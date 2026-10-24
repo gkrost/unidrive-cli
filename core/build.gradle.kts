@@ -321,7 +321,7 @@ providers.gradleProperty("unidriveTestJvm").orNull?.let { jvmVersion ->
 //
 // A test that fails on CI without a related change is quarantined, not retried and not deleted: it carries
 //     @Category(FlakyTests::class)
-//     @Flaky(issue = N, reason = "...", firstFailure = "https://github.com/gkrost/unidrive/actions/runs/...")
+//     @Flaky(issue = N, reason = "...", firstFailure = "https://github.com/gkrost/unidrive-cli/actions/runs/...")
 // (org.krost.unidrive.testing, :app:core's test fixtures). Then:
 //   - every Test task except flakyTest (`test`, and with it `check`, and sync-tracking's liveTest* tiers) excludes the
 //     category: it runs the stable tests only and fails on a stable failure, as before;
@@ -421,10 +421,10 @@ fun scanQuarantine(modules: Collection<Project>, rootDir: java.io.File): Quarant
                 // One string literal, or several joined with `+` when the reason does not fit a line.
                 val reasonLiterals = Regex("""\breason\s*=\s*((?:"(?:[^"\\]|\\.)*"\s*\+?\s*)+)""").find(args)?.groupValues?.get(1).orEmpty()
                 val reason = Regex(""""((?:[^"\\]|\\.)*)"""").findAll(reasonLiterals).joinToString("") { it.groupValues[1] }
-                val firstFailure = Regex("""\bfirstFailure\s*=\s*"(https://github\.com/gkrost/unidrive/[^"\s]+)"""").find(args)?.groupValues?.get(1).orEmpty()
+                val firstFailure = Regex("""\bfirstFailure\s*=\s*"(https://github\.com/gkrost/unidrive-cli/[^"\s]+)"""").find(args)?.groupValues?.get(1).orEmpty()
                 if (issue <= 0) problems += "$where: @Flaky needs issue = <number of the open issue that tracks the fix>"
                 if (reason.isBlank()) problems += "$where: @Flaky needs reason = \"what makes the test non-deterministic\""
-                if (firstFailure.isEmpty()) problems += "$where: @Flaky needs firstFailure = \"https://github.com/gkrost/unidrive/...\" (the first CI run that showed it)"
+                if (firstFailure.isEmpty()) problems += "$where: @Flaky needs firstFailure = \"https://github.com/gkrost/unidrive-cli/...\" (the first CI run that showed it)"
                 // Skip the annotations between @Flaky and the declaration it applies to.
                 var rest = text.substring(close + 1).trimStart()
                 while (rest.startsWith("@")) {

@@ -10,7 +10,7 @@ package org.krost.unidrive.testing
  * Quarantine a test with both lines together, in this order:
  *
  *     @Category(FlakyTests::class)
- *     @Flaky(issue = 832, reason = "...", firstFailure = "https://github.com/gkrost/unidrive/actions/runs/...")
+ *     @Flaky(issue = 832, reason = "...", firstFailure = "https://github.com/gkrost/unidrive-cli/actions/runs/...")
  *
  * Un-quarantine it by deleting both lines once the issue's fix has held.
  */

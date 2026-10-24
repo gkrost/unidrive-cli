@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report security vulnerabilities privately through GitHub's
-**[Report a vulnerability](https://github.com/gkrost/unidrive/security/advisories/new)**
+**[Report a vulnerability](https://github.com/gkrost/unidrive-cli/security/advisories/new)**
 form (the **Security** tab → *Report a vulnerability*). Private vulnerability
 reporting is enabled on this repository, so the report and any discussion stay
 confidential until a fix is published.

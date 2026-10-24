@@ -21,7 +21,7 @@ concurrency:
 # overnight: pair it with re-deriving the oracle's drift leg and re-measuring
 # the workers cap.
 jobs:
-  # Advisory full-history secret scan. AGENTS.md keeps `check` as the only
+  # Advisory full-history secret scan. The build keeps `check` as the only
   # merge gate; this job reports findings without becoming a required check.
   gitleaks:
     name: gitleaks (advisory)
