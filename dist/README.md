@@ -121,7 +121,7 @@ JAR (`unidrive-<version>.jar`) and publishes it as a GitHub Release with
 detached GPG signatures and SHA256 checksums.
 
 End users don't consume this artefact directly — it's the upstream input
-to `unidrive-dist`, which packages it as `.deb`/`.rpm`/AUR/tarball and
+to the distribution repository, which packages it as `.deb`/`.rpm`/AUR/tarball and
 publishes via the channels at https://unidrive.krost.org/install/.
 
 For the local-development install path used today (build + drop under

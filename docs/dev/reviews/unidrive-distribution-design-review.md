@@ -1,5 +1,8 @@
 # Review: unidrive-distribution-design.md
 
+> Names of the two private repositories are written as placeholders: `<dist-repo>` is the packaging and release
+> repository, `<infra-repo>` the hosting infrastructure repository.
+
 > Intensive review against project conventions (AGENTS.md, ADRs), technical
 > soundness, security, and operational completeness.
 >
@@ -29,7 +32,7 @@ The spec is structurally consistent with all of them.
 |---|---|---|
 | Hard rule: two providers | ✓ | No provider changes |
 | No CI policing | ✓ | `smoke-all.sh` gate, no coverage/lint baselines |
-| Abstractions earn their keep | ✓ | §2.2 gives three named justifications for `unidrive-dist` |
+| Abstractions earn their keep | ✓ | §2.2 gives three named justifications for `<dist-repo>` |
 | Doc surface bounded | ✓ | Lives in `docs/dev/specs/` |
 | No IDs/dates/versions | ✓ | §6.1 carves explicit exception for dist repo |
 | Core-app-contract: no engine packaging | ✓ | All packaging is client-layer; `--enable-native-access` flag preserved |
@@ -127,21 +130,21 @@ For MVP, pinning to JDK 21 is fine — just call out the shelf life.
 
 §5 alternates between three architectures without picking one clearly:
 
-1. "Stored in a restricted secret store on the krost-infra server"
+1. "Stored in a restricted secret store on the <infra-repo> server"
 2. "The dist CI runner accesses it via a chrooted SSH user (pkg-publisher)"
 3. "(simpler MVP: the CI runner pulls the key into ephemeral memory ...)"
 
 If (3) is the MVP choice (the text says "MVP starts with in-CI signing"),
 then (1) and (2) describe how the key is stored before CI pulls it. But
-(2) says the access is via SSH to krost-infra — that contradicts "in-CI"
-if the runner is on GH Actions (it must SSH to krost-infra to get the key,
+(2) says the access is via SSH to <infra-repo> — that contradicts "in-CI"
+if the runner is on GH Actions (it must SSH to <infra-repo> to get the key,
 then sign locally). That's actually *remote signing with local execution*.
 
 Recommendation: pick exactly one architecture for MVP and describe it as a
 numbered decision. Ideally: "MVP: the signing key lives as a GH Actions
 encrypted secret (`GPG_SIGNING_KEY` + `GPG_SIGNING_PASSPHRASE`). The release
 workflow imports the key into an ephemeral GPG keyring, signs, then scrubs
-the secret from memory. A remote signing service on krost-infra is a BACKLOG
+the secret from memory. A remote signing service on <infra-repo> is a BACKLOG
 item." Keep `pkg-publisher` as the rsync SSH user for artefact upload only,
 not key access.
 

@@ -1,10 +1,13 @@
 # UniDrive Distribution & Release Engineering — Design Spec
 
+> Names of the two private repositories are written as placeholders: `<dist-repo>` is the packaging and release
+> repository, `<infra-repo>` the hosting infrastructure repository.
+
 > Status: brainstormed and approved. Awaiting implementation plan.
 >
-> Scope: how UniDrive ships to end users on Linux. Covers the new `unidrive-dist`
+> Scope: how UniDrive ships to end users on Linux. Covers the new `<dist-repo>`
 > repository, release coordination across three repos, the four MVP distribution
-> channels, GPG signing, and the krost-infra integration for hosting the apt/dnf
+> channels, GPG signing, and the <infra-repo> integration for hosting the apt/dnf
 > repositories.
 
 ## §1. Why this spec exists
@@ -29,7 +32,7 @@ This spec defines the release surface that turns "we have two codebases" into
 
 ## §2. The triplet: three repos, one release
 
-A third repository, **`unidrive-dist`**, joins the existing two. Its single
+A third repository, **`<dist-repo>`**, joins the existing two. Its single
 job is distribution: packaging, signing, publishing, and orchestrating the
 cross-repo release dance. It contains no JVM or Rust source code.
 
@@ -48,7 +51,7 @@ cross-repo release dance. It contains no JVM or Rust source code.
                 └──────────────┬─────────────────────┘
                                ▼
               ┌────────────────────────────────┐
-              │ unidrive-dist (packaging-only) │
+              │ <dist-repo> (packaging-only)   │
               │   tag vX.Y.Z (or vX.Y.Z-pkgN)  │
               │   CI:                          │
               │     fetch artefacts            │
@@ -63,7 +66,7 @@ cross-repo release dance. It contains no JVM or Rust source code.
                                │
                                ▼
               ┌────────────────────────────────┐
-              │ krost-infra (Docker Compose)   │
+              │ <infra-repo> (Docker Compose)  │
               │   new container: pkg-server    │
               │   serves:                      │
               │     apt.unidrive.krost.org     │
@@ -80,16 +83,16 @@ cross-repo release dance. It contains no JVM or Rust source code.
   `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. Tagged release
   publishes per-arch tarballs containing the binary + LICENSE + NOTICE, with
   SHA256 + detached signature.
-- **`unidrive-dist`** knows about distro packaging. Pulls artefacts, builds
+- **`<dist-repo>`** knows about distro packaging. Pulls artefacts, builds
   `.deb`, `.rpm`, AUR `PKGBUILD`, and the canonical end-user tarball bundle.
-- **`krost-infra`** hosts the static apt/dnf repo server. One new container,
-  follows the existing krost-infra AGENTS.md security checklist.
+- **`<infra-repo>`** hosts the static apt/dnf repo server. One new container,
+  follows the existing <infra-repo> AGENTS.md security checklist.
 
 ### §2.2 Why a third repo, not packaging inside unidrive
 
 `unidrive` is the JVM engine. Adding deb/rpm/snap toolchains to its CI would
 mix concerns. The unidrive AGENTS.md "abstractions earn their keep" rule cuts
-both ways here — a separate `unidrive-dist` earns its keep because:
+both ways here — a separate `<dist-repo>` earns its keep because:
 
 1. Packaging mechanics evolve at a different cadence from the engine.
 2. The Rust co-daemon is upstream-equal to the JVM in the user's eyes; neither
@@ -125,7 +128,7 @@ Strict-SemVer table for 1.x onward:
 ### §3.3 Tagging protocol
 
 **Sibling repos tag only when their own code has changed for this release.**
-unidrive-dist's tag is authoritative — it defines the release. The
+<dist-repo>'s tag is authoritative — it defines the release. The
 user-visible coordinated SemVer is preserved (still one `0.0.1` everywhere)
 without forcing empty-payload tags on unchanged sibling repos.
 
@@ -140,7 +143,7 @@ Cut releases in this order:
    unidrive-mount-linux @ main green (cargo test) → git tag vX.Y.Z → push.
    GH Action cross-compiles x86_64 + aarch64, signs tarballs, attaches.
 
-3. unidrive-dist @ main green (Docker smoke) → git tag vX.Y.Z → push.
+3. <dist-repo> @ main green (Docker smoke) → git tag vX.Y.Z → push.
    GH Action runs release/release.sh which:
      a. fetch-artefacts.sh queries each sibling repo's GH Releases via the
         GitHub API for the latest release whose tag is at or before vX.Y.Z
@@ -149,7 +152,7 @@ Cut releases in this order:
      b. SHA256 + GPG verify each artefact downloaded.
      c. Build .deb, .rpm, AUR source, tarball bundle.
      d. Sign packages + repo metadata with project key (via pkg-signer, §5).
-     e. publish-apt.sh / publish-dnf.sh rsync to krost-infra over SSH.
+     e. publish-apt.sh / publish-dnf.sh rsync to <infra-repo> over SSH.
      f. publish-gh-release.sh uploads tarball bundle to dist's GH Release.
      g. publish-aur.sh ssh-pushes PKGBUILD update.
 ```
@@ -159,7 +162,7 @@ Cut releases in this order:
 - `unidrive`: tag `v0.0.2`, GH Release publishes the new JAR.
 - `unidrive-mount-linux`: no tag, still at `v0.0.1` (its existing release
   remains the latest).
-- `unidrive-dist`: tag `v0.0.2`. `fetch-artefacts.sh` pulls
+- `<dist-repo>`: tag `v0.0.2`. `fetch-artefacts.sh` pulls
   `unidrive 0.0.2` and `unidrive-mount-linux 0.0.1`, builds `0.0.2-1` deb/rpm.
 
 If steps 1 or 2 fail (or are skipped because nothing changed), no
@@ -173,7 +176,7 @@ postinst bug), without any change to JVM or Rust code:
 
 - **Upstream tags** (`unidrive`, `unidrive-mount-linux`) — only bump when their
   own code changes. `v0.0.1` stays `v0.0.1` on those repos.
-- **`unidrive-dist`** — tags `v0.0.1-pkg2`, `v0.0.1-pkg3`, etc. for
+- **`<dist-repo>`** — tags `v0.0.1-pkg2`, `v0.0.1-pkg3`, etc. for
   packaging-only respins.
 - **Distro version strings** use native revision suffixes:
   - deb: `0.0.1-1`, `0.0.1-2`
@@ -222,7 +225,7 @@ is a different binary and does not print it.
 
 ### §3.6 Rollback story
 
-- **Bad release on `apt.unidrive.krost.org`:** SSH to krost-infra, `mv` the
+- **Bad release on `apt.unidrive.krost.org`:** SSH to <infra-repo>, `mv` the
   previous good `dists/stable/` back from the timestamped backup directory
   (kept by publish-* scripts; retention: last 5).
 - **Bad GH Release tarball:** delete the GH Release (keep the tag), cut a
@@ -248,10 +251,10 @@ Four channels. Snap and Flatpak are explicitly deferred.
 
 ### §4.1 Channel 1: Tarball + `install.sh` (canonical, per-user)
 
-Single source of truth lives in `unidrive-dist/packaging/tarball/`. The
+Single source of truth lives in `<dist-repo>/packaging/tarball/`. The
 existing `unidrive/dist/install.sh` is migrated here. The `unidrive/dist/`
 directory becomes a thin pointer documenting that the canonical installer
-lives in `unidrive-dist`.
+lives in `<dist-repo>`.
 
 Tarball contents (`unidrive-X.Y.Z-linux-x86_64.tar.gz`,
 `unidrive-X.Y.Z-linux-aarch64.tar.gz`):
@@ -337,7 +340,7 @@ Target distros: Fedora 40+, RHEL 10, AlmaLinux/Rocky 10+.
 
 **RHEL 9 caveat:** kernel 5.14 does not meet the 6.9 floor. The rpm installs
 cleanly but `unidrive-mount` exits 78 on startup. RHEL 9 users are de-facto
-unsupported. Documented in `unidrive-dist/docs/compatibility.md`.
+unsupported. Documented in `<dist-repo>/docs/compatibility.md`.
 
 **RHEL 10 kernel verification:** RHEL 10 reached GA on 20 May 2025 with
 kernel 6.12.0-55.9.1.el10_0, which is above the 6.9 floor. RHEL 10 is a
@@ -378,7 +381,7 @@ of the Arch Linux account that owns (or co-maintains) the package. Therefore:
 - The bot account's SSH public key is registered in its Arch account
   settings.
 - The bot account's SSH **private** key is stored as the GH Actions secret
-  `AUR_BOT_KEY` on the unidrive-dist repo.
+  `AUR_BOT_KEY` on the <dist-repo> repo.
 - `publish-aur.sh` uses `AUR_BOT_KEY` to ssh-push the updated PKGBUILD.
 - If the bot account is compromised: the maintainer (co-maintainer) revokes
   its SSH key via the AUR web UI, regenerates a fresh keypair, updates
@@ -393,8 +396,8 @@ license=('Apache')
 depends=('java-runtime>=21' 'fuse3>=3.16')
 url='https://unidrive.krost.org'
 
-source=("https://github.com/gkrost/unidrive-dist/releases/download/vX.Y.Z/unidrive-X.Y.Z-linux-${CARCH}.tar.gz"
-        "https://github.com/gkrost/unidrive-dist/releases/download/vX.Y.Z/unidrive-X.Y.Z-linux-${CARCH}.tar.gz.asc")
+source=("https://github.com/<owner>/<dist-repo>/releases/download/vX.Y.Z/unidrive-X.Y.Z-linux-${CARCH}.tar.gz"
+        "https://github.com/<owner>/<dist-repo>/releases/download/vX.Y.Z/unidrive-X.Y.Z-linux-${CARCH}.tar.gz.asc")
 
 validpgpkeys=('<long fingerprint of unidrive-releases public key>')
 ```
@@ -441,7 +444,7 @@ contributor who proposes to own the platform-tier code.
   `openjdk-21-jre-headless`/equivalent). When a target distro defaults to
   JDK 23+, the wrapper script must detect `java --version` and select the
   correct flag form — filed as a BACKLOG design constraint in
-  unidrive-dist.
+  <dist-repo>.
 - **Per-user state is never touched by packaging.** `~/.config/unidrive/`,
   `~/.local/share/unidrive/`, `~/.cache/unidrive/` are created by
   `unidrive auth` and the running daemon. Install creates none of them.
@@ -456,9 +459,9 @@ contributor who proposes to own the platform-tier code.
 
 ### §4.7 Changelog strategy
 
-Single source of truth: `unidrive-dist/RELEASES.md`. Each release commit
+Single source of truth: `<dist-repo>/RELEASES.md`. Each release commit
 appends a new section to this file, sourced from the matching `CLOSED.md`
-entries in the sibling repos and from `unidrive-dist`'s own `CLOSED.md` for
+entries in the sibling repos and from `<dist-repo>`'s own `CLOSED.md` for
 packaging-only items.
 
 Format (one section per release):
@@ -478,7 +481,7 @@ Format (one section per release):
 - First .deb (Ubuntu 24.04 LTS + Debian 13; Ubuntu 26.04 added when GA)
 - First .rpm (Fedora 40, RHEL 10)
 - First AUR PKGBUILD
-- (etc., from unidrive-dist/CLOSED.md)
+- (etc., from <dist-repo>/CLOSED.md)
 ```
 
 At build time, `build-deb.sh` and `build-rpm.sh` extract the relevant
@@ -513,13 +516,13 @@ Fingerprint: <to be generated>
 Usage:       sign-only (no encryption, no certify-others)
 ```
 
-**The signing key never leaves the krost-infra server.** It is stored there
+**The signing key never leaves the <infra-repo> server.** It is stored there
 in a restricted-permissions GPG home directory owned by a dedicated
 `pkg-signer` system user.
 
-### §5.1 `pkg-signer` container (krost-infra)
+### §5.1 `pkg-signer` container (<infra-repo>)
 
-A second new krost-infra container, alongside `pkg-server`. Image:
+A second new <infra-repo> container, alongside `pkg-server`. Image:
 `debian:13-slim` plus `gnupg`, `dpkg-sig`, `rpm-sign`, `apt-utils`,
 `createrepo_c`. Exposes a minimal ssh-keyed sign-only service: a chrooted
 SSH user `signer` whose forced command is a shell script that:
@@ -533,13 +536,13 @@ SSH user `signer` whose forced command is a shell script that:
    artefact filename, and SHA256.
 
 Resource limits, healthcheck, no-new-privileges, read-only-with-tmpfs all
-per krost-infra AGENTS.md. The GPG home directory is on a dedicated docker
+per <infra-repo> AGENTS.md. The GPG home directory is on a dedicated docker
 volume (`signer-gnupg`) mounted read-write only inside this container; no
 other container, including `pkg-server`, can read it.
 
 ### §5.2 Release-time signing flow
 
-The unidrive-dist GH Actions release runner:
+The <dist-repo> GH Actions release runner:
 
 1. Builds unsigned `.deb`, `.rpm`, AUR source tarball, end-user tarball
    bundle, and the tarball's `SHA256SUMS` file (the one destined to
@@ -574,10 +577,10 @@ forced command refuses to expose `~/.gnupg/`). Defence in depth.
 The public key is published at `https://unidrive.krost.org/install/unidrive-releases.gpg`
 with its fingerprint plainly visible on the install page.
 
-## §6. `unidrive-dist` repo layout
+## §6. `<dist-repo>` repo layout
 
 ```
-unidrive-dist/
+<dist-repo>/
 ├── README.md
 ├── AGENTS.md
 ├── BACKLOG.md
@@ -600,7 +603,7 @@ unidrive-dist/
 │   ├── publish-gh-release.sh
 │   └── release.sh         # top-level orchestrator
 │
-├── repo-server/           # config destined for krost-infra
+├── repo-server/           # config destined for <infra-repo>
 │   ├── apt/Release.template
 │   ├── dnf/               # createrepo skeleton
 │   ├── nginx.conf
@@ -625,11 +628,11 @@ unidrive-dist/
     └── smoke-all.sh
 ```
 
-### §6.1 unidrive-dist AGENTS.md exception clause
+### §6.1 <dist-repo> AGENTS.md exception clause
 
 The unidrive AGENTS.md and unidrive-mount-linux AGENTS.md both forbid IDs,
 dates, and version numbers in commit messages, file names, and document
-content. `unidrive-dist` is the **explicit exception**: its job is releases,
+content. `<dist-repo>` is the **explicit exception**: its job is releases,
 which inherently carry versions.
 
 The exception is bounded:
@@ -641,12 +644,12 @@ The exception is bounded:
 - Source-code commit messages and `BACKLOG.md` entries still don't mention
   versions. Describe work, not releases.
 
-## §7. krost-infra integration
+## §7. <infra-repo> integration
 
 ### §7.1 New container: `pkg-server`
 
 A single nginx-based static-file server. Drop-in to
-`krost-infra/docker-compose.yml`:
+`<infra-repo>/docker-compose.yml`:
 
 ```yaml
   pkg-server:
@@ -689,13 +692,13 @@ volumes:
   pkg-data:                   # add to existing volumes: block
 ```
 
-Conforms to the krost-infra AGENTS.md Security Checklist for new services
+Conforms to the <infra-repo> AGENTS.md Security Checklist for new services
 (no-new-privileges, resource limits, healthcheck, read_only + tmpfs, log
 rotation, `traefik.enable=false` with router in `dynamic.yml`).
 
 ### §7.2 Traefik dynamic config
 
-Drop-in to `krost-infra/traefik/dynamic.yml`:
+Drop-in to `<infra-repo>/traefik/dynamic.yml`:
 
 ```yaml
 http:
@@ -721,7 +724,7 @@ http:
 
 ### §7.3 `pkg-data` volume layout
 
-Managed by `unidrive-dist`'s publish-* scripts over rsync-SSH:
+Managed by `<dist-repo>`'s publish-* scripts over rsync-SSH:
 
 ```
 /var/www/pkg/
@@ -781,7 +784,7 @@ how to add the apt/dnf repo and the public key fingerprint.
 
 ### §7.5 SSH deploy accounts and key rotation
 
-Two distinct SSH users on the krost-infra server, each with a separate GH
+Two distinct SSH users on the <infra-repo> server, each with a separate GH
 Actions secret holding its private key:
 
 | User | GH secret | Forced-command scope |
@@ -789,7 +792,7 @@ Actions secret holding its private key:
 | `pkg-publisher` | `DIST_DEPLOY_KEY` | `rsync` only, chrooted to `~/docker/pkg-server/pkg-data/` |
 | `signer` | `SIGNER_DEPLOY_KEY` | `pkg-signer` container's sign-only forced command (§5.1) |
 
-Both user setups are added to `krost-infra/setup-server.sh`. Both private
+Both user setups are added to `<infra-repo>/setup-server.sh`. Both private
 keys are Ed25519, generated with passphrase=empty (GH Actions can't prompt
 for a passphrase), and never exist in plain text outside the GH secrets
 store and the one-time generation step.
@@ -803,9 +806,9 @@ them back signed, which is effectively full release authority — this key
 is the more sensitive of the two.
 
 **Rotation playbook** (mirrors §3.7 GPG-key revocation; lives in
-`unidrive-dist/docs/release-process.md`):
+`<dist-repo>/docs/release-process.md`):
 
-1. On the krost-infra server, remove the compromised key from
+1. On the <infra-repo> server, remove the compromised key from
    `~pkg-publisher/.ssh/authorized_keys` or `~signer/.ssh/authorized_keys`.
 2. Generate a fresh Ed25519 keypair locally.
 3. Append the new public key to the appropriate `authorized_keys`.
@@ -816,14 +819,14 @@ is the more sensitive of the two.
    for artefacts published or signed since the last known-good release.
 6. If compromise window included a release: cut a fresh release with the
    user-visible version unchanged, increment the `-pkgN` suffix on
-   unidrive-dist. Publish a security advisory on `unidrive.krost.org`.
+   <dist-repo>. Publish a security advisory on `unidrive.krost.org`.
 
 No automatic rotation. Threat-driven manual rotation only, same posture as
 the GPG key.
 
-### §7.6 krost-infra documentation updates
+### §7.6 <infra-repo> documentation updates
 
-Per krost-infra AGENTS.md "Documentation-Stack Sync Rules":
+Per <infra-repo> AGENTS.md "Documentation-Stack Sync Rules":
 
 - `CLAUDE.md` services table → add `pkg-server`
 - `CLAUDE.md` architecture diagram → add the new container
@@ -839,7 +842,7 @@ Per krost-infra AGENTS.md "Documentation-Stack Sync Rules":
 ### §8.1 The gate
 
 ```bash
-cd unidrive-dist && ./test/smoke-all.sh
+cd <dist-repo> && ./test/smoke-all.sh
 ```
 
 Pass = green, anything else = red. No coverage tool, no lint baseline. Matches
@@ -866,9 +869,9 @@ a Docker container:
   catch the packaging-level failures (rpath, libfuse symbol resolution).
 - **No kernel-floor failure test in CI.** Tested in `unidrive-mount-linux`'s
   own `cargo test`.
-- **No repo-server integration test.** krost-infra has its own validation
-  via `docker compose config -q` plus the existing krost-infra smoke. The
-  contract between `unidrive-dist` and krost-infra is rsync-over-SSH.
+- **No repo-server integration test.** <infra-repo> has its own validation
+  via `docker compose config -q` plus the existing <infra-repo> smoke. The
+  contract between `<dist-repo>` and <infra-repo> is rsync-over-SSH.
 
 ### §8.4 End-to-end manual smoke
 
@@ -898,19 +901,19 @@ fusermount3 -u ~/cloud
 sudo apt remove unidrive
 ```
 
-Documented in `unidrive-dist/docs/release-process.md`. Not re-run for routine
+Documented in `<dist-repo>/docs/release-process.md`. Not re-run for routine
 PATCH releases.
 
 ### §8.5 Dev loop
 
 ```bash
-# In unidrive-dist/, against local checkouts of the sibling repos:
+# In <dist-repo>/, against local checkouts of the sibling repos:
 ./test/local-build.sh ../unidrive ../unidrive-mount-linux
 ```
 
 The script accepts the two sibling-repo paths as arguments, but
-`unidrive-dist/README.md` documents the canonical layout
-(`../unidrive` and `../unidrive-mount-linux` siblings of `../unidrive-dist`)
+`<dist-repo>/README.md` documents the canonical layout
+(`../unidrive` and `../unidrive-mount-linux` siblings of `../<dist-repo>`)
 so first-time contributors can clone-three-and-go without reading the
 script.
 
@@ -926,9 +929,9 @@ Lets a packaging-recipe change iterate without cutting any tags.
 
 ### §8.6 CI scope
 
-- **GH Actions on PR for unidrive-dist** → `test/smoke-all.sh` matrix (one
+- **GH Actions on PR for <dist-repo>** → `test/smoke-all.sh` matrix (one
   job per distro container). Blocks merge.
-- **GH Actions on tag for unidrive-dist** → `release/release.sh`. Requires
+- **GH Actions on tag for <dist-repo>** → `release/release.sh`. Requires
   sibling-repo tags to exist; fails fast otherwise.
 - **No nightly builds, no scheduled scans, no Dependabot for packaging
   recipes.** Distro packaging changes at the cadence of upstream releases;
@@ -936,7 +939,7 @@ Lets a packaging-recipe change iterate without cutting any tags.
 
 ## §9. Out of scope for MVP (deferred to BACKLOG)
 
-Filed as design constraints in unidrive-dist's `BACKLOG.md`, not work items:
+Filed as design constraints in <dist-repo>'s `BACKLOG.md`, not work items:
 
 - **Snap and Flatpak channels.** Per §4.5.
 - **Reproducible builds.** Rust tarballs aren't byte-reproducible
@@ -951,7 +954,7 @@ Filed as design constraints in unidrive-dist's `BACKLOG.md`, not work items:
   GH Releases download counts and `apt`/`dnf` access-log aggregates are the
   only signal. No "anonymous install ping."
 - **Hardware-backed signing key (HSM, YubiKey).** §5 puts the key on a
-  krost-infra container volume with restricted permissions. Moving the key
+  <infra-repo> container volume with restricted permissions. Moving the key
   to hardware-backed storage (YubiKey plugged into the server, or an HSM
   service) is a security-strengthening follow-up.
 - **Man page** (`/usr/share/man/man1/unidrive.1.gz`). `unidrive --help` is
@@ -970,7 +973,7 @@ A release of `unidrive v0.0.1` is complete when **all** of:
 2. `unidrive-mount-linux` tag `v0.0.1` exists; its GH Release contains
    `unidrive-mount-0.0.1-{x86_64,aarch64}.tar.gz` + `.sha256` + `.asc` per
    arch.
-3. `unidrive-dist` tag `v0.0.1` exists; its GH Release contains the
+3. `<dist-repo>` tag `v0.0.1` exists; its GH Release contains the
    end-user tarball bundle for both arches.
 4. `apt.unidrive.krost.org` serves a signed apt repo containing
    `unidrive_0.0.1-1_{amd64,arm64}.deb`.
@@ -989,10 +992,10 @@ A release of `unidrive v0.0.1` is complete when **all** of:
 - **Channel** — a single distribution mechanism (tarball, apt, dnf, AUR).
 - **Lockstep** — the convention that all three repos tag the same version
   for the same release.
-- **`-pkgN` suffix** — the unidrive-dist-only tag suffix for packaging-only
+- **`-pkgN` suffix** — the <dist-repo>-only tag suffix for packaging-only
   respins (e.g. `v0.0.1-pkg2`). Sibling repos never carry this suffix.
 - **Triplet** — the three coupled repos (`unidrive`,
-  `unidrive-mount-linux`, `unidrive-dist`).
+  `unidrive-mount-linux`, `<dist-repo>`).
 - **Per-user state** — `~/.config/unidrive/`, `~/.local/share/unidrive/`,
   `~/.cache/unidrive/`. Never touched by packaging.
 - **Hard floor** — kernel ≥ 6.9, libfuse ≥ 3.16. Enforced at runtime, not

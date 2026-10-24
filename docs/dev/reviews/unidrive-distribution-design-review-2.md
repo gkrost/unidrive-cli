@@ -59,7 +59,7 @@ The RELEASES.md → debian/changelog conversion needs a maintainer identity
 ### #E — `sign-packages.sh` in repo layout (§6)
 
 The `release/` directory lists `sign-packages.sh`. The release-time flow
-(§5.2) signs via SSH to krost-infra's `pkg-signer`, not locally. The dev
+(§5.2) signs via SSH to <infra-repo>'s `pkg-signer`, not locally. The dev
 loop (`local-build.sh`, §8.5) may need local-only signing (e.g., GPG on the
 developer's machine). The spec should note whether `sign-packages.sh` is
 for the dev-loop path and how it differs from production signing.

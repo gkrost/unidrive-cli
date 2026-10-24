@@ -1,7 +1,7 @@
 name: release
 
 # Fires on annotated or lightweight tag push matching v* (e.g. v0.0.1).
-# Per the spec, only the unidrive-dist repo enforces the strict tag regex
+# Per the spec, only the distribution repository enforces the strict tag regex
 # `^v(\d+\.\d+\.\d+)(-pkg\d+)?$`. On this repo we accept anything starting
 # with `v` so a future pre-release scheme can be opted into without
 # editing CI.
@@ -88,7 +88,7 @@ jobs:
           set -euo pipefail
           if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
             echo "ERROR: GPG_PRIVATE_KEY secret is not set on this repo." >&2
-            echo "  This key is provisioned by Plan P3 (krost-infra signing setup)." >&2
+            echo "  This key is provisioned by Plan P3 (the release signing setup)." >&2
             echo "  Add it under Settings -> Secrets and variables -> Actions before retrying." >&2
             exit 1
           fi
@@ -134,13 +134,13 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           # Release notes are intentionally minimal here. The full RELEASES.md
-          # narrative is published by unidrive-dist's release workflow (Plan P4)
+          # narrative is published by the distribution repository's release workflow (Plan P4)
           # which pulls this JAR + the Rust binary tarballs.
           body: |
             UniDrive CLI ${{ github.ref_name }}
 
             JVM artefact for the coordinated UniDrive release. Distro packages
-            and the canonical end-user tarball are produced by unidrive-dist
+            and the canonical end-user tarball are produced by the distribution repository
             and published at https://unidrive.krost.org/install/.
 
             Verify with:

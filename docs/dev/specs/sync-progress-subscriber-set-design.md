@@ -81,7 +81,7 @@ The **hydration event surface** is already subscriber-set-gated correctly: `Hydr
 
 **Non-goal NG3:** Adding a `sync.unsubscribe` verb. Disconnection IS the unsubscribe — close-listener handles it. Symmetric with hydration (no explicit unsubscribe). Add only when a real use case appears.
 
-**Non-goal NG4:** Backwards-compatibility shim for old clients that connect-and-listen without subscribing. `unidrive-ui.jar` (Apr 2 09:58 build) is the suspected one; it'll need a one-line `sync.subscribe` call on its next deploy. CLAUDE.md "Avoid backwards-compatibility hacks" applies.
+**Non-goal NG4:** Backwards-compatibility shim for old clients that connect-and-listen without subscribing. The Linux systray UI jar (Apr 2 09:58 build) is the suspected one; it'll need a one-line `sync.subscribe` call on its next deploy. CLAUDE.md "Avoid backwards-compatibility hacks" applies.
 
 ## 3. Design
 
@@ -417,7 +417,7 @@ Same shape as the IPC-transport fix's §3.5 smoke (per the corrected plan in `91
 
 ## 4. Risks and open questions
 
-**R1 — `unidrive-ui` breaks silently.** The systray UI binary at `~/.local/lib/unidrive-ui.jar` (Apr 2 09:58, pre-subscriber-set) connects expecting events to flow without `sync.subscribe`. After this fix, it'll show stale state forever. Mitigation: trivial UI-side fix (one-line `sync.subscribe` after connect). Detection: when the user next runs `unidrive-ui`, the systray will show "no recent sync activity" even mid-sync. Out of scope for this design; a follow-up BACKLOG entry to update `unidrive-ui` is filed at close-out (per §5).
+**R1 — The Linux systray UI breaks silently.** The systray UI binary (Apr 2 09:58, pre-subscriber-set) connects expecting events to flow without `sync.subscribe`. After this fix, it'll show stale state forever. Mitigation: trivial UI-side fix (one-line `sync.subscribe` after connect). Detection: when the user next runs the systray UI, it will show "no recent sync activity" even mid-sync. Out of scope for this design; a follow-up BACKLOG entry to update the systray UI is filed at close-out (per §5).
 
 **R2 — Other broadcast-listening consumers.** `grep -rn "server\.emit\|ipcServer\.emit" core/ --include="*.kt"` (production code, excluding tests) returns exactly one caller: `IpcProgressReporter.kt:23`. No other internal callers exist, so the JVM-side surface is fully accounted for. The grep was performed during the deep-review stage and is the substantive evidence behind G1.
 
@@ -447,4 +447,4 @@ Same shape as the IPC-transport fix's §3.5 smoke (per the corrected plan in `91
 - `IpcDispatcherIsolationTest.kt` and `IpcServerPermissionsTest.kt` unchanged and still pass (they don't rely on broadcast or state-dump behavior).
 - Manual live smoke per §3.6 passes against the `personal_onedrive` profile: `ls` succeeds, `less geheim.txt` prints, zero `Broken pipe`/`dropping dead` log lines during the session.
 - BACKLOG entry "Phase 2 co-daemon disconnects mid-IPC: `ls` on FUSE mount returns EIO" moves to `CLOSED.md` in the same commit set that lands the fix.
-- Follow-up BACKLOG entry filed at close-out: "`unidrive-ui` needs to call `sync.subscribe` after connecting (next deploy)."
+- Follow-up BACKLOG entry filed at close-out: "The Linux systray UI needs to call `sync.subscribe` after connecting (next deploy)."

@@ -1,5 +1,8 @@
 # Review: Distribution plans P1–P4a (branch `spec/distribution`)
 
+> Names of the two private repositories are written as placeholders: `<dist-repo>` is the packaging and release
+> repository, `<infra-repo>` the hosting infrastructure repository.
+
 > Third in the review series after the spec was approved. This review
 > covers the four implementation plans drafted on top of the spec.
 >
@@ -10,7 +13,7 @@
 
 Four plans totaling ~4,800 lines across 4,372 file-lines of plan
 content, creating/modifying files in 4 repos (unidrive,
-unidrive-mount-linux, krost-infra, unidrive-dist).
+unidrive-mount-linux, <infra-repo>, <dist-repo>).
 
 ---
 
@@ -20,7 +23,7 @@ unidrive-mount-linux, krost-infra, unidrive-dist).
 |---|---|---|
 | §10 AC #1 — JAR + SHA256 + ASC in GH Release | P1 Task 2 | ✅ Implemented |
 | §10 AC #2 — Per-arch tarballs + sigs in GH Release | P2 Task 3 | ✅ Implemented |
-| §10 AC #3 — End-user tarball bundle in unidrive-dist | P4a Tasks 7–9 | ✅ Implemented |
+| §10 AC #3 — End-user tarball bundle in <dist-repo> | P4a Tasks 7–9 | ✅ Implemented |
 | §10 AC #4 — `apt.unidrive.krost.org` signed repo | P3 Tasks 5, 10 (scaffold); content deferred to P5 | ⚠️ Deferred |
 | §10 AC #5 — `dnf.unidrive.krost.org` signed repo | Same as #4 | ⚠️ Deferred |
 | §10 AC #6 — AUR package | Deferred to P4b | ⏳ Pending |
@@ -33,10 +36,10 @@ The plans correctly identify all cross-repo dependencies:
 
 | Artefact | Produced by | Consumed by | Verified in |
 |---|---|---|---|
-| GPG private key (`GPG_PRIVATE_KEY`) | P3 Task 6 (krost-infra VPS) | P1, P2 workflows | P3 Task 11 |
+| GPG private key (`GPG_PRIVATE_KEY`) | P3 Task 6 (<infra-repo> VPS) | P1, P2 workflows | P3 Task 11 |
 | GPG fingerprint (`GPG_KEY_FINGERPRINT`) | P3 Task 6 | P1, P2 workflows | P3 Task 11 |
-| `DIST_DEPLOY_KEY` | P3 Task 8 | P4a (unidrive-dist) | P4a Task 0 |
-| `SIGNER_DEPLOY_KEY` | P3 Task 9 | P4a (unidrive-dist) | P4a Task 0 |
+| `DIST_DEPLOY_KEY` | P3 Task 8 | P4a (<dist-repo>) | P4a Task 0 |
+| `SIGNER_DEPLOY_KEY` | P3 Task 9 | P4a (<dist-repo>) | P4a Task 0 |
 | `unidrive-0.0.1.jar` + sigs | P1 (unidrive) | P4a `fetch-artefacts.sh` | P4a Task 9 (local-build) |
 | `unidrive-mount-0.0.1-*.tar.gz` + sigs | P2 (mount-linux) | P4a `fetch-artefacts.sh` | P4a Task 9 (local-build) |
 
