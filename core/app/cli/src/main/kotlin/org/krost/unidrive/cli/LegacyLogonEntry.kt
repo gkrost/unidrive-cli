@@ -6,8 +6,8 @@ import java.nio.file.Path
 
 /**
  * The Windows logon entry an earlier `:app:cli:deploy` wrote: `unidrive.vbs` in the user's Startup folder, which
- * ran the `unidrive-watch.cmd` restart loop around `unidrive autostart`. On Windows the tray client owns autostart
- * (gkrost/unidrive-windows#511), so deploy writes neither file any more and removes them through this object, which
+ * ran the `unidrive-watch.cmd` restart loop around `unidrive autostart`. On Windows the tray client owns autostart,
+ * so deploy writes neither file any more and removes them through this object, which
  * the deploy task loads from the freshly built shadow jar.
  *
  * A file is removed only when its content is what deploy wrote: a file of that name with any other content, and

@@ -161,7 +161,7 @@ function Run-Verify([string]$name, [string]$root, [string[]]$more) {
 }
 # How many entries of a mount folder are placeholders (reparse point) and how many are still plain files. After a healthy upload
 # every file is a placeholder, except names the client cannot match (non-NFC names, see the expected file). A plain file with an
-# NFC name that is still plain means the upload queue is stuck (gkrost/unidrive-windows#115).
+# NFC name that is still plain means the upload queue is stuck.
 function Placeholder-Counts([string]$root) {
     $phF = 0; $plF = 0; $phD = 0; $plD = 0; $stuck = 0; $clashes = 0; $names = [System.Collections.Generic.List[string]]::new()
     foreach ($e in [IO.Directory]::EnumerateFileSystemEntries($root, '*', [IO.SearchOption]::AllDirectories)) {
@@ -171,7 +171,7 @@ function Placeholder-Counts([string]$root) {
             $plF++
             $leaf = [IO.Path]::GetFileName($e)
             # a name with a sibling that is the same name for the cloud (gkrost/unidrive#491) stays plain on purpose once the client
-            # refuses such pairs (unidrive-windows#123): that is a clash, not a stuck queue
+            # refuses such pairs: that is a clash, not a stuck queue
             $nfc = $leaf.Normalize([Text.NormalizationForm]::FormC)
             $clash = @([IO.Directory]::EnumerateFileSystemEntries([IO.Path]::GetDirectoryName($e)) | Where-Object { $n = [IO.Path]::GetFileName($_); -not [string]::Equals($n, $leaf, [StringComparison]::Ordinal) -and [string]::Equals($n.Normalize([Text.NormalizationForm]::FormC), $nfc, [StringComparison]::Ordinal) }).Count -gt 0
             if ($clash) { $clashes++ }

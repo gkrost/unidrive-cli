@@ -56,7 +56,7 @@ import java.time.Instant
  * #560 U6 (cutover): a mount profile touches no sync root. The bytes a mount write puts in the cache
  * are the bytes that upload ([uploadFromCache]); a read is served from the cache or downloaded, never
  * seeded from a local folder; a delete or rename leaves no local copy behind. A pending write keeps its
- * own source — the cache — so nothing outside the profile (unidrive-windows#172's root move) can strand
+ * own source — the cache — so nothing outside the profile (the client's root move) can strand
  * it, and the 0-byte-placeholder shape of #524 cannot arise from the engine.
  *
  * Built over a [MountWiring] ([over]): the shared core of the engine that owns it, today `SyncEngine`

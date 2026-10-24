@@ -45,7 +45,7 @@ journalctl --user -u unidrive.service -f
 The unit runs `unidrive autostart`, which starts `sync --watch` for a mirror profile or
 `daemon run` for a mount profile. It resolves the default profile each time the service starts.
 These units are the Linux autostart. On Windows the tray client owns autostart
-([unidrive-windows#511](https://github.com/gkrost/unidrive-windows/issues/511)) and the engine installs no logon entry.
+and the engine installs no logon entry.
 
 ## Per-profile units
 
@@ -132,7 +132,7 @@ For the local-development install path used today (build + drop under
 
 Every launcher (the Gradle `deploy` task's `unidrive.ps1` / `unidrive`, `install.sh`, the golden-run launcher,
 `scripts/dev/unidrive-jfr.sh`) is rendered from `dist/launcher/*.tmpl` and reads its fixed JVM flags from
-`dist/launcher/jvm-flags.txt`. Add or remove a flag there, nowhere else (unidrive-windows mirrors the list in
+`dist/launcher/jvm-flags.txt`. Add or remove a flag there, nowhere else (the Windows client mirrors the list in
 `EngineHost.JvmFlags`; change both together).
 
 `unidrive --locale=xx_YY ...` (or `UNIDRIVE_LOCALE=xx_YY`) passes `-Duser.language=xx -Duser.country=YY` to the JVM and is

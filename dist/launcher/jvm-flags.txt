@@ -1,7 +1,7 @@
 # The JVM flags every unidrive launcher passes, one per line ('#' starts a comment).
 # Single source: the Gradle deploy launchers, dist/install.sh, scripts/dev/unidrive-jfr.sh and
 # scripts/golden/unicode-tree/run-localfs.ps1 read this file, DaemonAutospawn reads it beside the
-# deployed jar (the deploys copy it there), and unidrive-windows mirrors it in EngineHost.JvmFlags
+# deployed jar (the deploys copy it there), and the Windows client mirrors it in EngineHost.JvmFlags
 # (a different repository: change both together).
 #
 # Not listed here because they depend on the machine or the caller: -Xmx (UNIDRIVE_XMX, default 2g),

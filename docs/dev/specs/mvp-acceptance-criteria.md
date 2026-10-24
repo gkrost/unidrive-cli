@@ -8,7 +8,7 @@
 |---|---|---|
 | Core / CLI | `unidrive` daemon + CLI sync, legacy `SyncEngine` (engine decision #343) | this repo, Phase I of `mvp-release-sequence.md` |
 | Linux | core + `unidrive-mount-linux` FUSE mount | this repo + mount-linux smoke set |
-| Windows | core + `unidrive-windows` CfAPI mount (gated: the read tier per #290; writeback of new and changed files ships since unidrive-windows#86, rename and delete in progress in unidrive-windows#87) + CLI sync | unidrive-windows#9 |
+| Windows | core + the Windows client's CfAPI mount (gated: the read tier per #290; writeback of new and changed files ships since 2026-10-02, rename and delete in progress) + CLI sync | the client's gate |
 
 ## The six criteria
 

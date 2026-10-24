@@ -9,7 +9,7 @@ A profile today can be served two ways at once, and the two are partly coordinat
 - **Mirror:** `unidrive sync` reconciles a local `sync_root` with the cloud.
 - **Mount:** `unidrive daemon run` serves the hydration IPC verbs to a platform client (FUSE on Linux, CfAPI on Windows), which shows the cloud as on-demand files and writes back through `hydration.*`.
 
-On 2026-10-01 the owner decided that both folders stay and are coordinated ([unidrive-windows#84](https://github.com/gkrost/unidrive-windows/issues/84)): #141 would make `sync` a client of the daemon, and the bytes would be kept in step. Parts of that landed:
+On 2026-10-01 the owner decided that both folders stay and are coordinated: #141 would make `sync` a client of the daemon, and the bytes would be kept in step. Parts of that landed:
 
 - #478 (for #449, #450): the mount serves reads from the `sync_root` copy and mirrors what it writes into the `sync_root`; a delete or rename through the mount drops or moves the `sync_root` copy.
 - #459: the Reconciler suppressed a remote delete while a hydration cache copy existed (retired after U6 mode isolation and the pre-mutation mode gate).
@@ -71,7 +71,7 @@ Until the owner chooses, the folder stays untouched, a marker in it and the prof
 
 ## What this supersedes
 
-- **[unidrive-windows#84](https://github.com/gkrost/unidrive-windows/issues/84)** ("both folders stay, coordinated", 2026-10-01). Superseded by this decision; its coordination stays in place until the cutover.
+- **The decision of 2026-10-01** ("both folders stay, coordinated"). Superseded by this decision; its coordination stays in place until the cutover.
 - **#141** (`sync` as a client of the daemon). Replaced by the Option 2 hosting contract (#560 unit 4); it stays open until that lands and is then closed as superseded, not as delivered.
 - **[`mount-sync-mode-mutex-design.md`](../dev/specs/mount-sync-mode-mutex-design.md), in part.** One mode per profile stays (G1, NG2 per profile). First-writer-wins (G3) and "no profile-level mode flag" (NG3) are replaced by the explicit `mode`; coexistence of a mirror and a mount on one account is supported, as two profiles.
 - **[`unidrive-daemon-design.md`](../dev/specs/unidrive-daemon-design.md), in part.** I2 (`sync` ⇄ `daemon` exclusion per profile) becomes a consequence of the profile's mode rather than of which process starts first; discovery defaults follow #463.

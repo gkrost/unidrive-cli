@@ -1,6 +1,6 @@
 # `unidrive`
 
-Multi-platform cloud-sync core. Pure JVM, zero telemetry. Modular SPI for Internxt Drive (zero-knowledge E2EE) and Microsoft OneDrive (Graph API). Runs as a user-space Linux daemon via systemd; platform tiers consume the engine over IPC — [`unidrive-mount-linux`](https://github.com/gkrost/unidrive-mount-linux) (FUSE) and [`unidrive-windows`](https://github.com/gkrost/unidrive-windows) (CfAPI; new, changed, renamed and deleted files sync from the mount — unidrive-windows#86, then unidrive-windows#87).
+Multi-platform cloud-sync core. Pure JVM, zero telemetry. Modular SPI for Internxt Drive (zero-knowledge E2EE) and Microsoft OneDrive (Graph API). Runs as a user-space Linux daemon via systemd; platform tiers consume the engine over IPC — [`unidrive-mount-linux`](https://github.com/gkrost/unidrive-mount-linux) (FUSE) and the Windows client (CfAPI; new, changed, renamed and deleted files sync from the mount).
 
 ## Technical Layout
 
@@ -80,7 +80,7 @@ systemctl --user enable --now unidrive.service
 
 The installed unit runs `unidrive autostart`: mirror profiles use `sync --watch`, while mount profiles use `daemon run`. This keeps the background process aligned with the selected profile's fixed mode.
 
-On Windows the tray client owns autostart: it starts each account at sign-in ([unidrive-windows#511](https://github.com/gkrost/unidrive-windows/issues/511)). The engine writes no logon entry there: `./gradlew :app:cli:deploy` removes the Startup-folder `unidrive.vbs` and the `unidrive-watch.cmd` restart loop an earlier deploy wrote, each only when its content is the one deploy wrote. `unidrive autostart` stays for the Linux units.
+On Windows the tray client owns autostart: it starts each account at sign-in. The engine writes no logon entry there: `./gradlew :app:cli:deploy` removes the Startup-folder `unidrive.vbs` and the `unidrive-watch.cmd` restart loop an earlier deploy wrote, each only when its content is the one deploy wrote. `unidrive autostart` stays for the Linux units.
 
 Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/log-watch.sh --summary`.
 

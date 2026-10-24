@@ -586,7 +586,7 @@ fun deployWindows(
         """.trimMargin() + "\r\n",
     )
 
-    // No logon entry: on Windows the tray client owns autostart (gkrost/unidrive-windows#511). The Startup-folder
+    // No logon entry: on Windows the tray client owns autostart. The Startup-folder
     // unidrive.vbs and its unidrive-watch.cmd restart loop an earlier deploy wrote are removed, each only when its
     // content is what deploy wrote (LegacyLogonEntry, loaded from the jar just built; tested against a temp dir).
     URLClassLoader(arrayOf(jarFile.toURI().toURL()), ClassLoader.getPlatformClassLoader()).use { loader ->

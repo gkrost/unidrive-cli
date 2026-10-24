@@ -141,8 +141,7 @@ class EnumerationTracker(
      * The listing is done and [finalItems] items go to state.db. Returns how long the listing took.
      * The rate and the estimate end here: they describe the listing. That duration is also what the
      * status keeps reporting for the elapsed: the listing is over, and a count that keeps growing
-     * while state.db is written made the client show "found N items in 48 min" for what took 22
-     * (unidrive-windows#136).
+     * while state.db is written made the client show "found N items in 48 min" for what took 22.
      */
     fun saving(finalItems: Int): Long =
         synchronized(lock) {
@@ -223,7 +222,7 @@ class EnumerationTracker(
                 elapsedMs =
                     when {
                         !running -> null
-                        // unidrive-windows#136: the listing is over, so report its duration, not a count that keeps
+                        // The listing is over, so report its duration, not a count that keeps
                         // growing while state.db is written.
                         phase == EnumerationStatus.Phase.SAVING -> listingElapsedMs
                         else -> startedAtMs?.let { max(now - it, 0) }

@@ -306,7 +306,7 @@ class EnumerationTrackerTest {
         assertNull(s.etaS)
     }
 
-    // unidrive-windows#136: the client printed "The first scan found 245,490 items in 48 min" for a
+    // The client printed "The first scan found 245,490 items in 48 min" for a
     // listing that took 22 — the elapsed kept counting while state.db was written. During the saving
     // phase the listing is over: the status reports its duration, frozen.
     @Test

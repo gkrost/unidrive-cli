@@ -2,7 +2,7 @@
 # A rule for verify covers every surface (mount, fresh mount, mirror, provider directory); verify:mirror only the mirror run
 # (compare-expected -Tool verify:mirror).
 # tool	class	path	issue	note
-verify	MTIME	*	gkrost/unidrive#486	the client's cache copy carries the copy time (fix: unidrive-windows#120); placeholders are restamped from it
+verify	MTIME	*	gkrost/unidrive#486	the client's cache copy carries the copy time (fixed in the client); placeholders are restamped from it
 verify	MISSING	hazards/nfc-nfd-twins/*	gkrost/unidrive#491	the NFD member of each pair collapses onto the NFC path and never reaches the provider
 verify	MISSING	hazards/case-fold/{U+212B}.txt	gkrost/unidrive#491	the angstrom sign normalises to U+00C5
 verify	FORM	hazards/invisible-and-lookalike-twins/a{U+0301}{U+0302}{U+0303}{U+0304}{U+0305}.txt	gkrost/unidrive#491	a lone non-NFC name is stored in NFC (#171)

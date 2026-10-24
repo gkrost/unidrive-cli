@@ -2,13 +2,13 @@
 
 Companion to the plan `docs/dev/plans/win11-cfapi-mount.md`. This is the implementation-level breakdown of the first two phases (de-risk + read-only mount). Phases 2–4 (writeback, shell UX, packaging) are sketched in the plan and specced later.
 
-**Status:** Proposed. **Prereq decisions (from the plan §6.3):** `unidrive-windows` sibling repo vs in-tree `windows/`; unpackaged `CfRegisterSyncRoot` for Phase 1 (defer MSIX); lifecycle shape = client-is-the-Service.
+**Status:** Proposed. **Prereq decisions (from the plan §6.3):** a sibling repo for the Windows client vs in-tree `windows/`; unpackaged `CfRegisterSyncRoot` for Phase 1 (defer MSIX); lifecycle shape = client-is-the-Service.
 
 ---
 
 ## Shared substrate (built in Phase 0, used by everything)
 
-**Where it lives:** a sibling repo **`unidrive-windows`** (mirrors `unidrive-mount-linux`; satisfies the `AGENTS.md` "platforms are separate apps" rule) — a .NET 8 solution:
+**Where it lives:** a sibling repo for the Windows client (mirrors `unidrive-mount-linux`; satisfies the `AGENTS.md` "platforms are separate apps" rule) — a .NET 8 solution:
 - `Unidrive.Ipc` — the AF_UNIX NDJSON client (the spine)
 - `Unidrive.CfApi` — `cldapi.dll` bindings via **CsWin32** + the callback↔verb binding (Phase 1+)
 - `Unidrive.WinHost` — the Windows Service host / lifecycle
@@ -51,4 +51,4 @@ Companion to the plan `docs/dev/plans/win11-cfapi-mount.md`. This is the impleme
 
 - **Critical path:** 0.1 (recovery) → 0.3 (IPC client) → 1.1/1.6 (register + teardown, co-built so iteration is safe) → 1.2 → 1.3 → 1.5 → 1.4. Teardown (1.6) is built *with* registration (1.1), not bolted on at the end. 0.2 (#239) is parallel and unblocks Windows CI.
 - **Effort:** Phase 0 ≈ 1–2 wks (IPC client + recovery tool + #239 are the bulk); Phase 1 ≈ 3–4 wks (CfAPI binding + the FileIdentity/round-trip plumbing). One dev familiar with CfAPI; the official **CloudMirror** sample shortcuts 1.1–1.4.
-- **Decisions that block 0.3+ (need a call):** (1) `unidrive-windows` sibling repo vs in-tree `windows/` — recommend the sibling repo; (2) confirm unpackaged `CfRegisterSyncRoot` for Phase 1; (3) confirm lifecycle shape (i).
+- **Decisions that block 0.3+ (need a call):** (1) a sibling repo for the Windows client vs in-tree `windows/` — recommend the sibling repo; (2) confirm unpackaged `CfRegisterSyncRoot` for Phase 1; (3) confirm lifecycle shape (i).
