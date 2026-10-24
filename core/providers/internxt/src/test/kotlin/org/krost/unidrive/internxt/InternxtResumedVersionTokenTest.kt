@@ -43,7 +43,9 @@ class InternxtResumedVersionTokenTest {
     @Test
     fun `a resumed offset listing gives the files the version token a fresh one gives`() =
         runTest {
-            val drive = FakeDrive(fakeAccountFolders(), fakeAccountFiles())
+            // The poll rides the sync listings (#312); this test is about the offset listing's resume,
+            // so the server does not serve them and the gather keeps the offset path.
+            val drive = FakeDrive(fakeAccountFolders(), fakeAccountFiles(), syncStatus = 404)
             val since = "2026-07-01T00:00:00.000Z"
             val staging = FakeStaging()
             val fresh = internxtProviderOn(drive.engine).delta(since, null, staging.context())

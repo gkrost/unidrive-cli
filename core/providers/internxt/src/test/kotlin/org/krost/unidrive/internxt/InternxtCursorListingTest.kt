@@ -6,8 +6,6 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.client.request.HttpRequestData
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.headersOf
-import io.ktor.utils.io.ClosedReadChannelException
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.ScanContext
@@ -15,7 +13,6 @@ import org.krost.unidrive.ScanProgress
 import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.internxt.model.InternxtCredentials
 import java.time.Instant
-import java.util.Base64
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -38,288 +35,6 @@ import kotlin.test.assertTrue
  * strategies return can be compared.
  */
 class InternxtCursorListingTest {
-    private fun provider(engine: MockEngine): InternxtProvider {
-        val provider = InternxtProvider()
-        val auth = InternxtProvider::class.java.getDeclaredField("authService").also { it.isAccessible = true }.get(provider)
-        val credsField = auth.javaClass.getDeclaredField("credentials").also { it.isAccessible = true }
-        val payload = Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
-        credsField.set(
-            auth,
-            InternxtCredentials(
-                jwt = "header.$payload.signature",
-                mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-                rootFolderId = "root",
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = "6928426c1a2316b856c9ab81",
-            ),
-        )
-        val api = InternxtProvider::class.java.getDeclaredField("api").also { it.isAccessible = true }.get(provider)
-        val clientField = InternxtApiService::class.java.getDeclaredField("httpClient").also { it.isAccessible = true }
-        (clientField.get(api) as? HttpClient)?.close()
-        clientField.set(api, HttpClient(engine))
-        return provider
-    }
-
-    // ---- the fake drive ----------------------------------------------------------------------------------------------
-
-    private val jsonHeaders = headersOf("Content-Type", "application/json")
-    private val root = "root"
-    private val epoch = "1970-01-01T00:00:00.000Z"
-
-    private fun folder(
-        uuid: String,
-        name: String,
-        parent: String,
-    ) = """{"uuid":"$uuid","plainName":"$name","parentUuid":"$parent","status":"EXISTS",""" +
-        """"modificationTime":"2026-09-01T10:00:00.123Z","updatedAt":"2026-10-01T10:00:00.456Z"}"""
-
-    private fun file(
-        uuid: String,
-        name: String,
-        ext: String,
-        folder: String,
-        size: Int = 1,
-    ) = """{"uuid":"$uuid","plainName":"$name","type":"$ext","size":"$size","folderUuid":"$folder","status":"EXISTS",""" +
-        """"modificationTime":"2026-09-01T10:00:00.123Z","updatedAt":"2026-10-01T10:00:00.456Z"}"""
-
-    // The listing is ordered by updatedAt, not by the tree: a child can arrive before its parent.
-    private val standardFolderPages =
-        listOf(
-            listOf(folder("d4", "Deep", "d2"), folder("d2", "Sub", "d1")),
-            listOf(folder("d3", "Pics", root)),
-            listOf(folder("d1", "Docs", root)),
-        )
-    private val standardFilePages =
-        listOf(
-            listOf(file("f1", "top", "txt", root)),
-            listOf(file("f2", "a", "txt", "d1", 2), file("f3", "b", "txt", "d2", 3)),
-            listOf(file("f4", "p", "jpg", "d3", 4)),
-            listOf(file("f5", "deep", "txt", "d4", 5)),
-        )
-    private val standardPaths =
-        setOf(
-            "/Docs",
-            "/Docs/Sub",
-            "/Docs/Sub/Deep",
-            "/Pics",
-            "/top.txt",
-            "/Docs/a.txt",
-            "/Docs/Sub/b.txt",
-            "/Pics/p.jpg",
-            "/Docs/Sub/Deep/deep.txt",
-        )
-
-    private fun filesBody(
-        items: List<String>,
-        next: String? = null,
-    ): String = "{\"files\":[${items.joinToString(",")}]" + (if (next == null) "" else ",\"nextCursor\":\"$next\"") + "}"
-
-    private fun cutByTheGateway() =
-        ClosedReadChannelException(
-            java.io.EOFException("Failed to parse HTTP response: the server prematurely closed the connection"),
-        )
-
-    // The tree the fallback walk serves: root -> [w] with one file. Distinct from the cursor fixture's
-    // items, so a result can be attributed to the walk by its paths alone.
-    private val walkTree =
-        mapOf(
-            "root" to
-                """{"children":[{"uuid":"w","plainName":"w","status":"EXISTS"}],""" +
-                    """"files":[{"uuid":"wt","plainName":"wt","type":"txt","size":"9","status":"EXISTS"}]}""",
-            "w" to """{"children":[],"files":[]}""",
-        )
-    private val walkPaths = setOf("/w", "/wt.txt")
-
-    private sealed interface Failure {
-        data class Status(
-            val code: Int,
-        ) : Failure
-
-        data object Cut : Failure
-
-        // No connection at all: no route, refused, unknown host. The client reports it as status 0.
-        data object Unreachable : Failure
-    }
-
-    private class Seen(
-        val stream: String,
-        val updatedAt: String?,
-        val cursor: String?,
-        val status: String?,
-        val limit: String?,
-        val query: String,
-    )
-
-    /**
-     * The drive as a server: [folderPages] and [filePages] are served page by page by `/folders/sync` and `/files/sync`
-     * (the cursor of page i is `cursorOf(stream, i)`, an opaque string with characters that need URL encoding), and in
-     * one piece by the offset endpoints when [offsetListing] is on. [tree] serves `/folders/content/{uuid}` bodies for
-     * the fallback walk. [failure] makes a page fail, [body] replaces one. Every cursor request is recorded in [seen],
-     * every other request in [other].
-     */
-    private inner class DriveMock(
-        val folderPages: List<List<String>> = standardFolderPages,
-        val filePages: List<List<String>> = standardFilePages,
-        val offsetListing: Boolean = false,
-        val tree: Map<String, String>? = null,
-        val contentStatus: Int? = null,
-        val failure: (stream: String, page: Int) -> Failure? = { _, _ -> null },
-        val body: (stream: String, cursor: String?) -> String? = { _, _ -> null },
-        // #523/#647: raw item bodies for the paged per-folder listing, keyed by folder uuid; a uuid with no
-        // entry serves an empty listing. Two endpoint families serve them, each enforcing the validation of the
-        // public server source (the unit tests used to honour any limit, which hid #647):
-        //  - the cursor endpoints GET /folders/v2/content/{uuid}/folders and /files: order ASC|DESC, limit 50..1000
-        //    (default 100), an opaque cursor, the reply carries nextCursor (null on the last page);
-        //  - the deprecated offset endpoints GET /folders/content/{uuid}/folders and /files: limit REQUIRED 1..50,
-        //    offset REQUIRED >= 0, sort one of the listed columns; anything else answers 400.
-        // [pagedStatus] fails both families instead; [v2Status] fails only the cursor endpoints, [offsetStatus] only the offset ones.
-        val pagedContent: Map<String, Pair<List<String>, List<String>>> = emptyMap(),
-        val pagedStatus: Int? = null,
-        val v2Status: Int? = null,
-        val offsetStatus: Int? = null,
-        // A gateway that caps `limit` below what is asked serves at most [pagedMaxPage] (offset) or [v2MaxPage]
-        // (cursor) items per page; one that ignores `offset` on the files stream serves its first page again and
-        // again ([pagedIgnoresOffset]); one that ignores the cursor does the same on the cursor files stream
-        // ([v2IgnoresCursor]); one whose nextCursor never changes serves a new page per request under it ([v2StuckCursor]).
-        val pagedMaxPage: Int? = null,
-        val v2MaxPage: Int? = null,
-        val pagedIgnoresOffset: Boolean = false,
-        val v2IgnoresCursor: Boolean = false,
-        val v2StuckCursor: Boolean = false,
-    ) {
-        val seen = CopyOnWriteArrayList<Seen>()
-        val other = CopyOnWriteArrayList<String>()
-        private val v2Requests = ConcurrentHashMap<String, Int>()
-
-        fun cursorOf(
-            stream: String,
-            page: Int,
-        ) = "c-$stream-$page+/="
-
-        fun pageOf(
-            stream: String,
-            cursor: String?,
-        ): Int {
-            if (cursor == null) return 0
-            val match = Regex("""c-$stream-(\d+)\+/=""").matchEntire(cursor) ?: error("a malformed $stream cursor reached the server: $cursor")
-            return match.groupValues[1].toInt()
-        }
-
-        private fun pageBody(
-            stream: String,
-            page: Int,
-        ): String {
-            val pages = if (stream == "folders") folderPages else filePages
-            val next = if (page + 1 < pages.size) ",\"nextCursor\":\"${cursorOf(stream, page + 1)}\"" else ""
-            return "{\"$stream\":[${pages[page].joinToString(",")}]$next}"
-        }
-
-        val engine =
-            MockEngine { request ->
-                val path = request.url.encodedPath
-                val params = request.url.parameters
-                val stream =
-                    when {
-                        path.endsWith("/drive/folders/sync") -> "folders"
-                        path.endsWith("/drive/files/sync") -> "files"
-                        else -> null
-                    }
-                if (stream == null) {
-                    other += request.url.toString()
-                    when {
-                        path.contains("/folders/v2/content/") &&
-                            (path.endsWith("/files") || path.endsWith("/folders")) &&
-                            (pagedContent.isNotEmpty() || pagedStatus != null || v2Status != null) -> {
-                            val status = v2Status ?: pagedStatus
-                            if (status != null) return@MockEngine respond("{}", HttpStatusCode.fromValue(status), jsonHeaders)
-                            val limit = params["limit"]?.let { it.toIntOrNull() ?: -1 } ?: 100
-                            val order = params["order"] ?: "ASC"
-                            if (limit !in 50..1000 || order !in setOf("ASC", "DESC")) {
-                                return@MockEngine respond("""{"message":"Bad Request"}""", HttpStatusCode.BadRequest, jsonHeaders)
-                            }
-                            val uuid = path.substringAfter("/folders/v2/content/").substringBefore('/')
-                            val (folders, files) = pagedContent[uuid] ?: Pair(emptyList(), emptyList())
-                            val isFiles = path.endsWith("/files")
-                            val items = if (isFiles) files else folders
-                            val cursor = params["cursor"]
-                            if (cursor != null && !Regex("""v2-\d+""").matches(cursor) && cursor != "stuck") {
-                                return@MockEngine respond("""{"message":"Invalid cursor"}""", HttpStatusCode.BadRequest, jsonHeaders)
-                            }
-                            val size = minOf(limit, v2MaxPage ?: Int.MAX_VALUE)
-                            val from =
-                                when {
-                                    isFiles && v2IgnoresCursor -> 0
-                                    // a stuck cursor: the n-th request of the stream gets the n-th page
-                                    v2StuckCursor -> v2Requests.merge("$uuid|$path", 1, Int::plus)!!.minus(1) * size
-                                    else -> cursor?.removePrefix("v2-")?.toInt() ?: 0
-                                }
-                            val page = items.drop(from).take(size)
-                            val next = if (from + page.size < items.size) (if (v2StuckCursor) "stuck" else "v2-${from + page.size}") else null
-                            respond(
-                                """{"${if (isFiles) "files" else "folders"}":[${page.joinToString(",")}],"nextCursor":${next?.let { "\"$it\"" } ?: "null"}}""",
-                                HttpStatusCode.OK,
-                                jsonHeaders,
-                            )
-                        }
-                        path.contains("/folders/content/") &&
-                            (path.endsWith("/files") || path.endsWith("/folders")) &&
-                            (pagedContent.isNotEmpty() || pagedStatus != null || offsetStatus != null) -> {
-                            (offsetStatus ?: pagedStatus)?.let { return@MockEngine respond("{}", HttpStatusCode.fromValue(it), jsonHeaders) }
-                            val isFiles = path.endsWith("/files")
-                            val limit = params["limit"]?.let { it.toIntOrNull() ?: -1 } ?: 0
-                            val offset = params["offset"]?.let { it.toIntOrNull() ?: -1 } ?: -1
-                            val sort = params["sort"]
-                            val sortable = if (isFiles) setOf("updatedAt", "size", "id", "plainName", "uuid") else setOf("updatedAt", "id", "plainName", "uuid")
-                            if (limit !in 1..50 || offset < 0 || (sort != null && sort !in sortable)) {
-                                return@MockEngine respond("""{"message":"Bad Request"}""", HttpStatusCode.BadRequest, jsonHeaders)
-                            }
-                            val uuid = path.substringAfter("/folders/content/").substringBefore('/')
-                            val (folders, files) = pagedContent[uuid] ?: Pair(emptyList(), emptyList())
-                            val items = if (isFiles) files else folders
-                            val from = if (pagedIgnoresOffset && isFiles) 0 else offset
-                            respond(
-                                """{"${if (isFiles) "files" else "folders"}":[${items.drop(from).take(minOf(limit, pagedMaxPage ?: Int.MAX_VALUE)).joinToString(",")}]}""",
-                                HttpStatusCode.OK,
-                                jsonHeaders,
-                            )
-                        }
-                        contentStatus != null && (path.contains("/folders/content/") || path.contains("/folders/v2/content/")) ->
-                            respond("{}", HttpStatusCode.fromValue(contentStatus), jsonHeaders)
-                        tree != null && path.contains("/folders/content/") -> {
-                            val content =
-                                tree.entries.firstOrNull { path.endsWith("/drive/folders/content/${it.key}") }?.value
-                            if (content != null) respond(content, HttpStatusCode.OK, jsonHeaders)
-                            else error("unexpected request: ${request.url}")
-                        }
-                        !offsetListing || !(path.endsWith("/drive/folders") || path.endsWith("/drive/files")) -> {
-                            error("unexpected request: ${request.url}")
-                        }
-                        else -> {
-                            val offset = params["offset"]?.toInt() ?: 0
-                            val all = (if (path.endsWith("/drive/folders")) folderPages else filePages).flatten()
-                            respond(if (offset == 0) all.joinToString(",", "[", "]") else "[]", HttpStatusCode.OK, jsonHeaders)
-                        }
-                    }
-                } else {
-                    val cursor = params["cursor"]
-                    seen += Seen(stream, params["updatedAt"], cursor, params["status"], params["limit"], request.url.encodedQuery)
-                    val custom = body(stream, cursor)
-                    if (custom != null) {
-                        respond(custom, HttpStatusCode.OK, jsonHeaders)
-                    } else {
-                        val page = pageOf(stream, cursor)
-                        when (val f = failure(stream, page)) {
-                            is Failure.Status -> respond("{}", HttpStatusCode.fromValue(f.code), jsonHeaders)
-                            Failure.Cut -> throw cutByTheGateway()
-                            Failure.Unreachable -> throw java.net.NoRouteToHostException("No route to host")
-                            null -> respond(pageBody(stream, page), HttpStatusCode.OK, jsonHeaders)
-                        }
-                    }
-                }
-            }
-    }
 
     private class Killed : RuntimeException("killed by the test")
 
@@ -361,10 +76,7 @@ class InternxtCursorListingTest {
         }
     }
 
-    private fun quiet(onProgress: ((ScanProgress) -> Unit)? = null) = ScanContext(null, emptyList(), { _, _ -> }, onProgress = onProgress)
 
-    // A resumed row keeps the cloud identity staging holds: no creation time, and a root-level parent as null.
-    private fun essence(item: CloudItem) = listOf(item.id, item.path, item.name, item.size, item.isFolder, item.modified, item.deleted)
 
     // ---- paging, dedupe, queries -------------------------------------------------------------------------------------
 
@@ -375,15 +87,15 @@ class InternxtCursorListingTest {
             val folderPages =
                 listOf(
                     listOf(folder("d4", "Deep", "d2"), folder("d2", "Sub", "d1")),
-                    listOf(folder("d3", "Pics", root)),
-                    listOf(folder("d1", "Docs", root), folder("d3", "Photos", root)),
+                    listOf(folder("d3", "Pics", ROOT)),
+                    listOf(folder("d1", "Docs", ROOT), folder("d3", "Photos", ROOT)),
                 )
             val filePages =
                 listOf(
-                    listOf(file("f1", "top", "txt", root, size = 1)),
+                    listOf(file("f1", "top", "txt", ROOT, size = 1)),
                     listOf(file("f2", "a", "txt", "d1", 2), file("f3", "b", "txt", "d2", 3)),
                     listOf(file("f4", "p", "jpg", "d3", 4)),
-                    listOf(file("f5", "deep", "txt", "d4", 5), file("f1", "top", "txt", root, size = 99)),
+                    listOf(file("f5", "deep", "txt", "d4", 5), file("f1", "top", "txt", ROOT, size = 99)),
                 )
             val drive = DriveMock(folderPages, filePages)
             val before = Instant.now()
@@ -437,7 +149,7 @@ class InternxtCursorListingTest {
             for ((stream, pages) in listOf("folders" to 3, "files" to 4)) {
                 val requests = drive.seen.filter { it.stream == stream }
                 assertEquals(pages, requests.size, stream)
-                assertEquals(epoch, requests.first().updatedAt, "$stream: the first page asks for everything since the beginning of time")
+                assertEquals(EPOCH, requests.first().updatedAt, "$stream: the first page asks for everything since the beginning of time")
                 assertNull(requests.first().cursor, "$stream: and has no cursor yet")
                 requests.forEachIndexed { i, r ->
                     assertEquals("EXISTS", r.status, "$stream page $i names the status")
@@ -568,7 +280,7 @@ class InternxtCursorListingTest {
             assertEquals(standardPaths, page.items.map { it.path }.toSet(), "the rows of the offset listing may describe items that are gone")
             for (stream in listOf("folders", "files")) {
                 val first = drive.seen.first { it.stream == stream }
-                assertEquals(epoch, first.updatedAt, "$stream starts from scratch")
+                assertEquals(EPOCH, first.updatedAt, "$stream starts from scratch")
                 assertNull(first.cursor)
             }
             assertTrue(staging.markers.isNotEmpty() && staging.markers.all { decodeCursorMarker(it) != null }, "the offset marker is replaced: ${staging.markers}")
@@ -624,8 +336,10 @@ class InternxtCursorListingTest {
             val page = provider(drive.engine).delta(null, null, ScanContext(unstarted, emptyList(), { _, _ -> }))
 
             assertEquals(standardPaths, page.items.map { it.path }.toSet())
+            // The offset advances by the rows a page returned, not always by the limit (#312), so a
+            // stride check would lie; what the marker test is about is where the listing began.
             val offsets = drive.other.map { Regex("offset=(\\d+)").find(it)!!.groupValues[1].toInt() }
-            assertTrue(offsets.isNotEmpty() && offsets.all { it % 999 == 0 } && offsets.contains(0), "the offset listing began at 0: $offsets")
+            assertTrue(offsets.contains(0), "the offset listing began at 0: $offsets")
         }
 
     // ---- when the endpoints are missing and when they fail -----------------------------------------------------------
@@ -710,7 +424,7 @@ class InternxtCursorListingTest {
             assertTrue(drive.other.count { it.contains("/folders/content/") } >= 4, "both gathers walked the tree: ${drive.other}")
         }
 
-    // #523/#647: the folder "big" holds [count] files, listed by the paged per-folder endpoints; its parent is the drive root.
+    // #523/#647: the folder "big" holds [count] files, listed by the paged per-folder endpoints; its parent is the drive ROOT.
     // The items have the shape of the public server's FileDto/FolderDto replies (the cursor endpoints carry no
     // removed/deleted flag on files, and add fields the engine does not read).
     private fun bigFolder(count: Int): Map<String, Pair<List<String>, List<String>>> =
@@ -964,7 +678,7 @@ class InternxtCursorListingTest {
             val page = provider(drive.engine).delta(null, null, quiet())
 
             assertFalse(page.complete, "a folder nobody could list keeps the gather incomplete")
-            assertTrue(page.items.isEmpty(), "the root folder could not be listed, so nothing was gathered")
+            assertTrue(page.items.isEmpty(), "the ROOT folder could not be listed, so nothing was gathered")
             val contentCalls = drive.other.count { it.contains("/folders/content/") }
             assertTrue(contentCalls >= 3, "the combined call was attempted: ${drive.other}")
             assertTrue(drive.other.any { it.contains("/folders/v2/content/") }, "and the paged listing: ${drive.other}")
@@ -1068,7 +782,7 @@ class InternxtCursorListingTest {
                             null
                         } else {
                             when (cursor) {
-                                null -> filesBody(listOf(file("f1", "top", "txt", root)), next = "X")
+                                null -> filesBody(listOf(file("f1", "top", "txt", ROOT)), next = "X")
                                 "X" -> filesBody(listOf(file("f2", "a", "txt", "d1", 2)), next = "X")
                                 else -> error("a cursor the fake never issued: $cursor")
                             }
@@ -1096,7 +810,7 @@ class InternxtCursorListingTest {
                             null
                         } else {
                             when (cursor) {
-                                null -> filesBody(listOf(file("f1", "top", "txt", root)), next = "c1")
+                                null -> filesBody(listOf(file("f1", "top", "txt", ROOT)), next = "c1")
                                 "c1" -> filesBody(emptyList(), next = "c2")
                                 "c2" -> filesBody(listOf(file("f2", "a", "txt", "d1", 2)))
                                 else -> error("a cursor the fake never issued: $cursor")
@@ -1117,7 +831,7 @@ class InternxtCursorListingTest {
                             null
                         } else {
                             when (cursor) {
-                                null -> filesBody(listOf(file("f1", "top", "txt", root)), next = "c1")
+                                null -> filesBody(listOf(file("f1", "top", "txt", ROOT)), next = "c1")
                                 "c1" -> filesBody(emptyList(), next = "c2")
                                 "c2" -> filesBody(listOf(file("f2", "a", "txt", "d1", 2)), next = "c3")
                                 "c3" -> filesBody(emptyList(), next = "c4")
@@ -1141,7 +855,7 @@ class InternxtCursorListingTest {
                             null
                         } else {
                             when (cursor) {
-                                null -> filesBody(listOf(file("f1", "top", "txt", root)), next = "c1")
+                                null -> filesBody(listOf(file("f1", "top", "txt", ROOT)), next = "c1")
                                 "c1" -> filesBody(emptyList(), next = "c2")
                                 "c2" -> filesBody(emptyList(), next = "c3")
                                 else -> error("the stream should have ended before asking for $cursor")
@@ -1178,7 +892,7 @@ class InternxtCursorListingTest {
     @Test
     fun `the legacy page callback ticks while the pages come in`() =
         runTest {
-            val pages = (0 until 6).map { p -> (0 until 1000).map { i -> file("f${p * 1000 + i}", "n${p * 1000 + i}", "txt", root) } }
+            val pages = (0 until 6).map { p -> (0 until 1000).map { i -> file("f${p * 1000 + i}", "n${p * 1000 + i}", "txt", ROOT) } }
             val ticks = Collections.synchronizedList(mutableListOf<Int>())
 
             val page = provider(DriveMock(listOf(emptyList()), pages).engine).delta(null, { ticks += it }, quiet())
@@ -1191,15 +905,171 @@ class InternxtCursorListingTest {
     // ---- what stays as it was ----------------------------------------------------------------------------------------
 
     @Test
-    fun `an incremental delta does not use the cursor listing`() =
+    fun `an incremental poll pages through the sync listings from the rewound cursor without a status filter`() =
         runTest {
-            val drive = DriveMock(offsetListing = true)
+            val drive = DriveMock(folderPages = listOf(emptyList()), filePages = listOf(emptyList()))
 
-            provider(drive.engine).delta("2026-10-01T00:00:00Z", null, quiet())
+            provider(drive.engine).delta("2026-10-01T10:00:00Z", null, quiet())
 
-            assertTrue(drive.seen.isEmpty(), "no cursor listing for an incremental poll")
-            assertTrue(drive.other.isNotEmpty() && drive.other.all { it.contains("sort=updatedAt") && it.contains("status=ALL") }, "${drive.other}")
+            assertEquals(2, drive.seen.size, "one request per stream for a quiet account: ${drive.seen.map { it.query }}")
+            for (request in drive.seen) {
+                assertNull(request.status, "no status filter: tombstones must arrive in the stream: ${request.query}")
+                assertEquals("1000", request.limit, request.query)
+                assertNull(request.cursor, "the first page of a poll is asked by updatedAt: ${request.query}")
+                assertEquals(
+                    "2026-10-01T09:58:00Z",
+                    request.updatedAt,
+                    "the poll starts at the cursor rewound by the window: ${request.query}",
+                )
+            }
+            assertTrue(drive.other.isEmpty(), "the offset listing is not touched: ${drive.other}")
         }
+
+    @Test
+    fun `a change that lands while the poll gathers is delivered and the cursor is the newest updatedAt seen`() =
+        runTest {
+            // #312: r2 changes while the poll gathers, so the server serves it again, changed, after
+            // the pages that held its old version. The offset listing cannot do this: the change
+            // moves r2 inside the updatedAt order, every later row shifts up one, and the row at a
+            // page boundary is never returned — its updatedAt is below the promoted cursor, so no
+            // later poll reaches it either. The sync listings page by key, so a shift cannot hide a
+            // row: every row of the feed arrives, the changed r2 last.
+            val filePages =
+                listOf(
+                    listOf(fileRow("r1", "2026-10-01T10:00:00Z"), fileRow("r2", "2026-10-01T10:01:00Z")),
+                    listOf(fileRow("r3", "2026-10-01T10:02:00Z"), fileRow("r4", "2026-10-01T10:03:00Z")),
+                    listOf(fileRow("r2", "2026-10-01T10:05:00Z", size = 99)),
+                )
+            val drive = DriveMock(folderPages = listOf(emptyList()), filePages = filePages)
+
+            val page = provider(drive.engine).delta("2026-10-01T09:00:00Z", null, quiet())
+
+            assertEquals(
+                setOf("/r1.txt", "/r2.txt", "/r3.txt", "/r4.txt"),
+                page.items.map { it.path }.toSet(),
+                "no row of the feed is skipped: ${page.items.map { it.path }}",
+            )
+            assertEquals(99L, page.items.single { it.id == "r2" }.size, "the changed version of r2 is the one delivered")
+            assertTrue(page.complete)
+            assertEquals("2026-10-01T10:05:00Z", page.cursor, "the cursor is the newest updatedAt seen")
+            assertEquals(3, drive.seen.count { it.stream == "files" }, "the poll followed nextCursor to the end")
+            assertEquals(1, drive.seen.count { it.stream == "folders" })
+        }
+
+    @Test
+    fun `a trashed and a deleted row arrive as deleted items`() =
+        runTest {
+            val drive =
+                DriveMock(
+                    folderPages = listOf(emptyList()),
+                    filePages =
+                        listOf(
+                            listOf(
+                                fileRow("r1", "2026-10-01T10:00:00Z"),
+                                fileRow("t1", "2026-10-01T10:01:00Z", status = "TRASHED"),
+                                fileRow("d1", "2026-10-01T10:02:00Z", status = "DELETED"),
+                            ),
+                        ),
+                )
+
+            val page = provider(drive.engine).delta("2026-10-01T09:00:00Z", null, quiet())
+
+            assertEquals(
+                listOf(false),
+                page.items.filter { it.id == "r1" }.map { it.deleted },
+                "the live row is not deleted",
+            )
+            assertEquals(listOf(true), page.items.filter { it.id == "t1" }.map { it.deleted }, "the trashed row arrives as the tombstone it is")
+            assertEquals(listOf(true), page.items.filter { it.id == "d1" }.map { it.deleted }, "the deleted row arrives as the tombstone it is")
+        }
+
+    @Test
+    fun `a poll row without a status fails the poll loudly`() =
+        runTest {
+            val drive =
+                DriveMock(
+                    folderPages = listOf(emptyList()),
+                    filePages = listOf(listOf(fileRow("r1", "2026-10-01T10:00:00Z", withStatus = false))),
+                )
+
+            assertFailsWith<SyncRowWithoutStatus> { provider(drive.engine).delta("2026-10-01T09:00:00Z", null, quiet()) }
+        }
+
+    @Test
+    fun `a server without the sync listings still serves the poll from the offset listing`() =
+        runTest {
+            val drive =
+                DriveMock(
+                    folderPages = listOf(emptyList()),
+                    filePages = listOf(listOf(fileRow("r1", "2026-10-01T10:00:00Z"))),
+                    offsetListing = true,
+                    failure = { _, page -> if (page == 0) Failure.Status(404) else null },
+                )
+
+            val page = provider(drive.engine).delta("2026-10-01T09:00:00Z", null, quiet())
+
+            assertEquals(listOf("/r1.txt"), page.items.map { it.path })
+            assertTrue(page.complete)
+            assertTrue(drive.other.isNotEmpty(), "the offset listing served the poll: ${drive.other}")
+            assertEquals(1, drive.seen.count { it.stream == "files" }, "the missing endpoint is asked once, not retried")
+            assertEquals(1, drive.seen.count { it.stream == "folders" })
+        }
+
+    @Test
+    fun `a listing that moves while the offset poll gathers does not advance the cursor`() =
+        runTest {
+            // #312: the re-fetch of the last page sees a different tail than the gather read — the
+            // listing moved under the poll. The gathered rows are still delivered, and the poll
+            // leaves the cursor where it was, so the next poll re-reads the window instead of
+            // stepping over what it may have missed. The page stays complete: an incomplete one
+            // would set the engine's recovery latch and list the whole drive for it. (A shift that
+            // landed entirely inside an earlier page is not visible here; the sync listings are the
+            // fix, this is the net for the servers that do not have them.)
+            val page = provider(movingTailDrive(again = emptyList()).engine).delta("2026-10-01T09:00:00Z", null, quiet())
+
+            assertEquals(
+                listOf("/r1.txt", "/r2.txt", "/r3.txt"),
+                page.items.map { it.path }.sorted(),
+                "the gathered rows are still delivered",
+            )
+            assertTrue(page.complete, "a moved listing does not make the poll incomplete: the next poll re-reads the window")
+            assertEquals("2026-10-01T09:00:00Z", page.cursor, "the cursor stays where the poll started")
+        }
+
+    @Test
+    fun `a row that arrives at the end of the offset listing during the poll is no move`() =
+        runTest {
+            // r4 changed after the gather read the last page: it sorts after every row read, so no row
+            // before it shifted and the cursor advances to the newest updatedAt the gather saw.
+            val r4 = fileRow("r4", "2026-10-01T10:03:00Z")
+            val page = provider(movingTailDrive(again = listOf(fileRow("r3", "2026-10-01T10:02:00Z"), r4)).engine).delta("2026-10-01T09:00:00Z", null, quiet())
+
+            assertTrue(page.complete)
+            assertEquals("2026-10-01T10:02:00Z", page.cursor, "the cursor advances to the newest updatedAt gathered")
+        }
+
+    // A server without the sync listings whose offset listing of files serves r1, r2 and then r3 at offset 2;
+    // a re-read of offset 2 serves [again].
+    private fun movingTailDrive(again: List<String>): DriveMock {
+        var servedLastWindow = 0
+        return DriveMock(
+            folderPages = listOf(emptyList()),
+            filePages = listOf(emptyList()),
+            offsetListing = true,
+            failure = { _, page -> if (page == 0) Failure.Status(404) else null },
+            offsetPages = { stream, offset ->
+                if (stream != "files") {
+                    emptyList()
+                } else {
+                    when (offset) {
+                        0 -> listOf(fileRow("r1", "2026-10-01T10:00:00Z"), fileRow("r2", "2026-10-01T10:01:00Z"))
+                        2 -> if (servedLastWindow++ == 0) listOf(fileRow("r3", "2026-10-01T10:02:00Z")) else again
+                        else -> emptyList()
+                    }
+                }
+            },
+        )
+    }
 
     // ---- the API calls -----------------------------------------------------------------------------------------------
 
@@ -1229,7 +1099,7 @@ class InternxtCursorListingTest {
                     },
                 )
 
-            val first = service.getFoldersSync(updatedAt = epoch, cursor = null)
+            val first = service.getFoldersSync(updatedAt = EPOCH, cursor = null)
             val later = service.getFoldersSync(updatedAt = null, cursor = first.nextCursor)
 
             assertEquals(listOf("d1"), first.items.map { it.uuid })
@@ -1237,7 +1107,7 @@ class InternxtCursorListingTest {
             assertEquals(2, requests.size)
             assertEquals("/drive/folders/sync", requests[0].url.encodedPath)
             assertEquals("Bearer test-jwt", requests[0].headers[HttpHeaders.Authorization])
-            assertEquals(mapOf("status" to "EXISTS", "limit" to "1000", "updatedAt" to epoch), requests[0].url.parameters.entries().associate { it.key to it.value.single() })
+            assertEquals(mapOf("status" to "EXISTS", "limit" to "1000", "updatedAt" to EPOCH), requests[0].url.parameters.entries().associate { it.key to it.value.single() })
             assertEquals(mapOf("status" to "EXISTS", "limit" to "1000", "cursor" to "n+1/="), requests[1].url.parameters.entries().associate { it.key to it.value.single() })
             assertEquals(1, later.items.size)
             service.close()
@@ -1255,7 +1125,7 @@ class InternxtCursorListingTest {
                     },
                 )
 
-            val page = service.getFilesSync(updatedAt = epoch, cursor = null)
+            val page = service.getFilesSync(updatedAt = EPOCH, cursor = null)
 
             assertEquals(listOf("/drive/files/sync"), paths)
             assertEquals(listOf("f1"), page.items.map { it.uuid })
@@ -1269,14 +1139,14 @@ class InternxtCursorListingTest {
             for (status in listOf(404, 405, 501)) {
                 val calls = AtomicInteger()
                 val service = serviceOn(MockEngine { calls.incrementAndGet(); respond("{}", HttpStatusCode.fromValue(status), jsonHeaders) })
-                val failure = assertFailsWith<InternxtApiException> { service.getFoldersSync(updatedAt = epoch, cursor = null) }
+                val failure = assertFailsWith<InternxtApiException> { service.getFoldersSync(updatedAt = EPOCH, cursor = null) }
                 assertEquals(status, failure.statusCode)
                 assertEquals(1, calls.get(), "HTTP $status is not retried")
                 service.close()
             }
             val calls = AtomicInteger()
             val service = serviceOn(MockEngine { calls.incrementAndGet(); respond("{}", HttpStatusCode.ServiceUnavailable, jsonHeaders) })
-            assertEquals(503, assertFailsWith<InternxtApiException> { service.getFilesSync(updatedAt = epoch, cursor = null) }.statusCode)
+            assertEquals(503, assertFailsWith<InternxtApiException> { service.getFilesSync(updatedAt = EPOCH, cursor = null) }.statusCode)
             assertEquals(3, calls.get(), "HTTP 503 goes through the whole ladder")
             service.close()
         }
@@ -1327,8 +1197,8 @@ class InternxtCursorListingTest {
     @Test
     fun `the query of the first page names updatedAt, a later page names only its cursor`() {
         assertEquals(
-            mapOf("status" to "EXISTS", "limit" to "1000", "updatedAt" to epoch),
-            syncQueryParams(updatedAt = epoch, cursor = null, status = "EXISTS", limit = 1000),
+            mapOf("status" to "EXISTS", "limit" to "1000", "updatedAt" to EPOCH),
+            syncQueryParams(updatedAt = EPOCH, cursor = null, status = "EXISTS", limit = 1000),
         )
         assertEquals(
             mapOf("status" to "EXISTS", "limit" to "1000", "cursor" to "next"),
@@ -1336,7 +1206,7 @@ class InternxtCursorListingTest {
         )
         assertEquals(
             mapOf("status" to "EXISTS", "limit" to "50", "cursor" to "next"),
-            syncQueryParams(updatedAt = epoch, cursor = "next", status = "EXISTS", limit = 50),
+            syncQueryParams(updatedAt = EPOCH, cursor = "next", status = "EXISTS", limit = 50),
             "given both, the cursor wins and updatedAt is not sent",
         )
     }

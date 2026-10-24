@@ -411,7 +411,8 @@ class InternxtGatewayOriginErrorTest {
     // #463: the daemon polls by default, so an incremental delta is the poll. One unavailable answer on its cheap
     // updatedAt-filtered listing used to send the poll into a walk of the whole folder tree (about half an hour on a
     // large drive, for one blip). It ends the poll instead: the poller backs off and the next poll asks the cheap
-    // listing again from the same cursor. Only a full gather has a reason to walk.
+    // listing again from the same cursor. Only a full gather has a reason to walk. The poll's listing is the sync
+    // listing (#312); the offset one is the fallback for a server without those endpoints, and answers the same way.
     @Test
     fun `an unavailable listing ends an incremental delta instead of walking the whole tree`() =
         runTest {
@@ -426,8 +427,8 @@ class InternxtGatewayOriginErrorTest {
                                 walked.incrementAndGet()
                                 respond(contentOf(url)!!, HttpStatusCode.OK, json)
                             }
-                            isCursorListing(request.url.encodedPath) -> error("an incremental delta never asks the cursor listing: $url")
-                            isAccountWideListing(request.url.encodedPath) -> respond(errorBody(status), code, headers)
+                            isCursorListing(request.url.encodedPath) || isAccountWideListing(request.url.encodedPath) ->
+                                respond(errorBody(status), code, headers)
                             else -> error("unexpected request: $url")
                         }
                     }
@@ -457,6 +458,7 @@ class InternxtGatewayOriginErrorTest {
                             walked.incrementAndGet()
                             respond(contentOf(url)!!, HttpStatusCode.OK, json)
                         }
+                        isCursorListing(request.url.encodedPath) -> respond(errorBody(503), HttpStatusCode.ServiceUnavailable, json)
                         isAccountWideListing(request.url.encodedPath) -> respond(errorBody(503), HttpStatusCode.ServiceUnavailable, json)
                         else -> error("unexpected request: $url")
                     }
@@ -495,6 +497,8 @@ class InternxtGatewayOriginErrorTest {
                             walked.incrementAndGet()
                             respond(contentOf(url)!!, HttpStatusCode.OK, json)
                         }
+                        isCursorListing(request.url.encodedPath) ->
+                            if (unavailable) respond(errorBody(503), HttpStatusCode.ServiceUnavailable, json) else respond("{}", HttpStatusCode.OK, json)
                         isAccountWideListing(request.url.encodedPath) ->
                             if (unavailable) respond(errorBody(503), HttpStatusCode.ServiceUnavailable, json) else respond("[]", HttpStatusCode.OK, json)
                         else -> error("unexpected request: $url")

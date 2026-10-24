@@ -393,13 +393,15 @@ class InternxtApiServiceTest {
 
     @Test
     fun `listing query params honour explicit sort and status overrides for the delta path`() {
-        // drive-desktop pattern: incremental delta walks pass sort=updatedAt
-        // (so the per-page max() advances the effective cursor) and
-        // status=ALL (tombstones are the signal for "deleted since cursor").
-        // Verified against drive-desktop sync-remote-files.ts:30 + swagger
-        // schema.ts:5115/5119. Fresh full-enum walks instead pass
-        // status=EXISTS to skip the ~20–40 % tombstone payload on a
-        // long-lived account.
+        // drive-desktop pattern: the offset listing of a delta passes
+        // sort=updatedAt (so the per-page max() advances the effective cursor)
+        // and status=ALL (tombstones are the signal for "deleted since cursor").
+        // Since #312 the incremental poll itself rides the sync listings; these
+        // params belong to the offset listing that outlives it as the fallback
+        // for servers without those endpoints, and to the full gather's offset
+        // fallback (which passes status=EXISTS to skip the ~20–40 % tombstone
+        // payload on a long-lived account). Verified against drive-desktop
+        // sync-remote-files.ts:30 + swagger schema.ts:5115/5119.
         val deltaParams =
             InternxtApiService.listingQueryParams(
                 updatedAt = "2026-05-20T08:00:00Z",

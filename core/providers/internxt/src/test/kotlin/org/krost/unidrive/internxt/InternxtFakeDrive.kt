@@ -127,6 +127,9 @@ internal class FakeDrive(
     // connect failure with no response).
     val devices: List<String>? = null,
     val deviceStatus: Int? = null,
+    // Answers both sync listings with this HTTP status on every request (404: the server does not serve
+    // them, and a gather — a poll included, #312 — falls back to the offset listing).
+    val syncStatus: Int? = null,
 ) {
     val metaRequests = CopyOnWriteArrayList<String>()
     val deviceRequests = AtomicInteger()
@@ -197,6 +200,7 @@ internal class FakeDrive(
                     respondJson(rows.joinToString(",", "[", "]") { fakeFolderJson(it) })
                 }
                 path.endsWith("/drive/folders/sync") -> {
+                    syncStatus?.let { return@MockEngine respond("""{"statusCode":$it}""", HttpStatusCode.fromValue(it), fakeJsonHeaders) }
                     if (token != null && cursor == null) return@MockEngine respond("{}", HttpStatusCode.BadRequest, fakeJsonHeaders)
                     if (cursor != null && cursor.status != status) return@MockEngine respond("{}", HttpStatusCode.BadRequest, fakeJsonHeaders)
                     if (status == "EXISTS" && cursor != null && cursor.uuid == wall) {
@@ -208,6 +212,7 @@ internal class FakeDrive(
                     respondJson("""{"folders":[$rows],"nextCursor":${next?.let { "\"$it\"" } ?: "null"}}""")
                 }
                 path.endsWith("/drive/files/sync") -> {
+                    syncStatus?.let { return@MockEngine respond("""{"statusCode":$it}""", HttpStatusCode.fromValue(it), fakeJsonHeaders) }
                     val (taken, next) = page(files, { it.updatedAt }, { it.uuid }, status, cursor, params["updatedAt"])
                     respondJson("""{"files":[${taken.joinToString(",") { fakeFileJson(it) }}],"nextCursor":${next?.let { "\"$it\"" } ?: "null"}}""")
                 }

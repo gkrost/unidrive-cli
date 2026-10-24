@@ -177,7 +177,8 @@ class InternxtScopedDeltaTest {
 
     // #463: an incremental delta is the daemon's poll. A cut listing ends it (the poller backs off and asks the
     // cheap listing again from the same cursor); it used to walk the scope, which on a large scope is a whole
-    // enumeration for one blip.
+    // enumeration for one blip. The poll's listing is the sync listing (#312); the offset one behind it answers
+    // the same way.
     @Test
     fun `an incremental delta of a scoped profile, listings cut, fails without walking`() =
         runTest {
@@ -188,7 +189,7 @@ class InternxtScopedDeltaTest {
                     requested += url
                     when {
                         contentOf(url) != null -> respond(contentOf(url)!!, HttpStatusCode.OK, json)
-                        isAccountWideListing(request.url.encodedPath) -> throw cutByTheGateway()
+                        isCursorListing(request.url.encodedPath) || isAccountWideListing(request.url.encodedPath) -> throw cutByTheGateway()
                         else -> error("unexpected request: $url")
                     }
                 }
@@ -456,7 +457,9 @@ class InternxtScopedDeltaTest {
             )
             assertEquals(0, account.first().items, "the listing is named before the first page is back")
             assertEquals(5, account.last().items, "files and folders together")
-            assertEquals(3, account.size, "the start and one report per page")
+            // One report per page: the start, one page per stream, and the empty page each stream ends
+            // on since the listing ends on an empty page (#312).
+            assertEquals(5, account.size, "the start and one report per page")
             assertTrue(account.zipWithNext().all { (a, b) -> b.items >= a.items }, "the count only grows: $reports")
         }
 

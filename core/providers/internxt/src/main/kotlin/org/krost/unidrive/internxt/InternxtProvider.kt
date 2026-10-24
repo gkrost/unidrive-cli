@@ -2713,10 +2713,12 @@ class InternxtProvider(
         // for offset-stable pagination + status=EXISTS to skip the tombstone
         // population (20–40 % payload win on a long-lived account — no need
         // for tombstones on first walk because there's no local state to
-        // diff them against). Incremental delta (cursor!=null) uses
-        // sort=updatedAt so the per-page max() is monotonically advancing
-        // (next page advances the effective cursor) and status=ALL because
-        // tombstones ARE the signal for deletes since the last sync.
+        // diff them against). The offset listing of an incremental poll
+        // (cursor!=null — and only the fallback for a server without the sync
+        // listings, #312) uses sort=updatedAt so the per-page max() is
+        // monotonically advancing (next page advances the effective cursor)
+        // and status=ALL because tombstones ARE the signal for deletes since
+        // the last sync.
         val sort = if (cursor == null) "uuid" else "updatedAt"
         val status = if (cursor == null) "EXISTS" else "ALL"
 
@@ -2806,7 +2808,24 @@ class InternxtProvider(
         // (per-folder listings, up to 4 in flight), the walk a scoped profile does
         // anyway. A failing /folders used to end the whole gather, and a failing
         // /files fell back to a sequential walk that would take an hour.
+        //
+        // The last page each stream served is kept, as (offset, rows): the gather
+        // re-reads it afterwards to detect a listing that moved under it (#312).
+        val lastFolderPage = java.util.concurrent.atomic.AtomicReference<Pair<Int, List<InternxtFolder>>?>(null)
+        val lastFilePage = java.util.concurrent.atomic.AtomicReference<Pair<Int, List<InternxtFile>>?>(null)
         try {
+            if (cursor != null) {
+                // #312: the poll reads its changes through the sync listings — the keyset the full
+                // enumeration pages through, without the status filter, so that a row that changes
+                // mid-gather cannot push another row past a page boundary, and tombstones arrive in
+                // the stream. Null here means the server does not serve those endpoints: the offset
+                // listing below is the poll then, as it was before.
+                cursorIncrementalDelta(cursor, onPageProgress, scanContext, onProgress)?.let { page ->
+                    // The sync listings answered: an earlier run of failures is over (#463).
+                    incrementalUnavailableSince.set(null)
+                    return page
+                }
+            }
             coroutineScope {
                 val foldersDeferred =
                     async {
@@ -2820,6 +2839,7 @@ class InternxtProvider(
                             startOffset = resume.foldersOffset,
                             fetchPage = { offset -> api.listFolders(adjustedCursor, limit, offset, status, sort) },
                             onPage = { page, nextOffset ->
+                                if (page.isNotEmpty()) lastFolderPage.set(nextOffset - page.size to page)
                                 persister?.notifyFoldersPage(page, nextOffset)
                             },
                         )
@@ -2835,6 +2855,7 @@ class InternxtProvider(
                         startOffset = resume.filesOffset,
                         fetchPage = { offset -> api.listFiles(adjustedCursor, limit, offset, status, sort) },
                         onPage = { page, nextOffset ->
+                            if (page.isNotEmpty()) lastFilePage.set(nextOffset - page.size to page)
                             persister?.notifyFilesPage(page, nextOffset)
                         },
                     )
@@ -2843,41 +2864,7 @@ class InternxtProvider(
             }
         } catch (e: InternxtApiException) {
             if (e.statusCode !in SERVER_UNAVAILABLE_STATUSES) throw e
-            if (cursor != null) {
-                // #463: an incremental delta is the daemon's poll, and the daemon polls by default. Its
-                // updatedAt-filtered listing is one cheap query (0.24 s live, #517); the walk in its place
-                // costs a whole enumeration (about half an hour on a large drive) for what is usually a
-                // blip. So a blip fails the poll: the poller backs off and the next poll asks the cheap
-                // listing again from the same cursor, and nothing changed in between is lost.
-                // But the walk is also the only way out when the cheap listing STAYS unavailable (an old
-                // cursor whose query the gateway keeps cutting, #517): failing forever would freeze the
-                // mount's view. Once the listing has failed for INCREMENTAL_WALK_AFTER, the poll walks
-                // once, as it always did, and the walk's fresh cursor starts the cheap polls over.
-                val now = clock()
-                val since = incrementalUnavailableSince.updateAndGet { it ?: now }!!
-                if (java.time.Duration.between(since, now) < INCREMENTAL_WALK_AFTER) throw e
-                incrementalUnavailableSince.set(null)
-                log.warn(
-                    "Incremental listing unavailable since {} ({}: {}), walking the folder tree once{}",
-                    since,
-                    e.statusCode,
-                    e.message,
-                    if (scopeRoots.isEmpty()) "" else " of $scopeRoots",
-                )
-                // An incremental walk does not open the full-gather window (#517 R3).
-                return scopedFullDelta(scopeRoots.ifEmpty { listOf("/") }, onPageProgress, onProgress, combinedTotal())
-            }
-            // Only a full gather opens the window.
-            heavyListingsUnavailableUntil.set(Instant.now().plus(LISTING_UNAVAILABLE_TTL))
-            log.warn(
-                "Account-wide listing unavailable ({}: {}), falling back to the folder tree walk{}; " +
-                    "skipping the account-wide attempt until {}",
-                e.statusCode,
-                e.message,
-                if (scopeRoots.isEmpty()) "" else " of $scopeRoots",
-                heavyListingsUnavailableUntil.get(),
-            )
-            return scopedFullDelta(scopeRoots.ifEmpty { listOf("/") }, onPageProgress, onProgress, combinedTotal())
+            return unavailableListingFallback(e, cursor, scopeRoots, onPageProgress, onProgress, combinedTotal())
         }
         // The cheap listing answered: an earlier run of failures is over (#463).
         if (cursor != null) incrementalUnavailableSince.set(null)
@@ -2890,7 +2877,231 @@ class InternxtProvider(
                 .maxOrNull()
         // Only an incremental delta believes the engine's rows: a full listing is what runs when it cannot.
         val tracked = scanContext?.trackedRow.takeIf { cursor != null }
-        return assembleFullDelta(allFiles, allFolders, advanceCursor(seenMax, cursor), onProgress = onProgress, listing = ScanProgress.LISTING_ACCOUNT, tracked = tracked, fullGather = cursor == null)
+        // #312: the offset listing is only as good as its stability. A row that changes while the
+        // gather runs moves inside the updatedAt order, every later row shifts up one, and the row
+        // at a page boundary is fetched by no page — its change (a TRASHED tombstone included) never
+        // syncs, because the promoted cursor steps over it. The last page of each stream is re-read
+        // and compared by uuid: an incremental poll whose tail moved under it does not advance the
+        // cursor past what it could not re-read, and a full gather is not trusted as complete. A shift
+        // that landed entirely inside an earlier page is not visible here — the sync listings are
+        // the fix, this is the net for the servers that do not have them.
+        val listingStable =
+            lastPageStable(lastFolderPage.get(), { it.uuid }) { offset ->
+                api.listFolders(adjustedCursor, limit, offset, status, sort)
+            } &&
+                lastPageStable(lastFilePage.get(), { it.uuid }) { offset ->
+                    api.listFiles(adjustedCursor, limit, offset, status, sort)
+                }
+        return assembleOffsetDelta(allFiles, allFolders, seenMax, cursor, listingStable, onProgress, tracked)
+    }
+
+    // The account-wide listings answered unavailable (a 500/503, or a gateway cut that ends as one):
+    // a poll fails fast and walks the folder tree once after INCREMENTAL_WALK_AFTER; a full gather
+    // walks at once and opens the skip window.
+    private suspend fun unavailableListingFallback(
+        e: InternxtApiException,
+        cursor: String?,
+        scopeRoots: List<String>,
+        onPageProgress: ((itemsSoFar: Int) -> Unit)?,
+        onProgress: ((ScanProgress) -> Unit)?,
+        itemsSoFar: Int,
+    ): DeltaPage {
+        if (cursor != null) {
+            // #463: an incremental delta is the daemon's poll, and the daemon polls by default. Its
+            // updatedAt-filtered listing is one cheap query (0.24 s live, #517); the walk in its place
+            // costs a whole enumeration (about half an hour on a large drive) for what is usually a
+            // blip. So a blip fails the poll: the poller backs off and the next poll asks the cheap
+            // listing again from the same cursor, and nothing changed in between is lost.
+            // But the walk is also the only way out when the cheap listing STAYS unavailable (an old
+            // cursor whose query the gateway keeps cutting, #517): failing forever would freeze the
+            // mount's view. Once the listing has failed for INCREMENTAL_WALK_AFTER, the poll walks
+            // once, as it always did, and the walk's fresh cursor starts the cheap polls over.
+            val now = clock()
+            val since = incrementalUnavailableSince.updateAndGet { it ?: now }!!
+            if (java.time.Duration.between(since, now) < INCREMENTAL_WALK_AFTER) throw e
+            incrementalUnavailableSince.set(null)
+            log.warn(
+                "Incremental listing unavailable since {} ({}: {}), walking the folder tree once{}",
+                since,
+                e.statusCode,
+                e.message,
+                if (scopeRoots.isEmpty()) "" else " of $scopeRoots",
+            )
+            // An incremental walk does not open the full-gather window (#517 R3).
+            return scopedFullDelta(scopeRoots.ifEmpty { listOf("/") }, onPageProgress, onProgress, itemsSoFar)
+        }
+        // Only a full gather opens the window.
+        heavyListingsUnavailableUntil.set(Instant.now().plus(LISTING_UNAVAILABLE_TTL))
+        log.warn(
+            "Account-wide listing unavailable ({}: {}), falling back to the folder tree walk{}; " +
+                "skipping the account-wide attempt until {}",
+            e.statusCode,
+            e.message,
+            if (scopeRoots.isEmpty()) "" else " of $scopeRoots",
+            heavyListingsUnavailableUntil.get(),
+        )
+        return scopedFullDelta(scopeRoots.ifEmpty { listOf("/") }, onPageProgress, onProgress, itemsSoFar)
+    }
+
+    // The offset gather's DeltaPage: paths for every item, the cursor promoted to the newest
+    // updatedAt seen. When the listing moved under the gather (#312), a poll keeps its cursor where
+    // it was, so the next poll re-reads the window instead of stepping over what it may have
+    // missed. The poll stays complete: an incomplete page sets the engine's recovery latch, and
+    // every later gather would list the whole drive from zero for a change the next poll re-reads
+    // anyway. A full gather hands back the newest updatedAt it saw, incomplete, because a row it
+    // missed would otherwise be taken for gone; the engine's recovery lists the drive again.
+    private suspend fun assembleOffsetDelta(
+        allFiles: List<InternxtFile>,
+        allFolders: List<InternxtFolder>,
+        seenMax: String?,
+        cursor: String?,
+        stable: Boolean,
+        onProgress: ((ScanProgress) -> Unit)?,
+        tracked: ((String) -> CloudItem?)?,
+    ): DeltaPage {
+        if (stable) {
+            return assembleFullDelta(allFiles, allFolders, advanceCursor(seenMax, cursor), onProgress = onProgress, listing = ScanProgress.LISTING_ACCOUNT, tracked = tracked, fullGather = cursor == null)
+        }
+        if (cursor != null) {
+            log.warn("The offset listing moved while the poll ran; the cursor stays at {}, the next poll re-reads the window", cursor)
+            return assembleFullDelta(allFiles, allFolders, cursor, onProgress = onProgress, listing = ScanProgress.LISTING_ACCOUNT, tracked = tracked, fullGather = false)
+        }
+        log.warn("The offset listing moved while the full gather ran; returning DeltaPage(complete=false)")
+        return assembleFullDelta(allFiles, allFolders, advanceCursor(seenMax, null), onProgress = onProgress, listing = ScanProgress.LISTING_ACCOUNT, tracked = tracked, fullGather = true)
+            .copy(complete = false)
+    }
+
+    // The re-read of an offset stream's last page, compared by uuid: false when the page no longer
+    // begins with the rows the gather read, and false too when the re-read itself fails — a gather
+    // that cannot be checked is not a trusted one. Rows after them are rows that arrived at the end
+    // of the listing since (a change sorts last by updatedAt): nothing before them moved, so they
+    // do not make the gather untrusted. Null [last] (a stream that served only empty pages) has no
+    // boundary to check.
+    private suspend fun <T> lastPageStable(
+        last: Pair<Int, List<T>>?,
+        uuid: (T) -> String,
+        refetch: suspend (offset: Int) -> List<T>,
+    ): Boolean {
+        val (offset, rows) = last ?: return true
+        val again =
+            try {
+                refetch(offset)
+            } catch (e: InternxtApiException) {
+                log.warn(
+                    "Re-reading the last page of the listing at offset {} failed ({}: {}); the gather is not trusted as complete",
+                    offset,
+                    e.statusCode,
+                    e.message,
+                )
+                return false
+            }
+        return again.take(rows.size).map(uuid).sorted() == rows.map(uuid).sorted()
+    }
+
+    // The incremental poll's gather through the sync listings (#312): both streams read their
+    // changes by keyset from the cursor rewound by the window, without the status filter, so a row
+    // that changes mid-gather cannot push another row past a page boundary — the keyset key of an
+    // unchanged row never moves. Trashed and deleted rows arrive in the stream with their status and
+    // become tombstones exactly as the offset listing's status=ALL rows do; a row without a status
+    // fails the poll (SyncRowWithoutStatus). The cursor handed back is the newest updatedAt actually
+    // seen; a stream a guard ended (a cursor asked twice, a second empty page in a row) makes the
+    // page incomplete — the engine then re-lists the drive instead of trusting the poll.
+    //
+    // Null when the server does not serve the listings (404/405/501 on the first page of a stream):
+    // the caller keeps the offset listing. Any other failure propagates — an unavailable poll fails
+    // fast (#463), and a transient one is retried on the next tick from the same cursor.
+    private suspend fun cursorIncrementalDelta(
+        cursor: String,
+        onPageProgress: ((itemsSoFar: Int) -> Unit)?,
+        scanContext: ScanContext?,
+        onProgress: ((ScanProgress) -> Unit)?,
+    ): DeltaPage? {
+        val since = rewindCursor(cursor)
+        val heartbeat = onPageProgress?.let { cb -> ScanHeartbeat(cb) }
+        val lock = Mutex()
+        // A row can turn up twice: page for its old key, then again, changed, for its new key at the
+        // tail. The later page wins, as in the full enumeration's maps.
+        val files = LinkedHashMap<String, InternxtFile>()
+        val folders = LinkedHashMap<String, InternxtFolder>()
+        var maxSeen: String? = null
+        fun report() {
+            val total = files.size + folders.size
+            heartbeat?.tick(total)
+            onProgress?.invoke(ScanProgress(items = total, listing = ScanProgress.LISTING_CURSOR))
+        }
+        report()
+
+        val cutShort: Boolean
+        try {
+            cutShort =
+                coroutineScope {
+                    val foldersEnd =
+                        async {
+                            pageCursorStream(
+                                stream = "folders",
+                                start = StreamPosition(),
+                                fetch = { c -> api.getFoldersSync(updatedAt = since.takeIf { c == null }, cursor = c, status = null) },
+                                onPage = { page, _ ->
+                                    lock.withLock {
+                                        page.forEach { folders[it.uuid] = it }
+                                        maxSeen = seenThrough(maxSeen, page) { it.updatedAt }
+                                        report()
+                                    }
+                                },
+                            )
+                        }
+                    val filesEnd =
+                        async {
+                            pageCursorStream(
+                                stream = "files",
+                                start = StreamPosition(),
+                                fetch = { c -> api.getFilesSync(updatedAt = since.takeIf { c == null }, cursor = c, status = null) },
+                                onPage = { page, _ ->
+                                    lock.withLock {
+                                        page.forEach { files[it.uuid] = it }
+                                        maxSeen = seenThrough(maxSeen, page) { it.updatedAt }
+                                        report()
+                                    }
+                                },
+                            )
+                        }
+                    StreamEnd.CUT_SHORT in listOf(foldersEnd.await(), filesEnd.await())
+                }
+        } catch (e: CursorListingUnavailable) {
+            log.info("{}; the poll falls back to the offset listing", e.message)
+            return null
+        }
+
+        // A poll re-delivers the items of the rewound window; the unchanged folders above them are
+        // answered by the engine's rows (#936), as on the offset path.
+        val page =
+            assembleFullDelta(
+                files.values.toList(),
+                folders.values.toList(),
+                advanceCursor(maxSeen, cursor),
+                onProgress = onProgress,
+                listing = ScanProgress.LISTING_CURSOR,
+                tracked = scanContext?.trackedRow,
+                fullGather = false,
+            )
+        if (!cutShort) return page
+        log.warn(
+            "A sync stream of the poll was cut short by a guard; returning DeltaPage(complete=false). " +
+                "The next gather lists the drive instead of trusting the poll.",
+        )
+        return page.copy(complete = false)
+    }
+
+    // The newest updatedAt on [rows], against the newest seen so far — compared lexicographically,
+    // as everywhere a cursor is compared: the timestamps are ISO-8601 with the same suffix. A page
+    // that names none leaves [seen] as it is.
+    private fun <T> seenThrough(
+        seen: String?,
+        rows: List<T>,
+        updatedAt: (T) -> String?,
+    ): String? {
+        val newest = rows.mapNotNull(updatedAt).maxOrNull() ?: return seen
+        return if (seen == null || newest > seen) newest else seen
     }
 
     // The DeltaPage of a full gather: the folder graph from the folders, a path for every item, the items
@@ -3523,12 +3734,20 @@ class InternxtProvider(
     }
 
     // Two-wide speculative page fetcher used by [delta]. Keeps up to 2 in-flight
-    // [fetchPage] calls; when a page comes back with `size < limit` (the last
-    // page), any speculative siblings are cancelled rather than waited on — a
-    // wasted fetch costs a few hundred ms (measured p50 ~0.3s, #392
-    // 2026-09-29), far cheaper than one extra round-trip's wall-clock at p99
-    // (~2-4s). Pages are appended in offset order so the resulting list
-    // matches the sequential walk.
+    // [fetchPage] calls; the listing ends on an empty page, and any speculative
+    // siblings still in flight are cancelled rather than waited on — a wasted
+    // fetch costs a few hundred ms (measured p50 ~0.3s, #392 2026-09-29), far
+    // cheaper than one extra round-trip's wall-clock at p99 (~2-4s). Pages are
+    // appended in offset order so the resulting list matches the sequential walk.
+    //
+    // The next page begins where the last batch ended: the offset advances by
+    // the rows actually served, not by the limit, so a server that serves fewer
+    // rows than the limit asks (a clamp below [limit]) cannot open a gap. Only
+    // an empty page ends the listing — a short one says nothing about the end.
+    // The second seed and every top-up beyond a full page are speculative (they
+    // assume the page before them was full); when a batch comes back short, the
+    // boundary moves and the speculative page aimed past it is cancelled and
+    // re-seeded from the real boundary (#312).
     //
     // [startOffset] supports the resumable-scan handshake: a resumed scan
     // begins paginating from the persisted boundary rather than offset 0.
@@ -3557,7 +3776,8 @@ class InternxtProvider(
             val accumulated = mutableListOf<T>()
             val pipeline: ArrayDeque<Pair<Int, Deferred<List<T>>>> = ArrayDeque()
             var nextOffset = startOffset
-            // Seed the pipeline with up to 2 in-flight page fetches.
+            // Seed the pipeline with up to 2 in-flight page fetches. The second
+            // is speculative: it assumes a full first page.
             repeat(2) {
                 val offset = nextOffset
                 pipeline.addLast(offset to async { fetchPage(offset) })
@@ -3576,16 +3796,30 @@ class InternxtProvider(
                 // staging write rolls the page back without losing the offset
                 // we'd otherwise have queued ahead.
                 onPage?.invoke(batch, pageOffset + batch.size)
-                if (batch.size < limit) {
-                    // Last page: cancel any speculative siblings still in flight.
+                if (batch.isEmpty()) {
+                    // The listing ended. Cancel any speculative siblings still
+                    // in flight.
                     pipeline.forEach { it.second.cancel() }
                     pipeline.clear()
                     break
                 }
-                // Top up: keep two in flight.
-                val offset = nextOffset
-                pipeline.addLast(offset to async { fetchPage(offset) })
-                nextOffset += limit
+                // The boundary of the next page is the end of this batch.
+                val boundary = pageOffset + batch.size
+                val speculative = pipeline.firstOrNull()
+                if (speculative != null && speculative.first != boundary) {
+                    // A short batch moved the boundary: the speculative page
+                    // beyond it is aimed at a gap. Cancel and re-seed from the
+                    // real boundary.
+                    pipeline.forEach { it.second.cancel() }
+                    pipeline.clear()
+                    pipeline.addLast(boundary to async { fetchPage(boundary) })
+                }
+                // Top up: keep two in flight. The speculative that already aims
+                // at the boundary is that page; it is not asked for twice.
+                if (pipeline.size < 2) {
+                    val offset = pipeline.last().first + limit
+                    pipeline.addLast(offset to async { fetchPage(offset) })
+                }
             }
             accumulated
         }
