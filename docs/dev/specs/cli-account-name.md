@@ -50,8 +50,8 @@ credentials and compares it with the stored one:
 - same user (compared without case): stored as before;
 - no stored id (a new profile, or one signed in before ids were kept): stored, and the id is recorded;
 - another user: refused with `account_changed` (exit code 1, `{"ok":false,"error":"account_changed",...}`);
-- a stored id, but the provider did not say who signed in (OneDrive `/me` failed, a login answer
-  without a uuid): refused with `account_unverified`.
+- a stored id, but the provider did not say who signed in (OneDrive `/me/drive` failed or names no
+  owner user, a login answer without a uuid): refused with `account_unverified`.
 
 A refusal stores nothing: the old credentials, `account_name` and `account_id` stay byte for byte, a
 running daemon reloads nothing. The reply names no user and no id.

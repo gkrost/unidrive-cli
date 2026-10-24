@@ -219,6 +219,22 @@ Three columns per scenario:
    pass `--max-delete-ratio=1.0` to bypass.)
 ```
 
+## A delete that meets an edit
+
+A delete never carries away an edit that the deleting side did not see:
+
+- **Local delete over a remote edit.** A tracked path that is gone locally and whose remote copy changed since the
+  last sync is not deleted in the cloud. The reconciler reports it as a collision (`ReportCollision`, "tracked path
+  deleted locally but changed remotely since last sync"), as it does a path changed on both sides, and the pass
+  leaves it alone.
+- **The remote delete is guarded.** A local delete that does propagate passes the row's recorded etag as the delete's
+  `ifMatchETag` guard, except on a provider that reports item versions of its own (`reportsItemVersions`, OneDrive),
+  whose write token is not the content hash: it gets no guard. If the provider refuses the guard
+  (`RemoteConflictException`, the remote changed after the scan), the delete is skipped, the row stays tracked and
+  the path is left as a collision.
+- **An edit during an upload.** An upload records the local state it saw before the bytes were sent, so a file saved
+  again while its upload is in flight reads as a local change on the next pass, not as synced.
+
 ## What is intentionally NOT implemented yet
 
 These are the explicit scope cuts; each is a follow-up worth its own

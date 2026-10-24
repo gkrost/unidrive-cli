@@ -16,9 +16,11 @@ Multi-platform cloud-sync core. Pure JVM, zero telemetry. Modular SPI for Intern
 │   │   ├── sync/           # Sync engine (ships the MVP), IPC server
 │   │   └── sync-tracking/  # Frozen tracking-set engine (`unidrive ts`)
 │   └── providers/
+│       ├── dropbox/        # Dropbox HTTP API v2 client
 │       ├── internxt/       # Zero-knowledge encrypted client
 │       ├── localfs/        # No-auth local-directory provider for offline development and tests
-│       └── onedrive/       # Microsoft Graph API client
+│       ├── onedrive/       # Microsoft Graph API client
+│       └── s3/             # Amazon S3 and S3-compatible buckets
 └── dist/                   # User-space install scripts and systemd units
 ```
 
@@ -87,7 +89,7 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 `unidrive` uses a git-inspired subcommand design.
 
 ### Session & Identity
-- `auth` — OAuth/token provisioning
+- `auth` — OAuth/token provisioning: the interactive sign-in, `begin` and `complete` (a sign-in in two steps, for front-ends), `login` (Internxt, without a console) and `check` (`--json`: asks the provider with one call whether the profile's stored sign-in is still accepted, with no daemon, scan, sync or prompt; [spec](docs/dev/specs/cli-auth-check.md)). A sign-in as another user than the one the profile's sync state belongs to is refused (`account_changed`) before anything is stored ([spec](docs/dev/specs/cli-account-name.md))
 - `profile` — multi-profile management (`add`, `list`, `remove`)
 - `backup` — backup profiles (`add`, `list`)
 - `logout` — sign out: remove stored credentials and revoke the token where the provider has a revoke call (Dropbox; for the others only the local credentials go, and the output says so); the sync state is kept (`--delete-state` removes it), and a running daemon performs the sign-out over IPC (`--json` for front-ends)

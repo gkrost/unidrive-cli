@@ -30,7 +30,7 @@ unidrive does not ship a Dropbox app yet, so a profile names one:
 
 | Endpoint | Used by | Notes |
 |---|---|---|
-| `users/get_current_account` | first call | When `root_namespace_id` is not `home_namespace_id` (a team space), every later call sends `Dropbox-API-Path-Root` with the root, so team folders are visible next to the member folder. |
+| `users/get_current_account` | first call, `currentAccountId` | Its `account_id` is also the account id recorded, with one call, for a profile signed in before ids were kept (`docs/dev/specs/cli-account-name.md`). When `root_namespace_id` is not `home_namespace_id` (a team space), every later call sends `Dropbox-API-Path-Root` with the root, so team folders are visible next to the member folder. |
 | `files/list_folder` (+ `/continue`) | `delta`, `listChildren` | Recursive for `delta`. `include_deleted` is always true, because a cursor keeps its arguments and one made without deletions never reports one. `include_non_downloadable_files` is false. Pages of a listing that began without a cursor leave out deleted entries, which are history, not changes. A `reset` answer is `DeltaCursorExpiredException`. |
 | `files/list_folder/get_latest_cursor` | `deltaFromLatest` | The fast bootstrap. |
 | `files/list_folder/longpoll` (notify host, no token) | `onRemoteChangeHint` | Polls the cursor of the last finished walk. After a hint it waits for the next walk's cursor (60 s at most) and honours `backoff`. |

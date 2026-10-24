@@ -16,8 +16,7 @@ Talks to Microsoft Graph v1.0 (`https://graph.microsoft.com/v1.0`) through `Grap
 | `DELETE /me/drive/items/{id}` | `deleteItem` | 204 and 404 both treated as success (idempotent). |
 | `POST /me/drive/root/children` etc. | `createFolder` | Graph defaults to `conflictBehavior: fail`. |
 | `PATCH /me/drive/items/{id}` | `moveItem` | Only sets `parentReference` when the parent actually changes; one extra `getItemByPath` to resolve the new parent's id. No cross-drive moves. |
-| `GET /me/drive` | `getDrive` / `getQuota` | |
-| `GET /me` | `getMe` | Token-validation paths. |
+| `GET /me/drive` | `getDrive` / `getQuota` | The drive's `owner.user.id` and `owner.user.displayName` are also the account id and the account name a profile keeps (`OneDriveIdentity.kt`; `docs/dev/specs/cli-account-name.md`). `GET /me` is not called: see "Client identity". |
 | `POST /me/drive/items/{id}/createLink` | `createSharingLink` | |
 | `GET /me/drive/items/{id}/permissions` | `listPermissions` | |
 | `DELETE /me/drive/items/{id}/permissions/{permId}` | `deletePermission` | |
@@ -38,6 +37,7 @@ What the provider does:
 ## Robustness
 
 - **Auth refresh** is per-call: `TokenManager.isNearExpiry(5 min)` is checked at each request; on 401 the token is force-refreshed once. Refresh is `withContext(NonCancellable)`-wrapped and mutex-serialised so sibling cancellation can't half-write the token to disk and a 401 storm produces exactly one refresh.
+- **The token at rest** is `token.json` in the profile folder, written atomically and readable by the current user only (`CredentialStore`). `OneDriveConfig.credentialProtector` (a `CredentialProtector`, null by default) lets an embedding front-end keep the token in a protected store instead: the file then holds an opaque reference, an existing plaintext `token.json` is rewritten protected when it is first loaded, and `OAuthService.deleteToken` (which `TokenManager.logout` calls) removes the protected copy with the file. It is a constructor parameter only: there is no profile key, environment variable or service-loader hook for it, and the CLI and `OneDriveProviderFactory` pass none, so a CLI profile keeps the owner-only plaintext file. (Internxt, by contrast, defaults to the host's native store.)
 - **Retry placement** is inline at the HTTP layer (`authenticatedRequest`, `downloadFile`); `SyncEngine` only sees `Done` or terminal exceptions.
 - **Throttle budget** (`HttpRetryBudget`): shared across coroutines on one `GraphApiService` with `maxConcurrency = 8`, 200 ms steady spacing post-throttle, 500 ms storm spacing. Storm trigger = 4 throttles in 20 s → halve concurrency, pause `Retry-After × 1.2`; recovery +1 permit per 5 min of clean traffic.
 - **Retry-After** is honoured header-first, then JSON-body fallback (`error.retryAfterSeconds`). Per-request cap 5 attempts / 5 min single backoff / 15 min cumulative. Download-only flake budget: 3 attempts × 2 s × 2ⁿ for mid-stream Azure-CDN drops.
@@ -61,6 +61,7 @@ Client identity:
 
 - Published, SharePoint Online: traffic that names its app (a registered app ID plus `User-Agent: ISV|CompanyName|AppName/Version`) is prioritised over undecorated traffic. ([SharePoint Online throttling](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online))
 - Sign-in uses the personal-account authority (`OneDriveConfig.DEFAULT_AUTH_ENDPOINT`) unless the profile sets `authority_url`.
+- Sign-in asks for the scopes `openid`, `offline_access` and `Files.ReadWrite.All` (`OAuthService.SCOPES`), not `User.Read`. `GET /me` wants `User.Read` and answers 403 with these scopes, so the provider reads who owns the drive from `GET /me/drive` (`owner.user.id`) instead. A drive without an owner user gives no id: nothing is recorded, and a profile that already has one cannot compare it (the sign-in is then refused as `account_unverified`, `docs/dev/specs/cli-account-name.md`).
 
 Uploads:
 
@@ -90,7 +91,7 @@ Personal-vs-Business concurrency: the 8-permit default holds for both empiricall
 
 ## Known gaps
 
-The forward work — `If-Match` on PATCH, batch API, `fileSystemInfo` round-trip, hash-based local change detection, soft-vs-hard delete semantics — is in `BACKLOG.md` and `BOOSTERS.md`.
+The forward work — the `$batch` API for reconciliation reads, `Range` requests against the download URL, conditional GET (`If-None-Match` + cTag) and a slim `$select` delta payload — is in `BACKLOG.md` and `BOOSTERS.md`. `If-Match` on PATCH, the `fileSystemInfo` round-trip, hash-based local change detection and soft-vs-hard delete semantics have shipped (`CLOSED.md`).
 
 ## Request-id correlation
 
