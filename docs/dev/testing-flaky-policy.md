@@ -21,7 +21,7 @@ Both lines, together, in this order, on the test function (or the class):
 ```kotlin
 @Category(FlakyTests::class)
 @Flaky(issue = 0, reason = "what makes it non-deterministic",
-    firstFailure = "https://github.com/gkrost/unidrive/actions/runs/...")
+    firstFailure = "https://github.com/gkrost/unidrive-cli/actions/runs/...")
 ```
 
 (`org.junit.experimental.categories.Category`, `org.krost.unidrive.testing.Flaky` and `FlakyTests`; the last two live in `:app:core`'s test fixtures, which every module's tests see.)
