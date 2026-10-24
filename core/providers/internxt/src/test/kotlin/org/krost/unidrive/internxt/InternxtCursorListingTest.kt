@@ -1011,8 +1011,12 @@ class InternxtCursorListingTest {
             assertEquals(listOf("/r1.txt"), page.items.map { it.path })
             assertTrue(page.complete)
             assertTrue(drive.other.isNotEmpty(), "the offset listing served the poll: ${drive.other}")
-            assertEquals(1, drive.seen.count { it.stream == "files" }, "the missing endpoint is asked once, not retried")
-            assertEquals(1, drive.seen.count { it.stream == "folders" })
+            // The two streams run side by side: when one meets the 404 first, the other may be cancelled before its
+            // request goes out (which stream that is depends on the scheduler). Neither is ever asked twice.
+            val files = drive.seen.count { it.stream == "files" }
+            val folders = drive.seen.count { it.stream == "folders" }
+            assertTrue(files <= 1 && folders <= 1, "the missing endpoint is asked once per stream, not retried: ${drive.seen}")
+            assertTrue(files + folders >= 1, "the sync listing was asked at least once: ${drive.seen}")
         }
 
     @Test
