@@ -1,0 +1,728 @@
+import java.net.URLClassLoader
+import java.nio.file.Path
+import java.time.Instant
+import java.time.temporal.ChronoUnit
+import java.util.concurrent.TimeUnit
+
+// The shadow plugin drags log4j-core and plexus-utils onto this module's
+// buildscript (plugin) classpath; both carried known advisories at the
+// versions shadow pins (log4j-core deserialization/DoS; plexus-utils
+// directory-traversal). The latest shadow release still pins the vulnerable
+// versions, so a plugin bump can't fix it — force the patched releases on the
+// plugin classpath. These are build-time-only and never reach the shipped jar.
+buildscript {
+    configurations.classpath {
+        resolutionStrategy {
+            force("org.apache.logging.log4j:log4j-core:2.26.1")
+            force("org.codehaus.plexus:plexus-utils:4.1.0")
+        }
+    }
+}
+
+plugins {
+    kotlin("jvm")
+    kotlin("plugin.serialization")
+    application
+    id("com.gradleup.shadow") version libs.versions.shadow.get()
+}
+
+kotlin {
+    jvmToolchain(21)
+}
+
+// The packaged distribution ships a jlink runtime image instead of
+// requiring a user-installed JDK. Two module groups:
+//   - jdepsModuleSet is exactly what `jdeps --print-module-deps` reports
+//     for the fat jar. It is pinned in two places on purpose — here and in
+//     RuntimeModulesTest — so a new dependency that changes the module set
+//     fails `check` and the image is updated deliberately, not silently.
+//   - extraRuntimeModules is needed at runtime but invisible to jdeps:
+//     service-loaded or reflective paths in the bundled libraries (JDBC
+//     driver, HTTP/WebSocket stacks) land here, plus the deliberate
+//     additions — the JDK HTTP client, the JUL binding those stacks bind
+//     to, TLS EC-certificate support, the optional charsets, locale data
+//     for non-US date/number formats, and the zip filesystem provider.
+// jdk.jfr: engine-core's StateDatabaseHold flight-recorder event (the hold-time diagnostic of the
+// state database); it also lets a flight recording run on the packaged image.
+// java.desktop deliberately absent: the OAuth browser opener uses the
+// platform openers (rundll32/open/xdg-open), not java.awt.Desktop, so the
+// ~10 MB desktop module does not ship.
+val jdepsModuleSet =
+    listOf(
+        "java.base",
+        "java.instrument",
+        "java.management",
+        "java.naming",
+        "java.sql",
+        "jdk.jfr",
+        "jdk.unsupported",
+    )
+val extraRuntimeModules =
+    listOf(
+        "java.net.http",
+        "java.logging",
+        "jdk.crypto.ec",
+        "jdk.charsets",
+        "jdk.localedata",
+        "jdk.zipfs",
+    )
+
+// jlink produces a runtime of its own version, so the packaged image is
+// jlinked from the bundled runtime JDK — the current JDK release train the
+// platform packages are measured against — while the engine's bytecode
+// stays at the compile toolchain level above. The runtime JDK leads the
+// bytecode target on purpose; bump it with the release train.
+val runtimeToolchain =
+    the<org.gradle.jvm.toolchain.JavaToolchainService>().launcherFor {
+        languageVersion = org.gradle.jvm.toolchain.JavaLanguageVersion.of(27)
+    }
+
+application {
+    mainClass.set("org.krost.unidrive.cli.MainKt")
+    // UD-258: force UTF-8 on stdout/stderr so Windows JVMs don't encode
+    // glyphs as cp1252 `?`. Consumed by startScripts and the custom
+    // deploy-task launcher below.
+    applicationDefaultJvmArgs =
+        listOf(
+            "-Dstdout.encoding=UTF-8",
+            "-Dstderr.encoding=UTF-8",
+        )
+}
+
+tasks.named<JavaExec>("run") {
+    standardInput = System.`in`
+}
+
+// The build instant stamped into BuildInfo, to the second, UTC. Order: explicit, SOURCE_DATE_EPOCH, commit time, clock.
+// A value that does not parse is skipped, never stamped.
+fun resolveBuildInstant(
+    explicit: String?,
+    sourceDateEpoch: String?,
+    commitEpoch: String?,
+): String {
+    explicit?.trim()?.takeIf { it.isNotEmpty() }?.let { e ->
+        try {
+            return Instant.parse(e).truncatedTo(ChronoUnit.SECONDS).toString()
+        } catch (_: Exception) {
+        }
+    }
+    for (epoch in listOf(sourceDateEpoch, commitEpoch)) {
+        epoch?.trim()?.toLongOrNull()?.let { return Instant.ofEpochSecond(it).toString() }
+    }
+    return Instant.now().truncatedTo(ChronoUnit.SECONDS).toString()
+}
+
+val generateBuildInfo =
+    tasks.register("generateBuildInfo") {
+        val outputDir = layout.buildDirectory.dir("generated/src/main/kotlin")
+        outputs.dir(outputDir)
+        // Always regenerate — git commit changes without source changes
+        outputs.upToDateWhen { false }
+
+        // Capture at configuration time — Gradle 10 forbids Task.project access
+        // during execution (configuration-cache compatibility).
+        val version = project.version.toString()
+        val gitCommit =
+            providers
+                .exec {
+                    commandLine("git", "rev-parse", "--short", "HEAD")
+                }.standardOutput.asText
+                .map { it.trim() }
+        // UD-733: GIT_DIRTY surfaces uncommitted-build warnings at startup so
+        // users don't file bug reports against transient WIP state. Mode-only
+        // diffs (e.g. a chmod +x on a tracked script) don't change file
+        // contents and CAN be reproduced from main — they must not flip the
+        // build dirty. `git diff HEAD --numstat` reports added/deleted line
+        // counts per tracked path; mode-only changes show `0\t0\t<path>`.
+        // Binary diffs show `-\t-\t<path>` and count as dirty. Untracked
+        // files (not under HEAD) are detected separately.
+        val gitContentDiff =
+            providers
+                .exec {
+                    commandLine("git", "diff", "HEAD", "--numstat")
+                }.standardOutput.asText
+                .map { out ->
+                    out.lineSequence().any { line ->
+                        if (line.isBlank()) return@any false
+                        val parts = line.split('\t')
+                        if (parts.size < 2) return@any false
+                        val added = parts[0]
+                        val deleted = parts[1]
+                        // Binary file changes: treat as dirty.
+                        if (added == "-" || deleted == "-") return@any true
+                        (added.toIntOrNull() ?: 0) > 0 || (deleted.toIntOrNull() ?: 0) > 0
+                    }
+                }
+        // #1076: git lists untracked files below the working directory only, and Gradle starts this in app/cli, so a new
+        // source file in another module (compiled into the jar) was missed. The whole build tree is core/.
+        val gitUntracked =
+            providers
+                .exec {
+                    commandLine("git", "ls-files", "--others", "--exclude-standard")
+                }.standardOutput.asText
+                .map { it.trim().isNotEmpty() }
+        // BUILD_INSTANT (the shadowJar is not yet byte-reproducible, but this value no longer adds to that): first that is
+        // there of -PbuildInstant=<ISO-8601 UTC>, the SOURCE_DATE_EPOCH environment variable, the commit time of HEAD (a clean
+        // tree only: a dirty build is not that commit, so it says when it was built), else the clock. Seconds, UTC.
+        val explicitBuildInstant = providers.gradleProperty("buildInstant")
+        val sourceDateEpoch = providers.environmentVariable("SOURCE_DATE_EPOCH")
+        val gitCommitEpoch =
+            providers
+                .exec {
+                    commandLine("git", "log", "-1", "--format=%ct", "HEAD")
+                }.standardOutput.asText
+                .map { it.trim() }
+        // Per docs/dev/specs/unidrive-distribution-design.md §3.5,
+        // tagged-release builds print the bare semver (e.g. "0.0.1")
+        // with no commit suffix. Non-tag (dev) builds carry the commit id
+        // as semver build metadata (`+<commit>[.dirty]`, #574) for
+        // bug-report tractability.
+        val gitTagAtHead =
+            providers
+                .exec {
+                    commandLine("git", "tag", "--points-at", "HEAD")
+                }.standardOutput.asText
+                .map { it.trim() }
+
+        doLast {
+            val commit =
+                try {
+                    gitCommit.get().ifEmpty { "dev" }
+                } catch (_: Exception) {
+                    "dev"
+                }
+            val dirty =
+                try {
+                    gitContentDiff.get() || gitUntracked.get()
+                } catch (_: Exception) {
+                    false
+                }
+            val buildInstant =
+                resolveBuildInstant(
+                    explicit = explicitBuildInstant.orNull,
+                    sourceDateEpoch = sourceDateEpoch.orNull,
+                    commitEpoch = if (dirty) null else try { gitCommitEpoch.get() } catch (_: Exception) { null },
+                )
+            val taggedRelease =
+                try {
+                    !dirty &&
+                        gitTagAtHead.get().lines().any {
+                            it.matches(Regex("^v?$version(-pkg\\d+)?$"))
+                        }
+                } catch (_: Exception) {
+                    false
+                }
+            // #574 (owner decision): Kubernetes style — the release version plus the git commit id as
+            // semver build metadata: `<major>.<minor>.<patch>+<commit>`. Clients order on the release
+            // part (the project version, bumped per release) and use the commit id only to identify the
+            // build. A dirty build says so in the metadata (`+<commit>.dirty`); a tagged release keeps
+            // the bare semver of distribution-design §3.5 (no metadata, nothing to identify — the tag
+            // names the build).
+            val versionString =
+                when {
+                    taggedRelease -> version
+                    dirty -> "$version+$commit.dirty"
+                    else -> "$version+$commit"
+                }
+            val dir = outputDir.get().asFile.resolve("org/krost/unidrive/cli")
+            dir.mkdirs()
+            dir.resolve("BuildInfo.kt").writeText(
+                """
+            |package org.krost.unidrive.cli
+            |
+            |object BuildInfo {
+            |    const val VERSION = "$version"
+            |    const val COMMIT = "$commit"
+            |    const val DIRTY = $dirty
+            |    const val BUILD_INSTANT = "$buildInstant"
+            |    /** #574: dev builds carry the commit id as semver build metadata (`VERSION+COMMIT[.dirty]`);
+            |      * clients order on the release part (VERSION) and use the commit id to identify the build. */
+            |    fun versionString(): String = "$versionString"
+            |}
+                """.trimMargin() + "\n",
+            )
+        }
+    }
+
+sourceSets.main {
+    kotlin.srcDir(generateBuildInfo.map { layout.buildDirectory.dir("generated/src/main/kotlin") })
+}
+
+tasks.named("compileKotlin") {
+    dependsOn(generateBuildInfo)
+}
+
+tasks.shadowJar {
+    archiveBaseName.set("unidrive")
+    archiveClassifier.set("")
+    mergeServiceFiles()
+    // Shadow prints one warning per resource a transformer handles (about 70 per build): with the default
+    // duplicates strategy (EXCLUDE) a second copy could be dropped before the transformer merges it. For
+    // exactly these resources the copies are wanted, so INCLUDE hands all of them to the transformers.
+    filesMatching(listOf("META-INF/services/**", "META-INF/*.kotlin_module")) {
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    }
+}
+
+val copyCoroutineDebugAgent =
+    tasks.register<Copy>("copyCoroutineDebugAgent") {
+        from(configurations.runtimeClasspath.map { files -> files.filter { it.name.startsWith("kotlinx-coroutines-debug-") && it.name.endsWith(".jar") } })
+        into(layout.buildDirectory.dir("libs"))
+    }
+
+tasks.shadowJar {
+    finalizedBy(copyCoroutineDebugAgent)
+}
+
+// verifyThirdPartyNotices reads the plain jar from build/libs, the same directory the agent
+// copy stages into. Gradle 9 fails the build on that undeclared overlap, so the order is
+// explicit: the agent copy lands first, the notices verification reads the jar after it.
+tasks.matching { it.name == "verifyThirdPartyNotices" }.configureEach {
+    mustRunAfter(copyCoroutineDebugAgent)
+}
+
+// Bundles THIRD-PARTY-NOTICES.txt + the project LICENSE/NOTICE into the shadow jar and
+// guards them from `check`.
+apply(from = "../../gradle/notices.gradle.kts")
+
+tasks.register("runtimeImage") {
+    group = "distribution"
+    description =
+        "jlink a trimmed runtime image next to the shadow jar — " +
+            "what a packaged distribution ships instead of a user-installed JDK"
+
+    dependsOn(tasks.shadowJar)
+    // The shadow jar it reads lies in build/libs, where copyCoroutineDebugAgent stages the agent (a finalizer of shadowJar): Gradle 9
+    // fails the build on that undeclared overlap, as for verifyThirdPartyNotices above. The copy goes first.
+    mustRunAfter(copyCoroutineDebugAgent)
+
+    val imageDir = layout.buildDirectory.dir("runtime-image")
+    outputs.dir(imageDir).withPropertyName("imageDir")
+
+    // Capture at config time (Gradle 10: no Task.project at execution).
+    val jarFile = tasks.shadowJar.flatMap { it.archiveFile }
+    // Declared input, not only a doLast value: without it a rebuilt jar
+    // leaves the task UP-TO-DATE — a stale image ships, and the jdeps guard
+    // below, living in doLast, never runs again.
+    inputs.files(jarFile).withPropertyName("jarFile")
+    val javaHome = runtimeToolchain.map { it.metadata.installationPath }
+    val hostIsWindows = System.getProperty("os.name", "").lowercase().contains("win")
+
+    doLast {
+        val javaHomeDir = javaHome.get().asFile
+        fun tool(name: String) = javaHomeDir.resolve("bin/$name${if (hostIsWindows) ".exe" else ""}").absolutePath
+
+        // The jar's actual module footprint must still match the pin —
+        // same check RuntimeModulesTest runs, repeated here so a bare
+        // :app:cli:runtimeImage cannot build an image off a stale list.
+        val jarPath = jarFile.get().asFile.absolutePath
+        val jdepsOut =
+            run(tool("jdeps"), "--print-module-deps", "--multi-release", "21", "--ignore-missing-deps", "-q", jarPath)
+        val actualModules = jdepsOut.substringAfterLast('\n', jdepsOut).trim()
+        if (actualModules != jdepsModuleSet.joinToString(",")) {
+            throw GradleException(
+                "The jar's JDK module dependencies changed: jdeps reports [$actualModules], " +
+                    "the image pins [${jdepsModuleSet.joinToString(",")}]. Update jdepsModuleSet here and the " +
+                    "pinned set in RuntimeModulesTest, then re-verify the image boots the jar.",
+            )
+        }
+
+        val outDir = imageDir.get().asFile
+        if (outDir.exists()) outDir.deleteRecursively()
+        run(
+            tool("jlink"),
+            "--add-modules",
+            (jdepsModuleSet + extraRuntimeModules).joinToString(","),
+            "--strip-debug",
+            "--no-man-pages",
+            "--no-header-files",
+            "--compress",
+            "zip-9",
+            "--output",
+            outDir.absolutePath,
+        )
+
+        // Redistribution ships the runtime's licenses: OpenJDK GPLv2 with
+        // Classpath Exception plus per-module third-party notices. jlink
+        // copies module legal/ directories into the image by default; a
+        // missing one means the image was built with a stripping option
+        // combination that must not go out the door.
+        val legal = outDir.resolve("legal")
+        if (!legal.isDirectory || legal.listFiles().isNullOrEmpty()) {
+            throw GradleException(
+                "The runtime image at ${outDir.absolutePath} has no legal/ directory — " +
+                    "redistributed images must ship the runtime licenses.",
+            )
+        }
+
+        val sizeMb = outDir.walkBottomUp().filter { it.isFile }.sumOf { it.length() } / (1024 * 1024)
+        println("[runtime-image] ${outDir.absolutePath} ($sizeMb MB, ${legal.listFiles()!!.size} legal entries)")
+    }
+}
+
+fun run(
+    vararg cmd: String,
+    ignoreExit: Boolean = false,
+): String {
+    val proc = ProcessBuilder(*cmd).redirectErrorStream(true).start()
+    val output = proc.inputStream.bufferedReader().readText()
+    proc.waitFor()
+    if (!ignoreExit && proc.exitValue() != 0) {
+        throw GradleException("Command failed (${proc.exitValue()}): ${cmd.toList()}\n$output")
+    }
+    return output.trim()
+}
+
+// The launchers are rendered from dist/launcher/*.tmpl; the flags every launcher passes live in
+// dist/launcher/jvm-flags.txt (also read by dist/install.sh, unidrive-jfr.sh and the golden-run launcher).
+val launcherDir: File = rootProject.projectDir.resolve("../dist/launcher")
+
+fun staticJvmFlags(): List<String> =
+    launcherDir
+        .resolve("jvm-flags.txt")
+        .readLines()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("#") }
+
+fun renderLauncher(
+    template: String,
+    jarPath: String,
+    // The standalone coroutine-debug probe jar deployed beside the fat jar (gkrost/unidrive#613 ask 1):
+    // the launchers pass it as -javaagent when UNIDRIVE_COROUTINE_DEBUG asks for the facility, and a
+    // JVM start is the only moment a -javaagent can arm. Null (older dep set) renders an empty path
+    // the templates' existence checks refuse.
+    agentJarPath: String?,
+): String {
+    val flags = staticJvmFlags()
+    return launcherDir
+        .resolve(template)
+        .readText()
+        .replace("\r\n", "\n")
+        .replace("@STATIC_FLAGS_PS@", "\$javaArgs += @(" + flags.joinToString(", ") { "'$it'" } + ")")
+        .replace("@STATIC_FLAGS_SH@", flags.joinToString(" ") { "\"$it\"" })
+        .replace("@JAR@", jarPath)
+        .replace("@COROUTINES_DEBUG_AGENT@", agentJarPath ?: "")
+}
+
+tasks.register("deploy") {
+    dependsOn(tasks.shadowJar)
+    group = "distribution"
+    description = "Build fat JAR and deploy to local system"
+
+    // UD-292 (inline): without this Gradle 9's task-skipping
+    // heuristics elide doLast {} blocks on tasks that declare no
+    // outputs. The CLI deploy was silently NOT running between Gradle
+    // task graph evaluations even with --rerun-tasks, leaving the
+    // %LOCALAPPDATA%\unidrive\unidrive-*.jar stale relative to the
+    // build/libs jar. Always-run is the right semantic here: deploy
+    // must copy on every invocation.
+    outputs.upToDateWhen { false }
+
+    // Capture at config time (Gradle 10: no Task.project at execution).
+    val projectVersion = project.version.toString()
+    val shadowJarFile = tasks.shadowJar.flatMap { it.archiveFile }
+
+    doLast {
+        val home = System.getProperty("user.home")
+        val jarFile = shadowJarFile.get().asFile
+        val isWindows = System.getProperty("os.name", "").lowercase().contains("win")
+
+        // ASCII separator instead of em-dash: Gradle daemon's System.out
+        // encoding inherits the JVM platform default (cp437/cp850 on Windows
+        // produces 'ÔÇö' mojibake). Logback messages get UTF-8 via the encoder
+        // <charset>; gradle println doesn't go through logback.
+        println("[deploy] starting -- version=$projectVersion jar=${jarFile.name} target=${if (isWindows) "Windows" else "Linux"}")
+
+        // The standalone coroutine-debug probe jar (gkrost/unidrive#613 ask 1): deployed beside the
+        // fat jar, where the launchers' UNIDRIVE_COROUTINE_DEBUG gate and DaemonAutospawn find it for
+        // the -javaagent that arms the probes at JVM start.
+        val debugAgentJar =
+            configurations
+                .getByName("runtimeClasspath")
+                .files
+                .firstOrNull { it.name.startsWith("kotlinx-coroutines-debug-") }
+
+        if (isWindows) {
+            deployWindows(home, jarFile, projectVersion, debugAgentJar)
+        } else {
+            deployLinux(home, jarFile, projectVersion, debugAgentJar)
+        }
+
+        println("[deploy] complete.")
+    }
+}
+
+fun deployWindows(
+    home: String,
+    jarFile: File,
+    projectVersion: String,
+    debugAgentJar: File?,
+) {
+    val localAppData = System.getenv("LOCALAPPDATA") ?: "$home\\AppData\\Local"
+    val appData = System.getenv("APPDATA") ?: "$home\\AppData\\Roaming"
+    val libDir = file("$localAppData\\unidrive")
+    val binDir = file("$home\\.local\\bin")
+    val targetJar = file("$libDir\\${jarFile.name}")
+    val launcher = file("$binDir\\unidrive.cmd")
+    val startupDir = file("$appData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup")
+
+    libDir.mkdirs()
+    binDir.mkdirs()
+
+    // #1194: stop the engine processes through their profiles first — gracefully, by the daemon.shutdown verb.
+    // ProcessHandle's command line reads EMPTY for the running daemons on Windows (measured), so the kill step
+    // below cannot find them and the copy then fails on the locked jar. The .lock.pid sidecar under the config
+    // dir names every holder; the class is loaded from the jar just built, like LegacyLogonEntry below.
+    runCatching {
+        URLClassLoader(arrayOf(jarFile.toURI().toURL()), ClassLoader.getPlatformClassLoader()).use { loader ->
+            // The config dir is the one the engine itself resolves (SyncConfig.defaultConfigDir), so only the
+            // profiles this deploy is for are touched.
+            val stopped =
+                loader
+                    .loadClass("org.krost.unidrive.cli.DeployedProcessStopper")
+                    .getMethod("stopAllInDefaultConfigDir")
+                    .invoke(null) as List<*>
+            stopped.forEach { println("[deploy] $it") }
+        }
+    }.onFailure { println("[deploy] could not stop the running profiles by their locks (${it.javaClass.simpleName}: ${it.message}); the kill step below is next") }
+
+    // UD-712 (inline-rewritten 2026-04-29): Kill any running unidrive java
+    // process before overwriting the JAR. The previous Get-CimInstance
+    // PowerShell subroutine intermittently hung the gradle daemon (WMI /
+    // DCOM auth stalls under load) — the deploy task body would never
+    // reach the copyTo() below, the build exited cleanly without a
+    // BUILD SUCCESSFUL marker, and the AppData jar stayed stale. The
+    // user spent a session debugging "deploy didn't deploy."
+    //
+    // Replaced with ProcessHandle.allProcesses() — pure Java since JDK 9,
+    // no shell, no WMI, no PowerShell. Filters by commandLine substring
+    // (more reliable than the old WINDOWTITLE filter that missed
+    // background daemons launched from the startup VBS). #1194: on Windows
+    // the command line of a running daemon reads empty, so this step is a
+    // sweep for what the graceful step above missed, not the primary stop.
+    val targetJarName = jarFile.name
+    val killed =
+        ProcessHandle
+            .allProcesses()
+            .filter { ph ->
+                val cmd = ph.info().commandLine().orElse("")
+                // Match the CLI shadow-jar specifically, not gradle's own
+                // daemon (which always has "gradle-" on its command line).
+                cmd.contains(targetJarName) && !cmd.contains("gradle-")
+            }.toList()
+    killed.forEach { ph ->
+        try {
+            ph.destroyForcibly()
+            ph.onExit().get(5L, TimeUnit.SECONDS)
+            println("[deploy] killed running CLI process pid=${ph.pid()}")
+        } catch (e: Exception) {
+            println("[deploy] could not kill pid=${ph.pid()}: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+    if (killed.isEmpty()) println("[deploy] no running CLI process to kill -- proceeding to copy")
+
+    // Sweep legacy / stale jars before the copy. Pre-slim builds shipped
+    // `unidrive-mcp-*.jar` alongside the CLI jar; the MCP module was deleted
+    // but old artifacts linger in %LOCALAPPDATA% from prior deploys and confuse
+    // users about which jar is current. Delete anything matching `unidrive*.jar`
+    // that isn't the one we're about to write.
+    libDir
+        .listFiles { f -> f.isFile && f.name.startsWith("unidrive") && f.name.endsWith(".jar") && f.name != targetJarName }
+        ?.forEach {
+            if (it.delete()) println("[deploy] pruned stale jar ${it.name}")
+            else println("[deploy] could NOT prune stale jar ${it.name} (locked?)")
+        }
+
+    // #1194: a locked jar failed here as a bare FileAlreadyExistsException after a full build; the message now
+    // names the remedy instead.
+    try {
+        jarFile.copyTo(targetJar, overwrite = true)
+    } catch (e: kotlin.io.FileAlreadyExistsException) {
+        throw GradleException(
+            "The target jar $targetJar is held by a running process and could not be replaced. " +
+                "Stop it first — `unidrive -p <profile> daemon stop` for every running profile, or close the JVM — " +
+                "then re-run deploy. (${e.message})",
+        )
+    }
+    println("[deploy] copied ${jarFile.absolutePath} -> ${targetJar.absolutePath} (${jarFile.length()} bytes)")
+
+    // jvm-flags.txt beside the fat jar: DaemonAutospawn reads the launchers' single source from
+    // here when it spawns the daemon itself.
+    val flagsFile = File(libDir, "jvm-flags.txt")
+    launcherDir.resolve("jvm-flags.txt").copyTo(flagsFile, overwrite = true)
+    println("[deploy] copied jvm-flags.txt -> ${flagsFile.absolutePath}")
+
+    // The coroutine-debug probe jar lands beside the fat jar (the launchers and DaemonAutospawn
+    // -javaagent it when UNIDRIVE_COROUTINE_DEBUG=1). A stale version is replaced; absent dep →
+    // nothing deployed and the launchers' existence check skips the agent.
+    val debugAgentTarget =
+        debugAgentJar?.let { agent ->
+            val stale =
+                libDir.listFiles { f -> f.isFile && f.name.startsWith("kotlinx-coroutines-debug-") && f.name.endsWith(".jar") } ?: emptyArray()
+            stale.forEach { if (it.delete()) println("[deploy] pruned stale probe jar ${it.name}") }
+            val target = File(libDir, agent.name)
+            agent.copyTo(target, overwrite = true)
+            println("[deploy] copied probe jar -> ${target.absolutePath} (${agent.length()} bytes)")
+            target.absolutePath
+        }
+
+    // UD-270: route the cmd shim through PowerShell. cmd.exe's batch-file
+    // CTRL-C handler intercepts SIGINT and — *after* the JVM has already
+    // died — emits "Terminate batch job (Y/N)?" / "Batchvorgang abbrechen
+    // (J/N)?". Pure noise: the answer has no effect on anything that's
+    // still running. PowerShell exits cleanly back to the parent shell on
+    // CTRL-C with no prompt.
+    val ps1Launcher = file("$libDir\\unidrive.ps1")
+    ps1Launcher.writeText(renderLauncher("unidrive.ps1.tmpl", targetJar.absolutePath, debugAgentTarget).replace("\n", "\r\n"))
+
+    launcher.writeText(
+        """
+        |@echo off
+        |REM UD-270: routed through PowerShell to suppress the cmd.exe
+        |REM "Terminate batch job (Y/N)?" prompt on CTRL-C. powershell.exe
+        |REM (Windows PowerShell 5.1) is always present on Windows 10/11;
+        |REM no need for pwsh.
+        |powershell -NoProfile -ExecutionPolicy Bypass -File "${ps1Launcher.absolutePath}" %*
+        """.trimMargin() + "\r\n",
+    )
+
+    // No logon entry: on Windows the tray client owns autostart (gkrost/unidrive-windows#511). The Startup-folder
+    // unidrive.vbs and its unidrive-watch.cmd restart loop an earlier deploy wrote are removed, each only when its
+    // content is what deploy wrote (LegacyLogonEntry, loaded from the jar just built; tested against a temp dir).
+    URLClassLoader(arrayOf(jarFile.toURI().toURL()), ClassLoader.getPlatformClassLoader()).use { loader ->
+        val entry = loader.loadClass("org.krost.unidrive.cli.LegacyLogonEntry")
+        val vbs = entry.getMethod("removeFromStartup", Path::class.java).invoke(null, startupDir.toPath())
+        println("[deploy] legacy logon entry ${File(startupDir, "unidrive.vbs")}: $vbs")
+        val watch = entry.getMethod("removeWatchWrapper", Path::class.java).invoke(null, libDir.toPath())
+        println("[deploy] legacy restart loop ${File(libDir, "unidrive-watch.cmd")}: $watch")
+    }
+
+    println("Deployed unidrive $projectVersion (Windows):")
+    println("  JAR:      $targetJar")
+    println("  Launcher: $launcher")
+    println("  Autostart: none from the engine; the tray client starts the accounts at sign-in")
+    println()
+    println("NOTE: Ensure ${binDir.absolutePath} is on your PATH.")
+}
+
+fun deployLinux(
+    home: String,
+    jarFile: File,
+    projectVersion: String,
+    debugAgentJar: File?,
+) {
+    val libDir = file("$home/.local/lib/unidrive")
+    val binDir = file("$home/.local/bin")
+    val systemdDir = file("$home/.config/systemd/user")
+    val targetJar = file("$libDir/${jarFile.name}")
+    val launcher = file("$binDir/unidrive")
+
+    libDir.mkdirs()
+    binDir.mkdirs()
+    systemdDir.mkdirs()
+
+    // #1076: stop every active unidrive unit (the daemon, the per-profile and the mount instances) before the jar they
+    // run is replaced, and start exactly those again afterwards, as dist/install.sh does; one stop and one start call.
+    val activeUnits =
+        run("systemctl", "--user", "list-units", "--state=active", "--no-legend", "--plain", "unidrive*.service", ignoreExit = true)
+            .lines()
+            .map { it.trim().substringBefore(' ') }
+            .filter { it.startsWith("unidrive") && it.endsWith(".service") }
+    if (activeUnits.isNotEmpty()) run("systemctl", "--user", "stop", *activeUnits.toTypedArray(), ignoreExit = true)
+
+    // Sweep legacy / stale jars before the copy (mirrors deployWindows).
+    // Pre-slim builds shipped `unidrive-mcp-*.jar`; the MCP module was
+    // deleted but old artifacts linger from prior deploys.
+    libDir
+        .listFiles { f -> f.isFile && f.name.startsWith("unidrive") && f.name.endsWith(".jar") && f.name != jarFile.name }
+        ?.forEach {
+            if (it.delete()) println("[deploy] pruned stale jar ${it.name}")
+            else println("[deploy] could NOT prune stale jar ${it.name}")
+        }
+
+    jarFile.copyTo(targetJar, overwrite = true)
+
+    // jvm-flags.txt beside the fat jar (mirrors deployWindows): DaemonAutospawn reads the launchers'
+    // single source from here when it spawns the daemon itself.
+    launcherDir.resolve("jvm-flags.txt").copyTo(File(libDir, "jvm-flags.txt"), overwrite = true)
+    println("[deploy] copied jvm-flags.txt -> ${File(libDir, "jvm-flags.txt").absolutePath}")
+
+    // Mirrors deployWindows: the coroutine-debug probe jar beside the fat jar (see the note there).
+    val debugAgentTarget =
+        debugAgentJar?.let { agent ->
+            libDir
+                .listFiles { f -> f.isFile && f.name.startsWith("kotlinx-coroutines-debug-") && f.name.endsWith(".jar") }
+                ?.forEach { it.delete() }
+            val target = File(libDir, agent.name)
+            agent.copyTo(target, overwrite = true)
+            println("[deploy] copied probe jar -> ${target.absolutePath} (${agent.length()} bytes)")
+            target.absolutePath
+        }
+
+    launcher.writeText(renderLauncher("unidrive.sh.tmpl", targetJar.absolutePath, debugAgentTarget))
+    launcher.setExecutable(true)
+
+    // #1076: the units are dist/'s, the files dist/install.sh copies, so a deploy never swaps a hardened unit with its
+    // vault credential for a different one (the old inline unit read the passphrase from an env file and had no hardening).
+    val distDir = launcherDir.parentFile
+    val unitFiles = listOf("unidrive.service", "unidrive@.service", "unidrive-mount@.service")
+    for (unit in unitFiles) distDir.resolve(unit).copyTo(File(systemdDir, unit), overwrite = true)
+
+    run("systemctl", "--user", "daemon-reload")
+
+    if (activeUnits.isNotEmpty()) {
+        run("systemctl", "--user", "start", *activeUnits.toTypedArray())
+        println("Restarted: ${activeUnits.joinToString(" ")}")
+    }
+
+    println("Deployed unidrive $projectVersion:")
+    println("  JAR:      $targetJar")
+    println("  Launcher: $launcher")
+    println("  Units:    ${unitFiles.joinToString(", ") { File(systemdDir, it).path }} (from dist/)")
+}
+
+dependencies {
+    implementation(project(":app:core"))
+    implementation(project(":providers:internxt"))
+    implementation(project(":providers:onedrive"))
+    implementation(project(":providers:localfs"))
+    implementation(project(":providers:dropbox"))
+    implementation(project(":providers:s3"))
+    implementation(project(":app:sync"))
+    // StateDatabase, SyncEntry, PathNormalizer and SyncScope live in :app:engine-core (#560 U2).
+    implementation(project(":app:engine-core"))
+    // The CliExtension SPI that CliExtensionLoader discovers implementations of (#560).
+    implementation(project(":app:cli-spi"))
+    // The CLI owns the tracking-set commands and renders their user-facing
+    // text; the tracking-set engine remains a separately consumable module.
+    implementation(project(":app:sync-tracking"))
+    implementation(project(":app:hydration"))
+
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.coroutines.slf4j) // UD-212: MDCContext for profile MDC propagation
+    // Coroutine debug probes (gkrost/unidrive#613 ask 1): installed only when UNIDRIVE_COROUTINE_DEBUG=1.
+    // Arming the capture needs the probe JAR as a -javaagent at JVM start (the launcher templates and
+    // DaemonAutospawn add it when the flag is set); on a JVM started without it the runtime
+    // self-attach fails on locked-down HotSpots and CoroutineDebug's self-check says so. The agent
+    // jars are excluded from the fat jar: the self-attach path is the one that does not work, and
+    // jna alone would drag java.desktop into the module pin the runtime image deliberately omits.
+    implementation(libs.kotlinx.coroutines.debug) {
+        exclude(group = "net.bytebuddy")
+        exclude(group = "net.java.dev.jna")
+    }
+    implementation(libs.kotlinx.serialization.json) // UD-268: doctor --json output + audit-log JSONL parsing
+    implementation(libs.picocli)
+    implementation(libs.logback.classic)
+
+    testImplementation(kotlin("test"))
+    testImplementation(libs.kotlinx.coroutines.test) // poll-loop virtual-time tests
+}
+
+tasks.test {
+    useJUnit()
+    // RuntimeModulesTest jdeps-es the fat jar to pin its JDK module set —
+    // build the jar for `check` too, so the module pin is verified on every
+    // test run rather than only when someone remembers to build the image.
+    dependsOn(tasks.shadowJar)
+    systemProperty("unidrive.runtime.test.jar", tasks.shadowJar.flatMap { it.archiveFile }.get().asFile.absolutePath)
+}

@@ -1,0 +1,279 @@
+package org.krost.unidrive.hydration
+
+/**
+ * Sealed extension point for hydration failure modes. Phase 1 ships
+ * only Generic; Phase 3 adds Transient / Permanent / QuotaExhausted /
+ * Busy as the icon-overlay UX surfaces them.
+ */
+sealed interface HydrationError {
+    val message: String
+
+    data class Generic(override val message: String) : HydrationError
+
+    /**
+     * The remote object is genuinely gone (provider download still
+     * not-found after the re-resolve); since #941 only that: a stored object that
+     * cannot be served for another reason has its own token ([RemoteIncomplete],
+     * [RemoteObjectMissing], [ContentRefused], [UnsupportedObject]). Its [message] is the STABLE wire
+     * token `not_found`, matched verbatim by the mount crate's
+     * `ipc_error_to_errno` to return ENOENT instead of the catch-all EIO.
+     * Changing this string breaks that cross-repo contract.
+     */
+    data object NotFound : HydrationError {
+        override val message: String = NOT_FOUND_TOKEN
+    }
+
+    /**
+     * The path is not present in state.db — it was never part of the synced
+     * view. Its [message] is the STABLE wire token `unknown_path`, matched by
+     * the mount crate to return ENOENT (POSIX-correct for a path that does not
+     * exist) instead of the catch-all EIO. Used uniformly by every verb whose
+     * precondition is a state.db row lookup, so the same condition surfaces the
+     * same errno regardless of which verb hit it. Changing this string breaks
+     * that cross-repo contract.
+     */
+    data object UnknownPath : HydrationError {
+        override val message: String = UNKNOWN_PATH_TOKEN
+    }
+
+    /**
+     * Optimistic-concurrency mismatch on a write: the client's base etag does
+     * not match the row's current change-detection token, so the write would
+     * silently overwrite a newer remote version. The write is refused BEFORE
+     * any upload starts (nothing was modified — the client may keep both).
+     * Its [message] is the STABLE wire token `conflict`; a mount client maps
+     * it to its own conflict handling (EBUSY-flavoured) rather than EIO.
+     * Changing this string breaks that cross-repo contract.
+     */
+    data object Conflict : HydrationError {
+        override val message: String = CONFLICT_TOKEN
+    }
+
+    /**
+     * The path lies outside the profile's sync_path set. A mounted profile
+     * shows its scope as the whole drive, so a folder or file created outside
+     * the scope would land in the cloud but never appear in the view — the
+     * write is refused instead (nothing is created remotely). Raised by
+     * create, mkdir, rename (either end) and open_write_begin. Its [message]
+     * is the STABLE wire token `outside_scope`; a mount client surfaces it as
+     * a failed state with a readable reason. Changing this string breaks that
+     * cross-repo contract.
+     */
+    data object OutOfScope : HydrationError {
+        override val message: String = OUTSIDE_SCOPE_TOKEN
+    }
+
+    /**
+     * The path matches the profile's exclude_patterns. Two uses, one token:
+     * on create/open_write/open_write_begin it is NOT a refusal — the local
+     * write is accepted and the content stays local-only, deliberately never
+     * uploaded (carried as [Completed.error] so a client marking in-sync on a
+     * Completed event cannot mark an excluded file as uploaded). On rename it
+     * IS a refusal (for a synced source; a never-uploaded file renames
+     * locally): moving cloud content onto an excluded name would take a
+     * synced object out of every sync action silently (the Reconciler and
+     * LocalScanner skip excluded names), so the move is refused and both
+     * paths stay untouched. On open_read it is also a refusal, but only where a
+     * download would be needed: a cloud-only excluded object is not downloaded, while
+     * a file this machine holds in full (created locally, or synced and complete in
+     * the cache) is served from that local content.
+     * Its [message] is the STABLE wire token `excluded`.
+     * Changing this string breaks that cross-repo contract.
+     */
+    data object Excluded : HydrationError {
+        override val message: String = EXCLUDED_TOKEN
+    }
+
+    /**
+     * The upload was cancelled through [Hydration.cancelUpload] (the user
+     * deleted the file or moved it out while the upload was queued, running,
+     * or in a retry backoff). Carried as [Completed.error] so the client's
+     * handle correlation terminates with a cause instead of hanging. Its
+     * [message] is the STABLE wire token `cancelled`. Changing this string
+     * breaks that cross-repo contract.
+     */
+    data object Cancelled : HydrationError {
+        override val message: String = CANCELLED_TOKEN
+    }
+
+    /**
+     * The stored object is of a different size than the drive reports (#536): shorter, a multipart
+     * upload another client truncated, or longer. The refusal is correct (the cloud copy cannot decrypt to a whole
+     * file), but it is not a gone file: its own wire form carries the STABLE token
+     * `remote_incomplete` plus the numbers, `remote_incomplete: got <stored> of <declared> bytes`.
+     * A mount crate matches tokens verbatim and falls to the EIO catch-all (correct: the download
+     * failed); a client column parses the prefix to say "the cloud copy is incomplete". The numbers
+     * are the stored object's bytes and the declared drive size, in bytes. Changing the token
+     * prefix breaks that contract.
+     */
+    data class RemoteIncomplete(
+        val storedBytes: Long,
+        val declaredBytes: Long,
+    ) : HydrationError {
+        override val message: String = "$REMOTE_INCOMPLETE_TOKEN: got $storedBytes of $declaredBytes bytes"
+    }
+
+    /**
+     * The object exists in the cloud and was downloaded, but its content failed the integrity check the network
+     * recorded for it (#940), so the bytes were discarded instead of served as the file. Not a gone file (#941): its
+     * own wire form is the STABLE token `content_refused`, then a short reason without any file name:
+     * `content_refused: <reason>`. A client matches the prefix up to ": " and says "the cloud copy failed its integrity
+     * check"; a retry reads the same bytes. A mount crate falls to the EIO catch-all (correct: the read failed).
+     */
+    data class ContentRefused(
+        val reason: String,
+    ) : HydrationError {
+        override val message: String = "$CONTENT_REFUSED_TOKEN: ${reason.ifBlank { "integrity check failed" }}"
+    }
+
+    /**
+     * The object exists in the cloud, but this client cannot read it as stored (#941): spread over several shards,
+     * an encryption index that is not hex, a name the local file system cannot hold. Not a gone file: its own wire
+     * form is the STABLE token `unsupported_object`, then a short reason without any file name:
+     * `unsupported_object: <reason>`. A client matches the prefix up to ": ". A mount crate falls to the EIO catch-all.
+     */
+    data class UnsupportedObject(
+        val reason: String,
+    ) : HydrationError {
+        override val message: String = "$UNSUPPORTED_OBJECT_TOKEN: ${reason.ifBlank { "this client cannot read it" }}"
+    }
+
+    /** The drive lists this item but its stored cloud object is missing. */
+    data object RemoteObjectMissing : HydrationError {
+        override val message: String = "$REMOTE_OBJECT_MISSING_TOKEN: drive item exists, but its stored cloud object is missing"
+    }
+
+    /**
+     * A client-supplied path the engine does not accept, refused before anything is changed. Which paths: the
+     * wire-format notes of [HydrationIpcHandler] and §7 of docs/dev/specs/ipc-write-protocol.md. Its [message] is
+     * the STABLE wire token `invalid_path`. Changing this string breaks that cross-repo contract.
+     */
+    data object InvalidPath : HydrationError {
+        override val message: String = INVALID_PATH_TOKEN
+    }
+
+    /**
+     * The drive refuses the entry by its NAME: it compares the name as equal to a sibling's although the two differ
+     * (OneDrive ignores some characters in its uniqueness check), and landing the entry under another name was
+     * refused too. Not transient and not about the content: the upload is not retried, the local file is kept, and the
+     * entry is reported as blocked. The wire form is the STABLE token [reason] (`similar_name`), followed by
+     * `: <sibling>` when the conflicting sibling is known. A client matches the prefix up to ": ".
+     */
+    data class NameRefused(
+        val reason: String,
+        val sibling: String?,
+    ) : HydrationError {
+        override val message: String = if (sibling != null) "$reason: $sibling" else reason
+    }
+
+    /**
+     * The entry waits for a folder above it that the drive refused by name: nothing below that folder can reach the
+     * drive until the folder does, and no request was made for the entry. Wire form: the STABLE token
+     * `blocked_by_parent: <path of the folder>`.
+     */
+    data class BlockedByParent(
+        val parent: String,
+    ) : HydrationError {
+        override val message: String = "$BLOCKED_BY_PARENT_TOKEN: $parent"
+    }
+
+    /**
+     * The upload's folder is gone in the cloud (#580): the provider's path walk listed the folder above it successfully
+     * and [parent] was not in that listing (trashed or deleted elsewhere, typically before the drive's change feed
+     * reports it). Permanent for the current cloud state: the upload is not retried, the same bytes are not sent again
+     * at a replay or a resubmission, and the bytes stay in the cache. A listing that failed is never this. [parent] is
+     * the first folder of the upload's path the walk did not find (the direct parent or a folder above it). Wire form:
+     * the STABLE token `parent_gone: <parent>`; a client matches the prefix up to ": ". A client that does not know the
+     * token sees a failed upload with a readable error text, as before the token existed.
+     */
+    data class ParentGone(
+        val parent: String,
+    ) : HydrationError {
+        override val message: String = "$PARENT_GONE_TOKEN: $parent"
+
+        companion object {
+            /** The [ParentGone] of a wire form or a stored refusal reason `parent_gone: <parent>`, else null. */
+            fun parse(text: String): ParentGone? =
+                text.takeIf { it.startsWith("$PARENT_GONE_TOKEN: ") }?.let { ParentGone(it.substring(PARENT_GONE_TOKEN.length + 2)) }
+        }
+    }
+
+    /**
+     * The daemon is paused (#778) and the request would start a cloud download: refused at once, nothing is
+     * started and nothing is left waiting. A front-end asks the user whether to lift the pause (the action
+     * unpauses everything), calls `daemon.resume` and sends the request again. A file already in the cache is
+     * still served while paused; only a download is refused. Its [message] is the STABLE wire token `paused`.
+     * Changing this string breaks that cross-repo contract.
+     */
+    data object Paused : HydrationError {
+        override val message: String = PAUSED_TOKEN
+    }
+
+    /**
+     * The path is in the trash namespace, which the engine never writes to: the root folder and everything below it
+     * show what the provider keeps in its trash, and an item there can be read, hydrated and copied out but not
+     * changed, created, moved, renamed or deleted. Raised by every verb that would write (create, mkdir, rename
+     * (either end), unlink, rmdir, open_write and open_write_begin), before anything is touched or queued. Its
+     * [message] is the STABLE wire token `read_only`; the entries of `hydration.list` carry the same fact as
+     * `read_only: true`, so a client can refuse the action before it asks. Changing this string breaks that
+     * cross-repo contract.
+     */
+    data object ReadOnly : HydrationError {
+        override val message: String = READ_ONLY_TOKEN
+    }
+
+    /** #1178: the provider cannot delete for good (no [org.krost.unidrive.Capability.PermanentDelete]); only rm --permanent asks. */
+    data object PermanentUnsupported : HydrationError {
+        override val message: String = PERMANENT_UNSUPPORTED_TOKEN
+    }
+
+    companion object {
+        /** Wire token for [ReadOnly]; shared verbatim with the clients. */
+        const val READ_ONLY_TOKEN = "read_only"
+
+        /** Wire token for [PermanentUnsupported]; #1178. */
+        const val PERMANENT_UNSUPPORTED_TOKEN = "permanent_unsupported"
+
+        /** Wire token prefix for [ParentGone]; the folder's path follows after ": ". */
+        const val PARENT_GONE_TOKEN = "parent_gone"
+
+        /** Wire token prefix for [BlockedByParent]. */
+        const val BLOCKED_BY_PARENT_TOKEN = "blocked_by_parent"
+
+        /** Wire token for [NotFound]; shared verbatim with the mount crate. */
+        const val NOT_FOUND_TOKEN = "not_found"
+
+        /** Wire token prefix for [RemoteIncomplete]; the numbers follow after ": got ". */
+        const val REMOTE_INCOMPLETE_TOKEN = "remote_incomplete"
+
+        /** Wire token prefix for [ContentRefused]; the short reason follows after ": ". */
+        const val CONTENT_REFUSED_TOKEN = "content_refused"
+
+        /** Wire token prefix for [UnsupportedObject]; the short reason follows after ": ". */
+        const val UNSUPPORTED_OBJECT_TOKEN = "unsupported_object"
+
+        /** Wire token for a listed drive item whose stored object is absent. */
+        const val REMOTE_OBJECT_MISSING_TOKEN = "remote_object_missing"
+
+        /** Wire token for [UnknownPath]; shared verbatim with the mount crate. */
+        const val UNKNOWN_PATH_TOKEN = "unknown_path"
+
+        /** Wire token for [Conflict]; shared verbatim with the mount crate. */
+        const val CONFLICT_TOKEN = "conflict"
+
+        /** Wire token for [OutOfScope]; shared verbatim with the mount crate. */
+        const val OUTSIDE_SCOPE_TOKEN = "outside_scope"
+
+        /** Wire token for [Excluded]; shared verbatim with the mount crate. */
+        const val EXCLUDED_TOKEN = "excluded"
+
+        /** Wire token for [Cancelled]; shared verbatim with the mount crate. */
+        const val CANCELLED_TOKEN = "cancelled"
+
+        /** Wire token for [InvalidPath]. */
+        const val INVALID_PATH_TOKEN = "invalid_path"
+
+        /** Wire token for [Paused]. */
+        const val PAUSED_TOKEN = "paused"
+    }
+}

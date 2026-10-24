@@ -1,0 +1,261 @@
+package org.krost.unidrive.sync
+
+import com.sun.nio.file.ExtendedOpenOption
+import org.krost.unidrive.engine.localNameIssue
+import org.junit.Assume.assumeFalse
+import org.junit.Assume.assumeTrue
+import java.nio.channels.FileChannel
+import java.nio.file.FileSystemException
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardOpenOption
+import java.time.Instant
+import kotlin.test.*
+
+// UD-209: sparse-file production support missing on Windows — tests below skip there.
+private val IS_WINDOWS = System.getProperty("os.name", "").lowercase().contains("win")
+
+class PlaceholderManagerTest {
+    private lateinit var syncRoot: Path
+    private lateinit var mgr: PlaceholderManager
+
+    @BeforeTest
+    fun setUp() {
+        syncRoot = Files.createTempDirectory("unidrive-ph-test")
+        mgr = PlaceholderManager(syncRoot)
+    }
+
+    @Test
+    fun `createPlaceholder creates empty stub with mtime — UD-222`() {
+        val modified = Instant.parse("2026-03-28T12:00:00Z")
+        mgr.createPlaceholder("/docs/test.txt", size = 4096, modified = modified)
+
+        // UD-222: stubs are always 0 bytes. Real content arrives via provider.download —
+        // setLength(size) used to pre-allocate NUL bytes (346 GB on UD-712 run, NTFS).
+        val file = syncRoot.resolve("docs/test.txt")
+        assertTrue(Files.exists(file))
+        assertEquals(0, Files.size(file))
+    }
+
+    // ── #230: local-name representability ────────────────────────────────────
+
+    @Test
+    fun `localNameIssue allows normal names including spaces`() {
+        for (w in listOf(true, false)) {
+            assertNull(localNameIssue("/Documents/my report.txt", windows = w))
+            assertNull(localNameIssue("/a/b/c.pdf", windows = w))
+            assertNull(localNameIssue("/", windows = w))
+        }
+    }
+
+    @Test
+    fun `localNameIssue refuses dot segments`() {
+        for (w in listOf(true, false)) {
+            assertNotNull(localNameIssue("/a/./b", windows = w))
+            assertNotNull(localNameIssue("/a/../b", windows = w))
+        }
+    }
+
+    @Test
+    fun `localNameIssue rejects Windows-invalid names only on Windows`() {
+        val bad = listOf("/x/....", "/x/foo.", "/x/foo ", "/x/CON", "/x/nul.txt", "/x/a:b", "/x/a?b", "/x/a<b")
+        for (p in bad) {
+            assertNotNull(localNameIssue(p, windows = true), "expected '$p' rejected on Windows")
+            assertNull(localNameIssue(p, windows = false), "expected '$p' allowed on POSIX")
+        }
+    }
+
+    @Test
+    fun `localNameIssue rejects an embedded NUL on every platform`() {
+        val withNul = "/x/a" + Char(0) + "b"
+        assertNotNull(localNameIssue(withNul, windows = true))
+        assertNotNull(localNameIssue(withNul, windows = false))
+    }
+
+    // ── #600: component length ───────────────────────────────────────────────
+
+    @Test
+    fun `localNameIssue allows a 255-character component and rejects 256`() {
+        // The suffix is part of the component: 251 + 4 = 255 exactly.
+        val ok = "/x/" + "n".repeat(251) + ".txt"
+        val tooLong = "/x/" + "n".repeat(252) + ".txt"
+        assertNull(localNameIssue(ok, windows = true))
+        assertNull(localNameIssue(ok, windows = false))
+        assertNotNull(localNameIssue(tooLong, windows = true))
+        // 256 ASCII characters are also 256 UTF-8 bytes: rejected on POSIX too.
+        assertNotNull(localNameIssue(tooLong, windows = false))
+    }
+
+    @Test
+    fun `localNameIssue counts UTF-16 units on Windows and UTF-8 bytes on POSIX`() {
+        // 240 ASCII characters (240 UTF-8 bytes) + 4 four-byte emoji (8 UTF-16 code
+        // units, 16 UTF-8 bytes): 248 units — inside the Windows limit; 256 bytes —
+        // over POSIX NAME_MAX.
+        val component = "n".repeat(240) + "🦋".repeat(4)
+        assertEquals(248, component.length)
+        assertEquals(256, component.toByteArray(Charsets.UTF_8).size)
+        assertNull(localNameIssue("/x/$component", windows = true))
+        assertNotNull(localNameIssue("/x/$component", windows = false))
+    }
+
+    @Test
+    fun `createPlaceholder creates parent directories`() {
+        mgr.createPlaceholder("/deep/nested/dir/file.txt", size = 100, modified = Instant.now())
+        assertTrue(Files.isDirectory(syncRoot.resolve("deep/nested/dir")))
+    }
+
+    @Test
+    fun `createFolder creates directory with mtime`() {
+        val modified = Instant.parse("2026-03-28T12:00:00Z")
+        mgr.createFolder("/docs/projects", modified = modified)
+        assertTrue(Files.isDirectory(syncRoot.resolve("docs/projects")))
+    }
+
+    @Test
+    fun `dehydrate truncates file to sparse placeholder`() {
+        val file = syncRoot.resolve("test.txt")
+        Files.writeString(file, "hello world content here")
+
+        mgr.dehydrate("/test.txt", remoteSize = 500, remoteModified = Instant.now())
+
+        assertEquals(500, Files.size(file))
+        val content = Files.readAllBytes(file)
+        assertTrue(content.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `deleteLocal removes file`() {
+        val file = syncRoot.resolve("delete-me.txt")
+        Files.writeString(file, "bye")
+        mgr.deleteLocal("/delete-me.txt")
+        assertFalse(Files.exists(file))
+    }
+
+    @Test
+    fun `deleteLocal waits for a short exclusive Windows file lock`() {
+        assumeTrue(System.getProperty("os.name").lowercase().contains("windows"))
+        val file = syncRoot.resolve("held.txt")
+        Files.writeString(file, "content")
+        val channel = FileChannel.open(file, StandardOpenOption.READ, ExtendedOpenOption.NOSHARE_DELETE)
+        val releaser = Thread {
+            Thread.sleep(300)
+            channel.close()
+        }
+        releaser.start()
+        try {
+            assertFailsWith<FileSystemException> { Files.delete(file) }
+            mgr.deleteLocal("/held.txt")
+            assertFalse(Files.exists(file))
+        } finally {
+            releaser.join(2_000)
+            runCatching { channel.close() }
+        }
+    }
+
+    @Test
+    fun `deleteLocal removes empty parent directories`() {
+        val dir = syncRoot.resolve("a/b/c")
+        Files.createDirectories(dir)
+        val file = dir.resolve("file.txt")
+        Files.writeString(file, "content")
+        mgr.deleteLocal("/a/b/c/file.txt")
+        assertFalse(Files.exists(dir))
+        assertFalse(Files.exists(syncRoot.resolve("a/b")))
+        assertFalse(Files.exists(syncRoot.resolve("a")))
+    }
+
+    @Test
+    fun `deleteLocal does not remove non-empty parent directories`() {
+        Files.createDirectories(syncRoot.resolve("a/b"))
+        Files.writeString(syncRoot.resolve("a/b/keep.txt"), "keep")
+        Files.writeString(syncRoot.resolve("a/b/del.txt"), "del")
+        mgr.deleteLocal("/a/b/del.txt")
+        assertTrue(Files.exists(syncRoot.resolve("a/b")))
+        assertTrue(Files.exists(syncRoot.resolve("a/b/keep.txt")))
+    }
+
+    @Test
+    fun `resolveLocal maps path to filesystem`() {
+        assertEquals(syncRoot.resolve("docs/test.txt"), mgr.resolveLocal("/docs/test.txt"))
+    }
+
+    @Test
+    fun `resolveLocal rejects leading dotdot traversal escaping syncRoot`() {
+        assertFailsWith<SecurityException> {
+            mgr.resolveLocal("/../../etc/passwd")
+        }
+    }
+
+    @Test
+    fun `resolveLocal rejects embedded dotdot traversal escaping syncRoot`() {
+        assertFailsWith<SecurityException> {
+            mgr.resolveLocal("/docs/../../../etc/passwd")
+        }
+    }
+
+    @Test
+    fun `resolveLocal refuses a path that names another file inside syncRoot`() {
+        // /docs/sub/../file.txt stays inside syncRoot but is /docs/file.txt: a row, a scope rule or an ignore
+        // rule keyed at the text would act on a file it does not name.
+        for (p in listOf("/docs/sub/../file.txt", "/a/../b", "/a/./b", "/a//b")) {
+            assertFailsWith<SecurityException>(p) { mgr.resolveLocal(p) }
+        }
+        assertFailsWith<SecurityException> { safeResolveLocal(syncRoot, "/a/../b") }
+        assertEquals(syncRoot.resolve("docs"), mgr.resolveLocal("/docs/"))
+    }
+
+    @Test
+    fun `createPlaceholder rejects traversal path`() {
+        // SecurityException is thrown during path resolution, before any filesystem mutation.
+        // The throw itself proves no file was written outside syncRoot.
+        assertFailsWith<SecurityException> {
+            mgr.createPlaceholder("/../escaped.txt", size = 100, modified = Instant.now())
+        }
+    }
+
+    @Test
+    fun `isLocallyModified returns false for non-hydrated entry mtime match`() {
+        mgr.createPlaceholder("/test.txt", size = 100, modified = Instant.now())
+        val mtime = Files.getLastModifiedTime(syncRoot.resolve("test.txt")).toMillis()
+        assertFalse(mgr.isLocallyModified("/test.txt", lastSyncedMtime = mtime))
+    }
+
+    @Test
+    fun `isSparse detects sparse placeholder`() {
+        assumeFalse("isSparse uses POSIX stat — UD-209 tracks Windows support", IS_WINDOWS)
+        mgr.createPlaceholder("/sparse.txt", size = 1_000_000, modified = Instant.now())
+        val path = syncRoot.resolve("sparse.txt")
+        assertTrue(mgr.isSparse(path, 1_000_000))
+    }
+
+    @Test
+    fun `isSparse returns false for real file`() {
+        val path = syncRoot.resolve("real.txt")
+        Files.writeString(path, "a".repeat(1000))
+        assertFalse(mgr.isSparse(path, Files.size(path)))
+    }
+
+    @Test
+    fun `isSparse returns false for zero-byte file`() {
+        val path = syncRoot.resolve("empty.txt")
+        Files.createFile(path)
+        assertFalse(mgr.isSparse(path, 0L))
+    }
+
+    @Test
+    fun `isSparse returns false for nonexistent file`() {
+        val path = syncRoot.resolve("nope.txt")
+        assertFalse(mgr.isSparse(path, 100))
+    }
+
+    @Test
+    fun `dehydrated file detected as sparse`() {
+        assumeFalse("isSparse/dehydrate rely on POSIX sparse semantics — UD-209", IS_WINDOWS)
+        val path = syncRoot.resolve("hydrated.txt")
+        Files.writeString(path, "a".repeat(5000))
+        assertFalse(mgr.isSparse(path, Files.size(path)))
+
+        mgr.dehydrate("/hydrated.txt", remoteSize = 5000, remoteModified = Instant.now())
+        assertTrue(mgr.isSparse(path, 5000))
+    }
+}

@@ -1,0 +1,960 @@
+package org.krost.unidrive.sync
+
+import org.krost.unidrive.HashAlgorithm
+import org.krost.unidrive.sync.model.ChangeState
+import org.krost.unidrive.sync.model.SyncEntry
+import java.io.IOException
+import java.nio.file.AccessDeniedException
+import java.nio.file.FileVisitResult
+import java.nio.file.FileVisitor
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.attribute.BasicFileAttributes
+import java.time.Instant
+import kotlin.test.*
+
+class LocalScannerTest {
+    private lateinit var syncRoot: Path
+    private lateinit var db: StateDatabase
+    private lateinit var scanner: LocalScanner
+
+    @BeforeTest
+    fun setUp() {
+        syncRoot = Files.createTempDirectory("unidrive-scan-test")
+        val dbPath = Files.createTempDirectory("unidrive-scan-db").resolve("state.db")
+        db = StateDatabase(dbPath)
+        db.initialize()
+        scanner = LocalScanner(syncRoot, db)
+    }
+
+    @AfterTest
+    fun tearDown() {
+        db.close()
+    }
+
+    private fun entry(
+        path: String,
+        mtime: Long,
+        size: Long,
+        isHydrated: Boolean = true,
+    ) = SyncEntry(
+        path = path,
+        remoteId = "id",
+        remoteHash = "hash",
+        remoteSize = size,
+        remoteModified = Instant.now(),
+        localMtime = mtime,
+        localSize = size,
+        isFolder = false,
+        isPinned = false,
+        isHydrated = isHydrated,
+        lastSynced = Instant.now(),
+    )
+
+    @Test
+    fun `detects new local file`() {
+        Files.writeString(syncRoot.resolve("new.txt"), "hello")
+        val changes = scanner.scan()
+        assertEquals(1, changes.size)
+        assertEquals(ChangeState.NEW, changes["/new.txt"])
+    }
+
+    @Test
+    fun `UD-240h scan batches all UD-901 pre-writes into a single transaction`() {
+        // Functional regression: 100 NEW files all get UD-901 pending-upload rows committed
+        // and the connection is left in autoCommit=true (so the engine's later beginBatch
+        // works as expected). The perf claim ('1 transaction not 100') is a consequence;
+        // the test doesn't poke at SQLite internals.
+        repeat(100) { i -> Files.writeString(syncRoot.resolve("f-$i.txt"), "content-$i") }
+        val changes = scanner.scan()
+        assertEquals(100, changes.size)
+        // All 100 pending-upload rows must be readable (proves commit happened).
+        val rows = db.getAllEntries().filter { it.path.startsWith("/f-") }
+        assertEquals(100, rows.size)
+        // Every row carries the UD-901 pending shape: remoteId=null, isHydrated=true, lastSynced=EPOCH.
+        rows.forEach { r ->
+            assertNull(r.remoteId, "row ${r.path}")
+            assertTrue(r.isHydrated, "row ${r.path}")
+            assertEquals(Instant.EPOCH, r.lastSynced, "row ${r.path}")
+        }
+        // The autoCommit-restored invariant: a follow-up upsert must succeed without
+        // hanging behind an unclosed transaction.
+        db.upsertEntry(entry("/post-scan.txt", mtime = 999, size = 1))
+        assertNotNull(db.getEntry("/post-scan.txt"))
+    }
+
+    @Test
+    fun `UD-240h consecutive scan calls work — autoCommit invariant holds across runs`() {
+        // Two scan() calls in a row, with a NEW file added between them. Proves the
+        // first scan's batch commits cleanly and leaves autoCommit=true so the second
+        // scan can open its own batch. Without the rollback-on-failure guarantee in
+        // the finally{}, a partial-walk crash mid-batch would silently piggyback the
+        // engine's later beginBatch onto an unresolved transaction; this test pins
+        // the well-behaved happy path.
+        Files.writeString(syncRoot.resolve("a.txt"), "first")
+        scanner.scan()
+        Files.writeString(syncRoot.resolve("b.txt"), "second")
+        val changes = scanner.scan()
+        assertEquals(ChangeState.NEW, changes["/b.txt"])
+        // Both files must have rows.
+        assertNotNull(db.getEntry("/a.txt"))
+        assertNotNull(db.getEntry("/b.txt"))
+    }
+
+    @Test
+    fun `detects modified local file`() {
+        val file = syncRoot.resolve("mod.txt")
+        Files.writeString(file, "original")
+        val mtime = Files.getLastModifiedTime(file).toMillis()
+        db.upsertEntry(entry("/mod.txt", mtime = mtime, size = Files.size(file)))
+
+        // Modify the file
+        Thread.sleep(50) // Ensure mtime changes
+        Files.writeString(file, "modified content here")
+
+        val changes = scanner.scan()
+        assertEquals(ChangeState.MODIFIED, changes["/mod.txt"])
+    }
+
+    @Test
+    fun `detects deleted local file`() {
+        db.upsertEntry(entry("/gone.txt", mtime = 123, size = 10))
+        // File does not exist on disk
+        val changes = scanner.scan()
+        assertEquals(ChangeState.DELETED, changes["/gone.txt"])
+    }
+
+    @Test
+    fun `skips dehydrated files for modification check`() {
+        // A placeholder stub is a zero-byte file (or zeros of the remote size) with a synthetic mtime.
+        val file = syncRoot.resolve("placeholder.txt")
+        Files.createFile(file)
+        db.upsertEntry(entry("/placeholder.txt", mtime = 0, size = 100, isHydrated = false))
+
+        val changes = scanner.scan()
+        assertNull(changes["/placeholder.txt"])
+    }
+
+    @Test
+    fun `reports real content saved into a dehydrated row as modified`() {
+        val file = syncRoot.resolve("placeholder.txt")
+        Files.writeString(file, "x")
+        db.upsertEntry(entry("/placeholder.txt", mtime = 0, size = 100, isHydrated = false))
+
+        val changes = scanner.scan()
+        assertEquals(ChangeState.MODIFIED, changes["/placeholder.txt"])
+    }
+
+    @Test
+    fun `detects deleted dehydrated file`() {
+        db.upsertEntry(entry("/gone-placeholder.txt", mtime = 0, size = 100, isHydrated = false))
+        val changes = scanner.scan()
+        assertEquals(ChangeState.DELETED, changes["/gone-placeholder.txt"])
+    }
+
+    @Test
+    fun `unchanged file produces no entry`() {
+        val file = syncRoot.resolve("same.txt")
+        Files.writeString(file, "same")
+        val mtime = Files.getLastModifiedTime(file).toMillis()
+        val size = Files.size(file)
+        db.upsertEntry(entry("/same.txt", mtime = mtime, size = size))
+
+        val changes = scanner.scan()
+        assertNull(changes["/same.txt"])
+    }
+
+    @Test
+    fun `scans nested directories`() {
+        Files.createDirectories(syncRoot.resolve("a/b"))
+        Files.writeString(syncRoot.resolve("a/b/deep.txt"), "deep")
+        val changes = scanner.scan()
+        assertEquals(ChangeState.NEW, changes["/a/b/deep.txt"])
+    }
+
+    @Test
+    fun `excluded directory subtree is skipped`() {
+        Files.createDirectories(syncRoot.resolve("node_modules/pkg/lib"))
+        Files.writeString(syncRoot.resolve("node_modules/pkg/lib/index.js"), "code")
+        Files.writeString(syncRoot.resolve("node_modules/pkg/package.json"), "{}")
+        Files.writeString(syncRoot.resolve("keep.txt"), "keep")
+
+        val scannerWithExclude = LocalScanner(syncRoot, db, excludePatterns = listOf("node_modules/**"))
+        val changes = scannerWithExclude.scan()
+
+        assertEquals(1, changes.size)
+        assertEquals(ChangeState.NEW, changes["/keep.txt"])
+        assertNull(changes["/node_modules/pkg/lib/index.js"])
+        assertNull(changes["/node_modules/pkg/package.json"])
+    }
+
+    @Test
+    fun `excluded file pattern skips matching files`() {
+        Files.createDirectories(syncRoot.resolve("work"))
+        Files.writeString(syncRoot.resolve("work/scratch.tmp"), "temp")
+        Files.writeString(syncRoot.resolve("work/notes.txt"), "keep")
+
+        val scannerWithExclude = LocalScanner(syncRoot, db, excludePatterns = listOf("*.tmp"))
+        val changes = scannerWithExclude.scan()
+
+        assertNull(changes["/work/scratch.tmp"])
+        assertEquals(ChangeState.NEW, changes["/work/notes.txt"])
+    }
+
+    @Test
+    fun `excluded deleted paths do not generate DELETED`() {
+        db.upsertEntry(entry("/cache/old.tmp", mtime = 123, size = 10))
+
+        val scannerWithExclude = LocalScanner(syncRoot, db, excludePatterns = listOf("*.tmp"))
+        val changes = scannerWithExclude.scan()
+
+        assertNull(changes["/cache/old.tmp"])
+    }
+
+    // UD-736 — visitFileFailed override tests.
+
+    @Test
+    fun `UD-736 lastScanSkipped is zero when all files visit cleanly`() {
+        Files.writeString(syncRoot.resolve("a.txt"), "1")
+        Files.writeString(syncRoot.resolve("b.txt"), "2")
+        scanner.scan()
+        assertEquals(0, scanner.lastScanSkipped)
+    }
+
+    // UD-742 — onProgress callback fires during long walks
+
+    @Test
+    fun `UD-742 scan with no callback does not throw and returns same map shape`() {
+        Files.writeString(syncRoot.resolve("a.txt"), "1")
+        Files.writeString(syncRoot.resolve("b.txt"), "2")
+        val out = scanner.scan() // no callback overload still works
+        assertEquals(2, out.size)
+    }
+
+    @Test
+    fun `UD-742 scan fires onProgress at item-count threshold during walk`() {
+        // Threshold inside scan() is 5000 items per fire. Generate enough files
+        // for at least one heartbeat. Tempdir cleanup is fine — small files.
+        val target = 5_500
+        for (i in 0 until target) {
+            Files.writeString(syncRoot.resolve("f$i.txt"), "x")
+        }
+        val seen = mutableListOf<Int>()
+        scanner.scan { count -> seen.add(count) }
+        // At least one mid-scan fire
+        assertTrue(seen.isNotEmpty(), "expected at least one heartbeat fire for $target files")
+        // Last fire should be <= total items visited
+        assertTrue(
+            seen.last() <= target,
+            "heartbeat count ${seen.last()} should be <= total visited $target",
+        )
+    }
+
+    // UD-901 — LocalScanner writes a pending-upload state.db row on first sight of a NEW path
+
+    @Test
+    fun `UD-901 NEW file produces pending-upload entry in state db`() {
+        val file = syncRoot.resolve("pending.txt")
+        Files.writeString(file, "hello")
+        val expectedSize = Files.size(file)
+        val expectedMtime = Files.getLastModifiedTime(file).toMillis()
+
+        val changes = scanner.scan()
+
+        assertEquals(ChangeState.NEW, changes["/pending.txt"])
+        val stored = db.getEntry("/pending.txt")
+        assertNotNull(stored, "pending-upload row should exist after scan")
+        assertNull(stored.remoteId, "remoteId must be null for pending upload")
+        assertNull(stored.remoteHash)
+        assertEquals(0L, stored.remoteSize)
+        assertNull(stored.remoteModified)
+        assertEquals(expectedSize, stored.localSize)
+        assertEquals(expectedMtime, stored.localMtime)
+        assertTrue(stored.isHydrated, "bytes are on disk so isHydrated=true")
+        assertEquals(Instant.EPOCH, stored.lastSynced, "never roundtripped")
+    }
+
+    @Test
+    fun `UD-901 second scan on unchanged pending file does not duplicate-emit NEW`() {
+        val file = syncRoot.resolve("pending.txt")
+        Files.writeString(file, "hello")
+
+        // First scan establishes the pending-upload row + emits NEW
+        val first = scanner.scan()
+        assertEquals(ChangeState.NEW, first["/pending.txt"])
+
+        // Second scan: row already present, file unchanged → no change emitted
+        val second = scanner.scan()
+        assertNull(
+            second["/pending.txt"],
+            "second scan must not duplicate-emit NEW; got ${second["/pending.txt"]}",
+        )
+        // Row is still present
+        assertNotNull(db.getEntry("/pending.txt"))
+    }
+
+    @Test
+    fun `UD-901 pending row + delete-before-sync emits DELETED on next scan`() {
+        val file = syncRoot.resolve("pending.txt")
+        Files.writeString(file, "hello")
+
+        scanner.scan() // creates pending row
+        assertNotNull(db.getEntry("/pending.txt"))
+
+        Files.delete(file)
+
+        val second = scanner.scan()
+        assertEquals(
+            ChangeState.DELETED,
+            second["/pending.txt"],
+            "removed pending file must emit DELETED",
+        )
+    }
+
+    @Test
+    fun `UD-736 visitFileFailed continues walk and increments skipped count`() {
+        // POSIX-only: make a subdirectory unreadable so walkFileTree's attempt
+        // to enter it triggers the visitor's visitFileFailed callback. Windows
+        // ACL semantics make this hard to set up portably, so guard the test.
+        val isWindows = System.getProperty("os.name", "").lowercase().contains("win")
+        org.junit.Assume.assumeFalse("POSIX-only test for visitFileFailed defence", isWindows)
+
+        // Sibling files that should still be visited
+        Files.writeString(syncRoot.resolve("ok-1.txt"), "1")
+        Files.writeString(syncRoot.resolve("ok-2.txt"), "2")
+
+        val unreadable = syncRoot.resolve("blocked")
+        Files.createDirectory(unreadable)
+        Files.writeString(unreadable.resolve("hidden.txt"), "x")
+        // Strip read+execute permissions so walkFileTree fails to enter
+        Files.setPosixFilePermissions(unreadable, emptySet())
+
+        try {
+            val changes = scanner.scan()
+            // Both healthy siblings must still be reported NEW
+            assertEquals(ChangeState.NEW, changes["/ok-1.txt"])
+            assertEquals(ChangeState.NEW, changes["/ok-2.txt"])
+            // The blocked directory raises visitFileFailed — at minimum once
+            assertTrue(scanner.lastScanSkipped >= 1, "expected >=1 skipped, got ${scanner.lastScanSkipped}")
+        } finally {
+            // Restore permissions so @AfterTest cleanup can remove the tempdir
+            Files.setPosixFilePermissions(
+                unreadable,
+                java.nio.file.attribute.PosixFilePermissions
+                    .fromString("rwx------"),
+            )
+        }
+    }
+
+    // ---- a folder the scan cannot read is not a deleted folder ----
+
+    // remote_id is the row key: each row needs its own.
+    private fun syncedRow(path: String) = entry(path, mtime = 1_000, size = 1).copy(remoteId = "id-$path")
+
+    private fun folderRow(path: String) = syncedRow(path).copy(isFolder = true)
+
+    // The real walk, except that [dir] cannot be opened: the walk reports it as failed and visits nothing in it.
+    private fun walkFailingToOpen(dir: Path): (Path, FileVisitor<Path>) -> Unit =
+        { start, visitor ->
+            Files.walkFileTree(
+                start,
+                object : FileVisitor<Path> by visitor {
+                    override fun preVisitDirectory(
+                        d: Path,
+                        attrs: BasicFileAttributes,
+                    ): FileVisitResult {
+                        if (d != dir) return visitor.preVisitDirectory(d, attrs)
+                        visitor.visitFileFailed(d, AccessDeniedException(d.toString()))
+                        return FileVisitResult.SKIP_SUBTREE
+                    }
+                },
+            )
+        }
+
+    @Test
+    fun `rows at and under a folder the walk cannot open are not reported as deleted`() {
+        // The files under /d are not on disk: what is there does not matter, the walk could not look.
+        val dir = Files.createDirectory(syncRoot.resolve("d"))
+        db.upsertEntry(folderRow("/d"))
+        db.upsertEntry(syncedRow("/d/a.txt"))
+        db.upsertEntry(folderRow("/d/sub"))
+        db.upsertEntry(syncedRow("/d/sub/b.txt"))
+        db.upsertEntry(syncedRow("/gone.txt"))
+        val failing = LocalScanner(syncRoot, db, walkFileTree = walkFailingToOpen(dir))
+
+        val changes = failing.scan()
+
+        assertEquals(mapOf("/gone.txt" to ChangeState.DELETED), changes, "only the file that is really gone is deleted")
+        assertEquals(1, failing.lastScanSkipped)
+    }
+
+    @Test
+    fun `a row the file system cannot answer for is not reported as deleted`() {
+        // POSIX-only: chmod 000 on the folder makes the stat of a file in it fail with "permission denied", which
+        // Files.exists answers as "not there". The walk's report of the folder is held back, so only the
+        // existence check stands between the row and its deletion.
+        val isWindows = System.getProperty("os.name", "").lowercase().contains("win")
+        org.junit.Assume.assumeFalse("POSIX-only test for the existence check", isWindows)
+        val dir = Files.createDirectory(syncRoot.resolve("d"))
+        Files.writeString(dir.resolve("a.txt"), "a")
+        db.upsertEntry(syncedRow("/d/a.txt"))
+        db.upsertEntry(syncedRow("/gone.txt"))
+        val silent: (Path, FileVisitor<Path>) -> Unit = { start, visitor ->
+            Files.walkFileTree(
+                start,
+                object : FileVisitor<Path> by visitor {
+                    override fun visitFileFailed(
+                        file: Path,
+                        exc: IOException,
+                    ): FileVisitResult = if (file == dir) FileVisitResult.CONTINUE else visitor.visitFileFailed(file, exc)
+                },
+            )
+        }
+
+        Files.setPosixFilePermissions(dir, emptySet())
+        try {
+            org.junit.Assume.assumeFalse("the account reads a chmod 000 folder (root)", Files.isReadable(dir))
+            assertEquals(mapOf("/gone.txt" to ChangeState.DELETED), LocalScanner(syncRoot, db, walkFileTree = silent).scan())
+        } finally {
+            Files.setPosixFilePermissions(dir, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
+        }
+    }
+
+    @Test
+    fun `rows under a folder that is now a file are still reported as deleted`() {
+        // Linux answers the stat of a path through a file with "not a directory", which has no exception type of its
+        // own: the rows are still provably gone.
+        Files.writeString(syncRoot.resolve("d"), "a file now")
+        db.upsertEntry(syncedRow("/d/a.txt"))
+        db.upsertEntry(syncedRow("/d/sub/b.txt"))
+
+        val changes = scanner.scan()
+
+        assertEquals(ChangeState.DELETED, changes["/d/a.txt"])
+        assertEquals(ChangeState.DELETED, changes["/d/sub/b.txt"])
+    }
+
+    @Test
+    fun `default excludes skip desktop and editor junk but keep real files`() {
+        // A scanner configured with the production default set.
+        val excluded = LocalScanner(syncRoot, db, SyncConfig.DEFAULT_EXCLUDE_PATTERNS)
+        Files.writeString(syncRoot.resolve(".directory.lock"), "x")
+        Files.writeString(syncRoot.resolve("Thumbs.db"), "x")
+        Files.writeString(syncRoot.resolve("~\$report.docx"), "x")
+        Files.writeString(syncRoot.resolve("notes.txt.swp"), "x")
+        Files.writeString(syncRoot.resolve("draft.tmp"), "x")
+        Files.writeString(syncRoot.resolve("real.txt"), "keep me")
+
+        val changes = excluded.scan()
+
+        assertEquals(ChangeState.NEW, changes["/real.txt"], "real file must sync")
+        assertNull(changes["/.directory.lock"], ".directory.lock must be excluded")
+        assertNull(changes["/Thumbs.db"], "Thumbs.db must be excluded")
+        assertNull(changes["/~\$report.docx"], "Office lock file must be excluded")
+        assertNull(changes["/notes.txt.swp"], "vim swap must be excluded")
+        assertNull(changes["/draft.tmp"], "temp file must be excluded")
+    }
+
+    @Test
+    fun `default excludes skip a git repo subtree under the sync root`() {
+        // Issue #223: a checked-out repo under the sync root must never enter a
+        // plan — the whole `.git` subtree (including nested loose objects) is
+        // excluded by the default set, while tracked working-tree files sync.
+        val excluded = LocalScanner(syncRoot, db, SyncConfig.DEFAULT_EXCLUDE_PATTERNS)
+        Files.createDirectories(syncRoot.resolve("repo/.git/objects/ab"))
+        Files.createDirectories(syncRoot.resolve("repo/.git/refs/heads"))
+        Files.writeString(syncRoot.resolve("repo/.git/HEAD"), "ref: refs/heads/main")
+        Files.writeString(syncRoot.resolve("repo/.git/config"), "[core]")
+        Files.writeString(syncRoot.resolve("repo/.git/objects/ab/cdef0123456789"), "binaryobj")
+        Files.writeString(syncRoot.resolve("repo/.git/refs/heads/main"), "deadbeef")
+        // A repo at the sync-root top level too (not nested under a folder).
+        Files.createDirectories(syncRoot.resolve(".git/objects"))
+        Files.writeString(syncRoot.resolve(".git/HEAD"), "ref: refs/heads/main")
+        Files.writeString(syncRoot.resolve(".git/objects/0011223344"), "rootobj")
+        // Real tracked working-tree files that MUST sync.
+        Files.writeString(syncRoot.resolve("repo/README.md"), "hello")
+        Files.writeString(syncRoot.resolve("repo/.gitignore"), "build/")
+
+        val changes = excluded.scan()
+
+        // Tracked working-tree files sync — including .gitignore (NOT a .git entry).
+        assertEquals(ChangeState.NEW, changes["/repo/README.md"], "tracked file must sync")
+        assertEquals(ChangeState.NEW, changes["/repo/.gitignore"], ".gitignore must sync (it is not .git)")
+        // No part of either .git subtree may produce a change.
+        assertTrue(
+            changes.keys.none { it.contains("/.git/") || it.endsWith("/.git") },
+            "no .git path may enter the change set, got: ${changes.keys.filter { it.contains(".git/") }}",
+        )
+        // Spot-check the exact paths the issue observed being uploaded.
+        assertNull(changes["/.git/HEAD"])
+        assertNull(changes["/.git/objects/0011223344"])
+        assertNull(changes["/repo/.git/HEAD"])
+        assertNull(changes["/repo/.git/objects/ab/cdef0123456789"])
+        // The .git directory rows themselves must not be planned either.
+        assertNull(changes["/.git"])
+        assertNull(changes["/repo/.git"])
+    }
+
+    // #112 — hash-compare touch-only local changes
+
+    @Test
+    fun `#112 touch-only change is not flagged for re-upload when hash matches`() {
+        val file = syncRoot.resolve("touch.txt")
+        val content = "identical content"
+        Files.writeString(file, content)
+        val originalMtime = Files.getLastModifiedTime(file).toMillis()
+        val size = Files.size(file)
+        // Compute the MD5 hash that the provider would have stored
+        val storedHash = HashVerifier.computeMd5Hex(file)
+
+        db.upsertEntry(
+            SyncEntry(
+                path = "/touch.txt",
+                remoteId = "id",
+                remoteHash = storedHash,
+                remoteSize = size,
+                remoteModified = Instant.now(),
+                localMtime = originalMtime,
+                localSize = size,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = Instant.now(),
+            ),
+        )
+
+        // Simulate a touch (bump mtime without changing content)
+        Thread.sleep(50)
+        val newMtime = originalMtime + 1000L
+        file.toFile().setLastModified(newMtime)
+
+        val hashScanner = LocalScanner(syncRoot, db, hashAlgorithm = HashAlgorithm.Md5Hex)
+        val changes = hashScanner.scan()
+
+        assertNull(changes["/touch.txt"], "touch-only must not be flagged MODIFIED")
+
+        // Tracked mtime must be refreshed so the file isn't re-hashed every scan
+        val updated = db.getEntry("/touch.txt")
+        assertNotNull(updated)
+        assertNotEquals(originalMtime, updated.localMtime, "localMtime must be updated after touch-only skip")
+    }
+
+    @Test
+    fun `#112 real content change with same size IS flagged MODIFIED`() {
+        val file = syncRoot.resolve("edited.txt")
+        // Same byte-length, different content
+        Files.writeString(file, "aaa")
+        val originalMtime = Files.getLastModifiedTime(file).toMillis()
+        val size = Files.size(file)
+        val storedHash = HashVerifier.computeMd5Hex(file)
+
+        db.upsertEntry(
+            SyncEntry(
+                path = "/edited.txt",
+                remoteId = "id",
+                remoteHash = storedHash,
+                remoteSize = size,
+                remoteModified = Instant.now(),
+                localMtime = originalMtime,
+                localSize = size,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = Instant.now(),
+            ),
+        )
+
+        // Write different bytes of the same length, bump mtime
+        Thread.sleep(50)
+        Files.writeString(file, "bbb")
+
+        val hashScanner = LocalScanner(syncRoot, db, hashAlgorithm = HashAlgorithm.Md5Hex)
+        val changes = hashScanner.scan()
+
+        assertEquals(ChangeState.MODIFIED, changes["/edited.txt"], "content change must be flagged MODIFIED")
+    }
+
+    @Test
+    fun `#112 OneDrive touch-only skip works with QuickXor stored hash`() {
+        // Regression for PR #193: when OneDrive's toCloudItem() stored sha256Hash in
+        // remoteHash (the old precedence) but the provider's hashAlgorithm() returns
+        // QuickXor, #112 computed a QuickXor local hash and compared it against SHA-256
+        // → always mismatch → touch-only files were always re-uploaded. After the fix,
+        // toCloudItem() stores quickXorHash, so this test must pass.
+        val file = syncRoot.resolve("onedrive-touch.txt")
+        val content = "OneDrive touch-only content"
+        Files.writeString(file, content)
+        val originalMtime = Files.getLastModifiedTime(file).toMillis()
+        val size = Files.size(file)
+        // The stored remoteHash is now a QuickXor hash (base64), matching hashAlgorithm()
+        val storedHash = HashVerifier.computeQuickXorHash(file)
+
+        db.upsertEntry(
+            SyncEntry(
+                path = "/onedrive-touch.txt",
+                remoteId = "id",
+                remoteHash = storedHash,
+                remoteSize = size,
+                remoteModified = Instant.now(),
+                localMtime = originalMtime,
+                localSize = size,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = Instant.now(),
+            ),
+        )
+
+        // Simulate a touch (bump mtime without changing content)
+        Thread.sleep(50)
+        file.toFile().setLastModified(originalMtime + 1000L)
+
+        val hashScanner = LocalScanner(syncRoot, db, hashAlgorithm = HashAlgorithm.QuickXor)
+        val changes = hashScanner.scan()
+
+        assertNull(changes["/onedrive-touch.txt"], "OneDrive touch-only must not be flagged MODIFIED with QuickXor hash")
+
+        // Tracked mtime must be refreshed
+        val updated = db.getEntry("/onedrive-touch.txt")
+        assertNotNull(updated)
+        assertNotEquals(originalMtime, updated.localMtime, "localMtime must be updated after touch-only skip")
+    }
+
+    @Test
+    fun `#112 no stored remoteHash falls back to mtime+size behaviour`() {
+        val file = syncRoot.resolve("nohash.txt")
+        Files.writeString(file, "original")
+        val originalMtime = Files.getLastModifiedTime(file).toMillis()
+        val size = Files.size(file)
+
+        db.upsertEntry(
+            SyncEntry(
+                path = "/nohash.txt",
+                remoteId = "id",
+                remoteHash = null,  // no stored hash
+                remoteSize = size,
+                remoteModified = Instant.now(),
+                localMtime = originalMtime,
+                localSize = size,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = Instant.now(),
+            ),
+        )
+
+        // Touch only
+        Thread.sleep(50)
+        file.toFile().setLastModified(originalMtime + 1000L)
+
+        val hashScanner = LocalScanner(syncRoot, db, hashAlgorithm = HashAlgorithm.Md5Hex)
+        val changes = hashScanner.scan()
+
+        assertEquals(
+            ChangeState.MODIFIED,
+            changes["/nohash.txt"],
+            "without stored hash, mtime change must fall back to MODIFIED",
+        )
+    }
+
+    // ---- #396: touch-only shield for providers with NO remote content hash (Internxt) ----
+
+    /** A synced row for [file] as a hashless provider's engine leaves it: no remote hash, optional local hash. */
+    private fun hashlessRow(
+        path: String,
+        file: Path,
+        localHash: String?,
+    ) = SyncEntry(
+        path = path,
+        remoteId = "id",
+        remoteHash = null,
+        remoteSize = Files.size(file),
+        remoteModified = Instant.now(),
+        localMtime = Files.getLastModifiedTime(file).toMillis(),
+        localSize = Files.size(file),
+        isFolder = false,
+        isPinned = false,
+        isHydrated = true,
+        lastSynced = Instant.now(),
+        localHash = localHash,
+    )
+
+    @Test
+    fun `#396 touched file with a recorded local hash is not flagged and its tracked mtime is refreshed`() {
+        val file = syncRoot.resolve("eml.txt")
+        Files.writeString(file, "identical content")
+        val originalMtime = Files.getLastModifiedTime(file).toMillis()
+        val hash = HashVerifier.computeSha256Hex(file)
+        db.upsertEntry(hashlessRow("/eml.txt", file, hash))
+
+        // An external writer (shell handler, indexer, NTFS alternate stream) bumps the mtime;
+        // size and bytes are untouched.
+        file.toFile().setLastModified(originalMtime + 60_000L)
+        val touchedMtime = Files.getLastModifiedTime(file).toMillis()
+        assertNotEquals(originalMtime, touchedMtime, "precondition: mtime really moved")
+
+        val changes = scanner.scan()
+
+        assertNull(changes["/eml.txt"], "touch-only change on a hashless provider must not be flagged MODIFIED")
+        val updated = db.getEntry("/eml.txt")
+        assertNotNull(updated)
+        assertEquals(touchedMtime, updated.localMtime, "tracked mtime must be refreshed to the touched value")
+        assertEquals(hash, updated.localHash, "the recorded local hash must survive the refresh")
+        assertTrue(scanner.scan().isEmpty(), "the refreshed row must make the next scan a no-op")
+    }
+
+    @Test
+    fun `#396 same size but different bytes with a recorded local hash IS flagged MODIFIED`() {
+        val file = syncRoot.resolve("edited396.txt")
+        Files.writeString(file, "aaa")
+        val originalMtime = Files.getLastModifiedTime(file).toMillis()
+        val hash = HashVerifier.computeSha256Hex(file)
+        db.upsertEntry(hashlessRow("/edited396.txt", file, hash))
+
+        Files.writeString(file, "bbb") // same length, different content
+        file.toFile().setLastModified(originalMtime + 60_000L)
+
+        val changes = scanner.scan()
+
+        assertEquals(ChangeState.MODIFIED, changes["/edited396.txt"], "a one-byte edit must still be flagged MODIFIED")
+        assertEquals(originalMtime, db.getEntry("/edited396.txt")?.localMtime, "a real edit must not refresh the tracked mtime")
+    }
+
+    @Test
+    fun `#396 touched file WITHOUT a local hash behaves as before and is flagged MODIFIED`() {
+        val file = syncRoot.resolve("legacy396.txt")
+        Files.writeString(file, "pre-396 row")
+        val originalMtime = Files.getLastModifiedTime(file).toMillis()
+        db.upsertEntry(hashlessRow("/legacy396.txt", file, localHash = null))
+
+        file.toFile().setLastModified(originalMtime + 60_000L)
+
+        assertEquals(ChangeState.MODIFIED, scanner.scan()["/legacy396.txt"])
+    }
+
+    @Test
+    fun `#396 size change with a local hash is flagged MODIFIED without consulting the hash`() {
+        val file = syncRoot.resolve("grown396.txt")
+        Files.writeString(file, "short")
+        val hash = HashVerifier.computeSha256Hex(file)
+        db.upsertEntry(hashlessRow("/grown396.txt", file, hash))
+
+        Files.writeString(file, "considerably longer now")
+
+        assertEquals(ChangeState.MODIFIED, scanner.scan()["/grown396.txt"])
+    }
+
+    @Test
+    fun `#396 a file whose mtime and size are unchanged is never hashed`() {
+        val file = syncRoot.resolve("untouched396.txt")
+        Files.writeString(file, "stable")
+        // A deliberately wrong hash: if the scanner hashed every file on every scan it would
+        // notice the mismatch and flag MODIFIED. Untouched files must be skipped on stat alone.
+        db.upsertEntry(hashlessRow("/untouched396.txt", file, "0".repeat(64)))
+
+        assertTrue(scanner.scan().isEmpty())
+    }
+
+    @Test
+    fun `#439 an unreadable file cannot be hash-checked and is flagged MODIFIED, not absorbed as touch-only`() {
+        // POSIX-only: the branch under test needs a file whose stats stay readable while its
+        // bytes cannot be opened. chmod 000 does exactly that on POSIX; Windows ACL semantics
+        // make it awkward to set up portably (same guard as the UD-736 visitFileFailed test).
+        val isWindows = System.getProperty("os.name", "").lowercase().contains("win")
+        org.junit.Assume.assumeFalse("POSIX-only test for the unreadable-file branch", isWindows)
+
+        val file = syncRoot.resolve("locked396.txt")
+        Files.writeString(file, "secret content")
+        val hash = HashVerifier.computeSha256Hex(file)
+        db.upsertEntry(hashlessRow("/locked396.txt", file, hash))
+        val originalMtime = Files.getLastModifiedTime(file).toMillis()
+
+        // A healthy sibling proves the walk continues past the unreadable file.
+        Files.writeString(syncRoot.resolve("healthy.txt"), "healthy")
+
+        Files.setPosixFilePermissions(file, emptySet())
+        file.toFile().setLastModified(originalMtime + 60_000L)
+        try {
+            val changes = scanner.scan()
+
+            assertEquals(
+                ChangeState.MODIFIED,
+                changes["/locked396.txt"],
+                "bytes that cannot be read must not be absorbed as a touch-only change",
+            )
+            assertEquals(
+                originalMtime,
+                db.getEntry("/locked396.txt")?.localMtime,
+                "an unverified file must not get its tracked mtime refreshed",
+            )
+            assertEquals(ChangeState.NEW, changes["/healthy.txt"], "the walk must continue past the unreadable file")
+        } finally {
+            Files.setPosixFilePermissions(
+                file,
+                java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"),
+            )
+        }
+    }
+
+    @Test
+    fun `#396 provider with a remote hash keeps the #112 behaviour and ignores the local hash column`() {
+        val file = syncRoot.resolve("remote396.txt")
+        Files.writeString(file, "content")
+        val originalMtime = Files.getLastModifiedTime(file).toMillis()
+        val md5 = HashVerifier.computeMd5Hex(file)
+        val hashScanner = LocalScanner(syncRoot, db, hashAlgorithm = HashAlgorithm.Md5Hex)
+
+        // Remote hash matches the bytes: touch-only skip via #112, exactly as before.
+        db.upsertEntry(hashlessRow("/remote396.txt", file, localHash = null).copy(remoteHash = md5))
+        file.toFile().setLastModified(originalMtime + 60_000L)
+        assertNull(hashScanner.scan()["/remote396.txt"], "touch-only must still be skipped through the remote hash")
+
+        // Remote hash does NOT match the bytes: MODIFIED, even though a local hash of the current
+        // bytes is on the row. The remote hash keeps precedence; the local hash is only a fallback.
+        db.upsertEntry(
+            hashlessRow("/remote396.txt", file, HashVerifier.computeSha256Hex(file)).copy(remoteHash = "not-the-md5"),
+        )
+        file.toFile().setLastModified(originalMtime + 120_000L)
+        assertEquals(ChangeState.MODIFIED, hashScanner.scan()["/remote396.txt"])
+    }
+
+    // ---- #1056: the touch-only hash compare of a provider with a remote hash must not abort the walk ----
+
+    /**
+     * Runs [body] while [file] cannot be opened for reading: a handle with no sharing on Windows (the sharing
+     * violation of a VeraCrypt container or a VM disk in use), chmod 000 elsewhere (skipped when the account
+     * can read it anyway). Stats stay readable, as in the real case.
+     */
+    private fun whileUnreadable(
+        file: Path,
+        body: () -> Unit,
+    ) {
+        val isWindows = System.getProperty("os.name", "").lowercase().contains("win")
+        if (isWindows) {
+            java.nio.channels.FileChannel
+                .open(
+                    file,
+                    java.nio.file.StandardOpenOption.READ,
+                    com.sun.nio.file.ExtendedOpenOption.NOSHARE_READ,
+                    com.sun.nio.file.ExtendedOpenOption.NOSHARE_WRITE,
+                    com.sun.nio.file.ExtendedOpenOption.NOSHARE_DELETE,
+                ).use { body() }
+        } else {
+            Files.setPosixFilePermissions(file, emptySet())
+            try {
+                org.junit.Assume.assumeFalse("the account reads a chmod 000 file (root)", Files.isReadable(file))
+                body()
+            } finally {
+                Files.setPosixFilePermissions(file, java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"))
+            }
+        }
+    }
+
+    @Test
+    fun `#1056 a touched file the provider hash cannot read is flagged MODIFIED and the walk goes on`() {
+        val file = syncRoot.resolve("held1056.bin")
+        Files.writeString(file, "bytes of a container in use")
+        val healthy = syncRoot.resolve("healthy1056.bin")
+        Files.writeString(healthy, "healthy")
+        for (algorithm in listOf(HashAlgorithm.QuickXor, HashAlgorithm.Md5Hex)) {
+            val recorded = mutableMapOf<Path, Long>()
+            for (f in listOf(file, healthy)) {
+                recorded[f] = Files.getLastModifiedTime(f).toMillis()
+                db.upsertEntry(
+                    hashlessRow("/${f.fileName}", f, null).copy(remoteId = "id-${f.fileName}", remoteHash = HashVerifier.computeHash(f, algorithm)),
+                )
+                f.toFile().setLastModified(recorded.getValue(f) + 60_000L)
+            }
+            val hashScanner = LocalScanner(syncRoot, db, hashAlgorithm = algorithm)
+
+            var changes: Map<String, ChangeState> = emptyMap()
+            whileUnreadable(file) { changes = hashScanner.scan() }
+
+            assertEquals(ChangeState.MODIFIED, changes["/held1056.bin"], "$algorithm: unreadable bytes cannot be proven unchanged")
+            assertEquals(recorded.getValue(file), db.getEntry("/held1056.bin")?.localMtime, "$algorithm: no mtime refresh without proof")
+            assertNull(changes["/healthy1056.bin"], "$algorithm: the walk goes on; the healthy touched file is a touch-only")
+            assertEquals(recorded.getValue(healthy) + 60_000L, db.getEntry("/healthy1056.bin")?.localMtime, "$algorithm: touch-only refresh")
+            // once the lock is gone the next scan can prove the bytes unchanged
+            assertNull(hashScanner.scan()["/held1056.bin"], "$algorithm: readable again, touch-only")
+        }
+    }
+
+    @Test
+    fun `scoped scan neither reports nor records local files outside the scope`() {
+        Files.createDirectories(syncRoot.resolve("_INBOX/sub"))
+        Files.writeString(syncRoot.resolve("_INBOX/sub/in.txt"), "in")
+        Files.createDirectories(syncRoot.resolve("_INBOXX"))
+        Files.writeString(syncRoot.resolve("_INBOXX/out.txt"), "out")
+        Files.writeString(syncRoot.resolve("top.txt"), "top")
+
+        val changes = LocalScanner(syncRoot, db, scope = listOf("/_INBOX")).scan()
+
+        assertEquals(setOf("/_INBOX", "/_INBOX/sub", "/_INBOX/sub/in.txt"), changes.keys)
+        assertNotNull(db.getEntry("/_INBOX/sub/in.txt"))
+        assertNull(db.getEntry("/_INBOXX/out.txt"))
+        assertNull(db.getEntry("/top.txt"))
+    }
+
+    @Test
+    fun `scoped scan enters folders leading to a nested root but skips their other files`() {
+        Files.createDirectories(syncRoot.resolve("a/b"))
+        Files.writeString(syncRoot.resolve("a/b/x.txt"), "x")
+        Files.writeString(syncRoot.resolve("a/other.txt"), "o")
+
+        val changes = LocalScanner(syncRoot, db, scope = listOf("/a/b")).scan()
+
+        assertEquals(setOf("/a", "/a/b", "/a/b/x.txt"), changes.keys)
+        assertNull(db.getEntry("/a/other.txt"))
+    }
+
+    @Test
+    fun `scoped scan does not report unscanned tracked files as deleted`() {
+        Files.createDirectories(syncRoot.resolve("out"))
+        Files.writeString(syncRoot.resolve("out/keep.txt"), "k")
+        db.upsertEntry(
+            org.krost.unidrive.sync.model.SyncEntry(
+                path = "/out/keep.txt",
+                remoteId = "r1",
+                remoteHash = null,
+                remoteSize = 1,
+                remoteModified = null,
+                localMtime = Files.getLastModifiedTime(syncRoot.resolve("out/keep.txt")).toMillis(),
+                localSize = 1,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = java.time.Instant.now(),
+            ),
+        )
+        Files.delete(syncRoot.resolve("out/keep.txt"))
+
+        val changes = LocalScanner(syncRoot, db, scope = listOf("/in")).scan()
+
+        assertFalse("/out/keep.txt" in changes, "a tracked file outside the scope is not this run's business")
+    }
+
+    @Test
+    fun `scanning a sync root that does not exist yet reads every tracked row as deleted`() {
+        db.upsertEntry(
+            SyncEntry(
+                path = "/tracked.txt",
+                remoteId = "r1",
+                remoteHash = null,
+                remoteSize = 1,
+                remoteModified = Instant.parse("2026-03-28T12:00:00Z"),
+                localMtime = 1L,
+                localSize = 1,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = Instant.parse("2026-03-28T12:00:00Z"),
+            ),
+        )
+        val missing = syncRoot.resolve("not-created-yet")
+
+        val changes = LocalScanner(missing, db).scan()
+
+        assertEquals(mapOf("/tracked.txt" to ChangeState.DELETED), changes)
+        assertFalse(Files.exists(missing), "scanning must not create the root")
+    }
+}

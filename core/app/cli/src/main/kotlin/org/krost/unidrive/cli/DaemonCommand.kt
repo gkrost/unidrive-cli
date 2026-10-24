@@ -1,0 +1,638 @@
+package org.krost.unidrive.cli
+
+import org.krost.unidrive.AuthRequiredException
+import org.krost.unidrive.CredentialHealth
+import org.krost.unidrive.sync.IpcAuth
+import org.krost.unidrive.sync.IpcAuthClient
+import org.krost.unidrive.sync.IpcAuthException
+import org.krost.unidrive.sync.IpcEndpoint
+import org.krost.unidrive.sync.IpcServer
+import org.krost.unidrive.sync.ProcessFacts
+import org.krost.unidrive.sync.isLockHolder
+import org.krost.unidrive.sync.lookupProcess
+import org.krost.unidrive.sync.SyncEngine
+import picocli.CommandLine.Command
+import picocli.CommandLine.Option
+import picocli.CommandLine.Parameters
+import picocli.CommandLine.ParentCommand
+import java.nio.file.Files
+import kotlinx.coroutines.runBlocking
+
+@Command(
+    name = "daemon",
+    description = ["Manage the per-profile daemon (IPC server, hydration, refresh)"],
+    mixinStandardHelpOptions = true,
+    subcommands = [
+        DaemonRunCommand::class,
+        DaemonStatusCommand::class,
+        DaemonStopCommand::class,
+    ],
+)
+class DaemonCommand : Runnable {
+    @ParentCommand
+    lateinit var parent: Main
+
+    override fun run() {
+        println("Usage: unidrive daemon <run|status|stop>")
+    }
+}
+
+// ── daemon run ───────────────────────────────────────────────────────────────
+
+@Command(name = "run", description = ["Run the daemon in the foreground until SIGTERM"], mixinStandardHelpOptions = true)
+class DaemonRunCommand : Runnable {
+    @ParentCommand
+    lateinit var daemonCmd: DaemonCommand
+
+    @Parameters(
+        index = "0",
+        arity = "0..1",
+        paramLabel = "<profile>",
+        description = ["Profile name (alternative to the global -p option)"],
+    )
+    var profilePositional: String? = null
+
+    @Option(
+        names = ["--poll-interval"],
+        paramLabel = "<duration>",
+        description = [
+            "How often to poll the cloud for changes made elsewhere (e.g. 60s, 5m; a bare number is seconds). " +
+                "The first poll runs at start; after a provider failure the interval backs off (up to 10 min). " +
+                "0 = off. Default: the profile's daemon_poll_seconds (60).",
+        ],
+    )
+    var pollInterval: String? = null
+
+    // #578: the part parallelism of multipart uploads, overriding the profile's
+    // upload_concurrency key the same way --poll-interval overrides daemon_poll_seconds.
+    @Option(
+        names = ["--upload-concurrency"],
+        paramLabel = "<n>",
+        description = [
+            "How many parts of a large upload go over the wire at once (1 = the old single stream). " +
+                "Wins over the profile's upload_concurrency key; ignored by providers that do not upload in parts. " +
+                "Default: the profile's upload_concurrency (4).",
+        ],
+    )
+    var uploadConcurrency: Int? = null
+
+    @picocli.CommandLine.Spec
+    lateinit var spec: picocli.CommandLine.Model.CommandSpec
+
+    override fun run() {
+        val parent = daemonCmd.parent
+        applyPositionalProfile(parent, profilePositional)
+        val profile = parent.resolveCurrentProfile()
+        // #603 (U4): the hosting contract. The daemon serves both modes, but a profile without a mode is
+        // refused before any provider write, token rotation or mutable startup recovery.
+        val mode = parent.requireAnyProfileMode(profile, "daemon run")
+        // #865: a daemon start never runs an interactive sign-in. When the offline credential
+        // check says the profile cannot authenticate without one, refuse here — typed reason on
+        // stderr (the start log a front-end reads), non-zero exit — instead of letting the
+        // provider camp on its prompt. useVault = true because the start's own provider creation
+        // merges vault credentials; a vault-stored S3 key must not read as "missing" here.
+        val health = parent.checkCredentialHealth(profile, parent.providerConfigDir(), useVault = true)
+        daemonStartCredentialRefusal(profile.name, health)?.let { refusal ->
+            System.err.println(refusal)
+            kotlin.system.exitProcess(parent.MODE_REFUSAL_EXIT)
+        }
+        val config = parent.loadSyncConfig()
+        // Owner-only permissions, also for what an earlier version created: the credentials and the
+        // profile folder, the IPC folder (defaultSocketPath), then the hydration cache and the logs.
+        StoragePermissions.restrictProfile(parent.providerConfigDir())
+        val lockFile = parent.providerConfigDir().resolve(".lock")
+        val dbPath = parent.providerConfigDir().resolve("state.db")
+        val socketPath = IpcServer.defaultSocketPath(profile.name)
+        StoragePermissions.restrictCacheAndLogs(
+            SyncEngine.hydrationCacheRoot(SyncEngine.defaultHydrationCacheRoot(), profile.name),
+            StoragePermissions.defaultLogDir(),
+        )
+        val pollIntervalMs = EnumeratePoller.effectiveIntervalMs(pollInterval, config.daemonPollSeconds(profile.name))
+
+        // #578: refuse an out-of-range override here, before a daemon starts with it.
+        uploadConcurrency?.let { n ->
+            if (n !in 1..org.krost.unidrive.internxt.InternxtConfig.MAX_UPLOAD_CONCURRENCY) {
+                throw picocli.CommandLine.ParameterException(
+                    spec.commandLine(),
+                    "--upload-concurrency must be in 1..${org.krost.unidrive.internxt.InternxtConfig.MAX_UPLOAD_CONCURRENCY} (got $n)",
+                )
+            }
+        }
+
+        val runtime = DaemonRuntime(
+            profileName = profile.name,
+            lockFile = lockFile,
+            dbPath = dbPath,
+            syncRoot = config.syncRoot,
+            socketPath = socketPath,
+            providerFactory = { parent.createProvider() },
+            syncPaths = config.syncPaths,
+            excludePatterns = config.effectiveExcludePatterns(profile.name),
+            ignoreSettings = config.ignoreSettings(profile.name),
+            trashFolderName = config.trashFolderName(profile.name),
+            views = ConfiguredViews.of(config, profile.name),
+            pollIntervalMs = pollIntervalMs,
+            // #891: the health line, one INFO line per minute in unidrive.log.
+            healthIntervalMs = 60_000,
+            hydrationCacheMaxBytes = config.hydrationCacheMaxBytes(profile.name),
+            profileMode = mode,
+            // #655: the quota snapshot's TTL (profile config quota_refresh_minutes, default 15
+            // min, 0 = off) and whether the provider reports an ACCOUNT quota at all (localfs
+            // probes machine storage — daemon.status carries no quota field for it).
+            quotaRefreshMs = config.quotaRefreshMs(),
+            providerHasQuota = org.krost.unidrive.ProviderRegistry.getMetadata(profile.type)?.hasQuota ?: true,
+            // #586: credential_health in daemon.status. The offline check reads token files only; the vault is left
+            // out (it may prompt for a passphrase, and a daemon has no one to answer).
+            credentialHealthCheck = { parent.checkCredentialHealth(profile, lockFile.parent, useVault = false) },
+            afterProfileLockAcquired = {
+                SyncEngine.migrateLegacyHydrationCacheRoot(SyncEngine.defaultHydrationCacheRoot(), profile.name)
+            },
+            // #578: the --upload-concurrency flag's override of the profile's upload_concurrency key;
+            // null leaves the key in force. Applied to the provider right after construction.
+            uploadConcurrencyOverride = uploadConcurrency,
+        )
+        // #813: the profile the sign-in verbs sign in (its non-secret config, as `auth begin/complete/login` resolve it).
+        // A config that cannot be read for it leaves them answering sign_in_unavailable; the daemon runs either way.
+        runtime.signInTarget =
+            runCatching { resolveProfileTarget(parent, profile.name) }
+                .getOrNull()
+                ?.let { ProfileTarget(it.name, it.type, parent.providerConfigDir(), it.properties) }
+        // The startup banner reports the mode and the capabilities (#603 U4), so an operator — and a
+        // client reading the log — can see what this daemon serves without asking it over IPC.
+        println(
+            "unidrive daemon ${BuildInfo.versionString()} — profile '${profile.name}' " +
+                "(${mode.wireName}) — capabilities: ${mode.capabilities.joinToString(" ")}",
+        )
+
+        // Install SIGTERM handler that signals graceful shutdown. It must wait for the main
+        // thread's cleanup: the JVM halts once all hooks return.
+        Runtime.getRuntime().addShutdownHook(Thread {
+            runtime.shutdownAndWait()
+        })
+
+        try {
+            runBlocking { runtime.start() }
+        } catch (_: IpcAuth.StartupRefused) {
+            // The IPC token files could not be written or verified: the daemon never runs without its
+            // IPC. The reason is already on stderr and in the log, as one line.
+            kotlin.system.exitProcess(IpcAuth.STARTUP_REFUSED_EXIT_CODE)
+        }
+    }
+}
+
+// ── daemon status ────────────────────────────────────────────────────────────
+
+/**
+ * Read-only status for the running daemon.
+ *
+ * Two-stage output per spec unidrive-daemon-design.md §3.3:
+ *   1. `.lock.pid` (file-derived): PID + mode — printed when the pid is alive.
+ *      A dead pid (daemon kill -9'd) is reported as a stale lock instead.
+ *   2. `daemon.status` RPC reply (uptime_ms, clients_connected,
+ *      refresh_in_flight, refresh_job_id) — printed when the socket is
+ *      reachable.
+ *
+ * If the daemon is alive but the socket is gone (mid-shutdown), prints the
+ * file-derived line and a "socket unreachable" note.
+ * Honors the chicken-and-egg constraint: never need the daemon to be up
+ * just to know whether it's up.
+ */
+@Command(name = "status", description = ["Show daemon status for the current profile"], mixinStandardHelpOptions = true)
+class DaemonStatusCommand : Runnable {
+    @ParentCommand
+    lateinit var daemonCmd: DaemonCommand
+
+    @Parameters(
+        index = "0",
+        arity = "0..1",
+        paramLabel = "<profile>",
+        description = ["Profile name (alternative to the global -p option)"],
+    )
+    var profilePositional: String? = null
+
+    override fun run() {
+        val parent = daemonCmd.parent
+        applyPositionalProfile(parent, profilePositional)
+        val profile = parent.resolveCurrentProfile()
+        val lockFile = parent.providerConfigDir().resolve(".lock")
+        val pidFile = lockFile.resolveSibling("${lockFile.fileName}.pid")
+
+        val pid = when (val check = checkDaemonLock(profile.name, pidFile)) {
+            is DaemonLockCheck.NotRunning -> {
+                System.err.println(check.message)
+                System.exit(1)
+                return
+            }
+            is DaemonLockCheck.Refused -> {
+                System.err.println(check.message)
+                System.exit(1)
+                return
+            }
+            is DaemonLockCheck.Running -> check.pid
+        }
+        println("pid $pid, mode daemon")
+
+        // RPC enrichment per spec §4.3 — file-derived data above,
+        // RPC-derived below. The chicken-and-egg case is honored: a
+        // missing socket file means we can't reach the daemon, but
+        // we've already printed the file-derived line.
+        val socketPath = org.krost.unidrive.sync.IpcServer.defaultSocketPath(profile.name)
+        if (!java.nio.file.Files.exists(socketPath)) {
+            System.err.println("daemon socket not found at $socketPath (daemon may be mid-shutdown)")
+            return
+        }
+        try {
+            // daemon.status is a read verb: a read-scope connection (docs/dev/specs/ipc-authentication.md).
+            val endpoint = IpcEndpoint(socketPath, parent.providerConfigDir(), profile.name)
+            IpcAuthClient.connect(endpoint, IpcAuth.Scope.READ).use { channel ->
+                channel.write(
+                    java.nio.ByteBuffer.wrap(
+                        ("""{"verb":"daemon.status"}""" + "\n").toByteArray(),
+                    ),
+                )
+                // The reply carries the enumeration object (up to a few hundred bytes more than the
+                // rest). The daemon newline-terminates every reply; a read may return before the
+                // whole line does, so read until the newline shows up.
+                val buf = java.nio.ByteBuffer.allocate(8192)
+                while (!buf.array().take(buf.position()).contains('\n'.code.toByte())) {
+                    if (channel.read(buf) <= 0) break
+                }
+                buf.flip()
+                val reply = String(buf.array(), 0, buf.limit()).substringBefore('\n')
+                println(reply)
+            }
+        } catch (e: IpcAuthException) {
+            System.err.println("daemon IPC authentication failed: ${e.message}")
+        } catch (e: java.io.IOException) {
+            System.err.println("daemon socket unreachable: ${e.message}")
+        }
+    }
+}
+
+// ── daemon stop ──────────────────────────────────────────────────────────────
+
+@Command(name = "stop", description = ["Ask the running daemon to shut down over IPC (falling back to terminating it) and wait for it to exit"], mixinStandardHelpOptions = true)
+class DaemonStopCommand : Runnable {
+    @ParentCommand
+    lateinit var daemonCmd: DaemonCommand
+
+    @Parameters(
+        index = "0",
+        arity = "0..1",
+        paramLabel = "<profile>",
+        description = ["Profile name (alternative to the global -p option)"],
+    )
+    var profilePositional: String? = null
+
+    @Option(
+        names = ["--force"],
+        description = [
+            "Stop the daemon even when a FUSE mount it serves is still live. " +
+                "Without this flag, daemon stop refuses so the mount is not orphaned.",
+        ],
+    )
+    var force: Boolean = false
+
+    companion object {
+        const val STOP_DEADLINE_MS: Long = 12_000  // 10s graceful + 2s buffer
+        const val FORCED_STOP_DEADLINE_MS: Long = 5_000  // wait after destroy() before giving up
+    }
+
+    // #419: a daemon that was hard-killed never runs its shutdown code (`Process.destroy()` is
+    // TerminateProcess on Windows, which skips JVM shutdown hooks), so its socket file and
+    // .meta sibling outlive it. Remove them once the process is gone; a socket that still
+    // answers a connect belongs to a live daemon and is left alone. Best-effort.
+    private fun removeLeftoverSocket(profileName: String) {
+        runCatching { IpcServer.removeStaleSocketFiles(IpcServer.defaultSocketPath(profileName)) }
+    }
+
+    override fun run() {
+        val parent = daemonCmd.parent
+        applyPositionalProfile(parent, profilePositional)
+        val profile = parent.resolveCurrentProfile()
+        val lockFile = parent.providerConfigDir().resolve(".lock")
+        val pidFile = lockFile.resolveSibling("${lockFile.fileName}.pid")
+
+        val contents = when (val result = readLockPid(pidFile)) {
+            is LockPidReadResult.Absent -> {
+                println("no daemon running for profile '${profile.name}'")
+                return  // idempotent stop; exit 0
+            }
+            is LockPidReadResult.Malformed -> {
+                System.err.println("malformed lock-pid file at $pidFile: '${result.raw}'")
+                System.exit(1)
+                return
+            }
+            is LockPidReadResult.Present -> result.contents
+        }
+        val pid = contents.pid
+        val modeToken = contents.modeToken
+        if (modeToken != "daemon") {
+            System.err.println(daemonModeMismatchMessage(profile.name, modeToken, pid))
+            System.exit(1)
+            return
+        }
+
+        // Resolve the daemon process first. A dead daemon (kill -9'd or crashed)
+        // leaves a stale .lock.pid; stopping is then a no-op cleanup that must
+        // succeed so the profile isn't stuck. This precedes the live-mount guard
+        // below because that guard is only meaningful for a LIVE daemon — a dead
+        // daemon's IPC server is already gone, so its mount is already orphaned
+        // and refusing to clean up the stale lock helps nobody.
+        val handle = if (isLockHolder(pid, pidFile)) ProcessHandle.of(pid).orElse(null) else null
+        if (handle == null || !handle.isAlive) {
+            // Also the recycled-pid case: a live process that is not the lock's writer is never signalled.
+            println("daemon for profile '${profile.name}' (PID $pid) is not running (stale .lock.pid); cleaning up")
+            runCatching { Files.deleteIfExists(pidFile) }
+            removeLeftoverSocket(profile.name)
+            return
+        }
+
+        // Refuse (without --force) when a FUSE mount served by this (live) daemon
+        // is still live. Stopping the daemon tears down its IPC server; the
+        // co-daemon then loses its backend and the mount serves broken state
+        // (reads return EIO/ENOENT) with no other warning. The link between a
+        // mount and this daemon is the IPC socket the co-daemon connected to.
+        if (!force) {
+            val socketPath = IpcServer.defaultSocketPath(profile.name)
+            if (StaleMountDetector.hasLiveMountForSocket(socketPath.toString())) {
+                System.err.println(
+                    "refusing to stop daemon for profile '${profile.name}': a FUSE mount it " +
+                        "serves is still live. Stopping now would orphan the mount " +
+                        "(reads then fail with EIO/ENOENT). Unmount it first " +
+                        "(`fusermount -u <mountpoint>`), or re-run with --force to stop anyway.",
+                )
+                System.exit(1)
+                return
+            }
+        }
+
+        // Ask the daemon to stop over IPC first (signal-free, runs the clean shutdown path on every
+        // OS); Process.destroy() is only the fallback. On Windows destroy() is TerminateProcess,
+        // which skips the shutdown hooks and leaves a stale socket and lock.
+        val socketPath = IpcServer.defaultSocketPath(profile.name)
+        val endpoint = IpcEndpoint(socketPath, parent.providerConfigDir(), profile.name)
+        val outcome = stopDaemonProcess(
+            requestShutdown = { requestDaemonShutdown(endpoint) },
+            awaitExit = { timeoutMs -> awaitProcessExit(handle, timeoutMs) },
+            destroy = { handle.destroy() },
+            gracefulDeadlineMs = STOP_DEADLINE_MS,
+            forcedDeadlineMs = FORCED_STOP_DEADLINE_MS,
+        )
+        when (outcome) {
+            DaemonStopOutcome.GRACEFUL -> {
+                removeLeftoverSocket(profile.name)
+                println("daemon for profile '${profile.name}' stopped")
+            }
+            DaemonStopOutcome.FORCED -> {
+                removeLeftoverSocket(profile.name)
+                println(
+                    "daemon for profile '${profile.name}' did not stop gracefully; terminated it " +
+                        "(its shutdown hooks may not have run)",
+                )
+            }
+            DaemonStopOutcome.FAILED -> {
+                System.err.println(
+                    "daemon for profile '${profile.name}' did not exit within " +
+                        "${STOP_DEADLINE_MS + FORCED_STOP_DEADLINE_MS}ms; " +
+                        "send SIGKILL manually if needed (`kill -9 $pid`).",
+                )
+                System.exit(1)
+            }
+        }
+    }
+}
+
+// ── daemon stop: graceful-first stop ─────────────────────────────────────────
+
+internal enum class DaemonStopOutcome {
+    /** The daemon accepted daemon.shutdown and exited on its own. */
+    GRACEFUL,
+
+    /** The daemon had to be destroyed (socket unreachable, or it did not exit in time). */
+    FORCED,
+
+    /** The daemon is still running after destroy. */
+    FAILED,
+}
+
+/**
+ * Stop a daemon: ask it to exit over IPC ([requestShutdown] returns true once the daemon acked
+ * daemon.shutdown) and wait [gracefulDeadlineMs] for the process to go; only when the verb is not
+ * accepted or the process outlives the deadline is it [destroy]ed and waited on for
+ * [forcedDeadlineMs]. [awaitExit] returns true when the process has exited.
+ */
+internal fun stopDaemonProcess(
+    requestShutdown: () -> Boolean,
+    awaitExit: (timeoutMs: Long) -> Boolean,
+    destroy: () -> Unit,
+    gracefulDeadlineMs: Long,
+    forcedDeadlineMs: Long,
+): DaemonStopOutcome {
+    if (requestShutdown() && awaitExit(gracefulDeadlineMs)) return DaemonStopOutcome.GRACEFUL
+    destroy()
+    return if (awaitExit(forcedDeadlineMs)) DaemonStopOutcome.FORCED else DaemonStopOutcome.FAILED
+}
+
+private fun awaitProcessExit(handle: ProcessHandle, timeoutMs: Long): Boolean {
+    handle.onExit().orTimeout(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .handle { _, _ -> true }.get()
+    return !handle.isAlive
+}
+
+/**
+ * Send `daemon.shutdown` to the daemon listening on [endpoint] and wait for its ack. Returns true
+ * when the daemon has accepted the request: it replied ok, or it dropped the connection after the
+ * request was written (a daemon already closing its sockets can reset the connection before the
+ * ack is read, notably on Windows; the caller still verifies the process exits and falls back to
+ * destroy()). Returns false when the socket is absent or unreachable, the IPC handshake fails (an
+ * admin verb needs a full-scope connection), the request could not be written, or the reply is
+ * negative or missing. Never throws.
+ */
+internal fun requestDaemonShutdown(endpoint: IpcEndpoint, timeoutMs: Long = 3_000): Boolean {
+    if (!Files.exists(endpoint.socketPath)) return false
+    var written = false
+    return try {
+        IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).use { channel ->
+            channel.configureBlocking(false)
+            val request = """{"verb":"daemon.shutdown"}""" + "\n"
+            val out = java.nio.ByteBuffer.wrap(request.toByteArray())
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (out.hasRemaining()) {
+                channel.write(out)
+                if (out.hasRemaining()) {
+                    if (System.currentTimeMillis() >= deadline) return false
+                    Thread.sleep(10)
+                }
+            }
+            written = true
+            val collected = StringBuilder()
+            while (System.currentTimeMillis() < deadline && !collected.contains('\n')) {
+                val buf = java.nio.ByteBuffer.allocate(1024)
+                val n = channel.read(buf)
+                if (n < 0) return true
+                if (n > 0) {
+                    buf.flip()
+                    collected.append(String(buf.array(), 0, buf.limit()))
+                } else {
+                    Thread.sleep(10)
+                }
+            }
+            collected.toString().substringBefore('\n').contains("\"ok\":true")
+        }
+    } catch (_: java.io.IOException) {
+        written
+    }
+}
+
+// ── .lock.pid parsing helper ────────────────────────────────────────────────
+
+/**
+ * Parsed contents of a `.lock.pid` sidecar file.
+ *
+ * Per spec mount-sync-mode-mutex-design.md §3.1, the wire format is
+ * `<pid> <mode>\n`. This data class exposes the two fields; consumers
+ * that need to interpret the mode (e.g. distinguish `daemon` from `sync`)
+ * use [LockPidContents.modeToken] directly.
+ *
+ * @property pid the holder's process ID.
+ * @property modeToken the wire-format mode token (e.g. "daemon", "sync"),
+ *   or null when the sidecar carries no mode field (legacy pid-only format).
+ */
+internal data class LockPidContents(val pid: Long, val modeToken: String?)
+
+/**
+ * Result of trying to read a `.lock.pid` file.
+ */
+internal sealed class LockPidReadResult {
+    object Absent : LockPidReadResult()
+    data class Malformed(val raw: String) : LockPidReadResult()
+    data class Present(val contents: LockPidContents) : LockPidReadResult()
+}
+
+/**
+ * Read the `.lock.pid` sidecar at [pidFile]. Returns one of three states:
+ *   - [LockPidReadResult.Absent] — file doesn't exist
+ *   - [LockPidReadResult.Malformed] — file exists but pid field is unparseable
+ *   - [LockPidReadResult.Present] — file parsed cleanly
+ *
+ * Used by both DaemonStatusCommand and DaemonStopCommand to avoid
+ * duplicating the parse logic. If a third consumer arrives (e.g. doctor
+ * health check), extract this further.
+ */
+internal fun readLockPid(pidFile: java.nio.file.Path): LockPidReadResult {
+    if (!java.nio.file.Files.exists(pidFile)) return LockPidReadResult.Absent
+    val raw = java.nio.file.Files.readString(pidFile).trim()
+    val parts = raw.split(Regex("\\s+"), limit = 2)
+    val pid = parts.getOrNull(0)?.toLongOrNull() ?: return LockPidReadResult.Malformed(raw)
+    val modeToken = parts.getOrNull(1)
+    return LockPidReadResult.Present(LockPidContents(pid, modeToken))
+}
+
+/** True when [pid] is a running process that can be the writer of [pidFile]. Shared by `daemon status`, `doctor` and `migrate`. */
+internal fun isLockHolderAlive(
+    pid: Long,
+    pidFile: java.nio.file.Path,
+    lookup: (Long) -> ProcessFacts? = ::lookupProcess,
+): Boolean = isLockHolder(pid, pidFile, lookup)
+
+/** What `daemon status` learns from the `.lock.pid` sidecar, before it asks the daemon anything. */
+internal sealed class DaemonLockCheck {
+    /** No live daemon holds the profile; [message] goes to stderr. */
+    data class NotRunning(val message: String) : DaemonLockCheck()
+
+    /** The sidecar is unusable or held by something that is not a daemon; [message] goes to stderr. */
+    data class Refused(val message: String) : DaemonLockCheck()
+
+    /** A live daemon (mode `daemon`) holds the profile. */
+    data class Running(val pid: Long) : DaemonLockCheck()
+}
+
+internal fun checkDaemonLock(
+    profileName: String,
+    pidFile: java.nio.file.Path,
+    lookup: (Long) -> ProcessFacts? = ::lookupProcess,
+    isAlive: (Long) -> Boolean = { isLockHolderAlive(it, pidFile, lookup) },
+): DaemonLockCheck =
+    when (val result = readLockPid(pidFile)) {
+        is LockPidReadResult.Absent -> DaemonLockCheck.NotRunning("no daemon running for profile '$profileName'")
+        is LockPidReadResult.Malformed ->
+            DaemonLockCheck.Refused("malformed lock-pid file at $pidFile: '${result.raw}'")
+        is LockPidReadResult.Present -> {
+            val pid = result.contents.pid
+            val modeToken = result.contents.modeToken
+            // A killed holder never runs its cleanup, so its sidecar outlives it. Judge liveness
+            // before the mode: a dead holder of any mode is a stale lock, not a daemon.
+            if (!isAlive(pid)) {
+                DaemonLockCheck.NotRunning("no daemon running for profile '$profileName' (stale lock from pid $pid)")
+            } else if (modeToken != "daemon") {
+                DaemonLockCheck.Refused(daemonModeMismatchMessage(profileName, modeToken, pid))
+            } else {
+                DaemonLockCheck.Running(pid)
+            }
+        }
+    }
+
+/**
+ * Operator-facing message for the case where a `.lock.pid` holder's mode is
+ * not `daemon`. Shared by `daemon status` and `daemon stop` so both commands
+ * refuse a non-daemon lock holder with identical, symmetric wording. The
+ * legacy pid-only sidecar (no mode field) renders as `legacy (pre-mode-mutex)` — it
+ * predates the mode-mutex and is treated as a non-daemon holder (typically a legacy
+ * `unidrive sync` watcher).
+ */
+internal fun daemonModeMismatchMessage(profileName: String, modeToken: String?, pid: Long): String {
+    val rendered = modeToken ?: "legacy (pre-mode-mutex)"
+    return "lock for profile '$profileName' is held by mode '$rendered', not 'daemon'. " +
+        "Use the appropriate stop mechanism (e.g. `kill $pid` for sync)."
+}
+
+/**
+ * Apply a positional `<profile>` argument to [parent] before
+ * [Main.resolveCurrentProfile] runs. Mirrors `MountCommand.profileNameOverride`
+ * (sets `parent.provider` + invalidates the memoised profile cache). Lets
+ * `unidrive daemon run <profile>` / `unidrive sync <profile>` /
+ * `unidrive refresh <profile>` work alongside the global `-p <profile>` form,
+ * matching `unidrive mount`'s precedent. No-op when [positional] is null.
+ */
+internal fun applyPositionalProfile(parent: Main, positional: String?) {
+    if (positional != null) {
+        parent.provider = positional
+        parent.invalidateProfileCaches()
+    }
+}
+
+/**
+ * #865: the one-line start refusal when the profile's offline credential health says the daemon
+ * cannot authenticate without an interactive sign-in; null = the start may proceed. "Expired" is
+ * decided by the same remainingMs-exact mapping daemon.status's credential_health uses
+ * ([CredentialHealthMonitor.toReading]), so a start and a running daemon mean the same thing by
+ * "expired" — a credential still inside its validity (EXPIRING) never refuses a start.
+ *
+ * The line names the profile, carries the stable [AuthRequiredException.REASON] token for a
+ * front-end to match in the start log, and ends with the sign-in-again remedy.
+ */
+internal fun daemonStartCredentialRefusal(
+    profileName: String,
+    health: CredentialHealth,
+): String? {
+    val needsSignIn =
+        when (CredentialHealthMonitor.toReading(health, checkedAtMs = 0L).state) {
+            CredentialHealthMonitor.State.OK, CredentialHealthMonitor.State.EXPIRING -> false
+            CredentialHealthMonitor.State.EXPIRED,
+            CredentialHealthMonitor.State.MISSING,
+            CredentialHealthMonitor.State.UNKNOWN,
+            -> true
+        }
+    if (!needsSignIn) return null
+    val detail =
+        when (health) {
+            is CredentialHealth.Missing -> health.message
+            is CredentialHealth.Warning -> health.message
+            is CredentialHealth.ExpiresIn -> health.message
+            is CredentialHealth.Ok -> "credential check inconclusive"
+        }
+    return "Error: unidrive daemon: ${AuthRequiredException.REASON}: profile '$profileName' needs a " +
+        "sign-in before it can start ($detail); refusing to prompt without an interactive terminal. " +
+        "Sign in again: unidrive -p $profileName auth"
+}

@@ -1,0 +1,1107 @@
+package org.krost.unidrive.cli
+
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.slf4j.MDCContext
+import kotlinx.coroutines.withContext
+import org.krost.unidrive.AccountOwner
+import org.krost.unidrive.Capability
+import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.CredentialHealth
+import org.krost.unidrive.authenticateAndLog
+import org.krost.unidrive.engine.ReadOnlyTrashProvider
+import org.krost.unidrive.engine.TrashNamespace
+import org.krost.unidrive.engine.ViewCache
+import org.krost.unidrive.engine.ViewNamespaces
+import org.krost.unidrive.engine.ViewSpec
+import org.krost.unidrive.hydration.HydrationEvent
+import org.krost.unidrive.hydration.HydrationImpl
+import org.krost.unidrive.hydration.HydrationIpcHandler
+import org.krost.unidrive.hydration.MountEngine
+import org.krost.unidrive.hydration.provesProviderReachable
+import org.krost.unidrive.hydration.serialiseHydrationEvent
+import org.krost.unidrive.sync.IpcAuth
+import org.krost.unidrive.sync.IpcServer
+import org.krost.unidrive.sync.ProcessLock
+import org.krost.unidrive.sync.ProfileMode
+import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.telemetry.TransferHistory
+import org.krost.unidrive.sync.ignore.IgnoreSettings
+import org.krost.unidrive.sync.ignore.UploadIgnore
+import org.slf4j.LoggerFactory
+import java.time.Instant
+import java.nio.file.Files
+import java.nio.file.Path
+
+/**
+ * Per-profile daemon lifecycle, separated from picocli wiring for testability.
+ *
+ * Per spec docs/dev/specs/unidrive-daemon-design.md §3.3: the picocli class
+ * `DaemonRunCommand` is a thin shell that reads its dependencies off
+ * `parent: Main` and constructs this runtime. Tests construct DaemonRuntime
+ * directly with their own paths + provider factory — no JVM spawn required.
+ *
+ * Lifecycle (spec §3.2):
+ *   1. Acquire ProcessLock(DAEMON). On contention: render holder info, exit 1.
+ *   2. Warn on stale FUSE mounts (best-effort). Never abort.
+ *   3. Open StateDatabase. On failure: release lock (in cleanup), rethrow.
+ *   4. Call provider.authenticateAndLog(). On failure: release lock, rethrow.
+ *      NO socket is bound until this succeeds.
+ *   5. Register handlers, then bind IpcServer LAST — a client that can
+ *      connect is guaranteed a reply for every documented verb; binding
+ *      earlier accepted requests into the unregistered window and hung
+ *      their senders. On bind failure: release lock, rethrow.
+ *   6. SERVE until close() is called.
+ *   7. On close: graceful shutdown bounded by SHUTDOWN_DEADLINE_MS (spec I7).
+ *
+ * Phase 2 scope: hydration.* verbs + sync.subscribe wired. refresh.run and
+ * daemon.status come in Phase 3.
+ */
+// The constructor lists the daemon's seams one by one (tests build it with named arguments); its baseline entry
+// quoted the whole parameter list, so it is suppressed here instead.
+@Suppress("LongParameterList")
+class DaemonRuntime(
+    private val profileName: String,
+    private val lockFile: Path,
+    private val dbPath: Path,
+    private val syncRoot: Path,
+    private val socketPath: Path,
+    private val providerFactory: () -> CloudProvider,
+    private val syncPaths: List<String> = emptyList(),
+    private val excludePatterns: List<String> = emptyList(),
+    // > 0 enables the in-process auto-poll (mount-view-refresh-design.md §5):
+    // one periodic enumerate on serveScope, serialised by the sync.enumerate
+    // in-flight guard. 0 = off. `daemon run` passes the profile's daemon_poll_seconds
+    // (default 60 s, #463) or --poll-interval; 0 stays the default here so tests that
+    // construct a runtime do not poll.
+    private val pollIntervalMs: Long = 0,
+    // #891: the health line's interval (one INFO line with the heap, GC, threads, enumeration and upload
+    // queue, see DaemonHealthLine). `daemon run` passes 60 s; 0 = off, so tests that construct a runtime
+    // log nothing.
+    private val healthIntervalMs: Long = 0,
+    // #450: hydration cache budget in bytes (profile key hydration_cache_max_bytes); 0 = unlimited.
+    private val hydrationCacheMaxBytes: Long = HydrationImpl.DEFAULT_CACHE_MAX_BYTES,
+    // #603 (U4): the profile's hosting mode, resolved and gated by `daemon run` before this runtime is
+    // constructed. A mount daemon serves the hydration verbs, sync.enumerate and the poller, and routes
+    // refresh.run to the always-enumerate path; a mirror daemon refuses the mount verbs (wrong_mode) and
+    // keeps refresh.run's legacy reconcile. Reported in daemon.status (mode, capabilities) and the banner.
+    private val profileMode: ProfileMode,
+    // The profile's config folder (it holds credentials.json and the lock): the IPC token files are
+    // written here at every start, before the socket listens (docs/dev/specs/ipc-authentication.md).
+    private val ipcTokenDir: Path = lockFile.parent,
+    // #655: TTL of the quota snapshot in daemon.status (`quota`), in ms; 0 = the quota field
+    // renders from the cache only and never refreshes. `daemon run` passes the profile's
+    // quota_refresh_minutes (default 15 min).
+    private val quotaRefreshMs: Long = 15 * 60_000L,
+    // #655: whether the provider's quota() reports the account's storage plan (ProviderMetadata
+    // hasQuota). False — e.g. localfs — keeps the `quota` field ABSENT from daemon.status.
+    private val providerHasQuota: Boolean = true,
+    // #586: the offline credential check behind `credential_health` in daemon.status (`daemon run` passes the provider
+    // factory's), re-run at most once per TTL and never inside a status request. Null = no check can run: the field then
+    // reports `unknown`.
+    private val credentialHealthCheck: (() -> CredentialHealth)? = null,
+    private val credentialHealthTtlMs: Long = 60_000L,
+    // #660: the profile's ignore rules (honor_gitignore, ignore_rules). A mount daemon applies them to its uploads, a
+    // mirror daemon to its scan and plan, and both report them (daemon.status `ignore`, ignore.explain); null = off, the
+    // built-in excludes stay plain patterns.
+    private val ignoreSettings: IgnoreSettings? = UploadIgnore.settingsFor(honorGitignore = false, accountRules = emptyList()),
+    // The profile's trash_folder_name: the name of the read-only virtual folder that shows the provider's trash. Null =
+    // the default, "Papierkorb".
+    private val trashFolderName: String? = null,
+    // The read-only views of the profile (Recents, ...): the virtual folders that list items living elsewhere in the drive.
+    // Only a mount daemon shows them; none (the default) leaves every reply as it was.
+    private val views: List<ViewSpec> = emptyList(),
+    // How long the references of a view are answered as they are before the next listing starts a refresh (a seam for tests).
+    private val viewTtlMs: Long = ViewCache.DEFAULT_TTL_MS,
+    // How a start that loses the profile lock ends the process (a seam for tests, which cannot exit).
+    private val exitProcess: (Int) -> Unit = { code -> System.exit(code) },
+    // #678: where the startup replay and the cache sweep run their blocking per-record walks.
+    // Dispatchers.IO in production; a seam for tests, which pin that a stop does not wait for them.
+    private val startupIoDispatcher: CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
+    private val afterProfileLockAcquired: () -> Unit = {},
+    // #578: the --upload-concurrency flag's override of the profile's upload_concurrency
+    // key; null leaves the key in force. Applied to the provider right after construction.
+    private val uploadConcurrencyOverride: Int? = null,
+) {
+    private val log = LoggerFactory.getLogger(DaemonRuntime::class.java)
+
+    /**
+     * #652: how the transfer history file is opened; a seam for tests, which need an open to fail on demand (and to
+     * keep hold of the history to see it closed). Default retention (90 days or 200 MB) applies until the config keys
+     * exist.
+     */
+    internal var openHistory: (profile: String, file: Path) -> TransferHistory =
+        { profile, file -> TransferHistory.open(profile, file) }
+
+    /**
+     * #813: the profile the sign-in verbs (`auth.begin`, `auth.complete`, `auth.login`) sign in, with its non-secret
+     * config. `daemon run` sets it before [start]; null (a runtime a test builds without it) answers them
+     * `sign_in_unavailable`.
+     */
+    internal var signInTarget: ProfileTarget? = null
+
+    /** #813: when a sign-in through this daemon last loaded new credentials; a credential rejection before it is history. */
+    @Volatile
+    private var signedInAtMs: Long? = null
+
+    /** #655: the last quota snapshot served in daemon.status (`quota`); null = nothing fetched yet. */
+    internal data class QuotaSnapshot(
+        val usedBytes: Long? = null,
+        val totalBytes: Long? = null,
+        val remainingBytes: Long? = null,
+        val fetchedAtMs: Long? = null,
+        val stale: Boolean = true,
+        val error: String? = null,
+    )
+
+    @Volatile
+    private var quotaSnapshot: QuotaSnapshot? = null
+
+    private val quotaRefreshInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+
+    private var lock: ProcessLock? = null
+    private var db: StateDatabase? = null
+    private var ipcServer: IpcServer? = null
+    private val closeSignal = CompletableDeferred<Unit>()
+
+    // Counted down once cleanup() has run. Only armed after the lock is held: a start() that lost
+    // the lock race (or never ran) has nothing to wait for, and a shutdown hook must not stall the
+    // System.exit that path triggers.
+    private val cleanupDone = java.util.concurrent.CountDownLatch(1)
+
+    @Volatile private var lifecycleActive = false
+    private var startedAtMs: Long = 0
+
+    suspend fun start() {
+        Files.createDirectories(lockFile.parent)
+        val acquiredLock = ProcessLock(lockFile)
+        if (!acquiredLock.tryLock(ProcessLock.Mode.DAEMON)) {
+            renderLockContentionAndExit(acquiredLock)
+            return
+        }
+        lock = acquiredLock
+        lifecycleActive = true
+
+        try {
+            afterProfileLockAcquired()
+
+            // 2. Stale-mount warn (spec §3.3) — best-effort, never aborts.
+            val staleMounts = StaleMountDetector.detectStaleFuseUnidriveMounts()
+            if (staleMounts.isNotEmpty()) {
+                System.err.println(
+                    "WARNING: detected ${staleMounts.size} stale unidrive FUSE mount(s) " +
+                        "(likely from a kill -9'd `unidrive mount` parent or prior daemon): " +
+                        staleMounts.joinToString(),
+                )
+                // Emit one ready-to-run command per detected mount (real path,
+                // not a `<path>` placeholder) so the operator can copy-paste directly.
+                System.err.println("These mounts no longer serve data. Clean up with:")
+                staleMounts.forEach { System.err.println("  fusermount3 -u $it") }
+            }
+
+            db = StateDatabase(dbPath).also { it.initialize() }
+            // Before anything is served: the one rewrite of a fragmented file holds it alone (seconds on a large drive).
+            runCatching { db!!.compactOnce() }.onFailure { log.warn("compacting state.db at start failed", it) }
+
+            // #655: seed the quota snapshot from the sync_state cache (the same tuple
+            // `quota` persists), so the very first status already shows the last known
+            // values flagged stale instead of nulls.
+            quotaSnapshot = readCachedQuotaSnapshot(db!!)
+
+            // 4. Authenticate. NO socket is bound until this succeeds.
+            // The trash namespace is read-only: this wrapper is the last line of that rule, whichever part of the
+            // engine starts a write (the same namespace is handed to the engine, whose guard and planner ask it too).
+            val trash = TrashNamespace(trashFolderName)
+            // The views are a mount front-end feature: a mirror profile has no folder for them. Their roots yield to the live
+            // top-level items state.db holds. A view the provider does not declare (Capability.View) is not shown at all: an
+            // empty, unavailable folder would stand on every mount of a provider that never has it.
+            val cloud = providerFactory()
+            val viewNamespaces =
+                ViewNamespaces(
+                    specs = if (profileMode == ProfileMode.MOUNT) viewsTheProviderHas(cloud) else emptyList(),
+                    topLevelNames = { db?.listDirectChildren("")?.map { it.path.removePrefix("/") } ?: emptyList() },
+                )
+            val provider = ReadOnlyTrashProvider(cloud, trash, viewNamespaces)
+            // #578: the flag wins over the profile key, same shape as --poll-interval.
+            uploadConcurrencyOverride?.let { n ->
+                if (!provider.overrideUploadConcurrency(n)) {
+                    System.err.println(
+                        "unidrive daemon: --upload-concurrency ignored — provider '${provider.id}' does not upload in parts",
+                    )
+                }
+            }
+            try {
+                provider.authenticateAndLog()
+            } catch (e: Exception) {
+                System.err.println(
+                    "unidrive daemon: authentication failed for profile " +
+                        "'$profileName': ${e.message}",
+                )
+                throw e
+            }
+
+            // New IPC tokens for this start, written before the socket exists (only the lock holder
+            // gets here, so a refused second start never rotates a running daemon's tokens). A refusal
+            // has printed its one line; start() rethrows it and `daemon run` exits 78.
+            val ipcAuth = IpcAuth.issueOrReport(ipcTokenDir, profileName, BuildInfo.versionString())
+
+            Files.createDirectories(socketPath.parent)
+            val server = IpcServer(socketPath, auth = ipcAuth)
+            ipcServer = server
+
+            // Use supervisorScope-with-explicit-cancel so the SERVE block returns
+            // promptly on close(). A plain coroutineScope would wait for the
+            // hydration.events.collect launch (infinite flow) and any handler
+            // children spawned by IpcServer/HydrationIpcHandler to complete —
+            // they don't. Solution: launch the long-lived children under a
+            // dedicated SupervisorJob that we cancel before the scope exits.
+            val serveJob = kotlinx.coroutines.SupervisorJob()
+            val serveScope = kotlinx.coroutines.CoroutineScope(
+                kotlin.coroutines.coroutineContext + serveJob,
+            )
+            // A profile signed in before ids were kept has no account_id (AccountOwner): one identity call with the
+            // credentials this start just authenticated with records it. Off the start's path and bounded: a failed or slow
+            // call logs one line, the daemon serves either way and the next start tries again.
+            serveScope.launch { AccountOwner.recordIfMissing(ipcTokenDir, cloud) }
+            // The engine's two hooks into the hydration layer (see HydrationLink). Declared outside the
+            // try below: its finally joins the hydration uploads through it.
+            val hydrationLink = HydrationLink()
+            // #652: opened with the mount's hydration layer, closed (flushed) after its uploads have been joined.
+            var transferHistory: TransferHistory? = null
+            var historyRpc: HistoryRpcHandler? = null
+            // Coroutine-debug probes (gkrost/unidrive#613 ask 1): with UNIDRIVE_COROUTINE_DEBUG=1 the
+            // daemon captures suspension stacks at start and dumps every live coroutine when a
+            // coroutine-dump.trigger file appears in the profile folder — a hung upload becomes one
+            // stack trace instead of a silent wait. Off by default; see CoroutineDebug.
+            if (CoroutineDebug.enabled()) {
+                CoroutineDebug.install()
+                CoroutineDebug.watchForDumpRequests(ipcTokenDir, serveScope)
+            }
+            try {
+                // cacheKey = profileName keeps the daemon's hydration cache
+                // subtree per-account and consistent with MountCommand's
+                // co-daemon --cache root (also profile.name), so the FUSE
+                // backing store, eviction, and crash-recovery scanner all
+                // address the same files.
+                // The engine is built first and the hydration layer over it (MountEngine.over(engine)), so
+                // the engine's hooks into that layer go through hydrationLink, bound right after the layer
+                // is built. #301: the enumerate-reap asks whether an upload of a path is queued or in flight
+                // before it evicts that path's cache file. viewInvalidationSink fans the event to all
+                // subscribers without going through the HydrationImpl flow, which is intentional: the
+                // invalidation event originates outside the per-path hydration lifecycle.
+                val engine = SyncEngine(
+                    provider, db!!, syncRoot = syncRoot, cacheKey = profileName, syncPaths = syncPaths,
+                    standingScope = syncPaths, excludePatterns = excludePatterns, trashNamespace = trash, viewNamespaces = viewNamespaces,
+                    mountIgnore = ignoreSettings.takeIf { profileMode == ProfileMode.MOUNT },
+                    mirrorIgnore = ignoreSettings.takeIf { profileMode != ProfileMode.MOUNT },
+                    uploadInFlight = hydrationLink::hasUploadSlot,
+                    viewInvalidationSink = { changedPaths, full, moved ->
+                        // A pass changed rows: the top level may hold a folder with the name of a view's root now.
+                        viewNamespaces.invalidate()
+                        val cap = HydrationEvent.VIEW_INVALIDATED_PATH_CAP
+                        val event = if (full || changedPaths.size > cap) {
+                            HydrationEvent.ViewInvalidated(paths = emptyList(), full = true)
+                        } else {
+                            // #595: the renames ride along as an additive hint; a consumer
+                            // that ignores them still sees both ends in `paths`.
+                            HydrationEvent.ViewInvalidated(
+                                paths = changedPaths.toList(),
+                                moved = moved.map { HydrationEvent.ViewInvalidated.Moved(it.from, it.to) },
+                            )
+                        }
+                        hydrationLink.dispatchEvent(event)
+                    },
+                )
+                // #560 U3: the mount operations (hydration, uploads, remote folder/delete/rename and
+                // the enumeration) run on MountEngine, over this engine's shared core (guard, gather,
+                // enumeration: one of each per daemon). The engine itself stays for the refresh.run
+                // fallback (RefreshRpcHandler, U4). See MountEngine for who owns what.
+                val mount = MountEngine.over(engine)
+                // The references of the views, refreshed on the serve scope; a change goes to the subscribers as a
+                // view.invalidated for the view's root.
+                if (!viewNamespaces.isEmpty()) {
+                    mount.attachViews(
+                        ViewCache(
+                            scope = serveScope,
+                            fetch = provider::listView,
+                            limitOf = { kind -> viewNamespaces.spec(kind)?.limit ?: 1 },
+                            pageCapOf = { kind -> viewNamespaces.spec(kind)?.pageCap ?: 1 },
+                            ttlMs = viewTtlMs,
+                            onChanged = { kind ->
+                                viewNamespaces.rootPath(kind)?.let { root ->
+                                    hydrationLink.dispatchEvent(HydrationEvent.ViewInvalidated(paths = listOf(root)))
+                                }
+                            },
+                        ),
+                    )
+                }
+                // #778: the pause (daemon.pause / daemon.resume); the uploads and downloads of the mount consult it
+                // through the front-end, the enumeration and the refresh through the handlers below.
+                val pause = mount.pause
+                val wrongModeReply = """{"ok":false,"error":"wrong_mode"}"""
+                val mountMode = profileMode == ProfileMode.MOUNT
+                // #652: a mount profile records its transfers; a failure to open the history is logged once and the daemon
+                // runs without it. Mirror mode records none (its transfers are the sync pass's).
+                transferHistory = if (mountMode) openTransferHistory() else null
+                // #560 U6 (cutover): the hydration runtime exists only on a mount profile. A mirror
+                // daemon constructs no hydration layer and keeps no cache — its local bytes live in
+                // the sync root its reconcile owns, and every hydration verb gets wrong_mode below.
+                // Upload and replay jobs outlive IPC handlers but not this daemon: hydrationUploadScope
+                // keeps their scope separate so shutdown can cancel/join it without cancelling the serve scope.
+                val hydration: HydrationImpl? =
+                    if (mountMode) {
+                        HydrationImpl(
+                            mount,
+                            db!!,
+                            recoveryUploadScope = hydrationUploadScope(profileName),
+                            cacheMaxBytes = hydrationCacheMaxBytes,
+                            history = transferHistory,
+                        )
+                    } else {
+                        null
+                    }
+                val hydrationIpc: HydrationIpcHandler? =
+                    hydration?.let { h -> HydrationIpcHandler(h).also { hydrationLink.bind(h, it) } }
+
+                // The construction order from here on is explicit: every handler and the poller exist
+                // before anything is launched on serveScope, so the launches below (the cache sweep, the
+                // event collector, the upload replay, the poller) find what they signal already built.
+
+                // sync.enumerate handler (mount-view-refresh-design.md §4.1): one-way
+                // remote→state.db refresh for mount view consumers. Constructed before the
+                // hydration verbs so the subscribe-triggered enumerate (below) can reuse its
+                // shared in-flight guard.
+                val enumerateHandler = EnumerateRpcHandler(mount, serveScope, server::emit, paused = { pause.isPaused })
+
+                // refresh.run handler (spec §4.2). Pass serveScope so refresh
+                // jobs are cancelled when the daemon shuts down. Pass db so
+                // the F9 `reset` parameter can clear it (keeping the rows that
+                // still await upload) before re-enumeration.
+                // #603 (U4): a mount profile's refresh.run ALWAYS takes the one-way enumerate path —
+                // with or without a connected client. The enumerate is remote→state.db only: a reset
+                // clears the delta cursor (the enumeration state), pending local intent stays, the last
+                // good rows survive a failed or incomplete gather, and nothing is published as a
+                // deletion before an authoritative completion. A mirror profile keeps the legacy
+                // reconcile (its mounted flag stays false; no hydration subscriber exists there).
+                val refreshHandler =
+                    RefreshRpcHandler(
+                        server,
+                        engine,
+                        db!!,
+                        serveScope,
+                        mountClientConnected = { profileMode == ProfileMode.MOUNT },
+                        // A reset keeps the rows of uploads still under way (same hook the enumeration's reap uses).
+                        uploadInFlight = { path -> hydration?.hasUploadSlot(path) ?: false },
+                        paused = { pause.isPaused },
+                    )
+
+                // The remote poll (#463), mount-only; built here, started below (see there). The backoff
+                // starts escalated when the previous run ended in enumerate failures (#517 R3).
+                val poller: EnumeratePoller? =
+                    if (mountMode) {
+                        EnumeratePoller(
+                            enumerateHandler,
+                            pollIntervalMs,
+                            serveScope,
+                            onNextAttempt = mount.enumerationTracker::nextAttemptAt,
+                            consecutiveFailuresAtStart =
+                                db!!.getSyncState(SyncEngine.ENUMERATE_FAILURE_STREAK_KEY)?.toIntOrNull() ?: 0,
+                            isBusy = { refreshHandler.isInFlight() },
+                            awaitResumed = { pause.awaitResumed() },
+                        )
+                    } else {
+                        null
+                    }
+
+                if (hydration != null && hydrationIpc != null) {
+                    // #450: what a stopped daemon left in the hydration cache (staging temp files, the
+                    // copies of synced files read through the mount) is trimmed to the budget at start.
+                    serveScope.launch {
+                        // #678: blocking walk; off the event loop so it cannot delay a stop.
+                        withContext(startupIoDispatcher) {
+                            try {
+                                hydration.sweepCache()
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                log.warn("hydration cache sweep at start failed", e)
+                            }
+                        }
+                    }
+
+                    // #463: a download or upload that succeeded is a provider round trip that worked, so it cuts
+                    // the poller's back-off short. A read served from the warm cache touched no network and does
+                    // not (provesProviderReachable). The poller polls at most once per plain interval anyway.
+                    serveScope.launch {
+                        hydration.events.collect {
+                            hydrationIpc.dispatchEvent(it)
+                            if (it.provesProviderReachable()) poller?.providerReachable()
+                        }
+                    }
+                }
+
+                // Reactive remote-change detection: when the FUSE co-daemon issues
+                // hydration.subscribe on mount, run ONE guarded enumerate after the reply.
+                // The enumerate pulls remote changes into state.db and, when anything changed,
+                // the engine's viewInvalidationSink pushes view.invalidated back over this same
+                // subscribe stream — so a freshly-mounted view reflects remote renames/deletes
+                // without a manual `refresh`, without waiting for the next poll (#463). Serialised through
+                // the same in-flight guard as sync.enumerate/the poller, so a concurrent
+                // enumeration is skipped rather than overlapped.
+                // #603 (U4): the mount verbs exist only on a mount profile. A mirror daemon answers every
+                // hydration verb and sync.enumerate with wrong_mode — the client's command gate refuses
+                // before this, but nothing here may serve mount semantics on a mirror profile either.
+                // The mount wiring below (handlers, subscribe-hook, upload replay, poller)
+                // is mount-only; a mirror daemon keeps sync.subscribe, refresh.run (legacy reconcile)
+                // and daemon.status.
+                for (verb in HydrationIpcHandler.VERBS) {
+                    if (!mountMode) {
+                        server.registerHandler(verb) { _, _ -> wrongModeReply }
+                        continue
+                    }
+                    // The hydration layer is built above whenever mountMode holds.
+                    val ipc = requireNotNull(hydrationIpc) { "mount mode without a hydration layer" }
+                    server.registerHandler(verb) { connId, json ->
+                        val reply = ipc.handle(connectionId = connId, jsonRequest = json)
+                        // A READ-scope subscribe (an observer such as a status UI) never starts the enumerate:
+                        // observing must not scan the remote. #657
+                        if (verb == "hydration.subscribe" && reply.contains("\"ok\":true") &&
+                            subscribeEnumerates(server.authEnabled, server.scopeOf(connId))
+                        ) {
+                            server.scheduleAfterReply(connId) {
+                                runCatching { enumerateHandler.runGuarded(reset = false) }
+                                    .onFailure { log.warn("enumerate-on-subscribe failed", it) }
+                            }
+                        }
+                        reply
+                    }
+                }
+                if (!mountMode) {
+                    server.registerHandler("sync.enumerate") { _, _ -> wrongModeReply }
+                }
+                if (mountMode) {
+                    server.registerConnectionCloseListener { connId ->
+                        hydration?.onConnectionClosed(connId)
+                    }
+                    // A mount client's connections are never closed for being idle: its open handles and
+                    // its event subscription live on them, and refresh.run routing counts them.
+                    server.registerIdleExemptVerbs(HydrationIpcHandler.VERBS)
+                    hydrationIpc?.start(serveScope, server::writeToConnection)
+                    server.registerConnectionCloseListener { connId ->
+                        hydrationIpc?.onSubscriberDisconnect(connId)
+                    }
+                }
+
+                // Engine-side upload recovery: re-enqueue rows written through the
+                // mount whose upload never landed (still queued or failed when the
+                // daemon last stopped). Runs before any client connects, so a
+                // restart alone drains the backlog; the uploads go through the
+                // same per-path serialization and daemon-wide transfer budget as
+                // client-submitted ones. The co-daemon's recovery-<n> scanner
+                // stays as the client-side complement for cache files the row
+                // scan cannot see.
+                //
+                // #603 (U4): mount-only. A mirror daemon serves no hydration uploads to replay.
+                if (mountMode) {
+                    // The hydration layer is built above whenever mountMode holds.
+                    val h = requireNotNull(hydration) { "mount mode without a hydration layer" }
+                    serveScope.launch {
+                        // #678: the replay walks every record with blocking file-system work and no
+                        // suspension point; on the event loop it starved closeSignal.await(), so a
+                        // stop waited for the whole backlog. Off the loop, and with the walk checking
+                        // cancellation between records, a stop lands within one record.
+                        withContext(startupIoDispatcher) {
+                            try {
+                                val n = h.replayPendingUploads()
+                                if (n > 0) log.info("replayed {} pending upload(s) from state.db", n)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                log.warn("pending-upload replay failed", e)
+                            }
+                        }
+                    }
+                }
+
+                // sync.subscribe — symmetric to SyncCommand's wiring.
+                server.registerHandler("sync.subscribe") { connId, _ ->
+                    server.scheduleAfterReply(connId) {
+                        server.flushStateDumpTo(connId)
+                        server.registerSyncSubscriber(connId)
+                    }
+                    """{"ok":true}"""
+                }
+                server.registerConnectionCloseListener { connId ->
+                    server.unregisterSyncSubscriber(connId)
+                }
+
+                // history.list / history.subscribe (#653): read verbs over the transfer history. A mirror daemon, or a mount
+                // daemon whose history did not open, answers history_unavailable (never an empty list).
+                historyRpc =
+                    HistoryRpcHandler(
+                        transferHistory,
+                        if (mountMode) HistoryRpcHandler.OPEN_FAILED else HistoryRpcHandler.MIRROR,
+                    ).also { it.register(server, serveScope) }
+
+                // refresh.run verb (spec §4.2); the handler is constructed above.
+                server.registerHandler("refresh.run") { connId, json ->
+                    refreshHandler.handle(connId, json)
+                }
+
+                // sync.enumerate verb (mount-view-refresh-design.md §4.1), mount-only (#603: a mirror
+                // daemon registered its wrong_mode refusal above). The handler is constructed above
+                // (shared with the subscribe-triggered enumerate); here we expose it as an explicit verb
+                // whose terminal events fan out to sync.subscribe listeners via server.emit.
+                if (mountMode) {
+                    server.registerHandler("sync.enumerate") { connId, json ->
+                        enumerateHandler.handle(connId, json)
+                    }
+                }
+
+                // Remote-change discovery (mount-view-refresh-design.md §5, #463), on by default in
+                // `daemon run`: the notification channel is not reliable, and a mount profile has no
+                // other way to learn what changed in the cloud. The enumerate path is cheap on a
+                // no-change incremental delta. The first poll runs at start (catch-up after a stop or
+                // an outage). Shares the sync.enumerate in-flight guard and skips while a refresh runs,
+                // so it never overlaps either. Launched on serveScope so it cancels with the daemon at
+                // shutdown. The backoff starts escalated when the previous run ended in enumerate
+                // failures (#517 R3): a restart into a known-bad remote doesn't re-run the doomed
+                // cycle at full cadence. Mount-only (#603): a mirror profile's discovery is `sync`'s
+                // reconcile, not the mount-view poll (the poller is constructed above, null on a mirror).
+                poller?.start()
+                // #111: a provider with a push channel (Internxt's notifications, Dropbox's longpoll) wakes the poll when
+                // something changed in the cloud. Mount-only and only while the poll is on; a mirror daemon registers nothing.
+                if (poller != null && pollIntervalMs > 0) wakePollerOnRemoteChangeHint(provider, poller)
+
+                // #891: one health line per interval (heap, GC, threads, enumeration, upload queue) so the
+                // memory a long scan needs is visible while it happens. Cancelled with the serve scope.
+                if (healthIntervalMs > 0) {
+                    DaemonHealthLine(
+                        intervalMs = healthIntervalMs,
+                        scope = serveScope,
+                        enumeration = {
+                            mount.enumerationTracker.snapshot().let { it.state.name.lowercase() to it.items }
+                        },
+                        uploadQueueDepth = { hydration?.uploadHealthSnapshot()?.pending },
+                    ).start()
+                }
+
+                // credential_health (#586): checked off the request path, so the first status can already carry an answer.
+                val credentialHealth = CredentialHealthMonitor(credentialHealthCheck, credentialHealthTtlMs, serveScope)
+                credentialHealth.refreshAsync()
+
+                // daemon.status verb (spec §4.3). protocol_version is the
+                // additive cross-repo handshake field (IPC_PROTOCOL_VERSION):
+                // co-clients warn/refuse on mismatch instead of failing on a
+                // missing field mid-operation. provider/authenticated are the
+                // account/auth state a status UI needs; the SPI carries no account
+                // identity, so the provider type + name is what we can report
+                // truthfully, and `authenticated` only says that credentials are
+                // loaded (not that they are valid). enumeration is the progress of
+                // the remote enumeration (additive, object always present). Before a
+                // connection authenticates, IpcAuth answers daemon.status itself with
+                // the minimal reply; this handler serves authenticated connections.
+                server.registerHandler("daemon.status") { _, _ ->
+                    val uptimeMs = System.currentTimeMillis() - startedAtMs
+                    val clientCount = server.clientCount
+                    val refreshInFlight = refreshHandler.isInFlight()
+                    val refreshJobId = refreshHandler.inFlightJobId()
+                    val jobIdJson = if (refreshJobId != null) "\"$refreshJobId\"" else "null"
+                    // sync_paths: the effective scope (sync_path entries the daemon was started
+                    // with; empty = whole drive). Additive field, read-only over IPC.
+                    val syncPathsJson = kotlinx.serialization.json.JsonArray(
+                        syncPaths.map { kotlinx.serialization.json.JsonPrimitive(it) },
+                    ).toString()
+                    val providerJson = kotlinx.serialization.json.JsonPrimitive(provider.id).toString()
+                    val providerNameJson = kotlinx.serialization.json.JsonPrimitive(provider.displayName).toString()
+                    val enumerationStatus = mount.enumerationStatus()
+                    val enumerationJson = enumerationStatus.toJson().toString()
+                    val engineVersionJson = kotlinx.serialization.json.JsonPrimitive(BuildInfo.versionString()).toString()
+                    // engine_build_time_ms: when the build was made (epoch ms UTC; the commit time of a reproducible build); null when unknown.
+                    val engineBuildTimeJson = BuildInfoReport.buildTimeMs()?.toString() ?: "null"
+                    // uploads / cache / provider_health (#658): the engine's own account of whether everything
+                    // is uploaded, how much the hydration cache holds and when the provider last answered.
+                    // uploads and cache exist only where a hydration layer does (a mount profile): a mirror
+                    // daemon leaves them out, and so does an upload queue that has never been read, because a
+                    // front-end must never read an unknown as "nothing pending". Neither read blocks this reply
+                    // behind state.db or the cache directory: the previous reading is served (uploadHealthSnapshot),
+                    // and the cache walk runs off this request (bytes null until the first).
+                    val healthJson = hydration?.let { h ->
+                        h.requestCacheMeasurement()
+                        val uploads = h.uploadHealthSnapshot()
+                        (uploads?.let { ",\"uploads\":${it.toJson()}" } ?: "") + ",\"cache\":${h.cacheHealth().toJson()}"
+                    } ?: ""
+                    val lastContactMs = lastProviderContactMs(enumerationStatus.lastSuccessAtMs, mount.lastProviderContactAtMs)
+                    val providerHealth = providerHealthJson(lastContactMs)
+                    // credential_health (#586): the last offline check, or `expired` at once when the provider rejected the
+                    // credentials after the check (a transfer or an enumeration failed authentication and nothing worked since).
+                    val credentialHealthJson =
+                        credentialHealth.reading()
+                            .withRejection(rejectionAfterSignIn(mount.authRejectedAtMs, signedInAtMs), lastContactMs)
+                            .toJson(System.currentTimeMillis())
+                    // mode + capabilities (#603 U4): what this daemon serves, so a client can check the
+                    // hosting contract before it sends a verb the profile refuses (additive, read-only).
+                    val modeJson = kotlinx.serialization.json.JsonPrimitive(profileMode.wireName).toString()
+                    // `views` is a capability only where the profile shows a view: a daemon without one answers as it always did.
+                    // `view_page` with it: such a daemon answers view.page for its views.
+                    // `notifications.status` (#111): this reply carries the `notifications` object.
+                    val capabilitiesJson = kotlinx.serialization.json.JsonArray(
+                        (
+                            profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
+                                (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY)) +
+                                (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page"))
+                        )
+                            .map { kotlinx.serialization.json.JsonPrimitive(it) },
+                    ).toString()
+                    // quota (#655): the account's storage plan snapshot. Absent entirely for
+                    // providers without an account quota (ProviderMetadata hasQuota=false —
+                    // localfs probes machine storage). A client-connected status request is
+                    // also the refresh trigger: a fetch runs single-flight when the TTL has
+                    // expired; no client asking means no provider call. Failure keeps the
+                    // last value with stale=true and the error named; unknowns are null —
+                    // never zero, never a division by a missing total.
+                    if (providerHasQuota) maybeTriggerQuotaRefresh(clientCount, serveScope, paused = pause.isPaused)
+                    val quotaJson =
+                        if (!providerHasQuota) {
+                            null
+                        } else {
+                            val snap = quotaSnapshot ?: QuotaSnapshot()
+                            val errorJson = snap.error?.let { kotlinx.serialization.json.JsonPrimitive(it).toString() } ?: "null"
+                            """{"used_bytes":${snap.usedBytes ?: "null"},""" +
+                                """"total_bytes":${snap.totalBytes ?: "null"},""" +
+                                """"fetched_at_ms":${snap.fetchedAtMs ?: "null"},"stale":${snap.stale},"error":$errorJson}"""
+                        }
+                    // poll_interval_ms (#463): the effective interval of the remote poll (0 = off). The
+                    // next attempt after a failure is enumeration.next_attempt_at_ms (additive, read-only).
+                    // engine_version (#554): the build a co-client is talking to — behaviour fixes do
+                    // not move IPC_PROTOCOL_VERSION, so this is the age signal a client gates its
+                    // engine minimum on (additive, read-only). #574: a dev build carries the commit id
+                    // as semver build metadata (VERSION+COMMIT[.dirty]), so the release part orders.
+                    """{"ok":true,"protocol_version":$IPC_PROTOCOL_VERSION,"engine_version":$engineVersionJson,"engine_build_time_ms":$engineBuildTimeJson,"mode":$modeJson,"capabilities":$capabilitiesJson,"uptime_ms":$uptimeMs,"clients_connected":$clientCount,"refresh_in_flight":$refreshInFlight,"refresh_job_id":$jobIdJson,"sync_paths":$syncPathsJson,"provider":$providerJson,"provider_name":$providerNameJson,"authenticated":${provider.isAuthenticated},"enumeration":$enumerationJson,"poll_interval_ms":$pollIntervalMs""" +
+                        (quotaJson?.let { ",\"quota\":$it" } ?: "") +
+                        healthJson +
+                        ",\"provider_health\":$providerHealth" +
+                        ",\"credential_health\":$credentialHealthJson" +
+                        // notifications (#111): the provider's remote-change push channel; `unsupported` where it has none.
+                        ",\"notifications\":${notificationsStatusJson(provider.remoteChangeChannelStatus())}" +
+                        // ignore (#660): present where the ignore rules apply; held_back counts the folders
+                        // whose uploads wait for a rule file that cannot be read.
+                        (engine.uploadIgnore?.let { ",\"ignore\":${ignoreHealthJson(it.heldBack())}" } ?: "") +
+                        // trash: present only while something is in the provider's trash. The read-only folder that shows it,
+                        // by the path it has now, the name it has on disk (suffixed when a live top-level item holds the
+                        // configured name) and the name the profile asks for (trash_folder_name).
+                        (trash.rootPath()?.let { ",\"trash\":${trashStatusJson(it, trash.configuredName)}" } ?: "") +
+                        // views: present only while the profile shows a read-only view (Recents, ...), one object per view; the
+                        // state of each is the last answer the provider gave (nothing here asks it).
+                        (hydration?.viewStatuses()?.takeIf { it.isNotEmpty() }?.let { ",\"views\":${viewsStatusJson(it)}" } ?: "") +
+                        // remote_incomplete: present only while a truncated cloud object is remembered (count only, no names).
+                        (mount.remoteIncompleteCount().takeIf { it > 0 }?.let { ",\"remote_incomplete\":${remoteIncompleteJson(it)}" } ?: "") +
+                        // paused (#778): present only while the daemon is paused; uploads and quota above keep reporting.
+                        (pause.current?.let { ",\"paused\":${it.toJson()}" } ?: "") +
+                        // #578: the effective part parallelism of the provider's multipart uploads
+                        // (null when it does not upload in parts). Additive, read-only.
+                        ",\"upload_concurrency\":${provider.multipartUploadConcurrency()?.let { kotlinx.serialization.json.JsonPrimitive(it).toString() } ?: "null"}" +
+                        "}"
+                }
+
+                // ignore.explain (#660): a read verb; the daemon's own rules answer it, so it says what the upload path
+                // decides (the mount's, or the mirror's scan and plan).
+                val ignoreHandler = engine.uploadIgnore?.let { IgnoreRpcHandler(it, mount::matchingExcludePattern) }
+                server.registerHandler("ignore.explain") { _, json -> ignoreHandler?.explain(json) ?: wrongModeReply }
+
+                // daemon.pause / daemon.resume (#778): the daemon holds its pause in memory only. A pause stops every
+                // upload, cloud download and cloud enumeration from starting (local writes stay queued, reported as
+                // waiting); a transfer already running is judged by the in-flight rule. The change goes to the
+                // subscribers of both streams: sync.subscribe (every mode) and hydration.subscribe (mount).
+                // A pause with until_ms resumes by itself on serveScope (the timer dies with the daemon, like the pause).
+                val pauseHandler =
+                    PauseRpcHandler(pause, serveScope) { event ->
+                        runCatching { server.emit(serialiseHydrationEvent(event)) }
+                        hydrationIpc?.dispatchEvent(event)
+                    }
+                server.registerHandler("daemon.pause") { _, json -> pauseHandler.pause(json) }
+                server.registerHandler("daemon.resume") { _, _ -> pauseHandler.resume() }
+
+                // auth.logout (§4.10): sign the account out while the daemon keeps running — the daemon is the
+                // profile-lock holder, so the credential removal is its job (the CLI hands it over over IPC).
+                // It refuses while uploads are pending (without credentials they cannot finish) and never
+                // touches state.db. Both modes: a mirror daemon is signed out like a mount one.
+                val logoutHandler =
+                    AuthLogoutRpcHandler(
+                        profileDir = ipcTokenDir,
+                        db = db!!,
+                        providerFactory = providerFactory,
+                        // #1186: not the isAuthenticated setter, which does nothing on OneDrive, Internxt and Dropbox.
+                        forgetCredentials = { provider.forgetCredentials() },
+                    )
+                server.registerHandler(AuthLogoutRpcHandler.VERB) { _, json -> logoutHandler.handle(json) }
+
+                // auth.begin / auth.complete / auth.login (§4.11, #813): sign the account in again while the daemon keeps
+                // running. The daemon runs the CLI's own sign-in step, which stores the credentials once the provider accepted
+                // them; then its own provider instance reloads them in place (no restart, the mount stays), the credential
+                // check runs again and an authentication rejection from before the sign-in no longer reads as `expired`.
+                val signInHandler =
+                    AuthLoginRpcHandler(signInTarget) {
+                        provider.reloadCredentials()
+                        signedInAtMs = System.currentTimeMillis()
+                        credentialHealth.refreshNow()
+                    }
+                server.registerHandler(AuthLoginRpcHandler.BEGIN) { _, json -> signInHandler.begin(json) }
+                server.registerHandler(AuthLoginRpcHandler.COMPLETE) { _, json -> signInHandler.complete(json) }
+                server.registerHandler(AuthLoginRpcHandler.LOGIN) { _, json -> signInHandler.login(json) }
+
+                // auth.check (§4.12, #1240): the credential check goes through the daemon's own provider instance, the one that
+                // holds and refreshes the token, so a CLI check never races that refresh.
+                val checkHandler = AuthCheckRpcHandler(profileName, provider)
+                server.registerHandler(AuthCheckRpcHandler.VERB) { _, json -> checkHandler.check(json) }
+
+                // metrics.query (#654): the per-minute roll-ups of the provider's request attempts. A mount profile with an open
+                // history records them; a mirror daemon (no history) answers "not recording", never zeros.
+                val requestMetrics = transferHistory?.requestMetrics()?.also { provider.attachRequestMetrics(it) }
+                val metricsHandler = MetricsRpcHandler(requestMetrics)
+                server.registerHandler("metrics.query") { _, json -> metricsHandler.query(json) }
+
+                // daemon.shutdown verb: graceful stop over IPC, signal-free and identical on every
+                // OS (Windows has no SIGTERM; Process.destroy() there is TerminateProcess, which
+                // skips the shutdown path entirely). Acks first, then runs the same path as a
+                // clean exit: the serve scope is cancelled, then cleanup() closes the IPC server,
+                // the state database and the process lock. The ack means "accepted"; completion
+                // is observable as the connection closing and, finally, the process exiting.
+                server.registerHandler("daemon.shutdown") { connId, _ ->
+                    server.scheduleAfterReply(connId) { close() }
+                    """{"ok":true}"""
+                }
+
+                // Bind LAST, after every handler above is registered. The socket
+                // file appearing is what clients poll for before sending their
+                // first verb — starting the server any earlier opens a window in
+                // which a request is accepted and then silently dropped ("no
+                // handler"), hanging the client that sent it. With the bind here,
+                // a connect that succeeds is guaranteed a reply for every
+                // documented verb; authentication, engine construction and handler
+                // registration all complete before the socket exists.
+                server.start(serveScope)
+                startedAtMs = System.currentTimeMillis()
+
+                System.err.println(
+                    "daemon ready, pid ${ProcessHandle.current().pid()}, socket $socketPath",
+                )
+
+                closeSignal.await()
+                log.info("daemon: shutting down")
+            } finally {
+                // Stop accepting hydration verbs and cancel in-flight request handlers first. Upload
+                // workers have their own scope, so join them explicitly before cleanup closes state.db.
+                server.close()
+                ipcServer = null
+                serveJob.cancelAndJoin()
+                try {
+                    hydrationLink.hydration?.shutdownUploads()
+                } finally {
+                    // #652: after the uploads are joined (their last rows are queued by then), before state.db closes.
+                    historyRpc?.close()
+                    closeTransferHistory(transferHistory)
+                }
+            }
+        } catch (e: Exception) {
+            // An IPC startup refusal is already reported as its one line.
+            if (e !is IpcAuth.StartupRefused) log.error("daemon: lifecycle error", e)
+            throw e
+        } finally {
+            cleanup()
+            cleanupDone.countDown()
+        }
+    }
+
+    fun close() {
+        closeSignal.complete(Unit)
+    }
+
+    /**
+     * Request shutdown and block until [start]'s cleanup (IpcServer close, StateDatabase close,
+     * lock release) has finished, bounded by [timeoutMs] (spec I7). For the JVM shutdown hook:
+     * the JVM halts as soon as every hook returns, so a hook that only called [close] raced the
+     * main thread's cleanup and could leave a stale `.lock.pid` and socket behind.
+     *
+     * Returns true when cleanup completed (or there was nothing to clean up), false on timeout.
+     */
+    fun shutdownAndWait(timeoutMs: Long = SHUTDOWN_DEADLINE_MS): Boolean {
+        close()
+        if (!lifecycleActive) return true
+        return try {
+            cleanupDone.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+    }
+
+    private fun renderLockContentionAndExit(lock: ProcessLock) {
+        val holder = lock.readLiveHolderInfo()
+        val holderDesc = when {
+            holder?.mode == ProcessLock.Mode.SYNC ->
+                "Another `unidrive sync` is running for profile '$profileName'"
+            holder?.mode == ProcessLock.Mode.DAEMON ->
+                "Another `unidrive daemon` already serves profile '$profileName'"
+            holder != null && holder.mode == null && holder.rawMode != null ->
+                "Profile '$profileName' is held by an unidrive process running in " +
+                    "unknown mode '${holder.rawMode}' (this binary may be older than the holder)"
+            else ->
+                "Another unidrive process is using profile '$profileName'"
+        }
+        val pidPart = if (holder != null) " (PID ${holder.pid})" else ""
+        System.err.println("$holderDesc$pidPart.")
+        exitProcess(1)
+    }
+
+    /**
+     * #652: opens this mount profile's transfer history, or returns null after one WARN line: the history is never a
+     * reason to refuse to serve, so every failure to open it (a file that cannot be restricted to the owner, a damaged
+     * or newer database, a full disk) leaves the daemon running without one.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun openTransferHistory(): TransferHistory? =
+        try {
+            openHistory(profileName, dbPath.resolveSibling(HISTORY_FILE_NAME))
+        } catch (e: Exception) {
+            log.warn("transfer history unavailable for profile '{}' ({}: {}); the daemon runs without it", profileName, e.javaClass.simpleName, e.message)
+            null
+        }
+
+    // #111: the push channel is best effort; a channel that cannot start leaves the daemon on its poll alone.
+    private fun wakePollerOnRemoteChangeHint(
+        provider: CloudProvider,
+        poller: EnumeratePoller,
+    ) {
+        try {
+            provider.onRemoteChangeHint { poller.wake() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("remote change hints are off: the provider's channel did not start ({}); the poll stays", e.javaClass.simpleName)
+        }
+    }
+
+    // The views the profile asks for that the provider declares; each one it does not is left out with one INFO line. A provider
+    // that declares a kind and answers Unsupported at runtime (a server without the route) keeps it: that view is shown unavailable.
+    private fun viewsTheProviderHas(cloud: CloudProvider): List<ViewSpec> {
+        if (views.isEmpty()) return views
+        val declared = cloud.capabilities()
+        val (kept, dropped) = views.partition { Capability.View(it.kind) in declared }
+        for (spec in dropped) {
+            log.info("The {} view is not shown: the provider '{}' has no such view", ViewNamespaces.wireName(spec.kind), cloud.id)
+        }
+        return kept
+    }
+
+    /** #652: writes what is queued and closes the history file. Bounded by the history's own close; never throws. */
+    @Suppress("TooGenericExceptionCaught")
+    private fun closeTransferHistory(history: TransferHistory?) {
+        try {
+            history?.close()
+        } catch (e: Exception) {
+            log.warn("closing the transfer history of profile '{}' failed: {}", profileName, e.message)
+        }
+    }
+
+    private fun cleanup() {
+        runCatching { ipcServer?.close() }
+        ipcServer = null
+        runCatching { retryQuotaPersist(db) }
+        runCatching { db?.close() }
+        db = null
+        runCatching { lock?.unlock() }
+        lock = null
+    }
+
+    // ── #655: the quota snapshot ─────────────────────────────────────────────
+
+    /**
+     * Triggers a single-flight quota fetch when a client is asking (status request), the TTL
+     * has expired (or nothing was fetched yet), and the facility is on. Never blocks the
+     * reply: the fetch runs on serveScope and the NEXT status serves the fresh snapshot.
+     * The reply's own `stale` flag is recomputed from the TTL, so a client sees staleness
+     * immediately even before the fetch lands.
+     */
+    private fun maybeTriggerQuotaRefresh(
+        clientCount: Int,
+        scope: kotlinx.coroutines.CoroutineScope,
+        // #778: no fetch while the daemon is paused; the snapshot is still marked stale once its TTL has expired.
+        paused: Boolean = false,
+    ) {
+        if (quotaRefreshMs <= 0 || clientCount <= 0) return
+        val snap = quotaSnapshot
+        val expired = snap == null || snap.fetchedAtMs == null ||
+            System.currentTimeMillis() - snap.fetchedAtMs >= quotaRefreshMs
+        if (snap != null && !expired && !snap.stale) return
+        if (snap != null && !snap.stale && expired && !quotaRefreshInFlight.get()) {
+            // Mark the served snapshot stale at once: a client must not read a TTL-expired
+            // value as fresh while the refetch is in flight.
+            quotaSnapshot = snap.copy(stale = true)
+        }
+        if (paused) return
+        if (!quotaRefreshInFlight.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                retryQuotaPersist(db)
+                val provider = providerFactory()
+                try {
+                    runCatching {
+                        provider.authenticateAndLog()
+                        val quota = provider.quota()
+                        val now = System.currentTimeMillis()
+                        quotaSnapshot =
+                            QuotaSnapshot(
+                                usedBytes = quota.used,
+                                totalBytes = quota.total,
+                                remainingBytes = quota.remaining,
+                                fetchedAtMs = now,
+                                stale = false,
+                                error = null,
+                            )
+                        persistQuotaSnapshot(db, quotaSnapshot!!)
+                    }.onFailure { e ->
+                        // Keep the last values; flag them stale and name the failure.
+                        quotaSnapshot = (quotaSnapshot ?: QuotaSnapshot()).copy(
+                            stale = true,
+                            error = "${e.javaClass.simpleName}: ${e.message ?: "quota fetch failed"}",
+                        )
+                        log.warn("quota refresh failed; serving the last snapshot flagged stale: {}", e.message)
+                    }
+                } finally {
+                    provider.close()
+                }
+            } catch (e: Exception) {
+                log.warn("quota refresh crashed: {}", e.message)
+            } finally {
+                quotaRefreshInFlight.set(false)
+            }
+        }
+    }
+
+    /** Reads the cached quota tuple `quota` persists (same keys, one shared cache). */
+    private fun readCachedQuotaSnapshot(db: StateDatabase): QuotaSnapshot? {
+        val used = db.getSyncState("quota_used")?.toLongOrNull() ?: return null
+        val total = db.getSyncState("quota_total")?.toLongOrNull() ?: return null
+        val remaining = db.getSyncState("quota_remaining")?.toLongOrNull()
+        val fetchedAt = db.getSyncState("quota_fetched_at")?.let { runCatching { Instant.parse(it) }.getOrNull() }
+            ?: return null
+        val age = System.currentTimeMillis() - fetchedAt.toEpochMilli()
+        return QuotaSnapshot(
+            usedBytes = used,
+            totalBytes = total,
+            remainingBytes = remaining,
+            fetchedAtMs = fetchedAt.toEpochMilli(),
+            stale = quotaRefreshMs <= 0 || age >= quotaRefreshMs,
+            error = null,
+        )
+    }
+
+    // Written through the daemon's own database. A second StateDatabase on the same file ran initialize() (schema
+    // writes) and met the write lock of a merge chunk on a connection of its own, with only its busy timeout to wait.
+    internal fun persistQuotaSnapshot(
+        db: StateDatabase?,
+        snap: QuotaSnapshot,
+    ) {
+        db ?: return
+        val values =
+            linkedMapOf(
+                "quota_used" to (snap.usedBytes?.toString() ?: return),
+                "quota_total" to (snap.totalBytes?.toString() ?: return),
+                "quota_fetched_at" to Instant.ofEpochMilli(snap.fetchedAtMs ?: return).toString(),
+            )
+        snap.remainingBytes?.let { values["quota_remaining"] = it.toString() }
+        unpersistedQuota.set(values)
+        retryQuotaPersist(db)
+    }
+
+    // The local scanner's manual batch must keep its transaction until it commits or rolls back, and it can stay open
+    // for a whole pass: a refresh that finds it open leaves the values here instead of waiting with the provider open.
+    // The next refresh, or the shutdown, writes them, unless a newer snapshot has replaced them by then.
+    private val unpersistedQuota = java.util.concurrent.atomic.AtomicReference<Map<String, String>?>(null)
+
+    internal fun retryQuotaPersist(db: StateDatabase?) {
+        db ?: return
+        val values = unpersistedQuota.get() ?: return
+        if (runCatching { db.trySetSyncStatesWhenIdle(values) }.getOrDefault(true)) unpersistedQuota.compareAndSet(values, null)
+    }
+
+    /**
+     * The one real cycle in the daemon's wiring, made explicit: the [SyncEngine] is built first and the
+     * hydration layer over it ([MountEngine.over]), but two of the engine's hooks call into that layer
+     * (whether an upload of a path is queued or in flight, and the view.invalidated fan-out). The engine
+     * takes them from this link, which is bound once, right after the hydration layer is built.
+     *
+     * Unbound (before that point, and always on a mirror daemon, which builds no hydration layer): no
+     * upload slot is held, and a view invalidation has no subscriber to reach, so it is dropped. No IPC
+     * request sees the unbound state: the socket binds after every handler is registered.
+     */
+    internal class HydrationLink {
+        private class Bound(val hydration: HydrationImpl, val ipc: HydrationIpcHandler)
+
+        @Volatile private var bound: Bound? = null
+
+        /** The bound hydration layer (the one the shutdown joins the uploads of), or null. */
+        val hydration: HydrationImpl? get() = bound?.hydration
+
+        fun bind(
+            hydration: HydrationImpl,
+            ipc: HydrationIpcHandler,
+        ) {
+            check(bound == null) { "the hydration link is bound once" }
+            bound = Bound(hydration, ipc)
+        }
+
+        fun hasUploadSlot(path: String): Boolean = bound?.hydration?.hasUploadSlot(path) ?: false
+
+        fun dispatchEvent(event: HydrationEvent) {
+            bound?.ipc?.dispatchEvent(event)
+        }
+    }
+
+    companion object {
+        const val SHUTDOWN_DEADLINE_MS: Long = 10_000
+
+        /** #652: the transfer history's file, in the profile's state folder next to state.db. */
+        const val HISTORY_FILE_NAME = "telemetry.db"
+
+        /**
+         * The scope the mount's hydration uploads and replays run in. It carries the `profile` MDC key
+         * (kept across suspensions and thread hops by [MDCContext]), so their log lines in the shared
+         * unidrive.log read `[<profile>]` instead of `[*]` (#150).
+         */
+        internal fun hydrationUploadScope(profileName: String): kotlinx.coroutines.CoroutineScope =
+            kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() +
+                    kotlinx.coroutines.Dispatchers.IO +
+                    MDCContext(mapOf("profile" to profileName)),
+            )
+
+        // Cross-repo IPC wire-protocol version, surfaced as the additive
+        // protocol_version field in the daemon.status reply so co-clients
+        // (Rust FUSE crate, C# CfAPI client) can warn/refuse on mismatch
+        // instead of failing on a missing field mid-operation. Bump ONLY on
+        // a breaking wire change; additive fields do not bump it. The golden
+        // corpus under src/test/resources/ipc-contract/ pins the current
+        // shape (IpcContractCorpusTest). Version 2 authenticates every
+        // connection (IpcAuth, docs/dev/specs/ipc-authentication.md).
+        const val IPC_PROTOCOL_VERSION: Int = IpcAuth.PROTOCOL_VERSION
+
+        /**
+         * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a
+         * full-scope connection, or when the server does not authenticate at all (the protocol-1 fallback,
+         * until the handshake is mandatory everywhere). With authentication on, anything but `full`, an
+         * unknown scope included, does not enumerate.
+         */
+        internal fun subscribeEnumerates(
+            authEnabled: Boolean,
+            scope: String?,
+        ): Boolean = !authEnabled || scope == IpcAuth.Scope.FULL.wire
+    }
+}

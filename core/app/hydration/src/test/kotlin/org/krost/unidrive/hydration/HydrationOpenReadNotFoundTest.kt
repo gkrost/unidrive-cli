@@ -1,0 +1,191 @@
+package org.krost.unidrive.hydration
+
+import kotlinx.coroutines.test.runTest
+import org.krost.unidrive.PermanentDownloadFailureException
+import org.krost.unidrive.RemoteIncompleteDownloadException
+import org.krost.unidrive.RemoteObjectMissingDownloadException
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * After the download re-resolve, a read that is STILL not-found means the
+ * remote item is genuinely gone. It used to surface to the mount as a
+ * catch-all EIO; it must now surface as a STABLE typed `not_found` token so
+ * the Rust co-daemon can map it to ENOENT instead of EIO.
+ *
+ * The token string `not_found` is a wire contract shared verbatim with the
+ * mount crate's `ipc_error_to_errno`. Two orthogonal invariants:
+ *  1. A genuinely-gone read (provider download fails not-found) surfaces
+ *     `OpenResult.Failed` whose error message is exactly `not_found`, for
+ *     both the typed provider-agnostic [PermanentDownloadFailureException]
+ *     and a provider exception carrying `statusCode == 404`.
+ *  2. A non-not-found download failure still surfaces a generic error (NOT
+ *     `not_found`) so the catch-all EIO mapping is preserved.
+ */
+class HydrationOpenReadNotFoundTest {
+    /** Local stand-in for a provider exception that carries an HTTP status code
+     *  (mirrors OneDrive's GraphApiException, which the hydration module cannot
+     *  reference directly — it is provider-agnostic). */
+    private class FakeStatusException(message: String, @Suppress("unused") val statusCode: Int) :
+        RuntimeException(message)
+
+    @Test
+    fun `open_for_read_of_a_gone_file_returns_typed_not_found`() = runTest {
+        val env = HydrationTestEnv()
+        env.stateDb.insertUnhydratedEntry("/gone.txt", remoteSize = 5)
+        env.syncEngine.makeNextDownloadThrow(
+            PermanentDownloadFailureException("remote object is gone (stable 404)"),
+        )
+
+        val result = env.hydration.openForRead("conn1", "h1", "/gone.txt")
+
+        assertTrue(result is OpenResult.Failed, "a genuinely-gone read must fail: $result")
+        assertEquals(
+            "not_found",
+            result.error.message,
+            "a genuinely-gone read must surface the stable not_found token",
+        )
+    }
+
+    @Test
+    fun `open_for_read_of_a_404_provider_failure_returns_typed_not_found`() = runTest {
+        val env = HydrationTestEnv()
+        env.stateDb.insertUnhydratedEntry("/gone404.txt", remoteSize = 5)
+        env.syncEngine.makeNextDownloadThrow(
+            FakeStatusException("itemNotFound: The resource could not be found.", statusCode = 404),
+        )
+
+        val result = env.hydration.openForRead("conn1", "h1", "/gone404.txt")
+
+        assertTrue(result is OpenResult.Failed, "a 404 provider download must fail: $result")
+        assertEquals(
+            "not_found",
+            result.error.message,
+            "a provider 404 must surface the stable not_found token",
+        )
+    }
+
+    @Test
+    fun `open_for_read_non_not_found_failure_stays_generic`() = runTest {
+        val env = HydrationTestEnv()
+        env.stateDb.insertUnhydratedEntry("/flaky.txt", remoteSize = 5)
+        // A 503 (transient server error) is NOT a genuine not-found.
+        env.syncEngine.makeNextDownloadThrow(
+            FakeStatusException("serviceUnavailable", statusCode = 503),
+        )
+
+        val result = env.hydration.openForRead("conn1", "h1", "/flaky.txt")
+
+        assertTrue(result is OpenResult.Failed)
+        assertTrue(
+            result.error.message != "not_found",
+            "a non-not-found failure must NOT be tagged not_found (it maps to EIO): ${result.error.message}",
+        )
+    }
+
+    @Test
+    fun `open_for_read_of_a_listed_item_with_missing_cloud_object_surfaces_its_own_status`() = runTest {
+        val env = HydrationTestEnv()
+        env.stateDb.insertUnhydratedEntry("/missing-object.bin", remoteSize = 5)
+        env.syncEngine.makeNextDownloadThrow(
+            RemoteObjectMissingDownloadException(
+                "remote_object_missing: Internxt still lists this file, but its encrypted bridge object is absent.",
+            ),
+        )
+
+        val result = env.hydration.openForRead("conn1", "h1", "/missing-object.bin")
+
+        assertTrue(result is OpenResult.Failed)
+        assertEquals(HydrationError.RemoteObjectMissing.message, result.error.message)
+        assertTrue(result.error.message != HydrationError.NotFound.message)
+    }
+
+    @Test
+    fun `open_read IPC reply carries the not_found token verbatim`() = runTest {
+        val env = HydrationTestEnv()
+        env.stateDb.insertUnhydratedEntry("/wire.txt", remoteSize = 5)
+        env.syncEngine.makeNextDownloadThrow(
+            PermanentDownloadFailureException("gone"),
+        )
+        val handler = HydrationIpcHandler(env.hydration)
+
+        val reply = handler.handle(
+            "conn1",
+            """{"verb":"hydration.open_read","handle_id":"h1","path":"/wire.txt"}""",
+        )
+
+        assertEquals("""{"ok":false,"error":"not_found"}""", reply.trim())
+    }
+
+    // #536: a stored object shorter than the size the drive reports (a truncated multipart upload
+    // another client wrote) is NOT a gone file — every download of it fails, so it carries its own
+    // token with the numbers instead of not_found ("file is gone") or a generic message.
+    @Test
+    fun `open_for_read_of_a_truncated_remote_object_surfaces_remote_incomplete_not_not_found`() = runTest {
+        val env = HydrationTestEnv()
+        env.stateDb.insertUnhydratedEntry("/truncated.7z", remoteSize = 360951317)
+        env.syncEngine.makeNextDownloadThrow(
+            RemoteIncompleteDownloadException(
+                "Stored object for /truncated.7z is short: 298844160 of 360951317 bytes",
+                storedBytes = 298_844_160L,
+                declaredBytes = 360_951_317L,
+            ),
+        )
+
+        val result = env.hydration.openForRead("conn1", "h1", "/truncated.7z")
+
+        assertTrue(result is OpenResult.Failed, "a short stored object must fail: $result")
+        assertEquals(
+            "remote_incomplete: got 298844160 of 360951317 bytes",
+            result.error.message,
+            "the truncated object is not a gone file: its own token, with the numbers",
+        )
+    }
+
+    @Test
+    fun `hydrate_of_a_truncated_remote_object_surfaces_remote_incomplete_not_not_found`() = runTest {
+        val env = HydrationTestEnv()
+        env.stateDb.insertUnhydratedEntry("/truncated2.7z", remoteSize = 360951317)
+        env.syncEngine.makeNextDownloadThrow(
+            RemoteIncompleteDownloadException(
+                "Stored object for /truncated2.7z is short: 298844160 of 360951317 bytes",
+                storedBytes = 298_844_160L,
+                declaredBytes = 360_951_317L,
+            ),
+        )
+
+        val result = env.hydration.hydrate("/truncated2.7z")
+
+        assertTrue(result is HydrateResult.Failed, "a short stored object must fail: $result")
+        assertEquals(
+            "remote_incomplete: got 298844160 of 360951317 bytes",
+            result.error.message,
+            "the hydrate verb carries the same token as the open_read path",
+        )
+    }
+
+    @Test
+    fun `open_read IPC reply carries the remote_incomplete token with the numbers verbatim`() = runTest {
+        val env = HydrationTestEnv()
+        env.stateDb.insertUnhydratedEntry("/wire2.7z", remoteSize = 360951317)
+        env.syncEngine.makeNextDownloadThrow(
+            RemoteIncompleteDownloadException(
+                "Stored object for /wire2.7z is short: 298844160 of 360951317 bytes",
+                storedBytes = 298_844_160L,
+                declaredBytes = 360_951_317L,
+            ),
+        )
+        val handler = HydrationIpcHandler(env.hydration)
+
+        val reply = handler.handle(
+            "conn1",
+            """{"verb":"hydration.open_read","handle_id":"h1","path":"/wire2.7z"}""",
+        )
+
+        assertEquals(
+            """{"ok":false,"error":"remote_incomplete: got 298844160 of 360951317 bytes"}""",
+            reply.trim(),
+        )
+    }
+}

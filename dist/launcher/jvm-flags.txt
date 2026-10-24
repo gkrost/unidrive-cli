@@ -1,0 +1,35 @@
+# The JVM flags every unidrive launcher passes, one per line ('#' starts a comment).
+# Single source: the Gradle deploy launchers, dist/install.sh, scripts/dev/unidrive-jfr.sh and
+# scripts/golden/unicode-tree/run-localfs.ps1 read this file, DaemonAutospawn reads it beside the
+# deployed jar (the deploys copy it there), and unidrive-windows mirrors it in EngineHost.JvmFlags
+# (a different repository: change both together).
+#
+# Not listed here because they depend on the machine or the caller: -Xmx (UNIDRIVE_XMX, default 2g),
+# -Djdk.net.unixdomain.tmpdir (the host's temp dir), -Duser.language/-Duser.country (--locale), and
+# the diagnostics paths (-XX:ErrorFile, -XX:HeapDumpPath, the daemon's -Xlog:gc*:file), which ride
+# the launcher templates and DaemonAutospawn under UNIDRIVE_DIAG_DIR.
+# Also env-gated, added by the launcher templates and DaemonAutospawn (not a plain flag line): the
+# -javaagent of the probe jar deployed beside the fat jar, under UNIDRIVE_COROUTINE_DEBUG=1 (the
+# daemon's coroutine-dump facility, gkrost/unidrive#613 — see CoroutineDebug).
+# Start with a small heap. Without it JDK <= 25 commit 1/64 of RAM up front (about 500 MB on a 32 GB
+# machine), touch 80-140 MB of it during start and give it back only at a later GC: a one-shot sync then
+# peaks at ~385 MB RSS instead of ~200 MB, and a daemon can sit at ~470 MB until that GC. Measured on
+# Linux with no wall-clock or CPU cost (the JVM runtime spike, #624). Java 27's
+# G1 already starts at ~72 MB; the flag is harmless there.
+-Xms64m
+# Pick IPv4 or IPv6 the way the operating system orders them (RFC 6724; IPv6 first on a normal dual-stack
+# host), as curl and browsers do. Java's own default tries IPv4 first, and on a dual-stack line whose IPv4
+# runs through a carrier NAT (DS-Lite) that path can drop connections while IPv6 is clean: measured on one
+# such line, 58 of 300 IPv4 connects to the Internxt gateway failed and 0 of 300 IPv6 ones, and three
+# failures in a row aborted a 700 GiB first enumeration each time.
+-Djava.net.preferIPv6Addresses=system
+-Dstdout.encoding=UTF-8
+-Dstderr.encoding=UTF-8
+--enable-native-access=ALL-UNNAMED
+# A daemon that survives an OutOfMemoryError runs on with dead worker threads; exit so the supervisor restarts it.
+# The JVM exits with code 3 then, distinct from the CLI's own 0 (ok), 1 (aborted) and 2 (per-action failures).
+-XX:+ExitOnOutOfMemoryError
+# The companion -XX:HeapDumpPath (a machine path) rides the launcher templates and DaemonAutospawn; without
+# it the dump lands next to the process CWD. A dump is about as large as the heap (about 2 GB at the
+# default -Xmx2g); pruning stays manual.
+-XX:+HeapDumpOnOutOfMemoryError

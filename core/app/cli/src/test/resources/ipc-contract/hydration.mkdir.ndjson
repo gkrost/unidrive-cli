@@ -1,0 +1,14 @@
+{"verb":"hydration.mkdir","path":"/docs/newdir"}
+{"ok":true}
+{"verb":"hydration.mkdir","path":"/missing/newdir"}
+{"ok":false,"error":"parent_not_found"}
+{"verb":"hydration.mkdir","path":"/outside"}
+{"ok":false,"error":"outside_scope"}
+{"verb":"hydration.mkdir","path":"/docs/../newdir"}
+{"ok":false,"error":"invalid_path"}
+{"verb":"hydration.mkdir","path":"/Papierkorb/Old/newdir"}
+{"ok":false,"error":"read_only"}
+{"verb":"hydration.mkdir","path":"/Recents/newdir"}
+{"ok":false,"error":"read_only"}
+{"verb":"hydration.mkdir","path":"/Recents"}
+{"ok":false,"error":"read_only"}

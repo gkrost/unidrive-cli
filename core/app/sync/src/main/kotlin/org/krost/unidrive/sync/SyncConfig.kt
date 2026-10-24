@@ -1,0 +1,1139 @@
+package org.krost.unidrive.sync
+
+import com.akuleshov7.ktoml.Toml
+import com.akuleshov7.ktoml.TomlInputConfig
+import com.akuleshov7.ktoml.exceptions.TomlDecodingException
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.descriptors.elementNames
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import org.krost.unidrive.sync.model.ConflictPolicy
+import org.slf4j.LoggerFactory
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
+
+// ── ktoml-serializable intermediates ─────────────────────────────────────────
+
+private val ktoml = Toml(inputConfig = TomlInputConfig(ignoreUnknownNames = true))
+private val configLog = LoggerFactory.getLogger("org.krost.unidrive.sync.SyncConfig")
+
+/**
+ * Top-level so the @Serializable-generated companion is in scope at the call site.
+ *
+ * [source] names the file in error messages. When ktoml rejects the content and the content holds an
+ * invalid escape in a double-quoted string, the failure is rethrown as an [IllegalArgumentException]
+ * that names the file, line and key and says how to write the value (see [findInvalidTomlEscape]).
+ */
+internal fun decodeRawSyncConfig(
+    content: String,
+    source: String = "config.toml",
+): RawSyncConfig =
+    try {
+        ktoml.decodeFromString(RawSyncConfig.serializer(), content)
+    } catch (e: Exception) {
+        val bad = findInvalidTomlEscape(content) ?: throw e
+        throw IllegalArgumentException(invalidEscapeMessage(source, bad), e)
+    }
+
+/** A backslash escape that TOML does not define, found in a double-quoted string. */
+internal data class InvalidTomlEscape(
+    val lineNumber: Int,
+    val key: String?,
+    val sequence: String,
+)
+
+/**
+ * #361: first invalid escape in a double-quoted (basic) string of [content], or null. In a TOML basic
+ * string a backslash starts an escape, so a Windows path like `C:\Users\me` is invalid (`\U` expects
+ * eight hex digits) and ktoml fails with an opaque NumberFormatException. Scans line by line and is
+ * only a diagnostic: it runs after ktoml has already failed, so a valid config is never affected.
+ */
+internal fun findInvalidTomlEscape(content: String): InvalidTomlEscape? {
+    val keyRegex = Regex("""^\s*([^\s=#\[][^=]*?)\s*=""")
+    var key: String? = null
+    content.lines().forEachIndexed { index, line ->
+        keyRegex.find(line)?.let { key = it.groupValues[1] }
+        var inBasic = false
+        var inLiteral = false
+        var i = 0
+        while (i < line.length) {
+            val c = line[i]
+            when {
+                inLiteral -> if (c == '\'') inLiteral = false
+                inBasic ->
+                    when (c) {
+                        '"' -> inBasic = false
+                        '\\' -> {
+                            val valid =
+                                when (line.getOrNull(i + 1)) {
+                                    'b', 't', 'n', 'f', 'r', '"', '\\' -> true
+                                    'u' -> hasHexDigits(line, i + 2, 4)
+                                    'U' -> hasHexDigits(line, i + 2, 8)
+                                    else -> false
+                                }
+                            if (!valid) return InvalidTomlEscape(index + 1, key, line.substring(i, minOf(i + 2, line.length)))
+                            i++
+                        }
+                    }
+                c == '"' -> inBasic = true
+                c == '\'' -> inLiteral = true
+                c == '#' -> return@forEachIndexed
+            }
+            i++
+        }
+    }
+    return null
+}
+
+private fun hasHexDigits(
+    line: String,
+    from: Int,
+    count: Int,
+): Boolean = from + count <= line.length && (from until from + count).all { line[it].isDigit() || line[it].lowercaseChar() in 'a'..'f' }
+
+private fun invalidEscapeMessage(
+    source: String,
+    bad: InvalidTomlEscape,
+): String =
+    buildString {
+        append("$source line ${bad.lineNumber}")
+        bad.key?.let { append(", key '$it'") }
+        append(": invalid escape sequence '${bad.sequence}' in a double-quoted string. ")
+        append("In TOML a backslash inside \"...\" starts an escape, so a Windows path must be written with ")
+        append("forward slashes (\"C:/Users/me/Drive\"), doubled backslashes (\"C:\\\\Users\\\\me\\\\Drive\"), ")
+        append("or a single-quoted literal string ('C:\\Users\\me\\Drive').")
+    }
+
+/** The Recents view of a profile: its folder name (null = the engine's default), whether it is shown, and how many files it lists. */
+data class RecentsSettings(
+    val folderName: String?,
+    val view: Boolean,
+    val limit: Int,
+)
+
+/** The Favorites view of a profile: its folder name (null = the engine's default) and whether it is shown. */
+data class FavoritesSettings(
+    val folderName: String?,
+    val view: Boolean,
+)
+
+/**
+ * UD-282: a TOML section header in `config.toml` that doesn't match the
+ * schema (`[general]` or `[providers.X]`). Surfaced via [validateTomlSections]
+ * so users get a loud signal when they typo'd `[profiles.X]` instead of the
+ * silent ktoml drop.
+ */
+data class UnknownTomlSection(
+    val section: String,
+    val lineNumber: Int,
+    /** Suggested correction from the common-typos table or Levenshtein search. */
+    val suggestion: String?,
+)
+
+private val knownTopLevelSections = setOf("general", "providers")
+
+/**
+ * Hand-typed common section-header typos. Higher-precision than Levenshtein
+ * for the patterns we've seen in real config.toml files.
+ */
+private val commonSectionTypos =
+    mapOf(
+        "profiles" to "providers",
+        "profile" to "providers",
+        "provider" to "providers",
+        "general_settings" to "general",
+        "globals" to "general",
+        "global" to "general",
+        "settings" to "general",
+    )
+
+/**
+ * UD-282: scan a config.toml content string for top-level section headers
+ * that don't match the schema. ktoml's [TomlInputConfig.ignoreUnknownNames]
+ * is `true` by default for forward-compat, but it also silently drops
+ * `[profiles.X]` (the most common user typo for `[providers.X]`) without
+ * any signal — the user sees `Unknown profile: X` minutes later from the
+ * resolver, not at config-load time.
+ *
+ * Returns a list of unknown sections with line numbers and "did you mean"
+ * suggestions. Empty list = clean config.
+ *
+ * Pure function — no logging, no side effects. The caller ([parseRaw])
+ * decides whether to log a warning or throw under strict mode.
+ */
+internal fun validateTomlSections(content: String): List<UnknownTomlSection> {
+    val unknowns = mutableListOf<UnknownTomlSection>()
+    val sectionRegex = Regex("""^\s*\[([^\]]+)]\s*(#.*)?$""")
+    content.lines().forEachIndexed { idx, line ->
+        // Skip comments without breaking on inline `#` after the header.
+        if (line.trimStart().startsWith("#")) return@forEachIndexed
+        val m = sectionRegex.matchEntire(line) ?: return@forEachIndexed
+        val section = m.groupValues[1].trim()
+        // Tables-of-tables like `[providers.foo.pin_patterns]` are nested
+        // under the top-level (`providers`), so we only check the prefix.
+        val topLevel = section.substringBefore('.')
+        if (topLevel !in knownTopLevelSections) {
+            unknowns.add(
+                UnknownTomlSection(
+                    section = section,
+                    lineNumber = idx + 1,
+                    suggestion = suggestKnownSection(section, topLevel),
+                ),
+            )
+        }
+    }
+    return unknowns
+}
+
+/** A key in a `[providers.X]` section that [RawProvider] does not have, so ktoml drops it. */
+internal data class UnknownProfileKey(
+    val profile: String,
+    val key: String,
+    val lineNumber: Int,
+)
+
+private val knownProviderKeys: Set<String> by lazy { RawProvider.serializer().descriptor.elementNames.toSet() }
+
+/**
+ * The keys of the `[providers.X]` sections that [RawProvider] does not know. ktoml runs with
+ * `ignoreUnknownNames`, so a misspelt or misplaced key (`sync_direktion`) is otherwise dropped without a
+ * word and the profile runs on the default. Sub-tables (`[providers.X.pin_patterns]`) and profile names
+ * that are quoted or hold a dot are not checked. Pure function; [parseRaw] logs what it returns.
+ */
+internal fun validateProviderKeys(content: String): List<UnknownProfileKey> {
+    val unknown = mutableListOf<UnknownProfileKey>()
+    val sectionRegex = Regex("""^\s*\[([^\]]+)]\s*(#.*)?$""")
+    val keyRegex = Regex("""^\s*([A-Za-z0-9_-]+)\s*=""")
+    var profile: String? = null
+    content.lines().forEachIndexed { idx, line ->
+        if (line.trimStart().startsWith("#")) return@forEachIndexed
+        sectionRegex.matchEntire(line)?.let { header ->
+            val parts = header.groupValues[1].trim().split('.')
+            profile = if (parts.size == 2 && parts[0].trim() == "providers") parts[1].trim().takeIf { it.none { c -> c == '"' || c == '\'' } } else null
+            return@forEachIndexed
+        }
+        val current = profile ?: return@forEachIndexed
+        val key = keyRegex.find(line)?.groupValues?.get(1) ?: return@forEachIndexed
+        if (key !in knownProviderKeys) unknown.add(UnknownProfileKey(current, key, idx + 1))
+    }
+    return unknown
+}
+
+private fun suggestKnownSection(
+    fullSection: String,
+    topLevel: String,
+): String? {
+    // Common-typo lookup first — beats Levenshtein for the patterns we've seen.
+    commonSectionTypos[topLevel.lowercase()]?.let { fixed ->
+        // Preserve the trailing `.X.Y` segments (e.g. `profiles.foo.pin_patterns`
+        // → `providers.foo.pin_patterns`).
+        val rest = fullSection.substringAfter('.', "")
+        return if (rest.isEmpty()) fixed else "$fixed.$rest"
+    }
+    // Fallback: Levenshtein distance ≤ 3 against the known top-level set.
+    val best =
+        knownTopLevelSections.minByOrNull { levenshteinDistance(topLevel.lowercase(), it.lowercase()) }
+            ?: return null
+    val distance = levenshteinDistance(topLevel.lowercase(), best.lowercase())
+    if (distance > 3) return null
+    val rest = fullSection.substringAfter('.', "")
+    return if (rest.isEmpty()) best else "$best.$rest"
+}
+
+/** Iterative Levenshtein distance — small input sizes; no need for memo optimization. */
+private fun levenshteinDistance(
+    a: String,
+    b: String,
+): Int {
+    if (a == b) return 0
+    if (a.isEmpty()) return b.length
+    if (b.isEmpty()) return a.length
+    var prev = IntArray(b.length + 1) { it }
+    var curr = IntArray(b.length + 1)
+    for (i in 1..a.length) {
+        curr[0] = i
+        for (j in 1..b.length) {
+            val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+            curr[j] = minOf(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
+        }
+        val tmp = prev
+        prev = curr
+        curr = tmp
+    }
+    return prev[b.length]
+}
+
+/**
+ * UD-282: opt-in strict mode that turns every unknown TOML section into a
+ * fatal `IllegalArgumentException`. Useful for CI and for users who'd
+ * rather see config typos halt the run than surface as `Unknown profile:`
+ * minutes later.
+ *
+ * Reads `UNIDRIVE_STRICT_CONFIG` env var. Truthy values: `1`, `true`,
+ * `yes` (case-insensitive).
+ */
+internal fun isStrictConfigMode(): Boolean = System.getenv("UNIDRIVE_STRICT_CONFIG")?.lowercase() in setOf("1", "true", "yes")
+
+@Serializable
+data class RawSyncConfig(
+    val general: RawGeneral = RawGeneral(),
+    val providers: Map<String, RawProvider> = emptyMap(),
+)
+
+@Serializable
+data class RawGeneral(
+    // UD-252: explicit opt-in to pin "the default profile" when invoked without -p.
+    // Honoured by both the CLI and the MCP jar via [SyncConfig.resolveDefaultProfile].
+    // When unset, both jars fall back to `ProviderRegistry.defaultProvider()`
+    // (UD-012; "localfs" when discovered, else the first SPI-discovered factory).
+    val default_profile: String? = null,
+    val sync_root: String? = null,
+    val poll_interval: Int? = null,
+    val min_poll_interval: Int? = null,
+    val max_poll_interval: Int? = null,
+    val conflict_policy: String? = null,
+    val log_file: String? = null,
+    val max_bandwidth_kbps: Int? = null,
+    val max_delete_percentage: Int? = null,
+    // UD-265: two-axis reframing of the deletion safeguard. The existing
+    // max_delete_percentage stays as-is (back-compat); these add an absolute
+    // cap that defends against wide-blast on large inventories where any
+    // sane percentage is still a catastrophe, and a per-subtree percentage
+    // that catches "delete 100 % of one top-level" runs which are tiny
+    // fractions of the whole drive (the 2026-05-16 incident shape: 405
+    // deletes = 0.14 % of 280k entries, well under the old 50 % brake).
+    val max_delete_absolute: Int? = null,
+    val max_delete_per_subtree_percent: Int? = null,
+    val sync_direction: String? = null,
+    val client_location: String? = null,
+    val client_network: String? = null,
+    val exclude_patterns: List<String>? = null,
+    val desktop_notifications: Boolean? = null,
+    val verify_integrity: Boolean? = null,
+    // #655: TTL of the daemon's quota snapshot in daemon.status (quota), in minutes; 0 = off.
+    val quota_refresh_minutes: Int? = null,
+    val use_trash: Boolean? = null,
+    val trash_emulation: Boolean? = null,
+    val trash_retention_days: Int? = null,
+    val file_versioning: Boolean? = null,
+    val max_versions: Int? = null,
+    val version_retention_days: Int? = null,
+    // Streaming reconciliation: process delta pages as they arrive instead
+    // of accumulating the entire remote inventory before reconciling.
+    // Per-page resolveSlice fires safe-now actions (downloads, uploads,
+    // placeholder creates) immediately and defers deletion-bearing actions
+    // to scan-end so the detectMissingAfterFullSync guard still gates them.
+    //
+    // Three-valued: true forces on, false forces off, null leaves it to
+    // the migration default — on for new installs, off for upgrades, with
+    // an auto-flip to on after the first successful streaming scan
+    // (sync_state key `streaming_reconciliation_enabled`). CLI flag wins
+    // over this key.
+    val streaming_reconciliation: Boolean? = null,
+)
+
+/** Decodes a TOML value that may be written as a single string or an array of strings. */
+internal object StringOrListSerializer : KSerializer<List<String>> {
+    private val list = ListSerializer(String.serializer())
+    override val descriptor: SerialDescriptor = list.descriptor
+
+    override fun serialize(
+        encoder: Encoder,
+        value: List<String>,
+    ) = list.serialize(encoder, value)
+
+    override fun deserialize(decoder: Decoder): List<String> =
+        try {
+            list.deserialize(decoder)
+        } catch (_: TomlDecodingException) {
+            listOf(decoder.decodeString())
+        }
+}
+
+/** Decodes a TOML boolean that may also be written as the string "true" or "false", the way `profile add` writes its options. */
+internal object BooleanOrStringSerializer : KSerializer<Boolean> {
+    override val descriptor: SerialDescriptor = Boolean.serializer().descriptor
+
+    override fun serialize(
+        encoder: Encoder,
+        value: Boolean,
+    ) = encoder.encodeBoolean(value)
+
+    override fun deserialize(decoder: Decoder): Boolean =
+        try {
+            decoder.decodeBoolean()
+        } catch (_: TomlDecodingException) {
+            when (val s = decoder.decodeString()) {
+                "true" -> true
+                "false" -> false
+                else -> throw SerializationException("expected true or false, got '$s'")
+            }
+        }
+}
+
+@Serializable
+data class RawProvider(
+    // Profile metadata
+    val type: String? = null,
+    // #603 (U4): the profile's hosting mode, "mirror" | "mount" — chosen at creation, fixed afterwards.
+    // Absent = a modeless profile, which every command refuses (no legacy support; see ProfileMode).
+    val mode: String? = null,
+    // Free display text for front-ends (stored as typed). Never an identity: the profile name stays the
+    // config key, state directory, socket and sync-root id, and changing the label renames nothing.
+    val label: String? = null,
+    val sync_root: String? = null,
+    val root_path: String? = null, // localfs alternative
+    // localfs: accept a drive/filesystem root as root_path (refused by default).
+    @Serializable(with = BooleanOrStringSerializer::class)
+    val allow_drive_root: Boolean? = null,
+    // Sync settings
+    val pin_patterns: RawPinPatterns? = null,
+    val conflict_overrides: Map<String, String>? = null,
+    val exclude_patterns: List<String>? = null,
+    // Remote subtree(s) this profile syncs, e.g. "/_INBOX" or ["/_INBOX", "/alice_ssh"].
+    // Absent = the whole drive. The CLI --sync-path overrides it per invocation.
+    @Serializable(with = StringOrListSerializer::class)
+    val sync_path: List<String>? = null,
+    // #450: budget of this profile's hydration cache in bytes (the copies the mount's reads and
+    // writes leave under ~/.cache/unidrive/hydration/<profile>). 0 = unlimited. Absent = the default.
+    val hydration_cache_max_bytes: Long? = null,
+    // #463: how often `daemon run` polls the cloud for changes made elsewhere, in seconds. 0 = off.
+    // Absent = the default (60). `daemon run --poll-interval` overrides it.
+    val daemon_poll_seconds: Int? = null,
+    // #660: also read `.gitignore` files as ignore rules (beside `.unidrive.ignore`). Absent = off.
+    val honor_gitignore: Boolean? = null,
+    // #660: the account's own ignore rules, git syntax, applied at the root (below every rule file, above the
+    // built-in defaults). Not the same as exclude_patterns, which keep their glob syntax and meaning.
+    val ignore_rules: List<String>? = null,
+    // The name of the virtual folder that shows what the provider keeps in its trash (the trash namespace, read-only,
+    // under the root of the profile). Absent = "Papierkorb". A client sets it from its UI language; one folder name, no path.
+    val trash_folder_name: String? = null,
+    // The name of the virtual folder that lists the items the account shares with others (the Shared view, read-only, under
+    // the root of the profile). Absent = "Shared". A client sets it from its UI language; one folder name, no path.
+    val shared_folder_name: String? = null,
+    // Whether the profile shows that folder. Absent = DEFAULT_SHARED_VIEW. Only a mount profile of a provider that declares the view
+    // shows it.
+    val shared_view: Boolean? = null,
+    // The Recents view (the account's most recently changed files, read-only, under the root of the profile): the name of its
+    // folder (absent = "Recents"; one folder name, no path), whether the profile shows it (absent = DEFAULT_RECENTS_VIEW) and how many
+    // files it lists at most (absent = DEFAULT_RECENTS_LIMIT).
+    val recents_folder_name: String? = null,
+    val recents_view: Boolean? = null,
+    val recents_limit: Int? = null,
+    // The Favorites view (the account's favorite files, read-only, under the root of the profile): the name of its folder
+    // (absent = "Favorites"; one folder name, no path) and whether the profile shows it (absent = DEFAULT_FAVORITES_VIEW).
+    val favorites_folder_name: String? = null,
+    val favorites_view: Boolean? = null,
+    // S3 credentials
+    val bucket: String? = null,
+    val region: String? = null,
+    val endpoint: String? = null,
+    val access_key_id: String? = null,
+    val secret_access_key: String? = null,
+    // SFTP credentials
+    val host: String? = null,
+    val port: Int? = null,
+    val user: String? = null,
+    val remote_path: String? = null,
+    val identity: String? = null,
+    val password: String? = null,
+    // WebDAV credentials
+    val url: String? = null,
+    // WebDAV reuses `user` and `password` from above
+    // HiDrive credentials
+    val client_id: String? = null,
+    val client_secret: String? = null,
+    // OneDrive credentials
+    val authority_url: String? = null,
+    // OneDrive shared folders
+    val include_shared: Boolean? = null,
+    // #111: OneDrive remote-change notifications (Graph's socket.io endpoint) wake the poll. Absent = on; false = poll only.
+    val remote_notifications: Boolean? = null,
+    // OneDrive webhook
+    val webhook: Boolean? = null,
+    val webhook_port: Int? = null,
+    val webhook_url: String? = null,
+    // TLS
+    val trust_all_certs: Boolean? = null,
+    // Rclone
+    val rclone_remote: String? = null,
+    val rclone_path: String? = null,
+    val rclone_binary: String? = null,
+    val rclone_config: String? = null,
+    // UD-223: skip first-sync enumeration by adopting the provider's current cursor.
+    // OneDrive / Graph: `?token=latest`. Other providers: flag is a warn+no-op.
+    // Persists in config.toml so a user who opts in at profile creation doesn't need
+    // to pass `--fast-bootstrap` every time. CLI flag takes precedence.
+    val fast_bootstrap: Boolean? = null,
+    // Internxt destructive-overwrite guard. When set per profile, every
+    // `replaceFile` first renames the prior cloud content to
+    // `${plainName}.unidrive-prev-${utcStamp}` before creating the new
+    // version. Opt-in recovery insurance; default off. Threaded into
+    // InternxtConfig.keepOverwritten by InternxtProviderFactory.
+    val keep_overwritten: Boolean? = null,
+    // The sync policy of this profile alone: each key overrides the same-named [general] key for this profile
+    // (`unidrive backup add` writes them). Absent = the [general] value, then the default.
+    val sync_direction: String? = null,
+    val file_versioning: Boolean? = null,
+    val max_versions: Int? = null,
+    val trash_emulation: Boolean? = null,
+    val trash_retention_days: Int? = null,
+
+    // #578: the multipart upload policy, per profile (applies where multipart
+    // exists — Internxt today; other providers keep their path). The factory
+    // validates the ranges: concurrency 1..16 (1 = the single stream),
+    // chunk >= 5 MB (the bridge minimum), cutoff >= 100 MB.
+    val upload_concurrency: Int? = null,
+    val upload_chunk_mb: Int? = null,
+    val upload_cutoff_mb: Int? = null,
+)
+
+@Serializable
+data class RawPinPatterns(
+    val include: List<String> = emptyList(),
+    val exclude: List<String> = emptyList(),
+)
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+enum class SyncDirection { BIDIRECTIONAL, UPLOAD, DOWNLOAD }
+
+data class ProfileInfo(
+    val name: String,
+    val type: String,
+    val syncRoot: Path,
+    val rawProvider: RawProvider?,
+    /**
+     * #603 (U4): the profile's hosting mode, from `[providers.<name>] mode`. Null when the key is
+     * absent: a modeless profile, which every command refuses before anything is touched — it is never
+     * defaulted (owner decision: no legacy support, nothing assumes a legacy profile).
+     */
+    val mode: ProfileMode? = null,
+    /**
+     * True when this profile was discovered from a directory on disk that has
+     * no matching `[providers.<name>]` section in config.toml. An orphan profile
+     * has no declared type, credentials, or sync_root — treat it as read-only
+     * diagnostic data. The profile dir may contain a state.db from a prior
+     * `unidrive auth` run against a type-resolved name.
+     */
+    val isOrphan: Boolean = false,
+)
+
+class NoDefaultProfileException(message: String) : IllegalStateException(message)
+
+/** A config value the schema refuses (out of range, not one of the enum spellings); the message names the key. The CLI exits 78. */
+class ConfigValueException(message: String) : IllegalArgumentException(message)
+
+data class SyncConfig(
+    val syncRoot: Path,
+    val pollInterval: Int,
+    val minPollInterval: Int = 10,
+    val maxPollInterval: Int = 300,
+    val conflictPolicy: ConflictPolicy,
+    val logFile: Path?,
+    val maxBandwidthKbps: Int? = null,
+    val maxDeletePercentage: Int = 50,
+    // UD-265: defaults chosen to trip on the 2026-05-16 incident shape
+    // (405 deletes of a never-locally-hydrated subtree) while staying out
+    // of the way of routine sync activity (single-folder cleanups, small
+    // local-rm batches).
+    val maxDeleteAbsolute: Int = 50,
+    val maxDeletePerSubtreePercent: Int = 80,
+    val syncDirection: SyncDirection = SyncDirection.BIDIRECTIONAL,
+    val clientLocation: String? = null,
+    val clientNetwork: String? = null,
+    val globalExcludePatterns: List<String> = emptyList(),
+    val desktopNotifications: Boolean = false,
+    val verifyIntegrity: Boolean = false,
+    // #655: TTL of the daemon's quota snapshot in daemon.status (quota), in minutes; 0 = off.
+    val quotaRefreshMinutes: Int = 15,
+    val useTrash: Boolean = true,
+    val trashEmulation: Boolean = false,
+    val trashRetentionDays: Int = 30,
+    val fileVersioning: Boolean = false,
+    val maxVersions: Int = 5,
+    val versionRetentionDays: Int = 90,
+    // Raw TOML value of `[general] streaming_reconciliation`. Null when the
+    // key is absent. Final resolution (CLI > TOML > sync_state sentinel >
+    // hard default) happens in [resolveStreamingReconciliation] so the CLI
+    // can pass the same constant set without re-implementing the precedence.
+    val streamingReconciliation: Boolean? = null,
+    // Validated, normalised `[providers.<profile>] sync_path`; empty = whole drive.
+    val syncPaths: List<String> = emptyList(),
+    private val providers: Map<String, ProviderConfig>,
+) {
+    fun providerPinIncludes(providerId: String): List<String> = providers[providerId]?.pinIncludes ?: emptyList()
+
+    fun providerPinExcludes(providerId: String): List<String> = providers[providerId]?.pinExcludes ?: emptyList()
+
+    fun providerConflictOverrides(providerId: String): Map<String, ConflictPolicy> = providers[providerId]?.conflictOverrides ?: emptyMap()
+
+    fun providerExcludePatterns(providerId: String): List<String> = providers[providerId]?.excludePatterns ?: emptyList()
+
+    /** #450: this profile's hydration cache budget in bytes; 0 = unlimited. */
+    fun hydrationCacheMaxBytes(profileName: String): Long =
+        (providers[profileName]?.hydrationCacheMaxBytes ?: DEFAULT_HYDRATION_CACHE_MAX_BYTES).coerceAtLeast(0L)
+
+    /** #463: seconds between the daemon's polls of the cloud for this profile; 0 = off. */
+    fun daemonPollSeconds(profileName: String): Int =
+        (providers[profileName]?.daemonPollSeconds ?: DEFAULT_DAEMON_POLL_SECONDS).coerceAtLeast(0)
+
+    /**
+     * #655: TTL of the daemon's quota snapshot in daemon.status (`quota`), in ms; 0 = refresh
+     * off. The snapshot itself is served from memory/cache even when stale — the TTL only
+     * decides whether a client's status request triggers a provider fetch.
+     */
+    fun quotaRefreshMs(): Long = quotaRefreshMinutes.toLong() * 60_000L
+
+    /**
+     * #660: the ignore rules of a profile (its `honor_gitignore` and `ignore_rules` keys). The rule files themselves
+     * (`.unidrive.ignore`, `.gitignore` when honoured) are found where the profile keeps its local copy.
+     */
+    fun ignoreSettings(profileName: String): org.krost.unidrive.sync.ignore.IgnoreSettings =
+        org.krost.unidrive.sync.ignore.UploadIgnore.settingsFor(
+            honorGitignore = providers[profileName]?.honorGitignore ?: false,
+            accountRules = providers[profileName]?.ignoreRules ?: emptyList(),
+        )
+
+    /** The profile's `trash_folder_name`, null when unset (the engine then names the folder "Papierkorb"). */
+    fun trashFolderName(profileName: String): String? = providers[profileName]?.trashFolderName
+
+    /** The profile's `shared_folder_name`, null when unset (the engine then names the folder "Shared"). */
+    fun sharedFolderName(profileName: String): String? = providers[profileName]?.sharedFolderName
+
+    /** Whether the profile shows the Shared view: its `shared_view`, [DEFAULT_SHARED_VIEW] when unset. */
+    fun sharedView(profileName: String): Boolean = providers[profileName]?.sharedView ?: DEFAULT_SHARED_VIEW
+
+    /** The profile's Recents view as configured: its three keys, each at its default when unset. */
+    fun recents(profileName: String): RecentsSettings {
+        val p = providers[profileName]
+        return RecentsSettings(p?.recentsFolderName, p?.recentsView ?: DEFAULT_RECENTS_VIEW, p?.recentsLimit ?: DEFAULT_RECENTS_LIMIT)
+    }
+
+    /** The profile's Favorites view as configured: its two keys, each at its default when unset. */
+    fun favorites(profileName: String): FavoritesSettings {
+        val p = providers[profileName]
+        return FavoritesSettings(p?.favoritesFolderName, p?.favoritesView ?: DEFAULT_FAVORITES_VIEW)
+    }
+
+    fun effectiveExcludePatterns(providerId: String): List<String> =
+        DEFAULT_EXCLUDE_PATTERNS + globalExcludePatterns + (providers[providerId]?.excludePatterns ?: emptyList())
+
+    data class ProviderConfig(
+        val pinIncludes: List<String> = emptyList(),
+        val pinExcludes: List<String> = emptyList(),
+        val conflictOverrides: Map<String, ConflictPolicy> = emptyMap(),
+        val excludePatterns: List<String> = emptyList(),
+        val hydrationCacheMaxBytes: Long? = null,
+        val daemonPollSeconds: Int? = null,
+        val honorGitignore: Boolean = false,
+        val ignoreRules: List<String> = emptyList(),
+        val trashFolderName: String? = null,
+        val sharedFolderName: String? = null,
+        val sharedView: Boolean? = null,
+        val recentsFolderName: String? = null,
+        val recentsView: Boolean? = null,
+        val recentsLimit: Int? = null,
+        val favoritesFolderName: String? = null,
+        val favoritesView: Boolean? = null,
+    )
+
+    companion object {
+        /** #450: default hydration cache budget per profile, 20 GiB. */
+        const val DEFAULT_HYDRATION_CACHE_MAX_BYTES: Long = 20L * 1024 * 1024 * 1024
+
+        /** The floor of `poll_interval` and `min_poll_interval`, in seconds. */
+        const val MIN_POLL_INTERVAL_SECONDS: Int = 5
+
+        /**
+         * Whether a profile shows the Shared view when its `shared_view` is unset. On: the daemon shows the folder only where the
+         * provider declares the view (a provider without it gets no folder). The default is the owner's to change, here.
+         */
+        const val DEFAULT_SHARED_VIEW: Boolean = true
+
+        /** Whether a profile shows the Recents view when its `recents_view` is unset; as for Shared, only where the provider declares it. */
+        const val DEFAULT_RECENTS_VIEW: Boolean = true
+
+        /** Whether a profile shows the Favorites view when its `favorites_view` is unset; as for Shared, only where the provider declares it. */
+        const val DEFAULT_FAVORITES_VIEW: Boolean = true
+
+        /** How many files the Recents view lists when `recents_limit` is unset; a front-end asks for the ones after them page by page. */
+        const val DEFAULT_RECENTS_LIMIT: Int = 50
+
+        /** The most `recents_limit` may be: what the server's recents route answers at most. */
+        const val MAX_RECENTS_LIMIT: Int = 1000
+
+        /**
+         * #463: default interval of the daemon's poll for remote changes, in seconds. An incremental
+         * poll is one cheap delta query per provider (Internxt: two updatedAt-filtered listings, about
+         * 0.24 s on a large account; OneDrive: one delta request), the same cadence `sync --watch` uses.
+         */
+        const val DEFAULT_DAEMON_POLL_SECONDS: Int = 60
+
+        /**
+         * Patterns excluded from sync for every profile, before any user
+         * (TOML global / per-provider / CLI --exclude) patterns. Consolidates
+         * the unidrive-internal excludes (formerly hardcoded in SyncEngine)
+         * with desktop/OS/editor junk that must never reach the cloud.
+         * Matched by Reconciler.matchesGlob (handles **&#47;, *, ?, and
+         * escapes other chars incl. dollar-sign).
+         */
+        val DEFAULT_EXCLUDE_PATTERNS: List<String> = listOf(
+            // unidrive-internal
+            "/.unidrive-trash/**",
+            "/.unidrive-versions/**",
+            // version-control metadata directories (whole subtree, at any depth).
+            // The `**/.git/**` form matches both the directory itself (preVisit
+            // SKIP_SUBTREE) and every nested object, so a checked-out repo under
+            // the sync root never enters a plan (issue: .git uploaded in full).
+            "**/.git/**",  // Git
+            "**/.svn/**",  // Subversion
+            "**/.hg/**",   // Mercurial
+            "**/.bzr/**",  // Bazaar
+            // desktop / OS / editor junk
+            "**/.directory.lock", // KDE Dolphin
+            "**/.DS_Store",       // macOS
+            "**/._*",             // macOS AppleDouble
+            "**/Thumbs.db",       // Windows
+            "**/ehthumbs.db",     // Windows
+            "**/desktop.ini",     // Windows
+            "**/~\$*",            // MS Office lock files
+            "**/*.part",          // partial downloads
+            "**/*.crdownload",    // Chrome partial download
+            "**/*.swp",           // vim swap
+            "**/*.swx",           // vim swap
+            "**/*.tmp",           // generic temp
+            "**/*.unidrive-tmp",  // a provider's staging file of a download (also .ud-<hex>.unidrive-tmp), #1049 X2
+            "**/*~",              // generic backup
+        )
+
+        private val home: String = System.getenv("HOME") ?: System.getProperty("user.home")
+
+        /**
+         * UD-407: canonical config-dir resolver, used by both the CLI and MCP
+         * entry points so the same `unidrive` invocation lands on the same
+         * config file regardless of how it was launched.
+         *
+         * Precedence (highest first):
+         *  1. [explicitOverride] — the CLI's `-c/--config-dir` flag, when set.
+         *  2. `UNIDRIVE_CONFIG_DIR` env var. Documented at [Main.kt:reportConfigMissing]
+         *     as the workaround for MSIX-virtualised `%APPDATA%`; before
+         *     UD-407 the CLI advertised but ignored it.
+         *  3. `~/.config/unidrive/` if `config.toml` exists there. Lets users
+         *     opt out of `%APPDATA%` per-machine without setting an env var,
+         *     and converges Linux/Mac/Windows-MSIX users on the same default.
+         *  4. `%APPDATA%\unidrive\` on Windows.
+         *  5. `~/.config/unidrive/` as the cross-platform fallback.
+         *
+         * The MSIX angle: Claude Desktop and other MSIX-packaged hosts
+         * redirect `%APPDATA%` reads/writes to a per-package overlay
+         * (memory: project_msix_sandbox.md). A subprocess spawned from such
+         * a host sees a different on-disk file at the same nominal path
+         * than a native PowerShell does. Setting `UNIDRIVE_CONFIG_DIR` to a
+         * non-`%APPDATA%` path (or letting `~/.config/unidrive/` win)
+         * makes both views converge on the same file.
+         */
+        /**
+         * Resolved effective value for streaming reconciliation, in
+         * precedence order: CLI override > TOML key ([SyncConfig.streamingReconciliation])
+         * > sync_state sentinel (`streaming_reconciliation_enabled`, written
+         * by the engine after a successful streaming scan) > hard default
+         * of `false`. The hard default is conservative — upgrades stay on
+         * the established single-shot path until either the user explicitly
+         * opts in (`--streaming-reconciliation=on` or TOML) or has at least
+         * one successful streaming scan (after which the sentinel makes
+         * subsequent runs default-on without re-opting).
+         *
+         * Takes raw inputs rather than a `SyncConfig` + DB pair so it stays
+         * testable as a pure function.
+         */
+        fun resolveStreamingReconciliation(
+            cliOverride: Boolean?,
+            tomlValue: Boolean?,
+            sentinel: Boolean?,
+        ): Boolean = cliOverride ?: tomlValue ?: sentinel ?: false
+
+        /** Sync-state key for the auto-flip sentinel. Written by [SyncEngine] after a successful streaming scan. */
+        const val STREAMING_RECONCILIATION_SENTINEL_KEY: String = "streaming_reconciliation_enabled"
+
+        fun defaultConfigDir(explicitOverride: Path? = null): Path =
+            resolveConfigDir(
+                explicitOverride = explicitOverride,
+                envConfigDir = System.getenv("UNIDRIVE_CONFIG_DIR"),
+                appData = System.getenv("APPDATA"),
+                home = home,
+                xdgConfigExists = { Files.exists(it) },
+            )
+
+        /**
+         * UD-407: pure resolver, exposed for unit-testing the precedence
+         * order without env-var mutation. The OS-bound [defaultConfigDir]
+         * delegates here. See its doc-comment for the precedence rationale.
+         */
+        internal fun resolveConfigDir(
+            explicitOverride: Path?,
+            envConfigDir: String?,
+            appData: String?,
+            home: String,
+            xdgConfigExists: (Path) -> Boolean,
+        ): Path {
+            if (explicitOverride != null) return explicitOverride
+            if (envConfigDir != null) return Paths.get(envConfigDir)
+            val xdg = Paths.get(home, ".config", "unidrive")
+            if (xdgConfigExists(xdg.resolve("config.toml"))) return xdg
+            return if (appData != null) Paths.get(appData, "unidrive") else xdg
+        }
+
+        fun defaultConfigPath(): Path = defaultConfigDir().resolve("config.toml")
+
+        fun load(
+            configFile: Path,
+            providerId: String = org.krost.unidrive.ProviderRegistry.defaultProvider(),
+        ): SyncConfig {
+            if (!Files.exists(configFile)) return defaults(providerId)
+            val content = Files.readString(configFile)
+            return parse(content, providerId, configFile.toString())
+        }
+
+        // The default sync-root directory name comes from the provider's own
+        // metadata (`ProviderMetadata.syncRootDirName`), so a provider
+        // self-declares any name that differs from the title-cased id. A
+        // provider that doesn't set it — and any id with no discovered
+        // metadata — defaults to a title-cased id (e.g. "sftp" → ~/Sftp).
+        // OneDrive declares "OneDrive" to preserve existing users' ~/OneDrive
+        // layout; without that, title-casing would resolve to ~/Onedrive.
+        // This is the last provider-name dispatch site removed from SyncConfig.
+        fun defaultSyncRoot(providerId: String): Path {
+            val dirName =
+                org.krost.unidrive.ProviderRegistry.getMetadata(providerId)?.syncRootDirName
+                    ?: providerId.replaceFirstChar { it.uppercase() }
+            return Paths.get(home, dirName)
+        }
+
+        val KNOWN_TYPES: Set<String> get() = org.krost.unidrive.ProviderRegistry.knownTypes
+
+        // Paths-join, not string-concat: `home + "/Docs"` rendered every echoed
+        // expansion as "C:\Users\alice/Docs" on Windows — half of it in the OS's
+        // own separators, half in the cloud's.
+        private fun expandTilde(path: String): String =
+            if (path.startsWith("~")) Paths.get(home, path.substring(1)).toString() else path
+
+        fun resolveProfile(
+            name: String,
+            raw: RawSyncConfig,
+        ): ProfileInfo {
+            val section = raw.providers[name]
+            if (section != null) {
+                val type = section.type ?: name
+                if (type !in KNOWN_TYPES) {
+                    throw IllegalArgumentException(
+                        "Unknown provider type '$type' in profile '$name'. Supported: ${org.krost.unidrive.ProviderRegistry.knownTypes.joinToString(
+                            ", ",
+                        )}",
+                    )
+                }
+                val syncRoot =
+                    section.sync_root?.let { Paths.get(expandTilde(it)) }
+                        ?: raw.general.sync_root?.let { Paths.get(expandTilde(it)) }
+                        ?: defaultSyncRoot(type)
+                return ProfileInfo(
+                    name = name,
+                    type = type,
+                    syncRoot = syncRoot,
+                    rawProvider = section,
+                    mode = ProfileMode.fromConfig(section.mode), // null = modeless: the caller refuses (#603)
+                )
+            } else if (name in KNOWN_TYPES) {
+                val syncRoot =
+                    raw.general.sync_root?.let { Paths.get(expandTilde(it)) }
+                        ?: defaultSyncRoot(name)
+                return ProfileInfo(name = name, type = name, syncRoot = syncRoot, rawProvider = null, mode = null)
+            } else {
+                val configured = raw.providers.keys
+                throw IllegalArgumentException(
+                    buildString {
+                        append("Unknown profile: $name\n")
+                        if (configured.isNotEmpty()) append("Configured profiles: ${configured.joinToString(", ")}\n")
+                        append("Supported provider types: ${KNOWN_TYPES.joinToString(", ")}")
+                    },
+                )
+            }
+        }
+
+        fun defaults(providerId: String = org.krost.unidrive.ProviderRegistry.defaultProvider()) =
+            SyncConfig(
+                syncRoot = defaultSyncRoot(providerId),
+                pollInterval = 60,
+                minPollInterval = 10,
+                maxPollInterval = 300,
+                conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                logFile = null,
+                maxBandwidthKbps = null,
+                maxDeletePercentage = 50,
+                maxDeleteAbsolute = 50,
+                maxDeletePerSubtreePercent = 80,
+                syncDirection = SyncDirection.BIDIRECTIONAL,
+                clientLocation = null,
+                clientNetwork = null,
+                globalExcludePatterns = emptyList(),
+                desktopNotifications = false,
+                verifyIntegrity = false,
+                useTrash = true,
+                trashEmulation = false,
+                trashRetentionDays = 30,
+                fileVersioning = false,
+                maxVersions = 5,
+                versionRetentionDays = 90,
+                providers = emptyMap(),
+            )
+
+        fun parseRaw(
+            content: String,
+            source: String = "config.toml",
+        ): RawSyncConfig {
+            // UD-282: surface ignored TOML sections (most commonly the
+            // `[profiles.X]` → `[providers.X]` typo) instead of letting
+            // ktoml drop them silently.
+            val unknowns = validateTomlSections(content)
+            if (unknowns.isNotEmpty()) {
+                val strict = isStrictConfigMode()
+                unknowns.forEach { u ->
+                    val msg =
+                        buildString {
+                            append("config.toml line ${u.lineNumber}: ignored unknown section '[${u.section}]'")
+                            if (u.suggestion != null) {
+                                append(" — did you mean '[${u.suggestion}]'?")
+                            }
+                        }
+                    if (strict) {
+                        throw IllegalArgumentException(
+                            msg + " (UNIDRIVE_STRICT_CONFIG is set; remove the typo or unset the env var)",
+                        )
+                    } else {
+                        configLog.warn(msg)
+                    }
+                }
+            }
+            validateProviderKeys(content).forEach { k ->
+                configLog.warn("config.toml line ${k.lineNumber}: ignored unknown key '${k.key}' in [providers.${k.profile}]")
+            }
+            return decodeRawSyncConfig(content, source)
+        }
+
+        /**
+         * The single source of truth for "which profile does unidrive use when the user did not
+         * pass `-p`?" (CLI and MCP call it, so they stay identical).
+         *
+         * Resolution order, the same rule as the Windows client scripts:
+         *   1. `[general] default_profile = "..."`, when set and not blank.
+         *   2. The ONLY configured profile, when exactly one is configured.
+         *   3. Otherwise [NoDefaultProfileException]: with several profiles the message lists them
+         *      (name and type) and asks for `-p`; with none it says that no profile is configured.
+         * A profile of another type is never picked silently, and no profile is ever invented from
+         * a provider type name.
+         */
+        fun resolveDefaultProfile(raw: RawSyncConfig): String {
+            raw.general.default_profile?.takeIf { it.isNotBlank() }?.let { return it }
+            if (raw.providers.size == 1) return raw.providers.keys.first()
+            throw NoDefaultProfileException(noDefaultProfileMessage(raw))
+        }
+
+        /** [resolveDefaultProfile] over `config.toml` in [configDir]; a missing file is no profile. */
+        fun resolveDefaultProfile(configDir: Path): String {
+            val configFile = configDir.resolve("config.toml")
+            val raw =
+                if (Files.exists(configFile)) parseRaw(Files.readString(configFile), configFile.toString()) else parseRaw("[general]\n")
+            return resolveDefaultProfile(raw)
+        }
+
+        /** The refusal for "no `-p`, no `default_profile`, and not exactly one profile". */
+        fun noDefaultProfileMessage(raw: RawSyncConfig): String =
+            if (raw.providers.isEmpty()) {
+                "No profile configured: add an account first (unidrive profile add)."
+            } else {
+                val listed = raw.providers.entries.joinToString(", ") { (name, p) -> "$name (${p.type ?: name})" }
+                "No default profile is set and several profiles are configured: $listed. " +
+                    "Pass -p <name>, or set default_profile in [general] (unidrive profile default <name>)."
+            }
+
+        /**
+         * #560 U6: the profiles' local roots must not alias each other. Two mirror profiles may
+         * not share a sync root, may not nest one inside the other, may not reach the same folder
+         * through different paths (a symlink alias), and two profile names may not differ only in
+         * case (their profile folders, IPC sockets and cache keys would collide on a
+         * case-insensitive filesystem). A mount profile's `sync_root` key is not compared: the
+         * cutover left it unused, and a pending retire-or-adopt folder must not block unrelated
+         * profiles.
+         *
+         * Each root is compared both as the lexical path and as the resolved real path (symlinks
+         * collapsed; a not-yet-existing path keeps its lexical form), so nesting is caught before
+         * the folder exists too. Enforced by `Main` at every start and by `profile add`, before
+         * anything is mutated. [caseInsensitive] defaults to the host OS; a parameter so the
+         * Windows rules are testable anywhere.
+         */
+        fun detectRootIsolationConflicts(
+            raw: RawSyncConfig,
+            caseInsensitive: Boolean = System.getProperty("os.name", "").lowercase().contains("win"),
+        ): String? {
+            val seenNames = HashMap<String, String>() // lower-case name → first profile
+            class Root(
+                val profile: String,
+                val lexical: java.nio.file.Path,
+                val real: java.nio.file.Path,
+            )
+
+            val roots = mutableListOf<Root>()
+            for ((name, rp) in raw.providers) {
+                val lower = name.lowercase()
+                val prior = seenNames[lower]
+                if (prior != null && prior != name) {
+                    return "Profiles '$prior' and '$name' differ only in case; their profile folders, " +
+                        "IPC sockets and caches would collide. Rename one of them."
+                }
+                seenNames[lower] = name
+                if (rp.mode?.lowercase() == "mount") continue // touches no sync root after the cutover
+                val rootStr = rp.sync_root?.let { expandTilde(it) } ?: continue
+                val lexical = Paths.get(rootStr).normalize().toAbsolutePath()
+                val real = runCatching { lexical.toRealPath() }.getOrDefault(lexical)
+                roots.add(Root(name, lexical, real))
+            }
+            // Compare on '/'-separated strings so the rules read the same on every OS.
+            fun fold(p: java.nio.file.Path): String {
+                val s = p.toString().replace('\\', '/')
+                return if (caseInsensitive) s.lowercase() else s
+            }
+
+            fun nested(x: String, y: String): Boolean = x.startsWith("$y/") || y.startsWith("$x/")
+            for (i in roots.indices) {
+                for (j in roots.indices) {
+                    if (j <= i) continue
+                    val (a, b) = roots[i] to roots[j]
+                    val la = fold(a.lexical)
+                    val lb = fold(b.lexical)
+                    val ra = fold(a.real)
+                    val rb = fold(b.real)
+                    when {
+                        ra == rb ->
+                            return "Profiles '${a.profile}' and '${b.profile}' reach the same sync root " +
+                                "(${a.real}). Each profile needs its own root."
+                        nested(ra, rb) ->
+                            return "Profiles '${a.profile}' and '${b.profile}' have nested sync roots " +
+                                "(${a.real} is inside ${b.real}, or the reverse). Each profile needs its own root."
+                        nested(la, lb) ->
+                            return "Profiles '${a.profile}' and '${b.profile}' have nested sync roots " +
+                                "(${a.lexical} is inside ${b.lexical}, or the reverse). Each profile needs its own root."
+                    }
+                }
+            }
+            return null
+        }
+
+        fun parse(
+            content: String,
+            profileName: String = org.krost.unidrive.ProviderRegistry.defaultProvider(),
+            source: String = "config.toml",
+        ): SyncConfig {
+            val raw = decodeRawSyncConfig(content, source)
+            return raw.toSyncConfig(profileName)
+        }
+
+        private fun parseDirection(value: String): SyncDirection =
+            when (value.lowercase()) {
+                "bidirectional" -> SyncDirection.BIDIRECTIONAL
+                "upload" -> SyncDirection.UPLOAD
+                "download" -> SyncDirection.DOWNLOAD
+                else ->
+                    throw ConfigValueException(
+                        "sync_direction = \"$value\": expected \"bidirectional\", \"upload\" or \"download\". " +
+                            "An unknown spelling would otherwise sync both ways.",
+                    )
+            }
+
+        private fun parsePolicy(value: String): ConflictPolicy =
+            when (value.lowercase()) {
+                "last_writer_wins" -> ConflictPolicy.LAST_WRITER_WINS
+                else -> ConflictPolicy.KEEP_BOTH
+            }
+
+        private fun RawSyncConfig.toSyncConfig(profileName: String): SyncConfig {
+            val profile = providers[profileName]
+            val providerType = profile?.type ?: profileName
+            val syncRoot =
+                profile?.sync_root?.let { Paths.get(expandTilde(it)) }
+                    ?: general.sync_root?.let { Paths.get(expandTilde(it)) }
+                    ?: defaultSyncRoot(providerType)
+            val logFile = general.log_file?.let { Paths.get(expandTilde(it)) }
+            val providerConfigs =
+                providers.mapValues { (_, rp) ->
+                    ProviderConfig(
+                        pinIncludes = rp.pin_patterns?.include ?: emptyList(),
+                        pinExcludes = rp.pin_patterns?.exclude ?: emptyList(),
+                        conflictOverrides =
+                            (rp.conflict_overrides ?: emptyMap())
+                                .mapKeys { (k, _) -> k.removeSurrounding("\"") }
+                                .mapValues { (_, v) -> parsePolicy(v) },
+                        excludePatterns = rp.exclude_patterns ?: emptyList(),
+                        hydrationCacheMaxBytes = rp.hydration_cache_max_bytes,
+                        daemonPollSeconds = rp.daemon_poll_seconds,
+                        honorGitignore = rp.honor_gitignore ?: false,
+                        ignoreRules = rp.ignore_rules ?: emptyList(),
+                        trashFolderName = rp.trash_folder_name,
+                        sharedFolderName = rp.shared_folder_name,
+                        sharedView = rp.shared_view,
+                        recentsFolderName = rp.recents_folder_name,
+                        recentsView = rp.recents_view,
+                        recentsLimit = rp.recents_limit,
+                        favoritesFolderName = rp.favorites_folder_name,
+                        favoritesView = rp.favorites_view,
+                    )
+                }
+            val pollInt = general.poll_interval ?: 60
+            if (pollInt < MIN_POLL_INTERVAL_SECONDS) {
+                throw ConfigValueException("[general] poll_interval = $pollInt: must be at least $MIN_POLL_INTERVAL_SECONDS (seconds).")
+            }
+            profile?.hydration_cache_max_bytes?.let {
+                if (it < 0) {
+                    throw ConfigValueException(
+                        "[providers.$profileName] hydration_cache_max_bytes = $it: must be 0 (unlimited) or more; a negative budget is not \"unlimited\".",
+                    )
+                }
+            }
+            val rawMin = general.min_poll_interval ?: 10
+            val rawMax = general.max_poll_interval ?: 300
+            return SyncConfig(
+                syncRoot = syncRoot,
+                pollInterval = pollInt,
+                minPollInterval = rawMin.coerceIn(MIN_POLL_INTERVAL_SECONDS, pollInt),
+                maxPollInterval = rawMax.coerceAtLeast(pollInt),
+                conflictPolicy = general.conflict_policy?.let { parsePolicy(it) } ?: ConflictPolicy.KEEP_BOTH,
+                logFile = logFile,
+                maxBandwidthKbps = general.max_bandwidth_kbps,
+                maxDeletePercentage = (general.max_delete_percentage ?: 50).coerceIn(0, 100),
+                maxDeleteAbsolute = (general.max_delete_absolute ?: 50).coerceAtLeast(0),
+                maxDeletePerSubtreePercent = (general.max_delete_per_subtree_percent ?: 80).coerceIn(0, 100),
+                syncDirection = (profile?.sync_direction ?: general.sync_direction)?.let { parseDirection(it) } ?: SyncDirection.BIDIRECTIONAL,
+                clientLocation = general.client_location,
+                clientNetwork = general.client_network,
+                globalExcludePatterns = general.exclude_patterns ?: emptyList(),
+                desktopNotifications = general.desktop_notifications ?: false,
+                verifyIntegrity = general.verify_integrity ?: false,
+                quotaRefreshMinutes = (general.quota_refresh_minutes ?: 15).coerceAtLeast(0),
+                useTrash = general.use_trash ?: true,
+                trashEmulation = profile?.trash_emulation ?: general.trash_emulation ?: false,
+                trashRetentionDays = (profile?.trash_retention_days ?: general.trash_retention_days ?: 30).coerceAtLeast(1),
+                fileVersioning = profile?.file_versioning ?: general.file_versioning ?: false,
+                maxVersions = (profile?.max_versions ?: general.max_versions ?: 5).coerceAtLeast(1),
+                versionRetentionDays = (general.version_retention_days ?: 90).coerceAtLeast(1),
+                streamingReconciliation = general.streaming_reconciliation,
+                syncPaths = SyncScope.fromConfig(profile?.sync_path, profileName),
+                providers = providerConfigs,
+            )
+        }
+    }
+}

@@ -1,0 +1,981 @@
+package org.krost.unidrive.cli
+
+import org.krost.unidrive.CredentialHealth
+import org.krost.unidrive.sync.ProfileInfo
+import org.krost.unidrive.sync.RawProvider
+import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.SyncConfig
+import org.krost.unidrive.sync.model.SyncEntry
+import picocli.CommandLine
+import java.nio.file.Files
+import java.sql.DriverManager
+import java.time.Duration
+import java.time.Instant
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class StatusCommandTest {
+    private val cmd = CommandLine(Main())
+
+    @Test
+    fun `status command is registered`() {
+        val statusCmd = cmd.subcommands["status"]
+        assertNotNull(statusCmd, "status subcommand should be registered")
+    }
+
+    @Test
+    fun `status command has --all flag`() {
+        val statusCmd = cmd.subcommands["status"]!!
+        val options = statusCmd.commandSpec.options().map { it.longestName() }
+        assertTrue("--all" in options)
+    }
+
+    @Test
+    fun `status command --all has -a short alias`() {
+        val statusCmd = cmd.subcommands["status"]!!
+        val allNames = statusCmd.commandSpec.options().flatMap { it.names().toList() }
+        assertTrue("-a" in allNames)
+    }
+
+    // UD-756 — HYDRATED / PENDING bucket split
+
+    private fun fileEntry(
+        path: String,
+        size: Long,
+        remoteId: String?,
+        isHydrated: Boolean,
+        isFolder: Boolean = false,
+    ) = SyncEntry(
+        path = path,
+        remoteId = remoteId,
+        remoteHash = remoteId?.let { "h" },
+        remoteSize = if (remoteId != null) size else 0L,
+        remoteModified = remoteId?.let { Instant.now() },
+        localMtime = if (isHydrated) 1711627200000 else null,
+        localSize = if (isHydrated) size else null,
+        isFolder = isFolder,
+        isPinned = false,
+        isHydrated = isHydrated,
+        lastSynced = if (remoteId != null) Instant.now() else Instant.EPOCH,
+    )
+
+    @Test
+    fun `UD-756 mixed entries split into hydrated and pending buckets`() {
+        // Three hydrated-and-uploaded files (HYDRATED bucket)
+        // Two pending uploads (PENDING bucket)
+        // One sparse placeholder (counted nowhere — bytes aren't on disk)
+        // One folder (skipped)
+        val entries =
+            listOf(
+                fileEntry("/a.bin", size = 1_000, remoteId = "r1", isHydrated = true),
+                fileEntry("/b.bin", size = 2_000, remoteId = "r2", isHydrated = true),
+                fileEntry("/c.bin", size = 3_000, remoteId = "r3", isHydrated = true),
+                fileEntry("/pending1.bin", size = 5_000, remoteId = null, isHydrated = true),
+                fileEntry("/pending2.bin", size = 7_000, remoteId = null, isHydrated = true),
+                fileEntry("/sparse.bin", size = 9_000, remoteId = "r4", isHydrated = false),
+                fileEntry("/folder", size = 0, remoteId = "rf", isHydrated = true, isFolder = true),
+            )
+
+        val buckets = computeLocalSizeBuckets(entries)
+
+        assertEquals(6_000L, buckets.hydratedBytes, "hydrated = 1000 + 2000 + 3000")
+        assertEquals(12_000L, buckets.pendingBytes, "pending = 5000 + 7000")
+    }
+
+    @Test
+    fun `UD-756 only-pending profile reports zero hydrated`() {
+        val entries =
+            listOf(
+                fileEntry("/p1.bin", size = 100, remoteId = null, isHydrated = true),
+                fileEntry("/p2.bin", size = 200, remoteId = null, isHydrated = true),
+            )
+        val buckets = computeLocalSizeBuckets(entries)
+        assertEquals(0L, buckets.hydratedBytes)
+        assertEquals(300L, buckets.pendingBytes)
+    }
+
+    @Test
+    fun `UD-756 only-hydrated profile reports zero pending`() {
+        val entries =
+            listOf(
+                fileEntry("/h1.bin", size = 1_000, remoteId = "r1", isHydrated = true),
+                fileEntry("/h2.bin", size = 2_000, remoteId = "r2", isHydrated = true),
+            )
+        val buckets = computeLocalSizeBuckets(entries)
+        assertEquals(3_000L, buckets.hydratedBytes)
+        assertEquals(0L, buckets.pendingBytes)
+    }
+
+    @Test
+    fun `UD-756 sparse placeholder contributes nothing`() {
+        // Sparse placeholders have isHydrated=false and localSize=null. They
+        // belong in the SPARSE column, not in HYDRATED or PENDING.
+        val entries =
+            listOf(
+                fileEntry("/s.bin", size = 10_000, remoteId = "r", isHydrated = false),
+            )
+        val buckets = computeLocalSizeBuckets(entries)
+        assertEquals(0L, buckets.hydratedBytes)
+        assertEquals(0L, buckets.pendingBytes)
+    }
+
+    // #136: the predicate gap row — remoteId=null AND isHydrated=false — matches
+    // only half of the UD-901 pending-upload predicate. It has no real bytes on
+    // disk, so it must land in NEITHER bucket; only the remoteId half would have
+    // counted it as pending.
+    @Test
+    fun `UD-901 gap row remoteId null isHydrated false counts as neither bucket`() {
+        val entries =
+            listOf(
+                fileEntry("/gap.bin", size = 4_000, remoteId = null, isHydrated = false),
+                fileEntry("/pending.bin", size = 6_000, remoteId = null, isHydrated = true),
+            )
+        val buckets = computeLocalSizeBuckets(entries)
+        assertEquals(0L, buckets.hydratedBytes)
+        assertEquals(6_000L, buckets.pendingBytes, "only the whole-predicate row is upload-pending")
+    }
+
+    // ── discoverProfilesFromRaw — `status --all` enumeration ────────────────
+
+    @Test
+    fun `discoverProfilesFromRaw enumerates two same-type profiles in declaration order`() {
+        // Reproduces the BACKLOG scenario: two Internxt profiles configured
+        // with the first declared as `[providers.internxt]` and the second
+        // as `[providers.alice_example_internxt_pst]`. status --all must
+        // surface BOTH, in declaration order (file top-to-bottom), not
+        // alphabetical order and not just the second one.
+        val toml =
+            """
+            |[general]
+            |
+            |[providers.internxt]
+            |type = "internxt"
+            |sync_root = "~/Internxt"
+            |
+            |[providers.alice_example_internxt_pst]
+            |type = "internxt"
+            |sync_root = "~/InternxtPst"
+            """.trimMargin()
+        val raw = SyncConfig.parseRaw(toml)
+        val baseDir = Files.createTempDirectory("status-test-")
+        try {
+            val profiles = discoverProfilesFromRaw(raw, baseDir)
+            assertEquals(
+                listOf("internxt", "alice_example_internxt_pst"),
+                profiles.map { it.name },
+                "both profiles should be enumerated in declaration order",
+            )
+            assertTrue(profiles.all { it.type == "internxt" }, "both profiles should resolve as type=internxt")
+        } finally {
+            Files.deleteIfExists(baseDir)
+        }
+    }
+
+    // ── shouldProbeRemoteForStatus — side-effect-free status invariant ─────
+
+    @Test
+    fun `shouldProbeRemoteForStatus returns true only for Ok health`() {
+        // The structural invariant `unidrive status` depends on: a network
+        // probe (which for Internxt cascades into authenticateInteractive
+        // and prompts for credentials) is only attempted when the offline
+        // health check has already said the persisted token is valid.
+        assertTrue(shouldProbeRemoteForStatus(CredentialHealth.Ok))
+    }
+
+    @Test
+    fun `shouldProbeRemoteForStatus returns false for ExpiresIn (stale token)`() {
+        // The BACKLOG entry's repro: Internxt JWT past its `exp` claim.
+        // InternxtProviderFactory.checkCredentialHealth returns
+        // `ExpiresIn(0, "JWT expired — run 'unidrive auth'")` in this case.
+        // status MUST treat that as "do not probe" — otherwise
+        // provider.authenticateAndLog() drops into authenticateInteractive
+        // and prompts for email/password/2FA mid-render.
+        assertFalse(shouldProbeRemoteForStatus(CredentialHealth.ExpiresIn(0, "JWT expired — run 'unidrive auth'")))
+    }
+
+    @Test
+    fun `shouldProbeRemoteForStatus returns false for Missing health`() {
+        // No persisted credentials at all → cannot probe; the cached cells
+        // are all the status command has to render.
+        assertFalse(shouldProbeRemoteForStatus(CredentialHealth.Missing("No credentials file — run 'unidrive auth'")))
+    }
+
+    @Test
+    fun `shouldProbeRemoteForStatus returns false for Warning health`() {
+        // Generic warning from the factory — also a no-probe signal.
+        assertFalse(shouldProbeRemoteForStatus(CredentialHealth.Warning("Token is malformed")))
+    }
+
+    @Test
+    fun `stale glyph label uses the warn-tier rendering with the literal STALE text`() {
+        // The BACKLOG worked example explicitly names `⚠︎ STALE` as the
+        // visible cell rendering when a profile's token is past expiry.
+        // GlyphRenderer.warnLabel("STALE") is the production call;
+        // assert both the unicode rendering AND the ASCII fallback so the
+        // contract is pinned regardless of stdout encoding.
+        val label = GlyphRenderer.warnLabel("STALE")
+        // GlyphRenderer.warnLabel produces either `[⚠︎ STALE]` (U+26A0 + VS15)
+        // or `[! STALE]` in ASCII mode. Both must contain the literal
+        // `STALE` so the user can recognise the cell at a glance.
+        assertTrue("STALE" in label, "expected stale glyph to contain STALE, got: $label")
+        assertTrue(label.startsWith("[") && label.endsWith("]"), "expected bracketed label, got: $label")
+    }
+
+    @Test
+    fun `discoverProfilesFromRaw preserves declaration order across mixed provider types`() {
+        // Two onedrive profiles + one internxt profile interleaved in file
+        // order: the helper must NOT regroup by type or sort alphabetically.
+        // (Grouping by type happens later in `showMultiProviderStatus`; the
+        // discovery step is purely about completeness + order.)
+        val toml =
+            """
+            |[providers.work_od]
+            |type = "onedrive"
+            |
+            |[providers.personal_inxt]
+            |type = "internxt"
+            |
+            |[providers.archive_od]
+            |type = "onedrive"
+            """.trimMargin()
+        val raw = SyncConfig.parseRaw(toml)
+        val baseDir = Files.createTempDirectory("status-test-")
+        try {
+            val profiles = discoverProfilesFromRaw(raw, baseDir)
+            assertEquals(
+                listOf("work_od", "personal_inxt", "archive_od"),
+                profiles.map { it.name },
+            )
+        } finally {
+            Files.deleteIfExists(baseDir)
+        }
+    }
+
+    // ── #248: no fabricated rows when nothing is configured ───────────────────
+
+    @Test
+    fun `#248 discoverProfilesFromRaw returns no profiles when nothing is configured`() {
+        // With no config.toml providers and no profile dirs, `status --all` used to list one
+        // row per registered provider TYPE (Internxt Drive, Microsoft OneDrive) as if two
+        // accounts existed, while plain `status` said "no unidrive config found". The
+        // discovery step must report an empty list so the caller can say the same thing.
+        val raw = SyncConfig.parseRaw("[general]\n")
+        val baseDir = Files.createTempDirectory("status-test-")
+        try {
+            assertEquals(
+                emptyList(),
+                discoverProfilesFromRaw(raw, baseDir).map { it.name },
+                "provider types are not accounts: an empty config must discover no profiles",
+            )
+            assertEquals(
+                emptyList(),
+                discoverProfilesFromRaw(raw, baseDir.resolve("does-not-exist")).map { it.name },
+                "a missing config dir must discover no profiles either",
+            )
+        } finally {
+            Files.deleteIfExists(baseDir)
+        }
+    }
+
+    // ── #361: a config the TOML reader rejects is reported with its full path ──
+
+    @Test
+    fun `#361 status names the config file path when a backslash path makes it unreadable`() {
+        val dir = Files.createTempDirectory("status-config-")
+        try {
+            val bs = Char(92)
+            val configFile = dir.resolve("config.toml")
+            Files.writeString(configFile, "[providers.lf]\ntype = \"localfs\"\nsync_root = \"C:${bs}Users${bs}me\"\n")
+            var message: String? = null
+            val command = CommandLine(Main())
+            command.executionExceptionHandler =
+                CommandLine.IExecutionExceptionHandler { ex, _, _ ->
+                    message = ex.message
+                    1
+                }
+            assertEquals(1, command.execute("-c", dir.toString(), "status"))
+            assertTrue(configFile.toString() in message.orEmpty(), "must name the config file path: $message")
+            assertTrue("sync_root" in message.orEmpty(), "must name the key: $message")
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    // ── #117: orphan-profile enumeration invariants ──────────────────────────
+
+    @Test
+    fun `#117 orphan dir (no config_toml entry) appears in discoverProfilesFromRaw flagged isOrphan`() {
+        // The root bug: a profile directory created by `unidrive auth` against a
+        // type-resolved name (e.g. `unidrive -p my-personal-drive auth`) writes a
+        // token to ~/.config/unidrive/my-personal-drive/ but does NOT write a
+        // [providers.my-personal-drive] section to config.toml if the user forgot
+        // that step. Pre-fix: discoverProfilesFromRaw only walked raw.providers;
+        // the orphan dir was invisible to `status --all`.
+        val toml =
+            """
+            |[general]
+            |
+            |[providers.onedrive]
+            |type = "onedrive"
+            |sync_root = "~/OneDrive"
+            """.trimMargin()
+        val raw = SyncConfig.parseRaw(toml)
+        val baseDir = Files.createTempDirectory("status-orphan-test-")
+        try {
+            // Declared profile dir
+            Files.createDirectories(baseDir.resolve("onedrive"))
+            // Orphan dir — present on disk, absent from config.toml
+            Files.createDirectories(baseDir.resolve("my-personal-drive"))
+
+            val profiles = discoverProfilesFromRaw(raw, baseDir)
+
+            val names = profiles.map { it.name }
+            assertTrue("onedrive" in names, "declared profile must appear")
+            assertTrue("my-personal-drive" in names, "orphan profile must appear in --all view")
+
+            val orphan = profiles.single { it.name == "my-personal-drive" }
+            assertTrue(orphan.isOrphan, "orphan profile must be flagged isOrphan=true")
+
+            val declared = profiles.single { it.name == "onedrive" }
+            assertFalse(declared.isOrphan, "declared profile must NOT be flagged isOrphan")
+        } finally {
+            baseDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `#117 declared profile with its dir present is NOT flagged orphan`() {
+        val toml =
+            """
+            |[providers.internxt]
+            |type = "internxt"
+            |sync_root = "~/Internxt"
+            """.trimMargin()
+        val raw = SyncConfig.parseRaw(toml)
+        val baseDir = Files.createTempDirectory("status-orphan-test-")
+        try {
+            Files.createDirectories(baseDir.resolve("internxt"))
+            val profiles = discoverProfilesFromRaw(raw, baseDir)
+            val profile = profiles.single { it.name == "internxt" }
+            assertFalse(profile.isOrphan, "a declared+present profile is not orphan")
+        } finally {
+            baseDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `#117 declared-but-no-dir profile appears and is NOT flagged orphan`() {
+        // Sensible behaviour for a declared profile whose dir does not yet exist
+        // (e.g. the user added [providers.onedrive] but has not yet run auth):
+        // the profile still appears so the table can show [✘ AUTH] or [– –],
+        // and it is NOT flagged as orphan (it has a config.toml section).
+        val toml =
+            """
+            |[providers.onedrive]
+            |type = "onedrive"
+            """.trimMargin()
+        val raw = SyncConfig.parseRaw(toml)
+        val baseDir = Files.createTempDirectory("status-orphan-test-")
+        try {
+            // Intentionally do NOT create baseDir/onedrive
+            val profiles = discoverProfilesFromRaw(raw, baseDir)
+            val profile = profiles.single { it.name == "onedrive" }
+            assertFalse(profile.isOrphan, "declared (no dir yet) profile is not orphan")
+        } finally {
+            baseDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `#117 hidden dirs under config baseDir are not surfaced as orphan profiles`() {
+        // Directories starting with '.' (e.g. .cache, .tmp) must never appear
+        // as profile rows — they are OS/tool artifacts, not profiles.
+        val raw = SyncConfig.parseRaw("[general]\n")
+        val baseDir = Files.createTempDirectory("status-orphan-test-")
+        try {
+            Files.createDirectories(baseDir.resolve(".hidden-artifact"))
+            Files.createDirectories(baseDir.resolve("real-orphan"))
+            val profiles = discoverProfilesFromRaw(raw, baseDir)
+            val names = profiles.map { it.name }
+            assertFalse(".hidden-artifact" in names, "hidden dirs must not appear as profiles")
+            assertTrue("real-orphan" in names, "non-hidden orphan dir must appear")
+        } finally {
+            baseDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `#117 orphan profile row uses ORPHAN status label`() {
+        // Rendering parity invariant: both views produce an [ORPHAN] label (not
+        // [AUTH], [ERR], or [– –]) for an orphan profile — the user needs to know
+        // the profile is undeclared, not merely unauthenticated.
+        val label = GlyphRenderer.orphanLabel()
+        assertTrue("ORPHAN" in label, "expected orphan label to contain ORPHAN, got: $label")
+        assertTrue(label.startsWith("[") && label.endsWith("]"), "expected bracketed label, got: $label")
+    }
+
+    @Test
+    fun `#117 buildOrphanProfile creates ProfileInfo with isOrphan=true`() {
+        val profile = buildOrphanProfile("my-lost-profile")
+        assertEquals("my-lost-profile", profile.name)
+        assertTrue(profile.isOrphan)
+        assertFalse(profile.rawProvider != null, "orphan has no rawProvider")
+    }
+
+    // ── PR #196 review fix: configured/type profiles take precedence over orphan-dir ──
+
+    @Test
+    fun `PR196 configured type=onedrive profile AND stale orphan dir named onedrive resolves via config not orphan`() {
+        // Regression guard: with a [providers.personal] type="onedrive" config AND an
+        // orphan dir literally named "onedrive/", `-p onedrive status` must go through
+        // the config path — NOT the orphan-dir fallback.  Pre-fix: discoverProfiles()
+        // found the orphan dir first and returned it with isOrphan=true, producing
+        // "[? ORPHAN]" instead of the configured account's real status.
+        val toml =
+            """
+            |[general]
+            |
+            |[providers.personal]
+            |type = "onedrive"
+            |sync_root = "~/OneDrive"
+            """.trimMargin()
+        val raw = SyncConfig.parseRaw(toml)
+        val baseDir = Files.createTempDirectory("pr196-test-")
+        try {
+            // Stale orphan dir — present on disk, no matching [providers.onedrive] section
+            Files.createDirectories(baseDir.resolve("onedrive"))
+
+            // The precedence gate must return true for "onedrive" because "onedrive"
+            // is a known provider type — resolveCurrentProfile() takes priority.
+            assertTrue(
+                resolvesSingleProfileViaConfig("onedrive", raw),
+                "known provider type 'onedrive' must route through the config path, not the orphan fallback",
+            )
+            // Also assert the stale dir IS visible as an orphan in --all view (unchanged #117 behaviour)
+            val allProfiles = discoverProfilesFromRaw(raw, baseDir)
+            val orphan = allProfiles.find { it.name == "onedrive" }
+            assertNotNull(orphan, "orphan dir must still appear in --all view (#117 behaviour preserved)")
+            assertTrue(orphan.isOrphan, "orphan dir must be flagged isOrphan=true in --all view")
+        } finally {
+            baseDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `PR196 genuinely orphan name (no configured profile no type match) routes to orphan fallback`() {
+        // The #117 addition must still work for names that have NO config section
+        // AND are not a known provider type (e.g. a custom profile dir the user
+        // created by hand before adding the config.toml section).
+        val toml =
+            """
+            |[general]
+            |
+            |[providers.onedrive]
+            |type = "onedrive"
+            |sync_root = "~/OneDrive"
+            """.trimMargin()
+        val raw = SyncConfig.parseRaw(toml)
+        val baseDir = Files.createTempDirectory("pr196-test-")
+        try {
+            Files.createDirectories(baseDir.resolve("my-lost-profile"))
+
+            // "my-lost-profile" is neither in raw.providers nor a known type
+            assertFalse(
+                resolvesSingleProfileViaConfig("my-lost-profile", raw),
+                "non-configured non-type name must NOT route through config path",
+            )
+            // The orphan dir IS visible in --all view (unchanged #117 behaviour)
+            val allProfiles = discoverProfilesFromRaw(raw, baseDir)
+            val orphan = allProfiles.find { it.name == "my-lost-profile" }
+            assertNotNull(orphan, "orphan dir must appear in --all view")
+            assertTrue(orphan.isOrphan, "orphan dir must be flagged isOrphan=true")
+        } finally {
+            baseDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `#117 declared and orphan profiles share identical column structure via AccountRow`() {
+        // Rendering parity: both a declared profile row and an orphan profile row
+        // are [AccountRow] instances with the same set of fields (same columns).
+        // This pins the invariant: a future refactor that adds columns to one path
+        // but not the other will fail here.
+        val declaredFields = AccountRow::class.java.declaredFields.map { it.name }.toSet()
+        // An orphan row is still an AccountRow — same class, same fields.
+        val orphanFields = AccountRow::class.java.declaredFields.map { it.name }.toSet()
+        assertEquals(declaredFields, orphanFields, "AccountRow column structure must be identical for all rows")
+        // Also assert the fields we pin as essential for the table (snapshot)
+        assertTrue("profileName" in declaredFields)
+        assertTrue("status" in declaredFields)
+        assertTrue("statusLabel" in declaredFields)
+        assertTrue("sparse" in declaredFields)
+        assertTrue("cloudSize" in declaredFields)
+        assertTrue("hydratedSize" in declaredFields)
+        assertTrue("pendingSize" in declaredFields)
+        assertTrue("lastSync" in declaredFields)
+    }
+
+    // ── Tracking-set engine detection ──────────────────────────────────────────
+
+    /**
+     * Helper: create a minimal tracking.db at [path] and seed it with
+     * [rows] entries using the same schema as SqliteTrackingSet.
+     *
+     * Each row tuple: (path, state, remoteFileId?, remoteSize, localSize)
+     */
+    private fun createTrackingDb(
+        path: java.nio.file.Path,
+        rows: List<Triple<String, String, Long>>,
+    ) {
+        Files.createDirectories(path.parent)
+        DriverManager.getConnection("jdbc:sqlite:$path").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    """
+                    CREATE TABLE IF NOT EXISTS tracking_entries (
+                        path             TEXT PRIMARY KEY,
+                        provider_id      TEXT NOT NULL,
+                        remote_file_id   TEXT,
+                        state            TEXT NOT NULL,
+                        local_hash       TEXT,
+                        local_size       INTEGER,
+                        remote_etag      TEXT,
+                        remote_size      INTEGER,
+                        last_synced      TEXT NOT NULL
+                    )
+                    """,
+                )
+            }
+            rows.forEach { (entryPath, state, size) ->
+                conn.prepareStatement(
+                    "INSERT INTO tracking_entries (path, provider_id, remote_file_id, state, local_size, remote_size, last_synced) " +
+                        "VALUES (?, 'internxt', ?, ?, ?, ?, ?)",
+                ).use { ps ->
+                    ps.setString(1, entryPath)
+                    ps.setString(2, if (state != "Untracked") "remote-$entryPath" else null)
+                    ps.setString(3, state)
+                    ps.setLong(4, size)
+                    ps.setLong(5, size)
+                    ps.setString(6, Instant.now().toString())
+                    ps.executeUpdate()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `tracking-set profile with tracking-db returns TS status label not empty OK`() {
+        // Core invariant: a profile whose configDir contains tracking.db must NOT
+        // be reported as "[✔ OK]" with zeros — that was the misleading display this
+        // fix addresses.  The status label must be the [TS] marker.
+        val dir = Files.createTempDirectory("ts-status-test-")
+        try {
+            val trackingDb = dir.resolve("tracking.db")
+            createTrackingDb(
+                trackingDb,
+                listOf(
+                    Triple("/Documents/report.pdf", "TrackedSynced", 50_000L),
+                    Triple("/Documents/photo.jpg", "TrackedSynced", 200_000L),
+                ),
+            )
+            val counts = readTrackingDbCounts(trackingDb)
+            assertNotNull(counts, "readTrackingDbCounts must read a valid tracking.db")
+            assertEquals(2, counts.total)
+            assertEquals(2, counts.synced)
+            assertEquals(0, counts.pending)
+            assertTrue(counts.cloudBytes > 0, "cloud bytes must reflect remote_size")
+            assertTrue(counts.localBytes > 0, "local bytes must reflect local_size")
+
+            // The status label must be [TS], not [✔ OK]
+            val tsLabel = GlyphRenderer.trackingSetLabel()
+            assertTrue("TS" in tsLabel, "tracking-set label must contain TS, got: $tsLabel")
+            assertTrue(tsLabel.startsWith("[") && tsLabel.endsWith("]"), "must be bracketed")
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `readTrackingDbCounts returns null when tracking-db absent`() {
+        // Legacy profiles with no tracking.db must not be affected — the reader
+        // returns null so the caller stays on the state.db path.
+        val dir = Files.createTempDirectory("ts-status-test-")
+        try {
+            val missing = dir.resolve("tracking.db")
+            val counts = readTrackingDbCounts(missing)
+            assertEquals(null, counts, "must return null when tracking.db does not exist")
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `readTrackingDbCounts reflects pending entries separately from synced`() {
+        // Pending entries signal in-flight transfers. The counts must distinguish
+        // them from synced entries so the operator can see that a transfer is
+        // underway (not just a clean state count of zero pending).
+        val dir = Files.createTempDirectory("ts-status-test-")
+        try {
+            val trackingDb = dir.resolve("tracking.db")
+            createTrackingDb(
+                trackingDb,
+                listOf(
+                    Triple("/a.txt", "TrackedSynced", 1_000L),
+                    Triple("/b.txt", "PendingUpload", 2_000L),
+                    Triple("/c.txt", "PendingDownload", 3_000L),
+                ),
+            )
+            val counts = readTrackingDbCounts(trackingDb)
+            assertNotNull(counts)
+            assertEquals(3, counts.total)
+            assertEquals(1, counts.synced)
+            assertEquals(2, counts.pending)
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `tracking-set profile with both tracking-db and state-db uses tracking-db counts`() {
+        // When both tracking.db (TS engine) and state.db (legacy engine) are
+        // present, tracking.db takes precedence.  The profile was migrated to the
+        // TS engine; showing legacy state.db figures would be misleading.
+        val dir = Files.createTempDirectory("ts-status-test-")
+        try {
+            val trackingDb = dir.resolve("tracking.db")
+            createTrackingDb(
+                trackingDb,
+                listOf(Triple("/ts-file.txt", "TrackedSynced", 99_000L)),
+            )
+            // Also create a state.db (simulating a profile that has both)
+            val stateDb = dir.resolve("state.db")
+            DriverManager.getConnection("jdbc:sqlite:$stateDb").use { conn ->
+                conn.createStatement().use { it.executeUpdate("CREATE TABLE IF NOT EXISTS sync_state (key TEXT, value TEXT)") }
+            }
+
+            val counts = readTrackingDbCounts(trackingDb)
+            assertNotNull(counts, "tracking.db must be read when both dbs present")
+            assertEquals(1, counts.total, "counts must come from tracking.db (1 entry), not state.db (0 entries)")
+            assertEquals(1, counts.synced)
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `readTrackingDbCounts returns null for a corrupt or non-sqlite file`() {
+        // A malformed tracking.db must not crash the status command — readTrackingDbCounts
+        // must return null and let buildAccountRow fall through to the legacy path.
+        val dir = Files.createTempDirectory("ts-status-test-")
+        try {
+            val badDb = dir.resolve("tracking.db")
+            Files.writeString(badDb, "this is not a sqlite database")
+            val counts = readTrackingDbCounts(badDb)
+            assertEquals(null, counts, "corrupt file must return null, not throw")
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    // ── PR #198 P2: TS profile credential health is not bypassed ──────────────
+
+    @Test
+    fun `tracking-set profile with missing credentials renders auth status not healthy TS`() {
+        // The bug: buildAccountRow early-returned buildTrackingSetAccountRow with
+        // status="ts" (healthy) before running checkCredentialHealth.  A TS profile
+        // whose credentials are MISSING must render the auth problem, not [TS].
+        // This test drives trackingSetRowStatus directly with Missing health.
+        val missingHealth = CredentialHealth.Missing("No credentials file — run 'unidrive auth'")
+        val (status, statusLabel) = trackingSetRowStatus(missingHealth)
+        assertEquals("auth", status, "missing credentials must produce status=auth, not ts")
+        assertTrue("AUTH" in statusLabel, "status label for missing creds must contain AUTH, got: $statusLabel")
+        assertTrue(statusLabel.startsWith("[") && statusLabel.endsWith("]"), "expected bracketed label")
+    }
+
+    @Test
+    fun `tracking-set profile with stale token renders warn status not healthy TS`() {
+        // A TS profile with an expired / stale token must render [⚠ STALE], not [TS].
+        // The TS counts must still be preserved (count fields are unaffected by health).
+        val staleHealth = CredentialHealth.ExpiresIn(0, "JWT expired — run 'unidrive auth'")
+        val (status, statusLabel) = trackingSetRowStatus(staleHealth)
+        assertEquals("warn", status, "stale token must produce status=warn, not ts")
+        assertTrue("STALE" in statusLabel, "status label for stale token must contain STALE, got: $statusLabel")
+        assertTrue(statusLabel.startsWith("[") && statusLabel.endsWith("]"), "expected bracketed label")
+    }
+
+    @Test
+    fun `tracking-set profile with healthy credentials renders TS status`() {
+        // Regression guard for the happy path introduced by #118: a TS profile
+        // with valid credentials must still render [TS] + status="ts".
+        val okHealth = CredentialHealth.Ok
+        val (status, statusLabel) = trackingSetRowStatus(okHealth)
+        assertEquals("ts", status, "healthy TS profile must produce status=ts")
+        assertTrue("TS" in statusLabel, "status label for healthy TS profile must contain TS, got: $statusLabel")
+        assertTrue(statusLabel.startsWith("[") && statusLabel.endsWith("]"), "expected bracketed label")
+    }
+
+    @Test
+    fun `legacy state-db-only profile is not affected by tracking-set detection`() {
+        // A profile with only state.db (no tracking.db) must return null from
+        // readTrackingDbCounts so buildAccountRow follows the unchanged legacy path.
+        val dir = Files.createTempDirectory("ts-status-test-")
+        try {
+            val stateDb = dir.resolve("state.db")
+            DriverManager.getConnection("jdbc:sqlite:$stateDb").use { conn ->
+                conn.createStatement().use { it.executeUpdate("CREATE TABLE IF NOT EXISTS sync_state (key TEXT, value TEXT)") }
+            }
+            val noTracking = dir.resolve("tracking.db")
+            val counts = readTrackingDbCounts(noTracking)
+            assertEquals(null, counts, "no tracking.db -> null -> legacy path unchanged")
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    // ── #232: a live daemon must not render STALE; a dead one still does ──────
+
+    @Test
+    fun `legacyRowStatus renders OK for an expiring token with a recent scan`() {
+        // A live `sync --watch` daemon refreshes last_full_scan every poll, so an
+        // expiring token whose last scan is recent must NOT show STALE (#232).
+        val now = Instant.parse("2026-05-29T12:00:00Z")
+        val recent = now.minusSeconds(60).toString()
+        val (status, label) = legacyRowStatus(isExpiring = true, lastSyncRaw = recent, now = now)
+        assertEquals("ok", status, "expiring token + recent scan must render ok, not warn")
+        assertFalse("STALE" in label, "expected non-stale label, got: $label")
+    }
+
+    @Test
+    fun `legacyRowStatus renders STALE for an expiring token with an old scan`() {
+        // #157 preserved: no recent scan (dead daemon) + expiring token → STALE.
+        val now = Instant.parse("2026-05-29T12:00:00Z")
+        val old = now.minus(Duration.ofHours(2)).toString()
+        val (status, label) = legacyRowStatus(isExpiring = true, lastSyncRaw = old, now = now)
+        assertEquals("warn", status, "expiring token + stale scan must render warn")
+        assertTrue("STALE" in label, "expected STALE label, got: $label")
+    }
+
+    @Test
+    fun `legacyRowStatus renders STALE for an expiring token that never synced`() {
+        // #157 preserved: never-synced (null last_full_scan) + expiring → STALE.
+        val now = Instant.parse("2026-05-29T12:00:00Z")
+        val (status, label) = legacyRowStatus(isExpiring = true, lastSyncRaw = null, now = now)
+        assertEquals("warn", status, "expiring token + no scan must render warn")
+        assertTrue("STALE" in label, "expected STALE label, got: $label")
+    }
+
+    @Test
+    fun `legacyRowStatus renders OK for a healthy non-expiring token`() {
+        val now = Instant.parse("2026-05-29T12:00:00Z")
+        val (status, label) = legacyRowStatus(isExpiring = false, lastSyncRaw = null, now = now)
+        assertEquals("ok", status, "healthy token must render ok")
+        assertFalse("STALE" in label, "expected non-stale label, got: $label")
+    }
+
+    @Test
+    fun `lastScanIsRecent is false for blank, null, and unparseable timestamps`() {
+        val now = Instant.parse("2026-05-29T12:00:00Z")
+        assertFalse(lastScanIsRecent(null, now))
+        assertFalse(lastScanIsRecent("", now))
+        assertFalse(lastScanIsRecent("not-a-timestamp", now))
+        assertTrue(lastScanIsRecent(now.minusSeconds(30).toString(), now))
+    }
+
+    // ── #243 review: STALE grace scales with the configured max_poll_interval ──
+
+    @Test
+    fun `effectiveStaleGrace floors at the 15-min default but scales with max_poll_interval`() {
+        // PR #243 review: the grace must not be shorter than the daemon's poll heartbeat.
+        assertEquals(STALE_GRACE, effectiveStaleGrace(300), "default 300s poll keeps the 15-min grace floor")
+        assertEquals(Duration.ofMinutes(30), effectiveStaleGrace(900), "15-min poll -> 30-min grace (two intervals)")
+        assertEquals(Duration.ofHours(2), effectiveStaleGrace(3600), "1-hour poll -> 2-hour grace")
+    }
+
+    @Test
+    fun `legacyRowStatus honours a tuned grace so a slow-polling daemon is not falsely STALE`() {
+        // A scan 20 min ago is STALE under the default 15-min grace, but OK once the profile's
+        // max_poll_interval implies a longer heartbeat (PR #243 review).
+        val now = Instant.parse("2026-05-29T12:00:00Z")
+        val scan20mAgo = now.minus(Duration.ofMinutes(20)).toString()
+        assertTrue(
+            "STALE" in legacyRowStatus(isExpiring = true, lastSyncRaw = scan20mAgo, now = now).second,
+            "default 15-min grace: a 20-min-old scan is STALE",
+        )
+        val (status, label) =
+            legacyRowStatus(isExpiring = true, lastSyncRaw = scan20mAgo, now = now, grace = Duration.ofMinutes(30))
+        assertEquals("ok", status, "30-min grace (tuned max_poll_interval): a 20-min-old scan is still OK")
+        assertFalse("STALE" in label, "expected non-stale label under the tuned grace, got: $label")
+    }
+
+    @Test
+    fun `scope status line lists the configured scope`() {
+        assertEquals(
+            "Sync scope: /_INBOX, /alice_ssh",
+            scopeStatusLine(configured = listOf("/_INBOX", "/alice_ssh"), persisted = emptyList()),
+        )
+    }
+
+    @Test
+    fun `scope status line warns about scoped history when nothing is configured`() {
+        val line = scopeStatusLine(configured = emptyList(), persisted = listOf("/old"))!!
+        assertTrue("/old" in line && "--full-tree" in line, "got: $line")
+    }
+
+    @Test
+    fun `scope status line is silent for an unscoped profile`() {
+        assertNull(scopeStatusLine(configured = emptyList(), persisted = emptyList()))
+    }
+
+    @Test
+    fun `scope status line names the profile when asked to`() {
+        assertEquals("Sync scope (work): /a", scopeStatusLine(listOf("/a"), emptyList(), "work"))
+        assertTrue(scopeStatusLine(emptyList(), listOf("/old"), "work")!!.startsWith("Sync scope (work): whole drive"))
+        assertNull(scopeStatusLine(emptyList(), emptyList(), "work"))
+    }
+
+    // #395: the multi-profile view names a scoped profile; whole-drive profiles stay silent.
+    @Test
+    fun `multi-profile scope lines list scoped profiles and skip whole-drive ones`() {
+        val baseDir = Files.createTempDirectory("status-scope-test-")
+        fun profile(
+            name: String,
+            syncPath: List<String>?,
+        ) = ProfileInfo(name, "localfs", baseDir.resolve("root-$name"), RawProvider(type = "localfs", sync_path = syncPath))
+
+        val history = baseDir.resolve("past")
+        Files.createDirectories(history)
+        StateDatabase(history.resolve("state.db")).also {
+            it.initialize()
+            it.setSyncState("effective_scope", "/old\t/older")
+            it.close()
+        }
+        val lines =
+            scopeLinesForProfiles(
+                listOf(
+                    profile("whole", null),
+                    profile("scoped", listOf("/_INBOX", "/b")),
+                    profile("past", null),
+                    profile("broken", listOf("relative")),
+                    ProfileInfo("orphan", "localfs", baseDir.resolve("root-orphan"), null, isOrphan = true),
+                ),
+                baseDir,
+            )
+        assertEquals(3, lines.size, "got: $lines")
+        assertTrue(lines.any { it == "Sync scope (scoped): /_INBOX, /b" }, "got: $lines")
+        assertTrue(lines.any { it.startsWith("Sync scope (past): whole drive") && "/old, /older" in it }, "got: $lines")
+        assertTrue(lines.any { it.startsWith("Sync scope (broken): invalid:") }, "got: $lines")
+    }
+
+    @Test
+    fun `status --all prints the scope of a scoped profile under the table`() {
+        val dir = Files.createTempDirectory("status-scope-all-")
+        val originalOut = System.out
+        try {
+            val bs = Char(92)
+            val root = dir.resolve("root").toString().replace(bs, '/')
+            Files.writeString(
+                dir.resolve("config.toml"),
+                listOf(
+                    "[providers.lf]",
+                    "type = \"localfs\"",
+                    "mode = \"mirror\"",
+                    "sync_root = \"$root\"",
+                    "sync_path = [\"/_INBOX\"]",
+                ).joinToString("\n", postfix = "\n"),
+            )
+            val captured = java.io.ByteArrayOutputStream()
+            System.setOut(java.io.PrintStream(captured, true, "UTF-8"))
+            val exit = CommandLine(Main()).execute("-c", dir.toString(), "status", "--all")
+            System.setOut(originalOut)
+            val out = captured.toString("UTF-8")
+            assertEquals(0, exit, out)
+            assertTrue("Sync scope (lf): /_INBOX" in out, "the scoped profile must be named: $out")
+        } finally {
+            System.setOut(originalOut)
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    // The quota probe builds the provider, and the localfs factory refuses the root of a profile that has used it and
+    // lost it (an unplugged drive, an offline share). A status listing is a diagnostic: it must show the account, not
+    // end the process (Main exits on a ConfigurationException; the refusal is a ProviderException the probe absorbs).
+    @Test
+    fun `status --all lists a localfs profile whose used root has vanished`() {
+        val dir = Files.createTempDirectory("status-vanished-root-")
+        val originalOut = System.out
+        try {
+            val bs = Char(92)
+            fun toml(name: String) = dir.resolve(name).toString().replace(bs, '/')
+            Files.writeString(
+                dir.resolve("config.toml"),
+                listOf(
+                    "[providers.lf]",
+                    "type = \"localfs\"",
+                    "mode = \"mirror\"",
+                    "sync_root = \"${toml("root")}\"",
+                    "root_path = \"${toml("gone")}\"",
+                ).joinToString("\n", postfix = "\n"),
+            )
+            Files.createFile(Files.createDirectories(dir.resolve("lf")).resolve("localfs-root-seen"))
+            val captured = java.io.ByteArrayOutputStream()
+            System.setOut(java.io.PrintStream(captured, true, "UTF-8"))
+            val exit = CommandLine(Main()).execute("-c", dir.toString(), "status", "--all")
+            System.setOut(originalOut)
+            val out = captured.toString("UTF-8")
+            assertEquals(0, exit, out)
+            assertTrue("lf" in out, "the profile must be listed: $out")
+            assertFalse(Files.exists(dir.resolve("gone")), "status must not re-create the vanished root")
+        } finally {
+            System.setOut(originalOut)
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `out-of-scope line lists a few entries and counts the rest`() {
+        assertNull(outOfScopeLine(emptyList()))
+        assertEquals("Out of scope on disk (left untouched): /a, /b", outOfScopeLine(listOf("/a", "/b")))
+        val many = (1..7).map { "/e$it" }
+        assertEquals(
+            "Out of scope on disk (left untouched): /e1, /e2, /e3, /e4, /e5, and 2 more",
+            outOfScopeLine(many),
+        )
+    }
+
+    // ── #646: status without a default profile ───────────────────────────────
+
+    private fun rawOf(
+        defaultProfile: String?,
+        vararg profiles: Pair<String, String>,
+    ): org.krost.unidrive.sync.RawSyncConfig {
+        val lines = mutableListOf("[general]")
+        if (defaultProfile != null) lines += "default_profile = \"$defaultProfile\""
+        for ((n, t) in profiles) {
+            lines += "[providers.$n]"
+            lines += "type = \"$t\""
+        }
+        return org.krost.unidrive.sync.SyncConfig.parseRaw(lines.joinToString(System.lineSeparator()))
+    }
+
+    @Test
+    fun `no-default notice fires when no -p and no default_profile over several profiles and lists them`() {
+        val notice = noDefaultProfileNotice(null, rawOf(null, "a" to "internxt", "b" to "localfs"))
+        assertNotNull(notice)
+        assertTrue("-p <name>" in notice, "the notice names the -p remedy: $notice")
+        assertTrue("-a" in notice, "the notice names the -a remedy: $notice")
+        assertTrue("a (internxt)" in notice && "b (localfs)" in notice, "the notice lists the profiles: $notice")
+    }
+
+    @Test
+    fun `no-default notice stays silent when a default exists is asked for or at most one profile is configured`() {
+        val two = arrayOf("a" to "internxt", "b" to "localfs")
+        assertNull(noDefaultProfileNotice("a", rawOf(null, *two)), "explicit -p")
+        assertNull(noDefaultProfileNotice(null, rawOf("a", *two)), "default_profile set")
+        assertNull(noDefaultProfileNotice(null, rawOf(null, "a" to "internxt")), "one profile is the default")
+        assertNull(noDefaultProfileNotice(null, rawOf(null)), "no profiles: the config-missing report owns it")
+    }
+}

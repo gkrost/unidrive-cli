@@ -1,0 +1,298 @@
+package org.krost.unidrive
+
+/**
+ * Base type for any provider-originated failure that the sync engine
+ * may want to log, classify, or report to the user.
+ *
+ * ## UD-203: server request-id correlation
+ *
+ * The optional [requestId] field carries the provider's server-side
+ * request identifier when the failure originated from an HTTP
+ * response that included one. Provider-specific factories populate it
+ * from the canonical header for that provider:
+ *
+ * | Provider | Header(s) read |
+ * |----------|----------------|
+ * | OneDrive (Microsoft Graph) | `request-id`, fallback `client-request-id` |
+ * | Internxt                   | `x-request-id` |
+ * | S3 / S3-compatible         | `x-amz-request-id` (primary); `x-amz-id-2` is captured separately by the S3 layer when needed |
+ * | HiDrive                    | TBD — populate when verified |
+ * | WebDAV                     | none standard — leave null |
+ * | SFTP                       | n/a (not HTTP) |
+ *
+ * Logging callers can grep for `requestId=` on every `ProviderException`
+ * subclass without knowing which provider produced it. `null` means
+ * either the provider doesn't expose a request-id, or the failure was
+ * raised before the response headers were observed.
+ */
+open class ProviderException(
+    message: String,
+    cause: Throwable? = null,
+    val requestId: String? = null,
+    // #878: the HTTP status of an API error, so the status report can answer a machine-readable
+    // `last_error_code` (http_408) without parsing the sanitized message. Null for a non-HTTP failure.
+    val httpStatus: Int? = null,
+) : Exception(message, cause)
+
+open class AuthenticationException(
+    message: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : ProviderException(message, cause, requestId)
+
+/**
+ * The credentials are missing or expired and the only way forward is an interactive sign-in — but
+ * the caller has no interactive terminal to answer one. Raised instead of prompting on stdin, so a
+ * daemon/mount start (hidden window, systemd, a front-end) fails fast instead of camping forever on
+ * a read nobody will ever answer. An `AuthenticationException`, so every existing handler keeps its
+ * behaviour; front-ends additionally match [REASON] in the message or the start log and offer their
+ * own sign-in flow (`unidrive -p <profile> auth` on a terminal, `auth login` without one).
+ */
+open class AuthRequiredException(
+    message: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : AuthenticationException(message, cause, requestId) {
+    companion object {
+        /** The stable reason token a front-end greps the start log for. */
+        const val REASON = "auth_required"
+    }
+}
+
+/**
+ * Signals a transient network failure (DNS blip, connection reset, timeout)
+ * during an operation that retrying may recover — distinct from a permanent
+ * auth failure. It is deliberately NOT an [AuthenticationException]: a
+ * transient blip during token refresh must not latch the session as
+ * "expired → re-authenticate."
+ *
+ * Live evidence: a token refresh that hit a transient
+ * `java.nio.channels.UnresolvedAddressException` surfaced
+ * "Authentication expired. Please re-authenticate." and latched the session
+ * dead — even though a later live Graph `quota` call proved the token was
+ * still valid. Classifying that blip as transient keeps the session alive
+ * for the next attempt.
+ */
+open class TransientNetworkException(
+    message: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : ProviderException(message, cause, requestId)
+
+/**
+ * Signals a permanent download failure that retrying would not resolve —
+ * the remote object is gone (404 from a stable identifier) and no future
+ * attempt against the same identifier will succeed. The engine catches
+ * this and quarantines the row in state.db so it stops the retry storm,
+ * waiting for a fresh delta event on the same remote_id to clear the
+ * flag.
+ *
+ * #941: the plain class means exactly that, GONE, and the hydration layer reports it as `not_found`.
+ * A permanent failure with another cause is a subtype that says so ([RemoteIncompleteDownloadException],
+ * [RemoteObjectMissingDownloadException], [RemoteContentRefusedDownloadException],
+ * [UnsupportedRemoteObjectDownloadException]); each has its own wire token in HydrationImpl.downloadFailureOf,
+ * so a file that exists in the cloud is never reported as not found. Quarantine ignores the difference.
+ *
+ * Live evidence motivating this signal: a single zero-byte file
+ * (`/notes.txt`, Internxt bucket entry `0123456789abcdef01234567`) was
+ * retried 1,248 times over 8 hours after the user deleted it on the
+ * upstream client; the 404 body was the stable
+ * `{"error":"Bucket entry … not found"}` shape but it was treated as a
+ * transient failure by the generic exception handler.
+ */
+open class PermanentDownloadFailureException(
+    message: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : ProviderException(message, cause, requestId)
+
+/**
+ * #536: the stored object is of a different size than the drive reports: shorter, a multipart upload another
+ * client truncated (live evidence: a 23-part declared object whose 19 parts landed, 62 MiB short), or longer.
+ * Every download of such an object must fail the completeness guard, so the provider raises this
+ * typed failure — before streaming, off the shard's Content-Length, or after it, off the bytes
+ * written — instead of a retryable/generic shape. It is a [PermanentDownloadFailureException] so
+ * every quarantine site catches it without changes, but the hydration layer maps it to its own
+ * `remote_incomplete` wire token (with the numbers), never to `not_found`: the file is not gone,
+ * its cloud copy is incomplete.
+ */
+open class RemoteIncompleteDownloadException(
+    message: String,
+    val storedBytes: Long,
+    val declaredBytes: Long,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : PermanentDownloadFailureException(message, cause, requestId)
+
+/**
+ * #940: the object exists and was fetched, but its content failed the integrity check recorded for it (the
+ * downloaded ciphertext does not hash to the value the network stored), so the bytes were discarded instead of
+ * handed over as the file. Another attempt reads the same bytes, so it is permanent and quarantined like the other
+ * [PermanentDownloadFailureException] sites; it is not a gone file, and the hydration layer reports it as its own
+ * `content_refused` token, never `not_found`. [reason] is the short part a client may show (for example
+ * "SHA-256 mismatch"); it never carries a file name.
+ */
+open class RemoteContentRefusedDownloadException(
+    message: String,
+    val reason: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : PermanentDownloadFailureException(message, cause, requestId)
+
+/**
+ * #941: the object exists, but this client cannot read it as stored: an object spread over several shards, an
+ * encryption index that is not hex, a name the local file system cannot hold. Not a gone file and not a refused
+ * content: the hydration layer reports it as its own `unsupported_object` token. [reason] is the short part a
+ * client may show; it never carries a file name.
+ */
+open class UnsupportedRemoteObjectDownloadException(
+    message: String,
+    val reason: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : PermanentDownloadFailureException(message, cause, requestId)
+
+/**
+ * The drive still lists the file, but its bridge-side encrypted object is missing. This is a
+ * permanent failure for this object ID and is quarantined like other non-retryable downloads, but
+ * it is not the same as a deleted drive file: callers should preserve local bytes and report the
+ * cloud object as missing instead of surfacing `not_found`.
+ */
+open class RemoteObjectMissingDownloadException(
+    message: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : PermanentDownloadFailureException(message, cause, requestId)
+
+/**
+ * #493: a permanent upload failure — the provider rejected the request itself (a malformed or refused payload, e.g.
+ * Internxt's 400 "fileId must not be provided when size is 0", #485), so another attempt with the same bytes and the same
+ * call would be rejected the same way. The hydration upload queue does not run its retry ladder for it: it marks the row
+ * failed once and frees the transfer slot. Transient failures (5xx, 408, 429, network) must never be mapped to this.
+ */
+open class PermanentUploadFailureException(
+    message: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : ProviderException(message, cause, requestId)
+
+/**
+ * The provider refuses this entry because of its NAME, not its content or the request: the drive treats the
+ * name as identical to a sibling's although the two differ (OneDrive's uniqueness check ignores some
+ * characters, so a second sibling that differs from an existing one only in such characters is refused with
+ * 409 nameAlreadyExists). The same name will be refused again whatever the bytes, so this is a
+ * [PermanentUploadFailureException]: no retry ladder. It is raised only after the provider's own way round
+ * (landing the entry under a disambiguated server name, [CloudItem.nameOverridden]) was refused too.
+ *
+ * [reason] is a stable token ([SIMILAR_NAME]); [sibling] is the name of the conflicting sibling when the
+ * provider could tell which one it is, else null.
+ */
+open class NameRefusedException(
+    message: String,
+    val reason: String = SIMILAR_NAME,
+    val sibling: String? = null,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : PermanentUploadFailureException(message, cause, requestId) {
+    companion object {
+        /** The drive compares this name as equal to a sibling's. */
+        const val SIMILAR_NAME = "similar_name"
+    }
+}
+
+/**
+ * The folder the upload goes into is gone in the cloud: the provider's path walk listed the folder above it
+ * successfully, and the next folder of the path was not in that listing (a folder trashed or deleted elsewhere,
+ * typically before the drive's change feed reports it). The same call with the same bytes fails again for as long as
+ * the cloud stays so, so this is a [PermanentUploadFailureException]: no retry ladder, no replay of the same bytes.
+ * A listing that FAILED (5xx, timeout, a degraded gateway) is never this: absence is proven only by a listing that
+ * succeeded.
+ *
+ * [parent] is the path of the first folder of the upload's path that the walk did not find (the upload's direct
+ * parent or a folder above it); the hydration layer reports it as the `parent_gone: <parent>` token.
+ */
+open class ParentGoneException(
+    message: String,
+    val parent: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : PermanentUploadFailureException(message, cause, requestId)
+
+/** A remote item changed after the caller captured its write token. */
+open class RemoteConflictException(
+    message: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : ProviderException(message, cause, requestId)
+
+/**
+ * Signals that a folder cannot be removed because it still contains
+ * entries — the provider refused the delete with its non-empty surface
+ * (OneDrive 409 Conflict, Internxt's non-empty rejection). Typed so
+ * `HydrationImpl.rmdir` can map it to the FUSE ENOTEMPTY errno without
+ * substring-matching the provider's (potentially localised) message
+ * text. It is a [ProviderException] so legacy callers that only catch
+ * the base type keep their existing behaviour; rmdir catches this
+ * subtype first to surface NotEmpty.
+ */
+open class FolderNotEmptyException(
+    message: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : ProviderException(message, cause, requestId)
+
+/**
+ * Signals that a resumed delta cursor is no longer accepted by the
+ * provider — the remote returned a "gone" status (Graph 410 Gone) on the
+ * delta endpoint because the stored marker aged out or the drive was
+ * re-keyed. Delta continuity is lost: arbitrary changes (including
+ * deletions) happened in the gap and will never arrive incrementally.
+ *
+ * Callers that persist a cursor must treat this as "clear the cursor and
+ * re-enumerate the FULL inventory from a null cursor" — NOT as a generic
+ * transient failure. It is a [ProviderException] so legacy callers that
+ * only catch the base type keep their existing behaviour unchanged; the
+ * tracking engine catches this subtype first to drive a full resync.
+ */
+open class DeltaCursorExpiredException(
+    message: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : ProviderException(message, cause, requestId)
+
+/**
+ * UD-203: helper for logging call sites. Returns ` requestId=<id>` (with
+ * leading space) if the throwable is a [ProviderException] subclass that
+ * carries a non-null id, otherwise the empty string. The leading space
+ * makes the suffix safe to concatenate into an existing log message
+ * without separator gymnastics:
+ *
+ * ```
+ * log.warn("Action failed for {}: {}{}", path, e.message, requestIdSuffix(e))
+ * ```
+ *
+ * Designed for grep — operators see `requestId=<id>` on the error line
+ * and can plug the id directly into a support ticket regardless of
+ * which provider raised the exception.
+ */
+fun requestIdSuffix(t: Throwable?): String {
+    val id = (t as? ProviderException)?.requestId ?: return ""
+    return " requestId=$id"
+}
+
+/**
+ * #1240: no credentials are stored for the profile, so there is nothing to prove ([CloudProvider.checkCredentials]).
+ * An [AuthenticationException], so a handler that does not tell the cases apart treats it as one.
+ */
+open class NotSignedInException(
+    message: String,
+    cause: Throwable? = null,
+) : AuthenticationException(message, cause)
+
+/**
+ * What the provider answered to [CloudProvider.checkCredentials]: the credentials are accepted. [account] is the name
+ * the provider gives the account when it says one (a display name or an e-mail), else null. Never a secret.
+ */
+data class CredentialProof(
+    val account: String? = null,
+)

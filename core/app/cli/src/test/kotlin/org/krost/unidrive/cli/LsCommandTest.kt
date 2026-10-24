@@ -1,0 +1,372 @@
+package org.krost.unidrive.cli
+
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.Capability
+import org.krost.unidrive.CloudItem
+import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.DeltaPage
+import org.krost.unidrive.QuotaInfo
+import org.krost.unidrive.localfs.LocalFsProvider
+import org.krost.unidrive.cli.LsCommand.Companion.DaemonLsView
+import org.krost.unidrive.cli.LsCommand.Companion.ViewEntryParsed
+import org.krost.unidrive.sync.ProfileMode
+import org.krost.unidrive.sync.IpcAuth
+import org.krost.unidrive.sync.IpcAuthClient
+import org.krost.unidrive.sync.IpcEndpoint
+import java.nio.ByteBuffer
+import java.nio.channels.SocketChannel
+import java.nio.file.Files
+import java.nio.file.Path
+import java.time.Instant
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+/**
+ * `unidrive ls` (the live-query surface) must not contradict the FUSE mount (the
+ * daemon's state.db view) during the stale window. The fix makes `ls` read the SAME
+ * state.db view the mount serves (via hydration.list) when a daemon is running, so
+ * the two surfaces are a single source of truth.
+ */
+class LsCommandTest {
+    private lateinit var tempDir: Path
+    private lateinit var lockFile: Path
+    private lateinit var dbPath: Path
+    private lateinit var socketPath: Path
+
+    @BeforeTest
+    fun setUp() {
+        tempDir = Files.createTempDirectory("ls-command-test")
+        lockFile = tempDir.resolve(".lock")
+        dbPath = tempDir.resolve("state.db")
+        socketPath = tempDir.resolve("daemon.sock")
+    }
+
+    @AfterTest
+    fun tearDown() {
+        runCatching { Files.deleteIfExists(socketPath) }
+        runCatching { Files.deleteIfExists(dbPath) }
+        runCatching { Files.deleteIfExists(lockFile) }
+        runCatching { Files.deleteIfExists(lockFile.resolveSibling(".lock.pid")) }
+        runCatching { tempDir.toFile().deleteRecursively() }
+    }
+
+    // The daemon writes its IPC tokens next to the lock; ls connects with the read scope.
+    private fun endpoint() = IpcEndpoint(socketPath, tempDir, "test_profile")
+
+    // localfs answered listChildren of a missing path with an empty list, so
+    // `ls /typo` printed nothing and exited 0 — indistinguishable from an empty folder.
+    @Test
+    fun `live listing of a missing path is null not empty`() =
+        runBlocking {
+            val provider = LocalFsProvider(tempDir)
+            assertNull(LsCommand.listLive(provider, "/does/not/exist"))
+        }
+
+    @Test
+    fun `live listing of an existing empty folder is empty not null`() =
+        runBlocking {
+            Files.createDirectories(tempDir.resolve("empty"))
+            val provider = LocalFsProvider(tempDir)
+            assertEquals(emptyList(), LsCommand.listLive(provider, "/empty"))
+            assertEquals(emptyList(), LsCommand.listLive(LocalFsProvider(tempDir.resolve("empty")), "/"))
+        }
+
+    @Test
+    fun `live listing of a file path lists that file`() =
+        runBlocking {
+            Files.writeString(tempDir.resolve("a.txt"), "hi")
+            val provider = LocalFsProvider(tempDir)
+            assertEquals(listOf("a.txt"), LsCommand.listLive(provider, "/a.txt")?.map { it.name })
+        }
+
+    // state.db paths carry no trailing slash — `ls foo/` must resolve against /foo,
+    // or an existing (empty) folder reports as missing.
+    @Test
+    fun `ls path normalization strips trailing slashes`() {
+        assertEquals("/", LsCommand.normalizeLsPath("/"))
+        assertEquals("/", LsCommand.normalizeLsPath("///"))
+        assertEquals("/foo", LsCommand.normalizeLsPath("foo"))
+        assertEquals("/foo", LsCommand.normalizeLsPath("/foo/"))
+        assertEquals("/foo", LsCommand.normalizeLsPath("foo//"))
+        assertEquals("/foo/bar", LsCommand.normalizeLsPath("/foo/bar"))
+    }
+
+    @Test
+    fun `daemon view resolves an empty non-root listing against the parent`() {
+        val parent = listOf(ViewEntryParsed("/empty", 0, 1000, true))
+        val view =
+            LsCommand.resolveDaemonView("/empty", emptyList()) { queried ->
+                assertEquals("/", queried, "the lookup must ask for the parent path")
+                parent
+            }
+        assertTrue(view is DaemonLsView.Listing, "an existing empty folder lists (prints nothing, exit 0)")
+    }
+
+    @Test
+    fun `daemon view decides presence only from an enumerated parent`() {
+        val file = ViewEntryParsed("/a.txt", 42, 1000, false)
+        val self = LsCommand.resolveDaemonView("/a.txt", emptyList()) { listOf(file) }
+        assertEquals(DaemonLsView.SelfFile(file), self, "a file path lists as that file")
+
+        val missing = LsCommand.resolveDaemonView("/typo", emptyList()) { emptyList() }
+        assertEquals(DaemonLsView.NoSuchPath, missing, "absent in the parent view -> no such path")
+
+        val undecidable = LsCommand.resolveDaemonView("/a.txt", emptyList()) { null }
+        assertEquals(DaemonLsView.Undecidable, undecidable, "failed parent query must NOT claim the path is missing")
+    }
+
+    @Test
+    fun `daemon view skips the parent lookup for populated listings and root`() {
+        val children = listOf(ViewEntryParsed("/docs/x", 1, 1000, false))
+        val populated =
+            LsCommand.resolveDaemonView("/docs", children) {
+                throw AssertionError("a populated listing must not query the parent")
+            }
+        assertTrue(populated is DaemonLsView.Listing)
+
+        val root = LsCommand.resolveDaemonView("/", emptyList()) {
+            throw AssertionError("root must not query a parent")
+        }
+        assertTrue(root is DaemonLsView.Listing)
+    }
+
+    // #145 P2: `ls` mirrors the daemon view only when a DAEMON holds the lock. A plain
+    // `unidrive sync` watcher binds the same socket + hydration verbs but isn't the mount
+    // view, so a sync-mode (or absent) holder must fall through to the live provider query.
+    @Test
+    fun `daemonHoldsLock is true only for a daemon-mode lock holder`() {
+        val pidFile = tempDir.resolve(".lock.pid")
+        Files.writeString(pidFile, "12345 daemon")
+        assertTrue(daemonHoldsLock(tempDir), "daemon-mode holder -> mirror the daemon view")
+        Files.writeString(pidFile, "12345 sync")
+        assertFalse(daemonHoldsLock(tempDir), "a sync watcher must NOT take the daemon view")
+        Files.deleteIfExists(pidFile)
+        assertFalse(daemonHoldsLock(tempDir), "no lock holder -> live query")
+    }
+
+    @Test
+    fun parses_hydration_list_reply_into_view_entries() {
+        // Pin the wire-shape contract between hydration.list's reply (serialiseListEntries
+        // in HydrationIpcHandler) and ls's parser. If the daemon's list reply shape drifts,
+        // this fails — keeping ls's view consistent with the mount's view.
+        val reply =
+            """{"ok":true,"entries":[""" +
+                """{"path":"/Docs","size":0,"mtime_ms":1000,"hydrated":false,"folder":true},""" +
+                """{"path":"/a.txt","size":42,"mtime_ms":2000,"hydrated":true,"folder":false}""" +
+                """]}"""
+        val entries = LsCommand.parseListEntries(reply)
+        assertEquals(2, entries.size, "both entries must parse")
+        val folder = entries.single { it.isFolder }
+        assertEquals("/Docs", folder.path)
+        assertEquals(1000L, folder.mtimeMs)
+        val file = entries.single { !it.isFolder }
+        assertEquals("/a.txt", file.path)
+        assertEquals(42L, file.size)
+        assertEquals(2000L, file.mtimeMs)
+    }
+
+    @Test
+    fun `ls preserves and displays excluded entries`() {
+        val reply =
+            """{"ok":true,"entries":[""" +
+                """{"path":"/scratch.tmp","size":42,"mtime_ms":2000,"hydrated":false,"folder":false,"remote_modified_ms":null,"remote_id":"id","etag":null,"pending_upload":false,"error":false,"excluded":true}""" +
+                "]}"
+
+        val entry = LsCommand.parseListEntries(reply).single()
+
+        assertTrue(entry.excluded)
+        assertEquals("scratch.tmp [excluded]", LsCommand.displayName("scratch.tmp", isFolder = false, excluded = entry.excluded))
+        assertEquals("scratch/ [excluded]", LsCommand.displayName("scratch", isFolder = true, excluded = true))
+    }
+
+    @Test
+    fun `an excluded marker inside a string value is not read as the flag`() {
+        val reply =
+            """{"ok":true,"entries":[""" +
+                """{"path":"/a.txt","size":1,"mtime_ms":2,"hydrated":false,"folder":false,"remote_modified_ms":null,""" +
+                """"remote_id":",\"excluded\":true,","etag":null,"pending_upload":false,"error":false}""" +
+                "]}"
+
+        assertFalse(LsCommand.parseListEntries(reply).single().excluded)
+    }
+
+    @Test
+    fun `the exclusion guard marks ignore-rule folders and files like the daemon`() {
+        val cache = java.nio.file.Files.createTempDirectory("ls-ignore-cache")
+        try {
+            java.nio.file.Files.writeString(cache.resolve(".unidrive.ignore"), "build/\n")
+            val guard =
+                exclusionGuard(
+                    patterns = listOf("*.tmp"),
+                    ignoreSettings = org.krost.unidrive.sync.ignore.IgnoreSettings(),
+                    cacheDir = cache,
+                    inCloud = { false },
+                )
+
+            assertTrue(guard.isExcludedPath("/scratch.tmp", false))
+            assertTrue(guard.isExcludedPath("/build", true), "a build/ rule names the folder row")
+            assertTrue(guard.isExcludedPath("/build/out.bin", false))
+            assertFalse(guard.isExcludedPath("/build", false), "a file called build is not a folder")
+            assertFalse(guard.isExcludedPath("/document.txt", false))
+        } finally {
+            cache.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun parses_list_entries_that_carry_the_additive_fields() {
+        // hydration.list entries grew remote_modified_ms, remote_id, etag, pending_upload and
+        // error after `folder`; a daemon that predates them stops at `folder`. ls must read both,
+        // including null values and a mixed reply — the old regex closed the object right after
+        // `folder`, so ls printed nothing at all against a current daemon.
+        val reply =
+            """{"ok":true,"entries":[""" +
+                """{"path":"/Docs","size":0,"mtime_ms":1000,"hydrated":false,"folder":true,""" +
+                """"remote_modified_ms":900,"remote_id":"rid-docs","etag":null,"pending_upload":false,"error":false},""" +
+                """{"path":"/draft.txt","size":7,"mtime_ms":2000,"hydrated":true,"folder":false,""" +
+                """"remote_modified_ms":null,"remote_id":null,"etag":null,"pending_upload":true,"error":true},""" +
+                """{"path":"/old.txt","size":1,"mtime_ms":3000,"hydrated":false,"folder":false}""" +
+                """]}"""
+        val entries = LsCommand.parseListEntries(reply)
+        assertEquals(listOf("/Docs", "/draft.txt", "/old.txt"), entries.map { it.path })
+        assertEquals(listOf(true, false, false), entries.map { it.isFolder })
+        assertEquals(listOf(1000L, 2000L, 3000L), entries.map { it.mtimeMs })
+    }
+
+    @Test
+    fun ls_agrees_with_mount_view() = runBlocking {
+        // End-to-end: start a daemon serving a remote with two items, drive the
+        // mount-view enumerate (via hydration.subscribe, the co-daemon's mount signal),
+        // then assert ls's daemon-view query returns the SAME entries hydration.list
+        // serves to the mount. Same socket, same state.db → the two can never disagree.
+        val provider: CloudProvider = TwoRemoteFilesStubProvider()
+
+        val runtime = DaemonRuntime(
+            profileMode = ProfileMode.MOUNT,
+            profileName = "test_profile",
+            lockFile = lockFile,
+            dbPath = dbPath,
+            syncRoot = tempDir,
+            socketPath = socketPath,
+            providerFactory = { provider },
+        )
+
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath, daemonJob)
+
+        try {
+            // Trigger the reactive enumerate so state.db is populated, then wait for
+            // view.invalidated to confirm the enumerate completed. The mount client holds the full token:
+            // only a full-scope subscribe enumerates (a read-scope observer never does).
+            IpcAuthClient.connect(endpoint(), IpcAuth.Scope.FULL).use { sub ->
+                sub.configureBlocking(false)
+                sub.write(ByteBuffer.wrap(("""{"verb":"hydration.subscribe"}""" + "\n").toByteArray()))
+                // Complete lines under the shared budget; a stall names the step and every line seen.
+                awaitIpcLine(sub, "view.invalidated push of the subscribe-triggered enumerate") {
+                    it.contains("\"event\":\"view.invalidated\"")
+                }
+            }
+
+            // The mount-side view: query hydration.list directly.
+            val mountReply =
+                IpcAuthClient.connect(endpoint(), IpcAuth.Scope.READ).use { ch ->
+                    ch.write(ByteBuffer.wrap(("""{"verb":"hydration.list","prefix":""}""" + "\n").toByteArray()))
+                    readOneLine(ch)
+                }
+            val mountView = LsCommand.parseListEntries(mountReply)
+            assertTrue(mountView.isNotEmpty(), "mount view must be non-empty after enumerate; got: $mountReply")
+
+            // The ls-side view: the exact code path `unidrive ls` takes when a daemon runs.
+            val lsView = LsCommand().queryDaemonView(endpoint(), "/")
+            assertTrue(lsView != null, "ls must reach the daemon view")
+
+            // Single source of truth: the two surfaces list identical paths.
+            assertEquals(
+                mountView.map { it.path }.toSortedSet(),
+                lsView.map { it.path }.toSortedSet(),
+                "ls must list exactly the paths the mount view serves (no stale-window disagreement)",
+            )
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    private fun readOneLine(channel: SocketChannel): String {
+        val collected = StringBuilder()
+        while (!collected.contains('\n')) {
+            val buf = ByteBuffer.allocate(4096)
+            val n = channel.read(buf)
+            if (n <= 0) return collected.toString()
+            buf.flip()
+            collected.append(String(buf.array(), 0, buf.limit()))
+        }
+        return collected.toString().substringBefore('\n')
+    }
+
+    /** Provider whose complete delta reports two remote files. */
+    private class TwoRemoteFilesStubProvider : CloudProvider {
+        override val id: String = "stub-two-files"
+        override val displayName: String = "Stub (two remote files)"
+        override var isAuthenticated: Boolean = true
+
+        override fun capabilities(): Set<Capability> = emptySet()
+
+        override suspend fun authenticate() { /* no-op */ }
+
+        override suspend fun listChildren(path: String): List<CloudItem> = emptyList()
+
+        override suspend fun getMetadata(path: String): CloudItem = error("not used")
+
+        override suspend fun download(remotePath: String, destination: Path): Long = error("not used")
+
+        override suspend fun upload(
+            localPath: Path,
+            remotePath: String,
+            existingRemoteId: String?,
+            ifMatchETag: String?,
+            onProgress: ((Long, Long) -> Unit)?,
+        ): CloudItem = error("not used")
+
+        override suspend fun delete(remotePath: String, ifMatchETag: String?) = error("not used")
+
+        override suspend fun createFolder(path: String): CloudItem = error("not used")
+
+        override suspend fun move(fromPath: String, toPath: String): CloudItem = error("not used")
+
+        override suspend fun delta(
+            cursor: String?,
+            onPageProgress: ((Int) -> Unit)?,
+            scanContext: org.krost.unidrive.ScanContext?,
+        ): DeltaPage =
+            DeltaPage(
+                items = listOf(
+                    file("alpha.txt", "/alpha.txt"),
+                    file("beta.txt", "/beta.txt"),
+                ),
+                cursor = "cursor-1",
+                hasMore = false,
+            )
+
+        override suspend fun quota(): QuotaInfo = QuotaInfo(total = 0L, used = 0L, remaining = 0L)
+
+        private fun file(name: String, path: String) =
+            CloudItem(
+                id = "id-$name",
+                name = name,
+                path = path,
+                size = 5L,
+                isFolder = false,
+                modified = Instant.now(),
+                created = Instant.now(),
+                hash = "h-$name",
+                mimeType = "text/plain",
+            )
+    }
+}

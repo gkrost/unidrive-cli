@@ -1,0 +1,402 @@
+package org.krost.unidrive.internxt
+
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.http.HttpMethod
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
+import kotlinx.coroutines.test.runTest
+import org.krost.unidrive.ParentGoneException
+import org.krost.unidrive.PermanentUploadFailureException
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertFailsWith
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * #493: an upload the drive server refuses as a request (400, 413, 415, 422) is refused again with the same bytes; it is
+ * reported as a [PermanentUploadFailureException], so the hydration queue does not run its retry ladder on it. A server
+ * error keeps its own (retryable) type.
+ */
+class InternxtUploadRefusalTest {
+    private data class UploadScenario(
+        val emptyListing: Boolean = false,
+        val missingUploads: Boolean = false,
+        val missingUploadsCount: Int = 0,
+        val onFinish: () -> Unit = {},
+        val onStart: () -> Unit = {},
+        val onPut: () -> Unit = {},
+        val reconcileListing: String = """{"children":[],"files":[]}""",
+        // Folder uuid -> the listing body of that folder; checked before every other route.
+        val listingByFolder: Map<String, String> = emptyMap(),
+        // When set, every folder listing answers with this status (a degraded gateway).
+        val listingFailure: HttpStatusCode? = null,
+    )
+
+    private val bucket = "6928426c1a2316b856c9ab81"
+    private val shardUrl = "https://shard-host.invalid/refusal-put"
+    private val tmp: Path = Files.createTempDirectory("ud-refusal-")
+
+    @AfterTest
+    fun cleanUp() {
+        tmp.toFile().deleteRecursively()
+    }
+
+    private fun newProvider(createStatus: HttpStatusCode): InternxtProvider =
+        newProviderWith(createStatus)
+
+    /**
+     * The folder-listing route answers with an EMPTY children list: the walk
+     * succeeds and proves the target segment absent — positive proof (a trashed
+     * parent, #580), not a degraded gateway (that fails the listing itself).
+     */
+    private fun newProviderParentGone(): InternxtProvider =
+        newProviderWith(HttpStatusCode.OK, scenario = UploadScenario(emptyListing = true))
+
+    private fun newProviderWith(
+        createStatus: HttpStatusCode,
+        scenario: UploadScenario = UploadScenario(),
+    ): InternxtProvider {
+        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmp))
+        val authField = InternxtProvider::class.java.getDeclaredField("authService")
+        authField.isAccessible = true
+        val authService = authField.get(provider)
+        val credsField = authService.javaClass.getDeclaredField("credentials")
+        credsField.isAccessible = true
+        val payloadB64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
+        credsField.set(
+            authService,
+            org.krost.unidrive.internxt.model.InternxtCredentials(
+                jwt = "header.$payloadB64.signature",
+                mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                rootFolderId = "root-folder-uuid",
+                email = "test@example.invalid",
+                bridgeUser = "bridge-user",
+                bridgeUserId = "bridge-secret",
+                bucket = bucket,
+            ),
+        )
+        val apiField = InternxtProvider::class.java.getDeclaredField("api")
+        apiField.isAccessible = true
+        val api = apiField.get(provider) as InternxtApiService
+        val httpField = InternxtApiService::class.java.getDeclaredField("httpClient")
+        httpField.isAccessible = true
+        (httpField.get(api) as? HttpClient)?.close()
+        val json = headersOf("Content-Type", "application/json")
+        val startCount = AtomicInteger()
+        val finishCount = AtomicInteger()
+        httpField.set(
+            api,
+            HttpClient(
+                MockEngine { request ->
+                    val url = request.url.toString()
+                    val listedFolder = url.substringAfter("/folders/content/", "").substringBefore('?').substringBefore('/')
+                    when {
+                        scenario.listingFailure != null && url.contains("/folders/") ->
+                            respond("""{"error":"gateway"}""", scenario.listingFailure, json)
+                        listedFolder in scenario.listingByFolder ->
+                            respond(scenario.listingByFolder.getValue(listedFolder), HttpStatusCode.OK, json)
+                        (scenario.emptyListing || scenario.missingUploads || scenario.missingUploadsCount > 0) && url.contains("/folders/content/") ->
+                            respond(scenario.reconcileListing, HttpStatusCode.OK, json)
+                        url.contains("/v2/buckets/") && url.contains("/files/start") -> {
+                            scenario.onStart()
+                            val session = startCount.incrementAndGet()
+                            respond("""{"uploads":[{"index":0,"uuid":"shard-$session","url":"$shardUrl-$session"}]}""", HttpStatusCode.OK, json)
+                        }
+                        url.startsWith("$shardUrl-") -> {
+                            scenario.onPut()
+                            respond("", HttpStatusCode.OK)
+                        }
+                        url.contains("/v2/buckets/") && url.contains("/files/finish") -> {
+                            scenario.onFinish()
+                            val finish = finishCount.incrementAndGet()
+                            if (scenario.missingUploads || finish <= scenario.missingUploadsCount) {
+                                respond("""{"message":"MissingUploadsError: Missing uploads to complete the upload"}""", HttpStatusCode.Conflict, json)
+                            } else {
+                                respond("""{"id":"bucket-entry-1","index":"${"aa".repeat(32)}","bucket":"$bucket","name":"enc"}""", HttpStatusCode.OK, json)
+                            }
+                        }
+                        request.url.encodedPath == "/drive/files" && request.method == HttpMethod.Post ->
+                            if (createStatus == HttpStatusCode.OK) {
+                                respond("""{"uuid":"drive-file-1","fileId":"bucket-entry-1","plainName":"f","type":"txt","size":"10","bucket":"$bucket","folderUuid":"root-folder-uuid"}""", createStatus, json)
+                            } else {
+                                respond("""{"statusCode":${createStatus.value},"message":["refused"],"error":"x"}""", createStatus, json)
+                            }
+                        else -> respond("""{"error":"unexpected ${request.method.value} $url"}""", HttpStatusCode.NotFound, json)
+                    }
+                },
+            ),
+        )
+        return provider
+    }
+
+    private fun local(): Path = tmp.resolve("f.txt").also { Files.write(it, ByteArray(10) { 0x41 }) }
+
+    @Test
+    fun `missing shard session is restarted once with the same encrypted payload`() =
+        runTest {
+            val starts = AtomicInteger()
+            val puts = AtomicInteger()
+            val finishes = AtomicInteger()
+            val provider =
+                newProviderWith(
+                    HttpStatusCode.OK,
+                    scenario =
+                        UploadScenario(
+                            missingUploadsCount = 1,
+                            onStart = { starts.incrementAndGet() },
+                            onPut = { puts.incrementAndGet() },
+                            onFinish = { finishes.incrementAndGet() },
+                        ),
+                )
+            try {
+                val item = provider.upload(local(), "/f.txt", existingRemoteId = null, onProgress = null)
+                assertEquals("drive-file-1", item.id)
+                assertEquals(2, starts.get(), "a missing shard session gets one fresh bridge session")
+                assertEquals(2, puts.get(), "the same ciphertext is uploaded to the fresh session")
+                assertEquals(2, finishes.get(), "the fresh session is finished once")
+            } finally {
+                provider.close()
+            }
+        }
+
+    // #1203: the provider's sidecar store with a rename the test controls (a Windows rename that is refused while a scanner holds the target).
+    private fun InternxtProvider.withSidecarRename(move: (Path, Path) -> Unit) {
+        tombstoneStore = UploadTombstoneStore(tmp.resolve("upload-tombstones"), move = move, pause = {})
+    }
+
+    private fun realMove(
+        from: Path,
+        to: Path,
+    ) {
+        Files.move(from, to, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+    }
+
+    @Test
+    fun `a sidecar write that fails after finishUpload does not run the bridge session again`() =
+        runTest {
+            val starts = AtomicInteger()
+            val puts = AtomicInteger()
+            val finishes = AtomicInteger()
+            val provider =
+                newProviderWith(
+                    HttpStatusCode.OK,
+                    scenario = UploadScenario(onStart = { starts.incrementAndGet() }, onPut = { puts.incrementAndGet() }, onFinish = { finishes.incrementAndGet() }),
+                )
+            // The record of the finished commit cannot be written, whatever is tried: the file id is in hand and the upload goes on to createFile.
+            provider.withSidecarRename { from, to ->
+                if ("FINISH_DONE" in Files.readString(from)) throw java.nio.file.AccessDeniedException(from.toString(), to.toString(), null)
+                realMove(from, to)
+            }
+            try {
+                val item = provider.upload(local(), "/f.txt", existingRemoteId = null, onProgress = null)
+
+                assertEquals("drive-file-1", item.id)
+                assertEquals(1, starts.get(), "one bridge session")
+                assertEquals(1, puts.get(), "the shard is sent once")
+                assertEquals(1, finishes.get(), "finishUpload is not asked again for a session it already finished")
+            } finally {
+                provider.close()
+            }
+        }
+
+    @Test
+    fun `a sidecar rename that is refused for a moment is tried again and the upload is untouched`() =
+        runTest {
+            val starts = AtomicInteger()
+            val finishes = AtomicInteger()
+            val provider =
+                newProviderWith(
+                    HttpStatusCode.OK,
+                    scenario = UploadScenario(onStart = { starts.incrementAndGet() }, onFinish = { finishes.incrementAndGet() }),
+                )
+            var refusals = 0
+            provider.withSidecarRename { from, to ->
+                if (refusals++ < 3) throw java.nio.file.AccessDeniedException(from.toString(), to.toString(), null)
+                realMove(from, to)
+            }
+            try {
+                val item = provider.upload(local(), "/f.txt", existingRemoteId = null, onProgress = null)
+
+                assertEquals("drive-file-1", item.id)
+                assertEquals(1, starts.get())
+                assertEquals(1, finishes.get())
+                assertTrue(refusals >= 3, "the refusals really happened")
+            } finally {
+                provider.close()
+            }
+        }
+
+    @Test
+    fun `a regular upload with missing shards and no reconciled entry is refused after one finish`() =
+        runTest {
+            var finishCalls = 0
+            var startCalls = 0
+            var putCalls = 0
+            val provider =
+                newProviderWith(
+                    HttpStatusCode.OK,
+                    scenario =
+                        UploadScenario(
+                            missingUploads = true,
+                            onFinish = { finishCalls++ },
+                            onStart = { startCalls++ },
+                            onPut = { putCalls++ },
+                        ),
+                )
+            try {
+                val e = assertFailsWith<PermanentUploadFailureException> {
+                    provider.upload(local(), "/f.txt", existingRemoteId = null, onProgress = null)
+                }
+                assertTrue("MissingUploadsError" in (e.message ?: ""))
+                assertEquals(2, finishCalls, "one 409-reconciled session gets one fresh-session retry")
+                assertEquals(2, startCalls, "the refused shard session is replaced")
+                assertEquals(2, putCalls, "the encrypted payload is PUT to the replacement session")
+            } finally {
+                provider.close()
+            }
+        }
+
+    @Test
+    fun `a stale same-name entry still refuses missing shards after the bounded relist`() =
+        runTest {
+            var finishCalls = 0
+            val provider = newProviderWith(
+                HttpStatusCode.OK,
+                scenario =
+                    UploadScenario(
+                        missingUploads = true,
+                        onFinish = { finishCalls++ },
+                        reconcileListing = """{"children":[],"files":[{"uuid":"old","fileId":"old-entry","plainName":"f","type":"txt","size":"10","status":"EXISTS","creationTime":"2000-01-01T00:00:00Z"}]}""",
+                    ),
+            )
+            try {
+                assertFailsWith<PermanentUploadFailureException> {
+                    provider.upload(local(), "/f.txt", existingRemoteId = null, onProgress = null)
+                }
+                assertEquals(2, finishCalls, "a stale same-name entry does not justify repeating finish on the same session")
+            } finally {
+                provider.close()
+            }
+        }
+
+    @Test
+    fun `a 400 from the drive is a permanent upload failure`() =
+        runTest {
+            val provider = newProvider(HttpStatusCode.BadRequest)
+            try {
+                val e = assertFailsWith<PermanentUploadFailureException> {
+                    provider.upload(local(), "/f.txt", existingRemoteId = null, onProgress = null)
+                }
+                assertTrue("400" in (e.message ?: ""), "the status is named: ${e.message}")
+            } finally {
+                provider.close()
+            }
+        }
+
+    @Test
+    fun `a server error keeps its retryable type`() =
+        runTest {
+            val provider = newProvider(HttpStatusCode.InternalServerError)
+            try {
+                val e = assertFailsWith<InternxtApiException> {
+                    provider.upload(local(), "/f.txt", existingRemoteId = null, onProgress = null)
+                }
+                assertEquals(500, e.statusCode, "a server error is not turned into a permanent failure")
+            } finally {
+                provider.close()
+            }
+        }
+
+    // #580: the parent folder was trashed in the cloud; the walk's listing succeeds and
+    // the target segment is not in it. That is permanent for the current state — the same
+    // call with the same bytes fails again forever — so it is a PermanentUploadFailureException
+    // (no retry ladder, replay and same-bytes resubmission skip it, the cache bytes stay),
+    // NOT the plain retryable ProviderException the walk used to raise. It is typed as
+    // ParentGoneException and names the folder the walk did not find, which the hydration
+    // layer reports as the `parent_gone: <folder>` token.
+    @Test
+    fun `an upload whose parent the walk proves gone is a typed parent-gone refusal`() =
+        runTest {
+            val provider = newProviderParentGone()
+            try {
+                val e =
+                    assertFailsWith<ParentGoneException> {
+                        provider.upload(local(), "/_ud-test-0510/new.bin", existingRemoteId = null, onProgress = null)
+                    }
+                assertEquals("/_ud-test-0510", e.parent, "the folder the walk did not find is named")
+                assertTrue(
+                    "Folder not found" in (e.message ?: ""),
+                    "the walk's proof of absence is carried in the message: ${e.message}",
+                )
+            } finally {
+                provider.close()
+            }
+        }
+
+    @Test
+    fun `an empty-file upload into a parent the walk proves gone is also a typed parent-gone refusal`() =
+        runTest {
+            val provider = newProviderParentGone()
+            try {
+                val e =
+                    assertFailsWith<ParentGoneException> {
+                        provider.upload(local().let { Files.write(it, ByteArray(0)); it }, "/_ud-test-0510/zero.bin", existingRemoteId = null, onProgress = null)
+                    }
+                assertEquals("/_ud-test-0510", e.parent)
+                assertTrue("Folder not found" in (e.message ?: ""), e.message)
+            } finally {
+                provider.close()
+            }
+        }
+
+    // The folder named is the FIRST one of the path the walk did not find, not the upload's direct parent: here `/a`
+    // is listed and live, `/a/b` is not in its listing, so `/a/b/c` below it cannot exist either.
+    @Test
+    fun `a parent-gone refusal names the first folder of the path the walk did not find`() =
+        runTest {
+            val provider =
+                newProviderWith(
+                    HttpStatusCode.OK,
+                    scenario =
+                        UploadScenario(
+                            listingByFolder =
+                                mapOf(
+                                    "root-folder-uuid" to """{"children":[{"uuid":"a-uuid","plainName":"a","status":"EXISTS"}],"files":[]}""",
+                                    "a-uuid" to """{"children":[],"files":[]}""",
+                                ),
+                        ),
+                )
+            try {
+                val e =
+                    assertFailsWith<ParentGoneException> {
+                        provider.upload(local(), "/a/b/c/new.bin", existingRemoteId = null, onProgress = null)
+                    }
+                assertEquals("/a/b", e.parent)
+            } finally {
+                provider.close()
+            }
+        }
+
+    // A listing that FAILED is not a proof of absence (a degraded gateway, #387): it keeps its retryable type and is
+    // never reported as parent-gone.
+    @Test
+    fun `a failing listing during the parent walk is not a parent-gone refusal`() =
+        runTest {
+            val provider = newProviderWith(HttpStatusCode.OK, scenario = UploadScenario(listingFailure = HttpStatusCode.ServiceUnavailable))
+            try {
+                val e =
+                    assertFailsWith<Exception> {
+                        provider.upload(local(), "/_ud-test-0510/new.bin", existingRemoteId = null, onProgress = null)
+                    }
+                assertTrue(e !is PermanentUploadFailureException, "a failed listing stays retryable: $e")
+            } finally {
+                provider.close()
+            }
+        }
+}

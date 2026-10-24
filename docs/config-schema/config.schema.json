@@ -1,0 +1,163 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "unidrive config.toml",
+  "description": "Mirrors RawGeneral and RawProvider in core/app/sync/.../SyncConfig.kt. A test keeps the property names in lockstep.",
+  "type": "object",
+  "properties": {
+    "general": {
+      "type": "object",
+      "properties": {
+        "default_profile": { "type": "string" },
+        "sync_root": { "type": "string" },
+        "poll_interval": { "type": "integer", "minimum": 5 },
+        "min_poll_interval": { "type": "integer" },
+        "max_poll_interval": { "type": "integer" },
+        "conflict_policy": { "type": "string", "enum": ["keep_both", "last_writer_wins"] },
+        "log_file": { "type": "string" },
+        "max_bandwidth_kbps": { "type": "integer" },
+        "max_delete_percentage": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "max_delete_absolute": { "type": "integer", "minimum": 0 },
+        "max_delete_per_subtree_percent": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "sync_direction": { "type": "string", "enum": ["bidirectional", "upload", "download"] },
+        "client_location": { "type": "string" },
+        "client_network": { "type": "string" },
+        "exclude_patterns": { "type": "array", "items": { "type": "string" } },
+        "desktop_notifications": { "type": "boolean" },
+        "verify_integrity": { "type": "boolean" },
+        "quota_refresh_minutes": { "type": "integer", "minimum": 0 },
+        "use_trash": { "type": "boolean" },
+        "trash_emulation": { "type": "boolean" },
+        "trash_retention_days": { "type": "integer", "minimum": 1 },
+        "file_versioning": { "type": "boolean" },
+        "max_versions": { "type": "integer", "minimum": 1 },
+        "version_retention_days": { "type": "integer", "minimum": 1 },
+        "streaming_reconciliation": { "type": "boolean" }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "mode": { "type": "string", "enum": ["mirror", "mount"], "description": "#603 (U4): the profile's hosting mode, chosen at creation and fixed. A profile without one is refused." },
+          "label": { "type": "string", "description": "Free display text for front-ends, stored as typed. Display only: the profile name stays the identity, and changing the label renames nothing." },
+          "sync_root": { "type": "string" },
+          "root_path": { "type": "string" },
+          "allow_drive_root": {
+            "description": "localfs only: accept a drive or filesystem root (X:\\, /) as root_path, which is refused otherwise. `profile add --option allow_drive_root=true` writes it as a string; true and \"true\" read the same.",
+            "type": ["boolean", "string"],
+            "enum": [true, false, "true", "false"]
+          },
+          "pin_patterns": {
+            "type": "object",
+            "properties": {
+              "include": { "type": "array", "items": { "type": "string" } },
+              "exclude": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "conflict_overrides": { "type": "object", "additionalProperties": { "type": "string" } },
+          "exclude_patterns": { "type": "array", "items": { "type": "string" } },
+          "sync_path": {
+            "description": "Remote subtree(s) this profile syncs. Absolute remote paths starting with '/'. Absent means the whole drive. The CLI --sync-path overrides it for one invocation; `unidrive scope set|clear` changes it and applies the scope transition.",
+            "oneOf": [
+              { "type": "string", "pattern": "^/" },
+              { "type": "array", "items": { "type": "string", "pattern": "^/" } }
+            ]
+          },
+          "hydration_cache_max_bytes": {
+            "description": "Budget of this profile's hydration cache in bytes (the copies reads and writes through the mount leave under ~/.cache/unidrive/hydration/<profile>). Least recently used copies that hold nothing the cloud or the sync root does not are evicted after each close, after each upload and at daemon start. 0 means unlimited. Default 21474836480 (20 GiB).",
+            "type": "integer",
+            "minimum": 0
+          },
+          "honor_gitignore": {
+            "description": "Also read `.gitignore` files as ignore rules for uploads, beside `.unidrive.ignore`. Default false.",
+            "type": "boolean"
+          },
+          "ignore_rules": {
+            "description": "The account's own ignore rules for uploads, in git's syntax, applied at the root: below every `.unidrive.ignore` (and `.gitignore` with honor_gitignore), above the built-in defaults. An ignored file is never uploaded; cloud items stay visible. Separate from exclude_patterns, which keep their glob syntax.",
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "trash_folder_name": {
+            "description": "The name of the read-only folder at the top of the profile that shows what the provider keeps in its trash (Internxt: the items below a trashed folder), under the path they came from. One folder name, no path; at most 100 characters. A client sets it from the user's language. Default \"Papierkorb\". A live top-level item with the same name keeps it, and the folder is shown as \"<name> (2)\".",
+            "type": "string"
+          },
+          "shared_folder_name": {
+            "description": "The name of the read-only folder at the top of the profile that lists the items the account shares with others, a flat list in which each item is the real one under its own name and a folder is a read-only alias of the real folder (Internxt: files and folders with a share by a person or a link; what others share with it is not listed). Shown only with shared_view. One folder name, no path; at most 100 characters. A client sets it from the user's language. Default \"Shared\". A live top-level item with the same name keeps it, and the folder is shown as \"<name> (2)\".",
+            "type": "string"
+          },
+          "shared_view": {
+            "description": "Whether a mount profile shows the read-only folder named by shared_folder_name, which lists the files and folders the account shares. A mirror profile never shows it. Only a provider that declares the view (Internxt) shows it; for any other there is no folder, whatever this says. Takes effect when the daemon starts. Default true.",
+            "type": "boolean"
+          },
+          "recents_folder_name": {
+            "description": "The name of the read-only folder at the top of the profile that lists the files the account changed most recently, newest first, a flat list in which each file is the real one under its own name (Internxt). Shown only with recents_view. One folder name, no path; at most 100 characters. A client sets it from the user's language. Default \"Recents\". A live top-level item with the same name keeps it, and the folder is shown as \"<name> (2)\".",
+            "type": "string"
+          },
+          "recents_view": {
+            "description": "Whether a mount profile shows the read-only folder named by recents_folder_name. A mirror profile never shows it. Only a provider that declares the view (Internxt) shows it; for any other there is no folder, whatever this says. Takes effect when the daemon starts. Default true.",
+            "type": "boolean"
+          },
+          "recents_limit": {
+            "description": "How many files the Recents folder lists at most. Takes effect when the daemon starts. Default 50, the most the server answers with is 1000. A client's own list asks for the files after them page by page, up to 1000.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "favorites_folder_name": {
+            "description": "The name of the read-only folder at the top of the profile that lists the files the account marked as favorites, a flat list in which each file is the real one under its own name (Internxt; favorited folders are not listed yet). Shown only with favorites_view. One folder name, no path; at most 100 characters. A client sets it from the user's language. Default \"Favorites\". A live top-level item with the same name keeps it, and the folder is shown as \"<name> (2)\".",
+            "type": "string"
+          },
+          "favorites_view": {
+            "description": "Whether a mount profile shows the read-only folder named by favorites_folder_name. A mirror profile never shows it. Only a provider that declares the view (Internxt) shows it; for any other there is no folder, whatever this says. Takes effect when the daemon starts. Default true.",
+            "type": "boolean"
+          },
+          "daemon_poll_seconds": {
+            "description": "How often `unidrive daemon run` polls the cloud for changes made elsewhere (web UI, another device, another profile on the same account), in seconds. The first poll runs at daemon start; after a provider failure the interval backs off (up to 10 min). Each poll is an incremental delta from the stored cursor. 0 turns polling off. Default 60. `daemon run --poll-interval` overrides it.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "bucket": { "type": "string" },
+          "region": { "type": "string" },
+          "endpoint": { "type": "string" },
+          "access_key_id": { "type": "string" },
+          "secret_access_key": { "type": "string" },
+          "host": { "type": "string" },
+          "port": { "type": "integer" },
+          "user": { "type": "string" },
+          "remote_path": { "type": "string" },
+          "identity": { "type": "string" },
+          "password": { "type": "string" },
+          "url": { "type": "string" },
+          "client_id": { "type": "string" },
+          "client_secret": { "type": "string" },
+          "authority_url": { "type": "string" },
+          "include_shared": { "type": "boolean" },
+          "remote_notifications": {
+            "description": "OneDrive: open Graph's change-notification socket (socket.io, outbound, no server of ours) so that a change made elsewhere wakes the poll at once instead of at the next `daemon_poll_seconds`. The endpoint expires every 30 minutes and is renewed by itself; the poll stays the safety net. Default true; false polls only. `daemon.status` reports the channel as `notifications`. Other providers ignore it.",
+            "type": "boolean"
+          },
+          "webhook": { "type": "boolean" },
+          "webhook_port": { "type": "integer" },
+          "webhook_url": { "type": "string" },
+          "trust_all_certs": { "type": "boolean" },
+          "rclone_remote": { "type": "string" },
+          "rclone_path": { "type": "string" },
+          "rclone_binary": { "type": "string" },
+          "rclone_config": { "type": "string" },
+          "fast_bootstrap": { "type": "boolean" },
+          "keep_overwritten": { "type": "boolean" },
+          "sync_direction": { "type": "string", "enum": ["bidirectional", "upload", "download"], "description": "This profile's sync direction; overrides [general] sync_direction for this profile only. `unidrive backup add` writes \"upload\"." },
+          "file_versioning": { "type": "boolean", "description": "Overrides [general] file_versioning for this profile only." },
+          "max_versions": { "type": "integer", "minimum": 1, "description": "Overrides [general] max_versions for this profile only." },
+          "trash_emulation": { "type": "boolean", "description": "Overrides [general] trash_emulation for this profile only." },
+          "trash_retention_days": { "type": "integer", "minimum": 1, "description": "Overrides [general] trash_retention_days for this profile only." },
+          "upload_concurrency": { "type": "integer", "minimum": 1, "maximum": 16 },
+          "upload_chunk_mb": { "type": "integer", "minimum": 5 },
+          "upload_cutoff_mb": { "type": "integer", "minimum": 100 }
+        }
+      }
+    }
+  }
+}

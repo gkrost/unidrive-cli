@@ -1,0 +1,62 @@
+name: nightly-live-tests
+
+# Routine-vs-nightly live-test tiering.
+#
+# The routine (fast) tier runs on every PR via the `build` workflow
+# (`./gradlew check`, which runs the sync-tracking `test` task on the default
+# routine tier). This scheduled job runs the SLOW tier — the real-account
+# TrackingEngine live tests that took up to 62 min and are unfit for a per-PR
+# loop.
+#
+# On stock CI (no provider credentials) the real-account tests self-skip
+# (`UNIDRIVE_INTEGRATION_TESTS` unset + no token/credentials on disk), so this
+# job is green and serves as a continuous check that the nightly-tier task
+# itself stays wired correctly; the last step then marks the run as skipped
+# with a warning and a job-summary line, so green is not read as a live pass.
+# To exercise the real providers, populate the provider credentials and set
+# `UNIDRIVE_INTEGRATION_TESTS=true` in this job's environment (e.g. from
+# repository secrets) — see the live tests' Gate 1/Gate 2 skip messages for the
+# exact paths each provider reads.
+
+on:
+  schedule:
+    # 03:17 UTC daily — off-peak, offset from the CodeQL 05:28 Sunday cron.
+    - cron: '17 3 * * *'
+  # Allow on-demand runs from the Actions tab without waiting for the cron.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-live-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-nightly:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Cache ~/.gradle (same 429 rationale as build.yml; see
+      # core/settings.gradle.kts for the mirror set).
+      - name: Set up Gradle dependency cache
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Run nightly live-test tier
+        working-directory: core
+        run: ./gradlew :app:sync-tracking:liveTestNightly --no-daemon --console=plain
+
+      # A green run without credentials proves only that the task is wired;
+      # say so on the run page instead of passing for a live result.
+      - name: Report a skipped live tier
+        if: ${{ env.UNIDRIVE_INTEGRATION_TESTS != 'true' }}
+        run: |
+          echo "::warning title=Live tier skipped::No provider credentials: the real-account tests skipped themselves. This run checks the task wiring only."
+          echo "**Live tier skipped: no provider credentials.** The real-account tests skipped themselves; this run checks the task wiring only." >> "$GITHUB_STEP_SUMMARY"

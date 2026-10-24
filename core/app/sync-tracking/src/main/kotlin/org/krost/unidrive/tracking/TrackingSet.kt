@@ -1,0 +1,415 @@
+package org.krost.unidrive.tracking
+
+import java.nio.file.Files
+import java.nio.file.Path
+import java.sql.Connection
+import java.sql.DriverManager
+import java.time.Instant
+
+/**
+ * Persistent store of the tracking set. Co-exists with the existing
+ * engine's `state.db`; this is a separate file (`tracking.db`) so the
+ * two engines can run on the same profile and the user can always fall
+ * back to the original engine.
+ *
+ * Three operations dominate the interface:
+ * - `lookup(path)`: per-path read during reconcile.
+ * - `adopt(path, …)`: when both sides match at first-scan time
+ *   (spec Amendment 2's adopt-on-exact-content-match).
+ * - `upsert(record)`: every other state transition (Pending* during
+ *   apply, TrackedSynced after success, TrackedLocal/RemoteGone after
+ *   observing absence on a tracked path).
+ *
+ * `paths()` is used by the engine to drive per-path reconciliation over
+ * every tracked entry — the tracking-set engine's loop iterates the
+ * UNION of local observations + remote observations + tracking-set
+ * entries, so the "remote vanished and local already deleted" case is
+ * still observable even when the remote enumeration and local walk
+ * both omit the path.
+ */
+interface TrackingSet {
+    fun initialize()
+
+    fun close()
+
+    fun lookup(path: String): TrackingRecord?
+
+    fun upsert(record: TrackingRecord)
+
+    /** Remove a path from the set. Used by `TrackedBothGone` cleanup and `unclaim`. */
+    fun remove(path: String)
+
+    /** Adopt at first-scan time: both sides match, no transfer needed. */
+    fun adopt(
+        path: String,
+        providerId: String,
+        local: LocalObservation,
+        remote: RemoteObservation,
+        at: Instant = Instant.now(),
+    )
+
+    /** All currently-tracked paths (any state, including Pending*). Used to drive reconcile + ts status. */
+    fun paths(): Set<String>
+
+    /** Count by state — used by `ts status`. */
+    fun countsByState(): Map<TrackState, Int>
+
+    /**
+     * The persisted delta cursor for this profile, or null if none stored.
+     * The cursor is opaque — the provider interprets it (OneDrive's
+     * `@odata.deltaLink`, Internxt's offset/updatedAt marker). One value
+     * per db, because `tracking.db` is per-profile.
+     */
+    fun loadDeltaCursor(): String?
+
+    /**
+     * Persist the delta cursor for this profile. Only called after a pass
+     * that enumerated the full inventory (`complete == true`); an
+     * incomplete pass must leave the prior cursor untouched.
+     */
+    fun saveDeltaCursor(cursor: String?)
+
+    /**
+     * Remote directory paths whose reap was deferred (skipped because the
+     * remote listing still showed content, or the delete failed) and should be
+     * retried on a later pass. Directory rows are NOT in the tracking set, and
+     * the file whose deletion emptied a directory is removed from the set the
+     * moment its delete succeeds — so without this persisted set, a directory
+     * skipped once (e.g. on an eventually-consistent provider's listing lag)
+     * would never be revisited. Empty when nothing is pending.
+     */
+    fun pendingReaps(): Set<String>
+
+    /** Mark a remote directory path for a reap retry on a later pass. Idempotent. */
+    fun addPendingReap(path: String)
+
+    /** Clear a remote directory path once it is reaped or proven legitimately populated. Idempotent. */
+    fun removePendingReap(path: String)
+}
+
+/**
+ * SQLite-backed [TrackingSet]. New table layout — NOT shared with
+ * `state.db`'s `sync_entries`. Co-existence is intentional: the user can
+ * run both engines on the same profile (different DB files) and fall
+ * back without data loss.
+ *
+ * Schema is intentionally minimal. Future fields (move-detection
+ * bookkeeping, conflict-resolution policy per path) should add columns
+ * rather than overload existing ones.
+ */
+class SqliteTrackingSet(
+    private val dbPath: Path,
+    private val inMemory: Boolean = false,
+) : TrackingSet {
+    private var conn: Connection? = null
+
+    companion object {
+        private const val DELTA_CURSOR_KEY = "delta_cursor"
+
+        // #323 (tracking.db half): the format is frozen as of this stamp. A db written
+        // by a NEWER build refuses to open — an older jar must never stamp the version
+        // downward, or the next upgrade would believe nothing changed and skip
+        // migrations. Mirrors the state.db guard in StateDatabase.
+        internal const val SCHEMA_VERSION: Int = 1
+        internal const val SCHEMA_VERSION_KEY: String = "schema_version"
+    }
+
+    @Synchronized
+    override fun initialize() {
+        val url =
+            if (inMemory) {
+                "jdbc:sqlite::memory:"
+            } else {
+                Files.createDirectories(dbPath.parent)
+                "jdbc:sqlite:$dbPath"
+            }
+        conn = DriverManager.getConnection(url)
+        conn!!.autoCommit = true
+        try {
+            bootstrapSchema()
+        } catch (e: Throwable) {
+            // A refused open (#323) must not leak the connection it opened.
+            runCatching { conn?.takeIf { !it.isClosed }?.close() }
+            conn = null
+            throw e
+        }
+    }
+
+    private fun bootstrapSchema() {
+        val recorded = readSchemaVersion()
+        if (recorded != null) {
+            check(recorded <= SCHEMA_VERSION) {
+                "tracking.db was written by a newer unidrive (schema $recorded, this build supports $SCHEMA_VERSION); " +
+                    "upgrade unidrive or use a different tracking db."
+            }
+        }
+        createTables()
+        stampSchemaVersion()
+    }
+
+    /** The recorded schema version, or null on a fresh or pre-version database (adopted, then stamped). */
+    private fun readSchemaVersion(): Int? {
+        val c = conn ?: error("not initialized")
+        val hasMeta = c.metaData.getTables(null, null, "tracking_meta", null).use { rs -> rs.next() }
+        if (!hasMeta) return null
+        c.prepareStatement("SELECT value FROM tracking_meta WHERE key = ?").use { ps ->
+            ps.setString(1, SCHEMA_VERSION_KEY)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) return null
+                val value = rs.getString(1)
+                return value?.toIntOrNull()
+                    ?: error("tracking.db has an invalid schema version '$value'; upgrade unidrive or use a different tracking db.")
+            }
+        }
+    }
+
+    private fun stampSchemaVersion() {
+        val c = conn ?: error("not initialized")
+        c.prepareStatement(
+            """
+            INSERT INTO tracking_meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+        ).use { ps ->
+            ps.setString(1, SCHEMA_VERSION_KEY)
+            ps.setString(2, SCHEMA_VERSION.toString())
+            ps.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        conn?.takeIf { !it.isClosed }?.close()
+        conn = null
+    }
+
+    private fun createTables() {
+        val c = conn ?: error("not initialized")
+        c.createStatement().use { stmt ->
+            stmt.executeUpdate(
+                """
+                CREATE TABLE IF NOT EXISTS tracking_entries (
+                    path             TEXT PRIMARY KEY,
+                    provider_id      TEXT NOT NULL,
+                    remote_file_id   TEXT,
+                    state            TEXT NOT NULL,
+                    local_hash       TEXT,
+                    local_size       INTEGER,
+                    remote_etag      TEXT,
+                    remote_size      INTEGER,
+                    last_synced      TEXT NOT NULL
+                )
+                """,
+            )
+            stmt.executeUpdate(
+                """
+                CREATE INDEX IF NOT EXISTS idx_tracking_state
+                  ON tracking_entries(state)
+                """,
+            )
+            stmt.executeUpdate(
+                """
+                CREATE INDEX IF NOT EXISTS idx_tracking_remote_id
+                  ON tracking_entries(remote_file_id)
+                """,
+            )
+            stmt.executeUpdate(
+                """
+                CREATE TABLE IF NOT EXISTS tracking_meta (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT
+                )
+                """,
+            )
+            // Deferred empty-directory reaps to retry on a later pass. Added via
+            // CREATE TABLE IF NOT EXISTS so existing databases gain it transparently.
+            stmt.executeUpdate(
+                """
+                CREATE TABLE IF NOT EXISTS pending_reap (
+                    path TEXT PRIMARY KEY
+                )
+                """,
+            )
+        }
+    }
+
+    @Synchronized
+    override fun lookup(path: String): TrackingRecord? {
+        val c = conn ?: error("not initialized")
+        c.prepareStatement(
+            "SELECT path, provider_id, remote_file_id, state, local_hash, local_size, " +
+                "remote_etag, remote_size, last_synced FROM tracking_entries WHERE path = ?",
+        ).use { ps ->
+            ps.setString(1, path)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) return null
+                return TrackingRecord(
+                    path = rs.getString("path"),
+                    providerId = rs.getString("provider_id"),
+                    remoteFileId = rs.getString("remote_file_id"),
+                    state = TrackState.valueOf(rs.getString("state")),
+                    localHash = rs.getString("local_hash"),
+                    localSize = rs.getObject("local_size")?.let { (it as Number).toLong() },
+                    remoteEtag = rs.getString("remote_etag"),
+                    remoteSize = rs.getObject("remote_size")?.let { (it as Number).toLong() },
+                    lastSynced = Instant.parse(rs.getString("last_synced")),
+                )
+            }
+        }
+    }
+
+    @Synchronized
+    override fun upsert(record: TrackingRecord) {
+        val c = conn ?: error("not initialized")
+        c.prepareStatement(
+            """
+            INSERT INTO tracking_entries
+                (path, provider_id, remote_file_id, state, local_hash, local_size,
+                 remote_etag, remote_size, last_synced)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                provider_id    = excluded.provider_id,
+                remote_file_id = excluded.remote_file_id,
+                state          = excluded.state,
+                local_hash     = excluded.local_hash,
+                local_size     = excluded.local_size,
+                remote_etag    = excluded.remote_etag,
+                remote_size    = excluded.remote_size,
+                last_synced    = excluded.last_synced
+            """,
+        ).use { ps ->
+            ps.setString(1, record.path)
+            ps.setString(2, record.providerId)
+            ps.setString(3, record.remoteFileId)
+            ps.setString(4, record.state.name)
+            ps.setString(5, record.localHash)
+            if (record.localSize != null) ps.setLong(6, record.localSize) else ps.setNull(6, java.sql.Types.INTEGER)
+            ps.setString(7, record.remoteEtag)
+            if (record.remoteSize != null) ps.setLong(8, record.remoteSize) else ps.setNull(8, java.sql.Types.INTEGER)
+            ps.setString(9, record.lastSynced.toString())
+            ps.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    override fun remove(path: String) {
+        val c = conn ?: error("not initialized")
+        c.prepareStatement("DELETE FROM tracking_entries WHERE path = ?").use { ps ->
+            ps.setString(1, path)
+            ps.executeUpdate()
+        }
+    }
+
+    override fun adopt(
+        path: String,
+        providerId: String,
+        local: LocalObservation,
+        remote: RemoteObservation,
+        at: Instant,
+    ) {
+        upsert(
+            TrackingRecord(
+                path = path,
+                providerId = providerId,
+                remoteFileId = remote.remoteFileId,
+                state = TrackState.TrackedSynced,
+                localHash = local.hash,
+                localSize = local.size,
+                remoteEtag = remote.etag,
+                remoteSize = remote.size,
+                lastSynced = at,
+            ),
+        )
+    }
+
+    @Synchronized
+    override fun paths(): Set<String> {
+        val c = conn ?: error("not initialized")
+        val out = mutableSetOf<String>()
+        c.prepareStatement("SELECT path FROM tracking_entries").use { ps ->
+            ps.executeQuery().use { rs ->
+                while (rs.next()) out += rs.getString(1)
+            }
+        }
+        return out
+    }
+
+    @Synchronized
+    override fun loadDeltaCursor(): String? {
+        val c = conn ?: error("not initialized")
+        c.prepareStatement("SELECT value FROM tracking_meta WHERE key = ?").use { ps ->
+            ps.setString(1, DELTA_CURSOR_KEY)
+            ps.executeQuery().use { rs ->
+                return if (rs.next()) rs.getString(1) else null
+            }
+        }
+    }
+
+    @Synchronized
+    override fun saveDeltaCursor(cursor: String?) {
+        val c = conn ?: error("not initialized")
+        if (cursor == null) {
+            c.prepareStatement("DELETE FROM tracking_meta WHERE key = ?").use { ps ->
+                ps.setString(1, DELTA_CURSOR_KEY)
+                ps.executeUpdate()
+            }
+            return
+        }
+        c.prepareStatement(
+            """
+            INSERT INTO tracking_meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+        ).use { ps ->
+            ps.setString(1, DELTA_CURSOR_KEY)
+            ps.setString(2, cursor)
+            ps.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    override fun pendingReaps(): Set<String> {
+        val c = conn ?: error("not initialized")
+        val out = mutableSetOf<String>()
+        c.prepareStatement("SELECT path FROM pending_reap").use { ps ->
+            ps.executeQuery().use { rs ->
+                while (rs.next()) out += rs.getString(1)
+            }
+        }
+        return out
+    }
+
+    @Synchronized
+    override fun addPendingReap(path: String) {
+        val c = conn ?: error("not initialized")
+        c.prepareStatement("INSERT OR IGNORE INTO pending_reap (path) VALUES (?)").use { ps ->
+            ps.setString(1, path)
+            ps.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    override fun removePendingReap(path: String) {
+        val c = conn ?: error("not initialized")
+        c.prepareStatement("DELETE FROM pending_reap WHERE path = ?").use { ps ->
+            ps.setString(1, path)
+            ps.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    override fun countsByState(): Map<TrackState, Int> {
+        val c = conn ?: error("not initialized")
+        val out = mutableMapOf<TrackState, Int>()
+        c.prepareStatement("SELECT state, COUNT(*) FROM tracking_entries GROUP BY state").use { ps ->
+            ps.executeQuery().use { rs ->
+                while (rs.next()) {
+                    out[TrackState.valueOf(rs.getString(1))] = rs.getInt(2)
+                }
+            }
+        }
+        return out
+    }
+}

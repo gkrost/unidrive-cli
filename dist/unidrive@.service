@@ -1,0 +1,21 @@
+[Unit]
+Description=UniDrive background process for profile %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/unidrive -p %i autostart
+SuccessExitStatus=78 143
+Restart=on-failure
+RestartSec=30
+LoadCredentialEncrypted=unidrive-vault-pass
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=default.target

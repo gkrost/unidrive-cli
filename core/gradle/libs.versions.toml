@@ -1,0 +1,44 @@
+[versions]
+kotlin = "2.4.21"
+kotlinx-coroutines = "1.11.0"
+kotlinx-serialization = "1.11.0"
+sqlite-jdbc = "3.53.4.0"
+ktoml = "0.7.1"
+logback = "1.6.5"
+picocli = "4.7.7"
+ktor = "3.6.0"
+shadow = "9.6.1"
+# 1.23.x line: detekt 2.0 is a config-format rewrite and still alpha. Invoked
+# directly as detekt-cli on the toolchain JVM (see core/build.gradle.kts) — the
+# 1.x Gradle plugin analyzes in-process on the daemon JVM, which breaks on
+# JDKs its embedded compiler cannot parse.
+detekt = "1.23.8"
+socket-io-client = "2.1.2"
+
+[libraries]
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+kotlinx-coroutines-slf4j = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-slf4j", version.ref = "kotlinx-coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
+# Daemon-only (gkrost/unidrive#613 ask 1): DebugProbes behind UNIDRIVE_COROUTINE_DEBUG=1, so a
+# suspended-forever upload turns into one dump of every coroutine and its suspension stack.
+kotlinx-coroutines-debug = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-debug", version.ref = "kotlinx-coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite-jdbc" }
+ktoml-core = { module = "com.akuleshov7:ktoml-core", version.ref = "ktoml" }
+ktoml-file = { module = "com.akuleshov7:ktoml-file", version.ref = "ktoml" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+picocli = { module = "info.picocli:picocli", version.ref = "picocli" }
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+ktor-client-logging = { module = "io.ktor:ktor-client-logging", version.ref = "ktor" }
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+socket-io-client = { module = "io.socket:socket.io-client", version.ref = "socket-io-client" }
+detekt-cli = { module = "io.gitlab.arturbosch.detekt:detekt-cli", version.ref = "detekt" }
+
+[bundles]
+ktor-client = ["ktor-client-core", "ktor-client-cio", "ktor-client-content-negotiation", "ktor-serialization-kotlinx-json", "ktor-client-logging"]
+
+[plugins]
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

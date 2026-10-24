@@ -1,0 +1,826 @@
+# `unidrive daemon` — per-profile long-lived IPC server
+
+**Status:** draft (2026-05-25)
+**Branches affected:** `unidrive` main repo (`core/app/cli/`, `core/app/sync/` minor), `unidrive-mount-linux` sibling (error-message wording only)
+**BACKLOG entry this spec resolves:** "`unidrive mount` has no JVM-side IPC server lifecycle (mount-only mode is dead-on-arrival)" — High tier in `BACKLOG.md`.
+**BACKLOG entries this spec defers:**
+- "Convert `unidrive sync` into a client of the `unidrive daemon` process (daemon-decomposition phase 2)" — Medium tier.
+- "Auto-spawn `unidrive daemon` on first client connection (daemon-decomposition phase 3)" — Medium tier.
+- Mode-mutex spec `mount-sync-mode-mutex-design.md` becomes deletable scaffolding once phase 2 lands; this spec amends it but does not retire it.
+
+## 1. Problem
+
+The existing `unidrive mount` command was never functional standalone. `MountCommand.run()` spawns the Rust co-daemon (`unidrive-mount` from `../unidrive-mount-linux`) and supervises it, but it never instantiates an `IpcServer`. The Rust co-daemon connects to `/run/user/<uid>/unidrive-<profile>.sock` expecting a JVM-side handler to be listening — there is none.
+
+Pre-mode-mutex, the workflow happened to work when an operator ran `unidrive sync -w` concurrently in another terminal: `SyncCommand` creates an `IpcServer` (at `SyncCommand.kt:308`) which the co-daemon then connected to. Phase 1 of the mode-mutex work (spec `mount-sync-mode-mutex-design.md`) correctly forbids concurrent sync + mount per profile, closing the only path that ever made standalone mount work. Live smoke on 2026-05-24 surfaced the gap: `failed to connect IPC at /run/user/1000/unidrive-personal_onedrive.sock: io: Connection refused (os error 111)`.
+
+This spec introduces `unidrive daemon` — a per-profile, long-lived JVM that owns the IPC server, auth/provider session, and `state.db` handle. `mount` becomes a thin client of the daemon. `sync` stays unchanged in this phase; conversion to a daemon client is the phase-2 follow-up filed in BACKLOG.
+
+## 2. Goals and non-goals
+
+### Goals
+
+> **Note (2026-10-05):** G3's discovery default and the daemon's timers (the `sync_root` rescan of #510) are revisited under [`docs/adr/independent-profiles.md`](../../adr/independent-profiles.md) (#560, #463).
+
+- **G1:** `unidrive mount` works end-to-end without requiring a concurrent `sync` process.
+- **G2:** One daemon process per profile. Multiple profiles run multiple daemons.
+- **G3:** Daemon acts on IPC verbs, plus a small set of documented timers. No background reconcile loops (it never plans or executes a local→remote delete on its own) and no auto-bootstrap. **Remote-change discovery (#463, mount-view-refresh-design.md §5):** `unidrive daemon run` polls the cloud by default: ONE in-process timer fires the same one-way enumerate path as `sync.enumerate` every `daemon_poll_seconds` (profile key, default 60 s; `--poll-interval <duration>` overrides, `0` = off). The first poll runs at start, so a daemon that comes back from a stop or an outage catches up at once. Each poll is an incremental delta from the stored cursor (Internxt: two `updatedAt`-filtered listings; an unavailable answer ends the poll instead of walking the tree). ±10% jitter; serialised by the `sync.enumerate` in-flight guard and skipped while a `refresh.run` is in flight, so polls never overlap an enumeration or a refresh; on a provider failure the interval backs off (×4 per consecutive failure, capped at 10 min, starting escalated after a restart into a known failure streak), and so does a pass that succeeds but leaves the recovery latch set (the next pass would list the whole drive again, mount-view-refresh-design.md §3.1.1), and a hydration or upload that succeeds ends the back-off (next poll one plain interval after the failed one). Cancelled at shutdown. The notification channel is not reliable, and a mount profile has no other way to learn what changed in the cloud (#560 Option 2: a mirror and a mount profile on one account exchange changes only through the cloud). The other documented timers are the pending-upload and dirty-overwrite replay at start (#493, #605) and the hydration cache sweep (#450). The sync-root rescan (#504) retired with the #560 cutover: a mount profile touches no sync root.
+- **G4:** State-of-the-cloud population is the operator's choice via a new IPC verb `refresh.run`, exposed through a thin `unidrive refresh` client (replacing today's standalone refresh JVM).
+- **G5:** Lifecycle is explicit and operator-visible: `unidrive daemon run|status|stop` subcommands. Foreground run; operator backgrounds via shell or wrapper.
+- **G6:** Mode-mutex extends to two-way exclusion: `sync` ⇄ `daemon` per profile. Mount becomes a daemon client, not a lock holder. The existing `Mode.MOUNT` enum value is removed.
+- **G7:** Fail-fast on startup: daemon authenticates BEFORE binding the socket; on auth failure, no socket is ever created.
+- **G8:** Graceful shutdown with 10s deadline (matches existing `MountCommand.SIGTERM_GRACE_MS` convention). After deadline, in-flight RPCs are abandoned and the daemon exits.
+
+### Non-goals
+
+- **NG1:** Auto-spawning the daemon from clients. Operator runs `unidrive daemon run <profile>` explicitly. Filed as decomposition phase-3 in BACKLOG.
+- **NG2:** Converting `unidrive sync` into a daemon client. Sync still owns its own `IpcServer` + reconcile loop. Filed as decomposition phase-2 in BACKLOG.
+- **NG3:** Systemd-user-unit generation. Covered inside the phase-3 BACKLOG entry.
+- **NG4:** Daemon multiplexing multiple profiles. One profile per daemon process; no shared state across daemons.
+- **NG5:** Persisting the refresh cursor between runs. A new `refresh.run` re-enumerates the full cloud root. Persistent cursors are the tracking-set engine's concern, not this spec's.
+- **NG6:** Auto-retry on auth failure during normal operation. Token refresh on 401 stays handled by the existing provider HTTP client; whole-session auth failure during normal operation surfaces as `provider_error` to the client, daemon stays up.
+- **NG7:** UI changes (`unidrive-ui`). The UI already speaks IPC; it will connect to the daemon's socket transparently once the daemon exposes the same verbs the sync `IpcServer` does.
+- **NG8:** Backwards-compat for standalone `unidrive refresh`. The pre-spec behaviour was a standalone JVM running the refresh path against the provider directly. Post-spec, `unidrive refresh` becomes a thin client that requires a running daemon. Operators who used `unidrive refresh` standalone (without a sync watcher) get a clear "daemon not running" error and the same hint pointing at `unidrive daemon run`. This is a deliberate UX change consistent with the daemon model — fragmenting the refresh path between "standalone JVM" and "daemon RPC" would defeat the single-source-of-truth invariant the daemon establishes. Trade-off acknowledged: scripts that called `unidrive refresh <profile>` in cron jobs without managing a daemon will break. Migration: wrap with `unidrive daemon run <profile> & sleep 2 && unidrive refresh <profile> && unidrive daemon stop <profile>` or move to systemd-user-unit when phase-3 ships.
+
+## 3. Architecture
+
+### 3.1 Component picture
+
+```
+                    ┌──────────────────────────────────────────────┐
+                    │  unidrive daemon run personal_onedrive         │
+                    │  (long-lived JVM, one per profile)           │
+                    │                                              │
+                    │  ┌────────────────────────────────────────┐  │
+                    │  │  ProcessLock (Mode.DAEMON)             │  │
+                    │  └────────────────────────────────────────┘  │
+                    │  ┌────────────────────────────────────────┐  │
+                    │  │  Provider (OneDrive | Internxt)        │  │
+                    │  │  authenticated at startup              │  │
+                    │  └────────────────────────────────────────┘  │
+                    │  ┌────────────────────────────────────────┐  │
+                    │  │  StateDatabase (single connection,     │  │
+                    │  │  rollback-journal mode (SQLite default),│ │
+                    │  │  daemon-lifetime, @Synchronized API)   │  │
+                    │  └────────────────────────────────────────┘  │
+                    │  ┌────────────────────────────────────────┐  │
+                    │  │  IpcServer @ /run/user/<uid>/          │  │
+                    │  │    unidrive-<profile>.sock             │  │
+                    │  │  Handlers:                             │  │
+                    │  │    hydration.* (existing)              │  │
+                    │  │    refresh.run (new)                   │  │
+                    │  │    daemon.status (new, read-only)      │  │
+                    │  │    sync.subscribe (re-used)            │  │
+                    │  └────────────────────────────────────────┘  │
+                    └──────────────────────────────────────────────┘
+                                       ▲          ▲
+                          ┌────────────┘          └─────────────┐
+                          │ IPC                                 │ IPC
+                ┌─────────┴───────────┐               ┌─────────┴───────────┐
+                │ unidrive mount      │               │ unidrive refresh    │
+                │ (Kotlin process     │               │ (Kotlin client)     │
+                │  + Rust co-daemon)  │               │  issues refresh.run │
+                │  uses hydration.*   │               │  + subscribes to    │
+                │                     │               │  progress events    │
+                └─────────────────────┘               └─────────────────────┘
+```
+
+### 3.2 Lifecycle state machine
+
+```
+   [ unidrive daemon run <profile> ]
+              │
+              ▼
+   ┌──────────────────────────────┐
+   │ Acquire ProcessLock(DAEMON)  │──── fails ───▶ Print contention error, exit 1
+   └──────────────────────────────┘    (mirrors Mode.SYNC contention shape)
+              │ acquired
+              ▼
+   ┌──────────────────────────────┐
+   │ Open StateDatabase           │──── fails ───▶ Print error, release lock, exit 1
+   └──────────────────────────────┘
+              │ opened
+              ▼
+   ┌──────────────────────────────┐
+   │ provider.authenticate()      │──── fails ───▶ Print auth error, release lock, exit 1
+   └──────────────────────────────┘    (NO socket bound, NO .lock.pid lingering)
+              │ authed
+              ▼
+   ┌──────────────────────────────┐
+   │ IpcServer.start() — calls    │──── bind fails ▶ Release lock, exit 1
+   │ reclaimStaleSocket internally│   (no retry — see F3)
+   └──────────────────────────────┘
+              │ bound
+              ▼
+   ┌──────────────────────────────┐
+   │  SERVE (idle/serving RPCs)   │ ◀─── SIGTERM ──┐
+   └──────────────────────────────┘                │
+              │                                    │ initiate graceful shutdown
+              │                                    │
+              ▼                                    │
+   ┌──────────────────────────────┐                │
+   │ Refuse new connections;      │ ──── 10s ────▶ Force shutdown:
+   │ wait for in-flight RPCs;     │    deadline    cancel coroutines,
+   │ cancel refresh.run if any    │                drop connections
+   └──────────────────────────────┘
+              │
+              ▼
+   ┌──────────────────────────────┐
+   │ Close IpcServer;             │
+   │ close StateDatabase;         │
+   │ release ProcessLock;         │
+   │ remove socket file           │
+   └──────────────────────────────┘
+              │
+              ▼
+            exit 0
+```
+
+### 3.3 Component responsibilities
+
+- **`DaemonCommand` (new, `core/app/cli/src/main/kotlin/org/krost/unidrive/cli/DaemonCommand.kt`)** — owns the lifecycle state machine in §3.2. Constructs Provider, StateDatabase, Hydration, IpcServer in that order. Registers handlers. Installs a SIGTERM shutdown hook. Runs `runBlocking { ... }` until socket closes. **Implementer note on testability:** the existing `SyncCommand` reads all its dependencies through `@ParentCommand parent: Main` (see `SyncCommand.kt:213, 230-255`), which prevents instantiation without picocli wiring. T1 requires the daemon's lifecycle to be exercisable from a JUnit test without spawning a JVM. To make T1 cleanly implementable, `DaemonCommand` should be structured as a picocli-thin shell that delegates to a separately-constructable `DaemonRuntime` class taking its dependencies (profile config, provider factory, lock file path, db path, socket path) as constructor arguments. The picocli class reads them off `parent: Main`, the test fixture constructs them directly. This avoids the test-harness friction the audit flagged as Issue 4 (2026-05-25 spec review); the implementation plan handles the exact split.
+- **`DaemonStatusCommand` (new)** — reads `~/.config/unidrive/<profile>/.lock.pid`. If absent, prints "no daemon running for profile '<X>'" to stderr and exits 1. If present, prints `pid <N>, mode <X>` immediately from the file, THEN attempts to RPC the daemon for the richer fields (uptime, refresh-in-flight, clients connected). If the RPC fails (daemon mid-shutdown, socket gone), still prints the file-derived data plus a "daemon socket unreachable" note. Read-only; never acquires the lock.
+- **`DaemonStopCommand` (new)** — reads `.lock.pid`. If absent, prints "no daemon running" + exit 0 (idempotent stop). If present and mode is `daemon`, sends `SIGTERM` to the PID, waits up to 12s (10s grace + 2s buffer), reports outcome. Does not acquire the lock itself. If mode is not `daemon` (e.g. `sync`), refuses with a clear error.
+- **`RefreshCommand` (existing, refactored)** — becomes a thin client. Connects to the daemon socket; issues `sync.subscribe` first; then issues `refresh.run`; subscribes to progress events; prints them to stdout; exits when the daemon emits the `refresh.done` terminal event. If `Connection refused`, prints a clear error pointing at `unidrive daemon run`. The pre-existing standalone-JVM refresh path (calling `SyncCommand.run()` with `skipTransfers=true`) is removed from `RefreshCommand`; that code body moves into the daemon's `RefreshRpcHandler`.
+- **`MountCommand` (existing, modified)** — removes the `parent.acquireProfileLockForMount()` call. Still constructs the socket path via `IpcServer.defaultSocketPath(profile.name)`. Still supervises the Rust co-daemon subprocess. On a non-zero co-daemon exit, runs one authenticated `daemon.status` round-trip and words the hint from the result (running-and-answering / socket-present-but-silent / not-running; #202). Otherwise unchanged.
+- **`ProcessLock.Mode` (existing, modified at `core/app/sync/src/main/kotlin/org/krost/unidrive/sync/ProcessLock.kt`)** — `enum class Mode { SYNC, DAEMON }`. The `MOUNT` value is removed. The unknown-mode forward-compat path (already implemented at the `readHolderInfo()` reader per spec mount-sync-mode-mutex-design.md §3.1) handles any pre-existing `.lock.pid` files containing `mount` token gracefully: `HolderInfo(mode=null, rawMode="mount")`. The contention error names it verbatim ("Profile 'X' is held by an unidrive process running in unknown mode 'mount' — this binary may be older than the holder"), which is honest if a downgrade ever happens.
+- **`Main.acquireProfileLock()` (existing, modified)** — keeps Mode.SYNC acquisition. The mount-holder branch becomes a daemon-holder branch (renders "currently in use by `unidrive daemon`"). The unknown-mode branch handles legacy `mount` token gracefully.
+- **`Main.acquireProfileLockForMount()` (existing, REMOVED)** — no longer needed. Mount does not acquire the profile lock at all.
+- **`Main.acquireProfileLockForDaemon()` (new)** — symmetric to `acquireProfileLock()` but stamps `Mode.DAEMON`. Used only by `DaemonCommand`.
+- **`HydrationIpcHandler` (existing, unchanged)** — already supports all hydration verbs (read / open_write / list / subscribe / mkdir / unlink / rmdir). Daemon registers it on its IpcServer with the same wiring SyncCommand uses today.
+- **`RefreshRpcHandler` (new)** — new class registered as the `refresh.run` handler. Wraps a call into the existing `SyncEngine` refresh path (`skipTransfers=true, skipRemoteGather=false` — the same flags `RefreshCommand` sets today via `SyncCommand` inheritance). Publishes progress events to subscribers via the `IpcServer`'s subscriber-set mechanism. Owns the in-flight flag for invariant I6 (at most one `refresh.run` at a time).
+- **`StaleMountDetector` (existing)** — no change needed. The detector was added in Phase 1 to warn `SyncCommand` about leftover FUSE mounts from `kill -9`'d mounts (see `SyncCommand.kt:218`). The daemon adopts the same warn-but-do-not-abort behaviour: after acquiring the lock, call `StaleMountDetector.detectStaleFuseUnidriveMounts()`; if the returned list is non-empty, print a `WARNING:` line to stderr listing the stale mount paths plus a `fusermount3 -u <path>` cleanup hint, then continue startup. The daemon never aborts on stale mounts — they may have been left behind by a prior daemon's mount client that survived a `kill -9`, but the new daemon can still serve fresh clients.
+
+### 3.4 Data flow examples
+
+**Fresh-machine mount workflow:**
+
+```
+operator:  unidrive daemon run personal_onedrive            # terminal A, foreground
+operator:  unidrive refresh personal_onedrive               # terminal B, populates state.db
+operator:  unidrive mount personal_onedrive /tmp/onedrive   # terminal B, FUSE serves
+operator:  ls /tmp/onedrive                                # sees cloud tree (refresh populated)
+```
+
+**Just-mount (write-only) workflow:**
+
+```
+operator:  unidrive daemon run personal_onedrive            # terminal A
+operator:  unidrive mount personal_onedrive /tmp/onedrive   # terminal B
+operator:  ls /tmp/onedrive                                # empty (no refresh ran)
+operator:  mkdir /tmp/onedrive/new_folder                 # works → folder created on cloud
+operator:  echo hello > /tmp/onedrive/new_file.txt        # works → uploaded
+```
+
+**Co-daemon exit error path** (#202): the co-daemon's inherited stderr already says why it stopped.
+After a non-zero co-daemon exit the engine runs one authenticated `daemon.status` round-trip and words
+its hint from the result, so it claims the daemon is down only when the status check says so:
+
+```
+operator:  unidrive mount personal_onedrive /tmp/onedrive
+co-daemon: [Rust] failed to connect IPC at /run/user/1000/unidrive-personal_onedrive.sock:
+              io: Connection refused (os error 111)
+
+# the daemon is running and answering → the cause is the co-daemon's own
+mount:     unidrive mount: co-daemon exited with code 1. The daemon for profile 'personal_onedrive'
+           is running and answering, so the cause is the co-daemon's own (see its output above; run
+           again with RUST_LOG=debug for more).
+
+# the socket file is present but silent → it may still be starting, or the socket is stale
+mount:     unidrive mount: co-daemon exited with code 1. The daemon for profile 'personal_onedrive'
+           has a socket but did not answer: it may still be starting (run the mount again in a
+           moment) or a killed daemon left a stale socket (check `unidrive -p personal_onedrive
+           daemon status`).
+
+# no socket file at all → the only case that claims the daemon is down
+mount:     unidrive mount: co-daemon exited with code 1. The daemon for profile 'personal_onedrive'
+           is not running. Start it with: `unidrive -p personal_onedrive daemon run`.
+exit <the co-daemon's exit code, unchanged>.
+```
+
+## 4. Wire contract
+
+### 4.1 Existing verbs (unchanged, inherited from current IpcServer)
+
+- `hydration.read`, `hydration.open_write`, `hydration.list`, `hydration.subscribe`
+- `hydration.mkdir`, `hydration.unlink`, `hydration.rmdir` (Phase 2 namespace verbs)
+
+All reply shapes per the established pattern: `{"ok": true, ...}` on success, `{"ok": false, "error": "<wire-string>", "message": "..."}` on failure.
+
+### 4.2 New verb: `refresh.run`
+
+**Request:**
+
+```json
+{"verb": "refresh.run"}
+```
+
+No parameters in this spec. The verb runs against the daemon's bound profile (one daemon per profile, so the target is unambiguous). Future extensibility: a `path` field could narrow enumeration to a subtree — out of scope; file as follow-up if requested.
+
+**Synchronous reply (returned immediately, before enumeration starts):**
+
+```json
+{"ok": true, "job_id": "<uuid>"}
+```
+
+If a `refresh.run` is already in flight:
+
+```json
+{"ok": false, "error": "busy", "message": "refresh already running (job_id=<existing>)"}
+```
+
+The daemon serialises `refresh.run` jobs — at most one in flight at a time (invariant I6). This matches the underlying `SyncEngine` refresh path which is single-shot.
+
+**Progress events (streamed post-reply via the existing subscriber-set mechanism, mechanism β):**
+
+After the synchronous reply, the daemon writes JSON-Lines event records to any client that subscribed via `sync.subscribe` before issuing `refresh.run`. Event shapes match the existing `IpcServer.SyncState` data class wire format (already used by `SyncCommand` for its progress emission). Terminal event:
+
+```json
+{"event": "refresh.done", "job_id": "<uuid>", "ok": true}
+```
+
+Or on failure:
+
+```json
+{"event": "refresh.done", "job_id": "<uuid>", "ok": false, "error": "<wire-string>"}
+```
+
+**Wire-contract error strings for `refresh.run`:**
+
+- `"busy"` — another `refresh.run` is in flight (synchronous reply path). Also the terminal event of a `refresh.run` with `"reset": true` on a mounted profile when another enumeration (the daemon's own poll, a `sync.enumerate`) held the single-flight guard: that pass was not joined and the delta cursor was **not** cleared, so a reset is never reported as done when it did not run (#1037). A plain `refresh.run` that met a running pass still ends `ok: true`: that pass refreshes the view.
+- `"shutdown"` — daemon received SIGTERM and cancelled the refresh (terminal event path).
+- `"auth_failed"` — provider auth lapsed mid-job (rare; provider HTTP client normally refreshes tokens transparently).
+- `"provider_error"` — generic provider failure (network, 5xx, etc.); the human-readable detail is in `message`.
+
+The `unidrive refresh` CLI client treats any non-`ok=true` terminal as exit 1 with the `message` field printed to stderr.
+
+### 4.3 New verb: `daemon.status`
+
+**Request:**
+
+```json
+{"verb": "daemon.status"}
+```
+
+**Reply (always synchronous, `ok: true`):**
+
+```json
+{
+  "ok": true,
+  "uptime_ms": 3600000,
+  "clients_connected": 2,
+  "refresh_in_flight": false,
+  "refresh_job_id": null
+}
+```
+
+If a refresh is running:
+
+```json
+{
+  "ok": true,
+  "uptime_ms": 3600000,
+  "clients_connected": 2,
+  "refresh_in_flight": true,
+  "refresh_job_id": "9e08915a-..."
+}
+```
+
+Read-only verb; takes no parameters; never returns `ok: false` (a daemon that can reply to verbs is by definition functional enough to answer this one). PID and profile name are deliberately NOT in the response — those come from `.lock.pid` and are knowable without the daemon being reachable (avoiding the chicken-and-egg case where "is the daemon up?" requires the daemon to be up). The verb adds value only for the data that cannot be derived from the file system: uptime, connected-clients count, refresh-in-flight state, the progress of the remote enumeration.
+
+**The `enumeration` object.** The reply always carries an additive `enumeration` object (the protocol version does not change) that says whether the remote is being enumerated, how far that is, and how the last attempt ended. It covers every run of the engine's one-way remote enumeration (the poller, `sync.enumerate`, the mount-routed `refresh.run`, the enumerate after `hydration.subscribe`). Only `state`, `first` and `attempt` are always present; a field that is unknown is absent, never `null`, and clients must tolerate any other field missing. The engine reports numbers and codes only; the client words them.
+
+```json
+{
+  "state": "running",
+  "first": true,
+  "attempt": 2,
+  "phase": "listing",
+  "listing": "tree",
+  "started_at_ms": 1700000000000,
+  "elapsed_ms": 61500,
+  "items": 47000,
+  "folders_done": 310,
+  "folders_known": 4100,
+  "folders_skipped": 0,
+  "rate_per_s": 312.4,
+  "eta_s": 905,
+  "eta_kind": "lower_bound",
+  "last_error": "Server closed connection for GET <url>: the server prematurely closed the connection"
+}
+```
+
+| field | meaning |
+|---|---|
+| `state` | `idle`, `running` (an enumeration is in flight) or `failed` (the last attempt failed; a poller, if one runs, waits) |
+| `first` | true while no enumeration has completed for this profile (the delta cursor is empty): the view is incomplete until one does |
+| `attempt` | attempts since the last success, counting the running one; 0 after a success |
+| `phase` | while running: `listing` (gathering from the remote), `resolving_paths` (the listing is over; the provider builds the paths of what it gathered and asks for the folders the listing did not return, see `paths_done`) or `saving` (writing the result to state.db). A client that knows only `listing` and `saving` can word any other value as the listing still going on |
+| `listing` | `account` (account-wide offset pagination), `cursor` (account-wide cursor pagination, resumable from the cursor of the last page) or `tree` (folder walk); absent when the provider does not say |
+| `started_at_ms`, `elapsed_ms` | start of the running or the last attempt (epoch ms); elapsed time of the running one. While `phase` is `saving`, `elapsed_ms` stays at how long the listing took: the save time is not counted, so a client can word "found N items in X" with it. `elapsed_ms` is absent when no attempt runs |
+| `items` | items gathered by the running (or the failed) attempt so far |
+| `folders_done`, `folders_known`, `folders_skipped` | folder walk only: folders listed or skipped, folders discovered so far (a lower bound of the total), folders that failed and were skipped |
+| `paths_done`, `paths_total` | while `phase` is `resolving_paths` (and in the status of an attempt that failed in it): folders resolved, of the folders the listing did not return and an item hangs below, known so far. `paths_total` is a lower bound and can grow when a folder that was fetched hangs below another one that is missing; neither number goes down. `items` stands at what the listing gathered while this runs; `rate_per_s`, `eta_s` and `eta_kind` are absent in this phase. Absent in every other phase. A provider whose listing returns every folder reports no such step |
+| `rate_per_s` | items per second, smoothed over the last minute; absent before ten seconds of data and while the listing stands still |
+| `eta_s`, `eta_kind` | seconds left while listing. `lower_bound`: only the known queue of the folder walk is counted, the real value can be larger. `estimate`: the totals of a previous complete full enumeration give the size of the whole. Absent when neither is known |
+| `last_success_at_ms` | end of the last completed enumeration (epoch ms) |
+| `unreachable_items` | how many items of the last full listing the provider could not place, because a folder above them is gone for good (the server answers 404 or 410 for it), or because they sit in a tree of their own that is not part of the drive (Internxt: a device folder of the desktop app's backups, which has no parent). They are unreachable, not deleted: the scan counts as complete, their rows stay as they are, and nothing is reaped or removed from disk on their account. Absent when there are none; it changes only with a full listing |
+| `recovery` | `true` only while the running attempt lists the whole drive again because the previous scan ended incomplete (the recovery latch was set when it started); absent otherwise and when no attempt runs. A client can word it as "scanning again because the last scan was incomplete" |
+| `dropped_items` | how many tracked items the last full listing did not return because it ended incomplete. When two full listings in a row end incomplete with the same items missing, the engine accepts that set and ends the recovery instead of listing again; the rows of those items stay as they are and nothing is reaped on their account. Absent when there are none; it changes only with a full listing, and a complete full listing clears it. |
+| `duplicate_names` | how many remote items are kept locally under a decorated name (`name (dup-xxxxxxxx).ext`, 8 hex of the remote id) because another live item of the drive has the same path. The item that keeps the path is chosen by a fixed rule (folder, then the item already tracked there, then the smallest id); `unidrive status` lists the decorated paths. Absent when there are none; read from state.db when an attempt ends. |
+| `last_error` | the reason the last attempt failed, until a success: one line, at most 200 characters, with paths, quoted names, addresses and URLs replaced by placeholders |
+| `last_error_code` | A machine-readable cause for the failure, until a success. The full set: `http_<status>` for an API error (`http_408`); `auth_rejected` when the provider refused the credentials; a transport class `timeout`, `dns`, `tls`, `connect`, `reset` or `io` (`io` means transport I/O only); `decode` when an answer arrived but its body cannot be read; `internal` for an unexpected failure inside the engine or provider. Absent when unknown; the field is additive, new codes may appear, and the wording stays the client's |
+| `next_attempt_at_ms` | while `failed` and the poller runs: when it tries again (epoch ms, the jittered sleep it takes) |
+
+**The `trash` object** (additive; the protocol version does not change) is present only while something is in the
+provider's trash, which the engine shows apart in a read-only virtual folder (ipc-write-protocol.md section 4.1). Absent
+means there is none.
+
+```json
+{"trash": {"root_path": "/Papierkorb", "folder_name": "Papierkorb", "configured_name": "Papierkorb"}}
+```
+
+| field | meaning |
+|---|---|
+| `root_path` | where the folder is now. Everything at and below it is read-only; its `hydration.list` entry carries `trash_root:true` |
+| `folder_name` | its name on disk. It differs from `configured_name` (`Papierkorb (2)`, `(3)`, ...) while a live top-level item already has that name: the live item keeps it, and the engine logs the collision once |
+| `configured_name` | the name the profile asks for (`trash_folder_name`, set from the client's language with `profile set`; `Papierkorb` when unset) |
+
+**The `views` array** (additive; the protocol version does not change) is present only while the profile shows at least one
+read-only view (ipc-write-protocol.md section 4.2), and `capabilities` lists `views` then (and `view_page`: the daemon answers
+`view.page`, the pages past the folder's list for a front-end's own list); a daemon that shows none answers as
+before. One object per view, in the order `recents`, `favorites`, `shared`:
+
+```json
+{"views": [{"kind": "recents", "root_path": "/Recents", "folder_name": "Recents", "configured_name": "Recents", "entries": 12, "skipped": 0, "as_of_ms": 1760000000000, "state": "ok", "truncated": false},
+           {"kind": "shared", "root_path": "/Shared", "folder_name": "Shared", "configured_name": "Shared", "entries": 7, "skipped": 1, "as_of_ms": 1760000000000, "state": "ok", "truncated": false}]}
+```
+
+| field | meaning |
+|---|---|
+| `kind` | `recents`, `favorites`, `shared` |
+| `root_path` | where the folder is now. Everything at and below it is read-only; its `hydration.list` entry carries `view` |
+| `folder_name` | its name on disk. It differs from `configured_name` (`Recents (2)`, `(3)`, ...) while a live top-level item already has that name: the live item keeps it, and the engine logs the collision once |
+| `configured_name` | the name the profile asks for (the folder name key of the view: `shared_folder_name` for `shared`, set from the client's language with `profile set`; the kind's English default when unset) |
+| `entries`, `skipped` | what the last listing of the view showed, and the references it had no row to show (no live row, inside the Papierkorb, outside `sync_path`). `0` and `0` before the first listing. A folder reference is one entry (a read-only alias of the real folder, browsable below it, ipc-write-protocol.md section 4.2); what lies below an alias is listed from state.db at each call and counted nowhere here |
+| `as_of_ms` | when the list was fetched (epoch ms); `null` while it never was |
+| `state` | `ok`: the list is the provider's latest answer. `stale`: the last refresh failed, the list before it is served. `unavailable`: there is no list, because it was never fetched (also before anyone has listed the view: the engine asks only while somebody looks) or because the provider declares the view but answers that it has no such view (a server without the route); the folder is shown, empty |
+| `truncated` | additive. `true` while the list was cut: at the view's limit (the Shared view asks for 5,000) or at a cap of the provider, so the account has more such items than the folder shows. `false` otherwise, also before the first list. A client can say "showing the first N" instead of presenting the list as complete |
+
+A view whose kind the provider does not declare (OneDrive, S3, localfs, ... for every kind today) is not shown at all, whatever
+the profile key says: no folder, no object here, and no `views` capability when it was the only one. The engine logs that once
+at start.
+
+Nothing here asks the provider.
+
+The reply also carries `engine_build_time_ms` (additive; the protocol version does not change; no capability, a daemon without the field is simply older): when the engine was built, epoch milliseconds UTC, `null` when unknown. It is the commit time for a reproducible build (`SOURCE_DATE_EPOCH` or a clean tree), the build clock otherwise, and the same instant `unidrive --version` prints after `built`. It sits beside `engine_version` and is not part of the minimal reply before authentication.
+
+The reply also carries `poll_interval_ms` (additive, #463): the effective interval of the remote poll in ms, `0` when it is off. The poll's schedule after a failure is `enumeration.next_attempt_at_ms`.
+
+The enumeration is answered from memory, never from state.db: a running attempt from its tracker, an idle one from the cursor and the listing figures (`first`, `last_scan_complete`, `unreachable_items`, `dropped_items`, `last_success_at_ms`) that the last attempt left, read when it ended. So a status request does not wait for the batch that saves a result, for a pass over a large listing or for any other reader of state.db. Only the first request of a process that has not run an attempt yet reads them from state.db, once.
+
+**The `uploads`, `cache` and `provider_health` objects** (additive, #658; the protocol version does not change). They are the engine's own account of "is everything uploaded?", which a front-end cannot work out from its own journal: the engine knows its start-up replays, its keep-local rows and its stuck uploads. A value the daemon does not have is `null`, or the whole object is absent, never `0` and never a "healthy" default.
+
+```json
+{
+  "uploads": {"pending": 3, "in_flight": 1, "failed": 1, "oldest_pending_age_ms": 5400000, "as_of_ms": 1760000000000, "retrying": 1, "next_try_at_ms": 1760000060000},
+  "cache": {"bytes": 1288490188, "budget_bytes": 21474836480},
+  "provider_health": {"last_contact_ms": 1700000000000}
+}
+```
+
+| field | meaning |
+|---|---|
+| `uploads` | mount profiles only; absent on a mirror profile (no hydration layer) and until the upload queue has been read once after the start |
+| `uploads.as_of_ms` | #747: when the counts were read (epoch ms). A busy state.db serves the last good reading, so a front-end tells fresh from frozen by the stamp not advancing; absent until the first reading |
+| `uploads.pending` | paths whose bytes are not in the cloud yet and that an upload will take: every never-uploaded (`local:`) row, plus every path holding an upload slot (a dirty overwrite of an uploaded row has no such row). Queued, in flight and failed-awaiting-replay all count, **including the start-up replay's own uploads**. **Keep-local rows (`exclude_patterns`, ignore rules) and rows outside `sync_path` are not counted**: no upload will ever take them. `0` means nothing is waiting; a client that wants "everything is uploaded" also checks that `uploads` is present |
+| `uploads.in_flight` | transfer attempts that hold a transfer permit right now (a subset of `pending`); a path waiting for its turn, for the transfer budget or in a retry backoff is pending but not in flight |
+| `uploads.failed` | never-uploaded rows with a failed attempt on record (a subset of `pending`); a daemon restart replays them. The failed mark stays until an upload succeeds, so a row that waits in a retry backoff, or whose retry is in flight, is `failed` too |
+| `uploads.retrying` | additive (#1095). Paths whose upload failed at least one attempt and now wait in the retry backoff for the next one (a subset of `pending`; `0` when none; always present with `uploads`). A path is counted from the failed attempt to the end of the backoff delay and then leaves: the retry is due, and it counts in `in_flight` once it holds a transfer permit (while it waits for the transfer budget or the end of a pause it is `pending` only). So `retrying` and `in_flight` do not count the same path (they are read one after the other: a path that changes state at that very moment can show in both for that one reading). A never-uploaded row in a backoff is also in `failed` (see there); a dirty overwrite of an uploaded row is not (it has no row to carry the failed mark). When the last allowed attempt fails the path leaves `retrying`, and a never-uploaded row is `failed` only |
+| `uploads.next_try_at_ms` | additive (#1095). The earliest start of the next attempt over the `retrying` paths (epoch ms of the daemon's clock); `null` when `retrying` is `0`. It is the instant the path's history row carries as `next_try_at_ms` (section 4.8), so a status that polls needs no history read for "next try in 10 s". A value in the past is a retry that is due right now: the next reading drops it |
+| `uploads.oldest_pending_age_ms` | how long the oldest pending path has been waiting (ms), `null` when nothing is pending. A never-uploaded row waits since it was written, a dirty overwrite since its upload was submitted, so a stalled upload's age keeps growing from one status reply to the next |
+| `cache.bytes` | size of the profile's hydration cache directory (every regular file, protected or not: what the budget eviction counts) at the last walk; `null` until the first walk. A walk runs after the start and at most once per 10 s on a status request, never inside it |
+| `cache.budget_bytes` | `hydration_cache_max_bytes`; `null` when the profile has no budget (unlimited). `bytes` above the budget is possible: copies that are open, uploading, failed or modified are never evicted |
+| `provider_health.last_contact_ms` | epoch ms of the last time the provider answered: the later of the last completed enumeration (`enumeration.last_success_at_ms`) and the last mount-profile download or upload through the daemon that succeeded (a warm-cache serve is not a round trip). A mirror profile has no hydration layer, so only its enumerations stamp it. `null` until the first success since the daemon started. A failure or an outage never moves it, so a client words an outage as "last contact N minutes ago" |
+
+`uploads` is read from state.db at most once per second, and a status request waits for that read for 100 ms at most (1 s for the very first one): an enumeration's save holds the database for as long as it takes, and the reply serves the previous reading (its `oldest_pending_age_ms` carried forward to now) instead of stalling behind it. `retrying` and `next_try_at_ms` come from the daemon's memory (the upload slots) in the same reading: no new lock, and no database read of their own.
+
+**The `credential_health` object** (additive, #586; the protocol version does not change) says whether the profile's credentials are still good, which `authenticated` does not: that flag only says the credentials were loaded. It is always present, on mount and mirror profiles alike.
+
+```json
+{"credential_health": {"state": "expiring", "expires_in_ms": 5400000, "checked_at_ms": 1700000000000}}
+```
+
+| field | meaning |
+|---|---|
+| `state` | `ok`: credentials are present and no near expiry is known (it says nothing about the server's view, and a refreshable OneDrive token is `ok`). `expiring`: the provider reports an expiry that is near (under 24 h and not renewable). `expired`: the credential no longer works, because its expiry passed or because the provider rejected it. `missing`: no usable credential on disk. `unknown`: the daemon does not know: no check has finished yet, none can run, it threw, or it found something it cannot classify (a token file that does not parse) |
+| `expires_in_ms` | time left at this reply, counting down between checks; `0` for `expired`; `null` when no expiry is known (`ok`, `missing`, `unknown`). For `expiring` it is the exact time when the provider knows it, otherwise a lower bound in whole hours |
+| `checked_at_ms` | epoch ms of the check this reading comes from, or of the rejection that turned it `expired`; `null` until the first check has finished |
+
+The value is the provider factory's offline check (`ProviderFactory.checkCredentialHealth`: token files and their expiry, no network call and no vault prompt), the same one `status` and `doctor` print. It never runs inside a status request: the daemon runs it once at start and again, off the request path, at most once per minute while status requests keep coming, and every reply serves the last result. Before the first result the state is `unknown`, never `ok`. A client shows "sign in again" for `expired`, `missing`, and `expiring` when `expires_in_ms` is small; `unknown` is "not known", not a problem.
+
+A provider that rejects the credentials turns the state to `expired` without waiting for the next check: an enumeration or a download or upload that fails with an authentication error (a provider raises it only after its own token refresh has failed) newer than the last time the provider answered. A later success clears it. `missing` is not overridden by a rejection. Other operations (deletes, renames, folder creation) do not feed this signal yet.
+
+**The `notifications` object** (additive, #111; the protocol version does not change; `capabilities` lists `notifications.status`) reports the provider's remote-change push channel, the hint that wakes the poll before its interval. It is always present, on mount and mirror profiles alike.
+
+```json
+{"notifications": {"state": "connected", "last_hint_at_ms": 1700000000300, "hints": 7, "expires_at_ms": 1700001800000, "rotations": 2}}
+```
+
+| field | meaning |
+|---|---|
+| `state` | `connected`: the channel's socket is connected to a valid endpoint. `connecting`: fetching an endpoint, connecting, or waiting in the back-off (1 s doubling to 60 s) after a failure. `off`: the provider has a channel but it is not open (the profile set `remote_notifications = false`, nothing asked for hints yet, or signed out). `unsupported`: the provider reports no channel (today every provider but OneDrive, including Internxt and Dropbox, whose channels do not report a state yet) |
+| `last_hint_at_ms` | epoch ms of the last hint the channel gave; `null` before the first |
+| `hints` | hints since the provider was created: a notification, a rotation, a (re)connect |
+| `expires_at_ms` | epoch ms at which the current endpoint expires (OneDrive: 30 minutes after it was fetched); `null` when off, while connecting, or when the provider gave none |
+| `rotations` | how many times the channel replaced its endpoint (at each expiry, after a server disconnect or a connect error) |
+
+The endpoint itself is never reported: its query carries a token. The poll at `poll_interval_ms` stays the safety net whatever the state.
+
+**The `ignore` object** (additive; the protocol version does not change) is present where the ignore rules apply
+to uploads (a mount profile, and a mirror profile, whose scan and plan apply them; docs/dev/specs/ignore-layering-design.md). `held_back` lists the folders whose uploads wait
+because a rule file in them cannot be read (unreadable, larger than 1 MiB, or in the cloud and its download failed, is still to come, waits for the end of a pause, or on a mirror has not been downloaded yet):
+the rules fail closed, and this is where that is visible. `count` counts the folders found so far: a folder's rules are
+read when something below it is written or asked about (on a mirror: at every pass), so a folder nothing was written to is not known yet. `items` is
+capped at 20, `more` counts the rest. A folder is released, and leaves the list, once its rule file can be read.
+
+```json
+{"ignore": {"held_back": {"count": 1, "more": 0, "items": [
+  {"dir": "/work", "file": "/work/.unidrive.ignore", "reason": "java.nio.file.AccessDeniedException: ..."}]}}}
+```
+
+**The `paused` object** (additive; see §4.7) is present only while the daemon is paused: `"paused": {"reason": "metered", "since_ms": 1700000000000, "auto": true}`, plus `"until_ms": 1700003600000` (epoch ms) while the pause is timed and absent while it lasts until `daemon.resume`. A status line must show it instead of "up to date". `capabilities` lists `pause` on an engine that has the verbs. On a mount profile `capabilities` also lists `open_write_create_handle_ids`: the daemon issues the write-handle ids of `open_write` and `create` only, not of `open_write_begin` (ipc-write-protocol.md section 2).
+
+**The `remote_incomplete` object** (additive; the protocol version does not change) is present only while the daemon remembers a cloud object whose stored copy is of a different size than the drive reports (shorter or longer), so that every `open_read` and `hydrate` of it is refused with the `remote_incomplete` token (ipc-write-protocol.md section 7). Absent means it knows of none. It carries a count only, no names: `{"remote_incomplete": {"count": 2}}`.
+
+The daemon remembers such a refusal per cloud object (in memory, so a restart forgets it and the first read afterwards asks the cloud once more) and answers a repeat of the request with the same token and numbers without asking the cloud again. An entry ends when a read finds the object whole, when the listing reports a different size, hash or modification time for it (noticed at the next read), or one hour after it was recorded, when the next request asks the cloud once to check. The count therefore says "objects found of the wrong size and not seen to have changed", not a census: an object nobody reads again stays counted until the daemon restarts. The log carries one WARN per object and run; repeats are DEBUG.
+
+**`uploads.blocked`** (additive; the protocol version does not change). Some drives refuse an entry by its *name*, whatever its bytes: OneDrive stores names exactly but compares siblings on a key that ignores some characters (N'Ko, Tifinagh, Vai, Ethiopic, Adlam, Syriac, emoji, ...), so a second sibling that differs from an existing one only in such characters is refused. The engine first lands such an entry on the drive under a stable server name (an ASCII discriminator derived from the original name) and keeps the local name; only when that is refused too is the entry blocked, which is what this object reports. The object is **present only while something is blocked**; absent means nothing is.
+
+```json
+"uploads": {"pending": 12, "in_flight": 0, "failed": 12, "oldest_pending_age_ms": 600000,
+  "blocked": {"count": 21, "more": 0, "items": [
+    {"path": "/african/x", "reason": "similar_name", "sibling": "y"},
+    {"path": "/african/x/a.txt", "reason": "blocked_by_parent", "parent": "/african/x"}]}}
+```
+
+| field | meaning |
+|---|---|
+| `blocked.count` | every blocked entry: those the drive refused (`similar_name`) and everything waiting for a blocked folder above it (`blocked_by_parent`, folders and files, as far as they exist only in this mount). Files among them are also counted in `uploads.pending` and `uploads.failed` |
+| `blocked.items` | the first 50 by path; each has `path`, `reason`, and `sibling` (`similar_name`: the name it conflicts with, `null` when the engine could not tell) or `parent` (`blocked_by_parent`: the blocked folder it waits for) |
+| `blocked.more` | `count` minus the items listed |
+
+**`uploads.running`** (additive, #1200; the protocol version does not change; `capabilities` lists `uploads.running` on a mount daemon). Names the uploads holding a transfer permit right now, so "which file is that, and is it moving?" needs no log or thread dump. The object is **present only while an upload runs**; absent means none. It comes from the daemon's memory at the time of the reply (not from the cached `uploads` reading), and the paths go to the authenticated local socket only, never to the log at INFO.
+
+| Field | Meaning |
+|---|---|
+| `running.count` | every upload holding a permit (equals `in_flight` up to the moment the two are read) |
+| `running.items` | the first 20 by start time; each has `path`, `started_at_ms` (epoch ms the current attempt began; a retry is a new attempt), `bytes_done` (as the provider last reported, `0` before its first report) and `bytes_total` (`null` until the provider says) |
+| `running.more` | `count` minus the items listed |
+
+Nothing blocked is retried in a loop. The refusal is not repeated per file: a blocked folder is asked once, and the files below it are reported `blocked_by_parent` without a request. A daemon restart asks again (the sibling may be gone); an accepted folder unblocks its subtree. The local files are never touched.
+
+The reply also carries `upload_concurrency` (additive, #578): the effective part parallelism of the provider's multipart uploads, or `null` when the provider does not upload in parts. It reflects the profile's `upload_concurrency` key, overridden by `daemon run --upload-concurrency` when given.
+
+### 4.4 `sync.subscribe` (existing, unchanged semantics)
+
+The verb stays registered on the daemon's `IpcServer` with the same `scheduleAfterReply` post-reply hook mechanism (β) the `SyncCommand` uses today. On the daemon side, the only events emitted are refresh-progress events (the daemon has no reconcile loop). On the `SyncCommand` side today, the same verb emits sync-progress events. Both implementations honor the same subscriber-set contract; the event source differs by which IPC server the client connects to.
+
+This is intentional: a single subscription mechanism, multiple event sources. When phase-2 (sync-as-daemon-client) lands, the daemon will emit both refresh AND sync events on the same subscriber stream; `sync.subscribe` semantics don't need to change again.
+
+### 4.5 Mode-mutex amendment
+
+The `.lock.pid` sidecar wire format stays `<pid> <mode>\n`. The legal `<mode>` values become:
+
+- `sync` — held by `unidrive sync` (existing).
+- `daemon` — held by `unidrive daemon run` (new).
+- ~~`mount`~~ — **removed.** Any pre-existing `.lock.pid` containing `mount` is treated by `readHolderInfo()` as an unknown mode token (existing forward-compat path), producing `HolderInfo(mode=null, rawMode="mount")`. The contention error names the unknown mode verbatim.
+
+Backwards-compat for legacy pid-only sidecars stays unchanged: `<pid>\n` (no mode token) reads as `Mode.SYNC`.
+
+### 4.6 Path normalisation
+
+Unchanged from existing IPC contract. The new verbs follow the same conventions as the existing ones (`trimEnd('/')` per spec `hydration-namespace-verbs-design.md` §3.1, paths are absolute starting with `/`, empty path or `/` means root).
+
+### 4.7 `daemon.pause`, `daemon.resume` and the paused state
+
+A client knows *when* data should stop moving (a metered connection, power saver, a person's click); only the engine can make the transfers wait. The state is held by the daemon in memory only: a restarted daemon runs, and the client re-applies its rules (a manual pause is remembered by the client). Both verbs are in the admin class ([ipc-authentication.md](ipc-authentication.md) §4: full scope, a `read` connection gets `forbidden`) and exist in both profile modes.
+
+```json
+{"verb": "daemon.pause", "reason": "metered", "auto": true}
+{"ok": true, "paused": {"reason": "metered", "since_ms": 1700000000000, "auto": true}}
+
+{"verb": "daemon.pause", "reason": "user", "auto": false, "until_ms": 1700003600000}
+{"ok": true, "paused": {"reason": "user", "since_ms": 1700000000000, "auto": false, "until_ms": 1700003600000}}
+
+{"verb": "daemon.resume"}
+{"ok": true}
+```
+
+| member | meaning |
+|---|---|
+| `reason` | a short machine word the client turns into text (`metered`, `power_saver`, `user`): 1 to 32 characters of `a-z`, `0-9` and `_`. Required |
+| `auto` | true when a rule of the client paused, false when a person did. Optional, default false; anything but a JSON boolean is refused |
+| `until_ms` | a timed pause: the epoch ms (the unit of `since_ms`) at which the daemon resumes by itself. Optional; absent means the pause lasts until `daemon.resume`. A JSON integer later than the daemon's clock now, else refused. An absolute instant, never a duration: the client turns "for one hour" into `now + 1 h` and the reply echoes the instant it was given |
+
+A refused request answers `{"ok":false,"error":"<token>"}` and changes nothing: `missing_reason` (no `reason` member), `invalid_reason` (not a string, empty, longer than 32 or outside that character set), `invalid_auto`, `invalid_until` (not a JSON integer: a string, a fraction, `null`, a boolean), `until_in_past` (not later than the daemon's clock now). Unknown members are ignored. A refusal while paused leaves the pause in force, its timer included.
+
+**Idempotence.** `daemon.pause` while paused keeps the first `since_ms` (the pause began then) and takes the new `reason`, `auto` and `until_ms`; the reply carries the resulting object. `daemon.resume` while running is a no-op success. Neither a repeated identical pause nor a resume of a running daemon is announced as an event.
+
+**The timer.** A request names the whole pause, so the last one wins: a `daemon.pause` with a new `until_ms` replaces the timer (earlier or later), and one without `until_ms` makes a timed pause untimed. That holds for a pause of a rule too: an automatic pause (`auto: true`) sent over a person's timed pause replaces it entirely, the daemon keeps no second pause underneath. The client owns that policy; when the timer runs out and the client's rule still applies it sends the pause again. `daemon.resume` cancels the timer. The timer lives in the daemon's memory like the pause: a restarted daemon runs, with no timer, and a client that wants the pause to survive a restart sends it again with the instant it remembers. The instant is on the wall clock, which the daemon reads at least every 30 seconds: a clock that was set forward, or a machine that slept through the instant, resumes the daemon within that interval of the next check; a clock set back postpones the resume to the instant on the new clock.
+
+**Events** (one line each, to every `sync.subscribe` subscriber and, on a mount profile, every `hydration.subscribe` subscriber, whatever its scope):
+
+```json
+{"event": "paused", "reason": "metered", "since_ms": 1700000000000, "auto": true}
+{"event": "paused", "reason": "user", "since_ms": 1700000000000, "auto": false, "until_ms": 1700003600000}
+{"event": "resumed"}
+{"event": "resumed", "reason": "timeout"}
+```
+
+`paused` is sent when a pause begins and when a pause that is already in force changes its `reason`, `auto` or `until_ms` (`until_ms` only for a timed pause); `resumed` when a pause ends. The `resumed` of `daemon.resume` has no `reason`; the one of a timed pause that ran out carries `"reason": "timeout"`. A `resumed` is sent once per pause, whichever ends it. The user notification is the client's job.
+
+**What a pause does.**
+
+| subject | while paused |
+|---|---|
+| uploads | no upload starts. A write made meanwhile is accepted into the queue (its row, `pending_upload: true`, counted in `uploads.pending`) and waits: no failure is stamped (`uploads.failed` and `hydration.list`'s `error` stay as they were), `queued` is announced, and the upload runs after the resume. The start-up replay waits the same way. Waiting does not hold the queue's back-pressure: `open_write` is never held back at the queue depth for the length of a pause |
+| transfer in flight | judged once, when the pause begins. One whose estimated time remaining is **under 10 seconds** is left to finish; any other is aborted. The estimate is the bytes still to move divided by the rate since the transfer got its permit: for an upload from the provider's own progress reports `(done, total)`, for a download from the size of its staging file against the item's size. A transfer with no reading yet has no estimate and is aborted. An aborted upload goes back into the queue without counting a failed attempt (no `failed` event, no row stamp, the retry ladder is not advanced; `queued` is sent again) and keeps no permit or slot; an aborted download answers `paused` below |
+| cloud download | `hydration.open_read` and `hydration.hydrate` of a file that is not in the cache fail at once with `{"ok":false,"error":"paused"}` (the `failed` event, and for `open_read` the `completed` event, carry the token); nothing is started and nothing waits. A file already in the cache is served as usual. The engine cannot ask the user: the front-end asks whether the action may lift the pause, then calls `daemon.resume` and sends the request again |
+| cloud enumeration | the poll does not enumerate; its tick waits for the resume and runs at once when the pause ends. `sync.enumerate` and `refresh.run` answer `{"ok":false,"error":"paused"}`. An enumeration that is already running when the pause begins runs to its end |
+| quota | `daemon.status` keeps reporting the last snapshot (flagged `stale` once its TTL expired) and starts no fetch |
+| local writes, `hydration.list`, `daemon.status`, cache eviction | unaffected |
+
+The namespace verbs that act on the cloud synchronously (`hydration.mkdir`, `unlink`, `rmdir`, `rename`) have no queue to wait in; a pause does not hold them. (`hydration.create` is local until its upload.)
+
+**Stop while paused.** `daemon.shutdown` and the signal path behave as before: waiting uploads are cancelled with the serve scope, their rows stay never-uploaded (or keep the cache copy that differs from the row's baseline), and the next start replays them. Nothing is stamped failed.
+
+### 4.8 `history.list` and `history.subscribe`: the transfer history
+
+A mount daemon keeps one row per logical transfer in `telemetry.db` beside `state.db` (what a front-end shows as its activity list). Both verbs are in the read class ([ipc-authentication.md](ipc-authentication.md) §4), so the observer token is enough; the engine has no verb that changes or exports history (a front-end writes its own exports). Paths and error messages in a row are sensitive, which is why the daemon offers no way to export or change them.
+
+**A daemon without history.** A mirror profile records none, and a mount daemon whose `telemetry.db` did not open (the daemon logged it once and runs on) has none. Both verbs then answer `{"ok":false,"error":"history_unavailable","reason":"mirror"}` or `"reason":"open_failed"`, and so does `history.list` when the file cannot be read (`"reason":"read_failed"`). Never an empty list: an empty `rows` means the history holds no matching transfer.
+
+**`history.list`.**
+
+```json
+{"verb": "history.list", "filters": {"direction": ["upload", "download"], "result": "failed", "path_prefix": "/docs/", "from_ms": 1700000000000, "to_ms": 1700086400000}, "limit": 100, "cursor": "<next_cursor of the previous reply>"}
+```
+
+| member | meaning |
+|---|---|
+| `filters` | optional object; every member optional, all combined with AND |
+| `filters.direction` | one value or an array: `upload`, `download`, `delete`, `rename`, `mkdir`, `other` |
+| `filters.result` | one value or an array: `running`, `success`, `failed`, `skipped`, `conflict`, `interrupted` |
+| `filters.path_prefix` | a plain, case-sensitive prefix of the path (a folder is asked for with its trailing slash); not a pattern |
+| `filters.from_ms`, `filters.to_ms` | the half-open range `[from_ms, to_ms)` of the instant a row sorts by (below); integers, `from_ms <= to_ms` |
+| `limit` | rows per reply, default 100, **at most 500** (a larger value is 500). A reply also stops at about 512 KiB of row data (the first row always goes in), so it can hold fewer rows than `limit`; `next_cursor` carries on |
+| `cursor` | the `next_cursor` of the previous reply; absent for the first page |
+
+```json
+{"ok": true, "rows": [ {row}, ... ], "next_cursor": "<opaque>" , "tail_seq": 42, "incomplete": false}
+```
+
+`next_cursor` is `null` when no row follows; otherwise it is a token to pass back unchanged, which a client must not parse. A refused request answers `{"ok":false,"error":"<token>"}` and changes nothing: `invalid_request` (not a JSON object), `invalid_filters`, `invalid_direction`, `invalid_result`, `invalid_path_prefix`, `invalid_time_range`, `invalid_limit`, `invalid_cursor`. Unknown members are ignored.
+
+A **row** (every member always present; a value that was not measured or does not apply is `null`, never `0`):
+
+| member | meaning |
+|---|---|
+| `operation_id` | the transfer's id: stable for its whole life, the key a client merges rows by |
+| `direction` | as in the filter |
+| `path` | the item's path as the mount sees it |
+| `queued_at_ms` | wall clock: the operation was handed to the transfer machinery |
+| `started_at_ms` | wall clock: a transfer permit was acquired; `null` while it still waits, and for a skip that never started |
+| `finished_at_ms` | wall clock: it ended; `null` while `running` |
+| `queue_wait_ms`, `transfer_ms` | the wait for a permit and the time transferring, each measured on a monotonic clock and never one number; `null` until known |
+| `bytes_total`, `bytes_done` | `bytes_done` is known only for a transfer that reached its end |
+| `result` | as in the filter. `interrupted` is a transfer that was cancelled, aborted by a pause or cut off by a crash |
+| `error_class`, `error_message` | the last failed attempt; sanitized (no URL, no secret) |
+| `attempts` | attempts made: while the transfer runs, the attempts that failed (an attempt under way is not counted yet), once it ended all of them; `null` while none is counted |
+| `max_attempts` | additive (#1095). How many attempts the daemon makes at most for this transfer: for an upload the daemon's upload attempt limit (3 today), the same on every snapshot of the row; `null` for a download and for every other direction (the daemon does not retry them) |
+| `next_try_at_ms` | additive (#1095). Wall clock (epoch ms of the daemon's clock): when the next attempt starts, while the row waits in a retry backoff; `null` in every other state, a finished row included |
+
+**A row of an upload that is retried** stays one row (one `operation_id`) and is written again at every step, so `result` and `next_try_at_ms` together say where it is:
+
+| the transfer is | `result` | `finished_at_ms` | `attempts` | `next_try_at_ms` |
+|---|---|---|---|---|
+| waiting in a retry backoff after a failed attempt | `running` | `null` | the failed attempts so far, at least 1 | the instant the next attempt starts (the backoff is 2 s after the first failed attempt, 10 s after each later one) |
+| transferring its first attempt (a row exists once the transfer first held a permit), or a retry whose backoff is over: waiting for a permit or for the end of a pause, or transferring | `running` | `null` | `null` for the first attempt, the failed attempts so far for a retry | `null` |
+| out of attempts | `failed` | set | `max_attempts` | `null` |
+| ended another way | `success`, `skipped`, `conflict`, `interrupted`, or `failed` when the request was refused or the item was gone (not retried: fewer attempts than `max_attempts`) | set | as made | `null` |
+
+So a row with `result` `running` and a `next_try_at_ms` waits, and the attempt it waits for is number `attempts + 1` of `max_attempts` ("attempt 2 of 3, next try in 2 s"); with `next_try_at_ms` `null` and `attempts` of 1 or more the retry has started or is due. The snapshot that clears `next_try_at_ms` follows within milliseconds of the instant it names, so a value in the past is a retry that is due now, never a state that lasts. A cancel ends the row `interrupted` at once, and a row a crash left in a backoff is `interrupted` at the next start with `next_try_at_ms` `null`: no daemon will make that attempt. `daemon.status` counts the paths in a backoff as `uploads.retrying` with the earliest `next_try_at_ms` over them (section 4.3), the same instants. A history file written by an earlier build gains the two columns when it is opened; its rows read `null` for both.
+
+**Order and paging.** Rows come newest first by the instant they finished, or, while they have not, the instant they were queued; equal instants are ordered by `operation_id`, descending, so the order is total. The cursor is that pair (a keyset, never an offset), so rows that arrive while a client pages sort ahead of the cursor and move nothing behind it, and retention removing old rows leaves the pages that remain where they were; a cursor whose own row is gone still works. A transfer that finishes while a client pages moves from its queued position to its finished one: a client merges by `operation_id` and lets the newer snapshot win. The history serves at most the retention window (90 days or 200 MB by default), and `incomplete: true` says that rows are known to be missing from it (its writer dropped some under load or after a write failure), so a list is never presented as complete when it is not.
+
+**`history.subscribe`.** The reply is `{"ok":true,"tail_seq":42}`; from then on the connection also receives pushed lines, one per row snapshot committed to the file (a transfer is written when it starts, after each failed attempt that will be retried, when the backoff after it ends, and when it ends):
+
+```json
+{"event": "history.row", "seq": 43, "row": {row}}
+{"event": "history.lost", "since_last": 3}
+```
+
+Each subscriber has a bounded queue (256 snapshots). When one falls behind, the oldest queued snapshots are dropped, and the next line is `history.lost` with the number dropped, the shape of `hydration.subscribe`'s `lost`: the client then re-reads from the top with `history.list` (from its last durable position) and never assumes an uninterrupted tail. `seq` numbers the committed snapshots in commit order for the daemon's life (it restarts at 0 with the daemon, as does the connection). `tail_seq`, in both replies, is the last number committed **before** the reply was made: a client that subscribes first and lists second applies exactly the events whose `seq` is above the list's `tail_seq`, which can neither lose a row between the two nor lay an older snapshot over a newer one. A subscribed connection is not closed for being idle.
+
+### 4.9 `metrics.query`
+
+READ class. The per-minute roll-ups of this daemon's provider request attempts (counts, outcome classes, header and total time p50/p95, bytes), read from the profile's `telemetry.db`. A mount daemon records them; a mirror daemon answers `recording:false` and an empty series. No data is an empty series with `has_data:false`, never zeros. The request, the reply, what an attempt is, the retention windows and the byte budget shared with the transfer history are in `request-metrics.md`.
+
+### 4.10 `auth.logout`
+
+ADMIN class, both profile modes. A front-end signs an account out while its daemon is running: the daemon is the profile-lock holder, so the credential removal is its job — the CLI hands it over instead of refusing, the way `logout` used to (and a running account is exactly the case a front-end's sign-out button meets most).
+
+The request is `{"verb": "auth.logout"}`, or `{"verb": "auth.logout", "force": true}` to sign out past pending uploads. The daemon refuses while its state.db still holds uploads on their way — without credentials they cannot finish, and `profile remove` counts them by the same rule (pending minus failed; failed rows alone do not block):
+
+```json
+{"verb": "auth.logout"}
+{"ok":false,"error":"uploads_pending","pending":3,"failed":1}
+{"verb": "auth.logout", "force": true}
+{"ok":true,"revoked":true,"revocation":"revoked","credentials_removed":true}
+```
+
+On acceptance the daemon asks a freshly built provider (the way the quota refresh builds one) to revoke the token at the provider, then lets it forget the token locally, then deletes the credential files (`token.json`, `credentials.json`, `device-flow.json`) from the profile folder. Only a provider that has a revoke call can revoke: Dropbox does (`auth/token/revoke`, which also disables the refresh token behind the access token); OneDrive (the Microsoft identity platform v2 endpoint has no token revocation), Internxt (no revoke call is used) and the providers without an account do not, and for them the sign-out removes the local credentials only. A copy of the credential files made earlier (a backup, a synced config) keeps working at such a provider until the user ends the session in the provider's own account settings. The reply says which of the four cases happened:
+
+| `revocation` | `revoked` | meaning |
+|---|---|---|
+| `revoked` | `true` | the provider confirmed the revocation; the token and its refresh token no longer work |
+| `failed` | `false` | the provider was asked and could not be reached or refused; the token may still work (the local cleanup goes on either way) |
+| `unsupported` | `null` | the provider has no revoke call: only the local credentials were removed |
+| `not_signed_in` | `null` | there was no valid credential to revoke (the profile was already signed out) |
+
+`revoked` is `true` only after the provider confirmed; a front-end that words "signed out" from it treats every other value as "not revoked at the provider". `revocation` is the reason to word it from; a reader that does not know it keeps working on `revoked`, and a daemon older than #1052 sends no `revocation` (and its `revoked:true` meant only that the local logout returned). `credentials_removed` says whether any credential file was deleted (a repeated sign-out answers `false`). A credential marker whose OS secret-store item cannot be removed refuses the whole sign-out with `{"ok":false,"error":"credential_protection_unavailable"}` — nothing is deleted, and it can be retried once the store is unlocked.
+
+The daemon never touches `state.db` or `failures.jsonl` (a front-end's sign-out must not lose the sync state, and the daemon holds state.db open) and keeps running: before the credential files go, the engine's own provider instance forgets the credentials it holds in memory (`CloudProvider.forgetCredentials()`: OneDrive, Internxt and Dropbox drop their in-memory token or credentials, and a token refresh still under way stores nothing; it reads and writes no file, calls no provider endpoint and prompts for nothing), so `daemon.status` reports `authenticated:false` at once, no later request carries the old token, and the next credential-health check reports the missing credentials. Transfers after the sign-out fail with authentication errors until the account signs in again (a request already sent finishes with the token it carried, and a OneDrive upload session or download URL that was already handed out is pre-authenticated, carries no token and is not stopped by this; a sign-out meets an upload only with `force`) — the reply plus `daemon.status` are what a front-end words "this account is signed out" from.
+
+### 4.11 `auth.begin`, `auth.complete`, `auth.login`
+
+ADMIN class, both profile modes (#813). A front-end signs an account in again while its daemon is running: it learns that the account needs a sign-in from that daemon (`credential_health` `expired` or `missing`, `authenticated:false`), and the mount must not be stopped for it. The CLI's `auth begin`, `auth complete` and `auth login` therefore no longer refuse a profile held by a daemon with `profile_in_use`: each hands its step to the daemon over the authenticated, full-scope socket, and the daemon runs the same step the CLI runs on a stopped profile. A profile held by a sync is still `profile_in_use`.
+
+| verb | request body | reply |
+|---|---|---|
+| `auth.begin` | `{}` | as `auth begin --json`: `handle`, the provider's `user_code`, `verification_uri`, `interval_seconds`, `expires_in`, `message`, and `expires_at` |
+| `auth.complete` | `"handle"`, optional `"code"` (the authorization code of a no-redirect flow, Dropbox) | as `auth complete --json` for ONE poll: `status` `pending` (with `retry_after_seconds`) or `authenticated` (with `account` when the provider named it). `auth complete --wait` repeats the request at the daemon's interval |
+| `auth.login` | `"email"`, `"password"`, optional `"totp"` | as `auth login --json`: `status` `authenticated`, `account` |
+
+```json
+{"verb": "auth.login", "email": "user@example.test", "password": "..."}
+{"ok":true,"profile":"work","status":"authenticated","account":"user@example.test"}
+{"verb": "auth.login", "email": "user@example.test", "password": "wrong"}
+{"ok":false,"error":"bad_credentials","message":"wrong e-mail or password"}
+```
+
+**Secrets.** The password, the TOTP code and the authorization code travel in the request body only: never in an argument list, never in a reply, never in a log line (the daemon logs the verb and the refusal token). The CLI writes the `verb` member first, so the first characters of a line the daemon cannot dispatch, which it logs, hold no secret. The verbs are admin class: a `read` connection gets `forbidden`.
+
+**The credentials.** The provider stores them, owner-only and atomically as on a stopped profile, only after the account accepted them: a wrong password, a rejected code or an expired flow leaves the stored credentials byte for byte as they were, and the daemon's state unchanged. After a step that stored new credentials (a login, a poll that answered `authenticated`), the daemon's own provider instance reloads them in place (`CloudProvider.reloadCredentials()`: OneDrive and Internxt read the stored token or credentials, never their interactive fallback; the notifications socket of Internxt is opened again with them), runs the credential check again and treats an authentication rejection from before the sign-in as history. The next `daemon.status` reports `authenticated:true` and the new `credential_health` at once; no event is pushed (as for `auth.logout`). The daemon is not restarted and the mount stays; transfers that failed while the account was signed out are retried by their own retry ladder and use the new credentials.
+
+**Refusals** are `{"ok":false,"error":token,"message":...}` with the tokens of the CLI commands (`no_device_code_flow`, `missing_handle`, `flow_expired`, `unknown_handle`, `access_denied`, `auth_failed`, `login_not_supported`, `missing_email`, `empty_password`, `tfa_required`, `tfa_invalid`, `bad_credentials`, `credential_protection_unavailable`, `network_error`, `begin_failed`, `complete_failed`, `login_failed`, `account_changed`, `account_unverified`), plus `reload_failed` (the credentials were stored, but the running daemon could not load them; a restart picks them up), `sign_in_unavailable` (the daemon could not read its profile's config at start) and `invalid_request`. One sign-in step runs at a time. The CLI passes a refusal through with its token; a daemon older than these verbs answers `unknown_verb`, which the CLI reports as `daemon_too_old`. A daemon that does not answer at all is `profile_in_use`, unless it stopped meanwhile: then the CLI runs the step itself, under the profile lock.
+
+**Another user.** The step compares the user that signed in with the one the profile's sync state belongs to (`account_id` in the profile folder, [cli-account-name.md](cli-account-name.md) "Account owner") before anything is stored, exactly as on a stopped profile. Another user is `account_changed`; a profile with a stored user whose provider did not say who signed in is `account_unverified`. Either way nothing is stored, the daemon reloads nothing and keeps the credentials it runs with, and the reply names no user and no id.
+
+```json
+{"verb": "auth.login", "email": "other@example.test", "password": "..."}
+{"ok":false,"error":"account_changed","message":"this is another account than the one this profile belongs to; nothing was stored. Add it as a new account, or delete this profile's sync state first (logout --delete-state) to start the profile over with it"}
+```
+
+### 4.12 `auth.check`
+
+ADMIN class, both profile modes (#1240). The credential check of `unidrive auth check --json` (`cli-auth-check.md`) for a profile a daemon holds: the CLI hands it to the daemon over the authenticated, full-scope socket, and the daemon makes the one authenticated call through its **own provider instance** (`CloudProvider.checkCredentials()`). That instance is the one that holds the token and refreshes it, so an expired token is refreshed by the one refresher there is and the token file keeps a single writer; the CLI makes no provider call, reads no token and writes nothing while a daemon holds the profile.
+
+| verb | request body | reply |
+|---|---|---|
+| `auth.check` | optional `"timeout_seconds"` (1 to 300, default 20) | as `auth check --json`: `{"ok":true,"profile":..,"status":"authenticated","account":..}` (`account` only when the provider says it) or the refusal `{"ok":false,"error":token,"message":..}` |
+
+Refusal tokens: `not_signed_in`, `credentials_rejected`, `network_error` (the provider could not be asked, or did not answer within the limit: not a verdict), `provider_error`, `unsupported`, `invalid_timeout`, `invalid_request`. One check runs at a time. The daemon does nothing of its own with the result: no `state.db` write, no event, no `daemon.status` field set from it (the call goes through the same provider code as every other request, so a token refresh it triggers is recorded as any refresh is). A daemon older than this verb answers `unknown_verb`, which the CLI reports as `daemon_too_old`.
+
+## 5. Invariants and failure modes
+
+### 5.1 Invariants
+
+- **I1: One daemon per profile.** Enforced by `ProcessLock.Mode.DAEMON` acquisition before any other startup work. If the lock is held, the second daemon refuses to start with a clear contention message.
+- **I2: Sync ⇄ Daemon mutual exclusion per profile.** Same lock file, two-way mutex. `Mode.MOUNT` is removed.
+  > **Superseded in part (2026-10-05), see [`docs/adr/independent-profiles.md`](../../adr/independent-profiles.md) and #560.** The exclusion stays, but becomes a consequence of the profile's explicit `mode = mirror | mount`: a command for the wrong mode is refused before any write, instead of whichever process starts first winning. Since the #560 cutover the separation is real: a mount profile touches no `sync_root` (no mirror writes, no rescan — #478 and #510 are retired), and a mirror profile constructs no hydration runtime.
+- **I3: Socket existence implies serving daemon.** If `/run/user/<uid>/unidrive-<profile>.sock` exists, a daemon process is bound to it. Stale sockets are detected and cleaned by `IpcServer.reclaimStaleSocket()` (at `core/app/sync/src/main/kotlin/org/krost/unidrive/sync/IpcServer.kt:341`) on next startup.
+- **I4: `.lock.pid` and bound socket are atomic.** Either both exist (daemon running) or neither (daemon stopped). The sequence is: acquire lock + write `.lock.pid` → authenticate → bind socket. On clean shutdown: close socket → release lock + remove `.lock.pid`. On `kill -9`: the kernel releases the file lock, but `.lock.pid` and the socket file may remain. Stale-pid detection (existing in `acquireProfileLock`) and `reclaimStaleSocket` handle this on the next start.
+- **I5: Auth state is binary at startup.** Authenticated or refuses to bind. Token expiry mid-run does NOT shut down the daemon — the provider HTTP client handles refresh on 401; only an unrecoverable auth failure surfaces as `provider_error` to clients.
+- **I6: At most one `refresh.run` in flight.** The daemon serialises `refresh.run` calls via an internal mutex/atomic flag. A second concurrent call gets `{"ok": false, "error": "busy"}`.
+- **I7: Graceful-shutdown bounded.** SIGTERM → refuse new connections → wait for in-flight hydration RPCs (each capped at the existing IPC write/read timeout) → cancel in-flight `refresh.run` → hard deadline 10s → `exitProcess(143)` by the supervisor or self-exit. State.db is closed cleanly in all paths via `try/finally`.
+- **I8: State.db transactions are inherited from existing code.** The daemon does NOT introduce new long-lived transactions. Each hydration RPC delegates to one or more `StateDatabase` methods; `refresh.run` delegates to existing `SyncEngine` refresh code paths, which already have battle-tested batching. The writable connection runs SQLite in **WAL** mode with `synchronous=FULL` and `autoCommit = true` (`StateDatabase.initialize()`; a file that does not switch, such as one on a file system without shared memory, stays in its journal mode with one warning), and every public `StateDatabase` method holds the instance monitor. Power-outage durability: each `@Synchronized` method (and the explicit `beginBatch` / `commitBatch` / `rollbackBatch` triplet at lines 318-336) is a single transaction; SQLite's WAL with `synchronous=FULL` makes each committed transaction crash-consistent and durable, as the rollback journal did; a reader in another process (a CLI command) no longer fails the daemon's commits with `SQLITE_BUSY`. The file set of a profile's state is `state.db` with `state.db-wal` and `state.db-shm` while a connection is open (a copy of `state.db` alone misses the commits the WAL still holds: copy with `VACUUM INTO` through a read-only connection, as `--dry-run` does), and `logout --delete-state` deletes all of them. Concurrent-access cost: every refresh-side write serialises on the same monitor as every hydration-side read. During a multi-minute `refresh.run`, mount-side `hydration.list` / `hydration.read` calls block waiting for the monitor between each refresh batch — bounded by the per-batch duration (tens of ms typical), not the full refresh wall-clock. The enumeration merge is chunked for this reason (#147): `RemoteEnumeration` upserts the change set in transactions of `MERGE_CHUNK_ROWS` (5,000) rows, ancestors first, so a reader waits at most one chunk rather than the whole enumeration; the alias map and the #601 parent guard are derived from the full change set, and the reap keeps its own transaction after the chunks. This is acceptable for the basic mount UX but is a known property that the implementer should be aware of when writing T5 and when sizing the refresh batch interval. WAL is the precondition for read-only connections that do not wait for the writer at all; those are a separate step.
+
+### 5.2 Failure mode catalog
+
+| # | Failure | Detection | Daemon response | Client-visible effect |
+|---|---|---|---|---|
+| F1 | Lock contention (sync or another daemon running) | `tryLock(Mode.DAEMON)` returns false | Print mode-specific contention error, exit 1 | n/a (daemon never started) |
+| F2 | Auth failure at startup | Exception from `provider.authenticateAndLog()` | Release lock, exit 1 with stderr message | Mount/refresh clients see "Connection refused"; operator hint points at `unidrive daemon run` |
+| F2a | Credentials need an interactive sign-in at startup (expired, missing or unreadable; #865) | Offline credential check (`checkCredentialHealth`, same expired mapping as `daemon.status` `credential_health`) before the runtime is built; a provider's `authenticateInteractive()` without a terminal raises `AuthRequiredException` | Never prompts. One stderr line `Error: unidrive daemon: auth_required: profile '<p>' needs a sign-in before it can start (<detail>) ...; Sign in again: unidrive -p <p> auth`, exit 78 (`EX_CONFIG`). A credential still inside its validity (`expiring`) does not refuse | Mount scripts and front-ends match `auth_required` in the start log and offer their own sign-in flow |
+| F3 | Socket bind fails post-reclaim (permission denied, FS full, AF_UNIX unsupported) | `IOException` from `IpcServer.start()` after `reclaimStaleSocket` ran | Release lock, exit 1 with explicit "could not bind socket: <cause>" stderr | Operator sees the exact bind failure cause; no retry, no ambiguity |
+| F4 | State.db corrupted / locked | SQLException during open | Release lock, exit 1; do NOT delete state.db | Operator instruction: "state.db at <path> could not be opened: ..." |
+| F5 | Hydration RPC fails mid-call (provider 500) | `provider_error` from underlying call | Reply `{"ok": false, "error": "provider_error", "message": "..."}` | Mount: EIO from the FUSE op; operator may retry |
+| F6 | `refresh.run` fails mid-job (network, 401-loop, etc.) | Exception caught at handler boundary | Emit `{"event": "refresh.done", "ok": false, "error": "..."}` to subscribers; mark job cleared; daemon stays up | `unidrive refresh` CLI prints error and exits 1; daemon ready for retry |
+| F7 | Client disconnects mid-RPC | EOF on socket read/write | Drop the connection, mark its subscriptions cleaned (existing `IpcServer` behaviour) | n/a (client already gone) |
+| F8 | `kill -9` of daemon | Kernel releases file lock | n/a (process gone) | `.lock.pid` + socket file remain stale; next daemon start sees stale-pid and `reclaimStaleSocket` cleans both |
+| F9 | SIGTERM during `refresh.run` | Shutdown hook sets cancel flag; child coroutine receives `CancellationException` | Refresh coroutine cancels at the next suspension point, attempts to emit `{"event": "refresh.done", "ok": false, "error": "shutdown"}` to subscribers, daemon proceeds to close the IpcServer and exits within 10s. Terminal-event delivery is **best-effort**: `IpcServer.close()` at `core/app/sync/src/main/kotlin/org/krost/unidrive/sync/IpcServer.kt:319-339` cancels the broadcast job BEFORE closing client channels, so if the refresh coroutine's terminal-event emit loses the race against `close()`, the event is dropped silently (RENDEZVOUS channel semantics). Clients MUST treat socket EOF as equivalent to a `refresh.done error=shutdown` event for shutdown-correctness; the `unidrive refresh` CLI implements this by mapping EOF → exit 1 with stderr "daemon shut down before refresh completed." The 10s hard deadline (I7) is the backstop — if cancellation does not propagate (blocking OkHttp without `Dispatchers.IO` wrapping; SQLite transaction commit in flight that's already past its cancellation point), the supervisor calls `exitProcess(143)` regardless. State.db rollback-journal recovery protects committed work. Implementation note: audit OneDrive + Internxt HTTP clients during implementation for `withContext(Dispatchers.IO)` coverage; file a follow-up if gaps surface. | `unidrive refresh` CLI sees terminal event with `error: shutdown` OR sees socket EOF (handles both paths identically); exits 1 |
+| F10 | SIGTERM with no in-flight RPCs | Shutdown hook fires | Close socket immediately, release lock, exit 0 | `daemon stop` returns success |
+
+### 5.3 Out of scope (recorded so the reviewer can confirm)
+
+- **No daemon-side rate limiting on `refresh.run`.** Operator can issue back-to-back refreshes; second one gets `busy` error while the first runs. Acceptable until evidence shows otherwise.
+- **No persistent refresh cursor.** A `refresh.run` always re-enumerates from scratch. Persistent cursors are the tracking-set engine's concern.
+- **No client-side reconnect logic added.** The Rust co-daemon already has `ReconnectingIpcClient` in `unidrive-mount-linux/mount/src/reconnect.rs` for the existing connection. Daemon restart while mount is running is handled by that pre-existing client-side machinery.
+- **No daemon health-check broadcast beyond `daemon.status`.** Clients wanting liveness probes use `daemon.status` polling. No heartbeat.
+
+## 6. Test surface (named)
+
+Five spec-named tests pin the contract changes. Other tests (graceful-shutdown timing, client error rendering, `busy` rejection, `daemon.status` shape, `reclaimStaleSocket` behaviour) are required for shipping but left to implementer judgment for exact naming and module placement.
+
+### T1 — `daemon_binds_socket_and_serves_hydration_verbs`
+
+**Module:** `core/app/cli/` (new test class `DaemonCommandTest`).
+**Coverage:** Start the daemon (via a test harness that wires picocli without re-spawning a JVM); connect a fake IPC client; issue `hydration.list` against a fake provider; receive `{"ok": true, ...}`. Tear down via SIGTERM.
+**What it pins:** Daemon startup → auth → bind → register handlers → serve → graceful shutdown happy path.
+
+### T2 — `daemon_refuses_to_start_when_sync_holds_lock`
+
+**Module:** `core/app/cli/` (extension to existing `ProfileLockFactoryTest`).
+**Coverage:** Acquire `ProcessLock(Mode.SYNC)` from the test; attempt to acquire `ProcessLock(Mode.DAEMON)` from a second `ProcessLock` instance on the same lock file; assert it returns false; assert the rendered contention error names `unidrive sync`.
+**What it pins:** Sync ⇒ daemon exclusion + error rendering (G6).
+
+### T3 — `sync_refuses_to_start_when_daemon_holds_lock`
+
+**Module:** same as T2.
+**Coverage:** Symmetric to T2. Acquire `ProcessLock(Mode.DAEMON)`; attempt to acquire `Mode.SYNC`; assert refused with daemon-holder error.
+**What it pins:** Daemon ⇒ sync exclusion. Symmetric naming so removing T2 OR T3 in a future refactor can't silently weaken the contract (CLAUDE.md orthogonal-invariant-decomposition rule).
+
+### T4 — `daemon_fail_fast_on_auth_failure_does_not_bind_socket`
+
+**Module:** `core/app/cli/`.
+**Coverage:** Construct a `Provider` mock that throws `AuthenticationException` from `authenticateAndLog()`; run the daemon's startup sequence; assert (a) the daemon exited with non-zero, (b) the lock file was released (no `.lock.pid` left behind), (c) the socket file at the expected path does NOT exist.
+**What it pins:** G7 contract + invariant I4. Failed auth must not leave a half-functional daemon.
+
+### T5 — `refresh_run_emits_terminal_event_after_completing_enumeration`
+
+**Module:** `core/app/cli/` or `core/app/sync/` — whichever has the easier path to the existing fake-provider fixture used by today's `RefreshCommand` tests.
+**Coverage:** Start the daemon against a fake provider that yields a small, finite cloud tree (e.g. 3 folders + 5 files); subscribe via `sync.subscribe`; issue `refresh.run`; await the terminal `{"event": "refresh.done", "ok": true}` event; assert state.db contains expected rows; issue `refresh.run` again and assert it succeeds (not stuck in `busy`).
+**What it pins:** I6 (refresh serialisation + clearing) + post-reply hook pattern + state.db population end-to-end.
+
+### Tests deliberately NOT named in the spec (implementer's choice)
+
+- Daemon graceful shutdown timing — wall-clock-sensitive; harness choice is implementer's call.
+- Mount client error rendering when daemon down — coverage required; exact test name is implementer's call.
+- `refresh.run` `busy` rejection on concurrent call — covered by T5's "issue refresh again" step OR a dedicated test, implementer's call.
+- `daemon.status` verb returns expected shape — straightforward verb test, no spec-naming needed.
+- `reclaimStaleSocket` integration — already covered by IpcServer's own test suite.
+
+## 7. Live smoke (operator runs at close-out)
+
+```
+# 1. Start daemon (terminal A, foreground)
+unidrive daemon run personal_onedrive
+# Expected: prints "daemon ready, pid <N>, socket /run/user/<uid>/unidrive-personal_onedrive.sock"
+# Stays foreground.
+
+# 2. Daemon contention (terminal B)
+unidrive sync personal_onedrive
+# Expected: exit 1, stderr:
+#   Profile 'personal_onedrive' is currently in use by `unidrive daemon` (PID <N>).
+#   Stop the daemon first: `unidrive daemon stop personal_onedrive`.
+
+# 3. Status (terminal B, daemon still running in A)
+unidrive daemon status personal_onedrive
+# Expected: prints PID + mode from .lock.pid AND uptime + clients + refresh state from RPC.
+
+# 4. Refresh + mount (terminal B)
+unidrive refresh personal_onedrive
+# Expected: progress events stream to stdout; exits 0 on completion.
+unidrive mount personal_onedrive /tmp/onedrive-smoke
+# Expected: foreground; FUSE mount appears.
+
+# 5. (terminal C) Browse, mkdir, unlink, rmdir
+ls /tmp/onedrive-smoke
+mkdir /tmp/onedrive-smoke/smoke_folder
+echo hello > /tmp/onedrive-smoke/smoke_folder/hello.txt
+rm /tmp/onedrive-smoke/smoke_folder/hello.txt
+rmdir /tmp/onedrive-smoke/smoke_folder
+# All must succeed; check webapp for the round-trip.
+
+# 6. Graceful stop (terminal D)
+unidrive daemon stop personal_onedrive
+# Expected: daemon exits cleanly in <10s, mount terminal A's mount exits (co-daemon
+# notices socket gone, FUSE unmounts).
+
+# 7. Co-daemon exit error path (terminal D)
+unidrive mount personal_onedrive /tmp/onedrive-smoke
+# Expected: exit <co-daemon exit code>, stderr "unidrive mount: co-daemon exited with code <N>.
+# The daemon for profile 'personal_onedrive' is not running. Start it with:
+# `unidrive -p personal_onedrive daemon run`." (no socket exists; see §3.4 for the other two wordings)
+```
+
+If any step diverges from the expected output, file the divergence as a finding before merge.
+
+## 8. Open questions deferred to plan / implementation
+
+None at spec time. The plan will surface concrete questions about:
+- Exact picocli wiring for the `daemon` subcommand group (matches existing `vault`, `profile` patterns).
+- Whether `DaemonStatusCommand` + `DaemonStopCommand` are nested under `daemon` (`unidrive daemon status`) or top-level (`unidrive daemon-status`). Recommendation: nested per existing pattern.
+- The exact `RefreshRpcHandler` coroutine structure (do we launch refresh as a child of the IpcServer's scope, or own a separate `SupervisorJob` for it). Implementation choice; pin via T5.

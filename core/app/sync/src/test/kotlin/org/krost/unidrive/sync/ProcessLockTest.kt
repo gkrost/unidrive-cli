@@ -1,0 +1,356 @@
+package org.krost.unidrive.sync
+
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+
+class ProcessLockTest {
+    private lateinit var tmpDir: Path
+    private lateinit var lockFile: Path
+
+    @BeforeTest
+    fun setUp() {
+        tmpDir = Files.createTempDirectory("unidrive-processlock-test-")
+        lockFile = tmpDir.resolve(".lock")
+    }
+
+    @AfterTest
+    fun tearDown() {
+        runCatching { tmpDir.toFile().deleteRecursively() }
+    }
+
+    @Test
+    fun `tryLock returns true on first acquire`() {
+        val lock = ProcessLock(lockFile)
+        try {
+            assertTrue(lock.tryLock(), "first tryLock should succeed")
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    // -- UD-272: lock file carries holder PID -----------------------------------
+
+    @Test
+    fun `UD-272 - tryLock writes own PID into sibling pid file`() {
+        val lock = ProcessLock(lockFile)
+        val ownPid = ProcessHandle.current().pid()
+        val pidFile = lockFile.resolveSibling(lockFile.fileName.toString() + ".pid")
+        try {
+            assertTrue(lock.tryLock())
+            // Sibling .pid file now carries '<pid> sync\n' format.
+            val readContent = Files.readString(pidFile).trim()
+            val readPid = readContent.substringBefore(' ').toLongOrNull()
+            assertEquals(ownPid, readPid, ".pid sibling should carry our PID")
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    @Test
+    fun `UD-272 - unlock deletes sibling pid file`() {
+        val lock = ProcessLock(lockFile)
+        val pidFile = lockFile.resolveSibling(lockFile.fileName.toString() + ".pid")
+        assertTrue(lock.tryLock())
+        assertTrue(Files.exists(pidFile), "pid file should exist after acquire")
+        lock.unlock()
+        assertEquals(false, Files.exists(pidFile), "pid file should be removed after unlock")
+    }
+
+    @Test
+    fun `UD-272 - readHolderPid returns the PID written on tryLock`() {
+        val lock = ProcessLock(lockFile)
+        val ownPid = ProcessHandle.current().pid()
+        try {
+            assertTrue(lock.tryLock())
+            assertEquals(ownPid, lock.readHolderPid())
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    @Test
+    fun `UD-272 - readHolderPid returns null when pid file is missing`() {
+        // No prior holder → no .pid file → readHolderPid returns null
+        // (callers print the generic "Stop it first" message in that case).
+        val lock = ProcessLock(lockFile)
+        assertNull(lock.readHolderPid(), "missing pid file → null")
+    }
+
+    @Test
+    fun `UD-272 - readHolderPid returns null on non-numeric content`() {
+        val pidFile = lockFile.resolveSibling(lockFile.fileName.toString() + ".pid")
+        Files.writeString(pidFile, "not-a-pid\n")
+        val lock = ProcessLock(lockFile)
+        assertNull(lock.readHolderPid(), "garbage content → null PID")
+    }
+
+    @Test
+    fun `UD-272 - second tryLock by same JVM in different ProcessLock returns false`() {
+        // FileChannel.tryLock is per-JVM exclusive, so a second ProcessLock
+        // on the same file in the same JVM emulates a contending peer.
+        // After the first acquires, the second's readHolderPid sees our PID.
+        val first = ProcessLock(lockFile)
+        val second = ProcessLock(lockFile)
+        try {
+            assertTrue(first.tryLock(), "first should acquire")
+            // Second tryLock with zero timeout returns false immediately
+            // because the OS-level lock is held by the first.
+            assertEquals(false, second.tryLock(0.milliseconds))
+            // ... but it can still read the PID stamped by the first.
+            val holder = second.readHolderPid()
+            assertNotNull(holder, "should be able to read holder PID")
+            assertEquals(ProcessHandle.current().pid(), holder)
+        } finally {
+            first.unlock()
+            second.unlock()
+        }
+    }
+
+    // -- #1054 S3: only the holder removes the pid file ---------------------------------------------------------
+
+    @Test
+    fun `a contender that lost the lock does not delete the holder's pid file on unlock`() {
+        val pidFile = lockFile.resolveSibling(lockFile.fileName.toString() + ".pid")
+        val holder = ProcessLock(lockFile)
+        val loser = ProcessLock(lockFile)
+        try {
+            assertTrue(holder.tryLock(ProcessLock.Mode.DAEMON))
+            assertEquals(false, loser.tryLock(0.milliseconds))
+
+            loser.unlock()
+
+            assertTrue(Files.exists(pidFile), "the daemon's pid file must survive a failed contender's cleanup")
+            assertEquals(ProcessHandle.current().pid(), holder.readHolderPid())
+        } finally {
+            holder.unlock()
+        }
+    }
+
+    @Test
+    fun `an unlock of a lock that was never taken leaves a pid file alone`() {
+        val pidFile = lockFile.resolveSibling(lockFile.fileName.toString() + ".pid")
+        Files.writeString(pidFile, "4242 daemon\n")
+
+        ProcessLock(lockFile).unlock()
+
+        assertTrue(Files.exists(pidFile))
+    }
+
+    @Test
+    fun `unlocking twice removes the pid file once and never a later holder's`() {
+        val pidFile = lockFile.resolveSibling(lockFile.fileName.toString() + ".pid")
+        val first = ProcessLock(lockFile)
+        assertTrue(first.tryLock(ProcessLock.Mode.SYNC))
+        first.unlock()
+        assertEquals(false, Files.exists(pidFile))
+
+        val next = ProcessLock(lockFile)
+        try {
+            assertTrue(next.tryLock(ProcessLock.Mode.DAEMON))
+            first.unlock() // the shutdown hook running after the explicit unlock
+            assertTrue(Files.exists(pidFile), "the next holder's pid file survives the repeated unlock")
+        } finally {
+            next.unlock()
+        }
+    }
+
+    // -- Spec mount-sync-mode-mutex + unidrive-daemon T1/T2/T3/T3a -------------------------------
+
+    @Test
+    fun lock_pid_file_carries_mode_after_tryLock() {
+        val daemonLockFile = Files.createTempFile("mode-mutex-daemon", ".lock")
+        val daemonLock = ProcessLock(daemonLockFile)
+        try {
+            assertTrue(daemonLock.tryLock(ProcessLock.Mode.DAEMON))
+            val pidFile = daemonLockFile.resolveSibling("${daemonLockFile.fileName}.pid")
+            val body = Files.readString(pidFile).trim()
+            assertEquals(
+                "${ProcessHandle.current().pid()} daemon",
+                body,
+                "lock-pid sidecar must carry '<pid> daemon' on DAEMON acquisition",
+            )
+            assertEquals(ProcessHandle.current().pid(), daemonLock.readHolderPid())
+        } finally {
+            daemonLock.unlock()
+            Files.deleteIfExists(daemonLockFile)
+        }
+
+        val syncLockFile = Files.createTempFile("mode-mutex-sync", ".lock")
+        val syncLock = ProcessLock(syncLockFile)
+        try {
+            assertTrue(syncLock.tryLock(ProcessLock.Mode.SYNC))
+            val pidFile = syncLockFile.resolveSibling("${syncLockFile.fileName}.pid")
+            val body = Files.readString(pidFile).trim()
+            assertEquals("${ProcessHandle.current().pid()} sync", body)
+        } finally {
+            syncLock.unlock()
+            Files.deleteIfExists(syncLockFile)
+        }
+    }
+
+    // #570 review: a crash leaves the PID file of the last holder behind, and the read-only hold writes none. A
+    // contention message must not name that dead PID (its kill hint could hit an unrelated process reusing it).
+    @Test
+    fun read_live_holder_info_ignores_a_dead_pid_left_by_a_crash() {
+        val lockFile = Files.createTempFile("live-holder", ".lock")
+        val reader = ProcessLock(lockFile)
+        try {
+            val exited = ProcessBuilder(if (System.getProperty("os.name").lowercase().contains("win")) listOf("cmd", "/c", "exit") else listOf("true")).start()
+            exited.waitFor()
+            val deadPid = exited.pid()
+            Files.writeString(reader.pidFile, "$deadPid daemon\n")
+            assertNotNull(reader.readHolderInfo(), "precondition: the stale file parses")
+            assertEquals(null, reader.readLiveHolderInfo(), "a dead PID is not reported as the holder")
+
+            Files.writeString(reader.pidFile, "${ProcessHandle.current().pid()} daemon\n")
+            assertEquals(ProcessHandle.current().pid(), reader.readLiveHolderInfo()?.pid, "a live PID still is")
+        } finally {
+            Files.deleteIfExists(reader.pidFile)
+            Files.deleteIfExists(lockFile)
+        }
+    }
+
+    @Test
+    fun read_holder_info_returns_pid_and_mode_for_locked_file() {
+        val lockFile = Files.createTempFile("holder-info", ".lock")
+        val held = ProcessLock(lockFile)
+        try {
+            assertTrue(held.tryLock(ProcessLock.Mode.DAEMON))
+            val reader = ProcessLock(lockFile)
+            val info = reader.readHolderInfo()
+            assertNotNull(info)
+            assertEquals(ProcessHandle.current().pid(), info.pid)
+            assertEquals(ProcessLock.Mode.DAEMON, info.mode)
+        } finally {
+            held.unlock()
+            Files.deleteIfExists(lockFile)
+        }
+
+        val lockFile2 = Files.createTempFile("holder-info-sync", ".lock")
+        val held2 = ProcessLock(lockFile2)
+        try {
+            assertTrue(held2.tryLock(ProcessLock.Mode.SYNC))
+            val reader = ProcessLock(lockFile2)
+            val info = reader.readHolderInfo()
+            assertEquals(ProcessLock.Mode.SYNC, info?.mode)
+        } finally {
+            held2.unlock()
+            Files.deleteIfExists(lockFile2)
+        }
+    }
+
+    @Test
+    fun legacy_pid_only_lock_pid_file_reads_as_sync_mode() {
+        val lockFile = Files.createTempFile("legacy-pid", ".lock")
+        val pidFile = lockFile.resolveSibling("${lockFile.fileName}.pid")
+        Files.writeString(pidFile, "12345\n")
+        try {
+            val reader = ProcessLock(lockFile)
+            val info = reader.readHolderInfo()
+            assertNotNull(info, "legacy pid-only file must parse")
+            assertEquals(12345L, info.pid)
+            assertEquals(
+                ProcessLock.Mode.SYNC,
+                info.mode,
+                "legacy format must default to SYNC (the only mode that existed before)",
+            )
+            assertEquals(null, info.rawMode, "legacy format must NOT set rawMode")
+        } finally {
+            Files.deleteIfExists(pidFile)
+            Files.deleteIfExists(lockFile)
+        }
+    }
+
+    @Test
+    fun unknown_mode_token_yields_holder_info_with_null_mode_and_raw_token() {
+        val lockFile = Files.createTempFile("unknown-mode", ".lock")
+        val pidFile = lockFile.resolveSibling("${lockFile.fileName}.pid")
+        Files.writeString(pidFile, "67890 mirror\n")
+        try {
+            val reader = ProcessLock(lockFile)
+            val info = reader.readHolderInfo()
+            assertNotNull(info, "unknown-mode file must still parse the pid")
+            assertEquals(67890L, info.pid)
+            assertEquals(
+                null,
+                info.mode,
+                "unknown mode token must yield null mode (not silent SYNC default)",
+            )
+            assertEquals(
+                "mirror",
+                info.rawMode,
+                "unknown mode token must be preserved verbatim in rawMode",
+            )
+        } finally {
+            Files.deleteIfExists(pidFile)
+            Files.deleteIfExists(lockFile)
+        }
+    }
+
+    // -- #560 U5a: a read-only hold for the legacy-profile inventory ------------------------------
+
+    @Test
+    fun `read-only hold on a missing lock file creates nothing`() {
+        val hold = assertNotNull(ProcessLock(lockFile).tryHoldReadOnly())
+        try {
+            assertEquals(false, hold.locked)
+            assertTrue(hold.stillFree())
+            assertEquals(emptyList(), Files.list(tmpDir).use { it.toList() }, "no lock or pid file may be created")
+        } finally {
+            hold.close()
+        }
+    }
+
+    @Test
+    fun `read-only hold on a free lock file keeps writers out without stamping a pid`() {
+        Files.writeString(lockFile, "")
+        val pidFile = lockFile.resolveSibling(".lock.pid")
+        val hold = assertNotNull(ProcessLock(lockFile).tryHoldReadOnly())
+        val writer = ProcessLock(lockFile)
+        try {
+            assertTrue(hold.locked)
+            assertEquals(false, Files.exists(pidFile), "the hold must not stamp a pid file")
+            assertEquals(false, writer.tryLock(ProcessLock.Mode.DAEMON), "a daemon must not start while the hold is open")
+        } finally {
+            hold.close()
+        }
+        try {
+            assertTrue(writer.tryLock(ProcessLock.Mode.DAEMON), "the lock is free again after the hold closes")
+        } finally {
+            writer.unlock()
+        }
+        assertEquals(0L, Files.size(lockFile))
+    }
+
+    @Test
+    fun `read-only hold is refused while a writer holds the lock`() {
+        val writer = ProcessLock(lockFile)
+        try {
+            assertTrue(writer.tryLock(ProcessLock.Mode.SYNC))
+            assertNull(ProcessLock(lockFile).tryHoldReadOnly())
+        } finally {
+            writer.unlock()
+        }
+    }
+
+    @Test
+    fun `read-only hold without a lock file notices a writer that started meanwhile`() {
+        val hold = assertNotNull(ProcessLock(lockFile).tryHoldReadOnly())
+        val writer = ProcessLock(lockFile)
+        try {
+            assertTrue(writer.tryLock(ProcessLock.Mode.DAEMON))
+            assertEquals(false, hold.stillFree())
+        } finally {
+            writer.unlock()
+            hold.close()
+        }
+    }
+}

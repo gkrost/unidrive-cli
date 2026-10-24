@@ -1,0 +1,266 @@
+package org.krost.unidrive.internxt
+
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
+
+class InternxtCryptoTest {
+    private val crypto = InternxtCrypto()
+
+    @Test
+    fun `decrypt name encrypted by our implementation`() {
+        val password = "master-key-folder-42"
+        val plaintext = "my-document.pdf"
+
+        val encrypted = crypto.encryptName(plaintext, password)
+        val decrypted = crypto.decryptName(encrypted, password)
+
+        assertEquals(plaintext, decrypted)
+    }
+
+    @Test
+    fun `encrypt produces base64 output with correct structure`() {
+        val encrypted = crypto.encryptName("test.txt", "password-123")
+        val bytes =
+            java.util.Base64
+                .getDecoder()
+                .decode(encrypted)
+
+        // salt(64) + iv(16) + tag(16) + ciphertext(>=1)
+        assertTrue(bytes.size >= 97, "Output must be at least 97 bytes (64+16+16+1)")
+    }
+
+    @Test
+    fun `different encryptions produce different output (random salt+iv)`() {
+        val a = crypto.encryptName("same.txt", "same-password")
+        val b = crypto.encryptName("same.txt", "same-password")
+        assertNotEquals(a, b, "Random salt/IV should produce different ciphertexts")
+    }
+
+    @Test
+    fun `decrypt with wrong password throws AEADBadTagException`() {
+        val encrypted = crypto.encryptName("secret.txt", "correct-password")
+        assertFailsWith<javax.crypto.AEADBadTagException> {
+            crypto.decryptName(encrypted, "wrong-password")
+        }
+    }
+
+    @Test
+    fun `encrypt and decrypt with deterministic salt and iv`() {
+        val salt = ByteArray(64) { it.toByte() }
+        val iv = ByteArray(16) { (it + 100).toByte() }
+        val password = "test-key-99"
+        val plaintext = "deterministic-test.txt"
+
+        val encrypted = crypto.encryptName(plaintext, password, salt, iv)
+        val decrypted = crypto.decryptName(encrypted, password)
+
+        assertEquals(plaintext, decrypted)
+
+        // Same inputs -> same output (deterministic)
+        val encrypted2 = crypto.encryptName(plaintext, password, salt, iv)
+        assertEquals(encrypted, encrypted2)
+    }
+
+    @Test
+    fun `BIP39 mnemonic to seed produces 64 bytes`() {
+        val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val seed = crypto.mnemonicToSeed(mnemonic)
+        assertEquals(64, seed.size, "BIP39 seed must be 64 bytes (512 bits)")
+    }
+
+    @Test
+    fun `BIP39 mnemonic to seed is deterministic`() {
+        val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val seed1 = crypto.mnemonicToSeed(mnemonic)
+        val seed2 = crypto.mnemonicToSeed(mnemonic)
+        assertTrue(seed1.contentEquals(seed2))
+    }
+
+    @Test
+    fun `BIP39 mnemonic to seed matches known test vector`() {
+        val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val seed = crypto.mnemonicToSeed(mnemonic)
+        val expectedHex = "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4"
+        val actualHex = seed.joinToString("") { "%02x".format(it) }
+        assertEquals(expectedHex, actualHex, "Must match BIP39 reference vector")
+    }
+
+    @Test
+    fun `generate file key produces 32 bytes`() {
+        val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val seed = crypto.mnemonicToSeed(mnemonic)
+        val bucketKey = crypto.deriveBucketKey(seed, "6928426c1a2316b856c9ab81")
+        val fileKey = crypto.deriveFileKey(bucketKey, "file-index-abc".toByteArray())
+        assertEquals(32, fileKey.size, "File key must be 32 bytes (256 bits)")
+    }
+
+    // #336: known-answer vectors so a one-byte drift in the seed, bucket key or file key chain fails here
+    // instead of only as cross-client garbage in live tests. Computed with an independent implementation of
+    // the documented chain (Python hashlib): seed = PBKDF2-HMAC-SHA-512(mnemonic, salt "mnemonic", 2048
+    // iterations, 64 bytes); bucketKey = SHA-512(seed || hexToBytes(bucketId))[0..31]; fileKey =
+    // SHA-512(bucketKey[0..31] || fileIndex)[0..31]. The first mnemonic's seed reproduces the BIP39
+    // reference vector asserted above.
+    @Test
+    fun `bucket and file key derivation matches independent reference vectors`() {
+        data class Vector(val mnemonic: String, val bucket: String, val index: ByteArray, val bucketKeyHex: String, val fileKeyHex: String)
+
+        val vectors =
+            listOf(
+                Vector(
+                    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                    "6928426c1a2316b856c9ab81",
+                    ByteArray(32) { it.toByte() },
+                    "e7843ab1278517eb04c9af327b0233f5caaa1cfafbc452acbbcc76bf70bb188e",
+                    "881769043448e3a5c5206b0504e4225d98d061e7b2390e702c3fe1fbbc2b6354",
+                ),
+                Vector(
+                    "legal winner thank year wave sausage worth useful legal winner thank yellow",
+                    "a59acaa4e37b7a1f5e6d5a3f",
+                    byteArrayOf(1, 0, 0, 0, 0, 0, 0, 0) + ByteArray(24),
+                    "9ea263734c294a2282f036e8b294d4114d8d48035a6bbb63b1214248b154f0d8",
+                    "c9666609d7fbb0e471da484a6a07f017f5b249b469564f2f461ec6b9c64ef169",
+                ),
+            )
+        for (v in vectors) {
+            val seed = crypto.mnemonicToSeed(v.mnemonic)
+            val bucketKey = crypto.deriveBucketKey(seed, v.bucket)
+            val fileKey = crypto.deriveFileKey(bucketKey, v.index)
+            assertEquals(v.bucketKeyHex, bucketKey.joinToString("") { "%02x".format(it) }, "bucket key for bucket ${v.bucket}")
+            assertEquals(v.fileKeyHex, fileKey.joinToString("") { "%02x".format(it) }, "file key for bucket ${v.bucket}")
+        }
+    }
+
+    @Test
+    fun `decrypt ciphertext produced by JS reference implementation`() {
+        // Generated by @internxt/lib aes.encrypt with:
+        //   plaintext = "hello-world"
+        //   password  = "test-password-123"
+        //   salt      = bytes [0..63]  (64 bytes)
+        //   iv        = bytes [100..115] (16 bytes)
+        //   hops      = 2145
+        val jsCiphertext = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P2RlZmdoaWprbG1ub3BxcnNaK2pk75QqGxGIDYSCdulC4ulkVbQkf8/wmM4="
+        val decrypted = crypto.decryptName(jsCiphertext, "test-password-123")
+        assertEquals("hello-world", decrypted)
+    }
+
+    @Test
+    fun `char array password overloads preserve KDF and mnemonic decryption behavior`() {
+        val password = "pāssword-🔐"
+        val passwordChars = password.toCharArray()
+        val cryptoKey = InternxtConfig.CRYPTO_KEY
+        val challenge = crypto.cryptoJsEncrypt("001122aabbcc", cryptoKey)
+        val sKey =
+            java.util.Base64.getDecoder().decode(challenge).joinToString("") { "%02x".format(it) }
+
+        val stringHash = crypto.hashPassword(password, sKey, cryptoKey)
+        val charArrayHash = crypto.hashPassword(passwordChars, sKey, cryptoKey)
+        assertEquals(decryptHashResult(stringHash, cryptoKey), decryptHashResult(charArrayHash, cryptoKey))
+
+        val encryptedMnemonic = crypto.cryptoJsEncrypt("word1 word2 word3", password)
+        val encryptedMnemonicHex =
+            java.util.Base64.getDecoder().decode(encryptedMnemonic).joinToString("") { "%02x".format(it) }
+        assertEquals("word1 word2 word3", crypto.decryptMnemonic(encryptedMnemonicHex, passwordChars))
+        assertEquals(password, passwordChars.concatToString(), "char-array APIs must not clear caller-owned input")
+    }
+
+    private fun decryptHashResult(
+        hashHex: String,
+        cryptoKey: String,
+    ): String {
+        val encrypted = InternxtCrypto.hexToBytes(hashHex)
+        val base64 = java.util.Base64.getEncoder().encodeToString(encrypted)
+        return crypto.cryptoJsDecrypt(base64, cryptoKey)
+    }
+
+    @Test
+    fun `encrypt produces output decodable by JS reference implementation`() {
+        // Use same deterministic salt/iv as the JS test vector
+        val salt = ByteArray(64) { it.toByte() }
+        val iv = ByteArray(16) { (it + 100).toByte() }
+        val encrypted = crypto.encryptName("hello-world", "test-password-123", salt, iv)
+
+        // Must match the JS-produced ciphertext exactly (same algorithm, same inputs)
+        val jsCiphertext = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P2RlZmdoaWprbG1ub3BxcnNaK2pk75QqGxGIDYSCdulC4ulkVbQkf8/wmM4="
+        assertEquals(jsCiphertext, encrypted, "JDK and JS must produce identical ciphertext for same inputs")
+    }
+
+    @Test
+    fun `AES-256-CTR round-trip`() {
+        val key = ByteArray(32) { it.toByte() }
+        val iv = ByteArray(16) { (it + 10).toByte() }
+        val plaintext = "Hello, Internxt storage!".toByteArray()
+
+        val encCipher = crypto.createContentEncryptCipher(key, iv)
+        val encrypted = encCipher.doFinal(plaintext)
+
+        val decCipher = crypto.createContentDecryptCipher(key, iv)
+        val decrypted = decCipher.doFinal(encrypted)
+
+        assertTrue(plaintext.contentEquals(decrypted))
+    }
+
+    @Test
+    fun `file key derivation is deterministic`() {
+        val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val bucket = "6928426c1a2316b856c9ab81"
+        val index = ByteArray(32) { it.toByte() }
+
+        val seed = crypto.mnemonicToSeed(mnemonic)
+        val bucketKey = crypto.deriveBucketKey(seed, bucket)
+        val key1 = crypto.deriveFileKey(bucketKey, index)
+        val key2 = crypto.deriveFileKey(bucketKey, index)
+
+        assertTrue(key1.contentEquals(key2))
+        assertEquals(32, key1.size)
+    }
+
+    // --- #333: hexToBytes must fail loud on non-hex input, not derive garbage keys ---
+
+    @Test
+    fun `hexToBytes rejects odd-length input`() {
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                InternxtCrypto.hexToBytes("abc")
+            }
+        assertTrue("even length" in e.message!!, "message must name the even-length rule; got: ${e.message}")
+    }
+
+    @Test
+    fun `hexToBytes rejects a non-hex character`() {
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                // What a corrupted bridgeInfo.index / tombstone indexBytesHex could look like.
+                InternxtCrypto.hexToBytes("6928426c1a2316b856c9abg1")
+            }
+        assertTrue("hex" in e.message!!.lowercase(), "message must name the hex charset; got: ${e.message}")
+    }
+
+    @Test
+    fun `hexToBytes accepts uppercase hex`() {
+        val lower = InternxtCrypto.hexToBytes("6928426c1a2316b856c9ab81".take(20))
+        val upper = InternxtCrypto.hexToBytes("6928426C1A2316B856C9AB81".take(20))
+        assertTrue(lower.contentEquals(upper), "uppercase hex must decode to the same bytes")
+    }
+
+    // #1087: Character.digit also accepts the decimal digits of other scripts and the fullwidth Latin letters.
+    @Test
+    fun `hexToBytes rejects digits and letters that are not ASCII`() {
+        for (notHex in listOf("٠١", "०१", "ＡＢ", "１２", "aＡ", "١a")) {
+            val e = assertFailsWith<IllegalArgumentException>("input: ${notHex.map { "U+%04X".format(it.code) }}") { InternxtCrypto.hexToBytes(notHex) }
+            assertTrue("hex" in e.message!!.lowercase(), "message must name the hex charset; got: ${e.message}")
+        }
+    }
+
+    @Test
+    fun `hexToBytes decodes every ASCII hex digit pair to its known value`() {
+        assertTrue(InternxtCrypto.hexToBytes("00019fFf80aA").contentEquals(byteArrayOf(0x00, 0x01, 0x9f.toByte(), 0xff.toByte(), 0x80.toByte(), 0xaa.toByte())))
+    }
+
+    @Test
+    fun `hexToBytes empty string stays valid`() {
+        assertTrue(InternxtCrypto.hexToBytes("").contentEquals(ByteArray(0)))
+    }
+}

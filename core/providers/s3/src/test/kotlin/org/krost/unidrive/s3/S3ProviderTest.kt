@@ -1,0 +1,499 @@
+package org.krost.unidrive.s3
+
+import io.ktor.client.plugins.HttpTimeoutCapability
+import io.ktor.http.HttpMethod
+import kotlinx.coroutines.test.runTest
+import org.krost.unidrive.AuthenticationException
+import org.krost.unidrive.CapabilityResult
+import org.krost.unidrive.CaseSensitivity
+import org.krost.unidrive.CloudItem
+import org.krost.unidrive.ConfigurationException
+import org.krost.unidrive.HttpDefaults
+import org.krost.unidrive.PermanentDownloadFailureException
+import org.krost.unidrive.ProviderException
+import org.krost.unidrive.ProviderFactory
+import org.krost.unidrive.RemoteConflictException
+import org.krost.unidrive.ScanContext
+import java.nio.file.Files
+import java.nio.file.attribute.FileTime
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.ServiceLoader
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+/** The provider against [FakeS3]: listing, uploads (single and multipart, resumed), conditional writes, copies, deletes, links. */
+class S3ProviderTest {
+    private val dir = Files.createTempDirectory("s3-provider")
+    private val mib = 1024L * 1024
+
+    private fun provider(
+        fake: FakeS3,
+        endpoint: String = "http://localhost:9000",
+        threshold: Long = S3Config.MULTIPART_THRESHOLD,
+        minPart: Long = S3Config.MIN_PART_SIZE,
+    ) = S3Provider(
+        S3Config("b", "us-east-1", endpoint, "AK", "SK", dir, multipartThreshold = threshold, minPartSize = minPart),
+        fake.engine,
+    )
+
+    private fun httpDateAhead(seconds: Long) = DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now(ZoneOffset.UTC).plusSeconds(seconds))
+
+    private fun local(
+        name: String,
+        bytes: ByteArray,
+    ) = dir.resolve(name).also {
+        Files.write(it, bytes)
+        Files.setLastModifiedTime(it, FileTime.from(Instant.parse("2026-02-03T04:05:06.123Z")))
+    }
+
+    @Test
+    fun `the provider is found by the service loader`() {
+        assertTrue(ServiceLoader.load(ProviderFactory::class.java).any { it.id == "s3" })
+    }
+
+    @Test
+    fun `S3 declares case-sensitive keys`() {
+        // #309: object keys are case-sensitive, so `a.txt` and `A.txt` are two objects.
+        assertEquals(CaseSensitivity.SENSITIVE, provider(FakeS3()).caseSensitivity)
+    }
+
+    @Test
+    fun `delta lists the whole bucket with folders from markers and from keys, page by page`() =
+        runTest {
+            val fake = FakeS3(pageSize = 2)
+            fake.put("a.txt", "1")
+            fake.put("docs/", "")
+            fake.put("docs/deep/x.txt", "22")
+            fake.put("z.txt", "333")
+            val progress = mutableListOf<Int>()
+
+            val page = provider(fake).delta(null, onPageProgress = { progress += it })
+
+            assertEquals(listOf("/docs", "/docs/deep", "/a.txt", "/docs/deep/x.txt", "/z.txt"), page.items.map { it.path })
+            assertEquals(listOf(true, true, false, false, false), page.items.map { it.isFolder })
+            assertFalse(page.hasMore)
+            assertTrue(provider(fake).deltaIsFullListing)
+            assertEquals(2, progress.size)
+            val x = page.items.single { it.path == "/docs/deep/x.txt" }
+            assertEquals("docs/deep/x.txt", x.id)
+            assertEquals(FakeS3.md5Hex("22".toByteArray()), x.hash)
+            assertEquals(2, x.size)
+        }
+
+    @Test
+    fun `a resumed listing starts after the marker and keeps the staged items`() =
+        runTest {
+            val fake = FakeS3(pageSize = 1)
+            fake.put("a.txt", "1")
+            fake.put("b.txt", "2")
+            fake.put("c.txt", "3")
+            val persisted = mutableListOf<String>()
+            val staged = CloudItem("a.txt", "", "placeholder", 1, false, null, null, null, null)
+            val context = ScanContext("a.txt", listOf(staged), { _, marker -> persisted += marker })
+
+            val page = provider(fake).delta(null, scanContext = context)
+
+            assertEquals(listOf("/a.txt", "/b.txt", "/c.txt"), page.items.map { it.path })
+            assertEquals("a.txt", fake.requests.first { it.query["list-type"] == "2" }.query["start-after"])
+            assertEquals(listOf("b.txt", "c.txt"), persisted)
+        }
+
+    @Test
+    fun `children are the files and the folders one level down, not the folder's own marker`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("docs/", "")
+            fake.put("docs/a.txt", "1")
+            fake.put("docs/sub/b.txt", "2")
+
+            val children = provider(fake).listChildren("/docs")
+
+            assertEquals(listOf("/docs/a.txt" to false, "/docs/sub" to true), children.map { it.path to it.isFolder })
+        }
+
+    @Test
+    fun `a small upload is one signed PUT with the mtime as rclone writes it, and the item S3 then reports`() =
+        runTest {
+            val fake = FakeS3()
+
+            val item = provider(fake).upload(local("g.txt", "hello".toByteArray()), "/dir/Grüße ~*.txt")
+
+            val put = fake.requests.single { it.method == HttpMethod.Put }
+            assertEquals("/b/dir/Gr%C3%BC%C3%9Fe%20~%2A.txt", put.encodedPath)
+            assertEquals("1770091506.123000000", put.headers["x-amz-meta-mtime"])
+            assertEquals("hello", fake.text("dir/Grüße ~*.txt"))
+            assertEquals("/dir/Grüße ~*.txt", item.path)
+            assertEquals(FakeS3.md5Hex("hello".toByteArray()), item.hash)
+            assertEquals(fake.objects.getValue("dir/Grüße ~*.txt").lastModified, item.modified)
+        }
+
+    @Test
+    fun `a big upload goes in streamed parts with their MD5 and completes in order`() =
+        runTest {
+            val fake = FakeS3()
+            val bytes = ByteArray((2.5 * mib).toInt()) { (it % 253).toByte() }
+
+            val progress = mutableListOf<Long>()
+            provider(fake, threshold = mib, minPart = mib).upload(local("big.bin", bytes), "/big.bin") { done, _ -> progress += done }
+
+            assertEquals(3, fake.count { it.query.containsKey("partNumber") })
+            assertTrue(fake.objects.getValue("big.bin").bytes!!.contentEquals(bytes))
+            assertEquals(listOf(mib, 2 * mib, bytes.size.toLong(), bytes.size.toLong()), progress)
+            assertEquals("1770091506.123000000", fake.objects.getValue("big.bin").meta["mtime"])
+            assertEquals(0, fake.openUploads)
+            assertTrue(Files.list(dir.resolve("s3-uploads")).use { it.count() } == 0L)
+        }
+
+    // #1062: the key of a path loses its leading and trailing '/', never white space inside the name.
+    @Test
+    fun `a name with a trailing space is its own key, listed, downloaded and deleted as such`() =
+        runTest {
+            val fake = FakeS3()
+            val p = provider(fake)
+            assertEquals("d/a ", S3Provider.keyOf("/d/a "))
+            assertNotEquals(S3Provider.keyOf("/d/a "), S3Provider.keyOf("/d/a"))
+            assertEquals("d/ a", S3Provider.keyOf("/d/ a/"))
+
+            p.upload(local("one.bin", "1".toByteArray()), "/d/a ")
+            p.upload(local("two.bin", "22".toByteArray()), "/d/a")
+
+            assertEquals(setOf("d/a", "d/a "), fake.objects.keys.toSet(), "two uploads, two keys")
+            assertEquals("1", fake.text("d/a "))
+            assertEquals("22", fake.text("d/a"))
+
+            val out = dir.resolve("out.bin")
+            assertEquals(1L, p.download("/d/a ", out))
+            assertEquals("1", Files.readString(out))
+
+            p.delete("/d/a ")
+            assertEquals(setOf("d/a"), fake.objects.keys.toSet())
+        }
+
+
+    // #1058: the socket timeout is a read-idle timer from the start of the request and S3 answers only after the
+    // body; at its 60 s default it cut every upload a slow uplink needs longer than that for.
+    @Test
+    fun `every upload PUT, single and part, runs under a socket timeout as long as its request timeout`() =
+        runTest {
+            val fake = FakeS3()
+            val bytes = ByteArray((2.5 * mib).toInt()) { (it % 253).toByte() }
+
+            provider(fake).upload(local("small.bin", "hello".toByteArray()), "/small.bin")
+            provider(fake, threshold = mib, minPart = mib).upload(local("big.bin", bytes), "/big.bin")
+
+            val puts = fake.engine.requestHistory.filter { it.method == HttpMethod.Put }
+            assertEquals(4, puts.size, "one single PUT and three parts")
+            for (put in puts) {
+                val timeouts = put.getCapabilityOrNull(HttpTimeoutCapability)
+                assertNotNull(timeouts, "a PUT carries timeouts")
+                assertEquals(timeouts.requestTimeoutMillis, timeouts.socketTimeoutMillis, "socket timeout of ${put.url.encodedPath}")
+                assertTrue(timeouts.socketTimeoutMillis!! > HttpDefaults.SOCKET_TIMEOUT_MS, "longer than the ${HttpDefaults.SOCKET_TIMEOUT_MS} ms default")
+            }
+        }
+
+    @Test
+    fun `a multipart upload cut off half-way resumes with only the missing parts`() =
+        runTest {
+            val fake = FakeS3()
+            val bytes = ByteArray((2.5 * mib).toInt()) { (it % 251).toByte() }
+            val file = local("big.bin", bytes)
+            val provider = provider(fake, threshold = mib, minPart = mib)
+            fake.failures += Triple({ r: FakeS3.Request -> r.query["partNumber"] == "3" }, 400, "RequestTimeout")
+
+            assertFailsWith<S3Exception> { provider.upload(file, "/big.bin") }
+            assertEquals(1, fake.openUploads)
+            provider.upload(file, "/big.bin")
+
+            assertEquals(1, fake.count { it.query.containsKey("uploads") }, "one upload, resumed")
+            assertEquals(listOf("1", "2", "3", "3"), fake.requests.filter { it.query.containsKey("partNumber") }.map { it.query["partNumber"] })
+            assertTrue(fake.objects.getValue("big.bin").bytes!!.contentEquals(bytes))
+        }
+
+    @Test
+    fun `deleting a file that was never uploaded aborts the upload it left open`() =
+        runTest {
+            val fake = FakeS3()
+            val file = local("big.bin", ByteArray((1.5 * mib).toInt()))
+            val provider = provider(fake, threshold = mib, minPart = mib)
+            fake.failures += Triple({ r: FakeS3.Request -> r.query["partNumber"] == "2" }, 400, "RequestTimeout")
+            assertFailsWith<S3Exception> { provider.upload(file, "/big.bin") }
+
+            provider.discardStagedUpload(file.toString())
+
+            assertEquals(0, fake.openUploads)
+        }
+
+    @Test
+    fun `parts are sized to the vendor's part limit`() {
+        val aws = S3Provider(S3Config("b", "eu-west-1", "https://s3.eu-west-1.amazonaws.com", "AK", "SK", dir))
+        val scaleway = S3Provider(S3Config("b", "fr-par", "https://s3.fr-par.scw.cloud", "AK", "SK", dir))
+        val gib = 1024 * mib
+
+        assertEquals(16 * mib, aws.partSizeFor(100 * gib))
+        assertEquals(103 * mib, scaleway.partSizeFor(100 * gib))
+        assertFailsWith<ProviderException> { scaleway.partSizeFor(5_001 * gib) }
+    }
+
+    @Test
+    fun `on AWS a guarded write carries If-Match and a 412 is a conflict`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("a.txt", "old")
+            val etag = fake.objects.getValue("a.txt").etag
+            val aws = provider(fake, endpoint = "https://s3.eu-west-1.amazonaws.com")
+
+            aws.upload(local("a.txt", "new".toByteArray()), "/a.txt", ifMatchETag = etag)
+            assertEquals("\"$etag\"", fake.requests.last { it.method == HttpMethod.Put }.headers["if-match"])
+            assertEquals(HttpMethod.Put, fake.requests.first().method, "no HEAD comparison where If-Match does the work")
+
+            assertFailsWith<RemoteConflictException> { aws.upload(local("a.txt", "newer".toByteArray()), "/a.txt", ifMatchETag = etag) }
+            assertEquals("new", fake.text("a.txt"))
+        }
+
+    @Test
+    fun `elsewhere a guarded write compares the ETag first and sends nothing on a change`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("a.txt", "theirs")
+
+            assertFailsWith<RemoteConflictException> { provider(fake).upload(local("a.txt", "mine".toByteArray()), "/a.txt", ifMatchETag = "stale") }
+            assertEquals(0, fake.count { it.method == HttpMethod.Put })
+            assertNull(fake.requests.firstOrNull { it.headers.containsKey("if-match") })
+        }
+
+    @Test
+    fun `a folder delete removes every key below it in one batch, a guarded file delete checks the ETag`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("docs/", "")
+            fake.put("docs/a.txt", "1")
+            fake.put("docs/sub/b.txt", "2")
+            fake.put("keep.txt", "3")
+            val provider = provider(fake)
+
+            provider.delete("/docs")
+            assertEquals(listOf("keep.txt"), fake.objects.keys.toList())
+            val batch = fake.requests.single { it.query.containsKey("delete") }
+            assertTrue(batch.headers.containsKey("content-md5"))
+
+            assertFailsWith<RemoteConflictException> { provider.delete("/keep.txt", ifMatchETag = "stale") }
+            provider.delete("/keep.txt", ifMatchETag = fake.objects.getValue("keep.txt").etag)
+            assertTrue(fake.objects.isEmpty())
+        }
+
+    @Test
+    fun `a permanent delete of a folder or a file removes the keys, the capability is declared`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("docs/a.txt", "1")
+            fake.put("keep.txt", "3")
+            val provider = provider(fake)
+
+            assertTrue(provider.capabilities().any { it is org.krost.unidrive.Capability.PermanentDelete })
+            provider.deletePermanently("/docs")
+            provider.deletePermanently("/keep.txt")
+
+            assertTrue(fake.objects.isEmpty())
+        }
+
+    @Test
+    fun `a move copies with the metadata and deletes the source`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("a b.txt", "x", meta = mapOf("mtime" to "1.5"))
+
+            val moved = provider(fake).move("/a b.txt", "/dir/c.txt")
+
+            val copy = fake.requests.single { it.headers.containsKey("x-amz-copy-source") }
+            assertEquals("/b/a%20b.txt", copy.headers["x-amz-copy-source"])
+            assertEquals("COPY", copy.headers["x-amz-metadata-directive"])
+            assertEquals(listOf("dir/c.txt"), fake.objects.keys.toList())
+            assertEquals("1.5", fake.objects.getValue("dir/c.txt").meta["mtime"])
+            assertEquals("/dir/c.txt", moved.path)
+        }
+
+    // #1063: the source of a folder move goes the way a folder delete goes.
+    @Test
+    fun `a folder move that cannot delete a source key fails and leaves nothing to guess about`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("d/a.txt", "a")
+            fake.put("d/b.txt", "b")
+            fake.undeletable += "d/b.txt"
+
+            val e = assertFailsWith<ProviderException> { provider(fake).move("/d", "/e") }
+
+            assertTrue("1 of 2" in (e.message ?: ""), e.message)
+            // the copy is complete and the source holds only what the store refused to delete; a retry converges
+            assertEquals(setOf("d/b.txt", "e/a.txt", "e/b.txt"), fake.objects.keys.toSet())
+            fake.undeletable.clear()
+            provider(fake).move("/d", "/e")
+            assertEquals(setOf("e/a.txt", "e/b.txt"), fake.objects.keys.toSet())
+        }
+
+    @Test
+    fun `a folder move on a store without DeleteObjects deletes the source key by key`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("d/a.txt", "a")
+            fake.put("d/b.txt", "b")
+            fake.failures += Triple({ r: FakeS3.Request -> r.method == HttpMethod.Post && r.query.containsKey("delete") }, 501, "NotImplemented")
+
+            provider(fake).move("/d", "/e")
+
+            assertEquals(setOf("e/a.txt", "e/b.txt"), fake.objects.keys.toSet())
+        }
+
+    @Test
+    fun `an object above 5 GiB is moved by part copies on any vendor`() =
+        runTest {
+            val fake = FakeS3()
+            val size = 6L * 1024 * mib
+            fake.putSized("huge.bin", size)
+
+            provider(fake).move("/huge.bin", "/moved.bin")
+
+            val ranges =
+                fake.requests.filter { it.headers.containsKey("x-amz-copy-source-range") }.map {
+                    it.headers.getValue("x-amz-copy-source-range").removePrefix("bytes=").split("-").let { (a, b) -> a.toLong()..b.toLong() }
+                }
+            assertEquals(0L, ranges.first().first)
+            assertEquals(size - 1, ranges.last().last)
+            ranges.zipWithNext().forEach { (a, b) -> assertEquals(a.last + 1, b.first) }
+            assertTrue(ranges.all { it.last - it.first + 1 <= S3Config.MAX_PART_SIZE })
+            assertEquals(size, fake.objects.getValue("moved.bin").size)
+            assertFalse("huge.bin" in fake.objects)
+        }
+
+    @Test
+    fun `a download is staged, and an object that is gone is a permanent failure`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("a.txt", "content")
+            val target = dir.resolve("out/a.txt")
+
+            assertEquals(7, provider(fake).download("/a.txt", target))
+            assertEquals("content", Files.readString(target))
+            assertFailsWith<PermanentDownloadFailureException> { provider(fake).download("/gone.txt", dir.resolve("gone.txt")) }
+        }
+
+    @Test
+    fun `a 503 SlowDown is waited out and retried`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("a.txt", "x")
+            fake.failures += Triple({ r: FakeS3.Request -> r.method == HttpMethod.Head }, 503, "SlowDown")
+
+            assertEquals("/a.txt", provider(fake).getMetadata("/a.txt").path)
+            assertEquals(2, fake.count { it.method == HttpMethod.Head })
+        }
+
+    @Test
+    fun `a 503 is waited out for the Retry-After in either form`() =
+        runTest {
+            val cases: List<Pair<() -> String, LongRange>> = listOf(
+                { "2" } to 2_000L..3_000L,
+                // HTTP dates have second precision. Create this one just before the request, after the numeric case has run.
+                { httpDateAhead(6) } to 3_500L..6_500L,
+            )
+            for ((headerValue, expectedMs) in cases) {
+                val fake = FakeS3()
+                fake.put("a.txt", "x")
+                fake.failures += Triple({ r: FakeS3.Request -> r.method == HttpMethod.Head }, 503, "SlowDown")
+                val header = headerValue()
+                fake.failureRetryAfter = header
+                val started = testScheduler.currentTime
+
+                provider(fake).getMetadata("/a.txt")
+
+                val waited = testScheduler.currentTime - started
+                assertTrue(waited in expectedMs, "Retry-After '$header': waited $waited ms")
+            }
+        }
+
+    @Test
+    fun `a link is a presigned GET capped at seven days and never carries a password`() =
+        runTest {
+            val fake = FakeS3()
+            val provider = provider(fake)
+
+            val url = (provider.share("/a b.txt", expiryHours = 24 * 30) as CapabilityResult.Success).value
+
+            assertTrue(url.startsWith("http://localhost:9000/b/a%20b.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256"), url)
+            assertTrue("X-Amz-Expires=604800" in url && "X-Amz-Signature=" in url, url)
+            assertFailsWith<ProviderException> { provider.share("/a.txt", password = "pw") }
+        }
+
+    @Test
+    fun `refused keys fail the sign-in check`() =
+        runTest {
+            val fake = FakeS3()
+            fake.failures += Triple({ _: FakeS3.Request -> true }, 403, "InvalidAccessKeyId")
+            val provider = provider(fake)
+
+            assertFailsWith<AuthenticationException> { provider.authenticate() }
+            assertFalse(provider.isAuthenticated)
+        }
+
+    // #1063: a 403 for one object is that object's refusal, not a reason to stop the whole sync.
+    @Test
+    fun `a 403 AccessDenied on one object is an S3 refusal, not an authentication failure`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("locked.txt", "x")
+            val provider = provider(fake)
+            provider.authenticate()
+            fake.failures += Triple({ r: FakeS3.Request -> r.method == HttpMethod.Delete && r.key == "locked.txt" }, 403, "AccessDenied")
+
+            val e = assertFailsWith<S3Exception> { provider.delete("/locked.txt") }
+
+            assertEquals(403, e.status)
+            assertEquals("AccessDenied", e.code)
+            assertTrue(provider.isAuthenticated, "one denied object does not sign the account out")
+        }
+
+    @Test
+    fun `every credential code of a 403 is an authentication failure`() =
+        runTest {
+            for (code in listOf("InvalidAccessKeyId", "SignatureDoesNotMatch", "ExpiredToken", "InvalidToken")) {
+                val fake = FakeS3()
+                fake.put("a.txt", "x")
+                fake.failures += Triple({ r: FakeS3.Request -> r.method == HttpMethod.Delete }, 403, code)
+
+                assertFailsWith<AuthenticationException>(code) { provider(fake).delete("/a.txt") }
+            }
+        }
+
+    @Test
+    fun `keys that cannot even list the bucket fail the sign-in check whichever 403 the store gives`() =
+        runTest {
+            val fake = FakeS3()
+            fake.failures += Triple({ _: FakeS3.Request -> true }, 403, "AccessDenied")
+            val provider = provider(fake)
+
+            assertFailsWith<AuthenticationException> { provider.authenticate() }
+            assertFalse(provider.isAuthenticated)
+        }
+
+    @Test
+    fun `the factory needs bucket and keys, defaults to AWS in the region, and refuses a non-URL endpoint`() {
+        val factory = S3ProviderFactory()
+        val base = mapOf("bucket" to "b", "access_key_id" to "AK", "secret_access_key" to "SK")
+
+        assertFailsWith<ConfigurationException> { factory.create(base - "bucket", dir) }
+        val aws = factory.create(base + ("region" to "eu-central-1"), dir) as S3Provider
+        assertEquals("https://s3.eu-central-1.amazonaws.com", aws.config.endpoint)
+        assertTrue(aws.config.vendor.conditionalWrites)
+        assertEquals(1_000, (factory.create(base + ("endpoint" to "https://s3.fr-par.scw.cloud"), dir) as S3Provider).config.vendor.maxParts)
+        assertFailsWith<ConfigurationException> { factory.create(base + ("endpoint" to "s3.example.com"), dir) }
+    }
+}

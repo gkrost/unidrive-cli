@@ -1,0 +1,142 @@
+package org.krost.unidrive.hydration
+
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+class HydrationErrorTest {
+    @Test
+    fun `generic carries the message verbatim`() {
+        val e = HydrationError.Generic("disk full")
+        assertEquals("disk full", e.message)
+    }
+
+    @Test
+    fun `unknown path carries the stable unknown_path wire token`() {
+        assertEquals("unknown_path", HydrationError.UnknownPath.message)
+        assertEquals("unknown_path", HydrationError.UNKNOWN_PATH_TOKEN)
+    }
+
+    // #778: a download refused while the daemon is paused; the front-end asks the user, then resumes and retries.
+    @Test
+    fun `paused carries the stable paused wire token`() {
+        assertEquals("paused", HydrationError.Paused.message)
+        assertEquals("paused", HydrationError.PAUSED_TOKEN)
+    }
+
+    @Test
+    fun `conflict carries the stable conflict wire token`() {
+        assertEquals("conflict", HydrationError.Conflict.message)
+        assertEquals("conflict", HydrationError.CONFLICT_TOKEN)
+    }
+
+    // #536: the token plus the numbers, one string — a client parses the prefix, the mount crate
+    // falls to its EIO catch-all.
+    @Test
+    fun `remote incomplete carries the stable token with the numbers`() {
+        assertEquals(
+            "remote_incomplete: got 298844160 of 360951317 bytes",
+            HydrationError.RemoteIncomplete(storedBytes = 298_844_160L, declaredBytes = 360_951_317L).message,
+        )
+        assertTrue(HydrationError.RemoteIncomplete(1, 2).message.startsWith(HydrationError.REMOTE_INCOMPLETE_TOKEN))
+    }
+
+    @Test
+    fun `missing remote object carries a stable token and useful status`() {
+        assertEquals(
+            "remote_object_missing: drive item exists, but its stored cloud object is missing",
+            HydrationError.RemoteObjectMissing.message,
+        )
+        assertEquals("remote_object_missing", HydrationError.REMOTE_OBJECT_MISSING_TOKEN)
+    }
+
+    // #941: a refused content and an object this client cannot read each have their own token, then a short reason
+    // without a file name; a client matches the prefix up to ": ".
+    @Test
+    fun `content refused and unsupported object carry their stable tokens with the reason`() {
+        assertEquals("content_refused: SHA-256 mismatch", HydrationError.ContentRefused("SHA-256 mismatch").message)
+        assertEquals("content_refused", HydrationError.CONTENT_REFUSED_TOKEN)
+        assertEquals(
+            "unsupported_object: it is stored in several parts, which this client cannot read",
+            HydrationError.UnsupportedObject("it is stored in several parts, which this client cannot read").message,
+        )
+        assertEquals("unsupported_object", HydrationError.UNSUPPORTED_OBJECT_TOKEN)
+        // A blank reason still leaves a readable wire form.
+        assertEquals("content_refused: integrity check failed", HydrationError.ContentRefused(" ").message)
+        assertEquals("unsupported_object: this client cannot read it", HydrationError.UnsupportedObject("").message)
+    }
+
+    // The tokens of the failed-download causes are all different (a client keys its column text on them).
+    @Test
+    fun `the download failure causes have distinct tokens`() {
+        val tokens =
+            listOf(
+                HydrationError.NotFound.message,
+                HydrationError.RemoteIncomplete(1, 2).message.substringBefore(":"),
+                HydrationError.RemoteObjectMissing.message.substringBefore(":"),
+                HydrationError.ContentRefused("x").message.substringBefore(":"),
+                HydrationError.UnsupportedObject("x").message.substringBefore(":"),
+            )
+        assertEquals(tokens.size, tokens.toSet().size, "tokens: $tokens")
+    }
+
+    @Test
+    fun `sealed interface allows future variants without breaking exhaustiveness`() {
+        val e: HydrationError = HydrationError.Generic("x")
+        val rendered = when (e) {
+            is HydrationError.Generic -> "generic:${e.message}"
+            HydrationError.NotFound -> "not_found"
+            HydrationError.UnknownPath -> "unknown_path"
+            HydrationError.Conflict -> "conflict"
+            HydrationError.OutOfScope -> "outside_scope"
+            HydrationError.Excluded -> "excluded"
+            HydrationError.Cancelled -> "cancelled"
+            is HydrationError.RemoteIncomplete -> "remote_incomplete"
+            HydrationError.RemoteObjectMissing -> "remote_object_missing"
+            is HydrationError.ContentRefused -> "content_refused"
+            is HydrationError.UnsupportedObject -> "unsupported_object"
+            HydrationError.InvalidPath -> "invalid_path"
+            is HydrationError.NameRefused -> "name_refused"
+            is HydrationError.BlockedByParent -> "blocked_by_parent"
+            is HydrationError.ParentGone -> "parent_gone"
+            HydrationError.Paused -> "paused"
+            HydrationError.ReadOnly -> "read_only"
+            HydrationError.PermanentUnsupported -> "permanent_unsupported"
+        }
+        assertTrue(rendered.startsWith("generic:"))
+    }
+
+    // The trash namespace is read-only: every verb that would write answers this, and list says it beforehand.
+    @Test
+    fun `read only carries the stable read_only wire token`() {
+        assertEquals("read_only", HydrationError.ReadOnly.message)
+        assertEquals("read_only", HydrationError.READ_ONLY_TOKEN)
+    }
+
+    @Test
+    fun `invalid path carries the stable invalid_path wire token`() {
+        assertEquals("invalid_path", HydrationError.InvalidPath.message)
+        assertEquals("invalid_path", HydrationError.INVALID_PATH_TOKEN)
+    }
+
+    // The drive refuses an entry by its name: the stable token, then the sibling when it is known. A client matches the
+    // prefix up to ": ".
+    @Test
+    fun `name refused carries the stable similar_name token and the sibling when known`() {
+        assertEquals("similar_name", HydrationError.NameRefused("similar_name", null).message)
+        assertEquals("similar_name: sibling.txt", HydrationError.NameRefused("similar_name", "sibling.txt").message)
+        assertEquals("blocked_by_parent: /a/b", HydrationError.BlockedByParent("/a/b").message)
+        assertEquals("blocked_by_parent", HydrationError.BLOCKED_BY_PARENT_TOKEN)
+    }
+
+    // #580: the upload's folder is gone in the cloud: the stable token, then the folder's path. A client matches the
+    // prefix up to ": "; the stored refusal reason parses back to the same error.
+    @Test
+    fun `parent gone carries the stable parent_gone token and the folder`() {
+        assertEquals("parent_gone: /a/b", HydrationError.ParentGone("/a/b").message)
+        assertEquals("parent_gone", HydrationError.PARENT_GONE_TOKEN)
+        assertEquals(HydrationError.ParentGone("/a b/c: d"), HydrationError.ParentGone.parse("parent_gone: /a b/c: d"))
+        assertEquals(null, HydrationError.ParentGone.parse("parent folder of /a/x is gone"))
+        assertEquals(null, HydrationError.ParentGone.parse("parent_gone"))
+    }
+}

@@ -1,0 +1,849 @@
+package org.krost.unidrive.sync
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import java.net.StandardProtocolFamily
+import java.net.UnixDomainSocketAddress
+import java.nio.ByteBuffer
+import java.nio.channels.SocketChannel
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.test.*
+
+class IpcServerTest {
+    private lateinit var socketDir: Path
+    private lateinit var socketPath: Path
+    private var server: IpcServer? = null
+
+    @BeforeTest
+    fun setUp() {
+        socketDir = Files.createTempDirectory("unidrive-ipc-test")
+        socketPath = socketDir.resolve("test.sock")
+    }
+
+    @AfterTest
+    fun tearDown() {
+        server?.close()
+        Files.deleteIfExists(socketPath)
+        Files.deleteIfExists(metaPath)
+        Files.deleteIfExists(socketDir)
+    }
+
+    // The `.meta` sibling defaultSocketPath() writes next to a hashed socket name.
+    private val metaPath: Path
+        get() = socketDir.resolve("test.sock.meta")
+
+    private fun connectClient(): SocketChannel {
+        val client = SocketChannel.open(StandardProtocolFamily.UNIX)
+        client.connect(UnixDomainSocketAddress.of(socketPath))
+        client.configureBlocking(false)
+        return client
+    }
+
+    private suspend fun readFromClient(
+        client: SocketChannel,
+        timeoutMs: Long = 2000,
+        minLines: Int = 1,
+    ): String {
+        val buf = ByteBuffer.allocate(8192)
+        val sb = StringBuilder()
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            buf.clear()
+            val n = client.read(buf)
+            if (n > 0) {
+                buf.flip()
+                val bytes = ByteArray(buf.remaining())
+                buf.get(bytes)
+                sb.append(String(bytes, Charsets.UTF_8))
+                val lineCount = sb.count { it == '\n' }
+                if (lineCount >= minLines) break
+            }
+            delay(50)
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Issue `sync.subscribe` on `client` and drain the {"ok":true} reply
+     * line plus any subsequent state-dump lines. Production code registers
+     * this verb in SyncCommand; tests must register it themselves on the
+     * IpcServer they constructed. Idempotent across tests within a run.
+     *
+     * Returns after the post-reply state-dump has completed and the
+     * connection is registered in IpcServer.syncSubscribers.
+     */
+    private suspend fun subscribeSync(client: SocketChannel) {
+        runCatching {
+            server!!.registerHandler("sync.subscribe") { connId, _ ->
+                server!!.scheduleAfterReply(connId) {
+                    server!!.flushStateDumpTo(connId)
+                    server!!.registerSyncSubscriber(connId)
+                }
+                """{"ok":true}"""
+            }
+            server!!.registerConnectionCloseListener { connId ->
+                server!!.unregisterSyncSubscriber(connId)
+            }
+        }
+        val subscribedBefore = server!!.syncSubscribersSnapshot.size
+        val req = """{"verb":"sync.subscribe"}""" + "\n"
+        val w = ByteBuffer.wrap(req.toByteArray(Charsets.UTF_8))
+        while (w.hasRemaining()) client.write(w)
+        // The {"ok":true} reply, waited for until it is there however slow the runner is.
+        readFromClient(client, timeoutMs = 30_000, minLines = 1)
+        // The post-reply hook flushes the state dump, then registers the subscriber: a broadcast before that is not
+        // queued for the connection. Wait for the registration itself, not for a fixed pause.
+        val deadline = System.currentTimeMillis() + 30_000
+        while (server!!.syncSubscribersSnapshot.size <= subscribedBefore && System.currentTimeMillis() < deadline) delay(5)
+        check(server!!.syncSubscribersSnapshot.size > subscribedBefore) { "the connection never became a sync subscriber" }
+    }
+
+    // UD-816: real Unix-domain-socket I/O races runTest's virtual-time delays.
+    // CLAUDE.md: "runTest with real NIO operations will hang; use virtual time
+    // or mocks." Here it doesn't hang — it races and the assertion fails
+    // because the broadcast hadn't reached the client by the read deadline.
+    // Switch to runBlocking(Dispatchers.IO) + an explicit serverScope so all
+    // delay()s are real wall-clock and the server's accept loop is terminated
+    // by serverScope.cancel() at test end (otherwise runBlocking would wait on
+    // the still-running accept loop forever).
+    @Test
+    fun `broadcast sends message to connected client`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.start(serverScope)
+                delay(100)
+
+                val client = connectClient()
+                delay(100)
+                subscribeSync(client)
+
+                server!!.emit("""{"event":"test","data":"hello"}""")
+                val received = readFromClient(client)
+
+                assertTrue(received.contains(""""event":"test""""), "Expected event in: $received")
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    @Test
+    fun `dead client is removed without crash`() =
+        runTest {
+            server = IpcServer(socketPath)
+            server!!.start(backgroundScope)
+            delay(100)
+
+            val client = connectClient()
+            delay(100)
+            client.close()
+            delay(100)
+
+            // Emitting after client died should not throw
+            server!!.emit("""{"event":"after_death"}""")
+            delay(200)
+            // No exception = pass
+        }
+
+    // A request whose verb has no registered handler must be ANSWERED, not
+    // dropped: a dropped request is indistinguishable from a lost frame and the
+    // client hangs waiting for a reply line that never comes (the daemon-startup
+    // hang). runBlocking(IO) per the same runTest+real-UDS race as above.
+    @Test
+    fun `request for an unregistered verb is answered with unknown_verb`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.start(serverScope)
+                delay(100)
+
+                val client = connectClient()
+                delay(100)
+                val req = """{"verb":"no.such.verb"}""" + "\n"
+                val w = ByteBuffer.wrap(req.toByteArray(Charsets.UTF_8))
+                while (w.hasRemaining()) client.write(w)
+                val received = readFromClient(client)
+
+                val reply = Json.parseToJsonElement(received.trim()) as JsonObject
+                assertEquals("unknown_verb", reply["error"]?.jsonPrimitive?.content)
+                assertEquals("false", reply["ok"]?.jsonPrimitive?.content)
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    @Test
+    fun `request without a verb field is answered with missing_verb`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.start(serverScope)
+                delay(100)
+
+                val client = connectClient()
+                delay(100)
+                val req = """{"payload":"no verb here"}""" + "\n"
+                val w = ByteBuffer.wrap(req.toByteArray(Charsets.UTF_8))
+                while (w.hasRemaining()) client.write(w)
+                val received = readFromClient(client)
+
+                val reply = Json.parseToJsonElement(received.trim()) as JsonObject
+                assertEquals("missing_verb", reply["error"]?.jsonPrimitive?.content)
+                assertEquals("false", reply["ok"]?.jsonPrimitive?.content)
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    @Test
+    fun `max clients enforced`() =
+        runTest {
+            // A small injected cap; the default (32) is pinned in IpcServerConnectionLimitsTest.
+            server = IpcServer(socketPath, maxClients = 3)
+            server!!.start(backgroundScope)
+            delay(100)
+
+            val clients = mutableListOf<SocketChannel>()
+            for (i in 1..3) {
+                clients.add(connectClient())
+                delay(50)
+            }
+
+            // 4th client should be rejected
+            val rejected = connectClient()
+            delay(200)
+
+            // Attempt to read — the rejected client gets nothing but the refusal line before it is
+            // closed (the line itself: IpcServerConnectionLimitsTest)
+            val buf = ByteBuffer.allocate(64)
+            val n = rejected.read(buf)
+            val got = if (n > 0) String(buf.array(), 0, n, Charsets.UTF_8) else ""
+            val refusal = """{"ok":false,"error":"too_many_clients"}""" + "\n"
+            assertTrue(refusal.startsWith(got), "4th client should be rejected, got: $got")
+
+            rejected.close()
+            for (c in clients) c.close()
+        }
+
+    // UD-816: same runTest+real-UDS race as the broadcast test. Switch to
+    // runBlocking(Dispatchers.IO) so all delays are real wall-clock and the
+    // emit/read sequence has time to flush.
+    @Test
+    fun `stale socket file is reclaimed`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                // Create a stale UDS — bind then close without cleaning up the file
+                val staleServer =
+                    java.nio.channels.ServerSocketChannel
+                        .open(StandardProtocolFamily.UNIX)
+                staleServer.bind(UnixDomainSocketAddress.of(socketPath))
+                staleServer.close() // leaves the socket file behind
+
+                assertTrue(Files.exists(socketPath), "Stale socket should exist")
+
+                server = IpcServer(socketPath)
+                server!!.start(serverScope)
+                delay(100)
+
+                // Should work — stale socket was reclaimed
+                val client = connectClient()
+                delay(100)
+                subscribeSync(client)
+                server!!.emit("""{"event":"reclaimed"}""")
+                val received = readFromClient(client)
+                assertTrue(received.contains("reclaimed"), "Expected data after reclaim: $received")
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    @Test
+    fun `subscriber receives state dump after sync subscribe`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.start(serverScope)
+                server!!.updateState(
+                    IpcServer.SyncState(
+                        profile = "test_profile",
+                        phase = "reconcile",
+                        scanCount = 42,
+                        actionTotal = 10,
+                        actionIndex = 3,
+                        lastAction = "Upload",
+                        lastPath = "/foo.txt",
+                    ),
+                )
+                val client = connectClient()
+                delay(100)
+
+                // BEFORE sync.subscribe: no state-dump bytes should arrive.
+                val preSubscribe = readFromClient(client, timeoutMs = 300, minLines = 1)
+                assertEquals("", preSubscribe, "Expected zero pre-subscribe bytes; got: $preSubscribe")
+
+                // Register the handler + issue sync.subscribe.
+                server!!.registerHandler("sync.subscribe") { connId, _ ->
+                    server!!.scheduleAfterReply(connId) {
+                        server!!.flushStateDumpTo(connId)
+                        server!!.registerSyncSubscriber(connId)
+                    }
+                    """{"ok":true}"""
+                }
+                val req = """{"verb":"sync.subscribe"}""" + "\n"
+                val w = ByteBuffer.wrap(req.toByteArray(Charsets.UTF_8))
+                while (w.hasRemaining()) client.write(w)
+                val received = readFromClient(client, timeoutMs = 2000, minLines = 5)
+
+                val lines = received.split("\n").filter { it.isNotEmpty() }
+                assertTrue(lines.size >= 5, "Expected ≥5 lines, got ${lines.size}: $received")
+
+                assertTrue(lines[0].contains("\"ok\":true"), "Line 1 must be the subscribe reply: ${lines[0]}")
+                assertTrue(lines[1].contains("sync_started"), "Line 2 must be sync_started: ${lines[1]}")
+                assertTrue(lines[2].contains("scan_progress"), "Line 3 must be scan_progress: ${lines[2]}")
+                assertTrue(lines[3].contains("action_count"), "Line 4 must be action_count: ${lines[3]}")
+                assertTrue(lines[4].contains("action_progress"), "Line 5 must be action_progress: ${lines[4]}")
+
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    // NEW-2 invariant: when the broadcast channel (capacity 256) is full because a
+    // consumer is too slow, emit() drops the event — but the drop must be
+    // OBSERVABLE, not silent. Pre-fix, trySend's failure is swallowed by
+    // runCatching and an operator watching progress sees gaps with no signal.
+    // Post-fix, each full-channel drop increments droppedBroadcastEvents (and logs
+    // a WARN). Here we never call start(), so nothing ever drains the channel:
+    // the first 256 emits enqueue, every further emit fails (channel full) and
+    // must be counted. We use the counter rather than log capture because slf4j
+    // log-line interception is impractical in this harness; the counter is the
+    // directly-assertable observability surface.
+    @Test
+    fun `ipcserver_emit_warns_when_broadcast_channel_full`() {
+        val srv = IpcServer(tempSocket())
+        try {
+            val total = 300 // > 256 capacity → at least 44 drops
+            repeat(total) { srv.emit("""{"event":"tick","n":$it}""") }
+            assertTrue(
+                srv.droppedBroadcastEventsForTest > 0,
+                "channel-full drops must be observable; counter was ${srv.droppedBroadcastEventsForTest}",
+            )
+            assertEquals(
+                (total - 256).toLong(),
+                srv.droppedBroadcastEventsForTest,
+                "every emit past the 256-slot channel capacity (with no consumer) must be counted as dropped",
+            )
+        } finally {
+            srv.close()
+        }
+    }
+
+    @Test
+    fun `socket path uses hash for long profile names`() {
+        val longName = "a".repeat(100)
+        val baseName = IpcServer.socketBaseName(longName)
+        assertTrue(baseName.length < 30, "Hashed name should be short, got: $baseName (len=${baseName.length})")
+        assertTrue(baseName.startsWith("unidrive-"), "Should start with unidrive-: $baseName")
+        assertTrue(baseName.endsWith(".sock"), "Should end with .sock: $baseName")
+    }
+
+    @Test
+    fun `the canonical disk name matches the socket name for long profile names (#135)`() {
+        val longName = "a".repeat(100)
+        assertEquals(
+            IpcServer.socketBaseName(longName).removePrefix("unidrive-").removeSuffix(".sock"),
+            IpcServer.canonicalDiskName(longName),
+            "the socket name derives from the canonical",
+        )
+        assertEquals("short", IpcServer.canonicalDiskName("short"), "a short name stays verbatim")
+        assertTrue(IpcServer.canonicalDiskName(longName).length == 8, "the long name hashes to the 8-hex truncation")
+        assertEquals(
+            IpcServer.canonicalDiskName(longName),
+            IpcServer.canonicalDiskName(longName),
+            "stable across calls",
+        )
+    }
+
+    @Test
+    fun `canonical name accounts for the socket directory when the basename alone fits`() {
+        val longSocketDirectory = Path.of("/run/user/1000")
+        val profileName = "a".repeat(70)
+        assertTrue("unidrive-$profileName.sock".length <= 90)
+        assertEquals(8, IpcServer.canonicalDiskName(profileName, longSocketDirectory).length)
+    }
+
+    // ── Bug regression tests — these MUST fail until the bugs are fixed ──
+
+    // UD-816: same runTest+real-UDS race. Switch to runBlocking(IO).
+    @Test
+    fun `state dump events include profile and timestamp fields`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                // Bug: flushStateDump() uses hand-built JSON strings missing profile/timestamp.
+                // Live events from IpcProgressReporter include them. Schema must be consistent.
+                server = IpcServer(socketPath)
+                server!!.start(serverScope)
+                delay(100)
+
+                server!!.updateState(
+                    IpcServer.SyncState(
+                        profile = "onedrive",
+                        phase = "local",
+                        scanCount = 435,
+                        actionTotal = 100,
+                        actionIndex = 5,
+                        lastAction = "upload",
+                        lastPath = "/test.txt",
+                    ),
+                )
+
+                val client = connectClient()
+                delay(300)
+                subscribeSync(client)
+
+                val received = readFromClient(client, timeoutMs = 3000, minLines = 4)
+                val lines = received.trim().split("\n").filter { it.isNotBlank() }
+                val parser = Json { ignoreUnknownKeys = true }
+
+                for (line in lines) {
+                    val obj = parser.decodeFromString(JsonObject.serializer(), line)
+                    assertNotNull(obj["profile"], "Every state dump event must have 'profile' field. Missing in: $line")
+                    assertNotNull(obj["timestamp"], "Every state dump event must have 'timestamp' field. Missing in: $line")
+                    assertEquals("onedrive", obj["profile"]?.jsonPrimitive?.content, "Profile must be 'onedrive' in: $line")
+                }
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    @Test
+    fun `temp socket directory is cleaned up on close`() =
+        runTest {
+            // Bug: Files.createTempDirectory fallback creates a dir that close() never deletes.
+            // Only the socket file inside is deleted, leaking the directory.
+            val tmpBase = Files.createTempDirectory("unidrive-ipc-cleanup-test")
+            val tmpSocket =
+                tmpBase
+                    .resolve("inner")
+                    .also { Files.createDirectories(it) }
+                    .resolve("test.sock")
+
+            // Simulate the temp dir fallback scenario
+            val srv = IpcServer(tmpSocket)
+            srv.start(backgroundScope)
+            delay(100)
+            assertTrue(Files.exists(tmpSocket), "Socket should exist")
+            assertTrue(Files.exists(tmpSocket.parent), "Socket parent dir should exist")
+
+            srv.close()
+            delay(100)
+            assertFalse(Files.exists(tmpSocket), "Socket should be deleted")
+            // The parent directory should also be cleaned up if it was created by IpcServer
+            // This test documents the leak — it will fail until close() also deletes the parent
+            // when the parent is a temp directory created by defaultSocketPath()
+        }
+
+    @Test
+    fun `close deletes socket file`() =
+        runTest {
+            server = IpcServer(socketPath)
+            server!!.start(backgroundScope)
+            delay(100)
+            assertTrue(Files.exists(socketPath), "Socket file should exist after start")
+
+            server!!.close()
+            server = null
+            assertFalse(Files.exists(socketPath), "Socket file should be deleted after close")
+        }
+
+    // ── #419: `daemon stop` left the socket file (and its .meta sibling) behind ──
+
+    @Test
+    fun `#419 close deletes the meta sibling as well as the socket file`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                // defaultSocketPath() writes this next to a hashed socket name.
+                Files.writeString(metaPath, "some-long-profile-name\n")
+                server = IpcServer(socketPath)
+                server!!.start(serverScope)
+                delay(100)
+                assertTrue(Files.exists(socketPath), "Socket file should exist after start")
+
+                server!!.close()
+                server = null
+
+                assertFalse(Files.exists(socketPath), "Socket file should be deleted after close")
+                assertFalse(Files.exists(metaPath), "Meta file should be deleted after close")
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    @Test
+    fun `#419 closing a server whose start was refused does not delete the live daemon socket`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.start(serverScope)
+                delay(100)
+
+                // A second daemon for the same socket is refused ("Another daemon is already
+                // listening"). DaemonRuntime still calls close() on it during cleanup; that
+                // must not unlink the socket the first daemon is serving on.
+                val second = IpcServer(socketPath)
+                assertFailsWith<IllegalStateException> { second.start(serverScope) }
+                second.close()
+
+                assertTrue(Files.exists(socketPath), "the live daemon's socket must survive the refused server's close")
+                connectClient().close() // still answers
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    @Test
+    fun `#419 removeStaleSocketFiles clears the leftovers of a daemon that was hard-killed`() {
+        // A hard kill (daemon stop on Windows is TerminateProcess) runs no shutdown code, so the
+        // socket file and its meta sibling stay behind with nobody listening.
+        val dead = java.nio.channels.ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+        dead.bind(UnixDomainSocketAddress.of(socketPath))
+        dead.close() // leaves the socket file behind
+        Files.writeString(metaPath, "some-long-profile-name\n")
+        assertTrue(Files.exists(socketPath), "precondition: leftover socket file")
+
+        IpcServer.removeStaleSocketFiles(socketPath)
+
+        assertFalse(Files.exists(socketPath), "leftover socket file must be removed")
+        assertFalse(Files.exists(metaPath), "leftover meta file must be removed")
+    }
+
+    @Test
+    fun `#419 removeStaleSocketFiles leaves a live daemon socket alone`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.start(serverScope)
+                delay(100)
+                Files.writeString(metaPath, "some-long-profile-name\n")
+
+                IpcServer.removeStaleSocketFiles(socketPath)
+
+                assertTrue(Files.exists(socketPath), "a socket someone is listening on is not stale")
+                assertTrue(Files.exists(metaPath), "its meta file stays too")
+                connectClient().close() // still answers
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    // ── UD-406: runBlocking returns after IpcServer.close() ──────────────────
+    // SyncCommand's non-watch sync path was hanging after `Sync complete:`
+    // because `ipcServer.start(this)` launched an accept-loop coroutine into
+    // the runBlocking scope, and runBlocking blocks until ALL children
+    // complete. The fix is to call `ipcServer.close()` at the end of the
+    // non-watch branch so the accept-loop coroutine is cancelled.
+    //
+    // This test exercises the synthetic equivalent: spawn IpcServer.start
+    // inside a runBlocking, do the sync work (here a noop suspend), then
+    // close() — assert that the runBlocking block returns within a
+    // reasonable bound. Without the close, the test hangs and the JUnit
+    // timeout fires.
+
+    @Test(timeout = 5_000)
+    fun `UD-406 runBlocking returns after explicit ipcServer close`() {
+        val syncSocket = socketDir.resolve("ud406.sock")
+        val testServer = IpcServer(syncSocket)
+        try {
+            // Synthetic equivalent of SyncCommand.run():
+            //   runBlocking {
+            //     ipcServer.start(this)
+            //     <do sync work>
+            //     ipcServer.close()   ← UD-406 fix
+            //   }
+            // Without the close(), runBlocking would block forever waiting on
+            // the accept-loop child coroutine.
+            runBlocking {
+                testServer.start(this)
+                // Stand-in for engine.syncOnce — completes quickly.
+                kotlinx.coroutines.delay(50)
+                testServer.close()
+            }
+            // If we reach here, runBlocking returned cleanly. Without
+            // ipcServer.close() inside the lambda, the @Test timeout would
+            // have fired before this line.
+            assertFalse(
+                Files.exists(syncSocket),
+                "Socket file should be cleaned up after close() inside runBlocking",
+            )
+        } finally {
+            testServer.close()
+            Files.deleteIfExists(syncSocket)
+        }
+    }
+
+    // ── Helpers for request/reply tests ──────────────────────────────────────
+
+    private fun tempSocket(): Path = socketDir.resolve("handler-${System.nanoTime()}.sock")
+
+    private suspend fun waitForSocket(path: Path, timeoutMs: Long = 3000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (Files.exists(path)) {
+                try {
+                    SocketChannel.open(StandardProtocolFamily.UNIX).use { ch ->
+                        ch.connect(UnixDomainSocketAddress.of(path))
+                    }
+                    return
+                } catch (_: Exception) {}
+            }
+            delay(20)
+        }
+        error("Socket $path did not become available within ${timeoutMs}ms")
+    }
+
+    /** Opens a UDS connection, writes [request] + newline, reads one reply line. */
+    private suspend fun clientRoundTrip(path: Path, request: String): String {
+        val ch = SocketChannel.open(StandardProtocolFamily.UNIX)
+        ch.connect(UnixDomainSocketAddress.of(path))
+        ch.configureBlocking(false)
+        // Write request
+        val out = (request + "\n").toByteArray(Charsets.UTF_8)
+        val wbuf = ByteBuffer.wrap(out)
+        val writeDeadline = System.nanoTime() + 5_000_000_000L
+        while (wbuf.hasRemaining()) {
+            ch.write(wbuf)
+            if (wbuf.hasRemaining()) {
+                if (System.nanoTime() > writeDeadline) error("clientRoundTrip: write timeout")
+                delay(10)
+            }
+        }
+        // Read one reply line
+        val sb = StringBuilder()
+        val rbuf = ByteBuffer.allocate(8192)
+        val readDeadline = System.currentTimeMillis() + 3000
+        while (System.currentTimeMillis() < readDeadline) {
+            rbuf.clear()
+            val n = ch.read(rbuf)
+            if (n > 0) {
+                rbuf.flip()
+                val bytes = ByteArray(rbuf.remaining())
+                rbuf.get(bytes)
+                sb.append(String(bytes, Charsets.UTF_8))
+                if (sb.contains('\n')) break
+            }
+            delay(20)
+        }
+        ch.close()
+        return sb.toString()
+    }
+
+    @Test
+    fun `registered handler receives a client request and replies on the same connection`() = runBlocking(Dispatchers.IO) {
+        val sockPath = tempSocket()
+        val srv = IpcServer(sockPath)
+        srv.registerHandler("ping") { _, json -> """{"reply":"pong","echo":$json}""" }
+
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        srv.start(scope)
+        waitForSocket(sockPath)
+
+        val reply = clientRoundTrip(sockPath, """{"verb":"ping","arg":42}""")
+
+        assertEquals("""{"reply":"pong","echo":{"verb":"ping","arg":42}}""", reply.trim())
+
+        scope.cancel()
+        srv.close()
+    }
+
+    @Test
+    fun `registerHandler throws on duplicate registration`() {
+        val srv = IpcServer(tempSocket())
+        srv.registerHandler("ping") { _, _ -> """{"ok":true}""" }
+        assertFailsWith<IllegalArgumentException> {
+            srv.registerHandler("ping") { _, _ -> """{"ok":false}""" }
+        }
+    }
+
+    @Test
+    fun `handler exception produces error JSON reply`() = runBlocking(Dispatchers.IO) {
+        val sockPath = tempSocket()
+        val srv = IpcServer(sockPath)
+        srv.registerHandler("boom") { _, _ -> throw RuntimeException("kaboom") }
+
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        srv.start(scope)
+        waitForSocket(sockPath)
+
+        val reply = clientRoundTrip(sockPath, """{"verb":"boom"}""")
+
+        assertTrue(reply.contains("\"error\":\"handler_threw\""), "Expected handler_threw in: $reply")
+        assertTrue(reply.contains("\"verb\":\"boom\""), "Expected verb in: $reply")
+        assertTrue(reply.contains("kaboom"), "Expected exception message in: $reply")
+
+        scope.cancel()
+        srv.close()
+    }
+
+    // A reply-write failure (broken pipe, closed socket, write timeout) must close the client
+    // connection instead of being swallowed: a swallowed failure leaves the connection open and
+    // the client waits on a reply line that never comes, out its own timeout. Driven
+    // deterministically, not by racing a peer close: the handler returns a reply far larger than
+    // any socket buffer, the client never reads, and the server's write timeout is far shorter
+    // than writing it would take — writeNonBlocking throws, and the failure must end the
+    // connection (the client reads its partial reply, then EOF).
+    @Test
+    fun `a reply-write failure closes the client connection`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath, writeTimeoutMs = 100)
+                val bigReply = "x".repeat(16 * 1024 * 1024)
+                server!!.registerHandler("big") { _, _ -> """{"reply":"$bigReply"}""" }
+                server!!.start(serverScope)
+                waitForSocket(socketPath)
+
+                val client = connectClient()
+                val req = """{"verb":"big"}""" + "\n"
+                val w = ByteBuffer.wrap(req.toByteArray(Charsets.UTF_8))
+                while (w.hasRemaining()) client.write(w)
+
+                val closed = withTimeoutOrNull(10_000) {
+                    val buf = ByteBuffer.allocate(8192)
+                    var sawEof = false
+                    while (!sawEof) {
+                        buf.clear()
+                        when (client.read(buf)) {
+                            -1 -> sawEof = true
+                            0 -> delay(10)
+                            else -> {} // partial reply bytes; keep reading to EOF
+                        }
+                    }
+                    true
+                }
+                assertEquals(true, closed, "the connection must be closed after a reply-write failure, not left waiting")
+                val deadline = System.currentTimeMillis() + 5_000
+                while (server!!.clientCount > 0 && System.currentTimeMillis() < deadline) delay(10)
+                assertEquals(0, server!!.clientCount, "the dead client must be removed from the server's tracking")
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    @Test
+    fun `concurrent broadcast and RPC reply produce valid NDJSON lines`() = runBlocking(Dispatchers.IO) {
+        val sockPath = tempSocket()
+        val srv = IpcServer(sockPath)
+        srv.registerHandler("echo") { _, json -> """{"reply":"ok","echo":$json}""" }
+        // Register sync.subscribe handler before starting the listener
+        srv.registerHandler("sync.subscribe") { connId, _ ->
+            srv.scheduleAfterReply(connId) {
+                srv.flushStateDumpTo(connId)
+                srv.registerSyncSubscriber(connId)
+            }
+            """{"ok":true}"""
+        }
+        srv.registerConnectionCloseListener { connId ->
+            srv.unregisterSyncSubscriber(connId)
+        }
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        srv.start(scope)
+        waitForSocket(sockPath)
+
+        // One persistent listener client collects broadcast lines.
+        val received = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val listener = scope.launch {
+            java.nio.channels.SocketChannel.open(java.net.StandardProtocolFamily.UNIX).use { sc ->
+                sc.connect(java.net.UnixDomainSocketAddress.of(sockPath))
+                sc.configureBlocking(false)
+                // Send sync.subscribe immediately after connect
+                val subReq = """{"verb":"sync.subscribe"}""" + "\n"
+                val subBuf = java.nio.ByteBuffer.wrap(subReq.toByteArray(Charsets.UTF_8))
+                while (subBuf.hasRemaining()) sc.write(subBuf)
+                val buf = java.nio.ByteBuffer.allocate(4096)
+                val sb = StringBuilder()
+                while (isActive) {
+                    buf.clear()
+                    val n = sc.read(buf)
+                    if (n < 0) break
+                    if (n == 0) { delay(10); continue }
+                    buf.flip()
+                    sb.append(java.nio.charset.StandardCharsets.UTF_8.decode(buf).toString())
+                    var idx = sb.indexOf('\n')
+                    while (idx >= 0) {
+                        received.add(sb.substring(0, idx))
+                        sb.delete(0, idx + 1)
+                        idx = sb.indexOf('\n')
+                    }
+                }
+            }
+        }
+
+        // Hammer only once the listener is subscribed: a connection is accepted before its sync.subscribe is handled, and
+        // a broadcast before that is not queued for it. Polling the condition, not a fixed pause, so a loaded runner is waited for.
+        val deadline = System.currentTimeMillis() + 30_000
+        while (srv.syncSubscribersSnapshot.isEmpty() && System.currentTimeMillis() < deadline) delay(20)
+        assertTrue(srv.syncSubscribersSnapshot.isNotEmpty(), "the listener never became a sync subscriber")
+
+        // Fire 50 broadcasts + 50 RPC round-trips (batched 8 at a time so the connection cap
+        // is not exceeded: 1 persistent listener + up to 8 in-flight RPC clients = 9 max).
+        // RPC calls are wrapped in runCatching because a concurrent broadcast may close a
+        // client connection mid-write under load; the assertion below catches NDJSON interleaving
+        // on the persistent listener which is the invariant under test.
+        repeat(7) { batch ->
+            coroutineScope {
+                repeat(8) { i ->
+                    val n = batch * 8 + i
+                    launch { srv.emit("""{"event":"tick","n":$n}""") }
+                    launch { runCatching { clientRoundTrip(sockPath, """{"verb":"echo","n":$n}""") } }
+                }
+            }
+        }
+        // Remaining 2 (indices 56..57 — just ensure we issued at least 50 total)
+        coroutineScope {
+            repeat(2) { i ->
+                launch { srv.emit("""{"event":"tick","n":${56 + i}}""") }
+                launch { runCatching { clientRoundTrip(sockPath, """{"verb":"echo","n":${56 + i}}""") } }
+            }
+        }
+
+        delay(500) // drain
+        listener.cancel()
+        scope.cancel()
+        srv.close()
+
+        // Every received line must be valid JSON: starts with { and ends with }.
+        assertTrue(received.size >= 50, "Should have received at least the broadcasts, got ${received.size}")
+        for (line in received) {
+            assertTrue(line.startsWith("{") && line.endsWith("}"), "Garbled NDJSON: '$line'")
+        }
+    }
+}

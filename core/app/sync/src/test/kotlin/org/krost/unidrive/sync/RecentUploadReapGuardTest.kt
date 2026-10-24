@@ -1,0 +1,215 @@
+package org.krost.unidrive.sync
+
+import kotlinx.coroutines.test.runTest
+import org.krost.unidrive.sync.model.ConflictPolicy
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
+import kotlin.test.Test
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+/**
+ * The full-sync absence-implies-deletion sweep (detectMissingAfterFullSync)
+ * diffs the DB against the live remote inventory and marks any DB row whose remoteId
+ * is absent as deleted. Cloud delta is eventually consistent: a path the engine itself
+ * JUST uploaded is not guaranteed to appear in the very next full enumeration. Without
+ * a guard the sweep concludes "not in delta → deleted", queues a deletion, the next
+ * cycle re-detects + re-uploads — a steady-state churn.
+ *
+ * The guard keys off recently-uploaded paths (stamped at upload time), so it protects
+ * only what the engine pushed; a freshly-downloaded path whose remote is genuinely
+ * deleted is still reaped. These two named tests pin both orthogonal invariants:
+ *   - a just-uploaded path absent from a lagging delta is NOT reaped (no churn);
+ *   - a just-downloaded path whose remote is genuinely gone IS reaped (no data lag).
+ */
+class RecentUploadReapGuardTest {
+    private lateinit var syncRoot: Path
+    private lateinit var db: StateDatabase
+    private lateinit var provider: FakeCloudProvider
+
+    @BeforeTest
+    fun setUp() {
+        syncRoot = Files.createTempDirectory("ud-reap-root")
+        val dbPath = Files.createTempDirectory("ud-reap-db").resolve("state.db")
+        db = StateDatabase(dbPath)
+        db.initialize()
+        provider = FakeCloudProvider()
+    }
+
+    @AfterTest
+    fun tearDown() {
+        db.close()
+    }
+
+    private fun engine() =
+        SyncEngine(
+            provider = provider,
+            db = db,
+            syncRoot = syncRoot,
+            conflictPolicy = ConflictPolicy.KEEP_BOTH,
+            reporter = ProgressReporter.Silent,
+        )
+
+    @Test
+    fun `recently_uploaded_path_absent_from_an_incomplete_delta_is_not_reaped`() =
+        runTest {
+            val eng = engine()
+
+            // Baseline sync (nothing remote).
+            provider.deltaItems = emptyList()
+            eng.syncOnce()
+
+            // User drops a new local file; the engine uploads it (applyUpload runs,
+            // stamping the recent-upload watermark).
+            Files.writeString(syncRoot.resolve("geheim.txt"), "secret")
+            eng.syncOnce()
+            assertTrue(provider.uploadedPaths.contains("/geheim.txt"), "engine must upload the new local file")
+            assertNotNull(db.getEntry("/geheim.txt"))
+
+            // Next full-sync pass: cursor reset forces a full enumeration, but the
+            // eventually-consistent delta does NOT yet list the just-uploaded item.
+            db.setSyncState("delta_cursor", "")
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-2"
+
+            eng.syncOnce()
+
+            // The path must survive — no spurious deletion, no re-upload churn.
+            assertNotNull(db.getEntry("/geheim.txt"), "a just-uploaded path must NOT be reaped by a lagging delta")
+            assertTrue(Files.exists(syncRoot.resolve("geheim.txt")), "the local file must NOT be deleted")
+        }
+
+    @Test
+    fun `genuinely_deleted_downloaded_path_is_still_reaped`() =
+        runTest {
+            val eng = engine()
+
+            // Remote has a file; the engine downloads it (NOT an upload — no
+            // recent-upload watermark is stamped for downloads).
+            provider.files["/tracked.txt"] = ByteArray(50)
+            provider.deltaItems = listOf(cloudItem("/tracked.txt", size = 50))
+            provider.deltaCursor = "cursor-1"
+            eng.syncOnce()
+            assertNotNull(db.getEntry("/tracked.txt"))
+            assertTrue(Files.exists(syncRoot.resolve("tracked.txt")))
+
+            // The remote genuinely deletes it; a full enumeration no longer lists it.
+            db.setSyncState("delta_cursor", "")
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-2"
+
+            eng.syncOnce()
+
+            // No upload watermark protects a downloaded path → the genuine delete reaps.
+            assertNull(db.getEntry("/tracked.txt"), "a genuinely-deleted downloaded path must still be reaped")
+            assertFalse(Files.exists(syncRoot.resolve("tracked.txt")), "the local copy of a deleted remote file is removed")
+        }
+
+    @Test
+    fun `a row written after a resumed scan began is deferred although the resuming gather started later`() {
+        for (streaming in listOf(false, true)) {
+            tearDown()
+            setUp()
+            runTest {
+                val eng =
+                    SyncEngine(
+                        provider = provider,
+                        db = db,
+                        syncRoot = syncRoot,
+                        conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                        reporter = ProgressReporter.Silent,
+                        streamingReconciliation = streaming,
+                    )
+                provider.files["/kept.txt"] = ByteArray(10)
+                provider.files["/late.txt"] = ByteArray(10)
+                provider.deltaItems = listOf(cloudItem("/kept.txt", size = 10), cloudItem("/late.txt", size = 10))
+                eng.syncOnce()
+                assertNotNull(db.getEntry("/late.txt"))
+
+                // A daemon began a full listing and stopped mid-scan; its staged pages predate what follows.
+                Thread.sleep(5)
+                db.beginScan(initialMarker = null)
+                Thread.sleep(5)
+                // A write lands (an upload through the mount) before the next daemon resumes that scan.
+                db.upsertEntry(db.getEntry("/late.txt")!!.copy(lastSynced = java.time.Instant.now()))
+                Thread.sleep(5)
+
+                // The resumed listing (staged pages plus the rest) does not carry the late write.
+                db.setSyncState("delta_cursor", "")
+                provider.deltaItems = listOf(cloudItem("/kept.txt", size = 10))
+                provider.deltaCursor = "cursor-2"
+                eng.syncOnce()
+
+                assertNotNull(db.getEntry("/late.txt"), "streaming=$streaming: the listing began before that write; its silence proves nothing")
+                assertTrue(Files.exists(syncRoot.resolve("late.txt")), "streaming=$streaming: the local file must survive")
+            }
+        }
+    }
+
+    @Test
+    fun `a row written after the gather started is deferred even without an in-memory upload mark`() =
+        runTest {
+            val eng = engine()
+
+            // Baseline: synced file. Any in-memory upload grace mark from this pass is
+            // irrelevant — the next gather happens after the 120 s window in production
+            // terms, and a daemon restart would have wiped it anyway.
+            provider.files["/geheim.txt"] = ByteArray(10)
+            provider.deltaItems = listOf(cloudItem("/geheim.txt", size = 10))
+            eng.syncOnce()
+            assertNotNull(db.getEntry("/geheim.txt"))
+
+            // Full re-enumeration that does not list the file (provider lag), but a
+            // write-back lands as the walk starts: the mount's upload completed after
+            // the listing pages were fetched, so their silence proves nothing. The
+            // row's own write time is the persisted signal.
+            db.setSyncState("delta_cursor", "")
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-2"
+            provider.duringDelta = {
+                db.upsertEntry(db.getEntry("/geheim.txt")!!.copy(lastSynced = afterNow()))
+            }
+
+            eng.syncOnce()
+
+            assertNotNull(
+                db.getEntry("/geheim.txt"),
+                "a row written after the gather started must not be reaped by that gather",
+            )
+            assertTrue(Files.exists(syncRoot.resolve("geheim.txt")), "the local file must survive")
+        }
+
+    private fun cloudItem(
+        path: String,
+        size: Long = 100,
+        isFolder: Boolean = false,
+        deleted: Boolean = false,
+    ) = org.krost.unidrive.CloudItem(
+        id = "id-$path",
+        name = path.substringAfterLast("/"),
+        path = path,
+        size = size,
+        isFolder = isFolder,
+        modified = java.time.Instant.now(),
+        created = java.time.Instant.now(),
+        hash = "hash-$path",
+        mimeType = null,
+        deleted = deleted,
+    )
+
+    // A stamp later than every earlier reading of the clock. The clock can stay put between the gather's start and the
+    // write (it moves in steps of several milliseconds on some Windows machines), and a stamp equal to the start is not
+    // written after it.
+    private fun afterNow(): java.time.Instant {
+        val now = java.time.Instant.now()
+        while (true) {
+            val t = java.time.Instant.now()
+            if (t.isAfter(now)) return t
+            Thread.onSpinWait()
+        }
+    }
+}

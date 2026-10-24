@@ -1,0 +1,2 @@
+{"verb":"auth.begin"}
+{"ok":false,"error":"no_device_code_flow","message":"profile 'contract_profile' (type internxt) has no device-code sign-in"}

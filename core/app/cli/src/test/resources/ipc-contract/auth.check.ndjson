@@ -1,0 +1,4 @@
+{"verb":"auth.check"}
+{"ok":false,"error":"unsupported","message":"this provider has no credential check"}
+{"verb":"auth.check","timeout_seconds":0}
+{"ok":false,"error":"invalid_timeout","message":"--timeout must be between 1 and 300 seconds"}

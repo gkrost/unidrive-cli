@@ -1,0 +1,1827 @@
+package org.krost.unidrive.sync
+
+import org.krost.unidrive.CloudItem
+import org.krost.unidrive.sync.model.EntryStatus
+import org.krost.unidrive.sync.model.SyncEntry
+import java.nio.file.Files
+import java.sql.DriverManager
+import java.time.Duration
+import java.time.Instant
+import kotlin.test.*
+
+class StateDatabaseTest {
+    private lateinit var db: StateDatabase
+
+    @BeforeTest
+    fun setUp() {
+        val tmpDir = Files.createTempDirectory("unidrive-test")
+        db = StateDatabase(tmpDir.resolve("state.db"))
+        db.initialize()
+    }
+
+    @AfterTest
+    fun tearDown() {
+        db.close()
+    }
+
+    private fun entry(
+        path: String,
+        isFolder: Boolean = false,
+        remoteSize: Long = 100,
+    ) = SyncEntry(
+        path = path,
+        remoteId = "id-$path",
+        remoteHash = "hash-$path",
+        remoteSize = remoteSize,
+        remoteModified = Instant.parse("2026-03-28T12:00:00Z"),
+        localMtime = 1711627200000,
+        localSize = remoteSize,
+        isFolder = isFolder,
+        isPinned = false,
+        isHydrated = false,
+        lastSynced = Instant.now(),
+    )
+
+    @Test
+    fun `a trashed row is not brought back over an alive row that holds its path now`() {
+        db.upsertEntry(entry("/a.txt"))
+        assertTrue(db.setStatusTrashed("id-/a.txt"))
+        db.upsertEntry(entry("/a.txt").copy(remoteId = "created-since"))
+
+        // The cloud reports the old item alive again (a restore in the web UI). The path is taken: no flip, no exception.
+        assertFalse(db.setStatusExists("id-/a.txt"))
+
+        assertEquals("created-since", db.getEntry("/a.txt")?.remoteId)
+        assertEquals(1, db.getEntryCount())
+        assertEquals(EntryStatus.TRASHED, db.recovery.trashedEntries().single().status)
+    }
+
+    @Test
+    fun `a trashed row is brought back when nothing else holds its path`() {
+        db.upsertEntry(entry("/b.txt"))
+        assertTrue(db.setStatusTrashed("id-/b.txt"))
+
+        assertTrue(db.setStatusExists("id-/b.txt"))
+
+        assertEquals("id-/b.txt", db.getEntry("/b.txt")?.remoteId)
+    }
+
+    // #171: rows are stored NFC and looked up NFC, so the same logical name
+    // matches regardless of the Unicode form it arrives in (composed vs decomposed).
+    @Test
+    fun `getEntry matches across NFC and NFD path forms`() {
+        val nfc = "/sch\u00F6n.txt" // composed o-with-diaeresis (U+00F6)
+        val nfd = "/scho\u0308n.txt" // decomposed o + combining diaeresis (U+0308)
+        assertNotEquals(nfc, nfd, "precondition: the two forms are byte-different")
+        db.upsertEntry(entry(nfc))
+        assertNotNull(db.getEntry(nfd), "NFD lookup must resolve the NFC-stored row")
+        assertNotNull(db.getEntry(nfc))
+    }
+
+    @Test
+    fun `upsertEntry stores path in NFC`() {
+        db.upsertEntry(entry("/scho\u0308n.txt")) // written NFD -> stored NFC
+        assertNotNull(db.getEntry("/sch\u00F6n.txt"), "NFD-written row retrievable by NFC")
+    }
+
+    // #171 follow-up: EVERY path-keyed method normalizes its argument to NFC, not
+    // just getEntry/upsertEntry \u2014 otherwise a co-daemon op arriving in NFD would
+    // silently no-op against the NFC-stored row instead of resolving it.
+    @Test
+    fun `markUnhydrated resolves an NFD path to the NFC row`() {
+        db.upsertEntry(entry("/sch\u00F6n.txt").copy(isHydrated = true))
+        db.markUnhydrated("/scho\u0308n.txt")
+        assertEquals(false, db.getEntry("/sch\u00F6n.txt")?.isHydrated)
+    }
+
+    @Test
+    fun `deleteEntry resolves an NFD path to the NFC row`() {
+        db.upsertEntry(entry("/sch\u00F6n.txt"))
+        db.deleteEntry("/scho\u0308n.txt")
+        assertNull(db.getEntry("/sch\u00F6n.txt"))
+    }
+
+    @Test
+    fun `markUploadFailed resolves an NFD path to the NFC row`() {
+        db.upsertEntry(entry("/sch\u00F6n.txt"))
+        assertTrue(db.markUploadFailed("/scho\u0308n.txt", Instant.now()))
+    }
+
+    @Test
+    fun `listDirectChildren resolves an NFD parent path`() {
+        db.upsertEntry(entry("/f\u00F6lder/a.txt"))
+        assertEquals(listOf("/f\u00F6lder/a.txt"), db.listDirectChildren("/fo\u0308lder").map { it.path })
+    }
+
+    @Test
+    fun `getEntriesByPrefix resolves an NFD prefix`() {
+        db.upsertEntry(entry("/f\u00F6lder/a.txt"))
+        assertTrue(db.getEntriesByPrefix("/fo\u0308lder").any { it.path == "/f\u00F6lder/a.txt" })
+    }
+
+    @Test
+    fun `getEntryByRemotePath matches across NFC and NFD remote_path forms`() {
+        // remote_path stored NFD must be reachable by both NFC and NFD queries
+        db.upsertEntry(entry("/x.txt").copy(remotePath = "/scho\u0308n.txt"))
+        assertNotNull(db.getEntryByRemotePath("/scho\u0308n.txt"), "NFD remote lookup resolves the row")
+        assertNotNull(db.getEntryByRemotePath("/sch\u00F6n.txt"), "NFC remote lookup resolves the same row")
+    }
+
+    @Test
+    fun `upsert and get entry`() {
+        val e = entry("/test.txt")
+        db.upsertEntry(e)
+        val loaded = db.getEntry("/test.txt")
+        assertNotNull(loaded)
+        assertEquals("/test.txt", loaded.path)
+        assertEquals("id-/test.txt", loaded.remoteId)
+        assertEquals(100L, loaded.remoteSize)
+    }
+
+    @Test
+    fun `get nonexistent entry returns null`() {
+        assertNull(db.getEntry("/nope"))
+    }
+
+    // #728: the eviction pass classifies a whole batch of cache files from one query. The map is keyed
+    // by the spelling the caller asked with (NFD in, NFD key out) and a path with no alive row is absent.
+    @Test
+    fun `getEntriesByPaths resolves a batch across NFC and NFD and omits unknown paths`() {
+        val nfc = "/sch\u00F6n.txt" // composed o-with-diaeresis (U+00F6)
+        val nfd = "/scho\u0308n.txt" // decomposed o + combining diaeresis (U+0308)
+        db.upsertEntry(entry("/a.txt"))
+        db.upsertEntry(entry(nfc))
+
+        val found = db.getEntriesByPaths(listOf("/a.txt", nfd, "/missing.txt"))
+
+        assertEquals(setOf("/a.txt", nfd), found.keys)
+        assertEquals("id-/a.txt", found["/a.txt"]?.remoteId)
+        assertEquals(nfc, found[nfd]?.path, "the row is stored NFC, keyed by what the caller asked with")
+        assertNull(found["/missing.txt"], "no alive row: absent, not null")
+        assertTrue(db.getEntriesByPaths(emptyList()).isEmpty())
+    }
+
+    @Test
+    fun `delete entry`() {
+        db.upsertEntry(entry("/del.txt"))
+        db.deleteEntry("/del.txt")
+        assertNull(db.getEntry("/del.txt"))
+    }
+
+    @Test
+    fun `get all entries`() {
+        db.upsertEntry(entry("/a.txt"))
+        db.upsertEntry(entry("/b.txt"))
+        assertEquals(2, db.getAllEntries().size)
+    }
+
+    @Test
+    fun `upsert overwrites existing`() {
+        db.upsertEntry(entry("/test.txt", remoteSize = 100))
+        db.upsertEntry(entry("/test.txt", remoteSize = 999))
+        assertEquals(999, db.getEntry("/test.txt")!!.remoteSize)
+    }
+
+    @Test
+    fun `get and set sync state`() {
+        assertNull(db.getSyncState("delta_cursor"))
+        db.setSyncState("delta_cursor", "abc123")
+        assertEquals("abc123", db.getSyncState("delta_cursor"))
+        db.setSyncState("delta_cursor", "def456")
+        assertEquals("def456", db.getSyncState("delta_cursor"))
+    }
+
+    @Test
+    fun `pin rules CRUD`() {
+        db.addPinRule("Documents/**", pinned = true)
+        db.addPinRule("*.tmp", pinned = false)
+        val rules = db.getPinRules()
+        assertEquals(2, rules.size)
+        db.removePinRule("*.tmp")
+        assertEquals(1, db.getPinRules().size)
+    }
+
+    @Test
+    fun `case insensitive lookup`() {
+        db.upsertEntry(entry("/Documents/Report.pdf"))
+        val result = db.getEntryCaseInsensitive("/documents/report.pdf")
+        assertNotNull(result)
+        assertEquals("/Documents/Report.pdf", result.path)
+    }
+
+    @Test
+    fun `entries by prefix`() {
+        db.upsertEntry(entry("/docs/a.txt"))
+        db.upsertEntry(entry("/docs/b.txt"))
+        db.upsertEntry(entry("/other/c.txt"))
+        val docs = db.getEntriesByPrefix("/docs/")
+        assertEquals(2, docs.size)
+    }
+
+    @Test
+    fun `rename prefix updates all matching paths`() {
+        db.upsertEntry(entry("/old/a.txt"))
+        db.upsertEntry(entry("/old/sub/b.txt"))
+        db.upsertEntry(entry("/other/c.txt"))
+        db.renamePrefix("/old/", "/new/")
+        assertNull(db.getEntry("/old/a.txt"))
+        assertNotNull(db.getEntry("/new/a.txt"))
+        assertNotNull(db.getEntry("/new/sub/b.txt"))
+        assertNotNull(db.getEntry("/other/c.txt"))
+    }
+
+    @Test
+    fun `renamePrefix works without trailing slashes`() {
+        db.upsertEntry(entry("/old/a.txt"))
+        db.upsertEntry(entry("/old/sub/b.txt"))
+        db.upsertEntry(entry("/other/c.txt"))
+        db.renamePrefix("/old", "/new")
+        assertNull(db.getEntry("/old/a.txt"))
+        assertNull(db.getEntry("/old/sub/b.txt"))
+        assertNotNull(db.getEntry("/new/a.txt"))
+        assertNotNull(db.getEntry("/new/sub/b.txt"))
+        assertNotNull(db.getEntry("/other/c.txt"))
+    }
+
+    // ── UD-901c: renamePrefix tolerates pre-existing destination rows ───────
+    // Pre-fix the UPDATE collided with SQLite's PK uniqueness when LocalScanner
+    // had already written UD-901 pending rows at the destination prefix
+    // (because the user moved a folder locally and the new path appeared as
+    // NEW during local-scan). The action threw SQLITE_CONSTRAINT_PRIMARYKEY,
+    // the engine logged WARN, and the DB was left half-moved — source rows
+    // at old prefix, pending rows at new prefix — feeding a permanent failure
+    // cascade. Captured live 2026-05-03 10:13.
+
+    @Test
+    fun `UD-901c renamePrefix tolerates pre-existing pending row at destination`() {
+        // Source row carries the canonical metadata (remoteId, hash).
+        db.upsertEntry(entry("/old/Sample/photo.jpg"))
+        // Destination row is a UD-901 pending placeholder with remoteId=null —
+        // exactly the shape LocalScanner writes when the new path appears NEW.
+        db.upsertEntry(
+            SyncEntry(
+                path = "/new/Sample/photo.jpg",
+                remoteId = null,
+                remoteHash = null,
+                remoteSize = 0,
+                remoteModified = null,
+                localMtime = 1711627200000,
+                localSize = 100,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = Instant.EPOCH,
+            ),
+        )
+
+        // Pre-fix this threw SQLITE_CONSTRAINT_PRIMARYKEY. Post-fix it succeeds.
+        db.renamePrefix("/old/Sample", "/new/Sample")
+
+        // Exactly one row at the destination, carrying the SOURCE's metadata
+        // (the canonical remoteId), not the pending placeholder's null.
+        val resolved = db.getEntry("/new/Sample/photo.jpg")
+        assertNotNull(resolved, "destination row must exist after rename")
+        assertEquals("id-/old/Sample/photo.jpg", resolved.remoteId)
+        assertEquals("hash-/old/Sample/photo.jpg", resolved.remoteHash)
+        // Source is gone.
+        assertNull(db.getEntry("/old/Sample/photo.jpg"))
+    }
+
+    @Test
+    fun `UD-901c renamePrefix wipes deeper destination descendants too`() {
+        // Source has /old/Sample/sub/file.bin; destination already has
+        // ./sub/file.bin AND ./other.bin (both pending). After rename the
+        // destination should ONLY hold the source-rooted descendants.
+        db.upsertEntry(entry("/old/Sample/sub/file.bin"))
+        // Pending rows at destination — including a deeper one and an
+        // unrelated leaf at the same level.
+        db.upsertEntry(
+            SyncEntry(
+                path = "/new/Sample/sub/file.bin",
+                remoteId = null,
+                remoteHash = null,
+                remoteSize = 0,
+                remoteModified = null,
+                localMtime = 0,
+                localSize = 0,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = Instant.EPOCH,
+            ),
+        )
+        db.upsertEntry(
+            SyncEntry(
+                path = "/new/Sample/other.bin",
+                remoteId = null,
+                remoteHash = null,
+                remoteSize = 0,
+                remoteModified = null,
+                localMtime = 0,
+                localSize = 0,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = Instant.EPOCH,
+            ),
+        )
+
+        db.renamePrefix("/old/Sample", "/new/Sample")
+
+        // Source-rooted file is now at the destination, with canonical metadata.
+        val moved = db.getEntry("/new/Sample/sub/file.bin")
+        assertNotNull(moved)
+        assertEquals("id-/old/Sample/sub/file.bin", moved.remoteId)
+        // Pre-existing destination-only sibling row is gone (was a pending
+        // placeholder; canonical-source-rooted-rename wins).
+        assertNull(db.getEntry("/new/Sample/other.bin"))
+        // Source is gone.
+        assertNull(db.getEntry("/old/Sample/sub/file.bin"))
+    }
+
+    @Test
+    fun `UD-901c renamePrefix preserves rows outside both prefixes`() {
+        db.upsertEntry(entry("/old/x.txt"))
+        db.upsertEntry(entry("/new/y.txt")) // legitimate, non-colliding
+        db.upsertEntry(entry("/totally-other/z.txt"))
+
+        db.renamePrefix("/old", "/new")
+
+        assertNotNull(db.getEntry("/new/x.txt"))
+        // /new/y.txt is INSIDE the destination prefix, so it gets wiped along
+        // with the rename's DELETE phase. This is the documented trade — the
+        // post-rename destination subtree reflects what came from /old/.
+        assertNull(db.getEntry("/new/y.txt"))
+        // Wholly unrelated rows stay.
+        assertNotNull(db.getEntry("/totally-other/z.txt"))
+    }
+
+    @Test
+    fun `renamePrefix with underscore in path does not match wildcard`() {
+        db.upsertEntry(entry("/folder_a/file.txt"))
+        db.upsertEntry(entry("/folderXa/other.txt"))
+        db.renamePrefix("/folder_a", "/folder_b")
+        assertNotNull(db.getEntry("/folder_b/file.txt"))
+        assertNotNull(db.getEntry("/folderXa/other.txt"))
+        assertNull(db.getEntry("/folder_a/file.txt"))
+    }
+
+    @Test
+    fun `renamePrefix with percent in path does not match wildcard`() {
+        db.upsertEntry(entry("/100%done/file.txt"))
+        db.upsertEntry(entry("/100Xdone/other.txt"))
+        db.renamePrefix("/100%done", "/finished")
+        assertNotNull(db.getEntry("/finished/file.txt"))
+        assertNotNull(db.getEntry("/100Xdone/other.txt"))
+    }
+
+    @Test
+    fun `getEntriesByPrefix with underscore does not match wildcard`() {
+        db.upsertEntry(entry("/data_2024/jan.csv"))
+        db.upsertEntry(entry("/dataX2024/feb.csv"))
+        val results = db.getEntriesByPrefix("/data_2024/")
+        assertEquals(1, results.size)
+        assertEquals("/data_2024/jan.csv", results[0].path)
+    }
+
+    @Test
+    fun `getEntriesByPrefix with percent does not match wildcard`() {
+        db.upsertEntry(entry("/50%off/sale.txt"))
+        db.upsertEntry(entry("/50Xoff/nosale.txt"))
+        val results = db.getEntriesByPrefix("/50%off/")
+        assertEquals(1, results.size)
+        assertEquals("/50%off/sale.txt", results[0].path)
+    }
+
+    @Test
+    fun `repeated initialize does not leak connections`() {
+        // First initialize already called in setUp
+        // Call initialize again
+        db.initialize()
+        // Should not throw; ensure database still works
+        db.upsertEntry(entry("/test.txt"))
+        assertNotNull(db.getEntry("/test.txt"))
+    }
+
+    // UD-738 — in-memory shadow DB for `--reset --dry-run`
+
+    @Test
+    fun `UD-738 inMemory true creates a working DB without touching dbPath on disk`() {
+        val tmpDir = Files.createTempDirectory("unidrive-shadow")
+        val sentinelPath = tmpDir.resolve("never-created.db")
+        val shadow = StateDatabase(sentinelPath, inMemory = true)
+        shadow.initialize()
+        try {
+            // The shadow DB schema is set up and writable
+            shadow.upsertEntry(entry("/in-memory-only.txt"))
+            assertNotNull(shadow.getEntry("/in-memory-only.txt"))
+            // Critically: nothing was created at sentinelPath
+            assertFalse(
+                Files.exists(sentinelPath),
+                "in-memory mode must NOT touch the file at dbPath",
+            )
+        } finally {
+            shadow.close()
+        }
+    }
+
+    @Test
+    fun `UD-738 inMemory true is isolated from any real on-disk DB at the same path`() {
+        // Real, file-backed DB with one entry
+        val tmpDir = Files.createTempDirectory("unidrive-isolated")
+        val realPath = tmpDir.resolve("state.db")
+        val real = StateDatabase(realPath)
+        real.initialize()
+        real.upsertEntry(entry("/file-backed.txt"))
+        real.close()
+
+        // Open a shadow at the same path — must be empty, not see the real entry
+        val shadow = StateDatabase(realPath, inMemory = true)
+        shadow.initialize()
+        try {
+            assertNull(shadow.getEntry("/file-backed.txt"))
+            assertEquals(0, shadow.getAllEntries().size)
+        } finally {
+            shadow.close()
+        }
+
+        // Real DB on disk still has its entry
+        val realAgain = StateDatabase(realPath)
+        realAgain.initialize()
+        try {
+            assertNotNull(realAgain.getEntry("/file-backed.txt"))
+        } finally {
+            realAgain.close()
+        }
+    }
+
+    // ── state.db redesign acceptance fixtures ───────────────────────────────
+
+    @Test
+    fun `setStatusTrashed is an idempotent UPDATE keyed by remote_id`() {
+        db.upsertEntry(entry("/a.txt").copy(remoteId = "uuid-A"))
+        assertTrue(db.setStatusTrashed("uuid-A"), "first flip returns true")
+        assertNull(db.getEntry("/a.txt"), "alive view no longer sees trashed row")
+        // Second flip is a no-op: zero rows where status=EXISTS for this id.
+        assertFalse(db.setStatusTrashed("uuid-A"), "second flip is idempotent")
+        // The trashed row is reachable via Recovery.
+        val trashed = db.recovery.trashedEntries()
+        assertEquals(1, trashed.size)
+        assertEquals("uuid-A", trashed.single().remoteId)
+        assertEquals(EntryStatus.TRASHED, trashed.single().status)
+    }
+
+    @Test
+    fun `setStatusTrashed on synthetic id is a no-op`() {
+        // Pending-upload rows carry remote_id=null in Kotlin (a `local:<uuid>`
+        // synthetic at the SQL layer). Asking to "trash" them via the public
+        // remote_id surface is meaningless — they never reached the cloud.
+        assertFalse(db.setStatusTrashed("local:not-a-real-id"))
+    }
+
+    @Test
+    fun `trash-then-recreate at same path is INSERT-clean`() {
+        // Real cloud row at /foo/bar.txt.
+        val original = entry("/foo/bar.txt").copy(remoteId = "uuid-old", remoteHash = "old-hash")
+        db.upsertEntry(original)
+
+        // Cloud deletes it → flip to TRASHED. Row survives as tombstone.
+        assertTrue(db.setStatusTrashed("uuid-old"))
+        assertNull(db.getEntry("/foo/bar.txt"), "alive view no longer sees trashed row")
+
+        // New file with different UUID arrives at the same path. Pre-redesign
+        // this collided on the path PK; with the partial unique on path
+        // `WHERE status='EXISTS'` it inserts cleanly.
+        val replacement = entry("/foo/bar.txt").copy(remoteId = "uuid-new", remoteHash = "new-hash")
+        db.upsertEntry(replacement)
+
+        // Both rows coexist; only the EXISTS row is reachable via alive view.
+        val live = db.getEntry("/foo/bar.txt")
+        assertNotNull(live)
+        assertEquals("uuid-new", live.remoteId)
+        assertEquals("new-hash", live.remoteHash)
+
+        val all = db.recovery.allEntriesAnyStatus().sortedBy { it.remoteId }
+        assertEquals(2, all.size, "TRASHED and EXISTS both persist")
+        assertEquals(EntryStatus.TRASHED, all.first { it.remoteId == "uuid-old" }.status)
+        assertEquals(EntryStatus.EXISTS, all.first { it.remoteId == "uuid-new" }.status)
+    }
+
+    @Test
+    fun `rename regression pin — safe to tresor 14 descendants resolve via single UPDATE`() {
+        // Originating incident: a `.safe → .tresor` folder rename applied to
+        // the parent row but not to 14 descendant rows. Pre-redesign the
+        // descendants stayed at the old prefix because path-as-PK forced an
+        // N-row UPDATE that hit edge cases.
+        db.upsertEntry(entry("/Documents/.safe", isFolder = true).copy(remoteId = "uuid-parent"))
+        repeat(14) { i ->
+            db.upsertEntry(
+                entry("/Documents/.safe/file$i.txt").copy(remoteId = "uuid-child-$i"),
+            )
+        }
+        db.renamePrefix("/Documents/.safe", "/Documents/.tresor")
+
+        // Parent row moved.
+        assertNull(db.getEntry("/Documents/.safe"))
+        assertNotNull(db.getEntry("/Documents/.tresor"))
+
+        // All 14 descendants moved with it; none stranded under the old prefix.
+        repeat(14) { i ->
+            assertNull(db.getEntry("/Documents/.safe/file$i.txt"), "child $i must not remain at old prefix")
+            val moved = db.getEntry("/Documents/.tresor/file$i.txt")
+            assertNotNull(moved, "child $i must appear at new prefix")
+            assertEquals("uuid-child-$i", moved.remoteId, "remote_id is rename-stable")
+        }
+    }
+
+    @Test
+    fun `rename perf — 1000 descendants folder rename touches each row exactly once`() {
+        // The acceptance criterion is structural — renaming a folder with N
+        // descendants is N UPDATEs to the path column. We sanity-check at
+        // 1000 by asserting all 1000 land at the new prefix and none remain
+        // at the old prefix (the partial unique index would refuse a
+        // duplicate alive row, so this also confirms the UPDATEs didn't
+        // create conflicts).
+        db.upsertEntry(entry("/big", isFolder = true).copy(remoteId = "uuid-big"))
+        for (i in 0 until 1000) {
+            db.upsertEntry(entry("/big/file$i.txt").copy(remoteId = "uuid-f-$i"))
+        }
+        assertEquals(1001, db.getAllEntries().size)
+
+        db.renamePrefix("/big", "/huge")
+
+        // Every descendant moved.
+        assertEquals(1001, db.getAllEntries().size, "row count unchanged")
+        for (i in 0 until 1000) {
+            assertNull(db.getEntry("/big/file$i.txt"))
+            assertNotNull(db.getEntry("/huge/file$i.txt"))
+        }
+        // The folder root row moved too.
+        assertNull(db.getEntry("/big"))
+        assertNotNull(db.getEntry("/huge"))
+    }
+
+    @Test
+    fun `EXPLAIN QUERY PLAN for alive children of parent_uuid is an index seek`() {
+        // Acceptance criterion: the composite (parent_uuid, status) index is
+        // structurally present AND the planner will reach for it on the
+        // canonical "alive children of X" query. We assert both: the index
+        // appears in sqlite_master, and EXPLAIN QUERY PLAN on the canonical
+        // query reports `USING INDEX` (an index seek) rather than `SCAN
+        // sync_entries` (a tombstone-skipping table scan).
+        //
+        // Note: do NOT run ANALYZE here. After ANALYZE on a tiny table the
+        // planner correctly decides a full scan is cheaper than an index
+        // seek, which is fine in production (the index doesn't bloat much)
+        // but defeats the structural assertion this test is making.
+        db.upsertEntry(entry("/p", isFolder = true).copy(remoteId = "uuid-P"))
+        for (i in 0 until 20) {
+            db.upsertEntry(
+                entry("/p/file$i.txt").copy(remoteId = "uuid-PC-$i", parentUuid = "uuid-P"),
+            )
+        }
+
+        val dbPath = db.javaClass.getDeclaredField("dbPath")
+            .apply { isAccessible = true }.get(db) as java.nio.file.Path
+        DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
+            // Index existence.
+            val indexNames = mutableListOf<String>()
+            conn.createStatement().use { stmt ->
+                val rs = stmt.executeQuery(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sync_entries'",
+                )
+                while (rs.next()) indexNames.add(rs.getString(1))
+            }
+            assertTrue(
+                "idx_sync_entries_parent_alive" in indexNames,
+                "composite (parent_uuid, status) index must exist; got: $indexNames",
+            )
+            // Plan check.
+            val plan = StringBuilder()
+            conn.prepareStatement(
+                "EXPLAIN QUERY PLAN " +
+                    "SELECT * FROM sync_entries WHERE parent_uuid=? AND status='EXISTS'",
+            ).use { stmt ->
+                stmt.setString(1, "uuid-P")
+                val rs = stmt.executeQuery()
+                while (rs.next()) {
+                    plan.append(rs.getString("detail")).append("\n")
+                }
+            }
+            val planText = plan.toString()
+            assertTrue(
+                "USING INDEX" in planText && "SCAN sync_entries" !in planText,
+                "expected index seek for (parent_uuid, status); got plan:\n$planText",
+            )
+        }
+    }
+
+    /** The plan SQLite reports for [sql] with [params] bound in order, read through a connection of its own. */
+    private fun queryPlan(
+        database: StateDatabase,
+        sql: String,
+        vararg params: String,
+    ): String {
+        val dbPath = database.javaClass.getDeclaredField("dbPath")
+            .apply { isAccessible = true }.get(database) as java.nio.file.Path
+        DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
+            conn.prepareStatement("EXPLAIN QUERY PLAN $sql").use { stmt ->
+                params.forEachIndexed { i, p -> stmt.setString(i + 1, p) }
+                val rs = stmt.executeQuery()
+                val plan = StringBuilder()
+                while (rs.next()) plan.append(rs.getString("detail")).append("\n")
+                return plan.toString()
+            }
+        }
+    }
+
+    @Test
+    fun `EXPLAIN QUERY PLAN for the lookup by effective remote path is an index search`() {
+        // The save of a gather looks every item up by its effective remote path. The expression
+        // COALESCE(remote_path, path) is covered by no other index, so without its own the lookup scanned the
+        // whole table and saving a large drive's first enumeration took hours. No ANALYZE here, for the
+        // reason given in the parent_uuid test above.
+        for (i in 0 until 20) db.upsertEntry(entry("/p/file$i.txt").copy(remoteId = "uuid-$i"))
+
+        val plan = queryPlan(db, StateDatabase.BY_REMOTE_PATH, "/p/file3.txt")
+
+        assertTrue(
+            "SEARCH" in plan && "idx_sync_entries_remote_path_alive" in plan && "SCAN" !in plan,
+            "expected an index search on the effective remote path; got plan:\n$plan",
+        )
+        assertEquals("/p/file3.txt", db.getEntryByRemotePath("/p/file3.txt")?.path)
+    }
+
+    @Test
+    fun `EXPLAIN QUERY PLAN for direct children of a path is an index seek`() {
+        // #727: the listing filtered on substr(path, 1, length(?))=?, which is not sargable, so every folder
+        // listing read every alive row while holding the instance monitor — a scan of the 145k-row live
+        // table for a handful of children, with hydration list replies queued behind it for seconds. A path
+        // range then walked every row under the folder (the root of a large drive: all of them, 147 ms). The
+        // listing must be a seek on the folder index, which holds each row's folder. No ANALYZE here, for the
+        // reason given in the parent_uuid plan test above.
+        db.upsertEntry(entry("/p", isFolder = true))
+        db.upsertEntry(entry("/p/a.txt"))
+        db.upsertEntry(entry("/p/deep/b.txt"))
+        db.upsertEntry(entry("/other.txt"))
+
+        for (folder in listOf("/p/", "/")) {
+            val plan = queryPlan(db, StateDatabase.DIRECT_CHILDREN_BY_PATH, folder)
+            assertTrue(
+                "SEARCH" in plan && "idx_sync_entries_dir_alive" in plan && "SCAN" !in plan,
+                "expected a seek on the folder index for the children of '$folder'; got plan:\n$plan",
+            )
+        }
+        assertEquals(listOf("/p/a.txt"), db.listDirectChildren("/p").map { it.path })
+    }
+
+    @Test
+    fun `recovery namespace is the only path to TRASHED rows`() {
+        db.upsertEntry(entry("/alive.txt").copy(remoteId = "uuid-alive"))
+        db.upsertEntry(entry("/trashed.txt").copy(remoteId = "uuid-trashed"))
+        db.setStatusTrashed("uuid-trashed")
+
+        // Every public StateDatabase read excludes TRASHED rows.
+        assertEquals(listOf("/alive.txt"), db.getAllEntries().map { it.path })
+        assertNull(db.getEntry("/trashed.txt"))
+        assertNull(db.getEntryByRemoteId("uuid-trashed"))
+        assertEquals(1, db.getEntryCount())
+        assertEquals(listOf("/alive.txt"), db.getEntriesByPrefix("/").map { it.path })
+
+        // Recovery sees them.
+        assertEquals(
+            listOf("uuid-trashed"),
+            db.recovery.trashedEntries().mapNotNull { it.remoteId },
+        )
+        assertNotNull(db.recovery.getEntryByRemoteIdAnyStatus("uuid-trashed"))
+        val all = db.recovery.allEntriesAnyStatus().mapNotNull { it.remoteId }.sorted()
+        assertEquals(listOf("uuid-alive", "uuid-trashed"), all)
+    }
+
+    @Test
+    fun `recovery scenario — 100-item mass-delete is one SELECT plus one batched untrash`() {
+        // Synthesise a 100-item mass-delete: 100 rows trashed.
+        for (i in 0 until 100) {
+            db.upsertEntry(entry("/bulk/item$i.txt").copy(remoteId = "uuid-bulk-$i"))
+        }
+        for (i in 0 until 100) db.setStatusTrashed("uuid-bulk-$i")
+        // Nothing alive.
+        assertEquals(0, db.getEntryCount())
+
+        // The recovery operator does: SELECT what's TRASHED → batched PATCH.
+        val trashed = db.recovery.trashedEntries()
+        assertEquals(100, trashed.size, "one SELECT recovers the whole set")
+        // No audit-log archaeology, no cloud-trash listing — the (remote_id,
+        // parent_uuid) pairs are right here on the row.
+        val ids = trashed.mapNotNull { it.remoteId }.sorted()
+        assertEquals((0 until 100).map { "uuid-bulk-$it" }.sorted(), ids)
+
+        // Untrash: one batched flip restores everything (in real life this
+        // is paired with a cloud-side restore PATCH; here we just exercise
+        // the DB primitive).
+        db.batch { ids.forEach { db.setStatusExists(it) } }
+        assertEquals(100, db.getEntryCount(), "all alive after batched untrash")
+        assertEquals(0, db.recovery.trashedEntries().size)
+    }
+
+    @Test
+    fun `upgrade path — pre-redesign DB drops sync_entries and rebuilds at schema_version=2`() {
+        // Inject a pre-redesign-shaped DB: sync_state exists, no schema_version
+        // row, sync_entries has the old path-PK shape with a row that the
+        // new schema would consider non-rescannable (its remote_id would be
+        // a synthetic pending-upload row, but we want to prove that the
+        // upgrade drops everything regardless of row content).
+        val tmpDir = Files.createTempDirectory("unidrive-upgrade")
+        val dbFile = tmpDir.resolve("state.db")
+        DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    """
+                    CREATE TABLE sync_entries (
+                        path            TEXT PRIMARY KEY,
+                        remote_id       TEXT,
+                        remote_hash     TEXT,
+                        remote_size     INTEGER NOT NULL DEFAULT 0,
+                        remote_modified TEXT,
+                        local_mtime     INTEGER,
+                        local_size      INTEGER,
+                        is_folder       INTEGER NOT NULL DEFAULT 0,
+                        is_pinned       INTEGER NOT NULL DEFAULT 0,
+                        is_hydrated     INTEGER NOT NULL DEFAULT 0,
+                        last_synced     TEXT NOT NULL
+                    )
+                """,
+                )
+                stmt.executeUpdate(
+                    """
+                    CREATE TABLE sync_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    )
+                """,
+                )
+                // Pre-redesign DBs may already carry the legacy dedupe
+                // marker. The upgrade should not depend on its presence.
+                stmt.executeUpdate(
+                    "INSERT INTO sync_state (key, value) VALUES " +
+                        "('migration:dedupe_remote_id', 'deleted=0'), " +
+                        "('delta_cursor', '2026-05-17T10:00:00Z')",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_entries (path, remote_id, remote_size, " +
+                        "is_folder, is_pinned, is_hydrated, last_synced) " +
+                        "VALUES ('/old/file.txt', 'old-uuid', 100, 0, 0, 1, '2026-05-17T10:00:00Z')",
+                )
+            }
+        }
+
+        val upgraded = StateDatabase(dbFile)
+        upgraded.initialize()
+        try {
+            // sync_entries was dropped; nothing carried over.
+            assertEquals(0, upgraded.getAllEntries().size, "pre-redesign rows dropped, next scan repopulates")
+            assertEquals(0, upgraded.recovery.allEntriesAnyStatus().size)
+            // schema_version stamped.
+            assertEquals(
+                StateDatabase.SCHEMA_VERSION.toString(),
+                upgraded.getSyncState(StateDatabase.SCHEMA_VERSION_KEY),
+            )
+            // sync_state preserved (cursor survives).
+            assertEquals("2026-05-17T10:00:00Z", upgraded.getSyncState("delta_cursor"))
+            // The new schema is in place — partial unique on path is honoured.
+            upgraded.upsertEntry(entry("/new.txt").copy(remoteId = "uuid-new"))
+            assertNotNull(upgraded.getEntry("/new.txt"))
+        } finally {
+            upgraded.close()
+        }
+    }
+
+    @Test
+    fun `upgrade path — fresh install stamps schema_version and creates everything`() {
+        // setUp's `initialize()` already exercised the fresh-install path.
+        // Assert the post-state.
+        assertEquals(
+            StateDatabase.SCHEMA_VERSION.toString(),
+            db.getSyncState(StateDatabase.SCHEMA_VERSION_KEY),
+        )
+        // No row-level backfill code path: a fresh install has no migration
+        // markers from the old dedupe scheme.
+        assertNull(db.getSyncState("migration:dedupe_remote_id"))
+    }
+
+    // #411: `--reset` wiped the schema stamp together with the rest of sync_state, so the
+    // NEXT open saw "sync_state without schema_version", took the pre-redesign path and
+    // dropped every row the reset run had just written.
+    @Test
+    fun `resetAll keeps the schema stamp so rows written after it survive a reopen`() {
+        val path = Files.createTempDirectory("unidrive-reset").resolve("state.db")
+        val first = StateDatabase(path)
+        first.initialize()
+        first.upsertEntry(entry("/before.txt"))
+        first.setSyncState("delta_cursor", "old")
+        first.resetAll()
+        assertNull(first.getEntry("/before.txt"))
+        assertNull(first.getSyncState("delta_cursor"), "reset still clears the rest of sync_state")
+        assertEquals(StateDatabase.SCHEMA_VERSION.toString(), first.getSyncState(StateDatabase.SCHEMA_VERSION_KEY))
+        first.upsertEntry(entry("/after.txt"))
+        first.setSyncState("delta_cursor", "new")
+        first.close()
+
+        val reopened = StateDatabase(path)
+        reopened.initialize()
+        try {
+            assertNotNull(reopened.getEntry("/after.txt"), "a reset database must not be read as pre-redesign")
+            assertEquals("new", reopened.getSyncState("delta_cursor"))
+        } finally {
+            reopened.close()
+        }
+    }
+
+    @Test
+    fun `a dry-run snapshot of a database that was reset and repopulated still has its rows`() {
+        val dir = Files.createTempDirectory("unidrive-reset-snap")
+        val path = dir.resolve("state.db")
+        val real = StateDatabase(path)
+        real.initialize()
+        real.resetAll()
+        real.upsertEntry(entry("/kept.txt"))
+        real.close()
+
+        val snap = StateDatabase.snapshotOf(path, tempRoot = dir.resolve("tmp"))
+        try {
+            assertNotNull(snap.getEntry("/kept.txt"), "the preview must see the rows the real run would see")
+        } finally {
+            snap.close()
+        }
+    }
+
+    @Test
+    fun `upgrade path — current-version DB is a no-op`() {
+        // Re-initialize an already-current DB. Schema and rows survive.
+        db.upsertEntry(entry("/keep.txt").copy(remoteId = "uuid-keep"))
+        db.close()
+        val dbPath = (db.javaClass.getDeclaredField("dbPath").apply { isAccessible = true }.get(db) as java.nio.file.Path)
+        val reopened = StateDatabase(dbPath)
+        reopened.initialize()
+        try {
+            assertEquals(1, reopened.getAllEntries().size, "current-version DB preserves rows")
+            assertNotNull(reopened.getEntry("/keep.txt"))
+        } finally {
+            reopened.close()
+        }
+    }
+
+    @Test
+    fun `pending-upload row survives an upsert cycle without churning rows`() {
+        // The Kotlin-level `remoteId=null` placeholder maps to a `local:<uuid>`
+        // synthetic at the storage layer. Re-upserting the same pending row
+        // should not multiply rows (the path partial-unique reuses the
+        // existing synthetic).
+        val pending =
+            SyncEntry(
+                path = "/pending.txt",
+                remoteId = null,
+                remoteHash = null,
+                remoteSize = 0,
+                remoteModified = null,
+                localMtime = 1L,
+                localSize = 100,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = Instant.EPOCH,
+            )
+        db.upsertEntry(pending)
+        db.upsertEntry(pending) // same content again
+        assertEquals(1, db.getAllEntries().size, "second upsert must not create a duplicate row")
+
+        // The Kotlin-level mapper hides the synthetic.
+        val loaded = db.getEntry("/pending.txt")
+        assertNotNull(loaded)
+        assertNull(loaded.remoteId, "callers never see the local: synthetic")
+
+        // Promoting to real remote_id replaces the pending row cleanly.
+        db.upsertEntry(pending.copy(remoteId = "uuid-real", remoteHash = "h"))
+        assertEquals(1, db.getAllEntries().size)
+        assertEquals("uuid-real", db.getEntry("/pending.txt")?.remoteId)
+    }
+
+    // ---- Resumable-scan staging slice ----
+
+    private fun staged(
+        id: String,
+        path: String,
+        size: Long = 100,
+        isFolder: Boolean = false,
+    ) = CloudItem(
+        id = id,
+        name = path.substringAfterLast('/'),
+        path = path,
+        size = size,
+        isFolder = isFolder,
+        modified = Instant.parse("2026-03-28T12:00:00Z"),
+        created = null,
+        hash = "hash-$id",
+        mimeType = null,
+        parentId = null,
+    )
+
+    @Test
+    fun `staging — staged rows are orthogonal to sync_entries readers`() {
+        // The staging slice lives in its own table; the alive view and the
+        // recovery namespace both only ever see real `sync_entries` rows.
+        db.upsertEntry(entry("/foo.txt").copy(remoteId = "live-uuid"))
+        val scanId = db.beginScan(initialMarker = null)
+        db.persistScanPage(scanId, listOf(staged(id = "staged-uuid", path = "/foo.txt")), marker = "page1")
+
+        val alive = db.getEntry("/foo.txt")
+        assertNotNull(alive)
+        assertEquals("live-uuid", alive.remoteId)
+        assertEquals(1, db.getAllEntries().size, "staging table must not appear in the alive view")
+        assertEquals(1, db.recovery.allEntriesAnyStatus().size, "recovery is sync_entries-only too")
+        // Staged rows are loadable through the dedicated reader.
+        assertEquals(1, db.loadStagedItems(scanId).size)
+    }
+
+    @Test
+    fun `staging — beginScan persists checkpoint state`() {
+        val scanId = db.beginScan(initialMarker = "2026-05-18T10:00:00Z|offset=0,0")
+        assertEquals(scanId, db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID))
+        assertEquals(
+            "2026-05-18T10:00:00Z|offset=0,0",
+            db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_MARKER),
+        )
+        assertNotNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_STARTED_AT))
+    }
+
+    @Test
+    fun `staging — persistScanPage advances the checkpoint marker per page`() {
+        val scanId = db.beginScan(initialMarker = null)
+        db.persistScanPage(
+            scanId,
+            listOf(staged("u1", "/a.txt"), staged("u2", "/b.txt")),
+            marker = "marker=page1",
+        )
+        assertEquals("marker=page1", db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_MARKER))
+
+        db.persistScanPage(
+            scanId,
+            listOf(staged("u3", "/c.txt")),
+            marker = "marker=page2",
+        )
+        assertEquals("marker=page2", db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_MARKER))
+
+        val rows = db.loadStagedItems(scanId)
+        assertEquals(3, rows.size, "all three pages worth of rows must persist")
+    }
+
+    @Test
+    fun `staging — completeScan deletes staged rows and clears checkpoint`() {
+        val scanId = db.beginScan(initialMarker = null)
+        db.persistScanPage(scanId, listOf(staged("u1", "/a.txt")), marker = "m1")
+        assertEquals(1, db.loadStagedItems(scanId).size)
+
+        db.completeScan(scanId)
+
+        assertEquals(0, db.loadStagedItems(scanId).size)
+        assertNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID))
+        assertNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_MARKER))
+        assertNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_STARTED_AT))
+    }
+
+    @Test
+    fun `staging — getActiveScan returns the live scan when fresh`() {
+        db.beginScan(initialMarker = "resume-marker")
+        val active = db.getActiveScan(staleThreshold = Duration.ofHours(6))
+        assertNotNull(active)
+        assertEquals("resume-marker", active.marker)
+    }
+
+    @Test
+    fun `staging — getActiveScan clears + returns null on stale checkpoint`() {
+        val scanId = db.beginScan(initialMarker = "stale-marker")
+        db.persistScanPage(scanId, listOf(staged("u1", "/old.txt")), marker = "stale-marker")
+        // Backdate the started_at so the stale-detection threshold trips.
+        db.setSyncState(
+            StateDatabase.SCAN_IN_PROGRESS_STARTED_AT,
+            Instant.now().minus(Duration.ofDays(1)).toString(),
+        )
+
+        val active = db.getActiveScan(staleThreshold = Duration.ofHours(6))
+
+        assertNull(active, "stale checkpoint must surface as no active scan")
+        assertNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID), "stale state cleared")
+        assertEquals(0, db.loadStagedItems(scanId).size, "stale staged rows discarded")
+    }
+
+    @Test
+    fun `staging — persistScanPage is atomic across rows and the marker`() {
+        // Same remote_id appearing twice in one page (re-emitted on retry):
+        // the INSERT OR REPLACE keyed on (scan_id, remote_id) coalesces the
+        // two writes into one row, the marker advances exactly once, and the
+        // sync_entries side is untouched.
+        val scanId = db.beginScan(initialMarker = null)
+        db.persistScanPage(
+            scanId,
+            listOf(staged("u1", "/first.txt", size = 100), staged("u1", "/first.txt", size = 200)),
+            marker = "after-collision",
+        )
+        val rows = db.loadStagedItems(scanId)
+        assertEquals(1, rows.size, "(scan_id, remote_id) PK collapses retries")
+        assertEquals(200L, rows.single().size, "later write wins via INSERT OR REPLACE")
+        assertEquals("after-collision", db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_MARKER))
+    }
+
+    @Test
+    fun `staging — live + staged rows are independent across the two tables`() {
+        // Cloud and staged rows for the same path can coexist trivially —
+        // they live in different tables. No INSERT failure either way.
+        db.upsertEntry(entry("/shared.txt").copy(remoteId = "live-uuid"))
+        val scanId = db.beginScan(initialMarker = null)
+        db.persistScanPage(scanId, listOf(staged("staged-uuid", "/shared.txt")), marker = "m")
+        assertEquals(1, db.loadStagedItems(scanId).size)
+        assertEquals("live-uuid", db.getEntry("/shared.txt")?.remoteId)
+    }
+
+    @Test
+    fun `staging — loadStagedItems preserves cloud identity for path re-resolution`() {
+        // The staged row carries the cloud-identity fields (id, parentId,
+        // name, isFolder, size, modified, hash) but not the path — the
+        // provider re-resolves the path on resume from the rebuilt folder
+        // graph. loadStagedItems returns a placeholder path so the CloudItem
+        // shape stays uniform; the provider is responsible for overwriting it.
+        val scanId = db.beginScan(initialMarker = null)
+        val original =
+            staged(id = "u1", path = "/dir/file.txt", size = 4096, isFolder = false)
+                .copy(parentId = "parent-uuid")
+        db.persistScanPage(scanId, listOf(original), marker = "m")
+
+        val loaded = db.loadStagedItems(scanId).single()
+        assertEquals("u1", loaded.id)
+        assertEquals("file.txt", loaded.name)
+        assertEquals("parent-uuid", loaded.parentId, "parent_uuid drives folder-graph reconstruction")
+        assertEquals(4096L, loaded.size)
+        assertEquals(false, loaded.isFolder)
+        assertEquals("hash-u1", loaded.hash)
+        assertEquals(original.modified, loaded.modified)
+    }
+
+    @Test
+    fun `staging — completeScan does not touch live rows written outside the scan`() {
+        db.upsertEntry(entry("/live.txt").copy(remoteId = "live-uuid"))
+        val scanId = db.beginScan(initialMarker = null)
+        db.persistScanPage(scanId, listOf(staged("staged-uuid", "/other.txt")), marker = "m")
+
+        db.completeScan(scanId)
+
+        // Live row remains exactly as written; the engine's updateRemoteEntries
+        // call site, not completeScan, is responsible for materialising the
+        // staging slice into live rows.
+        assertNotNull(db.getEntry("/live.txt"))
+        assertEquals("live-uuid", db.getEntry("/live.txt")?.remoteId)
+        assertEquals(1, db.getAllEntries().size, "completed scan removes only staged rows")
+    }
+
+    @Test
+    fun `staging — newly staged rows default reconciled=0 (STAGED)`() {
+        // Streaming reconciliation: every newly persisted page lands as
+        // STAGED. The engine flips rows to RECONCILED via
+        // markStagedReconciled after dispatching the page's safe-now
+        // actions.
+        val scanId = db.beginScan(initialMarker = null)
+        db.persistScanPage(scanId, listOf(staged("u1", "/a.txt")), marker = "m1")
+        assertEquals(1, db.loadStagedItemsByReconciled(scanId, reconciled = false).size)
+        assertEquals(0, db.loadStagedItemsByReconciled(scanId, reconciled = true).size)
+    }
+
+    @Test
+    fun `staging — markStagedReconciled flips rows STAGED to RECONCILED`() {
+        val scanId = db.beginScan(initialMarker = null)
+        db.persistScanPage(
+            scanId,
+            listOf(staged("u1", "/a.txt"), staged("u2", "/b.txt"), staged("u3", "/c.txt")),
+            marker = "m1",
+        )
+        db.markStagedReconciled(scanId, listOf("u1", "u3"))
+        val stillStaged = db.loadStagedItemsByReconciled(scanId, reconciled = false)
+        val flipped = db.loadStagedItemsByReconciled(scanId, reconciled = true)
+        assertEquals(listOf("u2"), stillStaged.map { it.id })
+        assertEquals(listOf("u1", "u3"), flipped.map { it.id })
+    }
+
+    @Test
+    fun `staging — markStagedReconciled is idempotent on already-RECONCILED rows`() {
+        val scanId = db.beginScan(initialMarker = null)
+        db.persistScanPage(scanId, listOf(staged("u1", "/a.txt")), marker = "m1")
+        db.markStagedReconciled(scanId, listOf("u1"))
+        // Second flip is a no-op — the UPDATE rewrites the same value.
+        db.markStagedReconciled(scanId, listOf("u1"))
+        assertEquals(0, db.loadStagedItemsByReconciled(scanId, reconciled = false).size)
+        assertEquals(1, db.loadStagedItemsByReconciled(scanId, reconciled = true).size)
+    }
+
+    @Test
+    fun `staging — loadStagedItems returns both STAGED and RECONCILED rows`() {
+        // The provider needs the full folder graph on resume regardless
+        // of reconciliation state; the per-reconciled-state slice is
+        // only consumed by the engine's reconciler call site.
+        val scanId = db.beginScan(initialMarker = null)
+        db.persistScanPage(
+            scanId,
+            listOf(staged("u1", "/a.txt"), staged("u2", "/b.txt")),
+            marker = "m1",
+        )
+        db.markStagedReconciled(scanId, listOf("u1"))
+        assertEquals(2, db.loadStagedItems(scanId).size)
+    }
+
+    @Test
+    fun `staging — completeScan clears RECONCILED rows alongside STAGED`() {
+        val scanId = db.beginScan(initialMarker = null)
+        db.persistScanPage(
+            scanId,
+            listOf(staged("u1", "/a.txt"), staged("u2", "/b.txt")),
+            marker = "m1",
+        )
+        db.markStagedReconciled(scanId, listOf("u1"))
+        db.completeScan(scanId)
+        assertEquals(0, db.loadStagedItems(scanId).size)
+        assertEquals(0, db.loadStagedItemsByReconciled(scanId, reconciled = true).size)
+    }
+
+    @Test
+    fun `migration — remote_path column is added in-place to an existing v2 DB and existing rows read as non-aliased`() {
+        // #115: simulate a DEPLOYED v2 DB whose sync_entries predates the
+        // remote_path column (the universal shipped shape: includes the
+        // download_quarantined / last_error_at additive columns but NOT
+        // remote_path). The next initialize() must ADD the column without
+        // truncating rows or bumping schema_version, and every existing row
+        // must read back with remotePath=null → identical, non-aliased behaviour.
+        val tmpDir = Files.createTempDirectory("unidrive-remotepath-migration")
+        val dbFile = tmpDir.resolve("state.db")
+        DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    """
+                    CREATE TABLE sync_entries (
+                        remote_id            TEXT PRIMARY KEY,
+                        parent_uuid          TEXT,
+                        path                 TEXT NOT NULL,
+                        remote_hash          TEXT,
+                        remote_size          INTEGER NOT NULL DEFAULT 0,
+                        remote_modified      TEXT,
+                        local_mtime          INTEGER,
+                        local_size           INTEGER,
+                        is_folder            INTEGER NOT NULL DEFAULT 0,
+                        is_pinned            INTEGER NOT NULL DEFAULT 0,
+                        is_hydrated          INTEGER NOT NULL DEFAULT 0,
+                        last_synced          TEXT NOT NULL,
+                        status               TEXT NOT NULL DEFAULT 'EXISTS'
+                                             CHECK (status IN ('EXISTS','TRASHED','DELETED')),
+                        download_quarantined INTEGER NOT NULL DEFAULT 0,
+                        last_error_at        TEXT
+                    )
+                """,
+                )
+                stmt.executeUpdate(
+                    "CREATE VIEW alive_entries AS SELECT * FROM sync_entries WHERE status='EXISTS'",
+                )
+                stmt.executeUpdate(
+                    "CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_state VALUES ('${StateDatabase.SCHEMA_VERSION_KEY}', " +
+                        "'${StateDatabase.SCHEMA_VERSION}')",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_entries (remote_id, path, remote_hash, last_synced) " +
+                        "VALUES ('u-existing', '/Docs/report.pdf', 'h1', '2026-01-01T00:00:00Z')",
+                )
+            }
+        }
+
+        val upgraded = StateDatabase(dbFile)
+        upgraded.initialize()
+        try {
+            // The existing row survives and reads as non-aliased (remotePath null).
+            val row = upgraded.getEntry("/Docs/report.pdf")
+            assertNotNull(row, "pre-#115 row must survive the additive migration")
+            assertNull(row.remotePath, "an existing row has no remote_path → reads as null (non-aliased)")
+            // getEntryByRemotePath collapses to a plain path match for null rows.
+            assertEquals("/Docs/report.pdf", upgraded.getEntryByRemotePath("/Docs/report.pdf")?.path)
+            // The index of that lookup needs the column, so the migrated database has it too.
+            val plan = queryPlan(upgraded, StateDatabase.BY_REMOTE_PATH, "/Docs/report.pdf")
+            assertTrue(
+                "idx_sync_entries_remote_path_alive" in plan && "SCAN" !in plan,
+                "a migrated database must search the effective remote path by index; got plan:\n$plan",
+            )
+            // schema_version is unchanged (additive column, no bump).
+            assertEquals(
+                StateDatabase.SCHEMA_VERSION.toString(),
+                upgraded.getSyncState(StateDatabase.SCHEMA_VERSION_KEY),
+            )
+            // An aliased upsert round-trips remotePath correctly on the migrated DB.
+            upgraded.upsertEntry(
+                org.krost.unidrive.sync.model.SyncEntry(
+                    path = "/Bilder/x.jpg",
+                    remotePath = "/Pictures/x.jpg",
+                    remoteId = "u-alias",
+                    remoteHash = "h2",
+                    remoteSize = 10,
+                    remoteModified = null,
+                    localMtime = null,
+                    localSize = null,
+                    isFolder = false,
+                    isPinned = false,
+                    isHydrated = true,
+                    lastSynced = java.time.Instant.parse("2026-01-02T00:00:00Z"),
+                ),
+            )
+            assertEquals("/Pictures/x.jpg", upgraded.getEntry("/Bilder/x.jpg")?.remotePath)
+            // Found by its canonical effective remote path.
+            assertEquals("/Bilder/x.jpg", upgraded.getEntryByRemotePath("/Pictures/x.jpg")?.path)
+            // Second initialize() is idempotent (column already present).
+            upgraded.initialize()
+            assertNotNull(upgraded.getEntry("/Bilder/x.jpg"))
+        } finally {
+            upgraded.close()
+        }
+    }
+
+    @Test
+    fun `migration — local_hash column is added in-place to an existing DB and existing rows read it as null`() {
+        // #396: the shipped shape BEFORE local_hash — includes remote_path and the quarantine
+        // columns but not local_hash. The next initialize() must ADD the column without
+        // dropping rows or bumping schema_version; existing rows read localHash = null
+        // ("unknown"), which keeps today's mtime+size behaviour for them.
+        val tmpDir = Files.createTempDirectory("unidrive-localhash-migration")
+        val dbFile = tmpDir.resolve("state.db")
+        DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    """
+                    CREATE TABLE sync_entries (
+                        remote_id            TEXT PRIMARY KEY,
+                        parent_uuid          TEXT,
+                        path                 TEXT NOT NULL,
+                        remote_path          TEXT,
+                        remote_hash          TEXT,
+                        remote_size          INTEGER NOT NULL DEFAULT 0,
+                        remote_modified      TEXT,
+                        local_mtime          INTEGER,
+                        local_size           INTEGER,
+                        is_folder            INTEGER NOT NULL DEFAULT 0,
+                        is_pinned            INTEGER NOT NULL DEFAULT 0,
+                        is_hydrated          INTEGER NOT NULL DEFAULT 0,
+                        last_synced          TEXT NOT NULL,
+                        status               TEXT NOT NULL DEFAULT 'EXISTS'
+                                             CHECK (status IN ('EXISTS','TRASHED','DELETED')),
+                        download_quarantined INTEGER NOT NULL DEFAULT 0,
+                        last_error_at        TEXT
+                    )
+                """,
+                )
+                stmt.executeUpdate(
+                    "CREATE VIEW alive_entries AS SELECT * FROM sync_entries WHERE status='EXISTS'",
+                )
+                stmt.executeUpdate(
+                    "CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_state VALUES ('${StateDatabase.SCHEMA_VERSION_KEY}', " +
+                        "'${StateDatabase.SCHEMA_VERSION}')",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_entries (remote_id, path, remote_hash, local_mtime, local_size, is_hydrated, last_synced) " +
+                        "VALUES ('u-existing', '/Docs/report.pdf', 'h1', 1711627200000, 42, 1, '2026-01-01T00:00:00Z')",
+                )
+            }
+        }
+
+        val upgraded = StateDatabase(dbFile)
+        upgraded.initialize()
+        try {
+            val row = upgraded.getEntry("/Docs/report.pdf")
+            assertNotNull(row, "pre-#396 row must survive the additive migration")
+            assertNull(row.localHash, "an existing row has no local_hash -> reads as null (unknown)")
+            assertEquals(1711627200000L, row.localMtime)
+            assertEquals(42L, row.localSize)
+            assertEquals(
+                StateDatabase.SCHEMA_VERSION.toString(),
+                upgraded.getSyncState(StateDatabase.SCHEMA_VERSION_KEY),
+                "additive column: no schema_version bump",
+            )
+            // The column is writable and reads back on the migrated DB.
+            upgraded.upsertEntry(row.copy(localHash = "abc123"))
+            assertEquals("abc123", upgraded.getEntry("/Docs/report.pdf")?.localHash)
+            // Second initialize() is idempotent (column already present) and keeps the value.
+            upgraded.initialize()
+            assertEquals("abc123", upgraded.getEntry("/Docs/report.pdf")?.localHash)
+        } finally {
+            upgraded.close()
+        }
+    }
+
+    @Test
+    fun `local_hash round-trips through upsert and survives renamePrefix and touch-style copies`() {
+        assertNull(entry("/plain.txt").localHash)
+        db.upsertEntry(entry("/dir", isFolder = true))
+        db.upsertEntry(entry("/dir/a.txt").copy(isHydrated = true, localHash = "sha-a"))
+        assertEquals("sha-a", db.getEntry("/dir/a.txt")?.localHash)
+
+        // A scanner-style refresh (.copy of the row) keeps the hash.
+        db.upsertEntry(db.getEntry("/dir/a.txt")!!.copy(localMtime = 1711627999000))
+        assertEquals("sha-a", db.getEntry("/dir/a.txt")?.localHash)
+
+        // Renaming the folder moves the rows in place; the bytes are unchanged so the hash is kept.
+        db.renamePrefix("/dir", "/moved")
+        assertEquals("sha-a", db.getEntry("/moved/a.txt")?.localHash)
+    }
+
+    @Test
+    fun `local_hash is dropped when a row is written as not hydrated`() {
+        // A freed file / placeholder has no local bytes for a hash to describe, and a later
+        // re-hydrate through any path must not inherit a hash of bytes that are gone.
+        db.upsertEntry(entry("/freed.txt").copy(isHydrated = true, localHash = "sha-freed"))
+        assertEquals("sha-freed", db.getEntry("/freed.txt")?.localHash)
+
+        db.upsertEntry(db.getEntry("/freed.txt")!!.copy(isHydrated = false))
+        assertNull(db.getEntry("/freed.txt")?.localHash, "dehydrating a row clears its local hash")
+
+        db.upsertEntry(db.getEntry("/freed.txt")!!.copy(isHydrated = true))
+        assertNull(db.getEntry("/freed.txt")?.localHash, "re-hydrating without a fresh hash leaves it unknown")
+    }
+
+    @Test
+    fun `migration — cache_backed column is added in-place to an existing DB and existing rows read it as null`() {
+        // #449: the shipped shape BEFORE cache_backed (includes local_hash). The next initialize() must ADD
+        // the column without dropping rows or bumping schema_version; an existing row reads
+        // cacheBacked = null ("unknown"), which keeps the cache-presence guard for it.
+        val tmpDir = Files.createTempDirectory("unidrive-cachebacked-migration")
+        val dbFile = tmpDir.resolve("state.db")
+        DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    """
+                    CREATE TABLE sync_entries (
+                        remote_id            TEXT PRIMARY KEY,
+                        parent_uuid          TEXT,
+                        path                 TEXT NOT NULL,
+                        remote_path          TEXT,
+                        remote_hash          TEXT,
+                        remote_size          INTEGER NOT NULL DEFAULT 0,
+                        remote_modified      TEXT,
+                        local_mtime          INTEGER,
+                        local_size           INTEGER,
+                        is_folder            INTEGER NOT NULL DEFAULT 0,
+                        is_pinned            INTEGER NOT NULL DEFAULT 0,
+                        is_hydrated          INTEGER NOT NULL DEFAULT 0,
+                        last_synced          TEXT NOT NULL,
+                        status               TEXT NOT NULL DEFAULT 'EXISTS'
+                                             CHECK (status IN ('EXISTS','TRASHED','DELETED')),
+                        download_quarantined INTEGER NOT NULL DEFAULT 0,
+                        last_error_at        TEXT,
+                        local_hash           TEXT
+                    )
+                """,
+                )
+                stmt.executeUpdate(
+                    "CREATE VIEW alive_entries AS SELECT * FROM sync_entries WHERE status='EXISTS'",
+                )
+                stmt.executeUpdate(
+                    "CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_state VALUES ('${StateDatabase.SCHEMA_VERSION_KEY}', " +
+                        "'${StateDatabase.SCHEMA_VERSION}')",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_entries (remote_id, path, remote_hash, local_mtime, local_size, is_hydrated, last_synced) " +
+                        "VALUES ('u-existing', '/Docs/report.pdf', 'h1', 1711627200000, 42, 1, '2026-01-01T00:00:00Z')",
+                )
+            }
+        }
+
+        val upgraded = StateDatabase(dbFile)
+        upgraded.initialize()
+        try {
+            val row = upgraded.getEntry("/Docs/report.pdf")
+            assertNotNull(row, "pre-#449 row must survive the additive migration")
+            assertNull(row.cacheBacked, "an existing row has no cache_backed -> reads as null (unknown)")
+            assertEquals(42L, row.localSize)
+            assertEquals(
+                StateDatabase.SCHEMA_VERSION.toString(),
+                upgraded.getSyncState(StateDatabase.SCHEMA_VERSION_KEY),
+                "additive column: no schema_version bump",
+            )
+            upgraded.upsertEntry(row.copy(cacheBacked = false))
+            assertEquals(false, upgraded.getEntry("/Docs/report.pdf")?.cacheBacked)
+            // Second initialize() is idempotent (column already present) and keeps the value.
+            upgraded.initialize()
+            assertEquals(false, upgraded.getEntry("/Docs/report.pdf")?.cacheBacked)
+        } finally {
+            upgraded.close()
+        }
+    }
+
+    @Test
+    fun `cache_backed round-trips through upsert and is dropped when a row is written as not hydrated`() {
+        db.upsertEntry(entry("/m.txt").copy(isHydrated = true, cacheBacked = true))
+        assertEquals(true, db.getEntry("/m.txt")?.cacheBacked)
+        db.upsertEntry(db.getEntry("/m.txt")!!.copy(cacheBacked = false))
+        assertEquals(false, db.getEntry("/m.txt")?.cacheBacked)
+        // A scanner-style refresh (.copy of the row) keeps it.
+        db.upsertEntry(db.getEntry("/m.txt")!!.copy(localMtime = 1711627999000))
+        assertEquals(false, db.getEntry("/m.txt")?.cacheBacked)
+
+        // No local bytes: where the baseline lives means nothing, and a re-hydrate must not inherit it.
+        db.upsertEntry(db.getEntry("/m.txt")!!.copy(isHydrated = false))
+        assertNull(db.getEntry("/m.txt")?.cacheBacked)
+        db.upsertEntry(db.getEntry("/m.txt")!!.copy(isHydrated = true))
+        assertNull(db.getEntry("/m.txt")?.cacheBacked)
+    }
+
+    @Test
+    fun `migration — edit_base column is added in-place to an existing DB and existing rows read it as null`() {
+        // #1070/#1069: the shipped shape BEFORE edit_base. The next initialize() must ADD the column without
+        // dropping rows or bumping schema_version; an existing row reads editBase = null (no unsynced edit known).
+        val tmpDir = Files.createTempDirectory("unidrive-editbase-migration")
+        val dbFile = tmpDir.resolve("state.db")
+        DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    """
+                    CREATE TABLE sync_entries (
+                        remote_id            TEXT PRIMARY KEY,
+                        parent_uuid          TEXT,
+                        path                 TEXT NOT NULL,
+                        remote_path          TEXT,
+                        remote_hash          TEXT,
+                        remote_size          INTEGER NOT NULL DEFAULT 0,
+                        remote_modified      TEXT,
+                        local_mtime          INTEGER,
+                        local_size           INTEGER,
+                        is_folder            INTEGER NOT NULL DEFAULT 0,
+                        is_pinned            INTEGER NOT NULL DEFAULT 0,
+                        is_hydrated          INTEGER NOT NULL DEFAULT 0,
+                        last_synced          TEXT NOT NULL,
+                        status               TEXT NOT NULL DEFAULT 'EXISTS'
+                                             CHECK (status IN ('EXISTS','TRASHED','DELETED')),
+                        download_quarantined INTEGER NOT NULL DEFAULT 0,
+                        last_error_at        TEXT,
+                        local_hash           TEXT,
+                        cache_backed         INTEGER,
+                        upload_refused       TEXT,
+                        name_block           TEXT
+                    )
+                """,
+                )
+                stmt.executeUpdate(
+                    "CREATE VIEW alive_entries AS SELECT * FROM sync_entries WHERE status='EXISTS'",
+                )
+                stmt.executeUpdate(
+                    "CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_state VALUES ('${StateDatabase.SCHEMA_VERSION_KEY}', " +
+                        "'${StateDatabase.SCHEMA_VERSION}')",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_entries (remote_id, path, remote_hash, local_mtime, local_size, is_hydrated, last_synced) " +
+                        "VALUES ('u-existing', '/Docs/report.pdf', 'h1', 1711627200000, 42, 1, '2026-01-01T00:00:00Z')",
+                )
+            }
+        }
+
+        val upgraded = StateDatabase(dbFile)
+        upgraded.initialize()
+        try {
+            val row = upgraded.getEntry("/Docs/report.pdf")
+            assertNotNull(row, "a row from before the column must survive the additive migration")
+            assertNull(row.editBase)
+            assertEquals(
+                StateDatabase.SCHEMA_VERSION.toString(),
+                upgraded.getSyncState(StateDatabase.SCHEMA_VERSION_KEY),
+                "additive column: no schema_version bump",
+            )
+            assertTrue(upgraded.markEdited("/Docs/report.pdf", "h1"))
+            assertEquals("h1", upgraded.getEntry("/Docs/report.pdf")?.editBase)
+            // Second initialize() is idempotent (column already present) and keeps the value.
+            upgraded.initialize()
+            assertEquals("h1", upgraded.getEntry("/Docs/report.pdf")?.editBase)
+        } finally {
+            upgraded.close()
+        }
+    }
+
+    @Test
+    fun `migration - remote_version column is added in-place to an existing DB and existing rows read it as null`() {
+        // The shipped shape BEFORE remote_version (edit_base is the newest column). The next initialize() must ADD the
+        // column without dropping rows or bumping schema_version; an existing row reads remoteVersion = null, so its
+        // write token stays its remote_hash.
+        val tmpDir = Files.createTempDirectory("unidrive-remoteversion-migration")
+        val dbFile = tmpDir.resolve("state.db")
+        DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    """
+                    CREATE TABLE sync_entries (
+                        remote_id            TEXT PRIMARY KEY,
+                        parent_uuid          TEXT,
+                        path                 TEXT NOT NULL,
+                        remote_path          TEXT,
+                        remote_hash          TEXT,
+                        remote_size          INTEGER NOT NULL DEFAULT 0,
+                        remote_modified      TEXT,
+                        local_mtime          INTEGER,
+                        local_size           INTEGER,
+                        is_folder            INTEGER NOT NULL DEFAULT 0,
+                        is_pinned            INTEGER NOT NULL DEFAULT 0,
+                        is_hydrated          INTEGER NOT NULL DEFAULT 0,
+                        last_synced          TEXT NOT NULL,
+                        status               TEXT NOT NULL DEFAULT 'EXISTS'
+                                             CHECK (status IN ('EXISTS','TRASHED','DELETED')),
+                        download_quarantined INTEGER NOT NULL DEFAULT 0,
+                        last_error_at        TEXT,
+                        local_hash           TEXT,
+                        cache_backed         INTEGER,
+                        upload_refused       TEXT,
+                        name_block           TEXT,
+                        edit_base            TEXT
+                    )
+                """,
+                )
+                stmt.executeUpdate(
+                    "CREATE VIEW alive_entries AS SELECT * FROM sync_entries WHERE status='EXISTS'",
+                )
+                stmt.executeUpdate(
+                    "CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_state VALUES ('${StateDatabase.SCHEMA_VERSION_KEY}', " +
+                        "'${StateDatabase.SCHEMA_VERSION}')",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_entries (remote_id, path, remote_hash, local_mtime, local_size, is_hydrated, last_synced) " +
+                        "VALUES ('u-existing', '/Docs/report.pdf', 'h1', 1711627200000, 42, 1, '2026-01-01T00:00:00Z')",
+                )
+            }
+        }
+
+        val upgraded = StateDatabase(dbFile)
+        upgraded.initialize()
+        try {
+            val row = upgraded.getEntry("/Docs/report.pdf")
+            assertNotNull(row, "a row from before the column must survive the additive migration")
+            assertNull(row.remoteVersion, "no backfill: an old row knows no version")
+            assertEquals("h1", row.writeToken, "without a version the write token is the remote hash, as before")
+            assertEquals(
+                StateDatabase.SCHEMA_VERSION.toString(),
+                upgraded.getSyncState(StateDatabase.SCHEMA_VERSION_KEY),
+                "additive column: no schema_version bump",
+            )
+            upgraded.upsertEntry(row.copy(remoteVersion = "\"{V1},1\""))
+            assertEquals("\"{V1},1\"", upgraded.getEntry("/Docs/report.pdf")?.remoteVersion)
+            // Second initialize() is idempotent (column already present) and keeps the value.
+            upgraded.initialize()
+            assertEquals("\"{V1},1\"", upgraded.getEntry("/Docs/report.pdf")?.remoteVersion)
+        } finally {
+            upgraded.close()
+        }
+    }
+
+    @Test
+    fun `remote_version round-trips through both upserts and is the row's write token`() {
+        db.upsertEntry(entry("/v.txt").copy(remoteVersion = "\"{A},3\""))
+        val stored = db.getEntry("/v.txt")
+        assertNotNull(stored)
+        assertEquals("\"{A},3\"", stored.remoteVersion)
+        assertEquals("\"{A},3\"", stored.writeToken, "the provider's own token wins over the content hash")
+        assertEquals("hash-/v.txt", stored.remoteHash, "the content hash stays for change detection")
+
+        // The merge's upsert (keeping the refusal and name marks) stores it as well.
+        db.upsertEntry(stored.copy(remoteVersion = "\"{A},4\""), keepMarks = true)
+        assertEquals("\"{A},4\"", db.getEntry("/v.txt")?.remoteVersion)
+
+        // A delivery without a version clears it: the token falls back to the hash.
+        db.upsertEntry(db.getEntry("/v.txt")!!.copy(remoteVersion = null))
+        assertNull(db.getEntry("/v.txt")?.remoteVersion)
+        assertEquals("hash-/v.txt", db.getEntry("/v.txt")?.writeToken)
+    }
+
+    @Test
+    fun `the write token rules - which base a row accepts and what may be sent as If-Match`() {
+        val versioned = entry("/w.txt").copy(remoteVersion = "\"{A},3\"")
+        assertTrue(versioned.isBasedOn("\"{A},3\""), "the current version")
+        assertTrue(versioned.isBasedOn("hash-/w.txt"), "a base handed out before the row had a version, same content")
+        assertFalse(versioned.isBasedOn("\"{A},2\""), "an older version")
+        assertFalse(versioned.isBasedOn("hash-older"), "older content")
+        assertEquals("\"{A},3\"", versioned.ifMatchFor("\"{A},3\"", providerReportsVersions = true))
+        assertNull(versioned.ifMatchFor("hash-/w.txt", providerReportsVersions = true), "a content hash is never a provider's version")
+        assertNull(versioned.ifMatchFor(null, providerReportsVersions = true))
+
+        val plain = entry("/p.txt")
+        assertTrue(plain.isBasedOn("hash-/p.txt"))
+        assertFalse(plain.isBasedOn("hash-older"))
+        assertEquals("hash-/p.txt", plain.ifMatchFor("hash-/p.txt", providerReportsVersions = false), "Internxt: the hash is the token")
+        assertNull(plain.ifMatchFor("hash-/p.txt", providerReportsVersions = true), "no version known yet: unconditional")
+    }
+
+    @Test
+    fun `edit_base is set once by markEdited, survives a merge-style copy and ends with an upsert that clears it`() {
+        db.upsertEntry(entry("/e.txt"))
+        assertNull(db.getEntry("/e.txt")?.editBase)
+
+        assertTrue(db.markEdited("/e.txt", "hash-/e.txt"), "the first edit sets the base")
+        assertEquals("hash-/e.txt", db.getEntry("/e.txt")?.editBase)
+        assertFalse(db.markEdited("/e.txt", "later-version"), "a later edit keeps the version the first one started from")
+        assertEquals("hash-/e.txt", db.getEntry("/e.txt")?.editBase)
+
+        // A poll's merge (copy of the row with the new cloud version) keeps the note.
+        db.upsertEntry(db.getEntry("/e.txt")!!.copy(remoteHash = "newer", remoteSize = 7))
+        assertEquals("hash-/e.txt", db.getEntry("/e.txt")?.editBase)
+
+        // The upload that lands writes the row without it.
+        db.upsertEntry(db.getEntry("/e.txt")!!.copy(editBase = null))
+        assertNull(db.getEntry("/e.txt")?.editBase)
+
+        // "" is a base too (the row had no token): distinct from no note.
+        assertTrue(db.markEdited("/e.txt", ""))
+        assertEquals("", db.getEntry("/e.txt")?.editBase)
+    }
+
+    @Test
+    fun `markEdited notes only a cloud-backed file row`() {
+        db.upsertEntry(entry("/dir", isFolder = true))
+        assertFalse(db.markEdited("/dir", "x"), "a folder holds no edit")
+        db.upsertEntry(entry("/local.txt").copy(remoteId = null, isHydrated = true))
+        assertFalse(db.markEdited("/local.txt", "x"), "a row that never reached the cloud has no version to start from")
+        assertFalse(db.markEdited("/absent.txt", "x"))
+    }
+
+    @Test
+    fun `staging — scan_staging is added in-place to an existing v2 DB without disturbing rows`() {
+        // Simulate a v2 DB created before the resumable-scan slice landed:
+        // sync_entries + alive_entries + indexes are present, schema_version
+        // is 2, scan_staging is absent. The next initialize() must add
+        // scan_staging without touching the existing live rows.
+        val tmpDir = Files.createTempDirectory("unidrive-staging-migration")
+        val dbFile = tmpDir.resolve("state.db")
+        DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    """
+                    CREATE TABLE sync_entries (
+                        remote_id       TEXT PRIMARY KEY,
+                        parent_uuid     TEXT,
+                        path            TEXT NOT NULL,
+                        remote_hash     TEXT,
+                        remote_size     INTEGER NOT NULL DEFAULT 0,
+                        remote_modified TEXT,
+                        local_mtime     INTEGER,
+                        local_size      INTEGER,
+                        is_folder       INTEGER NOT NULL DEFAULT 0,
+                        is_pinned       INTEGER NOT NULL DEFAULT 0,
+                        is_hydrated     INTEGER NOT NULL DEFAULT 0,
+                        last_synced     TEXT NOT NULL,
+                        status          TEXT NOT NULL DEFAULT 'EXISTS'
+                                        CHECK (status IN ('EXISTS','TRASHED','DELETED'))
+                    )
+                """,
+                )
+                stmt.executeUpdate(
+                    "CREATE UNIQUE INDEX idx_sync_entries_path_alive " +
+                        "ON sync_entries(path) WHERE status='EXISTS'",
+                )
+                stmt.executeUpdate(
+                    "CREATE VIEW alive_entries AS SELECT * FROM sync_entries WHERE status='EXISTS'",
+                )
+                stmt.executeUpdate(
+                    "CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_state VALUES ('${StateDatabase.SCHEMA_VERSION_KEY}', " +
+                        "'${StateDatabase.SCHEMA_VERSION}')",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_entries (remote_id, path, remote_size, " +
+                        "is_folder, is_pinned, is_hydrated, last_synced) " +
+                        "VALUES ('keep-uuid', '/keep.txt', 100, 0, 0, 1, '2026-05-17T10:00:00Z')",
+                )
+            }
+        }
+
+        val upgraded = StateDatabase(dbFile)
+        upgraded.initialize()
+        try {
+            // Live row survived — additive migration does not touch sync_entries.
+            assertEquals(1, upgraded.getAllEntries().size)
+            assertNotNull(upgraded.getEntry("/keep.txt"))
+            // The new staging primitives operate cleanly on the migrated DB.
+            val scanId = upgraded.beginScan(initialMarker = "m0")
+            upgraded.persistScanPage(scanId, listOf(staged("new-uuid", "/new.txt")), marker = "m1")
+            assertEquals(1, upgraded.loadStagedItems(scanId).size)
+            // The staging slice is fully orthogonal — alive view unchanged.
+            assertEquals(1, upgraded.getAllEntries().size)
+        } finally {
+            upgraded.close()
+        }
+    }
+
+    @Test
+    fun insertFolder_creates_idempotent_folder_row() {
+        val mtime = java.time.Instant.parse("2026-05-24T08:00:00Z")
+        db.insertFolder("/test_folder", remoteId = "rid-1", mtime = mtime)
+
+        val entry = db.getEntry("/test_folder")
+        assertNotNull(entry)
+        assertEquals(true, entry.isFolder)
+        assertEquals(false, entry.isHydrated)
+        assertEquals("rid-1", entry.remoteId)
+
+        // Idempotent: second call must not throw, must not mutate.
+        db.insertFolder("/test_folder", remoteId = "rid-2-DIFFERENT", mtime = mtime)
+        val again = db.getEntry("/test_folder")
+        assertEquals("rid-1", again!!.remoteId, "insertFolder must be no-op when row exists")
+    }
+
+    @Test
+    fun markDeleted_sets_status_and_keeps_row() {
+        val mtime = java.time.Instant.parse("2026-05-24T08:00:00Z")
+        db.insertFolder("/to_delete", remoteId = "rid-x", mtime = mtime)
+
+        db.markDeleted("/to_delete")
+        val entry = db.getEntry("/to_delete")
+        assertNull(entry, "markDeleted must remove from alive_entries view")
+
+        // Idempotent on non-existent path: must not throw.
+        db.markDeleted("/never_existed")
+    }
+
+    // #323: an older jar opening a newer state.db must refuse to open and must
+    // never stamp the recorded version downward.
+
+    private fun schemaVersionOf(dbPath: java.nio.file.Path): Int? {
+        DriverManager.getConnection("jdbc:sqlite:${dbPath.toAbsolutePath().toUri()}").use { c ->
+            c.createStatement().use { stmt ->
+                stmt.executeQuery("SELECT value FROM sync_state WHERE key='schema_version'").use { rs ->
+                    return if (rs.next()) rs.getString(1).toIntOrNull() else null
+                }
+            }
+        }
+    }
+
+    private fun writeSchemaVersion(dbPath: java.nio.file.Path, version: Int) {
+        DriverManager.getConnection("jdbc:sqlite:${dbPath.toAbsolutePath().toUri()}").use { c ->
+            c.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    "UPDATE sync_state SET value='$version' WHERE key='schema_version'",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `opening a state_db stamped by a newer schema is refused and the stamp is untouched`() {
+        val dbPath = Files.createTempDirectory("ud-323-newer").resolve("state.db")
+        StateDatabase(dbPath).let { it.initialize(); it.close() }
+        writeSchemaVersion(dbPath, StateDatabase.SCHEMA_VERSION + 1)
+
+        val ex =
+            assertFailsWith<IllegalStateException> {
+                StateDatabase(dbPath).let { it.initialize(); it.close() }
+            }
+        assertTrue(
+            ex.message!!.contains("schema ${StateDatabase.SCHEMA_VERSION + 1}") &&
+                ex.message!!.contains("supports ${StateDatabase.SCHEMA_VERSION}") &&
+                ex.message!!.contains("upgrade unidrive"),
+            "the refusal must name both versions and the way out, got: ${ex.message}",
+        )
+        assertEquals(
+            StateDatabase.SCHEMA_VERSION + 1,
+            schemaVersionOf(dbPath),
+            "a refused open must not write anything, least of all stamp the version downward",
+        )
+    }
+
+    @Test
+    fun `a state_db at the current schema version opens`() {
+        val dbPath = Files.createTempDirectory("ud-323-current").resolve("state.db")
+        StateDatabase(dbPath).let { it.initialize(); it.close() }
+        assertEquals(StateDatabase.SCHEMA_VERSION, schemaVersionOf(dbPath))
+
+        StateDatabase(dbPath).let { it.initialize(); it.close() }
+        assertEquals(StateDatabase.SCHEMA_VERSION, schemaVersionOf(dbPath), "reopening keeps the stamp")
+    }
+
+    @Test
+    fun `a state_db at an older schema version migrates and is stamped current`() {
+        val dbPath = Files.createTempDirectory("ud-323-older").resolve("state.db")
+        StateDatabase(dbPath).let { it.initialize(); it.close() }
+        writeSchemaVersion(dbPath, 1)
+
+        StateDatabase(dbPath).let { it.initialize(); it.close() }
+
+        assertEquals(StateDatabase.SCHEMA_VERSION, schemaVersionOf(dbPath), "an older stamp migrates forward to current")
+    }
+}

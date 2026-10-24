@@ -1,0 +1,156 @@
+name: release
+
+# Fires on annotated or lightweight tag push matching v* (e.g. v0.0.1).
+# Per the spec, only the unidrive-dist repo enforces the strict tag regex
+# `^v(\d+\.\d+\.\d+)(-pkg\d+)?$`. On this repo we accept anything starting
+# with `v` so a future pre-release scheme can be opted into without
+# editing CI.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write  # required to create the GH Release
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false  # never cancel an in-flight release
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the existing BuildInfo.kt generator (which calls
+          # `git rev-parse --short HEAD` and `git diff HEAD --numstat`) finds
+          # something to work against.
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Cache ~/.gradle (same 429 rationale as build.yml; see
+      # core/settings.gradle.kts for the mirror set).
+      - name: Set up Gradle dependency cache
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      # The gate runs on the tagged commit itself, before anything is built,
+      # signed or published. A failing check stops the job here, so an
+      # untested tag never yields a signed release.
+      #
+      # Both Gradle steps run with strict dependency verification: every
+      # dependency and plugin artifact must match its sha256 in
+      # core/gradle/verification-metadata.xml, whichever mirror served it,
+      # or the job stops before the jar is built and signed. Other builds
+      # run lenient (core/gradle.properties). A dependency change that did
+      # not update the metadata fails here: regenerate it in core/ as
+      # core/gradle.properties describes (empty Gradle user home), review the
+      # diff, commit, and tag again.
+      - name: Gradle check
+        working-directory: core
+        run: ./gradlew check --no-daemon --dependency-verification strict
+
+      - name: Build shadowJar
+        working-directory: core
+        run: ./gradlew :app:cli:shadowJar --no-daemon -q --dependency-verification strict
+
+      - name: Verify expected JAR filename
+        run: |
+          set -euo pipefail
+          jar="core/app/cli/build/libs/unidrive-${GITHUB_REF_NAME#v}.jar"
+          test -f "$jar" || {
+            echo "ERROR: expected $jar to exist after shadowJar build" >&2
+            ls -la core/app/cli/build/libs/ >&2
+            exit 1
+          }
+          echo "JAR present: $jar"
+
+      - name: Stage release artefacts
+        run: |
+          set -euo pipefail
+          mkdir -p release-staging
+          ver="${GITHUB_REF_NAME#v}"
+          cp "core/app/cli/build/libs/unidrive-${ver}.jar" release-staging/
+          cd release-staging
+          sha256sum "unidrive-${ver}.jar" > "unidrive-${ver}.jar.sha256"
+          cat "unidrive-${ver}.jar.sha256"
+
+      - name: Import signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "ERROR: GPG_PRIVATE_KEY secret is not set on this repo." >&2
+            echo "  This key is provisioned by Plan P3 (krost-infra signing setup)." >&2
+            echo "  Add it under Settings -> Secrets and variables -> Actions before retrying." >&2
+            exit 1
+          fi
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-secret-keys --keyid-format LONG
+
+      - name: Sign artefacts
+        env:
+          GPG_KEY_FINGERPRINT: ${{ secrets.GPG_KEY_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GPG_KEY_FINGERPRINT:-}" ]; then
+            echo "ERROR: GPG_KEY_FINGERPRINT secret is not set on this repo." >&2
+            exit 1
+          fi
+          ver="${GITHUB_REF_NAME#v}"
+          cd release-staging
+          gpg --batch --yes --pinentry-mode loopback \
+              --local-user "$GPG_KEY_FINGERPRINT" \
+              --armor --detach-sign \
+              --output "unidrive-${ver}.jar.asc" \
+              "unidrive-${ver}.jar"
+          gpg --batch --yes --pinentry-mode loopback \
+              --local-user "$GPG_KEY_FINGERPRINT" \
+              --armor --detach-sign \
+              --output "unidrive-${ver}.jar.sha256.asc" \
+              "unidrive-${ver}.jar.sha256"
+          ls -1
+
+      - name: Verify signatures
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          cd release-staging
+          gpg --verify "unidrive-${ver}.jar.asc" "unidrive-${ver}.jar"
+          gpg --verify "unidrive-${ver}.jar.sha256.asc" "unidrive-${ver}.jar.sha256"
+
+      - name: Create GitHub Release
+        # Pinned by SHA like every action here; the trailing comment names the
+        # release it resolves to. Dependabot updates both together.
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          # Release notes are intentionally minimal here. The full RELEASES.md
+          # narrative is published by unidrive-dist's release workflow (Plan P4)
+          # which pulls this JAR + the Rust binary tarballs.
+          body: |
+            UniDrive CLI ${{ github.ref_name }}
+
+            JVM artefact for the coordinated UniDrive release. Distro packages
+            and the canonical end-user tarball are produced by unidrive-dist
+            and published at https://unidrive.krost.org/install/.
+
+            Verify with:
+              gpg --verify unidrive-*.jar.asc unidrive-*.jar
+              sha256sum -c unidrive-*.jar.sha256
+          files: |
+            release-staging/unidrive-*.jar
+            release-staging/unidrive-*.jar.sha256
+            release-staging/unidrive-*.jar.asc
+            release-staging/unidrive-*.jar.sha256.asc
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false

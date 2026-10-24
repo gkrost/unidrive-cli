@@ -1,0 +1,24 @@
+{
+  "id": "golden-unicode-download-v1",
+  "maxSegments": 3,
+  "notes": [
+    "Names created on the cloud side that Windows cannot create through the normal API; the mount and the mirror have to bring them to the user. seed-download.ps1 seeds this layout on the provider side of a hermetic localfs profile.",
+    "text files end with their own relative path unless plain is true; no file is larger than 1,000 bytes.",
+    "The case-only twin pair is deliberate: a volume that folds case keeps only the first of the two, and the seeder says so instead of failing. On a real cloud both exist."
+  ],
+  "nodes": [
+    {
+      "dir": ["download-hazards"],
+      "files": [
+        { "name": "control.txt", "text": "an ordinary name, for contrast" },
+        { "name": "trailing-dot.txt.", "text": "a trailing dot, legal in the cloud, refused by the normal Windows API" },
+        { "name": "trailing-space.txt ", "text": "a trailing space, legal in the cloud, refused by the normal Windows API" },
+        { "name": "CON", "text": "a reserved device name without an extension" },
+        { "name": "PRN.txt", "text": "a reserved device name with an extension" },
+        { "name": "NUL.csv", "text": "another reserved device name, in a folder that also holds ordinary files" },
+        { "name": "report.txt", "text": "the lower-case half of a case-only twin pair" },
+        { "name": "REPORT.TXT", "text": "the upper-case half of a case-only twin pair" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+{"argv":["auth","complete","--profile","od","--handle","handle-1","--json"]}
+{"ok":true,"profile":"od","status":"authenticated"}

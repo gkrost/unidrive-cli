@@ -1,0 +1,10 @@
+{"verb":"view.page","kind":"recents","limit":2}
+{"ok":true,"kind":"recents","offset":0,"entries":[{"path":"/Notes/todo.txt","size":5,"mtime_ms":1234567890123,"hydrated":false,"folder":false,"remote_modified_ms":1234567890000,"remote_id":"22222222-todo","etag":"etag-todo","pending_upload":false,"error":false},{"path":"/Work/todo.txt","size":5,"mtime_ms":1234567890123,"hydrated":false,"folder":false,"remote_modified_ms":1234567890000,"remote_id":"33333333-todo","etag":"etag-todo-2","pending_upload":false,"error":false}],"skipped":0,"next_offset":2,"state":"ok","as_of_ms":1700000000000}
+{"verb":"view.page","kind":"recents","offset":2,"limit":2}
+{"ok":true,"kind":"recents","offset":2,"entries":[{"path":"/Work/Reports/q3.pdf","size":5,"mtime_ms":1234567890123,"hydrated":false,"folder":false,"remote_modified_ms":1234567890000,"remote_id":"11111111-q3","etag":"etag-q3","pending_upload":false,"error":false}],"skipped":1,"end":true,"state":"ok","as_of_ms":1700000000000}
+{"verb":"view.page","kind":"recents","offset":1000}
+{"ok":true,"kind":"recents","offset":1000,"entries":[],"skipped":0,"end":true,"state":"ok","as_of_ms":1700000000000}
+{"verb":"view.page","kind":"shared"}
+{"ok":false,"error":"unknown_view"}
+{"verb":"hydration.list","prefix":"/Recents"}
+{"ok":true,"entries":[{"path":"/Recents/todo.txt","size":5,"mtime_ms":1234567890123,"hydrated":false,"folder":false,"remote_modified_ms":1234567890000,"remote_id":"unidrive:view:recents:22222222-todo","etag":"etag-todo","pending_upload":false,"error":false,"read_only":true,"view":"recents","view_target":"/Notes/todo.txt"},{"path":"/Recents/todo (dup-33333333).txt","size":5,"mtime_ms":1234567890123,"hydrated":false,"folder":false,"remote_modified_ms":1234567890000,"remote_id":"unidrive:view:recents:33333333-todo","etag":"etag-todo-2","pending_upload":false,"error":false,"read_only":true,"view":"recents","view_target":"/Work/todo.txt"}]}

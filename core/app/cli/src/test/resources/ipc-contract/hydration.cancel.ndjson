@@ -1,0 +1,6 @@
+{"verb":"hydration.cancel","path":"/docs/open.txt"}
+{"ok":true,"cancelled":true}
+{"verb":"hydration.cancel","path":"/docs/idle.txt"}
+{"ok":true,"cancelled":false}
+{"verb":"hydration.cancel","path":"/docs/../open.txt"}
+{"ok":false,"error":"invalid_path"}

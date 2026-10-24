@@ -1,0 +1,4 @@
+{"verb":"auth.complete"}
+{"ok":false,"error":"missing_handle","message":"the request names no handle"}
+{"verb":"auth.complete","handle":"handle-1"}
+{"ok":false,"error":"no_device_code_flow","message":"profile 'contract_profile' (type internxt) has no device-code sign-in"}

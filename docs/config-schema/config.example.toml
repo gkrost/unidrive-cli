@@ -1,0 +1,86 @@
+# unidrive config.toml. Copy to the config directory and edit.
+# Keys mirror config.schema.json; every key is optional.
+
+[general]
+# default_profile = "internxt"
+# poll_interval = 60
+# conflict_policy = "keep_both"        # keep_both | last_writer_wins
+# sync_direction = "bidirectional"     # bidirectional | upload | download
+# exclude_patterns = ["/dev/git/**"]   # ignored in both directions
+
+[providers.internxt]
+type = "internxt"
+# On Windows write paths with forward slashes ("C:/Users/me/Internxt"), doubled backslashes
+# ("C:\\Users\\me\\Internxt") or a single-quoted literal string ('C:\Users\me\Internxt').
+sync_root = "~/Internxt"
+
+# Free display text for front-ends, stored as typed. Display only: the profile name above stays the
+# identity (state folder, socket, sync-root id), and changing the label renames nothing.
+# label = "Work Internxt"
+
+# Sync only these remote subtrees. Nothing else materializes under sync_root.
+# A single path or a list; entries are absolute remote paths starting with "/".
+# Absent = the whole drive. `unidrive sync --sync-path ...` overrides it for one run.
+# Change it with `unidrive scope set <paths...>` / `unidrive scope clear`: they also apply the
+# scope change to the sync state, which a hand edit leaves to the next run.
+# sync_path = "/_INBOX"
+# sync_path = ["/_INBOX", "/alice_ssh"]
+
+# Budget of the hydration cache (what reads and writes through the mount leave under
+# ~/.cache/unidrive/hydration/<profile>), in bytes. Eviction never touches a file with an open
+# handle, a queued or failed upload, an unfinished create or an unsynced edit. 0 = unlimited.
+# Default 21474836480 (20 GiB). `unidrive doctor` shows the size against the budget.
+# hydration_cache_max_bytes = 21474836480
+
+# `unidrive daemon run` polls the cloud for changes made elsewhere (web UI, another device, another
+# profile on the same account) every this many seconds, starting at daemon start. Each poll is an
+# incremental delta; after a provider failure the interval backs off (up to 10 min). 0 = off.
+# `daemon run --poll-interval` overrides it.
+# daemon_poll_seconds = 60
+
+# OneDrive only: a change made elsewhere wakes the poll at once (Graph's socket.io change notifications,
+# an outbound connection renewed every 30 minutes). false = poll only. Default true; other providers ignore it.
+# remote_notifications = true
+
+# exclude_patterns = ["/dev/git/**"]
+
+# The sync policy of this profile alone; each key overrides the same-named [general] key. A backup profile
+# (`unidrive backup add` writes these) sends changes up and never takes the cloud's deletions down.
+# sync_direction = "upload"            # bidirectional | upload | download
+# file_versioning = true
+# max_versions = 5
+# trash_emulation = true
+# trash_retention_days = 30
+
+# Ignore rules for uploads, in git's syntax: `.unidrive.ignore` files anywhere in the tree, then these
+# account rules, then the built-in defaults (.git, .svn, OS and editor junk). An ignored file is never
+# uploaded; it stays where it is, and cloud items stay visible. `!.git` in a `.unidrive.ignore` brings a
+# repository's .git back. exclude_patterns above keep their own syntax and are not overridden by any rule.
+# honor_gitignore = false      # also read .gitignore files
+# ignore_rules = ["node_modules/", "*.log"]
+
+# What the provider keeps in its trash (Internxt: the items below a trashed folder) is shown apart, in a read-only
+# folder at the top of the profile, under the path it came from. This is that folder's name (one folder name, no
+# path); a client sets it from the user's language. Default: Papierkorb. A live top-level item with the same name
+# keeps it, and the folder is shown as "<name> (2)".
+# trash_folder_name = "Papierkorb"
+
+# Internxt only, mount profiles: what the account shares by itself is shown as one flat, read-only folder of files at the
+# top of the profile. shared_view = false switches it off (default: on; a provider without the view never shows it);
+# shared_folder_name is the folder's name (one folder name, no path; default: Shared). A live top-level item with the same
+# name keeps it, and the folder is shown as "<name> (2)".
+# shared_view = true
+# shared_folder_name = "Shared"
+
+# Internxt only, mount profiles: the files the account changed most recently, newest first, as one flat, read-only folder
+# at the top of the profile. recents_view = false switches it off (default: on); recents_folder_name is the folder's name
+# (one folder name, no path; default: Recents); recents_limit is how many files it lists at most (1 to 1000; default: 50).
+# recents_view = true
+# recents_folder_name = "Recents"
+# recents_limit = 50
+
+# Internxt only, mount profiles: the files the account marked as favorites, as one flat, read-only folder at the top of the
+# profile (favorited folders are not listed yet). favorites_view = false switches it off (default: on); favorites_folder_name
+# is the folder's name (one folder name, no path; default: Favorites).
+# favorites_view = true
+# favorites_folder_name = "Favorites"

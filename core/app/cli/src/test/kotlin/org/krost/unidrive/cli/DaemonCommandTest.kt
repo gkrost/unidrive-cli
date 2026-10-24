@@ -1,0 +1,315 @@
+package org.krost.unidrive.cli
+
+import org.krost.unidrive.CredentialHealth
+import org.krost.unidrive.sync.ProcessFacts
+import org.krost.unidrive.sync.isLockHolder
+import java.nio.file.Files
+import java.nio.file.attribute.FileTime
+import java.time.Instant
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+
+/**
+ * Daemon-lifecycle reliability guards.
+ *
+ * One named test per fixed invariant:
+ *   - `daemon status` refuses a non-daemon lock holder.
+ *   - `daemon stop` detects a live mount served by this daemon
+ *     (so it can refuse without --force rather than orphan the mount).
+ */
+class DaemonCommandTest {
+    // ── daemon status warns/refuses on a non-daemon lock holder ──────────────
+
+    // Invariant: when the .lock.pid holder's mode is not `daemon`
+    // (a legacy `sync` watcher, or a pre-mode-mutex pid-only sidecar), the
+    // status command must surface a mode-mismatch error pointing at the right
+    // stop mechanism — NOT a misleading "daemon status" line for an entirely
+    // different process class. The message is symmetric with `daemon stop`.
+    @Test
+    fun `daemon-status-warns-on-non-daemon-lock-holder`() {
+        val msg = daemonModeMismatchMessage("internxt_test", "sync", 12345)
+        assertTrue(
+            msg.contains("is held by mode 'sync'"),
+            "mode-mismatch message must name the actual holder mode; got: $msg",
+        )
+        assertTrue(
+            msg.contains("not 'daemon'"),
+            "message must state the holder is not a daemon; got: $msg",
+        )
+        assertTrue(
+            msg.contains("kill 12345"),
+            "message must point at the correct stop mechanism with the holder's pid; got: $msg",
+        )
+        assertFalse(
+            msg.startsWith("pid "),
+            "must NOT render the misleading file-derived 'pid <n>, mode ...' status line",
+        )
+    }
+
+    // Invariant: the legacy pid-only sidecar (no mode field) is pre-mode-mutex
+    // sync and must be treated as a non-daemon holder — same refusal path, no
+    // misleading status. It is named as a legacy holder, not as a "(no-mode)"
+    // state the daemon might be in.
+    @Test
+    fun `daemon-status-treats-legacy-no-mode-holder-as-non-daemon`() {
+        val msg = daemonModeMismatchMessage("internxt_test", null, 999)
+        assertTrue(
+            msg.contains("is held by mode 'legacy (pre-mode-mutex)'"),
+            "a pid-only sidecar must render as a legacy holder; got: $msg",
+        )
+        assertTrue(msg.contains("not 'daemon'"), "must state the holder is not a daemon; got: $msg")
+        assertFalse(msg.contains("(no-mode)"), "the ambiguous (no-mode) label must be gone; got: $msg")
+        assertFalse(msg.contains("'null'"), "must not leak a literal null mode; got: $msg")
+    }
+
+    @Test
+    fun `daemon-status-refuses-a-live-pid-only-sidecar-as-legacy-holder`() {
+        withPidFile("26168\n") { pidFile ->
+            val check = checkDaemonLock("p", pidFile, isAlive = { true })
+            assertTrue(check is DaemonLockCheck.Refused, "pid-only sidecar must be refused; got: $check")
+            assertTrue(check.message.contains("legacy (pre-mode-mutex)"), check.message)
+            assertTrue(check.message.contains("kill 26168"), check.message)
+        }
+    }
+
+    // ── daemon status does not trust a stale .lock.pid ───────────────────────
+
+    private fun withPidFile(contents: String?, block: (java.nio.file.Path) -> Unit) {
+        val dir = java.nio.file.Files.createTempDirectory("daemon-status-test")
+        try {
+            val pidFile = dir.resolve(".lock.pid")
+            if (contents != null) java.nio.file.Files.writeString(pidFile, contents)
+            block(pidFile)
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    // ── a recycled pid is not the daemon ─────────────────────────────────────
+
+    private fun withLockWrittenAt(written: Instant, block: (java.nio.file.Path) -> Unit) =
+        withPidFile("4242 daemon\n") { pidFile ->
+            Files.setLastModifiedTime(pidFile, FileTime.from(written))
+            block(pidFile)
+        }
+
+    private val lockWritten = Instant.parse("2000-01-01T10:00:00Z")
+
+    @Test
+    fun `a live pid that started after the lock was written is a stale lock`() {
+        withLockWrittenAt(lockWritten) { pidFile ->
+            val stranger = ProcessFacts(lockWritten.plusSeconds(3600), "C:/Windows/System32/wsl.exe")
+            val check = checkDaemonLock("p", pidFile, lookup = { stranger })
+            assertTrue(check is DaemonLockCheck.NotRunning && check.message.contains("stale lock"), "$check")
+        }
+    }
+
+    @Test
+    fun `a live pid whose command is not a java or unidrive process is a stale lock`() {
+        withLockWrittenAt(lockWritten) { pidFile ->
+            val stranger = ProcessFacts(lockWritten.minusSeconds(60), "C:/Windows/System32/wsl.exe")
+            assertFalse(isLockHolder(4242, pidFile) { stranger })
+        }
+    }
+
+    @Test
+    fun `a live pid that started before the lock was written is the daemon`() {
+        withLockWrittenAt(lockWritten) { pidFile ->
+            val daemon = ProcessFacts(lockWritten.minusSeconds(1), "/opt/jdk/bin/java -jar unidrive.jar daemon run")
+            assertEquals(DaemonLockCheck.Running(4242), checkDaemonLock("p", pidFile, lookup = { daemon }))
+        }
+    }
+
+    @Test
+    fun `facts the platform withholds fall back to a process with this pid runs`() {
+        withLockWrittenAt(lockWritten) { pidFile ->
+            assertTrue(isLockHolder(4242, pidFile) { ProcessFacts(null, null) })
+        }
+    }
+
+    @Test
+    fun `an old-format pid-only lock keeps the identity check`() {
+        withPidFile("4242\n") { pidFile ->
+            Files.setLastModifiedTime(pidFile, FileTime.from(lockWritten))
+            val stranger = ProcessFacts(lockWritten.plusSeconds(3600), null)
+            assertFalse(isLockHolder(4242, pidFile) { stranger })
+        }
+    }
+
+    // `daemon stop` only signals a process that isLockHolder accepts. This JVM stands in for the stranger:
+    // a lock written long before it started is not its lock. Nothing is signalled.
+    @Test
+    fun `this process is not the holder of a lock written before it started`() {
+        val ownPid = ProcessHandle.current().pid()
+        withPidFile("$ownPid daemon\n") { pidFile ->
+            Files.setLastModifiedTime(pidFile, FileTime.from(Instant.parse("2000-01-01T00:00:00Z")))
+            assertFalse(isLockHolder(ownPid, pidFile))
+            assertTrue(checkDaemonLock("p", pidFile) is DaemonLockCheck.NotRunning)
+        }
+    }
+
+    // Invariant: a `.lock.pid` whose pid is no longer running (the daemon was
+    // killed without its cleanup) is a stale lock, not a daemon. Status must say
+    // so plainly and must not print the dead pid as a status line or suggest a
+    // shutdown in progress.
+    @Test
+    fun `daemon-status-reports-dead-pid-as-stale-lock`() {
+        withPidFile("26168 daemon\n") { pidFile ->
+            val check = checkDaemonLock("p", pidFile, isAlive = { false })
+            val notRunning = check as? DaemonLockCheck.NotRunning
+            assertTrue(notRunning != null, "dead pid must read as not running; got: $check")
+            assertEquals("no daemon running for profile 'p' (stale lock from pid 26168)", notRunning.message)
+            assertFalse(notRunning.message.contains("mid-shutdown"))
+        }
+    }
+
+    // Invariant: liveness is judged before the holder's mode — a dead legacy
+    // sync watcher is just as stale as a dead daemon, and must not be reported
+    // as a live holder of another mode.
+    @Test
+    fun `daemon-status-reports-dead-non-daemon-holder-as-stale-lock`() {
+        withPidFile("26168 sync\n") { pidFile ->
+            val check = checkDaemonLock("p", pidFile, isAlive = { false })
+            assertEquals(
+                DaemonLockCheck.NotRunning("no daemon running for profile 'p' (stale lock from pid 26168)"),
+                check,
+            )
+        }
+    }
+
+    @Test
+    fun `daemon-status-accepts-live-daemon-pid`() {
+        withPidFile("26168 daemon\n") { pidFile ->
+            assertEquals(DaemonLockCheck.Running(26168), checkDaemonLock("p", pidFile, isAlive = { it == 26168L }))
+        }
+    }
+
+    @Test
+    fun `daemon-status-still-refuses-live-non-daemon-holder`() {
+        withPidFile("26168 sync\n") { pidFile ->
+            val check = checkDaemonLock("p", pidFile, isAlive = { true })
+            assertTrue(check is DaemonLockCheck.Refused, "live sync holder must still be refused; got: $check")
+            assertTrue(check.message.contains("is held by mode 'sync'"), check.message)
+        }
+    }
+
+    @Test
+    fun `daemon-status-absent-and-malformed-lock-keep-their-messages`() {
+        withPidFile(null) { pidFile ->
+            assertEquals(
+                DaemonLockCheck.NotRunning("no daemon running for profile 'p'"),
+                checkDaemonLock("p", pidFile, isAlive = { true }),
+            )
+        }
+        withPidFile("garbage") { pidFile ->
+            val check = checkDaemonLock("p", pidFile, isAlive = { true })
+            assertTrue(check is DaemonLockCheck.Refused && check.message.contains("malformed lock-pid file"), "$check")
+        }
+    }
+
+    // Real liveness (no injected predicate): the pid of a process that has exited
+    // reads as stale, this JVM's own pid reads as a running daemon.
+    @Test
+    fun `daemon-status-default-liveness-uses-the-real-process-table`() {
+        val javaBin = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString()
+        val child = ProcessBuilder(javaBin, "-version").redirectErrorStream(true).start()
+        child.inputStream.readAllBytes()
+        child.waitFor()
+        val deadPid = child.pid()
+        withPidFile("$deadPid daemon\n") { pidFile ->
+            val check = checkDaemonLock("p", pidFile)
+            assertTrue(
+                check is DaemonLockCheck.NotRunning && check.message.contains("stale lock from pid $deadPid"),
+                "exited process must read as stale; got: $check",
+            )
+        }
+        val ownPid = ProcessHandle.current().pid()
+        withPidFile("$ownPid daemon\n") { pidFile ->
+            assertEquals(DaemonLockCheck.Running(ownPid), checkDaemonLock("p", pidFile))
+        }
+    }
+
+    // ── daemon stop detects a live mount served by this daemon ───────────────
+
+    // Invariant: a live `unidrive-mount` co-daemon bound to this
+    // daemon's IPC socket means stopping the daemon would orphan the mount
+    // (reads then fail with EIO/ENOENT). The argv `--ipc <socket>` pair is the
+    // link between a mount and its daemon, and is what the stop guard keys on.
+    @Test
+    fun `daemon-stop-warns-on-live-mount`() {
+        val socket = "/run/user/1000/unidrive/internxt_test.sock"
+        val servingArgv = listOf(
+            "/home/alice/.local/lib/unidrive/unidrive-mount",
+            "--mount", "/home/alice/mnt",
+            "--ipc", socket,
+            "--cache", "/home/alice/.cache/unidrive/internxt_test",
+        )
+        assertTrue(
+            StaleMountDetector.cmdlineServesSocket(servingArgv, socket),
+            "a co-daemon whose --ipc matches this daemon's socket is served by this daemon",
+        )
+    }
+
+    // Invariant: a co-daemon bound to a DIFFERENT profile's socket
+    // must NOT be counted as served by this daemon — stopping this daemon would
+    // not orphan it, so the stop must not be blocked on it.
+    @Test
+    fun `daemon-stop-ignores-mount-bound-to-other-daemon`() {
+        val ourSocket = "/run/user/1000/unidrive/internxt_test.sock"
+        val otherProfileArgv = listOf(
+            "unidrive-mount",
+            "--mount", "/home/alice/mnt-od",
+            "--ipc", "/run/user/1000/unidrive/onedrive.sock",
+            "--cache", "/home/alice/.cache/unidrive/onedrive",
+        )
+        assertFalse(
+            StaleMountDetector.cmdlineServesSocket(otherProfileArgv, ourSocket),
+            "a co-daemon bound to another profile's socket is not served by this daemon",
+        )
+    }
+
+    // Invariant: non-co-daemon processes that merely mention the
+    // socket path (e.g. a `cat <socket>`) must never be mistaken for a mount.
+    // The argv[0] basename gate prevents that false positive.
+    @Test
+    fun `daemon-stop-ignores-non-codaemon-process-mentioning-socket`() {
+        val socket = "/run/user/1000/unidrive/internxt_test.sock"
+        assertFalse(
+            StaleMountDetector.cmdlineServesSocket(listOf("cat", socket), socket),
+            "only a unidrive-mount co-daemon counts; an unrelated process must not match",
+        )
+        assertEquals(false, StaleMountDetector.cmdlineServesSocket(emptyList(), socket))
+    }
+
+    // ── daemon start: no interactive sign-in (#865) ───────────────────────────
+
+    // Invariant: a daemon start proceeds exactly when the credentials can authenticate without
+    // an interactive sign-in. Expired/missing/unreadable credentials must produce the typed
+    // auth_required refusal — profile named, remedy attached — that a front-end greps the start
+    // log for; a credential that is fine or merely near expiry must never refuse a start.
+    @Test
+    fun `daemon-start-refuses-expired-credentials-with-typed-auth-required-reason`() {
+        val refusal = assertNotNull(daemonStartCredentialRefusal("p", CredentialHealth.ExpiresIn(0, "JWT expired")))
+        assertTrue(refusal.contains("auth_required"), "must carry the typed reason; got: $refusal")
+        assertTrue(refusal.contains("'p'"), "must name the profile; got: $refusal")
+        assertTrue(refusal.contains("JWT expired"), "must carry the check's detail; got: $refusal")
+        assertTrue(refusal.contains("Sign in again: unidrive -p p auth"), "must carry the remedy; got: $refusal")
+    }
+
+    @Test
+    fun `daemon-start-refuses-missing-and-unreadable-credentials`() {
+        assertNotNull(daemonStartCredentialRefusal("p", CredentialHealth.Missing("No credentials file")))
+        assertNotNull(daemonStartCredentialRefusal("p", CredentialHealth.Warning("token file does not parse")))
+    }
+
+    @Test
+    fun `daemon-start-proceeds-on-ok-and-expiring-credentials`() {
+        assertEquals(null, daemonStartCredentialRefusal("p", CredentialHealth.Ok))
+        // Time still left, exact or hour-granular: the daemon can authenticate and refresh.
+        assertEquals(null, daemonStartCredentialRefusal("p", CredentialHealth.ExpiresIn(2, "2h", remainingMs = 7_200_000)))
+        assertEquals(null, daemonStartCredentialRefusal("p", CredentialHealth.ExpiresIn(3, "3h")))
+    }
+}

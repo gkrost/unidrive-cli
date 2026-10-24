@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Generated from dist/launcher/unidrive.sh.tmpl; edit the template, not this file.
+# Heap size via UNIDRIVE_XMX (a bare size, e.g. 512m, 2g - no -Xmx prefix).
+# --locale=xx_YY (or UNIDRIVE_LOCALE) sets -Duser.language=xx -Duser.country=YY; the flag is consumed here and the
+# command line beats the environment.
+locale="${UNIDRIVE_LOCALE:-}"
+pass=()
+for a in "$@"; do
+    case "$a" in
+        --locale=*) locale="${a#--locale=}" ;;
+        *) pass+=("$a") ;;
+    esac
+done
+locale_args=()
+if [[ -n "$locale" ]]; then
+    if [[ "$locale" =~ ^([A-Za-z]{2,3})([_-]([A-Za-z]{2}))?$ ]]; then
+        locale_args+=("-Duser.language=$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')")
+        if [[ -n "${BASH_REMATCH[3]}" ]]; then
+            locale_args+=("-Duser.country=$(printf '%s' "${BASH_REMATCH[3]}" | tr '[:lower:]' '[:upper:]')")
+        fi
+    else
+        echo "unidrive: --locale expects xx or xx_YY (for example de_LU), got '$locale'" >&2
+        exit 2
+    fi
+fi
+# Coroutine debug probes (UNIDRIVE_COROUTINE_DEBUG=1): arm the daemon's coroutine capture. A
+# -javaagent reaches the JVM only at start, so the gate lives here; the probe jar sits beside the
+# fat jar (the deploy copies it). Without the flag, or without the jar, nothing is added. The
+# daemon then dumps its coroutines on a coroutine-dump.trigger file in the profile folder
+# (see CoroutineDebug).
+agent_args=()
+debug_agent='@COROUTINES_DEBUG_AGENT@'
+if [[ -n "${UNIDRIVE_COROUTINE_DEBUG:-}" && "${UNIDRIVE_COROUTINE_DEBUG}" != "0" && -n "$debug_agent" && -f "$debug_agent" ]]; then
+    agent_args+=("-javaagent:$debug_agent")
+fi
+# Post-mortem diagnostics in one directory (UNIDRIVE_DIAG_DIR overrides): fatal-crash hs_err logs, the OOM
+# heap dump (the companion -XX:+HeapDumpOnOutOfMemoryError rides jvm-flags.txt) and the daemon's bounded
+# GC log. The JVM silently skips a heap dump into a missing directory and treats a path without a trailing
+# separator as a FILE name, so: mkdir first, trailing separator always.
+diag_dir="${UNIDRIVE_DIAG_DIR:-$HOME/.local/share/unidrive/diagnostics}"
+mkdir -p "$diag_dir" 2>/dev/null || true
+diag_args=("-XX:ErrorFile=$diag_dir/hs_err_pid%p.log" "-XX:HeapDumpPath=$diag_dir/")
+# The GC log is daemon-only: CLI one-shots are ~1 s JVMs that would contend for the same file. The
+# long-runners are `daemon run`, `sync --watch`, and `autostart` (which selects one by profile mode).
+# Each daemon writes its own file, gc-<profile>.log: two daemons (one per profile) sharing one file cannot
+# rotate it. The profile is the `daemon run <profile>` positional (it wins, as in the CLI), else the global
+# -p/--provider (or --profile) value, else `default`; a value outside the profile-name rule (letters, digits,
+# '-', '_') is not file-safe and also gives `default`. DaemonAutospawn.gcLogFileName builds the same name for
+# the daemon a command autospawns, and unidrive.ps1.tmpl does the same on Windows.
+gc_at=-1
+gc_cmd=""
+for ((i = 0; i < ${#pass[@]}; i++)); do
+    a="${pass[i]}"
+    next="${pass[i + 1]:-}"
+    if [[ ( "$a" == "daemon" && "$next" == "run" ) || ( "$a" == "sync" && "$next" == "--watch" ) || "$a" == "autostart" ]]; then
+        gc_at=$i
+        gc_cmd="$a"
+        break
+    fi
+done
+if [[ "$gc_at" -ge 0 ]]; then
+    gc_profile=""
+    for ((i = 0; i < gc_at && ${#gc_profile} == 0; i++)); do
+        a="${pass[i]}"
+        case "$a" in
+            --provider=* | --profile=*) gc_profile="${a#*=}" ;;
+            -p | --provider | --profile) gc_profile="${pass[i + 1]:-}" ;;
+            -p=*) gc_profile="${a#-p=}" ;;
+            -p?*) gc_profile="${a#-p}" ;;
+        esac
+    done
+    if [[ "$gc_cmd" == "daemon" ]]; then
+        for ((i = gc_at + 2; i < ${#pass[@]}; i++)); do
+            a="${pass[i]}"
+            if [[ "$a" == "--poll-interval" ]]; then
+                i=$((i + 1))
+            elif [[ "$a" != -* ]]; then
+                gc_profile="$a"
+                break
+            fi
+        done
+    fi
+    [[ "$gc_profile" =~ ^[A-Za-z0-9_-]+$ ]] || gc_profile="default"
+    diag_args+=("-Xlog:gc*:file=$diag_dir/gc-$gc_profile.log:time,uptime:filecount=5,filesize=10m")
+fi
+# Java runtime: Linux runs unidrive on the system's JDK, not a bundled one. Java 25+ is preferred: the JVM
+# runtime spike (#624) measured Java 21 at ~30 % more CPU to a ready daemon than Java 25. Order:
+# UNIDRIVE_JAVA; else `java` on PATH when it is 25+; else the newest 25+ JDK under UNIDRIVE_JVM_DIR
+# (default /usr/lib/jvm); else `java` on PATH. Versions come from the JDK's `release` file, so choosing
+# costs no extra JVM start. The daemon a command autospawns runs on this same java (its java.home).
+java_major() {
+    local rel
+    rel="$(dirname "$(dirname "$(readlink -f "$1")")")/release"
+    [[ -f "$rel" ]] && sed -n 's/^JAVA_VERSION="\([0-9]*\).*/\1/p' "$rel"
+    return 0
+}
+java_bin="${UNIDRIVE_JAVA:-}"
+if [[ -z "$java_bin" ]]; then
+    java_bin="$(command -v java || true)"
+    major=""
+    [[ -n "$java_bin" ]] && major="$(java_major "$java_bin")"
+    if [[ -z "$major" || "$major" -lt 25 ]]; then
+        best_major=0
+        for cand in "${UNIDRIVE_JVM_DIR:-/usr/lib/jvm}"/*/bin/java; do
+            [[ -x "$cand" ]] || continue
+            m="$(java_major "$cand")"
+            if [[ -n "$m" && "$m" -ge 25 && "$m" -gt "$best_major" ]]; then
+                java_bin="$cand"
+                best_major="$m"
+            fi
+        done
+    fi
+fi
+if [[ -z "$java_bin" ]]; then
+    echo "unidrive: no Java runtime found. Install one (Debian/Ubuntu: sudo apt install openjdk-25-jre-headless) or set UNIDRIVE_JAVA." >&2
+    exit 1
+fi
+major="$(java_major "$java_bin")"
+if [[ -n "$major" && "$major" -lt 21 ]]; then
+    echo "unidrive: needs Java 21 or newer, found Java $major at $java_bin. Install openjdk-25-jre-headless or set UNIDRIVE_JAVA." >&2
+    exit 1
+fi
+if [[ -n "$major" && "$major" -lt 25 && "${#diag_args[@]}" -gt 2 ]]; then
+    # Long-runners only (they armed the GC log above): a one-shot command is not worth the noise.
+    echo "unidrive: running on Java $major; Java 25 or newer uses noticeably less CPU (Debian/Ubuntu: sudo apt install openjdk-25-jre-headless)." >&2
+fi
+# A JDK package upgrade replaces the runtime under a running daemon, and classes or native libraries it
+# loads later then come from the new files. Say so on every command until that daemon is restarted.
+for pid in $(pgrep -u "$(id -u)" -f 'unidrive[^ ]*\.jar .*daemon run' 2>/dev/null); do
+    if grep -q 'libjvm\.so (deleted)' "/proc/$pid/maps" 2>/dev/null; then
+        profile="$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | tail -1)"
+        if [[ -n "$profile" && "$profile" != "run" ]]; then
+            echo "unidrive: the Java runtime was updated after the daemon for profile '$profile' (pid $pid) started; restart it: unidrive -p $profile daemon stop" >&2
+        else
+            echo "unidrive: the Java runtime was updated after the unidrive daemon (pid $pid) started; restart it (unidrive daemon stop)." >&2
+        fi
+    fi
+done
+exec "$java_bin" "-Xmx${UNIDRIVE_XMX:-2g}" @STATIC_FLAGS_SH@ "${agent_args[@]}" "${locale_args[@]}" "-Djdk.net.unixdomain.tmpdir=${TMPDIR:-/tmp}" "${diag_args[@]}" -jar "@JAR@" "${pass[@]}"

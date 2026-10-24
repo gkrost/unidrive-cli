@@ -1,0 +1,426 @@
+package org.krost.unidrive.cli
+
+import org.krost.unidrive.ProviderRegistry
+import org.krost.unidrive.sync.SyncConfig
+import org.krost.unidrive.sync.ProfileMode
+import org.krost.unidrive.sync.generateProfileToml
+import org.krost.unidrive.sync.isValidProfileName
+import org.krost.unidrive.sync.removeProfileSection
+import org.krost.unidrive.sync.setDefaultProfile
+import kotlin.test.Test
+import kotlin.test.assertContains
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class ProfileCommandTest {
+    // ── generateProfileToml ──────────────────────────────────────────────────
+
+    @Test
+    fun `generateProfileToml produces valid S3 section`() {
+        val toml =
+            generateProfileToml(
+                "s3",
+                "hetzner-s3",
+                "~/HetznerS3",
+                mapOf(
+                    "bucket" to "my-bucket",
+                    "region" to "eu-central-1",
+                    "endpoint" to "https://s3.eu-central-1.hetzner.com",
+                    "access_key_id" to "AKIA123",
+                    "secret_access_key" to "secret",
+                ),
+            mode = ProfileMode.MOUNT,
+            )
+        assertContains(toml, "[providers.hetzner-s3]")
+        assertContains(toml, "type = \"s3\"")
+        assertContains(toml, "sync_root = \"~/HetznerS3\"")
+        assertContains(toml, "bucket = \"my-bucket\"")
+        assertContains(toml, "access_key_id = \"AKIA123\"")
+        assertContains(toml, "secret_access_key = \"secret\"")
+    }
+
+    @Test
+    fun `generateProfileToml produces minimal OneDrive section`() {
+        val toml = (generateProfileToml("onedrive", "work", "~/OneDrive-Work", emptyMap(), mode = ProfileMode.MOUNT))
+        assertContains(toml, "[providers.work]")
+        assertContains(toml, "type = \"onedrive\"")
+        assertContains(toml, "sync_root = \"~/OneDrive-Work\"")
+        // mode, type + sync_root; no credential fields (#603)
+        assertTrue(toml.lines().count { it.contains("=") } == 3) // mode + type + sync_root
+        assertContains(toml, "mode = \"mount\"")
+    }
+
+    @Test
+    fun `generateProfileToml skips blank credential values`() {
+        val toml =
+            generateProfileToml(
+                "sftp",
+                "nas",
+                "~/NAS",
+                mapOf(
+                    "host" to "192.168.1.100",
+                    "remote_path" to "",
+                    "user" to "admin",
+                ),
+            mode = ProfileMode.MOUNT,
+            )
+        assertContains(toml, "host = \"192.168.1.100\"")
+        assertContains(toml, "user = \"admin\"")
+        // remote_path is blank → skipped
+        assertTrue(toml.lines().none { it.startsWith("remote_path") })
+    }
+
+    @Test
+    fun `generateProfileToml for WebDAV includes all fields`() {
+        val toml =
+            generateProfileToml(
+                "webdav",
+                "nextcloud",
+                "~/Nextcloud",
+                mapOf(
+                    "url" to "https://cloud.example.com/dav",
+                    "user" to "alice",
+                    "password" to "s3cret",
+                ),
+            mode = ProfileMode.MOUNT,
+            )
+        assertContains(toml, "type = \"webdav\"")
+        assertContains(toml, "url = \"https://cloud.example.com/dav\"")
+        assertContains(toml, "user = \"alice\"")
+        assertContains(toml, "password = \"s3cret\"")
+    }
+
+    @Test
+    fun `generateProfileToml for rclone includes remote config`() {
+        val toml =
+            generateProfileToml(
+                "rclone",
+                "rclone-gdrive",
+                "~/GDrive",
+                mapOf(
+                    "rclone_remote" to "gdrive",
+                    "rclone_path" to "/backup",
+                ),
+            mode = ProfileMode.MOUNT,
+            )
+        assertContains(toml, "type = \"rclone\"")
+        assertContains(toml, "rclone_remote = \"gdrive\"")
+        assertContains(toml, "rclone_path = \"/backup\"")
+    }
+
+    @Test
+    fun `generateProfileToml escapes special characters in values`() {
+        val toml =
+            generateProfileToml(
+                "webdav",
+                "test",
+                "~/Test",
+                mapOf(
+                    "password" to """p@ss"word\with\slashes""",
+                ),
+            mode = ProfileMode.MOUNT,
+            )
+        assertContains(toml, """password = "p@ss\"word\\with\\slashes"""")
+    }
+
+    // ── removeProfileSection ─────────────────────────────────────────────────
+
+    @Test
+    fun `removeProfileSection excises target and preserves others`() {
+        val config =
+            """
+            [general]
+            poll_interval = 60
+
+            [providers.work]
+            type = "onedrive"
+            sync_root = "~/OneDrive-Work"
+
+            [providers.personal]
+            type = "onedrive"
+            sync_root = "~/OneDrive-Personal"
+
+            [providers.nas]
+            type = "sftp"
+            host = "192.168.1.1"
+            """.trimIndent().lines()
+
+        val result = removeProfileSection(config, "personal")
+        val joined = result.joinToString("\n")
+
+        assertContains(joined, "[providers.work]")
+        assertContains(joined, "[providers.nas]")
+        assertTrue(joined.lines().none { it.contains("[providers.personal]") })
+        assertTrue(joined.lines().none { it.contains("OneDrive-Personal") })
+    }
+
+    @Test
+    fun `removeProfileSection handles last section without trailing bracket`() {
+        val config =
+            """
+            [general]
+
+            [providers.only]
+            type = "s3"
+            bucket = "test"
+            """.trimIndent().lines()
+
+        val result = removeProfileSection(config, "only")
+        val joined = result.joinToString("\n")
+
+        assertContains(joined, "[general]")
+        assertTrue(result.none { it.contains("[providers.only]") })
+        assertTrue(result.none { it.contains("bucket") })
+    }
+
+    // #1085: TOML allows a comment after a header and the parser reads such a profile, so the remover must find it.
+    @Test
+    fun `removeProfileSection finds a header with a trailing comment`() {
+        val config = listOf("[general]", "", "[providers.a] # main", "type = \"x\"", "", "[providers.b]", "type = \"y\"")
+        val result = removeProfileSection(config, "a")
+        assertTrue(result.none { it.contains("[providers.a]") }, result.toString())
+        assertTrue(result.none { it.contains("type = \"x\"") }, result.toString())
+        assertContains(result.joinToString("\n"), "[providers.b]")
+    }
+
+    @Test
+    fun `removeProfileSection keeps the comment that introduces the next section`() {
+        val config = listOf("[general]", "", "[providers.a]", "type = \"x\"", "", "# about b", "[providers.b]", "type = \"y\"")
+        val result = removeProfileSection(config, "a")
+        assertEquals(listOf("[general]", "", "# about b", "[providers.b]", "type = \"y\""), result)
+    }
+
+    @Test
+    fun `removeProfileSection on nonexistent profile returns input unchanged`() {
+        val config = listOf("[general]", "", "[providers.foo]", "type = \"s3\"")
+        val result = removeProfileSection(config, "nonexistent")
+        assertEquals(config, result)
+    }
+
+    @Test
+    fun `removeProfileSection removes preceding blank lines`() {
+        val config =
+            listOf(
+                "[general]",
+                "",
+                "",
+                "[providers.remove-me]",
+                "type = \"onedrive\"",
+                "",
+                "[providers.keep]",
+                "type = \"s3\"",
+            )
+        val result = removeProfileSection(config, "remove-me")
+        // Should not have double blank lines before [providers.keep]
+        val joined = result.joinToString("\n")
+        assertContains(joined, "[general]")
+        assertContains(joined, "[providers.keep]")
+        assertTrue(result.none { it.contains("remove-me") })
+    }
+
+    // ── Profile name validation ────────────────────────────────────────────
+
+    @Test
+    fun `isValidProfileName accepts valid names`() {
+        assertTrue(isValidProfileName("onedrive"))
+        assertTrue(isValidProfileName("my-s3"))
+        assertTrue(isValidProfileName("hetzner_s3"))
+        assertTrue(isValidProfileName("OneDrive-Work2"))
+    }
+
+    @Test
+    fun `isValidProfileName rejects invalid names`() {
+        assertFalse(isValidProfileName("my.s3")) // dots break TOML
+        assertFalse(isValidProfileName("my s3")) // spaces
+        assertFalse(isValidProfileName("[bad]")) // brackets
+        assertFalse(isValidProfileName("")) // empty
+        assertFalse(isValidProfileName("path/name")) // slashes
+    }
+
+    @Test
+    fun `isValidProfileName rejects Windows reserved device names on every platform`() {
+        for (name in listOf("con", "NUL", "aux", "prn", "com1", "COM9", "lpt1", "LPT9", "con.txt", "COM1.log")) {
+            assertFalse(isValidProfileName(name), "reserved profile name was accepted: $name")
+        }
+    }
+
+    // ── Duplicate detection ──────────────────────────────────────────────────
+
+    @Test
+    fun `detectRootIsolationConflicts catches duplicate`() {
+        val raw =
+            SyncConfig.parseRaw(
+                """
+                [general]
+                [providers.a]
+                type = "onedrive"
+                sync_root = "~/SameRoot"
+                [providers.b]
+                type = "s3"
+                sync_root = "~/SameRoot"
+                """.trimIndent(),
+            )
+        val err = SyncConfig.detectRootIsolationConflicts(raw)
+        assertNotNull(err)
+        assertContains(err, "SameRoot")
+    }
+
+    @Test
+    fun `detectRootIsolationConflicts rejects a nested sync root`() {
+        val raw =
+            SyncConfig.parseRaw(
+                """
+                [general]
+                [providers.a]
+                type = "onedrive"
+                sync_root = "~/Sync"
+                [providers.b]
+                type = "s3"
+                sync_root = "~/Sync/b-archive"
+                """.trimIndent(),
+            )
+        val err = SyncConfig.detectRootIsolationConflicts(raw)
+        assertNotNull(err)
+        assertContains(err, "nested")
+    }
+
+    @Test
+    fun `detectRootIsolationConflicts rejects profiles differing only in name case`() {
+        val raw =
+            SyncConfig.parseRaw(
+                """
+                [general]
+                [providers.work]
+                type = "onedrive"
+                sync_root = "~/SyncA"
+                [providers.Work]
+                type = "s3"
+                sync_root = "~/SyncB"
+                """.trimIndent(),
+            )
+        val err = SyncConfig.detectRootIsolationConflicts(raw, caseInsensitive = true)
+        assertNotNull(err)
+        assertContains(err, "differ only in case")
+    }
+
+    @Test
+    fun `a mount profiles unused sync_root key does not conflict`() {
+        val raw =
+            SyncConfig.parseRaw(
+                """
+                [general]
+                [providers.mounted]
+                type = "onedrive"
+                mode = "mount"
+                sync_root = "~/Sync"
+                [providers.mirror]
+                type = "s3"
+                mode = "mirror"
+                sync_root = "~/Sync"
+                """.trimIndent(),
+            )
+        assertNull(
+            SyncConfig.detectRootIsolationConflicts(raw, caseInsensitive = true),
+            "the mount profile touches no sync root after the cutover",
+        )
+    }
+
+    @Test
+    fun `detectRootIsolationConflicts allows different roots`() {
+        val raw =
+            SyncConfig.parseRaw(
+                """
+                [general]
+                [providers.a]
+                type = "onedrive"
+                sync_root = "~/OneDrive"
+                [providers.b]
+                type = "s3"
+                sync_root = "~/S3"
+                """.trimIndent(),
+            )
+        assertNull(SyncConfig.detectRootIsolationConflicts(raw))
+    }
+
+    // ── New-account hint (#457) ──────────────────────────────────────────────
+
+    @Test
+    fun `the new-account hint for Internxt carries the referral link`() {
+        val hint = newAccountHint(ProviderRegistry.getMetadata("internxt"))
+        assertEquals(2, hint.size, "one sentence and the link: $hint")
+        assertContains(hint[0], "Internxt Drive")
+        assertEquals("  https://internxt.cello.so/wboSPv4MM19", hint[1])
+    }
+
+    @Test
+    fun `providers without an affiliate link print no hint`() {
+        for (id in listOf("onedrive", "localfs")) {
+            val metadata = ProviderRegistry.getMetadata(id)
+            assertNotNull(metadata, "$id is registered")
+            assertNull(metadata.affiliateUrl, "$id has no affiliate link")
+            assertTrue(newAccountHint(metadata).isEmpty(), "$id prints no hint")
+        }
+        assertTrue(newAccountHint(null).isEmpty(), "an unknown provider prints no hint")
+    }
+
+    // ── setDefaultProfile (#646) ─────────────────────────────────────────────
+
+    @Test
+    fun `setDefaultProfile inserts under the general header and keeps everything else`() {
+        val config =
+            """
+            [general]
+
+            [providers.work]
+            type = "onedrive"
+            """.trimIndent()
+
+        val result = setDefaultProfile(config, "work")
+
+        val lines = result.lines()
+        assertEquals("[general]", lines[0])
+        assertEquals("default_profile = \"work\"", lines[1])
+        assertTrue(lines.any { it.contains("[providers.work]") }, "the provider section survives")
+        assertTrue(lines.none { it.startsWith("default_profile") && it != lines[1] }, "no duplicate key")
+    }
+
+    @Test
+    fun `setDefaultProfile replaces an existing value in place`() {
+        val config =
+            """
+            [general]
+            default_profile = "old"
+            poll_interval = 60
+            """.trimIndent()
+
+        val result = setDefaultProfile(config, "new")
+
+        assertTrue("default_profile = \"old\"" !in result)
+        assertTrue("default_profile = \"new\"" in result)
+        assertTrue("poll_interval = 60" in result, "neighbouring keys survive")
+        assertEquals(1, result.lines().count { it.trim().startsWith("default_profile") }, "no duplicate key")
+    }
+
+    @Test
+    fun `setDefaultProfile escapes paths and quotes in the profile name`() {
+        val result = setDefaultProfile("[general]\n", "weird\"name")
+
+        assertContains(result, "default_profile = \"weird\\\"name\"")
+    }
+
+    // ── the mirror sync-root suggestion (#646) ───────────────────────────────
+
+    @Test
+    fun `the official Internxt client folders are never a suggestion`() {
+        assertTrue(isOfficialInternxtClientFolder("Internxt"))
+        assertTrue(isOfficialInternxtClientFolder("internxt"))
+        assertTrue(isOfficialInternxtClientFolder("InternxtDrive"))
+        assertTrue(isOfficialInternxtClientFolder("InternxtDrive-Old"))
+        assertFalse(isOfficialInternxtClientFolder("InternxtSync"))
+        assertFalse(isOfficialInternxtClientFolder("OneDrive"))
+        assertFalse(isOfficialInternxtClientFolder("MyFiles"))
+    }
+}

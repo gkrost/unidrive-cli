@@ -1,0 +1,144 @@
+# Closed
+
+Things that were done before this branch started. Append new entries when items move out of `BACKLOG.md`.
+
+## Slim-branch consolidation
+
+- Strip non-MVP providers + build targets; trim dependent CLI tests
+- Remove MCP module and all references
+- Remove CI policing; `./gradlew check` is the only gate
+- Delete Windows-only scripts; Linux-only surface
+- Delete Docker test harnesses for removed providers
+- Scrub MCP references from dist scripts
+- Absorb CONTRIBUTING.md and CLAUDE.md into AGENTS.md
+- Co-locate provider docs with provider modules
+- Trim surviving ADRs, drop seven obsolete ones
+- Rewrite README as Linux-power-user marketing front
+
+## Drained from BACKLOG
+
+- `--fast-bootstrap` adopts a matching top-level remote folder (registers the state.db row with the existing `remoteId`) instead of issuing a `mkdir` that 409s; gated to the bootstrap apply path so normal sync semantics are unchanged (BACKLOG: High)
+- `RefreshRpcHandler` reserves the in-flight slot via `compareAndSet`-before-launch (placeholder swap), with launch-failure cleanup so the invariant-I6 guard can't stick; added named tests for the busy, provider_error, and shutdown reply paths (docs/dev/specs/unidrive-daemon-design.md, `RefreshRpcHandler` / invariant I6)
+- Apply-phase action ordering respects parent-folder dependencies via Kahn's algorithm in `ApplyOrder.kt` (BACKLOG: High)
+- Tracking-set cursor-resume no longer forces `exists=true` for `PendingDeleteLocal` rows, fixing stale-local crash-recovery (BACKLOG: Critical)
+- Default-ignore-list surface (c): tracking-set `scanLocal` honours `effectiveExcludePatterns` via `TsContext` (BACKLOG: High)
+- Create-collision blind-PUT-overwrite fixed on both providers via `existingRemoteId` guard and rename-on-conflict fallbacks (BACKLOG: UD-366)
+- Positional `<profile>` argument on `daemon run|status|stop`, `sync`, `refresh` — works both as `-p` and positional
+- `hydration.dehydrate` on unknown path returns `Failed` instead of silent `Ok`
+- Hydration SPI Phase 1 — `app:hydration` module with openForRead/Write, closeHandle, hydrate/dehydrate, events flow
+- Internxt permanent-failure quarantine on download 404; quarantined rows skipped until fresh delta clears flag
+- Audit code/comment drift on hydration filtering — two comments rewritten, eight verified accurate
+- Unhydrated folder rows no longer turn into DeleteRemote — post-detectMoves filter in Reconciler drops them
+- Repo-root docs realigned to bounded doc surface; boosters analysis moved to docs/audits/
+- MDC empty `build` slot renders as `--------` instead of `???????`, matching `scan` convention
+- Dirty-build WARN ignores mode-only changes; dirtiness from `git diff --numstat` + untracked files
+- `unidrive mount` IPC lifecycle deadlock resolved by per-profile daemon process model
+- Streaming reconciliation (process pages as they arrive) across 6 commits + CLI/TOML config
+- Internxt `encryptVersion` — investigation found no `02-rsa` usage; added fail-fast guard for unknown versions
+- Internxt retry coverage on `putEncryptedShard`, `putEncryptedShardFromFile`, `downloadFileStreaming`
+- Internxt 429 on Drive DELETE mutations routes through `retryOnTransient`
+- Internxt delta path-collapse — `buildFolderPath` returns null on missing ancestor; delta filters dropped items
+- Internxt state-db duplicate-`remote_id` cleanup via one-shot SQL window-function migration
+- Internxt listing `status` filter selectable per call via optional parameter (default `"ALL"`)
+- Internxt `Retry-After` HTTP header parsing — RFC 7231 delta-seconds and IMF-fixdate support
+- Internxt JWT pre-expiry refresh margin (1 day) to avoid mid-stream 401s
+- Internxt `NonCancellable` wrap on `refreshToken` verified (already covered by `RefreshableTokenLatch`)
+- Internxt in-flight dedup extended to `getFileMeta`, `listFiles`, `listFolders`
+- Internxt hard-coded client-header values (`clientName`/`clientVersion`/`desktopHeader`) now configurable
+- Internxt request prioritization — two-lane Foreground/Background via coroutine context
+- Internxt `HttpRetryBudget` wiring — per-host budgets for Drive REST and Bridge upload
+- Internxt parallel listing pagination — fans out 2 page fetches per stream
+- Internxt 401 → automatic refresh-and-replay on Drive REST surface
+- state.db redesign: tombstones, uuid identity, parent_uuid — drop-and-rescan upgrade
+- Mount-write clobbered by SyncEngine resolved by per-profile mode mutex per design spec
+- Internxt resumable scan with persistent checkpoint in `scan_staging` table
+- Internxt cross-session resumable scan — incomplete scans survive clean exit
+- Internxt best-effort cursor advance on incomplete scan — promotes cursor unconditionally
+- Internxt WebSocket change feed (socket.io wake-signal via `NotificationsClient`)
+- Internxt `finishUpload` idempotency via 409 reconcile with listing-based collision detection
+- Internxt local chunk-tombstone for upload resume via `UploadTombstoneStore`
+- OneDrive `If-Match`/`@odata.etag` on `moveItem` + `conflictBehavior=replace` parity on uploadSimple
+- OneDrive delta soft-vs-hard delete semantics with age-gap WARN
+- OneDrive upload-session expiry validation — self-pruning store, probe resilience, two-attempt loop
+- OneDrive `fileSystemInfo` round-trip — local mtime/ctime preserved through upload/download
+- Internxt destructive-overwrite warning — opt-in `keep_overwritten=true` renames prior cloud file before replace
+- Internxt `--watch` cadence collapses to `max_poll_interval` while WebSocket is healthy
+- `unidrive status --all` enumerates profiles in config declaration order
+- `unidrive status` is side-effect-free — gates quota probe on `CredentialHealth.Ok`
+- IPC write-timeout drops Phase 2 mount clients — fixed with dedicated 4-thread transport pool
+- IPC transport plan doc fixed from non-existent `:app:sync:installDist` to `:app:cli:deploy`
+- Phase 2 co-daemon `Broken pipe` mid-IPC resolved by explicit subscriber-set on broadcast path
+- `unidrive refresh --reset` restored via daemon RPC verb extension after Task 11 refactor
+- Daemon constructed `SyncEngine` with wrong sync root (`dbPath.parent` vs configured `sync_root`) — fixed
+- Tracking-set engine: Internxt provider verified end-to-end — structural assertions hold on 196k-file profile
+- Tracking-set engine: OneDrive provider verified end-to-end — structural assertions hold on 3,232-file profile
+- `unidrive ts` CLI unreachable — fixed via `runtimeOnly` dependency to avoid classpath cycle
+- Tracking-set engine: per-profile delta-cursor persistence — incremental path safe from deletion-cascade
+- Internxt delta-page ancestor-uuid drop self-healing via bounded re-fetch
+- Internxt deleted-marker investigation — trashing bumps `updatedAt`; `/files` status-flip lag is the real blocker
+- OneDrive delta-endpoint 410-Gone self-heals into full re-enumeration in tracking engine
+- `ts` CLI never authenticated provider — fixed by adding `authenticateAndLog()` to sync/claim commands
+- Tracking-set Internxt trash→reap live-verify — trashing bumps `updatedAt`; flat `/files` listing lags ≥60 min
+
+## Drained from BACKLOG (issue closed as completed)
+
+- OneDrive chunked-upload resume corrupts a file changed between attempts — session keyed on path only (silent data-loss)
+- Hydration open-set is a non-thread-safe map iterated across connections — dehydrate races an open writer (data-loss + CME)
+- OneDrive download returns 404 itemNotFound for a file present in the listing → mount hydrate-on-read EIO (cloud-only files unreadable)
+- `applyDeleteRemote` swallows ALL provider errors and marks the row TRASHED anyway — stranded remote + delete never retried
+- OneDrive delta conflates a soft `removed` (permission revocation) with a hard delete → reaps a still-valid local copy (data-risk)
+- Tracking-set adopt-on-content-match silently degrades to size-only for Internxt (null hash) — different-content same-size files adopted as identical
+- Mount doesn't survive daemon restart — operations return EIO until mount is manually remounted
+- FUSE mount: `create`/`mknod`/`fsync` not implemented — all file-creation paths fail with ENOSYS
+- Legacy SyncEngine trips the deletion safeguard on the internxt_alice_example profile, daemon stays failed
+- OneDrive 410 Gone resync handling
+- OneDrive `file.hashes` in local change detector
+- OneDrive `If-Match` precondition on `createUploadSession`
+- OneDrive refresh `downloadUrl` on `assertNotHtml`
+- XDG-user-dir locale aliasing across `Pictures`/`Bilder`/`Imágenes`/`Images`/…
+- `status` and `status --all` enumerate different profile sources (orphan-profile-dir divergence)
+- `status` / `status --all` don't reflect the tracking-set engine
+- OneDrive delta loses sight of a path the engine itself just wrote ("not in delta, marking deleted" loop)
+- `IpcServer` broadcast channel (capacity 256) silently drops sync/progress events when a subscriber lags
+- Hydration `unknown path` maps to two different errnos depending on the verb (EIO vs ENOENT)
+- Bulk directory creation issues one synchronous remote round-trip per directory — large-tree copies into the mount are slow and abort wholesale on any failure
+- Tracking-set live-test runtime is impractical for routine CI
+- Tracking-set engine: migration / coexistence with legacy `state.db`
+- Pre-reconcile empty-sync_root guard must differentiate "rehydrate intent" from "wrong sync_root"
+- Typed `FolderNotEmpty` provider exception for `HydrationImpl.rmdir` (namespace-verbs R2)
+- `mkdir` parent-missing maps to ENOENT instead of EIO (namespace-verbs R3)
+- Cache-file eviction on `unlink` / `rmdir` (namespace-verbs R5)
+- `unidrive daemon status` should refuse / warn when lock-holder mode is not `daemon`
+- Daemon doesn't auto-poll for remote changes — mount view stays stale until operator runs `refresh`
+- `unidrive ls` (live query) and the FUSE mount (state.db) disagree during the stale window
+- `unidrive status` no-default-profile fallback shows misleading "Local Filesystem" row
+- Build-time test that `logback.xml` is XML-well-formed
+- Build-time test that `BuildInfo.DIRTY` correctly handles mode-only diffs
+- Hydrated-but-locally-missing rows in `--download-only` mode should re-download, not silently loop
+- Tracking-set live test: JWT/OAuth-refresh path not structurally exercised
+- Tracking-set live test: throttling / 429-storm handling path not exercised
+- `RefreshRpcHandler` exception-message JSON escape covers quotes only
+- `unidrive ts <sub>` ignores the global `-p` option
+- Stale `EXPERIMENTAL — not yet verified against real Internxt/OneDrive` warning in `ts`
+- Suggested-command output uses `<path>` placeholders instead of real values (not copy-pasteable)
+- Path normalization (NFC) across sync
+- Provider SPI hardening with two providers
+- `.lock.pid` rendered as `mode (no-mode)` for legacy pid-only sidecars — now named `legacy (pre-mode-mutex)` in the `daemon status`/`daemon stop` refusal
+- Pending-upload predicate (`remoteId == null && isHydrated == true`) was enforced informally across many call sites
+- `uploadFromCache` read the local watermark after the upload — redundant re-upload
+- Hydration-cache file was deleted inside the reap DB transaction — filesystem operation in a `db.batch{}`
+- Gradle daemon poison: `java.io.EOFException` from `SerializableTestResultStore` with 0-byte results
+- `unidrive refresh` against a profile with a pre-existing delta cursor returned only the incremental delta, not a full enumeration
+- Reach the 5+5+2 live-integration smoke target (OneDrive 9, Internxt 10, sync 2+ test methods, all behind `UNIDRIVE_INTEGRATION_TESTS`)
+- `unidrive-ui` calls `sync.subscribe` after connecting (was: the event stream needed an explicit client-side subscribe; drained from BACKLOG: Low)
+- Tracked data protected during reconciliation — an adoption/refresh can no longer clobber rows a concurrent apply is acting on (reconciliation guard, `fix: protect tracked data during reconciliation`; BACKLOG: Critical)
+- Socket-path name hashing and the hydration cache root share `IpcServer.canonicalDiskName` — verbatim for short profile names, 8-hex SHA-1 for long ones, with migration of an existing long cache directory (BACKLOG: Medium)
+- `unidrive sync` as a daemon client — superseded, not planned: a profile is a mirror or a mount (`docs/adr/independent-profiles.md`), so the daemon-decomposition phase-2 conversion has no subject (BACKLOG: Medium)
+- The daemon auto-spawns on the first client connection (`DaemonAutospawn.ensureDaemonRunning`), designed for both profile modes (daemon-decomposition phase 3; BACKLOG: Medium)
+- The enumeration merge holds `StateDatabase.batch{}` in bounded chunks, so a full enumeration no longer stalls a mount `ls` behind the `@Synchronized` lock (BACKLOG: Low)
+- Mount `rm` label vs disposition: TRASHED/DELETED are documented as encoding which side noticed the deletion (remote delta cascade vs engine-side), not recoverability — the schema header and `markDeleted` state it (BACKLOG: Low)
+- Internxt multipart upload with per-part resume and configurable concurrency (#578, engine PR #1225; drained from BACKLOG: Deferred; `daemon.status` reports `upload_concurrency`, null for a provider that does not upload in parts)
+- OneDrive `HttpRetryBudget` per-provider override (#131, drained from BACKLOG: Medium)
+- Local-dev redeploy and co-daemon observability gaps, `scripts/dev/redeploy-local.sh` (#150, drained from BACKLOG: Low)
+- Regression test for ts-CLI provider authentication (#168, drained from BACKLOG: Low)
+- Retry budget per operation: closed as not planned (#172, drained from BACKLOG: Cross-cutting)

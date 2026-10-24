@@ -1,0 +1,8 @@
+{"verb":"hydration.dehydrate","path":"/docs/report.txt"}
+{"ok":true}
+{"verb":"hydration.dehydrate","path":"/docs/open.txt"}
+{"ok":false,"error":"busy"}
+{"verb":"hydration.dehydrate","path":"/missing.txt"}
+{"ok":false,"error":"unknown_path"}
+{"verb":"hydration.dehydrate","path":"/.."}
+{"ok":false,"error":"invalid_path"}

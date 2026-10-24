@@ -1,0 +1,12 @@
+{"verb":"auth.login","email":"user@example.test","password":"fake-password"}
+{"ok":true,"profile":"contract_profile","status":"authenticated","account":"user@example.test"}
+{"verb":"auth.login","email":"user@example.test","totp":"123456","password":"fake-password"}
+{"ok":true,"profile":"contract_profile","status":"authenticated","account":"user@example.test"}
+{"verb":"auth.login","email":"user@example.test","password":""}
+{"ok":false,"error":"empty_password","message":"no password on standard input"}
+{"verb":"auth.login","email":"user@example.test","password":"wrong-password"}
+{"ok":false,"error":"bad_credentials","message":"wrong e-mail or password"}
+{"verb":"auth.login","email":"user@example.test","password":"fake-password","totp":"000000"}
+{"ok":false,"error":"tfa_invalid","message":"the two-factor code was rejected"}
+{"verb":"auth.login","email":"other@example.test","password":"fake-password"}
+{"ok":false,"error":"account_changed","message":"this is another account than the one this profile belongs to; nothing was stored. Add it as a new account, or delete this profile's sync state first (logout --delete-state) to start the profile over with it"}

@@ -1,0 +1,94 @@
+# Deltas from detekt's default config (buildUponDefaultConfig = true).
+# Detection only: nothing here may reformat code. Rules whose sole remedy is
+# restyling stay explicitly off, so a detekt upgrade cannot switch them on.
+# Gate: findings accepted in a module's config/detekt/baseline.xml do not count;
+# any other finding fails `check` (see the detekt block in core/build.gradle.kts).
+build:
+  maxIssues: 0
+
+config:
+  warningsAsErrors: false
+
+# The `formatting` ruleset (detekt-formatting, a ktlint wrapper that rewrites code) is
+# deliberately not on the classpath, so there is nothing to configure here. Do not
+# add the `io.gitlab.arturbosch.detekt:detekt-formatting` plugin dependency.
+# Verify: `git grep detekt-formatting` stays empty.
+
+complexity:
+  LongMethod:
+    active: true
+    threshold: 120
+  CyclomaticComplexMethod:
+    active: true
+    threshold: 30
+  NestedBlockDepth:
+    active: true
+  TooManyFunctions:
+    active: true
+    thresholdInFiles: 20
+    thresholdInClasses: 15
+  LargeClass:
+    active: true
+    threshold: 1000
+  LongParameterList:
+    active: true
+    functionThreshold: 8
+    constructorThreshold: 10
+
+coroutines:
+  # Syntax-only, so it works without type resolution. The rules that would catch a
+  # swallowed CancellationException (SuspendFunSwallowedCancellation,
+  # SleepInsteadOfDelay) need it, and detekt 1.x's embedded compiler cannot read
+  # this project's Kotlin metadata: with --classpath they stay silent on real
+  # violations and report false RedundantSuspendModifier/UnreachableCode instead.
+  # Revisit with detekt 2.0, whose analysis tracks the current compiler.
+  GlobalCoroutineUsage:
+    active: true
+
+exceptions:
+  SwallowedException:
+    active: true
+  TooGenericExceptionCaught:
+    active: true
+  TooGenericExceptionThrown:
+    active: true
+  RethrowCaughtException:
+    active: true
+
+naming:
+  ConstructorParameterNaming:
+    active: true
+    # snake_case TOML DTO keys are intentional.
+    parameterPattern: '(_?[a-z][A-Za-z0-9]*)|([a-z][a-z0-9]*(_[a-z0-9]+)*)'
+
+empty-blocks:
+  EmptyFunctionBlock:
+    active: false # picocli / ktor test stubs
+
+style:
+  MagicNumber:
+    active: false # protocol constants everywhere
+  MaxLineLength:
+    active: false # formatting only
+  NewLineAtEndOfFile:
+    active: false # formatting only
+  WildcardImport:
+    active: false # deliberate in tests
+  ReturnCount:
+    active: false
+  LoopWithTooManyJumpStatements:
+    active: false
+  UnusedPrivateMember:
+    active: true
+  UnusedPrivateProperty:
+    active: true
+  UnusedParameter:
+    active: true
+  UseCheckOrError:
+    active: true
+  UseRequire:
+    active: true
+
+performance:
+  ForEachOnRange:
+    active: true

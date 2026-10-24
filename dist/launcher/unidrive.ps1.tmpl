@@ -1,0 +1,107 @@
+# Generated from dist/launcher/unidrive.ps1.tmpl by the Gradle deploy; edit the template, not this file.
+#
+# UD-270: PowerShell launcher, invoked by unidrive.cmd so CTRL-C from the user's shell exits cleanly
+# without cmd.exe's trailing "Terminate batch job?" prompt.
+#
+# Args go through a single-quoted array + splat so PowerShell 5.1's parser doesn't split tokens at `.`
+# (`-Dstdout.encoding=UTF-8` became `-Dstdout` + `.encoding=UTF-8` and Java crashed on the fragment).
+#
+# Force UTF-8 console output so Java's UTF-8 stdout renders correctly on a German Windows console
+# (CP850 would show box-drawing characters as mojibake).
+chcp 65001 > $null
+
+# Heap size: UNIDRIVE_XMX holds a bare size (e.g. 512m, 2g - no -Xmx prefix).
+$xmx = if ($env:UNIDRIVE_XMX) { '-Xmx' + $env:UNIDRIVE_XMX } else { '-Xmx2g' }
+
+# --locale=xx_YY (or UNIDRIVE_LOCALE) sets -Duser.language=xx -Duser.country=YY. The flag is consumed here and
+# never reaches the engine; the command line beats the environment.
+$locale = $env:UNIDRIVE_LOCALE
+$passArgs = @()
+foreach ($a in $args) {
+    if ($a -match '^--locale=(.*)$') { $locale = $Matches[1] } else { $passArgs += $a }
+}
+$localeArgs = @()
+if ($locale) {
+    if ($locale -match '^([A-Za-z]{2,3})(?:[_-]([A-Za-z]{2}))?$') {
+        $localeArgs += ('-Duser.language=' + $Matches[1].ToLowerInvariant())
+        if ($Matches[2]) { $localeArgs += ('-Duser.country=' + $Matches[2].ToUpperInvariant()) }
+    } else {
+        [Console]::Error.WriteLine("unidrive: --locale expects xx or xx_YY (for example de_LU), got '$locale'")
+        exit 2
+    }
+}
+
+# AF_UNIX socket temp dir: the JVM's default tracks java.io.tmpdir, which packaged Windows apps have seen
+# redirected or unwritable - pin it to the host's temp dir instead.
+$tmp = if ($env:TEMP) { $env:TEMP } elseif ($env:TMP) { $env:TMP } else { $null }
+
+$javaArgs = @($xmx)
+@STATIC_FLAGS_PS@
+$javaArgs += $localeArgs
+# Append, never concat with a possibly-null operand: it inserts an empty element when TEMP/TMP are unset.
+if ($tmp) { $javaArgs += ('-Djdk.net.unixdomain.tmpdir=' + $tmp) }
+# Coroutine debug probes (UNIDRIVE_COROUTINE_DEBUG=1): arm the daemon's coroutine capture. A
+# -javaagent reaches the JVM only at start, so the gate lives here; the probe jar sits beside the
+# fat jar (the deploy copies it). Without the flag, or without the jar, nothing is added. The
+# daemon then dumps its coroutines on a coroutine-dump.trigger file in the profile folder
+# (see CoroutineDebug).
+$debugAgent = '@COROUTINES_DEBUG_AGENT@'
+if ($env:UNIDRIVE_COROUTINE_DEBUG -and $env:UNIDRIVE_COROUTINE_DEBUG -ne '0' -and $debugAgent -and (Test-Path $debugAgent)) {
+    $javaArgs += ('-javaagent:' + $debugAgent)
+}
+# Post-mortem diagnostics in one directory (UNIDRIVE_DIAG_DIR overrides): fatal-crash hs_err logs, the OOM
+# heap dump (the companion -XX:+HeapDumpOnOutOfMemoryError rides jvm-flags.txt) and the daemon's bounded
+# GC log. The JVM silently skips a heap dump into a missing directory and treats a path without a trailing
+# separator as a FILE name, so: create it first, trailing separator always.
+$diagDir = $env:UNIDRIVE_DIAG_DIR
+if (-not $diagDir) {
+    $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $env:USERPROFILE 'AppData\Local' }
+    $diagDir = Join-Path $localAppData 'unidrive\diagnostics'
+}
+New-Item -ItemType Directory -Force -Path $diagDir -ErrorAction SilentlyContinue | Out-Null
+$diag = $diagDir.TrimEnd('\') + '\'
+# Parenthesise each element: `,` binds tighter than `+`, so unparenthesised the two flags become ONE argument with a space
+# in it, which Windows PowerShell 5.1 hands to java mis-quoted (java then prints its usage text).
+$javaArgs += @(('-XX:ErrorFile=' + $diag + 'hs_err_pid%p.log'), ('-XX:HeapDumpPath=' + $diag))
+# The GC log is daemon-only: CLI one-shots are ~1 s JVMs that would contend for the same file. The
+# long-runners are `daemon run`, `sync --watch`, and `autostart` (which selects one by profile mode).
+# The bound is Count, not Count - 1: `autostart` is a one-word command and usually the last argument ($passArgs[$i + 1] past the end is $null).
+# Each daemon writes its own file, gc-<profile>.log: two daemons (one per profile) sharing one file cannot rotate it
+# (the rename of a file the other JVM holds open fails with "Permission denied"). The profile is the `daemon run
+# <profile>` positional (it wins, as in the CLI), else the global -p/--provider (or --profile) value, else `default`;
+# a value outside the profile-name rule (letters, digits, '-', '_') is not file-safe and also gives `default`.
+# DaemonAutospawn.gcLogFileName builds the same name for the daemon a command autospawns.
+$gcAt = -1
+for ($i = 0; $i -lt $passArgs.Count; $i++) {
+    if (($passArgs[$i] -ceq 'daemon' -and $passArgs[$i + 1] -ceq 'run') -or ($passArgs[$i] -ceq 'sync' -and $passArgs[$i + 1] -ceq '--watch') -or $passArgs[$i] -ceq 'autostart') {
+        $gcAt = $i
+        break
+    }
+}
+if ($gcAt -ge 0) {
+    $gcProfile = $null
+    for ($i = 0; $i -lt $gcAt -and -not $gcProfile; $i++) {
+        if ($passArgs[$i] -cmatch '^(?:--provider|--profile)=(.*)$') { $gcProfile = $Matches[1] }
+        elseif ($passArgs[$i] -ceq '-p' -or $passArgs[$i] -ceq '--provider' -or $passArgs[$i] -ceq '--profile') { $gcProfile = $passArgs[$i + 1] }
+        elseif ($passArgs[$i] -cmatch '^-p=?(.+)$') { $gcProfile = $Matches[1] }
+    }
+    if ($passArgs[$gcAt] -ceq 'daemon') {
+        for ($i = $gcAt + 2; $i -lt $passArgs.Count; $i++) {
+            if ($passArgs[$i] -ceq '--poll-interval') { $i++ }
+            elseif (-not $passArgs[$i].StartsWith('-')) { $gcProfile = $passArgs[$i]; break }
+        }
+    }
+    if (-not ($gcProfile -cmatch '^[A-Za-z0-9_-]+$')) { $gcProfile = 'default' }
+    $javaArgs += ('-Xlog:gc*:file=' + $diag + 'gc-' + $gcProfile + '.log:time,uptime:filecount=5,filesize=10m')
+}
+$javaArgs += @('-jar', '@JAR@')
+# Redirected standard input (profile set ignore_rules from a file, auth login --password-stdin) must reach the JVM:
+# inside a script, piped-in input is $input and the native call does not see it on its own, so pipe it in. The
+# else branch keeps an interactive console attached (the masked password prompt, System.console() checks).
+# Windows PowerShell 5.1 quirk: once chcp 65001 is active, its redirected-input reader prepends a BOM to the first
+# line it pipes into the native command ($OutputEncoding does not stop it). Re-point the reader at a UTF-8 encoding
+# without a preamble, and pin $OutputEncoding the same way, so the bytes arrive as they are in the file.
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+if ([Console]::IsInputRedirected) { $input | & java @javaArgs @passArgs } else { & java @javaArgs @passArgs }
+exit $LASTEXITCODE
