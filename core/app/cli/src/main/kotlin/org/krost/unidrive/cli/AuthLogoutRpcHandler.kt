@@ -25,7 +25,7 @@ import java.nio.file.Path
  * - `revoked` is true only when the provider confirmed the revocation, false when it could not be reached
  *   or refused it (the local cleanup goes on either way), null when nothing was asked of the provider.
  *   `revocation` says why: `revoked`, `failed`, `unsupported` (the provider has no revoke call: only the
- *   local credentials went; #1052) or `not_signed_in` (no valid credential to revoke).
+ *   local credentials went; archive#1052) or `not_signed_in` (no valid credential to revoke).
  *
  * Admin class: a `read` connection gets `forbidden` ([IpcAuth] default).
  */

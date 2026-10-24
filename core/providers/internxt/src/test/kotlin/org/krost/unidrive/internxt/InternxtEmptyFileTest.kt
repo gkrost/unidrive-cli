@@ -26,7 +26,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #485: empty files. The drive API validates `fileId` against `size` on create (POST /files) and replace
+ * archive#485: empty files. The drive API validates `fileId` against `size` on create (POST /files) and replace
  * (PUT /files/{uuid}) alike: required when size > 0, refused when size == 0 ("fileId must not be provided when size is 0").
  * The mock enforces exactly that and fails every bridge request, so an empty file must reach the drive with size 0, no
  * fileId and no bridge traffic; downloading one must not ask the bridge either.
@@ -182,7 +182,7 @@ class InternxtEmptyFileTest {
             }
         }
 
-    // #1038: the name `e` is held by no file here, only `e.txt` shares its base name; a 409 must not adopt it.
+    // archive#1038: the name `e` is held by no file here, only `e.txt` shares its base name; a 409 must not adopt it.
     @Test
     fun `a create collision does not adopt a sibling that only shares the base name`() =
         runTest {

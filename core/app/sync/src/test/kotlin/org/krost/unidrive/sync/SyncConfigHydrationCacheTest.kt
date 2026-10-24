@@ -4,7 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
-/** #450: `hydration_cache_max_bytes` in the profile section. */
+/** archive#450: `hydration_cache_max_bytes` in the profile section. */
 class SyncConfigHydrationCacheTest {
     private fun parse(
         providerBody: String,

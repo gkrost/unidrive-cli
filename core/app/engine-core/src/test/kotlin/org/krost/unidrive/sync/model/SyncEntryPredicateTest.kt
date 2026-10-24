@@ -6,7 +6,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #136: the UD-901 pending-upload predicate lives in ONE place —
+ * archive#136: the UD-901 pending-upload predicate lives in ONE place —
  * [SyncEntry.isPendingUpload] — so no consumer re-assembles it from halves and
  * silently misclassifies the gap row (remoteId == null, isHydrated == false: a
  * sparse partial-download row that has no bytes to upload).

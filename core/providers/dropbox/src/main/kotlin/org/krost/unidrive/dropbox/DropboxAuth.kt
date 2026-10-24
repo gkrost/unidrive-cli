@@ -45,7 +45,7 @@ class DropboxAuth(
     }
 
     /**
-     * Drops the grant from memory (#1186): [accessToken] fails as not signed
+     * Drops the grant from memory (archive#1186): [accessToken] fails as not signed
      * in from now on, and a refresh still under way stores nothing. The token file goes only with [removeStored]
      * (a sign-out of this instance itself); the daemon's instance leaves it to the sign-out that already removed it.
      */
@@ -88,7 +88,7 @@ class DropboxAuth(
 
     /**
      * The authorization url. With [redirect] (the browser flow) Dropbox calls back to [DropboxConfig.redirectUri];
-     * without it (#866) Dropbox shows the user a code to paste instead of calling back.
+     * without it (archive#866) Dropbox shows the user a code to paste instead of calling back.
      */
     internal fun authorizationUrl(
         state: String,

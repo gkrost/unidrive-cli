@@ -80,7 +80,7 @@ class FakeTrackingProvider : CloudProvider {
     val incrementalDeletes: MutableList<String> = mutableListOf()
 
     /**
-     * #401 test hook: live items appended to the delta page verbatim. The [files]
+     * archive#401 test hook: live items appended to the delta page verbatim. The [files]
      * map is path-keyed and cannot hold two live items for one path — this models
      * a provider emitting same-named twins.
      */

@@ -14,7 +14,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #658: the engine's own account of "is everything uploaded?" and "how big is the cache?",
+ * archive#658: the engine's own account of "is everything uploaded?" and "how big is the cache?",
  * the numbers `daemon.status` carries as `uploads` and `cache`.
  *
  * Pending = the rows whose bytes never reached the cloud (`local:` rows) plus every path that holds
@@ -301,7 +301,7 @@ class HydrationUploadHealthTest {
             assertTrue((System.nanoTime() - started) / 1_000_000 < 1_000, "a re-read waits only briefly for a busy database")
             assertEquals(1, served.pending)
             assertEquals(90_000L, served.oldestPendingAgeMs, "its age is carried forward, not frozen")
-            // #747: the served reading keeps the stamp of when it was TAKEN, not the request time - a
+            // archive#747: the served reading keeps the stamp of when it was TAKEN, not the request time - a
             // front-end tells fresh from frozen by the stamp not advancing while the database is busy.
             val stamp = assertNotNull(served.asOfMs, "the served reading carries its stamp")
             val served2 = assertNotNull(env.hydration.uploadHealthSnapshot(nowMs = since.toEpochMilli() + 120_000))
@@ -331,7 +331,7 @@ class HydrationUploadHealthTest {
     @Test
     fun `a cache over its budget reports what is there, not the budget`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this, cacheMaxBytes = 100L)
-        // Unfinished creates are never evicted, so the cache can stay over budget (#450).
+        // Unfinished creates are never evicted, so the cache can stay over budget (archive#450).
         env.stateDb.insertCreatedRow("/c/big.bin")
         writeCache(env, "/c/big.bin", "z".repeat(400))
 
@@ -409,7 +409,7 @@ class HydrationUploadHealthTest {
         assertEquals(1, env.hydration.cacheWalkCount.get())
     }
 
-    // #747: as_of_ms is the stamp of the reading; a fresh take advances it. (The frozen case - a busy
+    // archive#747: as_of_ms is the stamp of the reading; a fresh take advances it. (The frozen case - a busy
     // state.db keeps the last good counts and their stamp - is driven in the held-database test above.)
     @Test
     fun `as_of_ms is stamped and advances across reads`() = runBlocking {

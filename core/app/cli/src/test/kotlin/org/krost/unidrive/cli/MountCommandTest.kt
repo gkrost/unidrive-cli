@@ -46,7 +46,7 @@ class MountCommandTest {
 
         val argv = MountCommand.buildArgv(binary, mountPoint, socket, cacheRoot, tokenFile, "foo")
 
-        // #239: assert the argv structure against the inputs' own toString() rather than
+        // archive#239: assert the argv structure against the inputs' own toString() rather than
         // hard-coded POSIX strings, so the test holds on Windows (where Paths.get renders
         // backslash separators). The pinned contract is the flag order + that each path is
         // passed through verbatim, untransformed.
@@ -68,7 +68,7 @@ class MountCommandTest {
         )
     }
 
-    // IPC protocol 2 (#632): a protocol-2 daemon refuses every verb from an unauthenticated
+    // IPC protocol 2 (archive#632): a protocol-2 daemon refuses every verb from an unauthenticated
     // connection, so a co-daemon started without the token file and the exact profile name
     // cannot mount at all. If this test is removed or loosened, mount silently breaks again.
     @Test
@@ -98,7 +98,7 @@ class MountCommandTest {
 
         val cacheIdx = argv.indexOf("--cache")
         assertTrue(cacheIdx >= 0, "argv must contain --cache flag")
-        // #239: normalize separators so the layout assertions hold on Windows.
+        // archive#239: normalize separators so the layout assertions hold on Windows.
         val cacheValue = argv[cacheIdx + 1].replace('\\', '/')
         assertTrue(
             cacheValue.endsWith("/personal_onedrive"),
@@ -127,7 +127,7 @@ class MountCommandTest {
         assertEquals(Paths.get("/tmp/xdg-cache/unidrive/hydration/default"), resolved)
     }
 
-    // ── #135: the cache root shares the socket's canonical disk name ─────────
+    // ── archive#135: the cache root shares the socket's canonical disk name ─────────
 
     @Test
     fun `hydrationCacheRoot uses the canonical disk name for long profile names`() {
@@ -288,7 +288,7 @@ class MountCommandTest {
 
     @Test
     fun `binary present returns 0`() {
-        // #239: any existing file qualifies (checkBinaryExists accepts isExecutable OR exists).
+        // archive#239: any existing file qualifies (checkBinaryExists accepts isExecutable OR exists).
         // The prior `/bin/sh` hardcode failed on Windows; use a temp file so the test is OS-agnostic.
         val present = Files.createTempFile("unidrive-mount-present", ".bin")
         try {

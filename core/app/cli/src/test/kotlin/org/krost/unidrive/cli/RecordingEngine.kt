@@ -36,7 +36,7 @@ class RecordingEngine(
     @Volatile var syncOnceCalled = false
     @Volatile var lastReset: Boolean? = null
 
-    // #560 U1: the flags the last syncOnce ran with, (skipTransfers, skipRemoteGather).
+    // archive#560 U1: the flags the last syncOnce ran with, (skipTransfers, skipRemoteGather).
     @Volatile var lastSyncOnceFlags: Pair<Boolean, Boolean>? = null
     val enumerateCount = java.util.concurrent.atomic.AtomicInteger(0)
 

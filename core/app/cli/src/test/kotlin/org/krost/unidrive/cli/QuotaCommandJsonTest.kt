@@ -20,7 +20,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #655: `quota --json` is the read-only surface — the running daemon's snapshot or the cached
+ * archive#655: `quota --json` is the read-only surface — the running daemon's snapshot or the cached
  * one, never a network call and never a daemon start. A stopped profile stays stopped.
  */
 class QuotaCommandJsonTest {

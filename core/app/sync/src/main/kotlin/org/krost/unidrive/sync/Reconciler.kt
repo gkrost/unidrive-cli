@@ -35,7 +35,7 @@ class Reconciler(
     // regression test inject a counting stub and assert the bound, and
     // the algorithm fix groups uploads by size from a single pre-pass.
     private val localFsProbe: (Path) -> LocalFileInfo? = ::probeRealFs,
-    // #115: XDG-user-dir locale aliasing.  Injectable user-dirs.dirs content
+    // archive#115: XDG-user-dir locale aliasing.  Injectable user-dirs.dirs content
     // (XDG_*_DIR key → basename).  Empty map = rely on the static alias table
     // alone.  SyncEngine wires the real ~/.config/user-dirs.dirs content here
     // at construction time; tests inject synthetic maps so they are host-
@@ -43,11 +43,11 @@ class Reconciler(
     // / resolveSlice() call using the remote top-level names from that call's
     // remoteChanges argument (canonical name = existing cloud folder).
     private val xdgUserDirsOverrides: Map<String, String> = emptyMap(),
-    // #532: content-equality for the MODIFIED/MODIFIED branch. The engine wires HashVerifier
+    // archive#532: content-equality for the MODIFIED/MODIFIED branch. The engine wires HashVerifier
     // (hash of the local file, provider algorithm, vs the remote item's hash). Null keeps the
     // plain conflict — a provider without a content hash has nothing to compare.
     private val sameContent: ((localFile: java.nio.file.Path, remoteItem: CloudItem) -> Boolean)? = null,
-    // #439: SHA-256 of a local file, compared against a delete row's recorded localHash (#396)
+    // archive#439: SHA-256 of a local file, compared against a delete row's recorded localHash (archive#396)
     // before a DeleteRemote+Upload pair is converted into a file MoveRemote. Null when the file
     // cannot be read — an unverifiable candidate counts as a mismatch, the safe side.
     private val localHashOf: (java.nio.file.Path) -> String? = {
@@ -60,12 +60,12 @@ class Reconciler(
 ) {
     private val log = LoggerFactory.getLogger(Reconciler::class.java)
 
-    // #660: the ignore rules of a mirror, asked wherever [excludePatterns] are: an ignored path is planned like an
+    // archive#660: the ignore rules of a mirror, asked wherever [excludePatterns] are: an ignored path is planned like an
     // excluded one (nothing at all). The default ignores nothing. A property rather than a constructor parameter, so
     // the constructor's signature stays as it is (as SyncEngine.conflictClock).
     internal var isIgnored: (path: String, isDir: Boolean) -> Boolean = { _, _ -> false }
 
-    // #309: the profile's case policy (NameKey.foldsCase): true when the provider or the local file system folds case,
+    // archive#309: the profile's case policy (NameKey.foldsCase): true when the provider or the local file system folds case,
     // so two paths that differ only in case are one name and a second one is refused. False only for a case-sensitive
     // provider on a case-sensitive file system, where they are two files. The default keeps the guards on. A property, as
     // [isIgnored], so the constructor's signature stays as it is.
@@ -84,13 +84,13 @@ class Reconciler(
         return Files.isDirectory(local)
     }
 
-    // #316: how resolveSlice reads the rows its page needs. The default asks the state database in
+    // archive#316: how resolveSlice reads the rows its page needs. The default asks the state database in
     // bounded chunks of indexed path lookups, so a streamed gather reads the page's and the local
     // changes' rows, not the whole table once per delta page. A test substitutes a counting wrapper.
     internal var entryLookup: (Collection<String>) -> Map<String, SyncEntry> = { paths -> entriesByPathsChunked(db, paths) }
 
     // A hash is only comparable when both sides have one. A row written before the provider reported a hash (Internxt rows have
-    // remote_hash = null; #464 gave its listing a version token) must not look remotely modified just because the listing now
+    // remote_hash = null; archive#464 gave its listing a version token) must not look remotely modified just because the listing now
     // carries one: that would re-download every existing file on the first sync after the upgrade. mtime still decides then.
     private fun remoteHashChanged(
         remote: String?,
@@ -101,7 +101,7 @@ class Reconciler(
     // is added or removed (the uploads of a first sync touch the remote folder after its row was
     // recorded). The no-op metadata update that would follow is suppressed in resolveAction, not here:
     // the same MODIFIED classification must still raise a delete-vs-modify conflict instead of letting
-    // a local folder delete propagate as a recursive DeleteRemote (#694). A file turning into a folder,
+    // a local folder delete propagate as a recursive DeleteRemote (archive#694). A file turning into a folder,
     // or the reverse, is a change either way.
     private fun remoteMetadataChanged(
         remoteItem: CloudItem,
@@ -129,12 +129,12 @@ class Reconciler(
         // unrelated orphans surfaced when the user asked for ~106 in-scope
         // changes.
         syncPaths: List<String> = emptyList(),
-        // #160: when true, a hydrated row whose local file is absent is planned
+        // archive#160: when true, a hydrated row whose local file is absent is planned
         // as a re-download instead of DeleteRemote. Only safe in download-only
         // mode — in bidirectional mode a locally-deleted hydrated file is a
         // legitimate user delete that must propagate to remote.
         downloadOnly: Boolean = false,
-        // #200(b): when false, the remote enumeration that produced [remoteChanges]
+        // archive#200(b): when false, the remote enumeration that produced [remoteChanges]
         // was incomplete, so a local-present/remote-absent path may be an
         // un-enumerated subtree rather than a genuinely-new file. Defer new-local
         // creates (Upload/CreateRemoteFolder) until a complete enumeration confirms
@@ -172,7 +172,7 @@ class Reconciler(
         // alive and doesn't double-process. `resurrectedPaths` tracks the
         // paths so the main loop can skip them after we've already emitted
         // (or deliberately not emitted) the right action.
-        // #115: alias context for transparent locale-alias adoption. The action
+        // archive#115: alias context for transparent locale-alias adoption. The action
         // `path` stays real-local everywhere; the canonical remote path is
         // carried out-of-band via SyncAction.remoteTarget. Remote-delta keys
         // (canonical) are reverse-mapped into the real-local namespace so they
@@ -206,8 +206,8 @@ class Reconciler(
                 // wins). Folders never need re-download — the metadata flip
                 // is enough. `path` here is real-local (reverse-mapped), so
                 // resolveLocal lands on the alias-named on-disk folder.
-                // #526: an unresolvable local name plans the download; its apply quarantines
-                // the row (#230) instead of aborting the resurrection pass.
+                // archive#526: an unresolvable local name plans the download; its apply quarantines
+                // the row (archive#230) instead of aborting the resurrection pass.
                 val localPath = safeResolveLocalOrNull(syncRoot, path)
                 if (!item.isFolder && (localPath == null || !Files.isRegularFile(localPath))) {
                     resurrectedActions.add(SyncAction.DownloadContent(path, item))
@@ -221,7 +221,7 @@ class Reconciler(
         // is ASCII-only; lowercase(Locale.ROOT) folds Unicode too — a slight
         // behavioural improvement on case-insensitive filesystems with non-ASCII
         // names, fully covered by existing case-collision tests with ASCII paths).
-        // #309: keyed by caseKey, so with a case-sensitive provider on a case-sensitive
+        // archive#309: keyed by caseKey, so with a case-sensitive provider on a case-sensitive
         // file system (foldCase false) no two paths share a key and the guards stay off.
         val allDbEntries = db.getAllEntries()
         val entryByPath = allDbEntries.associateBy { it.path }
@@ -314,11 +314,11 @@ class Reconciler(
             // clears automatically when a fresh delta event re-reports the
             // same remote_id via SyncEngine.updateRemoteEntries.
             if (entry.downloadQuarantined) continue
-            // #115: the entry's canonical remote path is `remotePath ?: path`;
+            // archive#115: the entry's canonical remote path is `remotePath ?: path`;
             // the delta is keyed there. The DownloadContent `path` stays real-
             // local (entry.path) so the bytes land in the alias-named folder.
             val effectiveRemote = entry.remotePath ?: entry.path
-            // #403: a twin's row shares the effective remote path with the item that holds the name: never the
+            // archive#403: a twin's row shares the effective remote path with the item that holds the name: never the
             // other twin's bytes into this row.
             val remoteItem =
                 remoteChanges[DuplicateNames.keyOf(entry.path, entry.remotePath) ?: PathNormalizer.nfc(effectiveRemote)]
@@ -345,7 +345,7 @@ class Reconciler(
         // the UD-225 download-recovery loop above.
         for (entry in allDbEntries) {
             if (entry.isFolder) continue
-            // #136: the whole UD-901 predicate, not halves — a sparse
+            // archive#136: the whole UD-901 predicate, not halves — a sparse
             // partial-download row (remoteId == null, isHydrated == false) has no
             // real bytes to upload and belongs to the download-recovery lane above.
             if (!entry.isPendingUpload) continue
@@ -354,14 +354,14 @@ class Reconciler(
             if (excludePatterns.any { matchesGlob(entry.path, it) } || isIgnored(entry.path, false)) continue
             // UD-901a: same scope guard as the UD-225 loop above.
             if (!SyncScope.contains(entry.path, syncPaths)) continue
-            // #526: an unresolvable name must not abort the recovery loop — skip the row.
+            // archive#526: an unresolvable name must not abort the recovery loop — skip the row.
             val localPath = safeResolveLocalOrNull(syncRoot, entry.path) ?: continue
             if (!Files.isRegularFile(localPath)) continue
             if (caseKey(entry.path) in caseCollisionKeys) {
                 actions.add(SyncAction.Conflict(entry.path, ChangeState.NEW, ChangeState.UNCHANGED, null, policyForPath(entry.path)))
                 continue
             }
-            // #115: preserve any persisted canonical remote path as remoteTarget
+            // archive#115: preserve any persisted canonical remote path as remoteTarget
             // so the retry uploads to the same canonical the row was keyed at.
             actions.add(SyncAction.Upload(entry.path, remoteTarget = entry.remotePath))
         }
@@ -450,19 +450,19 @@ class Reconciler(
         pageRemote: Map<String, CloudItem>,
         localChanges: Map<String, ChangeState>,
         syncPaths: List<String> = emptyList(),
-        // #115 streaming fix: stable set of ALL remote top-level folder names known
+        // archive#115 streaming fix: stable set of ALL remote top-level folder names known
         // across all pages, supplied by the streaming gather before any slice fires.
         // When null (single-shot reconcile or test call without the argument), the
         // alias context falls back to deriving top-level names from pageRemote alone
         // — which is the pre-fix behaviour and is correct for non-streaming callers.
         stableRemoteTopLevelNames: Set<String>? = null,
-        // #160: mirror of the same flag on reconcile() — re-download hydrated rows
+        // archive#160: mirror of the same flag on reconcile() — re-download hydrated rows
         // whose local file is absent instead of emitting DeleteRemote.
         downloadOnly: Boolean = false,
     ): List<SyncAction> {
         val pinRules = db.getPinRules()
 
-        // #115: alias context, using the stable full-scan top-level set when
+        // archive#115: alias context, using the stable full-scan top-level set when
         // provided by the streaming gather. Action paths stay real-local; the
         // canonical remote path is carried out-of-band via remoteTarget.
         val alias = buildAliasContext(pageRemote, stableRemoteTopLevelNames)
@@ -480,7 +480,7 @@ class Reconciler(
             (pageRemoteLocal.keys + localChanges.keys)
                 .filter { path -> excludePatterns.none { pattern -> matchesGlob(path, pattern) } }
                 .filter { SyncScope.contains(it, syncPaths) }
-        // #316: the loop below looks up exactly the paths this slice asks about, so read only those rows. The batch
+        // archive#316: the loop below looks up exactly the paths this slice asks about, so read only those rows. The batch
         // lookup can return an NFC row under an NFD caller key when both spellings occur in this slice; key by the
         // stored spelling, as the old whole-table map did, and keep only paths this slice asks about.
         val requestedPaths = candidates.toHashSet()
@@ -507,7 +507,7 @@ class Reconciler(
             val action = resolveAction(path, localState, remoteState, remoteItem, entry, pinRules, alias, downloadOnly)
             if (action != null) actions.add(action)
         }
-        // #309: a streamed download starts before the scan ends, so a case twin's download is held back here already.
+        // archive#309: a streamed download starts before the scan ends, so a case twin's download is held back here already.
         dropDownloadsOntoLocalCaseTwins(actions, localChanges)
         dropStreamedDownloadsOntoCaseTwinsOnDisk(actions, entryByPath)
         return actions
@@ -533,11 +533,11 @@ class Reconciler(
         fullRemote: Map<String, CloudItem>,
         fullLocal: Map<String, ChangeState>,
         syncPaths: List<String> = emptyList(),
-        // #160: mirror of the same flag on reconcile(). The streamed actions
+        // archive#160: mirror of the same flag on reconcile(). The streamed actions
         // from resolveSlice already used this flag; finalizeStreaming receives
         // it only for completeness (the recovery loops don't call resolveAction).
         @Suppress("UNUSED_PARAMETER") downloadOnly: Boolean = false,
-        // #200(b): mirror of the same flag on reconcile() — defer new-local creates
+        // archive#200(b): mirror of the same flag on reconcile() — defer new-local creates
         // when the (cross-page) enumeration that produced fullRemote was incomplete.
         enumerationComplete: Boolean = true,
     ): List<SyncAction> {
@@ -550,7 +550,7 @@ class Reconciler(
         val actions = streamedActions.toMutableList()
         val coveredPaths = actions.mapTo(mutableSetOf()) { it.path }
 
-        // #115: alias context. Action paths stay real-local; the canonical
+        // archive#115: alias context. Action paths stay real-local; the canonical
         // remote path is carried out-of-band via remoteTarget.
         val alias = buildAliasContext(fullRemote)
 
@@ -570,10 +570,10 @@ class Reconciler(
             if (entry.path in coveredPaths) continue
             if (excludePatterns.any { matchesGlob(entry.path, it) } || isIgnored(entry.path, false)) continue
             if (!SyncScope.contains(entry.path, syncPaths)) continue
-            // #115: delta keyed at the canonical remote path; DownloadContent
+            // archive#115: delta keyed at the canonical remote path; DownloadContent
             // path stays real-local so bytes land in the alias-named folder.
             val effectiveRemote = entry.remotePath ?: entry.path
-            // #403: see the same loop in reconcile().
+            // archive#403: see the same loop in reconcile().
             val remoteItem =
                 fullRemote[DuplicateNames.keyOf(entry.path, entry.remotePath) ?: PathNormalizer.nfc(effectiveRemote)]
                     ?.takeIf { entry.remoteId == null || it.id == entry.remoteId } ?: CloudItem(
@@ -593,21 +593,21 @@ class Reconciler(
         // UD-901 recovery — pending-upload DB rows.
         for (entry in allDbEntries) {
             if (entry.isFolder) continue
-            // #136: whole predicate, not halves (sparse partial-download rows have
+            // archive#136: whole predicate, not halves (sparse partial-download rows have
             // no bytes to upload — see the first UD-901 loop).
             if (!entry.isPendingUpload) continue
             if (entry.path in coveredPaths) continue
             if (db.uploadRefusal(entry.path)?.startsWith("${entry.localMtime}|${entry.localSize}|") == true) continue
             if (excludePatterns.any { matchesGlob(entry.path, it) } || isIgnored(entry.path, false)) continue
             if (!SyncScope.contains(entry.path, syncPaths)) continue
-            // #526: an unresolvable name must not abort the recovery loop — skip the row.
+            // archive#526: an unresolvable name must not abort the recovery loop — skip the row.
             val localPath = safeResolveLocalOrNull(syncRoot, entry.path) ?: continue
             if (!Files.isRegularFile(localPath)) continue
             if (caseKey(entry.path) in caseCollisionKeys) {
                 actions.add(SyncAction.Conflict(entry.path, ChangeState.NEW, ChangeState.UNCHANGED, null, policyForPath(entry.path)))
                 continue
             }
-            // #115: preserve persisted canonical remote path as remoteTarget.
+            // archive#115: preserve persisted canonical remote path as remoteTarget.
             actions.add(SyncAction.Upload(entry.path, remoteTarget = entry.remotePath))
         }
 
@@ -646,11 +646,11 @@ class Reconciler(
         return sortActions(actions)
     }
 
-    // #309: the key two paths are compared by: folded where the case policy folds ([foldCase]), so only then do two
+    // archive#309: the key two paths are compared by: folded where the case policy folds ([foldCase]), so only then do two
     // paths that differ only in case share one.
     private fun caseKey(path: String): String = NameKey.of(path, foldCase)
 
-    // #309: a local case-only rename of a tracked name is one remote move, planned before the case guard refuses it
+    // archive#309: a local case-only rename of a tracked name is one remote move, planned before the case guard refuses it
     // ([LocalCaseOnlyRenames]). Returns the new paths the moves cover.
     private fun pairCaseOnlyRenames(
         actions: MutableList<SyncAction>,
@@ -670,7 +670,7 @@ class Reconciler(
         ).plan(actions, remoteByLocalPath, localChanges, entriesByCaseKey) { aliasTarget(alias, it) }
     }
 
-    // #309: the case twins the plan refuses, where the case policy folds (on a case-sensitive provider and file system
+    // archive#309: the case twins the plan refuses, where the case policy folds (on a case-sensitive provider and file system
     // every key is the path itself and nothing collides). Each refusal is a Conflict with no remote item (local NEW,
     // remote unchanged), which the apply never transfers (RefusedCaseCollisionTest):
     // - a local NEW path whose name a tracked row holds in another case;
@@ -732,7 +732,7 @@ class Reconciler(
         }
     }
 
-    // #309: a download of a remote file whose name a new local file holds in another case would land on that file where
+    // archive#309: a download of a remote file whose name a new local file holds in another case would land on that file where
     // the disk folds case, and would make a twin of it where only the provider does. Once the gather has recorded the
     // remote item, the recovery of unhydrated rows and every later remote edit plan such a download; none is applied
     // while the local twin is there (its upload is refused as a conflict above), so neither side's bytes are lost.
@@ -768,7 +768,7 @@ class Reconciler(
         }
     }
 
-    // #309: the streamed slice of [dropDownloadsOntoLocalCaseTwins] for a row that was never hydrated (the remote twin the
+    // archive#309: the streamed slice of [dropDownloadsOntoLocalCaseTwins] for a row that was never hydrated (the remote twin the
     // gather recorded): once its local twin's pending-upload row exists, the scan no longer reports that file new, and the
     // slice does not see the recovery's refusal. The sync root itself is asked whether a name of another case is there.
     private fun dropStreamedDownloadsOntoCaseTwinsOnDisk(
@@ -815,7 +815,7 @@ class Reconciler(
             policy = policyForPath(path),
         )
 
-    // #200(b): when the remote enumeration was INCOMPLETE, a local-present/
+    // archive#200(b): when the remote enumeration was INCOMPLETE, a local-present/
     // remote-absent path may be a subtree we simply failed to enumerate, not a
     // genuinely-new local file — so emitting Upload/CreateRemoteFolder risks
     // duplicating a file that exists remotely but went unseen. Drop those new-local
@@ -846,7 +846,7 @@ class Reconciler(
         }
     }
 
-    // #115: alias-context for transparent locale-alias adoption.
+    // archive#115: alias-context for transparent locale-alias adoption.
     //
     // The action `path` is ALWAYS the real local sync_root-relative path
     // (LocalScanner keys/scans there); a separate canonical REMOTE path is
@@ -879,7 +879,7 @@ class Reconciler(
 
     private fun buildAliasContext(
         remoteTopLevelMap: Map<String, CloudItem>,
-        // #115 streaming fix: when non-null, use this pre-computed stable set of
+        // archive#115 streaming fix: when non-null, use this pre-computed stable set of
         // top-level remote folder names instead of deriving it from remoteTopLevelMap.
         // This lets resolveSlice() alias against the FULL set of canonical names known
         // across ALL pages, not only the names present in the current page — avoiding
@@ -929,7 +929,7 @@ class Reconciler(
         return AliasContext(isEmpty = false, localToRemote = localToRemote, remoteToLocal = remoteToLocal)
     }
 
-    // #115: canonical remote path for [path] under the current alias context,
+    // archive#115: canonical remote path for [path] under the current alias context,
     // or null when it equals [path] (non-aliased → remoteTarget left null so
     // behaviour is byte-identical to today).
     private fun aliasTarget(
@@ -941,7 +941,7 @@ class Reconciler(
         return if (remote != path) remote else null
     }
 
-    // #115: a top-level alias folder (e.g. /Bilder) is a single path component.
+    // archive#115: a top-level alias folder (e.g. /Bilder) is a single path component.
     // Only the alias folder ITSELF is adopted (suppress CreateRemoteFolder);
     // genuine subfolders under it still get created on remote (under canonical).
     private fun isTopLevelAliasFolder(path: String): Boolean = path.removePrefix("/").count { it == '/' } == 0
@@ -953,11 +953,11 @@ class Reconciler(
         remoteItem: CloudItem?,
         entry: SyncEntry?,
         pinRules: List<Pair<String, Boolean>>,
-        // #115: alias context. `path` is ALWAYS the real-local path; LOCAL ops
+        // archive#115: alias context. `path` is ALWAYS the real-local path; LOCAL ops
         // resolve it directly via resolveLocal, REMOTE-write actions carry the
         // canonical remote path out-of-band via remoteTarget.
         alias: AliasContext = AliasContext.IDENTITY,
-        // #160: when true, a hydrated row whose local file is absent is re-downloaded
+        // archive#160: when true, a hydrated row whose local file is absent is re-downloaded
         // instead of propagated as DeleteRemote. Only safe in download-only mode —
         // in bidirectional mode the same state is a legitimate user delete.
         downloadOnly: Boolean = false,
@@ -988,7 +988,7 @@ class Reconciler(
 
             // Both modified
             localState == ChangeState.MODIFIED && remoteState == ChangeState.MODIFIED -> {
-                // #532: the same bytes written on both sides between two syncs is convergence,
+                // archive#532: the same bytes written on both sides between two syncs is convergence,
                 // not a conflict — the report showed both devices writing 42 identical bytes
                 // and the second sync renaming one copy to *.conflict-local-*. Adopt the remote
                 // metadata instead (CreatePlaceholder keeps the local bytes: with real content
@@ -1027,7 +1027,7 @@ class Reconciler(
                 }
             localState == ChangeState.UNCHANGED && remoteState == ChangeState.MODIFIED && remoteItem != null ->
                 if (remoteItem.isFolder) {
-                    // #694: a folder's modified time moves with its children (the first sync's uploads
+                    // archive#694: a folder's modified time moves with its children (the first sync's uploads
                     // touch the remote folder after its row was recorded). There is nothing to apply
                     // and no content to fetch, so this is a no-op rather than a metadata-only update;
                     // updateRemoteEntries records the new metadata. A tracked FILE that the remote
@@ -1037,7 +1037,7 @@ class Reconciler(
                     SyncAction.DownloadContent(path, remoteItem)
                 }
             localState == ChangeState.UNCHANGED && remoteState == ChangeState.DELETED ->
-                // #419: `entry` comes from the alive view, so null means the row is already a
+                // archive#419: `entry` comes from the alive view, so null means the row is already a
                 // TRASHED tombstone (or was never tracked). With nothing on disk either there is
                 // nothing left to delete — applyDeleteLocal would be a pure no-op that only
                 // pollutes the preview ("N del-local") every time a rewound delta cursor
@@ -1048,7 +1048,7 @@ class Reconciler(
             localState == ChangeState.NEW && remoteState == ChangeState.UNCHANGED -> {
                 val local = resolveLocal(path)
                 if (Files.isDirectory(local)) {
-                    // #115: an XDG alias top-level folder whose canonical already
+                    // archive#115: an XDG alias top-level folder whose canonical already
                     // exists on remote is ADOPTED — its remoteTarget resolves to
                     // the canonical, which already exists, so no CreateRemoteFolder
                     // is needed for the alias folder itself. Suppress it. Sub-paths
@@ -1073,7 +1073,7 @@ class Reconciler(
                     localState,
                     remoteState,
                     remoteItem ?: CloudItem(
-                        id = entry.remoteId!!, // checked above; no smart cast across modules (#560 U2)
+                        id = entry.remoteId!!, // checked above; no smart cast across modules (archive#560 U2)
                         name = path.substringAfterLast('/'),
                         path = entry.remotePath ?: path,
                         size = entry.remoteSize,
@@ -1089,13 +1089,13 @@ class Reconciler(
                 // UD-366: pass the existing remote UUID so the provider can route through
                 // PUT /files/{uuid} (replace-in-place) rather than POSTing a duplicate that
                 // 409s on Internxt.
-                // #403: a twin row uploads to its canonical remote path (by its id), never to its decorated name.
+                // archive#403: a twin row uploads to its canonical remote path (by its id), never to its decorated name.
                 SyncAction.Upload(path, remoteId = entry?.remoteId, remoteTarget = entry?.remotePath ?: aliasTarget(alias, path))
             localState == ChangeState.DELETED && remoteState == ChangeState.UNCHANGED ->
                 when {
                     // UD-901: a pending-upload row (entry.remoteId == null) that vanished
                     // before its first upload has nothing to delete on the remote side —
-                    // just drop the placeholder row. #136: the remoteId half alone is
+                    // just drop the placeholder row. archive#136: the remoteId half alone is
                     // INTENTIONAL here — this is cleanup of any never-uploaded row whose
                     // file is gone, including a sparse partial-download row
                     // (isHydrated == false): nothing exists locally or remotely, so the
@@ -1147,7 +1147,7 @@ class Reconciler(
                             SyncAction.DownloadContent(path, remoteItem ?: recordedItem(entry, path))
                         }
                     }
-                    // #160: download-only mode — a hydrated row whose local file is
+                    // archive#160: download-only mode — a hydrated row whose local file is
                     // absent must be re-downloaded, not propagated as DeleteRemote
                     // (which the direction filter would drop, making the file
                     // unreachable forever). In bidirectional mode the same state is
@@ -1183,7 +1183,7 @@ class Reconciler(
         return defaultPolicy
     }
 
-    // #403: a new local item below a twin folder (kept under its decorated name) has no remote place of its own name:
+    // archive#403: a new local item below a twin folder (kept under its decorated name) has no remote place of its own name:
     // the folder is the canonical one in the cloud. Aim the create at the canonical path; a provider that holds two
     // folders there refuses the ambiguous path (Internxt fails closed) instead of creating a folder of the decorated name.
     private fun retargetBelowTwinFolders(
@@ -1276,7 +1276,7 @@ class Reconciler(
     private fun detectMoves(
         actions: MutableList<SyncAction>,
         entryByPath: Map<String, SyncEntry>,
-        // #115: alias context. All action paths are real-local; the MoveRemote
+        // archive#115: alias context. All action paths are real-local; the MoveRemote
         // this emits carries the canonical remote source (fromPath = the source
         // row's effective remote path) and canonical destination (remoteTarget).
         alias: AliasContext = AliasContext.IDENTITY,
@@ -1346,7 +1346,7 @@ class Reconciler(
             actions.add(
                 SyncAction.MoveRemote(
                     path = create.path,
-                    // #115: fromPath stays real-local (the source row's path) so
+                    // archive#115: fromPath stays real-local (the source row's path) so
                     // the executor's DB ops + resolveLocal work; the canonical
                     // remote source is derived in the executor from the source
                     // row. remoteTarget carries the canonical destination.
@@ -1391,12 +1391,12 @@ class Reconciler(
         val uploadsBySize: Map<Long, List<SyncAction.Upload>> =
             uploads
                 .mapNotNull { up ->
-                    // #115: up.path is real-local; probe it directly.
+                    // archive#115: up.path is real-local; probe it directly.
                     val info = localFsProbe(resolveLocal(up.path)) ?: return@mapNotNull null
                     up to info.size
                 }.groupBy({ it.second }, { it.first })
 
-        // #439: hash each upload candidate at most once, even when several deletes consider it.
+        // archive#439: hash each upload candidate at most once, even when several deletes consider it.
         val candidateHashes = HashMap<String, String?>()
 
         val matchedUploads = mutableSetOf<String>()
@@ -1405,13 +1405,13 @@ class Reconciler(
             val entry = entryByPath[del.path] ?: continue
             if (entry.isFolder || entry.remoteId == null) continue
 
-            // #296: size alone is NOT evidence of a move. An unrelated new file
+            // archive#296: size alone is NOT evidence of a move. An unrelated new file
             // that happens to byte-match a deleted one (padded formats, templates,
             // camera files) used to be converted into a remote rename — the cloud
             // kept the deleted file's bytes under the new name and the new file's
             // real content was never uploaded. Require a structural anchor on top
             // of the size match, mirroring the folder branch above: same basename
-            // (cross-folder move) OR same parent (rename in place — the #115
+            // (cross-folder move) OR same parent (rename in place — the archive#115
             // alias-folder rename invariant depends on this arm). The anchor only
             // narrows the candidates; movesVerifiedBytes decides on the content.
             val delName = del.path.substringAfterLast("/")
@@ -1429,7 +1429,7 @@ class Reconciler(
             // file into a rename of unrelated bytes. Fall back to the independent
             // DeleteRemote + Upload — correct, just less efficient.
             //
-            // #439/#296: when the delete row carries the engine's own SHA-256 (#396), the pair
+            // archive#439/#296: when the delete row carries the engine's own SHA-256 (archive#396), the pair
             // is only a move if the candidate still holds those bytes. An unrelated same-size,
             // same-name file used to be converted anyway: the cloud kept the deleted file's
             // bytes under the new name and the new file's content was never sent until an
@@ -1444,11 +1444,11 @@ class Reconciler(
             actions.add(
                 SyncAction.MoveRemote(
                     path = candidate.path,
-                    // #115: fromPath stays real-local; canonical remote source is
+                    // archive#115: fromPath stays real-local; canonical remote source is
                     // derived in the executor from the source row. remoteTarget
                     // carries the canonical destination.
                     fromPath = del.path,
-                    remoteId = entry.remoteId!!, // checked above; no smart cast across modules (#560 U2)
+                    remoteId = entry.remoteId!!, // checked above; no smart cast across modules (archive#560 U2)
                     remoteTarget = aliasTarget(alias, candidate.path),
                 ),
             )
@@ -1456,7 +1456,7 @@ class Reconciler(
         }
     }
 
-    // #439: does [candidatePath] hold the bytes the delete row describes? The row's localHash (#396)
+    // archive#439: does [candidatePath] hold the bytes the delete row describes? The row's localHash (archive#396)
     // where the engine recorded one (a provider without a remote hash); otherwise the provider's hash
     // of the row, compared through [sameContent] with the provider's algorithm — on OneDrive, Dropbox
     // and S3 that is the only hash a row has. A row with neither has nothing to compare: then only the
@@ -1502,9 +1502,9 @@ class Reconciler(
         actions: MutableList<SyncAction>,
         remoteChanges: Map<String, CloudItem>,
         entryByRemoteId: Map<String, SyncEntry>,
-        // #1044: what the scan found at the old names, to tell an unuploaded edit from an untouched file.
+        // archive#1044: what the scan found at the old names, to tell an unuploaded edit from an untouched file.
         localChanges: Map<String, ChangeState>,
-        // #115: alias context. Candidate action paths are real-local; the remote
+        // archive#115: alias context. Candidate action paths are real-local; the remote
         // delta is canonical-keyed. We look the delta up by the candidate's
         // canonical path and compare the matched row's EFFECTIVE remote path
         // (remotePath ?: path) against the delta path — NOT against candidate.path.
@@ -1531,7 +1531,7 @@ class Reconciler(
             // already living at this canonical path is treated as UNCHANGED, not
             // a rename. `remoteItem.path` is the canonical delta path.
             val oldEffectiveRemote = PathNormalizer.nfc(oldEntry.remotePath ?: oldEntry.path)
-            // #403: a twin keeps the canonical remote path; when it leaves the name to another item (a folder took the
+            // archive#403: a twin keeps the canonical remote path; when it leaves the name to another item (a folder took the
             // path) its row moves to the decorated name, which is a local rename.
             val becameTwin = oldEntry.path != candidate.path && DuplicateNames.keyOf(canonicalPath, remoteItem.path) != null
             if (oldEffectiveRemote == remoteItem.path && !becameTwin) continue
@@ -1562,7 +1562,7 @@ class Reconciler(
     }
 
     /**
-     * #1044: the move above carries the old bytes to the new name. When the cloud also changed the file (a rename
+     * archive#1044: the move above carries the old bytes to the new name. When the cloud also changed the file (a rename
      * together with an edit, or a client that was away for days), the new content is still to be fetched: the
      * download the move replaced stays, after it. An edit of the old name that was never uploaded would be replaced
      * by that download, so both versions are kept instead, as for any file changed on both sides; the upload planned
@@ -1597,7 +1597,7 @@ class Reconciler(
         }
 
     /**
-     * #424: a remote folder rename reports the folder AND its descendants at their new paths, so the loop
+     * archive#424: a remote folder rename reports the folder AND its descendants at their new paths, so the loop
      * above plans a MoveLocal for each. The folder's move already carries every descendant (on disk, and
      * in state.db through renamePrefix), so a descendant move whose destination is just its old path
      * re-rooted under the folder's new path has nothing left to do. Run anyway, it found its source gone
@@ -1640,7 +1640,7 @@ class Reconciler(
         actions.sortedWith(
             compareBy(
                 { actionPriority(it) },
-                // #421: moves and deletes share a priority, and the depth key below is negative for a
+                // archive#421: moves and deletes share a priority, and the depth key below is negative for a
                 // delete and positive for everything else, so every delete used to sort ahead of every
                 // move. A folder delete trashes the folder with whatever is still inside it, so a folder
                 // renamed d1 -> d2 (mkdir d2, del d1, move d1/x -> d2/x) lost the files its own moves
@@ -1677,11 +1677,11 @@ class Reconciler(
 
     private fun resolveLocal(remotePath: String): java.nio.file.Path = safeResolveLocal(syncRoot, remotePath)
 
-    // #419: true only when [path] is provably absent on disk (a dangling symlink still counts as
+    // archive#419: true only when [path] is provably absent on disk (a dangling symlink still counts as
     // present). A path that resolves outside sync_root has nothing inside it to delete, so it
     // counts as absent and its delete is dropped here rather than handed to the apply step.
     // resolveLocal throws InvalidPathException for a remote name a Windows path cannot represent
-    // (the #230 quarantine class) — that is "cannot resolve", not "absent": the caller keeps its
+    // (the archive#230 quarantine class) — that is "cannot resolve", not "absent": the caller keeps its
     // action and the apply step rejects it as it always did.
     private fun isAbsentLocally(path: String): Boolean =
         try {
@@ -1694,7 +1694,7 @@ class Reconciler(
         }
 
     companion object {
-        // #316: paths per state-database lookup; each call holds the database monitor, so keep it short
+        // archive#316: paths per state-database lookup; each call holds the database monitor, so keep it short
         // and far below SQLite's bound-parameter ceiling.
         const val ENTRY_LOOKUP_CHUNK = 500
 
@@ -1780,7 +1780,7 @@ class Reconciler(
             return glob.matches(cleanPath)
         }
 
-        /** The regex-only answer of [matchesGlob]: the reference the fast paths are tested against (#552). */
+        /** The regex-only answer of [matchesGlob]: the reference the fast paths are tested against (archive#552). */
         internal fun matchesGlobRegex(
             path: String,
             pattern: String,
@@ -1789,7 +1789,7 @@ class Reconciler(
             return compileGlob(cleanPattern).matchesRegex(path.removePrefix("/"))
         }
 
-        // #552: a glob compiles to its regex and, for the shapes the default excludes and most user excludes
+        // archive#552: a glob compiles to its regex and, for the shapes the default excludes and most user excludes
         // have, to a plain string test. The regex of `**/x` backtracks along the whole path; the exclude
         // patterns run once per row of state.db (hundreds of thousands) and the string tests do not.
         private class CompiledGlob(

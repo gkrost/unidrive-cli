@@ -457,7 +457,7 @@ class LocalScannerTest {
 
     @Test
     fun `default excludes skip a git repo subtree under the sync root`() {
-        // Issue #223: a checked-out repo under the sync root must never enter a
+        // Issue archive#223: a checked-out repo under the sync root must never enter a
         // plan — the whole `.git` subtree (including nested loose objects) is
         // excluded by the default set, while tracked working-tree files sync.
         val excluded = LocalScanner(syncRoot, db, SyncConfig.DEFAULT_EXCLUDE_PATTERNS)
@@ -495,7 +495,7 @@ class LocalScannerTest {
         assertNull(changes["/repo/.git"])
     }
 
-    // #112 — hash-compare touch-only local changes
+    // archive#112 — hash-compare touch-only local changes
 
     @Test
     fun `#112 touch-only change is not flagged for re-upload when hash matches`() {
@@ -576,9 +576,9 @@ class LocalScannerTest {
 
     @Test
     fun `#112 OneDrive touch-only skip works with QuickXor stored hash`() {
-        // Regression for PR #193: when OneDrive's toCloudItem() stored sha256Hash in
+        // Regression for PR archive#193: when OneDrive's toCloudItem() stored sha256Hash in
         // remoteHash (the old precedence) but the provider's hashAlgorithm() returns
-        // QuickXor, #112 computed a QuickXor local hash and compared it against SHA-256
+        // QuickXor, archive#112 computed a QuickXor local hash and compared it against SHA-256
         // → always mismatch → touch-only files were always re-uploaded. After the fix,
         // toCloudItem() stores quickXorHash, so this test must pass.
         val file = syncRoot.resolve("onedrive-touch.txt")
@@ -657,7 +657,7 @@ class LocalScannerTest {
         )
     }
 
-    // ---- #396: touch-only shield for providers with NO remote content hash (Internxt) ----
+    // ---- archive#396: touch-only shield for providers with NO remote content hash (Internxt) ----
 
     /** A synced row for [file] as a hashless provider's engine leaves it: no remote hash, optional local hash. */
     private fun hashlessRow(
@@ -804,7 +804,7 @@ class LocalScannerTest {
         val md5 = HashVerifier.computeMd5Hex(file)
         val hashScanner = LocalScanner(syncRoot, db, hashAlgorithm = HashAlgorithm.Md5Hex)
 
-        // Remote hash matches the bytes: touch-only skip via #112, exactly as before.
+        // Remote hash matches the bytes: touch-only skip via archive#112, exactly as before.
         db.upsertEntry(hashlessRow("/remote396.txt", file, localHash = null).copy(remoteHash = md5))
         file.toFile().setLastModified(originalMtime + 60_000L)
         assertNull(hashScanner.scan()["/remote396.txt"], "touch-only must still be skipped through the remote hash")
@@ -818,7 +818,7 @@ class LocalScannerTest {
         assertEquals(ChangeState.MODIFIED, hashScanner.scan()["/remote396.txt"])
     }
 
-    // ---- #1056: the touch-only hash compare of a provider with a remote hash must not abort the walk ----
+    // ---- archive#1056: the touch-only hash compare of a provider with a remote hash must not abort the walk ----
 
     /**
      * Runs [body] while [file] cannot be opened for reading: a handle with no sharing on Windows (the sharing

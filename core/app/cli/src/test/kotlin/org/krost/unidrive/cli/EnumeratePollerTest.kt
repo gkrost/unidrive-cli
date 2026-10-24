@@ -97,7 +97,7 @@ class EnumeratePollerTest {
         scope.cancel()
     }
 
-    // #926: a pass that worked but leaves the recovery latch set is followed by a full listing of the drive again; that
+    // archive#926: a pass that worked but leaves the recovery latch set is followed by a full listing of the drive again; that
     // listing must not start one plain interval later, again and again. It backs off like a failure, and the pass that
     // ends the recovery brings the plain interval back.
     @Test
@@ -162,14 +162,14 @@ class EnumeratePollerTest {
         assertEquals(listOf(null, 240_000L), reported, "cleared at the start, then 60 s + the backed-off 180 s")
 
         // The retry starts at 240 s and fails too; the backoff escalates (180 s x 3 = 540 s,
-        // not a flat 180 s again, #517 R3), so the reported next attempt is 240 s + 540 s.
+        // not a flat 180 s again, archive#517 R3), so the reported next attempt is 240 s + 540 s.
         advanceTimeBy(180_000)
         runCurrent()
         assertEquals(listOf(null, 240_000L, null, 780_000L), reported)
         scope.cancel()
     }
 
-    // #517 R3: a flat first step repeated forever re-ran a doomed enumerate every ~7 min
+    // archive#517 R3: a flat first step repeated forever re-ran a doomed enumerate every ~7 min
     // for hours on the live account. The injected jitter records every sleep before it
     // is taken, so the recorded values ARE the schedule.
 
@@ -199,7 +199,7 @@ class EnumeratePollerTest {
         scope.cancel()
     }
 
-    // #1084: the back-off cap is 10 minutes; with an interval of an hour a failure must not bring the next poll sooner.
+    // archive#1084: the back-off cap is 10 minutes; with an interval of an hour a failure must not bring the next poll sooner.
     @Test
     fun `a backoff is never shorter than the poll interval`() = runTest {
         val longIntervalMs = 3_600_000L
@@ -361,7 +361,7 @@ class EnumeratePollerTest {
         scope.cancel()
     }
 
-    // ---- #463: discovery for a daemon that serves a mount ---------------------------------------------------------
+    // ---- archive#463: discovery for a daemon that serves a mount ---------------------------------------------------------
 
     // A loop left running after a failed assertion makes runTest advance its virtual clock forever: the build would
     // hang instead of failing. These tests cancel the loop in a finally.
@@ -587,7 +587,7 @@ class EnumeratePollerTest {
         assertEquals(2, engine.enumerateCount.get(), "and no second one for the same burst")
     }
 
-    // #778: a hint during a pause does not enumerate; the poll catches up the moment the pause ends, as it does anyway.
+    // archive#778: a hint during a pause does not enumerate; the poll catches up the moment the pause ends, as it does anyway.
     @Test
     fun `a hint during a pause waits for the resume`() = pollTest { scope ->
         val engine = RecordingEngine(enumerateResult = EnumerateResult(ok = true))
@@ -650,7 +650,7 @@ class EnumeratePollerTest {
         assertEquals(2, engine.enumerateCount.get(), "the hints of the back-off do not add a run after it")
     }
 
-    // #926: a pass that leaves the recovery pending is followed by a full listing; that back-off holds against hints too.
+    // archive#926: a pass that leaves the recovery pending is followed by a full listing; that back-off holds against hints too.
     @Test
     fun `a hint does not cut the backoff after an incomplete scan short`() = pollTest { scope ->
         val engine = RecordingEngine(enumerateResult = EnumerateResult(ok = true, complete = false, recoveryPending = true))
@@ -775,7 +775,7 @@ class EnumeratePollerTest {
         assertEquals(30L, lastProviderContactMs(10L, 30L))
     }
 
-    // #778: the poll's cloud enumeration waits while the daemon is paused and catches up the moment it resumes.
+    // archive#778: the poll's cloud enumeration waits while the daemon is paused and catches up the moment it resumes.
     @Test
     fun `the poll does not enumerate while paused and catches up at once on resume`() = runTest {
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))

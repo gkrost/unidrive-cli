@@ -20,7 +20,7 @@ import java.util.Base64
  * purposes (display the user's preferred_username, sniff `exp` for a
  * proactive refresh) we trust the issuer and just need the claim value.
  *
- * UD-308 follow-up (PR #23 Codex P2): base64url payload segments need
+ * UD-308 follow-up (PR archive#23 Codex P2): base64url payload segments need
  * padding so the total length is a multiple of 4. The pre-UD-308 OneDrive
  * + Internxt copies used a hardcoded `+ "=="` that only worked when
  * `raw.length % 4 == 2`; for `% 4` in {0, 3} the decode threw. The shared

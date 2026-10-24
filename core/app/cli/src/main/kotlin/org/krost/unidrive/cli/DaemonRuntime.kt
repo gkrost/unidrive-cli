@@ -77,16 +77,16 @@ class DaemonRuntime(
     // > 0 enables the in-process auto-poll (mount-view-refresh-design.md §5):
     // one periodic enumerate on serveScope, serialised by the sync.enumerate
     // in-flight guard. 0 = off. `daemon run` passes the profile's daemon_poll_seconds
-    // (default 60 s, #463) or --poll-interval; 0 stays the default here so tests that
+    // (default 60 s, archive#463) or --poll-interval; 0 stays the default here so tests that
     // construct a runtime do not poll.
     private val pollIntervalMs: Long = 0,
-    // #891: the health line's interval (one INFO line with the heap, GC, threads, enumeration and upload
+    // archive#891: the health line's interval (one INFO line with the heap, GC, threads, enumeration and upload
     // queue, see DaemonHealthLine). `daemon run` passes 60 s; 0 = off, so tests that construct a runtime
     // log nothing.
     private val healthIntervalMs: Long = 0,
-    // #450: hydration cache budget in bytes (profile key hydration_cache_max_bytes); 0 = unlimited.
+    // archive#450: hydration cache budget in bytes (profile key hydration_cache_max_bytes); 0 = unlimited.
     private val hydrationCacheMaxBytes: Long = HydrationImpl.DEFAULT_CACHE_MAX_BYTES,
-    // #603 (U4): the profile's hosting mode, resolved and gated by `daemon run` before this runtime is
+    // archive#603 (U4): the profile's hosting mode, resolved and gated by `daemon run` before this runtime is
     // constructed. A mount daemon serves the hydration verbs, sync.enumerate and the poller, and routes
     // refresh.run to the always-enumerate path; a mirror daemon refuses the mount verbs (wrong_mode) and
     // keeps refresh.run's legacy reconcile. Reported in daemon.status (mode, capabilities) and the banner.
@@ -94,19 +94,19 @@ class DaemonRuntime(
     // The profile's config folder (it holds credentials.json and the lock): the IPC token files are
     // written here at every start, before the socket listens (docs/dev/specs/ipc-authentication.md).
     private val ipcTokenDir: Path = lockFile.parent,
-    // #655: TTL of the quota snapshot in daemon.status (`quota`), in ms; 0 = the quota field
+    // archive#655: TTL of the quota snapshot in daemon.status (`quota`), in ms; 0 = the quota field
     // renders from the cache only and never refreshes. `daemon run` passes the profile's
     // quota_refresh_minutes (default 15 min).
     private val quotaRefreshMs: Long = 15 * 60_000L,
-    // #655: whether the provider's quota() reports the account's storage plan (ProviderMetadata
+    // archive#655: whether the provider's quota() reports the account's storage plan (ProviderMetadata
     // hasQuota). False — e.g. localfs — keeps the `quota` field ABSENT from daemon.status.
     private val providerHasQuota: Boolean = true,
-    // #586: the offline credential check behind `credential_health` in daemon.status (`daemon run` passes the provider
+    // archive#586: the offline credential check behind `credential_health` in daemon.status (`daemon run` passes the provider
     // factory's), re-run at most once per TTL and never inside a status request. Null = no check can run: the field then
     // reports `unknown`.
     private val credentialHealthCheck: (() -> CredentialHealth)? = null,
     private val credentialHealthTtlMs: Long = 60_000L,
-    // #660: the profile's ignore rules (honor_gitignore, ignore_rules). A mount daemon applies them to its uploads, a
+    // archive#660: the profile's ignore rules (honor_gitignore, ignore_rules). A mount daemon applies them to its uploads, a
     // mirror daemon to its scan and plan, and both report them (daemon.status `ignore`, ignore.explain); null = off, the
     // built-in excludes stay plain patterns.
     private val ignoreSettings: IgnoreSettings? = UploadIgnore.settingsFor(honorGitignore = false, accountRules = emptyList()),
@@ -120,18 +120,18 @@ class DaemonRuntime(
     private val viewTtlMs: Long = ViewCache.DEFAULT_TTL_MS,
     // How a start that loses the profile lock ends the process (a seam for tests, which cannot exit).
     private val exitProcess: (Int) -> Unit = { code -> System.exit(code) },
-    // #678: where the startup replay and the cache sweep run their blocking per-record walks.
+    // archive#678: where the startup replay and the cache sweep run their blocking per-record walks.
     // Dispatchers.IO in production; a seam for tests, which pin that a stop does not wait for them.
     private val startupIoDispatcher: CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
     private val afterProfileLockAcquired: () -> Unit = {},
-    // #578: the --upload-concurrency flag's override of the profile's upload_concurrency
+    // archive#578: the --upload-concurrency flag's override of the profile's upload_concurrency
     // key; null leaves the key in force. Applied to the provider right after construction.
     private val uploadConcurrencyOverride: Int? = null,
 ) {
     private val log = LoggerFactory.getLogger(DaemonRuntime::class.java)
 
     /**
-     * #652: how the transfer history file is opened; a seam for tests, which need an open to fail on demand (and to
+     * archive#652: how the transfer history file is opened; a seam for tests, which need an open to fail on demand (and to
      * keep hold of the history to see it closed). Default retention (90 days or 200 MB) applies until the config keys
      * exist.
      */
@@ -139,17 +139,17 @@ class DaemonRuntime(
         { profile, file -> TransferHistory.open(profile, file) }
 
     /**
-     * #813: the profile the sign-in verbs (`auth.begin`, `auth.complete`, `auth.login`) sign in, with its non-secret
+     * archive#813: the profile the sign-in verbs (`auth.begin`, `auth.complete`, `auth.login`) sign in, with its non-secret
      * config. `daemon run` sets it before [start]; null (a runtime a test builds without it) answers them
      * `sign_in_unavailable`.
      */
     internal var signInTarget: ProfileTarget? = null
 
-    /** #813: when a sign-in through this daemon last loaded new credentials; a credential rejection before it is history. */
+    /** archive#813: when a sign-in through this daemon last loaded new credentials; a credential rejection before it is history. */
     @Volatile
     private var signedInAtMs: Long? = null
 
-    /** #655: the last quota snapshot served in daemon.status (`quota`); null = nothing fetched yet. */
+    /** archive#655: the last quota snapshot served in daemon.status (`quota`); null = nothing fetched yet. */
     internal data class QuotaSnapshot(
         val usedBytes: Long? = null,
         val totalBytes: Long? = null,
@@ -209,7 +209,7 @@ class DaemonRuntime(
             // Before anything is served: the one rewrite of a fragmented file holds it alone (seconds on a large drive).
             runCatching { db!!.compactOnce() }.onFailure { log.warn("compacting state.db at start failed", it) }
 
-            // #655: seed the quota snapshot from the sync_state cache (the same tuple
+            // archive#655: seed the quota snapshot from the sync_state cache (the same tuple
             // `quota` persists), so the very first status already shows the last known
             // values flagged stale instead of nulls.
             quotaSnapshot = readCachedQuotaSnapshot(db!!)
@@ -228,7 +228,7 @@ class DaemonRuntime(
                     topLevelNames = { db?.listDirectChildren("")?.map { it.path.removePrefix("/") } ?: emptyList() },
                 )
             val provider = ReadOnlyTrashProvider(cloud, trash, viewNamespaces)
-            // #578: the flag wins over the profile key, same shape as --poll-interval.
+            // archive#578: the flag wins over the profile key, same shape as --poll-interval.
             uploadConcurrencyOverride?.let { n ->
                 if (!provider.overrideUploadConcurrency(n)) {
                     System.err.println(
@@ -272,10 +272,10 @@ class DaemonRuntime(
             // The engine's two hooks into the hydration layer (see HydrationLink). Declared outside the
             // try below: its finally joins the hydration uploads through it.
             val hydrationLink = HydrationLink()
-            // #652: opened with the mount's hydration layer, closed (flushed) after its uploads have been joined.
+            // archive#652: opened with the mount's hydration layer, closed (flushed) after its uploads have been joined.
             var transferHistory: TransferHistory? = null
             var historyRpc: HistoryRpcHandler? = null
-            // Coroutine-debug probes (gkrost/unidrive#613 ask 1): with UNIDRIVE_COROUTINE_DEBUG=1 the
+            // Coroutine-debug probes (archive#613 ask 1): with UNIDRIVE_COROUTINE_DEBUG=1 the
             // daemon captures suspension stacks at start and dumps every live coroutine when a
             // coroutine-dump.trigger file appears in the profile folder — a hung upload becomes one
             // stack trace instead of a silent wait. Off by default; see CoroutineDebug.
@@ -291,7 +291,7 @@ class DaemonRuntime(
                 // address the same files.
                 // The engine is built first and the hydration layer over it (MountEngine.over(engine)), so
                 // the engine's hooks into that layer go through hydrationLink, bound right after the layer
-                // is built. #301: the enumerate-reap asks whether an upload of a path is queued or in flight
+                // is built. archive#301: the enumerate-reap asks whether an upload of a path is queued or in flight
                 // before it evicts that path's cache file. viewInvalidationSink fans the event to all
                 // subscribers without going through the HydrationImpl flow, which is intentional: the
                 // invalidation event originates outside the per-path hydration lifecycle.
@@ -308,7 +308,7 @@ class DaemonRuntime(
                         val event = if (full || changedPaths.size > cap) {
                             HydrationEvent.ViewInvalidated(paths = emptyList(), full = true)
                         } else {
-                            // #595: the renames ride along as an additive hint; a consumer
+                            // archive#595: the renames ride along as an additive hint; a consumer
                             // that ignores them still sees both ends in `paths`.
                             HydrationEvent.ViewInvalidated(
                                 paths = changedPaths.toList(),
@@ -318,7 +318,7 @@ class DaemonRuntime(
                         hydrationLink.dispatchEvent(event)
                     },
                 )
-                // #560 U3: the mount operations (hydration, uploads, remote folder/delete/rename and
+                // archive#560 U3: the mount operations (hydration, uploads, remote folder/delete/rename and
                 // the enumeration) run on MountEngine, over this engine's shared core (guard, gather,
                 // enumeration: one of each per daemon). The engine itself stays for the refresh.run
                 // fallback (RefreshRpcHandler, U4). See MountEngine for who owns what.
@@ -341,15 +341,15 @@ class DaemonRuntime(
                         ),
                     )
                 }
-                // #778: the pause (daemon.pause / daemon.resume); the uploads and downloads of the mount consult it
+                // archive#778: the pause (daemon.pause / daemon.resume); the uploads and downloads of the mount consult it
                 // through the front-end, the enumeration and the refresh through the handlers below.
                 val pause = mount.pause
                 val wrongModeReply = """{"ok":false,"error":"wrong_mode"}"""
                 val mountMode = profileMode == ProfileMode.MOUNT
-                // #652: a mount profile records its transfers; a failure to open the history is logged once and the daemon
+                // archive#652: a mount profile records its transfers; a failure to open the history is logged once and the daemon
                 // runs without it. Mirror mode records none (its transfers are the sync pass's).
                 transferHistory = if (mountMode) openTransferHistory() else null
-                // #560 U6 (cutover): the hydration runtime exists only on a mount profile. A mirror
+                // archive#560 U6 (cutover): the hydration runtime exists only on a mount profile. A mirror
                 // daemon constructs no hydration layer and keeps no cache — its local bytes live in
                 // the sync root its reconcile owns, and every hydration verb gets wrong_mode below.
                 // Upload and replay jobs outlive IPC handlers but not this daemon: hydrationUploadScope
@@ -383,7 +383,7 @@ class DaemonRuntime(
                 // jobs are cancelled when the daemon shuts down. Pass db so
                 // the F9 `reset` parameter can clear it (keeping the rows that
                 // still await upload) before re-enumeration.
-                // #603 (U4): a mount profile's refresh.run ALWAYS takes the one-way enumerate path —
+                // archive#603 (U4): a mount profile's refresh.run ALWAYS takes the one-way enumerate path —
                 // with or without a connected client. The enumerate is remote→state.db only: a reset
                 // clears the delta cursor (the enumeration state), pending local intent stays, the last
                 // good rows survive a failed or incomplete gather, and nothing is published as a
@@ -401,8 +401,8 @@ class DaemonRuntime(
                         paused = { pause.isPaused },
                     )
 
-                // The remote poll (#463), mount-only; built here, started below (see there). The backoff
-                // starts escalated when the previous run ended in enumerate failures (#517 R3).
+                // The remote poll (archive#463), mount-only; built here, started below (see there). The backoff
+                // starts escalated when the previous run ended in enumerate failures (archive#517 R3).
                 val poller: EnumeratePoller? =
                     if (mountMode) {
                         EnumeratePoller(
@@ -420,10 +420,10 @@ class DaemonRuntime(
                     }
 
                 if (hydration != null && hydrationIpc != null) {
-                    // #450: what a stopped daemon left in the hydration cache (staging temp files, the
+                    // archive#450: what a stopped daemon left in the hydration cache (staging temp files, the
                     // copies of synced files read through the mount) is trimmed to the budget at start.
                     serveScope.launch {
-                        // #678: blocking walk; off the event loop so it cannot delay a stop.
+                        // archive#678: blocking walk; off the event loop so it cannot delay a stop.
                         withContext(startupIoDispatcher) {
                             try {
                                 hydration.sweepCache()
@@ -435,7 +435,7 @@ class DaemonRuntime(
                         }
                     }
 
-                    // #463: a download or upload that succeeded is a provider round trip that worked, so it cuts
+                    // archive#463: a download or upload that succeeded is a provider round trip that worked, so it cuts
                     // the poller's back-off short. A read served from the warm cache touched no network and does
                     // not (provesProviderReachable). The poller polls at most once per plain interval anyway.
                     serveScope.launch {
@@ -451,10 +451,10 @@ class DaemonRuntime(
                 // The enumerate pulls remote changes into state.db and, when anything changed,
                 // the engine's viewInvalidationSink pushes view.invalidated back over this same
                 // subscribe stream — so a freshly-mounted view reflects remote renames/deletes
-                // without a manual `refresh`, without waiting for the next poll (#463). Serialised through
+                // without a manual `refresh`, without waiting for the next poll (archive#463). Serialised through
                 // the same in-flight guard as sync.enumerate/the poller, so a concurrent
                 // enumeration is skipped rather than overlapped.
-                // #603 (U4): the mount verbs exist only on a mount profile. A mirror daemon answers every
+                // archive#603 (U4): the mount verbs exist only on a mount profile. A mirror daemon answers every
                 // hydration verb and sync.enumerate with wrong_mode — the client's command gate refuses
                 // before this, but nothing here may serve mount semantics on a mirror profile either.
                 // The mount wiring below (handlers, subscribe-hook, upload replay, poller)
@@ -470,7 +470,7 @@ class DaemonRuntime(
                     server.registerHandler(verb) { connId, json ->
                         val reply = ipc.handle(connectionId = connId, jsonRequest = json)
                         // A READ-scope subscribe (an observer such as a status UI) never starts the enumerate:
-                        // observing must not scan the remote. #657
+                        // observing must not scan the remote. archive#657
                         if (verb == "hydration.subscribe" && reply.contains("\"ok\":true") &&
                             subscribeEnumerates(server.authEnabled, server.scopeOf(connId))
                         ) {
@@ -507,12 +507,12 @@ class DaemonRuntime(
                 // stays as the client-side complement for cache files the row
                 // scan cannot see.
                 //
-                // #603 (U4): mount-only. A mirror daemon serves no hydration uploads to replay.
+                // archive#603 (U4): mount-only. A mirror daemon serves no hydration uploads to replay.
                 if (mountMode) {
                     // The hydration layer is built above whenever mountMode holds.
                     val h = requireNotNull(hydration) { "mount mode without a hydration layer" }
                     serveScope.launch {
-                        // #678: the replay walks every record with blocking file-system work and no
+                        // archive#678: the replay walks every record with blocking file-system work and no
                         // suspension point; on the event loop it starved closeSignal.await(), so a
                         // stop waited for the whole backlog. Off the loop, and with the walk checking
                         // cancellation between records, a stop lands within one record.
@@ -541,7 +541,7 @@ class DaemonRuntime(
                     server.unregisterSyncSubscriber(connId)
                 }
 
-                // history.list / history.subscribe (#653): read verbs over the transfer history. A mirror daemon, or a mount
+                // history.list / history.subscribe (archive#653): read verbs over the transfer history. A mirror daemon, or a mount
                 // daemon whose history did not open, answers history_unavailable (never an empty list).
                 historyRpc =
                     HistoryRpcHandler(
@@ -554,7 +554,7 @@ class DaemonRuntime(
                     refreshHandler.handle(connId, json)
                 }
 
-                // sync.enumerate verb (mount-view-refresh-design.md §4.1), mount-only (#603: a mirror
+                // sync.enumerate verb (mount-view-refresh-design.md §4.1), mount-only (archive#603: a mirror
                 // daemon registered its wrong_mode refusal above). The handler is constructed above
                 // (shared with the subscribe-triggered enumerate); here we expose it as an explicit verb
                 // whose terminal events fan out to sync.subscribe listeners via server.emit.
@@ -564,22 +564,22 @@ class DaemonRuntime(
                     }
                 }
 
-                // Remote-change discovery (mount-view-refresh-design.md §5, #463), on by default in
+                // Remote-change discovery (mount-view-refresh-design.md §5, archive#463), on by default in
                 // `daemon run`: the notification channel is not reliable, and a mount profile has no
                 // other way to learn what changed in the cloud. The enumerate path is cheap on a
                 // no-change incremental delta. The first poll runs at start (catch-up after a stop or
                 // an outage). Shares the sync.enumerate in-flight guard and skips while a refresh runs,
                 // so it never overlaps either. Launched on serveScope so it cancels with the daemon at
                 // shutdown. The backoff starts escalated when the previous run ended in enumerate
-                // failures (#517 R3): a restart into a known-bad remote doesn't re-run the doomed
-                // cycle at full cadence. Mount-only (#603): a mirror profile's discovery is `sync`'s
+                // failures (archive#517 R3): a restart into a known-bad remote doesn't re-run the doomed
+                // cycle at full cadence. Mount-only (archive#603): a mirror profile's discovery is `sync`'s
                 // reconcile, not the mount-view poll (the poller is constructed above, null on a mirror).
                 poller?.start()
-                // #111: a provider with a push channel (Internxt's notifications, Dropbox's longpoll) wakes the poll when
+                // archive#111: a provider with a push channel (Internxt's notifications, Dropbox's longpoll) wakes the poll when
                 // something changed in the cloud. Mount-only and only while the poll is on; a mirror daemon registers nothing.
                 if (poller != null && pollIntervalMs > 0) wakePollerOnRemoteChangeHint(provider, poller)
 
-                // #891: one health line per interval (heap, GC, threads, enumeration, upload queue) so the
+                // archive#891: one health line per interval (heap, GC, threads, enumeration, upload queue) so the
                 // memory a long scan needs is visible while it happens. Cancelled with the serve scope.
                 if (healthIntervalMs > 0) {
                     DaemonHealthLine(
@@ -592,7 +592,7 @@ class DaemonRuntime(
                     ).start()
                 }
 
-                // credential_health (#586): checked off the request path, so the first status can already carry an answer.
+                // credential_health (archive#586): checked off the request path, so the first status can already carry an answer.
                 val credentialHealth = CredentialHealthMonitor(credentialHealthCheck, credentialHealthTtlMs, serveScope)
                 credentialHealth.refreshAsync()
 
@@ -625,7 +625,7 @@ class DaemonRuntime(
                     val engineVersionJson = kotlinx.serialization.json.JsonPrimitive(BuildInfo.versionString()).toString()
                     // engine_build_time_ms: when the build was made (epoch ms UTC; the commit time of a reproducible build); null when unknown.
                     val engineBuildTimeJson = BuildInfoReport.buildTimeMs()?.toString() ?: "null"
-                    // uploads / cache / provider_health (#658): the engine's own account of whether everything
+                    // uploads / cache / provider_health (archive#658): the engine's own account of whether everything
                     // is uploaded, how much the hydration cache holds and when the provider last answered.
                     // uploads and cache exist only where a hydration layer does (a mount profile): a mirror
                     // daemon leaves them out, and so does an upload queue that has never been read, because a
@@ -639,18 +639,18 @@ class DaemonRuntime(
                     } ?: ""
                     val lastContactMs = lastProviderContactMs(enumerationStatus.lastSuccessAtMs, mount.lastProviderContactAtMs)
                     val providerHealth = providerHealthJson(lastContactMs)
-                    // credential_health (#586): the last offline check, or `expired` at once when the provider rejected the
+                    // credential_health (archive#586): the last offline check, or `expired` at once when the provider rejected the
                     // credentials after the check (a transfer or an enumeration failed authentication and nothing worked since).
                     val credentialHealthJson =
                         credentialHealth.reading()
                             .withRejection(rejectionAfterSignIn(mount.authRejectedAtMs, signedInAtMs), lastContactMs)
                             .toJson(System.currentTimeMillis())
-                    // mode + capabilities (#603 U4): what this daemon serves, so a client can check the
+                    // mode + capabilities (archive#603 U4): what this daemon serves, so a client can check the
                     // hosting contract before it sends a verb the profile refuses (additive, read-only).
                     val modeJson = kotlinx.serialization.json.JsonPrimitive(profileMode.wireName).toString()
                     // `views` is a capability only where the profile shows a view: a daemon without one answers as it always did.
                     // `view_page` with it: such a daemon answers view.page for its views.
-                    // `notifications.status` (#111): this reply carries the `notifications` object.
+                    // `notifications.status` (archive#111): this reply carries the `notifications` object.
                     val capabilitiesJson = kotlinx.serialization.json.JsonArray(
                         (
                             profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
@@ -659,7 +659,7 @@ class DaemonRuntime(
                         )
                             .map { kotlinx.serialization.json.JsonPrimitive(it) },
                     ).toString()
-                    // quota (#655): the account's storage plan snapshot. Absent entirely for
+                    // quota (archive#655): the account's storage plan snapshot. Absent entirely for
                     // providers without an account quota (ProviderMetadata hasQuota=false —
                     // localfs probes machine storage). A client-connected status request is
                     // also the refresh trigger: a fetch runs single-flight when the TTL has
@@ -677,20 +677,20 @@ class DaemonRuntime(
                                 """"total_bytes":${snap.totalBytes ?: "null"},""" +
                                 """"fetched_at_ms":${snap.fetchedAtMs ?: "null"},"stale":${snap.stale},"error":$errorJson}"""
                         }
-                    // poll_interval_ms (#463): the effective interval of the remote poll (0 = off). The
+                    // poll_interval_ms (archive#463): the effective interval of the remote poll (0 = off). The
                     // next attempt after a failure is enumeration.next_attempt_at_ms (additive, read-only).
-                    // engine_version (#554): the build a co-client is talking to — behaviour fixes do
+                    // engine_version (archive#554): the build a co-client is talking to — behaviour fixes do
                     // not move IPC_PROTOCOL_VERSION, so this is the age signal a client gates its
-                    // engine minimum on (additive, read-only). #574: a dev build carries the commit id
+                    // engine minimum on (additive, read-only). archive#574: a dev build carries the commit id
                     // as semver build metadata (VERSION+COMMIT[.dirty]), so the release part orders.
                     """{"ok":true,"protocol_version":$IPC_PROTOCOL_VERSION,"engine_version":$engineVersionJson,"engine_build_time_ms":$engineBuildTimeJson,"mode":$modeJson,"capabilities":$capabilitiesJson,"uptime_ms":$uptimeMs,"clients_connected":$clientCount,"refresh_in_flight":$refreshInFlight,"refresh_job_id":$jobIdJson,"sync_paths":$syncPathsJson,"provider":$providerJson,"provider_name":$providerNameJson,"authenticated":${provider.isAuthenticated},"enumeration":$enumerationJson,"poll_interval_ms":$pollIntervalMs""" +
                         (quotaJson?.let { ",\"quota\":$it" } ?: "") +
                         healthJson +
                         ",\"provider_health\":$providerHealth" +
                         ",\"credential_health\":$credentialHealthJson" +
-                        // notifications (#111): the provider's remote-change push channel; `unsupported` where it has none.
+                        // notifications (archive#111): the provider's remote-change push channel; `unsupported` where it has none.
                         ",\"notifications\":${notificationsStatusJson(provider.remoteChangeChannelStatus())}" +
-                        // ignore (#660): present where the ignore rules apply; held_back counts the folders
+                        // ignore (archive#660): present where the ignore rules apply; held_back counts the folders
                         // whose uploads wait for a rule file that cannot be read.
                         (engine.uploadIgnore?.let { ",\"ignore\":${ignoreHealthJson(it.heldBack())}" } ?: "") +
                         // trash: present only while something is in the provider's trash. The read-only folder that shows it,
@@ -702,20 +702,20 @@ class DaemonRuntime(
                         (hydration?.viewStatuses()?.takeIf { it.isNotEmpty() }?.let { ",\"views\":${viewsStatusJson(it)}" } ?: "") +
                         // remote_incomplete: present only while a truncated cloud object is remembered (count only, no names).
                         (mount.remoteIncompleteCount().takeIf { it > 0 }?.let { ",\"remote_incomplete\":${remoteIncompleteJson(it)}" } ?: "") +
-                        // paused (#778): present only while the daemon is paused; uploads and quota above keep reporting.
+                        // paused (archive#778): present only while the daemon is paused; uploads and quota above keep reporting.
                         (pause.current?.let { ",\"paused\":${it.toJson()}" } ?: "") +
-                        // #578: the effective part parallelism of the provider's multipart uploads
+                        // archive#578: the effective part parallelism of the provider's multipart uploads
                         // (null when it does not upload in parts). Additive, read-only.
                         ",\"upload_concurrency\":${provider.multipartUploadConcurrency()?.let { kotlinx.serialization.json.JsonPrimitive(it).toString() } ?: "null"}" +
                         "}"
                 }
 
-                // ignore.explain (#660): a read verb; the daemon's own rules answer it, so it says what the upload path
+                // ignore.explain (archive#660): a read verb; the daemon's own rules answer it, so it says what the upload path
                 // decides (the mount's, or the mirror's scan and plan).
                 val ignoreHandler = engine.uploadIgnore?.let { IgnoreRpcHandler(it, mount::matchingExcludePattern) }
                 server.registerHandler("ignore.explain") { _, json -> ignoreHandler?.explain(json) ?: wrongModeReply }
 
-                // daemon.pause / daemon.resume (#778): the daemon holds its pause in memory only. A pause stops every
+                // daemon.pause / daemon.resume (archive#778): the daemon holds its pause in memory only. A pause stops every
                 // upload, cloud download and cloud enumeration from starting (local writes stay queued, reported as
                 // waiting); a transfer already running is judged by the in-flight rule. The change goes to the
                 // subscribers of both streams: sync.subscribe (every mode) and hydration.subscribe (mount).
@@ -737,12 +737,12 @@ class DaemonRuntime(
                         profileDir = ipcTokenDir,
                         db = db!!,
                         providerFactory = providerFactory,
-                        // #1186: not the isAuthenticated setter, which does nothing on OneDrive, Internxt and Dropbox.
+                        // archive#1186: not the isAuthenticated setter, which does nothing on OneDrive, Internxt and Dropbox.
                         forgetCredentials = { provider.forgetCredentials() },
                     )
                 server.registerHandler(AuthLogoutRpcHandler.VERB) { _, json -> logoutHandler.handle(json) }
 
-                // auth.begin / auth.complete / auth.login (§4.11, #813): sign the account in again while the daemon keeps
+                // auth.begin / auth.complete / auth.login (§4.11, archive#813): sign the account in again while the daemon keeps
                 // running. The daemon runs the CLI's own sign-in step, which stores the credentials once the provider accepted
                 // them; then its own provider instance reloads them in place (no restart, the mount stays), the credential
                 // check runs again and an authentication rejection from before the sign-in no longer reads as `expired`.
@@ -756,12 +756,12 @@ class DaemonRuntime(
                 server.registerHandler(AuthLoginRpcHandler.COMPLETE) { _, json -> signInHandler.complete(json) }
                 server.registerHandler(AuthLoginRpcHandler.LOGIN) { _, json -> signInHandler.login(json) }
 
-                // auth.check (§4.12, #1240): the credential check goes through the daemon's own provider instance, the one that
+                // auth.check (§4.12, archive#1240): the credential check goes through the daemon's own provider instance, the one that
                 // holds and refreshes the token, so a CLI check never races that refresh.
                 val checkHandler = AuthCheckRpcHandler(profileName, provider)
                 server.registerHandler(AuthCheckRpcHandler.VERB) { _, json -> checkHandler.check(json) }
 
-                // metrics.query (#654): the per-minute roll-ups of the provider's request attempts. A mount profile with an open
+                // metrics.query (archive#654): the per-minute roll-ups of the provider's request attempts. A mount profile with an open
                 // history records them; a mirror daemon (no history) answers "not recording", never zeros.
                 val requestMetrics = transferHistory?.requestMetrics()?.also { provider.attachRequestMetrics(it) }
                 val metricsHandler = MetricsRpcHandler(requestMetrics)
@@ -804,7 +804,7 @@ class DaemonRuntime(
                 try {
                     hydrationLink.hydration?.shutdownUploads()
                 } finally {
-                    // #652: after the uploads are joined (their last rows are queued by then), before state.db closes.
+                    // archive#652: after the uploads are joined (their last rows are queued by then), before state.db closes.
                     historyRpc?.close()
                     closeTransferHistory(transferHistory)
                 }
@@ -861,7 +861,7 @@ class DaemonRuntime(
     }
 
     /**
-     * #652: opens this mount profile's transfer history, or returns null after one WARN line: the history is never a
+     * archive#652: opens this mount profile's transfer history, or returns null after one WARN line: the history is never a
      * reason to refuse to serve, so every failure to open it (a file that cannot be restricted to the owner, a damaged
      * or newer database, a full disk) leaves the daemon running without one.
      */
@@ -874,7 +874,7 @@ class DaemonRuntime(
             null
         }
 
-    // #111: the push channel is best effort; a channel that cannot start leaves the daemon on its poll alone.
+    // archive#111: the push channel is best effort; a channel that cannot start leaves the daemon on its poll alone.
     private fun wakePollerOnRemoteChangeHint(
         provider: CloudProvider,
         poller: EnumeratePoller,
@@ -900,7 +900,7 @@ class DaemonRuntime(
         return kept
     }
 
-    /** #652: writes what is queued and closes the history file. Bounded by the history's own close; never throws. */
+    /** archive#652: writes what is queued and closes the history file. Bounded by the history's own close; never throws. */
     @Suppress("TooGenericExceptionCaught")
     private fun closeTransferHistory(history: TransferHistory?) {
         try {
@@ -920,7 +920,7 @@ class DaemonRuntime(
         lock = null
     }
 
-    // ── #655: the quota snapshot ─────────────────────────────────────────────
+    // ── archive#655: the quota snapshot ─────────────────────────────────────────────
 
     /**
      * Triggers a single-flight quota fetch when a client is asking (status request), the TTL
@@ -932,7 +932,7 @@ class DaemonRuntime(
     private fun maybeTriggerQuotaRefresh(
         clientCount: Int,
         scope: kotlinx.coroutines.CoroutineScope,
-        // #778: no fetch while the daemon is paused; the snapshot is still marked stale once its TTL has expired.
+        // archive#778: no fetch while the daemon is paused; the snapshot is still marked stale once its TTL has expired.
         paused: Boolean = false,
     ) {
         if (quotaRefreshMs <= 0 || clientCount <= 0) return
@@ -1068,13 +1068,13 @@ class DaemonRuntime(
     companion object {
         const val SHUTDOWN_DEADLINE_MS: Long = 10_000
 
-        /** #652: the transfer history's file, in the profile's state folder next to state.db. */
+        /** archive#652: the transfer history's file, in the profile's state folder next to state.db. */
         const val HISTORY_FILE_NAME = "telemetry.db"
 
         /**
          * The scope the mount's hydration uploads and replays run in. It carries the `profile` MDC key
          * (kept across suspensions and thread hops by [MDCContext]), so their log lines in the shared
-         * unidrive.log read `[<profile>]` instead of `[*]` (#150).
+         * unidrive.log read `[<profile>]` instead of `[*]` (archive#150).
          */
         internal fun hydrationUploadScope(profileName: String): kotlinx.coroutines.CoroutineScope =
             kotlinx.coroutines.CoroutineScope(

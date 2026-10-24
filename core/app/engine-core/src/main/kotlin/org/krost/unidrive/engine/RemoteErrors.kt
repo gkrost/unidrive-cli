@@ -4,9 +4,9 @@ import org.krost.unidrive.ProviderException
 
 /**
  * How a failed provider call is classified as "the remote item does not exist".
- * Shared by the mirror engine (a planned DeleteRemote, the #419 ghost probe)
+ * Shared by the mirror engine (a planned DeleteRemote, the archive#419 ghost probe)
  * and the mount operations (deleteRemote, remoteItemOrNull, the rescan's
- * remote-version check). Moved out of SyncEngine for #560 U2; the answer is
+ * remote-version check). Moved out of SyncEngine for archive#560 U2; the answer is
  * unchanged.
  *
  * The reflective `getStatusCode()` probe stays with each caller (SyncEngine,

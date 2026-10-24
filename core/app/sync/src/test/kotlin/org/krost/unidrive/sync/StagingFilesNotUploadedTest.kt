@@ -14,7 +14,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #1049 X2: the providers stage a download as `<name>.unidrive-tmp` beside its destination (`.ud-<hex>.unidrive-tmp` for
+ * archive#1049 X2: the providers stage a download as `<name>.unidrive-tmp` beside its destination (`.ud-<hex>.unidrive-tmp` for
  * a name too long to take the suffix, `stagingSiblingName`). An interrupted download (Ctrl-C of `sync --watch`, a kill)
  * leaves the partial file in the sync root, and the default excludes did not match it: the next scan reported it NEW and
  * uploaded the partial as a normal file.

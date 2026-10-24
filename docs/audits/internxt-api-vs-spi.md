@@ -109,7 +109,7 @@ Legend: ✅ Used — ⚠️ Used-but-divergent — ◯ Available-unused — ❓ 
 | `/folders` | DELETE | ✅ | `InternxtApiService.kt:217-240` | `deleteFolder` (sends `items: [{uuid, type: "folder"}]`). |
 | `/folders/count` | GET | ◯ | — | |
 | `/folders/content/{uuid}` | GET | ✅ | `InternxtApiService.kt:71-74` | `getFolderContents` returns `{children, files}` per `FolderContentResponse.kt`. **Note:** spec `GetFolderContentDto` returns the folder's own metadata wrapped around children/files; provider DTO at `InternxtFile.kt:25-29` only deserialises `children` + `files` and ignores the rest. Silent-default on parent metadata is benign (provider doesn't need it) but is divergent. |
-| `/folders/content/{uuid}/files` | GET | ⚠️ | `InternxtApiService.kt` `offsetFolderStream` | Deprecated offset listing: `limit` is REQUIRED, 1..50 (#647). Used only as the 404/405 fallback of `/folders/v2/content/{uuid}/files` (cursor, `limit` 50..1000), which `getFolderContentsPaged` asks first. |
+| `/folders/content/{uuid}/files` | GET | ⚠️ | `InternxtApiService.kt` `offsetFolderStream` | Deprecated offset listing: `limit` is REQUIRED, 1..50 (archive#647). Used only as the 404/405 fallback of `/folders/v2/content/{uuid}/files` (cursor, `limit` 50..1000), which `getFolderContentsPaged` asks first. |
 | `/folders/content/{uuid}/folders` | GET | ⚠️ | `InternxtApiService.kt` `offsetFolderStream` | As `/files` above; the cursor form is `/folders/v2/content/{uuid}/folders`. |
 | `/folders/content/{uuid}/folders/existence` | POST | ◯ | — | Could replace the 409-recovery dance in `createFolder` (`InternxtProvider.kt:256-267`). |
 | `/folders/content/{uuid}/files/existence` | POST | ◯ | — | |
@@ -123,7 +123,7 @@ Legend: ✅ Used — ⚠️ Used-but-divergent — ◯ Available-unused — ❓ 
 | `/folders/{uuid}/size` | GET | ◯ | — | |
 | `/folders/meta` | GET (?path) | ◯ | — | |
 
-**Addendum 2026-09-29 (#392, live equivalence check).** The "paginated
+**Addendum 2026-09-29 (archive#392, live equivalence check).** The "paginated
 variants could replace `/folders/content/{uuid}` for large folders" note
 above was probed on a real account (`/_INBOX`: 126 folders, 1,433 files):
 for 12 sampled folders — including the largest (869 files, 18 paginated

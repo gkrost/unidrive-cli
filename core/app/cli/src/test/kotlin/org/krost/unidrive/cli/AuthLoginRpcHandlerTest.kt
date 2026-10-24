@@ -47,7 +47,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The sign-in verbs `auth.begin`, `auth.complete` and `auth.login` (docs/dev/specs/unidrive-daemon-design.md §4.11, #813):
+ * The sign-in verbs `auth.begin`, `auth.complete` and `auth.login` (docs/dev/specs/unidrive-daemon-design.md §4.11, archive#813):
  * the running daemon signs its account in again. The library sign-in and the device-code factory are fakes on the
  * [LifecycleHooks] seams; every password, code and token here is made up. No test reaches a network, a real account or
  * the user's own sockets.

@@ -17,7 +17,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #571: the verdicts of the write-progress watchdog on a clock the test drives, and the cut / cancellation shape of
+ * archive#571: the verdicts of the write-progress watchdog on a clock the test drives, and the cut / cancellation shape of
  * [withUploadWatchdog] on a block without a network. The loopback tests of the Internxt provider drive it through a
  * real engine.
  */
@@ -96,7 +96,7 @@ class UploadProgressWatchdogTest {
         assertTrue(!p.bodySent)
     }
 
-    // #592: the verdict is wall-clock time, so a process that was not running (a stop-the-world GC, a starved CI runner, a
+    // archive#592: the verdict is wall-clock time, so a process that was not running (a stop-the-world GC, a starved CI runner, a
     // suspended VM) looked like an upload that stopped moving. The watchdog notices that its OWN ticks came late and gives
     // the time back.
     @Test
@@ -208,7 +208,7 @@ class UploadProgressWatchdogTest {
             assertEquals(UploadWatchdogException.Reason.STALLED, e.reason)
         }
 
-    // #572 review: an HTTP engine may turn the watchdog's cancellation into an IOException of its own ("socket closed").
+    // archive#572 review: an HTTP engine may turn the watchdog's cancellation into an IOException of its own ("socket closed").
     // The user must still see the verdict (stalled), not the engine's generic text.
     @Test
     fun `the verdict wins when the engine turns the cut into an IOException of its own`() =

@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
 
 /**
  * The enumeration asks for the number of alive rows twice per pass, and each ask was a `COUNT(*)` of the whole table
- * under the monitor: 128 ms on average on 388,000 rows, 22 s in 88 minutes of the daemon's life (#983). The number is
+ * under the monitor: 128 ms on average on 388,000 rows, 22 s in 88 minutes of the daemon's life (archive#983). The number is
  * now kept in memory, in step with every write. The tests compare it with what the table holds, after every kind of
  * write, and pin the places where a number that is merely added to would go wrong: a rollback, a writer in another
  * connection, a bulk write. Nothing here reads a clock: that the table is not scanned is counted
@@ -301,7 +301,7 @@ class StateDatabaseEntryCountTest {
         db.upsertEntry(entry("/base"))
         db.beginBatch()
         db.upsertEntry(entry("/mine-before"))
-        onOtherThread { db.upsertEntry(entry("/theirs")) } // commits the batch's transaction as it stands (#300)
+        onOtherThread { db.upsertEntry(entry("/theirs")) } // commits the batch's transaction as it stands (archive#300)
         db.upsertEntry(entry("/mine-after")) // the owner's next write opens a new transaction
         db.rollbackBatch()
 

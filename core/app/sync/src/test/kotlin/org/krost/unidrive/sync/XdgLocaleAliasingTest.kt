@@ -8,7 +8,7 @@ import java.time.Instant
 import kotlin.test.*
 
 /**
- * Tests for XDG-user-dir locale alias resolution (#115).
+ * Tests for XDG-user-dir locale alias resolution (archive#115).
  *
  * All tests use in-memory fake data (no live network, no host filesystem
  * dependencies) — user-dirs.dirs content is injected via
@@ -71,7 +71,7 @@ class XdgLocaleAliasingTest {
      * (e.g. `/Bilder`), the reconciler must NOT emit a `CreateRemoteFolder` for
      * the locale name.  The local folder is adopted as the canonical cloud folder.
      *
-     * Transparent-adoption model (#115): every action's `path` stays the REAL
+     * Transparent-adoption model (archive#115): every action's `path` stays the REAL
      * local path (`/Bilder/...`); REMOTE-write actions carry the canonical
      * remote path out-of-band via `remoteTarget`. So a new local file under the
      * alias (`/Bilder/new.jpg`) plans an Upload with `path=/Bilder/new.jpg` and
@@ -323,7 +323,7 @@ class XdgLocaleAliasingTest {
      * `Bilder/b.jpg`) must be detected as a server-side move and NOT degrade to
      * a `DeleteRemote + Upload` re-upload pair.
      *
-     * Transparent-adoption model (#115): the DB row is keyed by the REAL local
+     * Transparent-adoption model (archive#115): the DB row is keyed by the REAL local
      * path (`/Bilder/a.jpg`) and carries the canonical remote path
      * (`/Pictures/a.jpg`) in `remotePath`. detectMoves runs on real-local paths,
      * so it pairs DeleteRemote(/Bilder/a.jpg) + Upload(/Bilder/b.jpg) into a
@@ -427,7 +427,7 @@ class XdgLocaleAliasingTest {
      * so the alias fires from page 1 onward and NO /Bilder-prefixed
      * action is emitted across any of the 4 slices.
      *
-     * Transparent-adoption model (#115): the alias FIRING is now observed via
+     * Transparent-adoption model (archive#115): the alias FIRING is now observed via
      * `remoteTarget`/suppressed CreateRemoteFolder, not via a rewritten action
      * `path` (which always stays real-local /Bilder). When the alias does NOT
      * fire (broken empty-set lookahead) the alias folder is created on remote

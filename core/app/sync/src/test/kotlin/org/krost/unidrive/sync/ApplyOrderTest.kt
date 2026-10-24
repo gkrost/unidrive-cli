@@ -76,7 +76,7 @@ class ApplyOrderTest {
         assertEquals(input, topologicalApplyOrder(input), "independent mkdirs keep input order")
     }
 
-    // #123: createFolderBatches feeds the bounded-concurrency create-folder run.
+    // archive#123: createFolderBatches feeds the bounded-concurrency create-folder run.
     // Every batch may run concurrently; the apply loop drains batch N before
     // starting batch N+1. These tests pin the parent-before-child invariant that
     // barrier relies on.

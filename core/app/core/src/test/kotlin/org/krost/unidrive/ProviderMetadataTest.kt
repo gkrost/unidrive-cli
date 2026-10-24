@@ -84,12 +84,12 @@ class ProviderMetadataTest {
     }
 
     // UD-810 audit: renamed from `allByTier returns sorted metadata` and
-    // rewritten under Codex PR #18 review feedback.
+    // rewritten under Codex PR archive#18 review feedback.
     //
     // Previous body sorted with a LOCAL `sortedBy { canonical.indexOf(...) }`
     // expression that never invoked `ProviderRegistry.allByTier()` — if
     // `allByTier()` changed to the wrong order or stopped sorting entirely,
-    // the test would still pass. Codex flagged this on PR #18.
+    // the test would still pass. Codex flagged this on PR archive#18.
     //
     // Fix: `ProviderRegistry.allByTier` now takes an optional
     // `metadata: List<ProviderMetadata>` parameter (default = `allMetadata()`)

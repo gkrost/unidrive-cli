@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
 class UploadTimeoutPolicyTest {
     private val policy = UploadTimeoutPolicy
 
-    // UD-277 acceptance #2 — explicit fixture from the original WebDAV
+    // UD-277 acceptance archive#2 — explicit fixture from the original WebDAV
     // ticket: fileSize = 2 GiB, minThroughput = 512 KiB/s → timeout ≥ 4096 s
 
     @Test
@@ -112,7 +112,7 @@ class UploadTimeoutPolicyTest {
         assertTrue(expected > 600_000L, "5 GiB should exceed the floor with default throughput")
     }
 
-    // #571 — the limits of a watched upload.
+    // archive#571 — the limits of a watched upload.
 
     @Test
     fun `571 the response wait is the 300 s floor below 3 GB and grows with the size above`() {

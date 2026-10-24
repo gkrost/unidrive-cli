@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * #314: a legacy row (older Internxt clients predating `plainName`) carries only the
+ * archive#314: a legacy row (older Internxt clients predating `plainName`) carries only the
  * encrypted name. The converters attempt the client-side decryption against the item's
  * parent scope; an undecryptable name keeps today's ciphertext fallback, never throws.
  */

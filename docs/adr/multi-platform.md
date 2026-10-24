@@ -17,7 +17,7 @@ Second, the product direction has expanded. The core is the foundation for three
 | Surface | Purpose | Status |
 |---|---|---|
 | Linux daemon | Background sync with a CLI control surface. | Active — Internxt + OneDrive |
-| Windows desktop client | Full Explorer integration via the Cloud Files API. Placeholder representation of cloud-only items. Replaces the first-party OneDrive / Internxt desktop clients. | In progress — the Windows client; the MVP gate covers the read tier (#290). Writeback of new and changed files ships (2026-10-02); rename and delete are in progress |
+| Windows desktop client | Full Explorer integration via the Cloud Files API. Placeholder representation of cloud-only items. Replaces the first-party OneDrive / Internxt desktop clients. | In progress — the Windows client; the MVP gate covers the read tier (archive#290). Writeback of new and changed files ships (2026-10-02); rename and delete are in progress |
 | Android app | Cloud-drive sync (browse, hydrate, upload). Out of scope: in-app document editing, mail, contacts, anything that isn't sync. | Planned |
 | Linux UI | FUSE-backed file-on-demand + Dolphin context menus (hydrate / dehydrate per directory or file). | Planned |
 

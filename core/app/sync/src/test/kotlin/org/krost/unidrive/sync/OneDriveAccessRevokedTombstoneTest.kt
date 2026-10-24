@@ -11,7 +11,7 @@ import java.time.Instant
 import kotlin.test.*
 
 /**
- * #183: minimal-tombstone orphan fix — a Graph delta item carrying only `id` +
+ * archive#183: minimal-tombstone orphan fix — a Graph delta item carrying only `id` +
  * `@microsoft.graph.removed state="removed"` (no parentReference / path) arrives
  * as CloudItem(deleted=false, accessRevoked=true, path="/"). The engine must retire
  * the DB row via TRASHED without touching the local file.

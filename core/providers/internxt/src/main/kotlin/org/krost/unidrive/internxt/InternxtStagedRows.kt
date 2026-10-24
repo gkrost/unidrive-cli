@@ -5,7 +5,7 @@ import org.krost.unidrive.internxt.model.InternxtFile
 // The version token of a file ("<uuid>|<modificationTime>|<size>", see InternxtProvider.internxtVersionToken) is built from the
 // modification time string the server sent. A staged row keeps no such string (scan_staging holds the time as an Instant, whose
 // toString() drops a zero fraction: `...09Z` for `...09.000Z`), so a file resumed from its row got a token no fresh listing
-// gives, and its first edit conflicted with no remote change (#1039). The hash of a staged row is the listing's own tag, so
+// gives, and its first edit conflicted with no remote change (archive#1039). The hash of a staged row is the listing's own tag, so
 // the file rows of every listing carry the raw string as the suffix of that tag. A tag with an empty suffix says the
 // server sent none; a row with no such tag (staged by an earlier version) has only its Instant.
 

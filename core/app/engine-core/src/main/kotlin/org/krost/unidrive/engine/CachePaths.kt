@@ -52,7 +52,7 @@ object CachePaths {
      * [isInside] answers every question from scratch: it walks a candidate up to its deepest existing prefix, and
      * on Windows every absent component it steps over is an internally thrown exception (a pair with the JDK's
      * translation of it). A pass over rows repeats that walk for every row, and repeats the probes of every
-     * ancestor the rows share — the replay (#729) walked 137,534 rows that way for 341,451 recorded exceptions and
+     * ancestor the rows share — the replay (archive#729) walked 137,534 rows that way for 341,451 recorded exceptions and
      * 13–17 minutes per start. This object remembers instead: the folder's real path is taken once, and every path
      * the pass probes is kept, present (through the real path it resolved to) or absent, so a second row below an
      * ancestor already probed costs a lookup. Absent answers are kept for the same reason: the row whose cache

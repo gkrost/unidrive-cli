@@ -125,7 +125,7 @@ open class SyncEngine(
     // Default false; flipped by the CLI flag + TOML key.
     private val streamingReconciliation: Boolean = false,
     // Root directory for the hydration cache used by the mount front-end (MountEngine
-    // ensureHydrated / uploadFromCache, #560 U3). Null means resolve via XDG_CACHE_HOME (or ~/.cache).
+    // ensureHydrated / uploadFromCache, archive#560 U3). Null means resolve via XDG_CACHE_HOME (or ~/.cache).
     // Injected in tests so the cache stays inside the temp directory.
     private val cacheRoot: Path? = null,
     // Per-account namespace for the hydration cache subtree. MUST be unique
@@ -137,11 +137,11 @@ open class SyncEngine(
     // type. Defaults to [providerId] so callers that don't set it keep the
     // pre-existing layout; the CLI sync/daemon paths pass profile.name.
     private val cacheKey: String = providerId,
-    // #660: the ignore rules of the mount's uploads, read from the hydration cache (rule files, the account's
+    // archive#660: the ignore rules of the mount's uploads, read from the hydration cache (rule files, the account's
     // rules, the overridable content defaults). Null = off: the built-in default excludes stay plain exclude
     // patterns, as before.
     private val mountIgnore: org.krost.unidrive.sync.ignore.IgnoreSettings? = null,
-    // #660: the ignore rules of the mirror's scan and plan, read from the sync root. An ignored path is treated as an
+    // archive#660: the ignore rules of the mirror's scan and plan, read from the sync root. An ignored path is treated as an
     // excluded one: no upload, no download, no delete on either side. Null = off, as for mountIgnore.
     private val mirrorIgnore: org.krost.unidrive.sync.ignore.IgnoreSettings? = null,
     // Called once after enumerateRemoteIntoState mutates state.db with the set of
@@ -152,13 +152,13 @@ open class SyncEngine(
     // be invalidated). No-op default keeps callers that don't need the signal
     // unaffected. app:cli is the wiring site; keeping this as a plain lambda keeps
     // :app:sync free of :app:hydration (HydrationEvent lives there; checkModuleEdges
-    // forbids the edge either way, #560 U3). The mount front-end's rescan reports
+    // forbids the edge either way, archive#560 U3). The mount front-end's rescan reports
     // through the same sink (RemoteGather.invalidateView).
-    // #595: [moved] carries the renames the merge detected (old path -> new path);
+    // archive#595: [moved] carries the renames the merge detected (old path -> new path);
     // consumers that only need the paths can ignore it — changedPaths always holds
     // both ends of every move regardless.
     private val viewInvalidationSink: (changedPaths: Set<String>, full: Boolean, moved: List<RemoteMerge.Move>) -> Unit = { _, _, _ -> },
-    // #301: whether a background hydration upload of [path] is queued or in flight
+    // archive#301: whether a background hydration upload of [path] is queued or in flight
     // (an open_write returned Ok but its upload has not landed yet). The
     // enumerate-reap consults it before evicting a hydration-cache file, so a
     // queued edit's only copy is never deleted out from under its upload. Wired by
@@ -177,7 +177,7 @@ open class SyncEngine(
     // The read-only views of the profile (Recents, ...): the virtual folders that list items living elsewhere. The caller that
     // wraps the provider in a ReadOnlyTrashProvider hands the same instance in here, so the wrapper and the guard ask one.
     private val viewNamespaces: org.krost.unidrive.engine.ViewNamespaces = org.krost.unidrive.engine.ViewNamespaces.NONE,
-    // #309: whether the file system of the sync root folds case: asked of it by default, a parameter so a test runs the case
+    // archive#309: whether the file system of the sync root folds case: asked of it by default, a parameter so a test runs the case
     // policy of either file system on any host. Together with the provider's declaration it makes the profile's case
     // policy (caseFolds).
     private val localFoldsCase: Boolean = NameKey.localFoldsCase(syncRoot),
@@ -185,14 +185,14 @@ open class SyncEngine(
     EnumerationEntryPoint {
     private val log = LoggerFactory.getLogger(SyncEngine::class.java)
 
-    // #738: the clock that stamps keep-both conflict copies. Tests pin it; production uses the system clock.
+    // archive#738: the clock that stamps keep-both conflict copies. Tests pin it; production uses the system clock.
     // A property rather than a constructor parameter, so the constructor's signature stays as it is.
     internal var conflictClock: java.time.Clock = java.time.Clock.systemDefaultZone()
     private val effectiveExcludePatterns =
         validateExcludePatterns(
             (SyncConfig.DEFAULT_EXCLUDE_PATTERNS + excludePatterns).distinct(),
         )
-    // #737: the current pass's (unscoped) remote changes, for [CloudCopyProof]: a file this pass
+    // archive#737: the current pass's (unscoped) remote changes, for [CloudCopyProof]: a file this pass
     // reports deleted, or whose path is now a folder, does not count as being in the cloud.
     @Volatile
     private var passRemoteChanges: Map<String, CloudItem> = emptyMap()
@@ -202,7 +202,7 @@ open class SyncEngine(
     private var remoteListingReady = false
 
     init {
-        // #737: a local file in the way of a remote folder is replaced only with proof that its bytes
+        // archive#737: a local file in the way of a remote folder is replaced only with proof that its bytes
         // are in the cloud. Otherwise PlaceholderManager keeps it as a conflict copy, recorded here.
         placeholder.fileInTheWayGuard = CloudCopyProof(db, provider.hashAlgorithm()) { passRemoteChanges }
         placeholder.onFileKeptAside = { path, copy -> recordFileKeptAside(path, copy) }
@@ -211,7 +211,7 @@ open class SyncEngine(
     }
 
     /**
-     * #660: the ignore rules of the profile, or null when both [mountIgnore] and [mirrorIgnore] are off. The mount's
+     * archive#660: the ignore rules of the profile, or null when both [mountIgnore] and [mirrorIgnore] are off. The mount's
      * rule files are read from the hydration cache. One the cloud holds (a file row with a remote id) that the cache
      * does not is downloaded on purpose, capped at [org.krost.unidrive.sync.ignore.IgnoreSettings.maxRuleFileBytes],
      * into [ignoreRuleFilesRoot]. A larger one, one whose size is not positive, or one whose download fails or is not
@@ -229,7 +229,7 @@ open class SyncEngine(
                             dir = ignoreRuleFilesRoot(cacheRoot ?: defaultHydrationCacheRoot(), cacheKey),
                             lookup = ::cloudRuleFile,
                             download = { id, remotePath, destination -> provider.downloadById(id, remotePath, destination) },
-                            // #778: no download while paused, and each takes a permit (the guard is built below).
+                            // archive#778: no download while paused, and each takes a permit (the guard is built below).
                             transfers = { guard.ruleFileTransfers },
                             maxBytes = settings.maxRuleFileBytes,
                             // The row's hash uses the provider's algorithm. A provider with none, or a hash this
@@ -246,7 +246,7 @@ open class SyncEngine(
             )
         }
 
-    /** #660: the cloud's copy of the rule file [path], from its row; null when the cloud holds no such file. */
+    /** archive#660: the cloud's copy of the rule file [path], from its row; null when the cloud holds no such file. */
     private fun cloudRuleFile(path: String): org.krost.unidrive.sync.ignore.CloudRuleFile? {
         val row = db.getEntry(path) ?: return null
         val id = row.remoteId ?: return null
@@ -272,7 +272,7 @@ open class SyncEngine(
         return ancestorRemote + nfc.substring(ancestor.length)
     }
 
-    // #660: the mirror's own rules (null on a mount profile, whose scan and plan keep the plain exclude patterns).
+    // archive#660: the mirror's own rules (null on a mount profile, whose scan and plan keep the plain exclude patterns).
     private val mirrorRules: org.krost.unidrive.sync.ignore.UploadIgnore? = uploadIgnore.takeIf { mountIgnore == null }
 
     // With the mirror's rules on, the built-in defaults are theirs (overridable, `!.git`), as on the mount.
@@ -290,7 +290,7 @@ open class SyncEngine(
         )
 
     /**
-     * #660: true when the mirror's rules ignore [path]: the scan and the plan treat it as excluded. A rule file that
+     * archive#660: true when the mirror's rules ignore [path]: the scan and the plan treat it as excluded. A rule file that
      * holds its own folder back (not downloaded yet, unreadable) is not ignored itself: the folder waits for it, so
      * it is synced like any file.
      */
@@ -304,7 +304,7 @@ open class SyncEngine(
     }
 
     /**
-     * #660: true when the cloud holds the rule file [path] and this computer does not have its bytes: a row whose
+     * archive#660: true when the cloud holds the rule file [path] and this computer does not have its bytes: a row whose
      * download is still to come (or failed), or a file this pass's listing reports that is not here yet.
      */
     private fun ruleFileNotDownloaded(path: String): Boolean {
@@ -316,9 +316,9 @@ open class SyncEngine(
         return !Files.exists(local)
     }
 
-    // #560 U2: scope, excludes and the transfer budget live in :app:engine-core's
+    // archive#560 U2: scope, excludes and the transfer budget live in :app:engine-core's
     // RemoteOperationGuard, shared by the sync pass and the mount front-end (MountEngine,
-    // through [mountWiring], #560 U3).
+    // through [mountWiring], archive#560 U3).
     //
     // UD-263: per-provider transfer concurrency cap, computed once at
     // construction. Audit values flow from docs/providers/<id>-robustness.md
@@ -332,7 +332,7 @@ open class SyncEngine(
         org.krost.unidrive.engine.RemoteOperationGuard(
             standingScope = standingScope,
             syncPaths = syncPaths,
-            // #660: with the ignore rules on, the built-in defaults are theirs (overridable, `!.git`); the
+            // archive#660: with the ignore rules on, the built-in defaults are theirs (overridable, `!.git`); the
             // profile's own exclude_patterns stay plain patterns, exactly as before.
             excludePatterns =
                 if (uploadIgnore == null) {
@@ -359,7 +359,7 @@ open class SyncEngine(
     private val perProviderConcurrency: Int get() = guard.maxConcurrentTransfers
     private val transferBudget: kotlinx.coroutines.sync.Semaphore get() = guard.transferBudget
 
-    // #115: read once at construction — a locale change requires a daemon
+    // archive#115: read once at construction — a locale change requires a daemon
     // restart. Shared by the reconciler (alias detection) and updateRemoteEntries
     // (canonical→real-local reverse map for newly-arrived aliased rows).
     private val xdgUserDirsOverrides: Map<String, String> =
@@ -370,22 +370,22 @@ open class SyncEngine(
             ),
         )
 
-    // #309: the profile's case policy: names that differ only in case are one name where the provider or the sync
+    // archive#309: the profile's case policy: names that differ only in case are one name where the provider or the sync
     // root's file system folds case. The planner and the remote gather both decide by it.
     private val caseFolds: Boolean = NameKey.foldsCase(provider.caseSensitivity, localFoldsCase)
 
     private val reconciler = Reconciler(
         db, syncRoot, conflictPolicy, conflictOverrides, planExcludePatterns,
-        // #115: wire real user-dirs.dirs content so the reconciler can map locale-
+        // archive#115: wire real user-dirs.dirs content so the reconciler can map locale-
         // aliased local folder names to their cloud-canonical equivalents.
         xdgUserDirsOverrides = xdgUserDirsOverrides,
-        // #532: identical edits on both sides are convergence, not a conflict — compare the
+        // archive#532: identical edits on both sides are convergence, not a conflict — compare the
         // local file against the remote item with the provider's own content hash. Strict
         // (matches, not verify): a provider without a hash keeps the conflict.
         sameContent = { localFile, item -> HashVerifier.matches(localFile, item.hash, provider.hashAlgorithm()) },
     ).also { r ->
         r.foldCase = caseFolds
-        // #660: the mirror's ignore rules, applied wherever the exclude patterns are.
+        // archive#660: the mirror's ignore rules, applied wherever the exclude patterns are.
         if (mirrorRules != null) r.isIgnored = ::ignoredByRules
     }
 
@@ -397,21 +397,21 @@ open class SyncEngine(
     @Volatile
     private var remoteWakeDebounceJob: kotlinx.coroutines.Job? = null
 
-    // #116: set true for the duration of a sync run that actually took the
+    // archive#116: set true for the duration of a sync run that actually took the
     // fast-bootstrap branch (cursor adopted with zero enumeration). When true,
     // applyCreateRemoteFolder adopts-on-name-match for a top-level folder whose
     // name already exists on the remote instead of issuing a CreateRemoteFolder
     // that would 409 — the pre-existing cloud tree is invisible to the planner
     // under fast-bootstrap, so the local scanner emits a spurious mkdir for every
     // top-level folder that matches one. Reset at the start of every doSyncOnce.
-    // The gather sets it, so the flag lives in RemoteGather (#560 U2b).
+    // The gather sets it, so the flag lives in RemoteGather (archive#560 U2b).
     private var fastBootstrapActive: Boolean
         get() = remoteGather.fastBootstrapActive
         set(value) {
             remoteGather.fastBootstrapActive = value
         }
 
-    // #116: per-run cache of the remote root's direct children indexed by name,
+    // archive#116: per-run cache of the remote root's direct children indexed by name,
     // populated lazily on the first top-level CreateRemoteFolder while
     // fastBootstrapActive. Null = not yet fetched this run; an empty map = fetched
     // and the root has no folders (or the listing failed — see populateRemoteTopLevel).
@@ -420,8 +420,8 @@ open class SyncEngine(
     private var remoteTopLevelByName: Map<String, CloudItem>? = null
     private val remoteTopLevelMutex = kotlinx.coroutines.sync.Mutex()
 
-    // #560 U2b: the remote gather — delta paging, the scan staging and the cursor, the
-    // #401 collision rule, the absence sweep, the tracked-scope transition and the
+    // archive#560 U2b: the remote gather — delta paging, the scan staging and the cursor, the
+    // archive#401 collision rule, the absence sweep, the tracked-scope transition and the
     // commit into sync_entries — lives in :app:engine-core's RemoteGather, and the
     // mount's enumeration in RemoteEnumeration. Both take what they used to read from
     // this engine's fields explicitly; the private wrappers below keep the sync pass's
@@ -475,9 +475,9 @@ open class SyncEngine(
         )
 
     /**
-     * #560 U3: what the mount front-end (`MountEngine`, :app:hydration) runs on: this engine's guard,
+     * archive#560 U3: what the mount front-end (`MountEngine`, :app:hydration) runs on: this engine's guard,
      * gather and enumeration (shared, not copied), its cache layout, its audit log, progress reporter,
-     * logger and the late-bound [uploadInFlight]. #560 U6: the mount touches no sync root — the
+     * logger and the late-bound [uploadInFlight]. archive#560 U6: the mount touches no sync root — the
      * `SyncRootBridge` of the coordinated model is gone, and the sync root, its name rules, its scanner
      * and the mirror's executors stay mirror-only here. Built once per engine. The view invalidation
      * reaches [viewInvalidationSink] through the gather's listener, as for the enumeration and the
@@ -591,7 +591,7 @@ open class SyncEngine(
         unreachableIds: Set<String> = emptySet(),
     ) = remoteGather.detectMissingAfterFullSync(remoteChanges, admittedLoserIds, gatherStartedAt, unreachableIds)
 
-    // #401: a path-addressed mutation on a collided path could hit either twin and
+    // archive#401: a path-addressed mutation on a collided path could hit either twin and
     // the action carries no remote id to aim it with. Skip; the action re-plans
     // once the duplicate is resolved in the cloud. Internal for the wrong-twin test.
     internal fun refuseCollidedPath(action: SyncAction): Boolean {
@@ -655,7 +655,7 @@ open class SyncEngine(
 
     /**
      * Resolves the cache file path for a given path within the hydration cache.
-     * The mount front-end resolves through it ([MountWiring.cachePathOf], #560 U3), as do the
+     * The mount front-end resolves through it ([MountWiring.cachePathOf], archive#560 U3), as do the
      * enumeration's reap and test fixtures.
      *
      * The result is normalised and always lies inside the profile's cache folder
@@ -670,13 +670,13 @@ open class SyncEngine(
             path,
         )
 
-    // #560 U2: the classification lives in :app:engine-core (RemoteErrors), shared with the mount.
+    // archive#560 U2: the classification lives in :app:engine-core (RemoteErrors), shared with the mount.
     // See [org.krost.unidrive.engine.RemoteErrors.isAlreadyGone] for the two shapes it accepts.
     private fun isAlreadyGone(e: Throwable): Boolean = org.krost.unidrive.engine.RemoteErrors.isAlreadyGone(e)
 
     // The remote item at [path], or null only when the provider proves it ABSENT; transient failures
-    // propagate, never read as absence. The mirror's copy of MountEngine.remoteItemOrNull (#560 U3),
-    // for the #421 move-source probe.
+    // propagate, never read as absence. The mirror's copy of MountEngine.remoteItemOrNull (archive#560 U3),
+    // for the archive#421 move-source probe.
     private suspend fun remoteItemIfPresent(path: String): CloudItem? =
         try {
             provider.getMetadata(path)
@@ -701,10 +701,10 @@ open class SyncEngine(
      * gather + state.db upsert, but NEVER scans sync_root, NEVER plans/executes a local→remote
      * delete, and NEVER evaluates the empty-sync_root / max_delete_* guards. Remote-observed
      * deletions flip state.db rows only on a COMPLETE enumeration. Single-flight: an overlapping
-     * call returns `skipped = true`. See [RemoteEnumeration] (#560 U2b) and
+     * call returns `skipped = true`. See [RemoteEnumeration] (archive#560 U2b) and
      * docs/dev/specs/mount-view-refresh-design.md.
      *
-     * #560 U3: the mount front-end (MountEngine) runs the same [RemoteEnumeration]; this entry
+     * archive#560 U3: the mount front-end (MountEngine) runs the same [RemoteEnumeration]; this entry
      * point stays for the mount-routed `refresh.run` (RefreshRpcHandler, reworked in U4).
      */
     override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult = enumeration.enumerate(reset)
@@ -776,7 +776,7 @@ open class SyncEngine(
         skipTransfers: Boolean = false,
         skipRemoteGather: Boolean = false,
     ) {
-        // #116: reset the per-run fast-bootstrap adopt state. gatherRemoteChanges
+        // archive#116: reset the per-run fast-bootstrap adopt state. gatherRemoteChanges
         // flips fastBootstrapActive on only when the bootstrap branch is actually
         // taken; the apply loop reads it to adopt-on-name-match top-level folders.
         fastBootstrapActive = false
@@ -785,7 +785,7 @@ open class SyncEngine(
         // The last pass's apply may have moved rows out of the trash namespace (a restored folder takes the rows below
         // it along): read it again before this pass plans, or their ids stay refused for one more pass.
         trashNamespace.refresh(db)
-        // #660: a rule file edited, added or removed since the last pass applies to this one.
+        // archive#660: a rule file edited, added or removed since the last pass applies to this one.
         mirrorRules?.revalidate()
         val downloaded = AtomicInteger(0)
         val uploaded = AtomicInteger(0)
@@ -858,7 +858,7 @@ open class SyncEngine(
         //    blocks delete propagation in those modes, so the catastrophe
         //    pattern can't trigger from the directions alone.
         //
-        // UD-256 / PR #45 review (Codex P1): **never mutate effective_scope
+        // UD-256 / PR archive#45 review (Codex P1): **never mutate effective_scope
         // in dry-run.** Dry-run is contractually side-effect-free (see
         // UD-738's in-memory-shadow handling of `--reset --dry-run`). Earlier
         // versions of this block wrote to sync_state unconditionally — so a
@@ -868,7 +868,7 @@ open class SyncEngine(
         // `--sync-path X --dry-run`: previewing a scope addition silently
         // committed it. Both writes are now gated on `!dryRun`. The refusal
         // / warning branches are pure reads and stay structured as before.
-        // #395: a per-run --sync-path outside the standing scope is tracked for this run only; the next
+        // archive#395: a per-run --sync-path outside the standing scope is tracked for this run only; the next
         // run without the flag untracks those rows again (the local files stay). Intentional, so say it.
         if (standingScope.isNotEmpty()) {
             val standing = SyncScope.normalize(standingScope)
@@ -883,7 +883,7 @@ open class SyncEngine(
             }
         }
         val priorScope = loadEffectiveScope()
-        // #532: a refresh (skipTransfers) of a profile that has a persisted scope but no
+        // archive#532: a refresh (skipTransfers) of a profile that has a persisted scope but no
         // runtime syncPaths continues WITHIN the persisted scope instead of being refused
         // below: refresh plans the boundary the profile has been operating on, so
         // out-of-scope paths stay invisible to the reconciler exactly as under
@@ -977,7 +977,7 @@ open class SyncEngine(
         // "--force-delete" hint that would have catastrophically wiped
         // the cloud side.
         //
-        // #137: --download-only is exempt. In download-only mode the
+        // archive#137: --download-only is exempt. In download-only mode the
         // destructive local→remote-delete direction is already gated by
         // the direction filter, so the mis-pointed-sync_root mass-delete
         // risk does NOT apply. A download-only user who intentionally
@@ -1000,7 +1000,7 @@ open class SyncEngine(
             }
         }
 
-        // #137: create sync_root only after the guard — an aborted (guard-fired)
+        // archive#137: create sync_root only after the guard — an aborted (guard-fired)
         // run must not leave an empty sync_root dir behind.
         if (dryRun) {
             if (!Files.exists(syncRoot)) {
@@ -1227,7 +1227,7 @@ open class SyncEngine(
                     downloadOnly = syncDirection == SyncDirection.DOWNLOAD,
                     enumerationComplete = enumerationComplete)
             }
-        // #503 review: a name the local scan refused as an NFC clash (#491) is out of sync in BOTH directions. The scan
+        // archive#503 review: a name the local scan refused as an NFC clash (archive#491) is out of sync in BOTH directions. The scan
         // reports no change for it, so without this a remote edit of the cloud copy would be planned as a download that
         // overwrites the local member with that name (and a local edit of it would be lost). Nothing is planned for it.
         val reconciledActions =
@@ -1243,7 +1243,7 @@ open class SyncEngine(
         logUnhydratedFolderSkips(dryRun)
         val reconciledActionsWritable = dropWritesToTrash(reconciledActions)
 
-        // #1043: the merge records the cloud's new hash, size and modified time on the row before any action runs.
+        // archive#1043: the merge records the cloud's new hash, size and modified time on the row before any action runs.
         // A hydrated row whose file still holds the old bytes must not say "in sync" with them: a download that
         // is skipped (refresh), cancelled, refused or cut short by the process dying is not planned again (the
         // delta is not delivered twice), and the next local edit would go up over the newer cloud version.
@@ -1348,7 +1348,7 @@ open class SyncEngine(
         // Any single axis tripping aborts apply / warns in dry-run.
         // forceDelete bypasses all three. 0 disables the corresponding axis.
         //
-        // #108: under a long-running daemon (`sync --watch`), a tripped safeguard
+        // archive#108: under a long-running daemon (`sync --watch`), a tripped safeguard
         // must NOT abort the whole cycle. The throw is caught by the watch loop,
         // which then retries the same failing cycle forever (exponential backoff)
         // and never makes progress on uploads/downloads either — the daemon
@@ -1431,7 +1431,7 @@ open class SyncEngine(
             }
         }
 
-        // #108: drop the planned deletes for this cycle when a daemon-mode
+        // archive#108: drop the planned deletes for this cycle when a daemon-mode
         // safeguard tripped. The apply pass derives sequentialActions from
         // `actions`, so removing them here keeps uploads/downloads/creates
         // flowing; the deletes are re-evaluated on the next sync.
@@ -1487,10 +1487,10 @@ open class SyncEngine(
         // Pass 1 actions that were applied (mkdir, delete, move, ...), by label, for the sync summary;
         // transfers are reported through the downloaded/uploaded counts.
         val appliedCounts = mutableMapOf<String, Int>()
-        // #419: paths this pass has already deleted on the remote, so the empty-directory
+        // archive#419: paths this pass has already deleted on the remote, so the empty-directory
         // reaper below leaves them alone instead of re-probing a folder it just trashed.
         val remoteDeletedPaths = mutableSetOf<String>()
-        // #421: source paths of remote moves that failed this pass. The reconciler orders every
+        // archive#421: source paths of remote moves that failed this pass. The reconciler orders every
         // folder delete after the moves out of that folder; a remote delete must also not run when
         // such a move failed, or it would trash the folder together with the file the move left in it.
         val failedMoveSources = mutableListOf<String>()
@@ -1509,7 +1509,7 @@ open class SyncEngine(
         var batchCommitted = false
         try {
             withContext(Priority.Foreground) {
-                // #123: process a maximal contiguous run of CreateRemoteFolder
+                // archive#123: process a maximal contiguous run of CreateRemoteFolder
                 // actions with bounded concurrency instead of one blocking
                 // round-trip each. topologicalApplyOrder has already placed any
                 // MoveRemote a create depends on before the run, so a run's
@@ -1611,7 +1611,7 @@ open class SyncEngine(
                         if (action is SyncAction.MoveRemote && moveSourceStillRemote(action.fromPath)) {
                             failedMoveSources.add(action.fromPath)
                         }
-                        // #530: one WARN line with the item, the class and the message (the
+                        // archive#530: one WARN line with the item, the class and the message (the
                         // console appender's threshold is WARN — a throwable here printed the
                         // full JVM stack trace for every expected per-file failure); the
                         // stack trace lives on a DEBUG event, which the file appender takes
@@ -1744,7 +1744,7 @@ open class SyncEngine(
                                             handlePermanentDownloadFailure(action, e)
                                             transferFailures.incrementAndGet()
                                         } catch (e: Exception) {
-                                            // #530: one WARN line, the stack trace at DEBUG.
+                                            // archive#530: one WARN line, the stack trace at DEBUG.
                                             log.warn(
                                                 "Download failed for {}: {}: {}",
                                                 action.path,
@@ -1799,7 +1799,7 @@ open class SyncEngine(
                                             handlePermanentUploadFailure(action, e)
                                             transferFailures.incrementAndGet()
                                         } catch (e: Exception) {
-                                            // #530: one WARN line, the stack trace at DEBUG.
+                                            // archive#530: one WARN line, the stack trace at DEBUG.
                                             log.warn(
                                                 "Upload failed for {}: {}: {}",
                                                 action.path,
@@ -1859,7 +1859,7 @@ open class SyncEngine(
         // 218 k items, pending_cursor written, delta_cursor never set; the
         // following run did the full enum again.
         //
-        // #108/P1 (PR #241 review): when a daemon-mode safeguard trip deferred the planned
+        // archive#108/P1 (PR archive#241 review): when a daemon-mode safeguard trip deferred the planned
         // deletes this cycle, do NOT advance the cursor. A DeleteLocal driven by a remote
         // tombstone is consumed from the delta exactly once; if the cursor moved past it, an
         // incremental delta would not resend it and the unchanged local+DB row would not
@@ -1913,7 +1913,7 @@ open class SyncEngine(
      *  - **Deepest-first**, so a nested empty tree collapses bottom-up.
      *  - **Best-effort.** A provider error on one directory is logged and
      *    skipped; it never fails the pass.
-     *  - **Already gone is not a failure (#419).** A directory this pass's own
+     *  - **Already gone is not a failure (archive#419).** A directory this pass's own
      *    DeleteRemote already removed ([alreadyDeleted]) is not a candidate, and
      *    a not-found from the listing or the delete (trashed meanwhile, e.g. by
      *    an ancestor's delete) means the goal is met — debug, not WARN.
@@ -1931,7 +1931,7 @@ open class SyncEngine(
                 .distinct()
                 // A scoped pass may delete a file at the scope root, but its
                 // ancestors belong to the wider tree. Reaping one can cascade-delete
-                // siblings this pass did not enumerate (#525).
+                // siblings this pass did not enumerate (archive#525).
                 .filter { SyncScope.contains(it, syncPaths) }
                 .filterNot { it in alreadyDeleted }
                 .sortedByDescending { it.count { ch -> ch == '/' } }
@@ -1952,7 +1952,7 @@ open class SyncEngine(
         }
     }
 
-    // #419: the provider says the path does not exist — the typed Internxt "not found"
+    // archive#419: the provider says the path does not exist — the typed Internxt "not found"
     // shapes, or an HTTP 404 carried on the exception (same probe as remoteItemOrNull).
     private fun isRemoteNotFound(e: Throwable): Boolean =
         isAlreadyGone(e) || statusCodeOf(e) == 404 || (e.cause?.let { statusCodeOf(it) } == 404)
@@ -2010,7 +2010,7 @@ open class SyncEngine(
                     transferFailures.incrementAndGet()
                     executedPaths.add(action.path)
                 } catch (e: Exception) {
-                    // #530: one WARN line, the stack trace at DEBUG.
+                    // archive#530: one WARN line, the stack trace at DEBUG.
                     log.warn(
                         "Streaming download failed for {}: {}: {}",
                         action.path,
@@ -2071,7 +2071,7 @@ open class SyncEngine(
                     transferFailures.incrementAndGet()
                     executedPaths.add(action.path)
                 } catch (e: Exception) {
-                    // #530: one WARN line, the stack trace at DEBUG.
+                    // archive#530: one WARN line, the stack trace at DEBUG.
                     log.warn(
                         "Streaming upload failed for {}: {}: {}",
                         action.path,
@@ -2129,16 +2129,16 @@ open class SyncEngine(
         val storedCursor = if (retryIncompleteEnumeration) null else db.getSyncState("delta_cursor")
         val cursor = storedCursor?.ifEmpty { null }
         val isFullSync = cursor == null || provider.deltaIsFullListing
-        // #321: when the remote walk began — the absence sweep defers the deletion verdict
+        // archive#321: when the remote walk began — the absence sweep defers the deletion verdict
         // for any row written after this instant, because these listing pages cannot have
         // seen that write.
         val gatherStartedAt = Instant.now()
         val changes = mutableMapOf<String, CloudItem>()
-        // #401: the streaming path admits through the same collision winner-rule as
+        // archive#401: the streaming path admits through the same collision winner-rule as
         // the buffered gather (see gatherRemoteChanges).
         val keyToPath = HashMap<String, String>()
         val collisions = HashMap<String, RemoteGather.CollisionRecord>()
-        // #403: the twin rows of state.db, for the winner rule and placeTwins.
+        // archive#403: the twin rows of state.db, for the winner rule and placeTwins.
         remoteGather.loadTwins()
         val buffer = StreamingReconcileBuffer()
         val safeAccumulator = mutableListOf<SyncAction>()
@@ -2188,10 +2188,10 @@ open class SyncEngine(
                             "Items that already exist on the remote will stay invisible until they next mutate. " +
                             "Upload-direction sync is unaffected."
                     // The log line only — reporter.onWarning duplicated it on every CLI
-                    // one-shot run (console appender + progress reporter, #532); the
+                    // one-shot run (console appender + progress reporter, archive#532); the
                     // daemon runs with the Silent reporter either way.
                     log.warn(msg)
-                    // #116: arm adopt-on-name-match for this run's apply pass.
+                    // archive#116: arm adopt-on-name-match for this run's apply pass.
                     fastBootstrapActive = true
                     if (deferUntilListing) {
                         publishPassListing(changes)
@@ -2223,7 +2223,7 @@ open class SyncEngine(
         // (DeltaPage.unreachableIds): the absence sweep treats them as present.
         val unreachable = HashSet<String>()
         // The entries the provider could not read (DeltaPage.skippedPaths): persisted with the
-        // completeness flag so the status can name the blocked folder (#1234).
+        // completeness flag so the status can name the blocked folder (archive#1234).
         val skippedPaths = LinkedHashSet<String>()
         val activeScan = db.getActiveScan(staleThreshold = java.time.Duration.ofHours(SCAN_CHECKPOINT_STALE_HOURS))
         val resumedItems: List<CloudItem> =
@@ -2275,7 +2275,7 @@ open class SyncEngine(
             )
         }
 
-        // #115 streaming fix (page-order-independent): obtain the complete set of
+        // archive#115 streaming fix (page-order-independent): obtain the complete set of
         // remote top-level folder names with ONE cheap listing of the root's direct
         // children BEFORE the streaming loop starts.  XDG aliasing only concerns
         // top-level folders, so this single call is sufficient and does not defeat
@@ -2389,7 +2389,7 @@ open class SyncEngine(
                         safeAccumulator.addAll(safeNow)
                         for (action in safeNow) {
                             if (action is SyncAction.DownloadContent || action is SyncAction.Upload) {
-                                // #200(b): a NEW-local upload must NOT dispatch mid-gather —
+                                // archive#200(b): a NEW-local upload must NOT dispatch mid-gather —
                                 // enumeration completeness isn't known until scan-end. It stays in
                                 // safeAccumulator, so finalizeStreaming's gate either keeps it
                                 // (complete → uploaded in Pass 2) or defers it (incomplete),
@@ -2501,7 +2501,7 @@ open class SyncEngine(
                     val ids = mutableListOf<String>()
                     for ((_, item) in held) {
                         ids.add(item.originalId)
-                        // #401: single admit into the gather map. The page slice carries
+                        // archive#401: single admit into the gather map. The page slice carries
                         // the key's winner only when THIS page's item is it — a twin that
                         // lost to an earlier page's winner was already reconciled on that
                         // page, and the collision is recorded by the admit itself.
@@ -2592,7 +2592,7 @@ open class SyncEngine(
             db.completeScan(scanId)
         }
 
-        // #403: the twins get their decorated keys once every page is in (RemoteGather.placeTwins). A page may have
+        // archive#403: the twins get their decorated keys once every page is in (RemoteGather.placeTwins). A page may have
         // planned a twin at the name a later page's item won: that plan is dropped while it is still unapplied, and
         // every re-keyed item is planned here at its own key, with the resolution the pages get.
         val keyedBefore = HashMap(changes)
@@ -2620,7 +2620,7 @@ open class SyncEngine(
             safeAccumulator.addAll(buffer.classify(rekeyedActions))
         }
 
-        // #401: report suppressed twins BEFORE the absence sweep so their ids are
+        // archive#401: report suppressed twins BEFORE the absence sweep so their ids are
         // excluded from reaping (same ordering as the buffered gather).
         val collisionLoserIds = reportGatheredCollisions(collisions, dryRun = false)
 
@@ -2664,7 +2664,7 @@ open class SyncEngine(
     }
 
     private suspend fun applyCreatePlaceholder(action: SyncAction.CreatePlaceholder) {
-        // #230 (PR #242 review): applyDownload guards the file-download path, but folders and
+        // archive#230 (PR archive#242 review): applyDownload guards the file-download path, but folders and
         // "both new" adopt placeholders reach createFolder/createPlaceholder here. A name that
         // cannot exist on the local filesystem (Windows reserved / all-dots / trailing-dot, etc.)
         // would fail the mkdir every poll cycle. Quarantine the row instead — the same flag
@@ -2699,7 +2699,7 @@ open class SyncEngine(
             if (item.isFolder) {
                 placeholder.createFolder(action.path, item.modified)
             } else if (shouldDownload) {
-                // #1045: no stub first. The download places the file when its bytes are complete; a stub it leaves
+                // archive#1045: no stub first. The download places the file when its bytes are complete; a stub it leaves
                 // behind by failing reads as an edit of the file, and the next pass would upload it over the
                 // cloud's content. (Whatever is at the path now stays until then.)
                 placeholder.prepareParent(action.path)
@@ -2712,9 +2712,9 @@ open class SyncEngine(
                     // UD-225b: prefer id-based dispatch — path-based download triggers
                     // a per-segment folder traversal in resolveFolder which can fail
                     // on transient 503s or sanitization edge cases (UD-317).
-                    // #115: the REMOTE source is item.path (canonical); the local
+                    // archive#115: the REMOTE source is item.path (canonical); the local
                     // destination is localPath (resolved from the real-local action.path).
-                    // #491: in the provider's own spelling, which a name that is not NFC keeps at the provider.
+                    // archive#491: in the provider's own spelling, which a name that is not NFC keeps at the provider.
                     val receipt = downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli())
                     downloadReceipt = receipt
                     downloadedHash = stagedLocalHash(localPath, receipt)
@@ -2728,7 +2728,7 @@ open class SyncEngine(
 
         val isHydrated = hasRealContent || item.size == 0L || shouldDownload
         val entry = entryFromCloudItem(item, action.path, isHydrated)
-        // #396: only bytes the engine just wrote get a local hash; an adopted file is not re-read.
+        // archive#396: only bytes the engine just wrote get a local hash; an adopted file is not re-read.
         db.upsertEntry(
             if (shouldDownload) {
                 withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash)
@@ -2753,7 +2753,7 @@ open class SyncEngine(
             if (action.wasHydrated && !item.isFolder) {
                 try {
                     // UD-225b: id-based dispatch (see applyCreatePlaceholder).
-                    // #115: remote source = item.path (canonical); dest = real-local.
+                    // archive#115: remote source = item.path (canonical); dest = real-local.
                     val localPath = placeholder.resolveLocal(action.path)
                     val receipt = downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli())
                     downloadReceipt = receipt
@@ -2769,7 +2769,7 @@ open class SyncEngine(
         }
 
         val entry = entryFromCloudItem(item, action.path, action.wasHydrated)
-        // #396: the hydrated branch above re-downloaded real bytes; metadata-only updates did not.
+        // archive#396: the hydrated branch above re-downloaded real bytes; metadata-only updates did not.
         db.upsertEntry(
             if (action.wasHydrated && !item.isFolder) {
                 withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash)
@@ -2794,7 +2794,7 @@ open class SyncEngine(
 
     private suspend fun applyDownload(action: SyncAction.DownloadContent) {
         log.debug("Download: {} ({} bytes)", action.path, action.remoteItem.size)
-        // #230: a name that cannot exist on the local filesystem (Windows
+        // archive#230: a name that cannot exist on the local filesystem (Windows
         // all-dots / trailing-dot / reserved device name, etc.) can never be
         // downloaded here. Surface it as a permanent failure so the row is
         // quarantined (handlePermanentDownloadFailure) instead of re-attempted
@@ -2817,7 +2817,7 @@ open class SyncEngine(
             var downloadedHash: String? = null
             withEchoSuppression(action.path) {
                 // UD-225b: id-based dispatch — see applyCreatePlaceholder for rationale.
-                // #115: remote source = remoteItem.path (canonical); local
+                // archive#115: remote source = remoteItem.path (canonical); local
                 // destination = localPath (resolved from real-local action.path).
                 val receipt = downloadByIdOrPathWithHash(
                     action.remoteItem,
@@ -2860,10 +2860,10 @@ open class SyncEngine(
     }
 
     private suspend fun applyUpload(action: SyncAction.Upload) {
-        // #115: LOCAL read uses action.path (the real local path); the REMOTE
+        // archive#115: LOCAL read uses action.path (the real local path); the REMOTE
         // upload target is action.remoteTarget ?: action.path. For a non-aliased
         // upload remoteTarget is null, so remotePath == action.path and this is
-        // byte-identical to pre-#115 behaviour.
+        // byte-identical to pre-archive#115 behaviour.
         val localPath = placeholder.resolveLocal(action.path)
         val remotePath = action.remoteTarget ?: action.path
         val sizeForLog = if (Files.isRegularFile(localPath)) Files.size(localPath) else -1L
@@ -2895,7 +2895,7 @@ open class SyncEngine(
         // deletion verdict instead of reaping + re-uploading in a loop. Marked by
         // the REMOTE path because the absence sweep reasons in the remote namespace.
         markRecentlyUploaded(remotePath)
-        // #337/#148: the row records the file's stats as they were BEFORE the
+        // archive#337/#148: the row records the file's stats as they were BEFORE the
         // transfer. A write that lands while the upload is in flight must stay
         // visible to the next scan (which re-uploads it); recording the
         // post-upload mtime of a changed file would absorb the edit into the
@@ -2912,7 +2912,7 @@ open class SyncEngine(
         db.upsertEntry(
             SyncEntry(
                 path = action.path,
-                // #115: persist the canonical remote path so the next sync's
+                // archive#115: persist the canonical remote path so the next sync's
                 // delta (keyed at the canonical) matches this row by effective
                 // remote path — no re-upload, no spurious MoveLocal.
                 remotePath = action.remoteTarget,
@@ -2926,7 +2926,7 @@ open class SyncEngine(
                 isPinned = false,
                 isHydrated = true,
                 lastSynced = Instant.now(),
-            ).let { withSentHash(it, localPath, sent) }, // #396: hashless providers get the SHA-256 of the bytes just sent
+            ).let { withSentHash(it, localPath, sent) }, // archive#396: hashless providers get the SHA-256 of the bytes just sent
         )
         // UD-113: success path. Failure path emits inside the try/catch above.
         auditLog?.emit(
@@ -2940,11 +2940,11 @@ open class SyncEngine(
     }
 
     private suspend fun applyMoveRemote(action: SyncAction.MoveRemote) {
-        // #115: action.fromPath / action.path are REAL-LOCAL (DB + resolveLocal
+        // archive#115: action.fromPath / action.path are REAL-LOCAL (DB + resolveLocal
         // ops below key on them). The REMOTE move runs in the canonical
         // namespace: source = source row's `remotePath ?: fromPath`, dest =
         // action.remoteTarget ?: action.path. Non-aliased rows have remotePath
-        // null and remoteTarget null → identical to pre-#115 behaviour.
+        // null and remoteTarget null → identical to pre-archive#115 behaviour.
         val oldEntry = db.getEntry(action.fromPath)
         val remoteFrom = oldEntry?.remotePath ?: action.fromPath
         val remoteTo = action.remoteTarget ?: action.path
@@ -2954,7 +2954,7 @@ open class SyncEngine(
         val result =
             try {
                 if (!action.remoteId.startsWith("local:")) {
-                    // #402: aim the move at the twin the row tracks, not at whichever
+                    // archive#402: aim the move at the twin the row tracks, not at whichever
                     // same-named sibling getMetadata's path lookup finds first.
                     provider.moveById(action.remoteId, remoteFrom, remoteTo)
                 } else {
@@ -3002,7 +3002,7 @@ open class SyncEngine(
         db.upsertEntry(
             SyncEntry(
                 path = action.path,
-                // #115: persist the canonical remote destination so the next
+                // archive#115: persist the canonical remote destination so the next
                 // sync's delta (canonical-keyed) matches this row by effective
                 // remote path.
                 remotePath = action.remoteTarget,
@@ -3016,7 +3016,7 @@ open class SyncEngine(
                 isPinned = false,
                 isHydrated = oldEntry?.isHydrated ?: true,
                 lastSynced = Instant.now(),
-                // #396: a rename does not touch the bytes, so the recorded local hash stays valid.
+                // archive#396: a rename does not touch the bytes, so the recorded local hash stays valid.
                 localHash = oldEntry?.localHash,
             ),
         )
@@ -3034,7 +3034,7 @@ open class SyncEngine(
     private fun applyMoveLocal(action: SyncAction.MoveLocal) {
         val oldLocal = placeholder.resolveLocal(action.fromPath)
         val newLocal = placeholder.resolveLocal(action.path)
-        // #424: updateRemoteEntries re-keys a renamed item's row to its new path (by remote id) before
+        // archive#424: updateRemoteEntries re-keys a renamed item's row to its new path (by remote id) before
         // Pass 1 runs, so the row is usually no longer at fromPath. Look it up by id too, or its
         // hydration and local baseline are lost and the moved file reads as an unhydrated stub.
         val oldEntry = db.getEntry(action.fromPath) ?: db.getEntryByRemoteId(action.remoteItem.id)
@@ -3045,7 +3045,7 @@ open class SyncEngine(
         if (!Files.exists(oldLocal, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
             Files.exists(newLocal, java.nio.file.LinkOption.NOFOLLOW_LINKS)
         ) {
-            // #424: the source is gone and the destination is already there: the item was moved already
+            // archive#424: the source is gone and the destination is already there: the item was moved already
             // (by its folder's move, or by hand). Its bytes (hydrated content, or a local edit not yet
             // uploaded) are the user's: never recreate a placeholder over them. Update the rows only.
             log.info("Move of {} -> {}: already at the destination, rows updated only", action.fromPath, action.path)
@@ -3090,7 +3090,7 @@ open class SyncEngine(
                 // A fresh stub (or no earlier row): the baseline is what is on disk now, unhydrated for a stub.
                 fromCloud
             } else {
-                // #424: keep the local baseline the row had. The bytes moved unchanged, and a local edit
+                // archive#424: keep the local baseline the row had. The bytes moved unchanged, and a local edit
                 // that has not been uploaded yet must still read as modified on the next scan; taking the
                 // baseline from disk here would mark that edit as synced and it would never go up.
                 fromCloud.copy(
@@ -3103,7 +3103,7 @@ open class SyncEngine(
     }
 
     /**
-     * #1046: moves [oldLocal] to [newLocal] without destroying what is at the destination. A file there (a local file
+     * archive#1046: moves [oldLocal] to [newLocal] without destroying what is at the destination. A file there (a local file
      * that is new on both sides: the remote renamed `a` to `b` while an unsynced `b` of the same size exists, which the
      * reconciler adopts and then turns into this move) is the user's: it is kept as a conflict copy, as for any file
      * changed on both sides, and the next scan uploads it. A folder there can only be replaced while it is empty. The
@@ -3121,7 +3121,7 @@ open class SyncEngine(
                 !Files.isDirectory(newLocal, noFollow) &&
                 !runCatching { Files.isSameFile(oldLocal, newLocal) }.getOrDefault(false)
         if (occupied) keepOccupantAside(path, newLocal)
-        // #1086: moveFile renames through a name in between when only the case changes (a case-insensitive file system
+        // archive#1086: moveFile renames through a name in between when only the case changes (a case-insensitive file system
         // would treat the plain move as already done).
         moveFile(oldLocal, newLocal, replaceExisting = Files.isDirectory(newLocal, noFollow))
         return occupied
@@ -3175,7 +3175,7 @@ open class SyncEngine(
     }
 
     /**
-     * #424: [StateDatabase.renamePrefix] first deletes every row at and under the destination (its
+     * archive#424: [StateDatabase.renamePrefix] first deletes every row at and under the destination (its
      * UD-901c clean-up of pending rows a local scan left there). In a remote folder rename those rows
      * are the descendants updateRemoteEntries has already re-keyed to the new path, with their
      * hydration and local baselines. The rows that track a remote item are put back; only rows without
@@ -3219,7 +3219,7 @@ open class SyncEngine(
     }
 
     /**
-     * #421: true while the remote still has [fromPath], so a delete of a folder a move failed to
+     * archive#421: true while the remote still has [fromPath], so a delete of a folder a move failed to
      * take something out of stays guarded. A move that failed AFTER the provider applied it (a
      * multi-leg move, the state.db writes) leaves the source gone: re-planning that move then
      * fails with "Item not found" every pass, and guarding the delete on it would keep the
@@ -3241,7 +3241,7 @@ open class SyncEngine(
         }
 
     /**
-     * #421: true when [action] deletes a folder that a remote move failed to take something out
+     * archive#421: true when [action] deletes a folder that a remote move failed to take something out
      * of earlier in this pass. Deleting it now would trash whatever the move left behind (the
      * provider's delete takes the folder's whole subtree with it); the delete and the failed move
      * both re-plan on the next sync instead.
@@ -3261,10 +3261,10 @@ open class SyncEngine(
     private suspend fun applyDeleteRemote(action: SyncAction.DeleteRemote) {
         // UD-113: capture pre-delete row for the audit entry.
         val priorEntry = db.getEntry(action.path)
-        // #115: DeleteRemote.path is real-local (DB lookup above keys on it).
+        // archive#115: DeleteRemote.path is real-local (DB lookup above keys on it).
         // The REMOTE delete target is the row's effective remote path
         // (`remotePath ?: path`). Non-aliased rows have remotePath null →
-        // delete at action.path, byte-identical to pre-#115.
+        // delete at action.path, byte-identical to pre-archive#115.
         val remotePath = priorEntry?.remotePath ?: action.path
         val remoteId = priorEntry?.remoteId
         // UD-753: per-operation log at the engine (was repeated across provider services).
@@ -3272,7 +3272,7 @@ open class SyncEngine(
         var auditResult = "success"
         try {
             if (remoteId != null && !remoteId.startsWith("local:")) {
-                // #402: the row's real cloud uuid addresses the twin the engine
+                // archive#402: the row's real cloud uuid addresses the twin the engine
                 // actually tracks; path resolution would pick the first of any
                 // same-named siblings and could trash the wrong one.
                 provider.deleteById(remoteId, remotePath)
@@ -3341,7 +3341,7 @@ open class SyncEngine(
     }
 
     /**
-     * #116: fast-bootstrap adopt-on-name-match for a TOP-LEVEL folder. Returns true
+     * archive#116: fast-bootstrap adopt-on-name-match for a TOP-LEVEL folder. Returns true
      * when the folder's name already exists at the remote root and the state.db row
      * was adopted (capturing the existing remoteId) — the caller then SKIPS the
      * CreateRemoteFolder, avoiding the 409 the mkdir would otherwise hit.
@@ -3387,7 +3387,7 @@ open class SyncEngine(
         return true
     }
 
-    // #116: the single path segment of a drive-root child, or null when the path
+    // archive#116: the single path segment of a drive-root child, or null when the path
     // is the root itself or nested deeper than one level (adopt-on-match is
     // top-level-only — see adoptExistingTopLevelFolder).
     private fun topLevelFolderName(remotePath: String): String? {
@@ -3396,7 +3396,7 @@ open class SyncEngine(
         return trimmed
     }
 
-    // #116: lazily list the remote root's direct child folders once per run and
+    // archive#116: lazily list the remote root's direct child folders once per run and
     // index them by name. A failed listing caches an empty map so we don't retry
     // per folder — falling back to the pre-fix mkdir (which 409s, but is no worse
     // than before the fix).
@@ -3429,10 +3429,10 @@ open class SyncEngine(
     }
 
     private suspend fun applyCreateRemoteFolder(action: SyncAction.CreateRemoteFolder) {
-        // #115: REMOTE create target = remoteTarget ?: path; LOCAL mtime read
+        // archive#115: REMOTE create target = remoteTarget ?: path; LOCAL mtime read
         // uses action.path. Non-aliased: remoteTarget null → identical to today.
         val remotePath = action.remoteTarget ?: action.path
-        // #116: under fast-bootstrap the pre-existing cloud tree is invisible to
+        // archive#116: under fast-bootstrap the pre-existing cloud tree is invisible to
         // the planner, so the local scanner emits a CreateRemoteFolder for every
         // top-level local folder — including ones whose name already exists on the
         // remote, each of which then 409s. Adopt-on-name-match: if the matching
@@ -3445,7 +3445,7 @@ open class SyncEngine(
                 provider.createFolder(remotePath)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
-                // #531: under a fast-bootstrap-adopted cursor the pre-existing cloud tree is
+                // archive#531: under a fast-bootstrap-adopted cursor the pre-existing cloud tree is
                 // invisible to state.db, so the planner emits mkdir-remote for folders that exist
                 // remotely (a second device, a lost row) and each one fails with 409
                 // nameAlreadyExists — the same failure, run after run. Resolve it here: when the
@@ -3522,7 +3522,7 @@ open class SyncEngine(
     }
 
     /**
-     * #123: applies a contiguous run of CreateRemoteFolder actions with bounded concurrency.
+     * archive#123: applies a contiguous run of CreateRemoteFolder actions with bounded concurrency.
      *
      * The run is split into depth-ordered batches (see [createFolderBatches]); each batch runs
      * concurrently under a [concurrency]-permit semaphore, and the next batch starts only after
@@ -3586,7 +3586,7 @@ open class SyncEngine(
                             failedPaths.add(normalizeTrackedPath(action.path))
                             failures.incrementAndGet()
                             passOneFailures.incrementAndGet()
-                            // #530: one WARN line, the stack trace at DEBUG.
+                            // archive#530: one WARN line, the stack trace at DEBUG.
                             log.warn(
                                 "Action failed for {}: {}: {}{}",
                                 action.path,
@@ -3674,7 +3674,7 @@ open class SyncEngine(
         }
     }
 
-    // #738: the stamp carries seconds, and keepBothCopyPath adds a " (2)" counter when the name is
+    // archive#738: the stamp carries seconds, and keepBothCopyPath adds a " (2)" counter when the name is
     // still taken, so a second conflict on the same file never lands on the first one's copy.
     private fun conflictStamp(): String =
         java.time.format.DateTimeFormatter
@@ -3710,7 +3710,7 @@ open class SyncEngine(
                 // Move the user's edit aside under the conflict-local name. It is uploaded in this same
                 // pass (below) and tracked at its own path, so a later delete of the canonical cannot
                 // reap the user's recoverable copy of their own work.
-                // #738: no REPLACE_EXISTING. An existing target is a bug, never something to overwrite: the
+                // archive#738: no REPLACE_EXISTING. An existing target is a bug, never something to overwrite: the
                 // move then throws, the conflict fails, and the canonical (the user's edit) stays untouched.
                 withEchoSuppression(conflictPath) {
                     Files.move(localPath, conflictLocal)
@@ -3722,10 +3722,10 @@ open class SyncEngine(
             applyCreatePlaceholder(
                 SyncAction.CreatePlaceholder(action.path, action.remoteItem, shouldHydrate = !action.remoteItem.isFolder),
             )
-            // #694: the side copy goes up in this pass, not on the next one (the plan was made before the copy
+            // archive#694: the side copy goes up in this pass, not on the next one (the plan was made before the copy
             // existed). Best effort: a failed upload leaves the copy local-only, and the next scan uploads it.
             if (keptCopyPath != null && syncDirection != SyncDirection.DOWNLOAD) {
-                // #115: keptCopyPath is real-local. Under a locale alias (/Bilder <-> /Pictures) the copy
+                // archive#115: keptCopyPath is real-local. Under a locale alias (/Bilder <-> /Pictures) the copy
                 // belongs next to the canonical remote file, as the reconciler's own Upload would target it.
                 val canonicalCopy =
                     action.remoteItem.path.substringBeforeLast('/') + "/" + keptCopyPath.substringAfterLast('/')
@@ -3751,7 +3751,7 @@ open class SyncEngine(
                 provider.upload(localPath, action.path) { transferred, total ->
                     reporter.onTransferProgress(action.path, transferred, total)
                 }
-            // #337/#148: record the pre-upload stat (same rule as applyUpload) so a
+            // archive#337/#148: record the pre-upload stat (same rule as applyUpload) so a
             // write landing during this upload is re-planned by the next scan.
             val afterUpload = statBeforeUpload(localPath)
             if (afterUpload != null && sent != null && afterUpload != sent) {
@@ -3817,7 +3817,7 @@ open class SyncEngine(
         isHydrated: Boolean,
     ) = SyncEntry(
         path = path,
-        // #115: when the action's local [path] differs from the remote item's
+        // archive#115: when the action's local [path] differs from the remote item's
         // canonical path, this is a locale-aliased row — persist the canonical
         // as remotePath so the next delta matches by effective remote path.
         // Equal paths (the universal case) leave remotePath null → byte-identical.
@@ -3834,7 +3834,7 @@ open class SyncEngine(
         lastSynced = Instant.now(),
     )
 
-    // #396: for a provider with no remote content hash (Internxt), record the SHA-256 of the
+    // archive#396: for a provider with no remote content hash (Internxt), record the SHA-256 of the
     // bytes the engine itself just wrote (download) or sent (upload). LocalScanner uses it to
     // recognise a file whose mtime was bumped by something else (shell handler, indexer,
     // antivirus) as unchanged instead of planning a redundant re-upload. Hash-capable
@@ -3889,7 +3889,7 @@ open class SyncEngine(
     // Same guard for a copy of the bytes that is not the sync-root file — the cache copy a
     // hydration downloaded or a write-back was uploaded from. The row records that copy's
     // stats, so the hash must describe that copy and be dropped if it changes mid-hash.
-    // #560 U3: shared with the mount front-end, see [Transfers.withLocalHash].
+    // archive#560 U3: shared with the mount front-end, see [Transfers.withLocalHash].
     internal fun withLocalHash(
         entry: SyncEntry,
         local: Path,
@@ -3900,7 +3900,7 @@ open class SyncEngine(
     // mtime and size of a file about to be uploaded, or null when it cannot be read.
     private fun statBeforeUpload(local: Path): Pair<Long, Long>? = Transfers.statBeforeUpload(local)
 
-    // See [Transfers.withSentHash] (#337/#148: hash only the bytes that were sent).
+    // See [Transfers.withSentHash] (archive#337/#148: hash only the bytes that were sent).
     private fun withSentHash(
         entry: SyncEntry,
         local: Path,
@@ -3927,9 +3927,9 @@ open class SyncEngine(
 
     private fun updateRemoteEntries(remoteChanges: Map<String, CloudItem>) = remoteGather.updateRemoteEntries(remoteChanges)
 
-    // #1043: the hydrated file rows whose bytes a planned action is about to replace with the cloud's: a download,
+    // archive#1043: the hydrated file rows whose bytes a planned action is about to replace with the cloud's: a download,
     // or a conflict the cloud side may win. Read before the merge. A renamed file is found by its remote id: the
-    // merge re-keys its row to the new name. #1045: the row of a local file that is new on both sides (nothing
+    // merge re-keys its row to the new name. archive#1045: the row of a local file that is new on both sides (nothing
     // synced yet, a pending upload) is one too: the merge turns it into a row of the cloud's item over the local
     // file's bytes.
     private fun rowsAwaitingContent(actions: List<SyncAction>): List<Pair<SyncEntry, CloudItem>> {
@@ -4010,7 +4010,7 @@ open class SyncEngine(
             else -> action.path
         }
 
-    // #737: PlaceholderManager kept a local file that was in the way of a remote folder as the
+    // archive#737: PlaceholderManager kept a local file that was in the way of a remote folder as the
     // conflict copy [copy]. Surface it like a keep-both conflict. A pending upload's row is dropped:
     // its bytes now live at [copy], which the next scan finds and uploads under that name.
     private fun recordFileKeptAside(
@@ -4029,7 +4029,7 @@ open class SyncEngine(
         )
     }
 
-    // #1045: the bytes of [item] did not arrive. The row says so (download pending) and keeps the rest; unlike
+    // archive#1045: the bytes of [item] did not arrive. The row says so (download pending) and keeps the rest; unlike
     // restoreToPlaceholder this leaves the file system alone: what is at the path is the user's, or nothing.
     private fun markWaitingForContent(
         path: String,
@@ -4227,7 +4227,7 @@ open class SyncEngine(
     // UD-264: append a JSON line to skipped-ops.jsonl. Goes through
     // kotlinx.serialization.json so the output is always valid JSONL even
     // when an action's path contains JSON-special chars (`"`, `\`, newline).
-    // PR #46 Codex P2 (2026-05-17): the prior hand-built triple-quoted
+    // PR archive#46 Codex P2 (2026-05-17): the prior hand-built triple-quoted
     // template broke parsing for valid Linux/cloud filenames — failures.jsonl
     // already had ~119 PARSE_ERR entries from the same bug class in
     // logFailure (separate ticket to follow). The audit-of-record observed a
@@ -4246,7 +4246,7 @@ open class SyncEngine(
         logSkippedOp(actionLabel(action), action.path, reason, dryRun)
     }
 
-    // #401 overload: gather-collision records have no SyncAction — the label and
+    // archive#401 overload: gather-collision records have no SyncAction — the label and
     // path stand in. Same JSONL shape as the action-based entry.
     private fun logSkippedOp(
         label: String,
@@ -4322,10 +4322,10 @@ open class SyncEngine(
         internal const val KEEP_BOTH_MAX_NAME_ATTEMPTS: Int = 1000
 
         /**
-         * #738: the keep-both side-copy path for [path] at [stamp]: `dir/stem.conflict-local-<stamp>.ext`, and
+         * archive#738: the keep-both side-copy path for [path] at [stamp]: `dir/stem.conflict-local-<stamp>.ext`, and
          * `dir/stem.conflict-local-<stamp> (n).ext` (n = 2, 3, …) while [isTaken] says the name is in use. The
          * extension is taken from the file name only, so a dot in a folder name never splits the path.
-         * The stem is cut (#1091, on a code-point boundary) so the whole name stays within 255 UTF-16 units.
+         * The stem is cut (archive#1091, on a code-point boundary) so the whole name stays within 255 UTF-16 units.
          * Throws [IllegalStateException] rather than reuse a taken name once [KEEP_BOTH_MAX_NAME_ATTEMPTS] are spent.
          */
         internal fun keepBothCopyPath(
@@ -4348,7 +4348,7 @@ open class SyncEngine(
             error("no free keep-both copy name for $path after $KEEP_BOTH_MAX_NAME_ATTEMPTS attempts")
         }
 
-        // #560 U2b: the enumeration's and the gather's constants live in
+        // archive#560 U2b: the enumeration's and the gather's constants live in
         // RemoteEnumeration and RemoteGather (see there); these names stay for callers.
         const val ENUMERATE_FAILURE_STREAK_KEY: String = RemoteEnumeration.FAILURE_STREAK_KEY
         const val BULK_REAP_ABSOLUTE: Int = RemoteEnumeration.BULK_REAP_ABSOLUTE
@@ -4371,7 +4371,7 @@ open class SyncEngine(
 
         const val STREAMING_RECONCILE_CHANNEL_CAPACITY: Int = 4
 
-        // #401: the status collision surface (see RemoteGather).
+        // archive#401: the status collision surface (see RemoteGather).
         const val REMOTE_COLLISIONS_KEY: String = RemoteGather.REMOTE_COLLISIONS_KEY
         const val REMOTE_COLLISION_PATHS_KEY: String = RemoteGather.REMOTE_COLLISION_PATHS_KEY
         const val COLLISION_PATHS_STATUS_LIMIT: Int = RemoteGather.COLLISION_PATHS_STATUS_LIMIT
@@ -4402,11 +4402,11 @@ open class SyncEngine(
         fun hydrationCacheRoot(cacheRoot: Path, cacheKey: String): Path =
             cacheRoot
                 .resolve("unidrive/hydration")
-                // #135: the same canonical disk name the IPC socket uses, so the two never
+                // archive#135: the same canonical disk name the IPC socket uses, so the two never
                 // disagree about what identifies a profile on disk for long profile names.
                 .resolve(IpcServer.canonicalDiskName(cacheKey.ifBlank { "default" }, IpcServer.defaultSocketDirectory()))
 
-        /** #660: where a mount keeps the rule files it downloaded only to read them (beside the hydration cache, not in it). */
+        /** archive#660: where a mount keeps the rule files it downloaded only to read them (beside the hydration cache, not in it). */
         fun ignoreRuleFilesRoot(cacheRoot: Path, cacheKey: String): Path =
             cacheRoot
                 .resolve("unidrive/ignore-rules")

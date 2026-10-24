@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * #1091: Internxt keeps a file's name without its extension (`plainName`) and its `type`; the name a user sees is
+ * archive#1091: Internxt keeps a file's name without its extension (`plainName`) and its `type`; the name a user sees is
  * `plainName.type`. The conflict copy and the archived overwrite append text to the plainName, so the plainName is cut for
  * the whole name to stay within 255 UTF-16 units.
  */

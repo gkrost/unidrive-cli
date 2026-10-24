@@ -21,7 +21,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #1043: the delta merge copies a new remote hash, size and modified time onto a row before any action runs.
+ * archive#1043: the delta merge copies a new remote hash, size and modified time onto a row before any action runs.
  * A hydrated row must not read "in sync" with the new metadata while its file still holds the old bytes:
  * when the download does not complete (refresh skips it, the pass dies, the engine is refused) the delta is
  * not delivered again, and the next local edit would be uploaded over the newer remote version.

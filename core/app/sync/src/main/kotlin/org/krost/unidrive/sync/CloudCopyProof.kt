@@ -7,7 +7,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * #737: the sync engine's [FileInTheWayGuard]. A file in the way of a remote folder may be replaced
+ * archive#737: the sync engine's [FileInTheWayGuard]. A file in the way of a remote folder may be replaced
  * without a copy only when its state row proves the bytes on disk are the bytes the cloud holds:
  *  - the row is a synced, hydrated file (a remote id, not a folder, not quarantined, not a tombstone);
  *  - the file is unchanged since the engine recorded it (size and mtime equal the row's local

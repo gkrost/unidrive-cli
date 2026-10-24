@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
-// #171: the NFC canonicalization helper + the on-disk resolution fallback.
+// archive#171: the NFC canonicalization helper + the on-disk resolution fallback.
 class PathNormalizerTest {
     @Test
     fun `decomposed input normalizes to composed NFC`() {
@@ -25,7 +25,7 @@ class PathNormalizerTest {
     }
 
     // On a byte-preserving FS (Linux/CI), an NFD on-disk file must still resolve
-    // via its NFC logical path so uploads read the real bytes (issue #211 P2).
+    // via its NFC logical path so uploads read the real bytes (issue archive#211 P2).
     @Test
     fun `safeResolveLocal finds an NFD on-disk file via its NFC path`() {
         val root = Files.createTempDirectory("ud-nfc-resolve")

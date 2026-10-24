@@ -20,9 +20,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #560 U1: what `refresh.run` does with state.db today, by route. RefreshRoutingTest pins which engine entry point
+ * archive#560 U1: what `refresh.run` does with state.db today, by route. RefreshRoutingTest pins which engine entry point
  * runs; these pin the `reset` handling and the flags of the reconcile route. A reset keeps the rows that still await
- * upload (RefreshResetKeepsPendingTest has the detail). #560 U4 changes this routing on purpose (refresh of a mount
+ * upload (RefreshResetKeepsPendingTest has the detail). archive#560 U4 changes this routing on purpose (refresh of a mount
  * profile always enumerates); these tests then change with it.
  */
 class RefreshRoutingCurrentBehaviourTest {

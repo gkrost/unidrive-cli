@@ -72,7 +72,7 @@ class ReadOnlyTrashProvider(
         inner.deleteById(remoteId, remotePath)
     }
 
-    // #1178: a delete for good is a delete; `CloudProvider by inner` would hand it past the guard.
+    // archive#1178: a delete for good is a delete; `CloudProvider by inner` would hand it past the guard.
     override suspend fun deletePermanently(remotePath: String) {
         refuse(remotePath)
         inner.deletePermanently(remotePath)

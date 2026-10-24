@@ -20,7 +20,7 @@ internal class ChangeChannelCounters {
 
 /**
  * The OneDrive remote-change hint: Graph's socket.io endpoint for the drive (`GET /me/drive/root/subscriptions/socketIo`,
- * #111). Every `notification` event is a "something changed, walk the delta" hint; the payload is not parsed.
+ * archive#111). Every `notification` event is a "something changed, walk the delta" hint; the payload is not parsed.
  *
  * ## Rotation (spike E2, 2026-10-21)
  *

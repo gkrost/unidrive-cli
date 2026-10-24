@@ -19,7 +19,7 @@ import java.sql.SQLException
 import java.sql.Statement
 
 /**
- * #560 U5a: the read-only inventory of a legacy profile, the first step of its one-time conversion
+ * archive#560 U5a: the read-only inventory of a legacy profile, the first step of its one-time conversion
  * (docs/adr/independent-profiles.md, "Migration"). It reports what a conversion would have to preserve: the
  * profile's config, its state.db, the bytes in the sync_root and in the hydration cache, upload staging and the
  * platform client's recovery files.
@@ -108,7 +108,7 @@ internal object LegacyInventory {
         val aliveFolders: Int,
         val localIdRows: Int,
         // `StateDatabase.pendingUploadPaths()`: alive files with a `local:` id and is_hydrated. Matches rows written
-        // through the mount AND rows written by LocalScanner (#560 corrections table).
+        // through the mount AND rows written by LocalScanner (archive#560 corrections table).
         val pendingUploads: List<String>,
         // The mount's replay subset: a cache copy exists, in scope, not excluded (`HydrationImpl.replayable`).
         val pendingMountReplayable: List<String>,
@@ -248,7 +248,7 @@ internal object LegacyInventory {
         val source = inputs.profileDir.resolve("state.db")
         if (!Files.exists(source)) return null
         Files.createDirectories(inputs.tempRoot)
-        // #1054 S4: the copy of state.db lists every path; owner-only, not the temp folder's inherited ACL.
+        // archive#1054 S4: the copy of state.db lists every path; owner-only, not the temp folder's inherited ACL.
         val dir = org.krost.unidrive.io.createOwnerOnlyTempDirectory(inputs.tempRoot, "unidrive-inventory-")
         try {
             val copy = dir.resolve("state.db")

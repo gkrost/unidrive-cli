@@ -39,7 +39,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #778: `daemon.pause` and `daemon.resume` against a live daemon on a real socket: scope, the `paused`
+ * archive#778: `daemon.pause` and `daemon.resume` against a live daemon on a real socket: scope, the `paused`
  * object of `daemon.status`, the `paused` and `resumed` events, and what a paused daemon leaves undone.
  */
 class DaemonPauseTest {

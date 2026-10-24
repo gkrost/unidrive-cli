@@ -41,7 +41,7 @@ class HydrationUploadQueueTest {
         return Files.getLastModifiedTime(cache).toMillis() to Files.size(cache)
     }
 
-    // #605 (U6): a dirty overwrite — a row whose cache copy drifted from its baseline while the
+    // archive#605 (U6): a dirty overwrite — a row whose cache copy drifted from its baseline while the
     // daemon was down — is replayed by the engine itself, not only by a mount client's scanner.
     @Test
     fun `a dirty overwrite of an uploaded row replays from the cache`() = runTest {
@@ -83,7 +83,7 @@ class HydrationUploadQueueTest {
         assertEquals("xyz", env.syncEngine.remoteContentSeen("/q/f.txt"), "then it is replayed")
     }
 
-    // #729: the dirty-overwrite scan starts from the files the cache holds, not from every uploaded file row.
+    // archive#729: the dirty-overwrite scan starts from the files the cache holds, not from every uploaded file row.
     // On the live profile it walked 137,534 rows and resolved a cache path for each one, component by component,
     // with a pair of internally thrown JDK exceptions per absent component on Windows (341,451 recorded
     // exceptions, 13–17 minutes per start). An empty cache has nothing to replay: no row is probed at all.
@@ -100,7 +100,7 @@ class HydrationUploadQueueTest {
         assertEquals(0, probed, "no cache file exists, so no row's cache copy is asked for")
     }
 
-    // #729: the rows the dirty scan takes up follow the cache files, not the uploaded rows: the two thousand
+    // archive#729: the rows the dirty scan takes up follow the cache files, not the uploaded rows: the two thousand
     // rows without a cache copy are never looked up, and the one file that is a row's drifted cache copy is the
     // one candidate the scan probes.
     @Test
@@ -119,7 +119,7 @@ class HydrationUploadQueueTest {
         assertEquals(1, probed, "one cache file, whatever the uploaded-row count")
     }
 
-    // #729: the scan's row lookup follows the spelling the cache stores. On a case-insensitive volume a file
+    // archive#729: the scan's row lookup follows the spelling the cache stores. On a case-insensitive volume a file
     // stored under a different case than the row's path still names that row's copy: the index-backed COLLATE
     // NOCASE lookup finds the row, and the body re-resolves the row's own path (so a case-sensitive volume,
     // where that copy is genuinely absent, skips instead of uploading another file's bytes).
@@ -138,7 +138,7 @@ class HydrationUploadQueueTest {
         assertEquals("xyz", env.syncEngine.remoteContentSeen("/q/F.txt"))
     }
 
-    // #729: the row filter the row-driven scan applied in SQL (status EXISTS, a real remote id, a file row,
+    // archive#729: the row filter the row-driven scan applied in SQL (status EXISTS, a real remote id, a file row,
     // hydrated) now lives in the scan's row lookup. Only an uploaded, hydrated file row with a drifted cache
     // copy replays: a never-uploaded row is the pending loop's (its handle says so), a folder row has no file
     // in the cache, and a cache file no row names is left alone.
@@ -179,7 +179,7 @@ class HydrationUploadQueueTest {
         collector.cancel()
     }
 
-    // #729: the row-driven scan skipped a row whose path is excluded (keep-local) or outside the sync scope
+    // archive#729: the row-driven scan skipped a row whose path is excluded (keep-local) or outside the sync scope
     // before probing its cache copy; the cache-driven scan keeps both guards, so their cache files are
     // candidates but never replay.
     @Test
@@ -285,7 +285,7 @@ class HydrationUploadQueueTest {
         collector.cancel()
     }
 
-    // #493: an upload the provider refuses as such (Internxt's 400 for an empty file, #485) used to run the whole retry
+    // archive#493: an upload the provider refuses as such (Internxt's 400 for an empty file, archive#485) used to run the whole retry
     // ladder, holding a transfer slot through every backoff, before failing the same way.
     @Test
     fun `an upload the provider refuses is not retried`() = runTest {
@@ -311,7 +311,7 @@ class HydrationUploadQueueTest {
         collector.cancel()
     }
 
-    // #493: the refusal is persisted with the content's stamp: the replay at the next daemon start and a resubmission of
+    // archive#493: the refusal is persisted with the content's stamp: the replay at the next daemon start and a resubmission of
     // the same bytes do not ask the provider again; new content does.
     @Test
     fun `a refused upload is not replayed at the next start, nor resubmitted unchanged, but new content goes`() = runTest {
@@ -333,7 +333,7 @@ class HydrationUploadQueueTest {
         advanceUntilIdle()
         assertEquals(1, env.syncEngine.uploadAttempts(), "unchanged content is not sent again")
 
-        // New bytes are not what was refused. The row still carries its failure mark, so since #499 it is replayed like
+        // New bytes are not what was refused. The row still carries its failure mark, so since archive#499 it is replayed like
         // any failed row: after the delay, not at once.
         writeCache(env, "/docs/f.txt", "different bytes now")
         assertEquals(0, env.hydration.replayPendingUploads(), "new content is replayed, after the delay of failed rows")
@@ -491,7 +491,7 @@ class HydrationUploadQueueTest {
         assertEquals("bytes", env.syncEngine.remoteContentSeen("/q/f.txt"))
     }
 
-    // #613: an upload whose provider call suspended with no progress held its path's
+    // archive#613: an upload whose provider call suspended with no progress held its path's
     // slot for the daemon's lifetime — no provider request, no failure, no completed
     // — and every later hand-over of the path queued behind it. The stall watchdog
     // bounds each attempt: the hung upload runs the failed-attempt path to a failed
@@ -545,7 +545,7 @@ class HydrationUploadQueueTest {
         collector.cancel()
     }
 
-    // #613: the watchdog keys on silent time — an upload whose provider still
+    // archive#613: the watchdog keys on silent time — an upload whose provider still
     // reports byte progress is never cancelled, however long the transfer runs.
     @Test
     fun `a slow upload that keeps reporting progress is not cancelled by the watchdog`() = runTest {
@@ -680,7 +680,7 @@ class HydrationUploadQueueTest {
         assertNull(env.syncEngine.remoteContentSeen("/_INBOX/gone.txt"))
     }
 
-    // #493: two uploads that kept failing were replayed at every start and held both transfer slots for their whole
+    // archive#493: two uploads that kept failing were replayed at every start and held both transfer slots for their whole
     // retry ladder; a row whose last attempt failed now waits, and fresh work goes first.
     @Test
     fun `a row whose last upload failed is replayed later, after the rows that can go now`() = runTest {

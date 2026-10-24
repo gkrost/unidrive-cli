@@ -128,7 +128,7 @@ internal class FakeDrive(
     val devices: List<String>? = null,
     val deviceStatus: Int? = null,
     // Answers both sync listings with this HTTP status on every request (404: the server does not serve
-    // them, and a gather — a poll included, #312 — falls back to the offset listing).
+    // them, and a gather — a poll included, archive#312 — falls back to the offset listing).
     val syncStatus: Int? = null,
 ) {
     val metaRequests = CopyOnWriteArrayList<String>()

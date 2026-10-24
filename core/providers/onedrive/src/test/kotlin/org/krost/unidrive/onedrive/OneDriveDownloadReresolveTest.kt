@@ -254,7 +254,7 @@ class OneDriveDownloadReresolveTest {
             Files.deleteIfExists(dest)
         }
 
-    // #329: the pre-authenticated @microsoft.graph.downloadUrl carries a tempauth token
+    // archive#329: the pre-authenticated @microsoft.graph.downloadUrl carries a tempauth token
     // that expires (~1 h). A 401 on that URL says nothing about account auth — the item
     // must be re-resolved once for a fresh URL and the download retried, instead of
     // being misclassified as an AuthenticationException.
@@ -310,7 +310,7 @@ class OneDriveDownloadReresolveTest {
             Files.deleteIfExists(dest)
         }
 
-    // #329: a 401 that persists on the re-resolved URL is a real failure — but exactly
+    // archive#329: a 401 that persists on the re-resolved URL is a real failure — but exactly
     // one re-resolve, no loop.
     @Test
     fun `a 401 that persists after re-resolution throws AuthenticationException with no second re-resolve`() =
@@ -357,7 +357,7 @@ class OneDriveDownloadReresolveTest {
             Files.deleteIfExists(dest)
         }
 
-    // #329 review: a 403 that persists on the fresh URL is an access refusal, not an
+    // archive#329 review: a 403 that persists on the fresh URL is an access refusal, not an
     // authentication failure (it must not latch the stale-auth UX), as before the change.
     @Test
     fun `a 403 that persists after re-resolution stays a GraphApiException`() =
@@ -397,7 +397,7 @@ class OneDriveDownloadReresolveTest {
             Files.deleteIfExists(dest)
         }
 
-    // #247, the live repro: the item is already gone at the FIRST path resolve. That
+    // archive#247, the live repro: the item is already gone at the FIRST path resolve. That
     // 404 used to escape as a raw GraphApiException and was retried on every poll.
     @Test
     fun `a 404 itemNotFound on the initial path resolve is a permanent failure`() =
@@ -428,7 +428,7 @@ class OneDriveDownloadReresolveTest {
             Files.deleteIfExists(dest)
         }
 
-    // #247: only `itemNotFound` means gone. A 404 with another error code stays the
+    // archive#247: only `itemNotFound` means gone. A 404 with another error code stays the
     // retryable GraphApiException, and so does a 503.
     @Test
     fun `a 404 with another error code and a 503 stay retryable`() =

@@ -84,7 +84,7 @@ if [[ "$gc_at" -ge 0 ]]; then
     diag_args+=("-Xlog:gc*:file=$diag_dir/gc-$gc_profile.log:time,uptime:filecount=5,filesize=10m")
 fi
 # Java runtime: Linux runs unidrive on the system's JDK, not a bundled one. Java 25+ is preferred: the JVM
-# runtime spike (#624) measured Java 21 at ~30 % more CPU to a ready daemon than Java 25. Order:
+# runtime spike (archive#624) measured Java 21 at ~30 % more CPU to a ready daemon than Java 25. Order:
 # UNIDRIVE_JAVA; else `java` on PATH when it is 25+; else the newest 25+ JDK under UNIDRIVE_JVM_DIR
 # (default /usr/lib/jvm); else `java` on PATH. Versions come from the JDK's `release` file, so choosing
 # costs no extra JVM start. The daemon a command autospawns runs on this same java (its java.home).

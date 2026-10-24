@@ -153,7 +153,7 @@ val generateBuildInfo =
                         (added.toIntOrNull() ?: 0) > 0 || (deleted.toIntOrNull() ?: 0) > 0
                     }
                 }
-        // #1076: git lists untracked files below the working directory only, and Gradle starts this in app/cli, so a new
+        // archive#1076: git lists untracked files below the working directory only, and Gradle starts this in app/cli, so a new
         // source file in another module (compiled into the jar) was missed. The whole build tree is core/.
         val gitUntracked =
             providers
@@ -175,7 +175,7 @@ val generateBuildInfo =
         // Per docs/dev/specs/unidrive-distribution-design.md §3.5,
         // tagged-release builds print the bare semver (e.g. "0.0.1")
         // with no commit suffix. Non-tag (dev) builds carry the commit id
-        // as semver build metadata (`+<commit>[.dirty]`, #574) for
+        // as semver build metadata (`+<commit>[.dirty]`, archive#574) for
         // bug-report tractability.
         val gitTagAtHead =
             providers
@@ -212,7 +212,7 @@ val generateBuildInfo =
                 } catch (_: Exception) {
                     false
                 }
-            // #574 (owner decision): Kubernetes style — the release version plus the git commit id as
+            // archive#574 (owner decision): Kubernetes style — the release version plus the git commit id as
             // semver build metadata: `<major>.<minor>.<patch>+<commit>`. Clients order on the release
             // part (the project version, bumped per release) and use the commit id only to identify the
             // build. A dirty build says so in the metadata (`+<commit>.dirty`); a tagged release keeps
@@ -387,7 +387,7 @@ fun staticJvmFlags(): List<String> =
 fun renderLauncher(
     template: String,
     jarPath: String,
-    // The standalone coroutine-debug probe jar deployed beside the fat jar (gkrost/unidrive#613 ask 1):
+    // The standalone coroutine-debug probe jar deployed beside the fat jar (archive#613 ask 1):
     // the launchers pass it as -javaagent when UNIDRIVE_COROUTINE_DEBUG asks for the facility, and a
     // JVM start is the only moment a -javaagent can arm. Null (older dep set) renders an empty path
     // the templates' existence checks refuse.
@@ -433,7 +433,7 @@ tasks.register("deploy") {
         // <charset>; gradle println doesn't go through logback.
         println("[deploy] starting -- version=$projectVersion jar=${jarFile.name} target=${if (isWindows) "Windows" else "Linux"}")
 
-        // The standalone coroutine-debug probe jar (gkrost/unidrive#613 ask 1): deployed beside the
+        // The standalone coroutine-debug probe jar (archive#613 ask 1): deployed beside the
         // fat jar, where the launchers' UNIDRIVE_COROUTINE_DEBUG gate and DaemonAutospawn find it for
         // the -javaagent that arms the probes at JVM start.
         val debugAgentJar =
@@ -469,7 +469,7 @@ fun deployWindows(
     libDir.mkdirs()
     binDir.mkdirs()
 
-    // #1194: stop the engine processes through their profiles first — gracefully, by the daemon.shutdown verb.
+    // archive#1194: stop the engine processes through their profiles first — gracefully, by the daemon.shutdown verb.
     // ProcessHandle's command line reads EMPTY for the running daemons on Windows (measured), so the kill step
     // below cannot find them and the copy then fails on the locked jar. The .lock.pid sidecar under the config
     // dir names every holder; the class is loaded from the jar just built, like LegacyLogonEntry below.
@@ -497,7 +497,7 @@ fun deployWindows(
     // Replaced with ProcessHandle.allProcesses() — pure Java since JDK 9,
     // no shell, no WMI, no PowerShell. Filters by commandLine substring
     // (more reliable than the old WINDOWTITLE filter that missed
-    // background daemons launched from the startup VBS). #1194: on Windows
+    // background daemons launched from the startup VBS). archive#1194: on Windows
     // the command line of a running daemon reads empty, so this step is a
     // sweep for what the graceful step above missed, not the primary stop.
     val targetJarName = jarFile.name
@@ -533,7 +533,7 @@ fun deployWindows(
             else println("[deploy] could NOT prune stale jar ${it.name} (locked?)")
         }
 
-    // #1194: a locked jar failed here as a bare FileAlreadyExistsException after a full build; the message now
+    // archive#1194: a locked jar failed here as a bare FileAlreadyExistsException after a full build; the message now
     // names the remedy instead.
     try {
         jarFile.copyTo(targetJar, overwrite = true)
@@ -621,7 +621,7 @@ fun deployLinux(
     binDir.mkdirs()
     systemdDir.mkdirs()
 
-    // #1076: stop every active unidrive unit (the daemon, the per-profile and the mount instances) before the jar they
+    // archive#1076: stop every active unidrive unit (the daemon, the per-profile and the mount instances) before the jar they
     // run is replaced, and start exactly those again afterwards, as dist/install.sh does; one stop and one start call.
     val activeUnits =
         run("systemctl", "--user", "list-units", "--state=active", "--no-legend", "--plain", "unidrive*.service", ignoreExit = true)
@@ -662,7 +662,7 @@ fun deployLinux(
     launcher.writeText(renderLauncher("unidrive.sh.tmpl", targetJar.absolutePath, debugAgentTarget))
     launcher.setExecutable(true)
 
-    // #1076: the units are dist/'s, the files dist/install.sh copies, so a deploy never swaps a hardened unit with its
+    // archive#1076: the units are dist/'s, the files dist/install.sh copies, so a deploy never swaps a hardened unit with its
     // vault credential for a different one (the old inline unit read the passphrase from an env file and had no hardening).
     val distDir = launcherDir.parentFile
     val unitFiles = listOf("unidrive.service", "unidrive@.service", "unidrive-mount@.service")
@@ -689,9 +689,9 @@ dependencies {
     implementation(project(":providers:dropbox"))
     implementation(project(":providers:s3"))
     implementation(project(":app:sync"))
-    // StateDatabase, SyncEntry, PathNormalizer and SyncScope live in :app:engine-core (#560 U2).
+    // StateDatabase, SyncEntry, PathNormalizer and SyncScope live in :app:engine-core (archive#560 U2).
     implementation(project(":app:engine-core"))
-    // The CliExtension SPI that CliExtensionLoader discovers implementations of (#560).
+    // The CliExtension SPI that CliExtensionLoader discovers implementations of (archive#560).
     implementation(project(":app:cli-spi"))
     // The CLI owns the tracking-set commands and renders their user-facing
     // text; the tracking-set engine remains a separately consumable module.
@@ -700,7 +700,7 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.slf4j) // UD-212: MDCContext for profile MDC propagation
-    // Coroutine debug probes (gkrost/unidrive#613 ask 1): installed only when UNIDRIVE_COROUTINE_DEBUG=1.
+    // Coroutine debug probes (archive#613 ask 1): installed only when UNIDRIVE_COROUTINE_DEBUG=1.
     // Arming the capture needs the probe JAR as a -javaagent at JVM start (the launcher templates and
     // DaemonAutospawn add it when the flag is set); on a JVM started without it the runtime
     // self-attach fails on locked-down HotSpots and CoroutineDebug's self-check says so. The agent

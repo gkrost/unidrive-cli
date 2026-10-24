@@ -183,7 +183,7 @@ internal fun removeRemote(
     if (path == "/") throw LifecycleError("root_refused", "refusing to delete the root of the drive")
     val target = resolveProfileTarget(main, null)
     requireMountProfile(main, target)
-    // #1178: a permanent delete is permanent whatever the provider's trash default is.
+    // archive#1178: a permanent delete is permanent whatever the provider's trash default is.
     val deletedAs = if (request.permanent) DELETED_AS_PERMANENT else deleteSemantics(target.type)
     val socket = RmHooks.socketPath(target.name)
     return when (ProfileRemover.holderOf(target.profileDir, socket)) {
@@ -248,7 +248,7 @@ private fun folderRefusal(
     val confirm = request.confirm
     return when {
         !request.recursive -> LifecycleError("path_is_folder", "'$path' is a folder; rm -r deletes a folder with everything in it")
-        // #1178: the permanent consent below asks; one question, never two.
+        // archive#1178: the permanent consent below asks; one question, never two.
         request.permanent -> null
         request.yes -> null
         confirm == null ->
@@ -258,7 +258,7 @@ private fun folderRefusal(
     }
 }
 
-// #1178: --permanent refuses without a yes, whatever the kind is; one question, never two.
+// archive#1178: --permanent refuses without a yes, whatever the kind is; one question, never two.
 private fun requirePermanentConsent(
     path: String,
     request: RmRequest,
@@ -293,7 +293,7 @@ private fun removeViaDaemon(
     request: RmRequest,
     deletedAs: String,
 ): RmResult {
-    // #1178: a permanent delete asks before the unlink type-probe — a file would be gone at once otherwise.
+    // archive#1178: a permanent delete asks before the unlink type-probe — a file would be gone at once otherwise.
     if (request.permanent) requirePermanentConsent(path, request, null)
     val unlink = askDaemonToDelete(endpoint, "hydration.unlink", path, recursive = false, permanent = request.permanent)
     if (unlink == null) return RmResult(path, isFolder = false, route = "daemon", deletedAs = deletedAs)

@@ -13,12 +13,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 
 /**
- * #112 / PR #193 review: the touch-only upload-skip optimization computes a local hash
+ * archive#112 / PR archive#193 review: the touch-only upload-skip optimization computes a local hash
  * using `CloudProvider.hashAlgorithm()` and compares it against the stored `remoteHash`.
  * For OneDrive, `hashAlgorithm()` returns `HashAlgorithm.QuickXor`, so `toCloudItem()`
  * MUST store the `quickXorHash` value in `remoteHash` — not the `sha256Hash`. When Graph
  * supplies both fields (the common case for personal OneDrive), the old precedence
- * (`sha256Hash ?: quickXorHash`) caused #112's compare to always mismatch: QuickXor local
+ * (`sha256Hash ?: quickXorHash`) caused archive#112's compare to always mismatch: QuickXor local
  * hash vs. SHA-256 stored hash → every touch-only change was re-uploaded anyway.
  *
  * Tests use the same MockEngine-swap idiom as [DeltaRemovedStateTest].
@@ -53,7 +53,7 @@ class OneDriveHashAlignmentTest {
     /**
      * The realistic personal OneDrive case: Graph returns both sha256Hash and quickXorHash.
      * `toCloudItem()` must store quickXorHash in `CloudItem.hash` so it is consistent with
-     * `hashAlgorithm()` returning QuickXor. Without this alignment, #112's touch-only skip
+     * `hashAlgorithm()` returning QuickXor. Without this alignment, archive#112's touch-only skip
      * computes a QuickXor hash locally and compares it against a SHA-256 stored value →
      * always mismatch → touch-only files are always re-uploaded.
      */
@@ -100,7 +100,7 @@ class OneDriveHashAlignmentTest {
 
     /**
      * When only sha256Hash is present (e.g. SharePoint/business drives without quickXorHash),
-     * fall back to sha256Hash so the field is not empty.  The #112 fallback guard
+     * fall back to sha256Hash so the field is not empty.  The archive#112 fallback guard
      * (`!entry.remoteHash.isNullOrEmpty()`) will still prevent a hash-compare attempt when
      * the algorithm doesn't match, but having a non-null hash preserves diagnostic info.
      */

@@ -9,7 +9,7 @@ import java.util.UUID
 /**
  * Moves [source] to [target] like [Files.move]. A rename that only changes the case of a name (`report.txt` to
  * `Report.txt`, `docs` to `Docs`) names the same file on a case-insensitive file system, and the JDK then does
- * nothing: the name on disk stays as it was (#1086). That case goes through a name in between, in the same folder,
+ * nothing: the name on disk stays as it was (archive#1086). That case goes through a name in between, in the same folder,
  * and is put back if the second step fails.
  *
  * [replaceExisting] is [StandardCopyOption.REPLACE_EXISTING] for every other move; a case-only rename has no

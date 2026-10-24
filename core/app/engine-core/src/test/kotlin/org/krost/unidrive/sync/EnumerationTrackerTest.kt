@@ -704,7 +704,7 @@ class EnumerationTrackerTest {
         assertEquals(ScanProgress.LISTING_TREE, live.snapshot().listing)
     }
 
-    // #586: a rejected credential is told apart from any other failure, and a success does not erase the record
+    // archive#586: a rejected credential is told apart from any other failure, and a success does not erase the record
     // (a reader compares it with the last success).
     @Test
     fun `a failure that names a credential rejection stamps authRejectedAtMs and a plain failure does not`() {
@@ -727,7 +727,7 @@ class EnumerationTrackerTest {
         assertEquals(now, tracker.snapshot().lastSuccessAtMs)
     }
 
-    // #878: last_error_code — the machine-readable cause of the failure, cleared by a success and by
+    // archive#878: last_error_code — the machine-readable cause of the failure, cleared by a success and by
     // the next attempt, and absent while nothing has failed.
     @Test
     fun `the failure carries its code and a success or a new attempt clears it`() {

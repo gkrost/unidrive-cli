@@ -29,7 +29,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #603 (U4, the hosting contract): a profile's `mode = "mirror" | "mount"` decides what serves it.
+ * archive#603 (U4, the hosting contract): a profile's `mode = "mirror" | "mount"` decides what serves it.
  * A profile without a mode is refused — never defaulted; a command for the wrong mode is refused
  * before anything is touched; a mirror daemon answers the mount verbs with wrong_mode and keeps the
  * legacy refresh; a mount daemon reports mode + capabilities and always enumerates on refresh.run.

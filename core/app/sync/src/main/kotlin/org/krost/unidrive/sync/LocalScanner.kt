@@ -20,14 +20,14 @@ class LocalScanner(
     private val syncRoot: Path,
     private val db: StateDatabase,
     private val excludePatterns: List<String> = emptyList(),
-    // #112: algorithm used to compute remoteHash strings for this provider.
+    // archive#112: algorithm used to compute remoteHash strings for this provider.
     // Null means "no verifiable hash" — fall back to mtime+size only.
     private val hashAlgorithm: HashAlgorithm? = null,
     // Remote-style scope roots; empty = walk everything. Only in-scope subtrees and
     // the folders leading to them are walked, so local content outside the scope is
     // neither scanned nor given a pending-upload row.
     private val scope: List<String> = emptyList(),
-    // #660: the ignore rules (null = none), asked beside the exclude patterns: an ignored path is not reported, an
+    // archive#660: the ignore rules (null = none), asked beside the exclude patterns: an ignored path is not reported, an
     // ignored folder is not walked.
     private val ignored: ((path: String, isDir: Boolean) -> Boolean)? = null,
     // Test seam: the walk. A test makes a folder fail to open, which a temp folder on Windows cannot be made to do;
@@ -47,8 +47,8 @@ class LocalScanner(
     var lastScanSkipped: Int = 0
         private set
 
-    // #503/#491: local siblings whose names are equal after NFC but differ in code points
-    // cannot both live under one cloud name. Both are refused (owner decision, #491). Rebuilt
+    // archive#503/#491: local siblings whose names are equal after NFC but differ in code points
+    // cannot both live under one cloud name. Both are refused (owner decision, archive#491). Rebuilt
     // by every scan(): the clash exists for as long as the twins do.
     //  - blockedPaths: absolute on-disk paths of the refused members (files skipped,
     //    folders pruned with their whole subtree).
@@ -60,10 +60,10 @@ class LocalScanner(
 
     private fun underBlockedKey(path: String): Boolean = blockedKeys.any { path == it || path.startsWith("$it/") }
 
-    /** #503: whether [path] (an NFC path) is, or lies below, a name the last [scan] refused as an NFC clash. */
+    /** archive#503: whether [path] (an NFC path) is, or lies below, a name the last [scan] refused as an NFC clash. */
     fun isUnderNfcCollision(path: String): Boolean = underBlockedKey(path)
 
-    /** #503: the NFC paths the last [scan] refused (empty when there is no clash). */
+    /** archive#503: the NFC paths the last [scan] refused (empty when there is no clash). */
     val nfcCollisionKeys: Set<String> get() = blockedKeys.toSet()
 
     private fun refuseNfcTwins(dir: Path) {
@@ -95,7 +95,7 @@ class LocalScanner(
         }
     }
 
-    // Real bytes in the place of a placeholder that the row was not synced with. #1043: a row that waits for newer
+    // Real bytes in the place of a placeholder that the row was not synced with. archive#1043: a row that waits for newer
     // cloud content still describes its file; a file that matches that baseline is unedited, the download replaces it.
     private fun holdsUserBytes(
         file: Path,
@@ -148,7 +148,7 @@ class LocalScanner(
      *
      * With [detectDeletions] (a full sync) every alive row the walk did not see is also checked against
      * the file system and reported as DELETED, which loads all rows once and costs one exclude-pattern
-     * run and a file-system call per row. The daemon's rescan (#504, #552) only uploads and never acts on
+     * run and a file-system call per row. The daemon's rescan (archive#504, archive#552) only uploads and never acts on
      * a deletion, so it passes `false`: rows are then looked up by path for the files the walk visits,
      * and the cost follows the files on disk instead of the rows in state.db.
      */
@@ -167,7 +167,7 @@ class LocalScanner(
         fun underUnreadable(path: String): Boolean = unreadable.any { path == it || path.startsWith("$it/") }
 
         // Load all DB entries once — avoids N+1 queries during file tree walk. Without deletion detection the
-        // walk asks for the few rows it needs instead (#552).
+        // walk asks for the few rows it needs instead (archive#552).
         val dbEntries = if (detectDeletions) db.getAllEntries().associateBy { it.path } else null
 
         fun knownEntry(path: String): SyncEntry? = if (dbEntries != null) dbEntries[path] else db.getEntry(path)
@@ -200,13 +200,13 @@ class LocalScanner(
                     attrs: BasicFileAttributes,
                 ): FileVisitResult {
                     if (file in blockedPaths) return FileVisitResult.CONTINUE
-                    // #171: canonicalize to NFC so an NFD on-disk name matches the
+                    // archive#171: canonicalize to NFC so an NFD on-disk name matches the
                     // NFC remote/state.db key in the reconciler.
                     val relativePath = PathNormalizer.nfc("/" + syncRoot.relativize(file).toString().replace('\\', '/'))
                     if (isExcluded(relativePath)) return FileVisitResult.CONTINUE
                     if (!inScope(relativePath)) return FileVisitResult.CONTINUE
                     // A tree can arrive via WSL or an extended Win32 path. Do not
-                    // persist a pending upload Windows cannot resolve later (#526).
+                    // persist a pending upload Windows cannot resolve later (archive#526).
                     localNameIssue(relativePath)?.let { reason ->
                         skipped++
                         log.warn("Skipping local file {}: {}", relativePath, reason)
@@ -224,7 +224,7 @@ class LocalScanner(
                         // upserts the same path, promoting the row to a fully-synced
                         // state once the byte transfer succeeds.
                         //
-                        // #739: the row is hydrated whatever the bytes are. A path with no
+                        // archive#739: the row is hydrated whatever the bytes are. A path with no
                         // row cannot be an engine placeholder: the engine's placeholders
                         // are 0-byte files (UD-222), and a freed or interrupted one keeps
                         // its row. The UD-209b sparse probe used to run here and recorded a
@@ -252,7 +252,7 @@ class LocalScanner(
                         val currentMtime = attrs.lastModifiedTime().toMillis()
                         val currentSize = attrs.size()
                         if (currentMtime != entry.localMtime || currentSize != entry.localSize) {
-                            // #112: mtime changed but size is the same — potential touch-only.
+                            // archive#112: mtime changed but size is the same — potential touch-only.
                             // Hash-compare to avoid a needless re-upload when content is identical.
                             // Only gate on size-unchanged to skip large-file hashing on real edits.
                             val isTouchOnly =
@@ -260,7 +260,7 @@ class LocalScanner(
                                     currentSize == entry.localSize &&
                                     hashAlgorithm != null &&
                                     !entry.remoteHash.isNullOrEmpty()
-                            // #396: no comparable remote hash (Internxt: hashAlgorithm() is null) —
+                            // archive#396: no comparable remote hash (Internxt: hashAlgorithm() is null) —
                             // fall back to the SHA-256 the engine recorded when it wrote or sent
                             // these bytes. Rows without one behave exactly as before.
                             val isLocalHashTouchOnly =
@@ -269,8 +269,8 @@ class LocalScanner(
                                     currentSize == entry.localSize &&
                                     entry.localHash != null
                             if (isTouchOnly) {
-                                // #1056: a file held open by another process (a sharing violation on Windows)
-                                // can't be hashed: treat it as changed, as the #396 branch below does, rather
+                                // archive#1056: a file held open by another process (a sharing violation on Windows)
+                                // can't be hashed: treat it as changed, as the archive#396 branch below does, rather
                                 // than abort the walk and, with it, every scan that meets the file.
                                 val localHash =
                                     try {
@@ -332,7 +332,7 @@ class LocalScanner(
                 ): FileVisitResult {
                     if (dir == syncRoot) return FileVisitResult.CONTINUE
                     if (dir in blockedPaths) return FileVisitResult.SKIP_SUBTREE
-                    // #171: canonicalize to NFC (see visitFile).
+                    // archive#171: canonicalize to NFC (see visitFile).
                     val relativePath = PathNormalizer.nfc("/" + syncRoot.relativize(dir).toString().replace('\\', '/'))
                     if (isExcluded(relativePath, isDir = true)) return FileVisitResult.SKIP_SUBTREE
                     if (!onScopePath(relativePath)) return FileVisitResult.SKIP_SUBTREE
@@ -380,7 +380,7 @@ class LocalScanner(
                     if (!onScopePath(entry.path)) continue
                     if (underBlockedKey(entry.path)) continue
                     if (underUnreadable(entry.path)) continue
-                    // #526: a name the filesystem cannot resolve (a trailing space, creatable through
+                    // archive#526: a name the filesystem cannot resolve (a trailing space, creatable through
                     // an extended-length path or a Linux tool) threw here and aborted the whole scan.
                     // Skip it with the walk's own warning shape and leave the row exactly as it is.
                     if (localNameIssue(entry.path) != null) {

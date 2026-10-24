@@ -126,7 +126,7 @@ class VaultTest {
         Files.deleteIfExists(path)
     }
 
-    // -- #1053: the write is atomic and owner-only from the first byte -----------------------------------------
+    // -- archive#1053: the write is atomic and owner-only from the first byte -----------------------------------------
 
     private val oldData = mapOf("old" to mapOf("secret_access_key" to "old-secret"))
     private val newData = mapOf("new" to mapOf("secret_access_key" to "new-secret"))

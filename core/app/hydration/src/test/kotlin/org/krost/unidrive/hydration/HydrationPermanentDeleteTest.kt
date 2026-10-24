@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-/** #1178: `rm --permanent` through the hydration verbs. */
+/** archive#1178: `rm --permanent` through the hydration verbs. */
 class HydrationPermanentDeleteTest {
     @Test
     fun `#1178 unlink permanent deletes for good through the provider, the default never does`() = runTest {

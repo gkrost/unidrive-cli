@@ -4,7 +4,7 @@ import java.security.MessageDigest
 
 /**
  * The hash the network recorded for a stored shard (`shards[].hash` of the bridge info), parsed by its shape, and
- * how to check the downloaded ciphertext against it (#940).
+ * how to check the downloaded ciphertext against it (archive#940).
  *
  * Two shapes are known:
  *  - 40 hex characters: RIPEMD-160(SHA-256(ciphertext)). Every official client sends this in `files/finish`

@@ -81,7 +81,7 @@ class S3Provider(
         }
     }
 
-    /** #1240: the keys are the credential, and [authenticate] is already one non-interactive listing: no sign-in can start from it. */
+    /** archive#1240: the keys are the credential, and [authenticate] is already one non-interactive listing: no sign-in can start from it. */
     override suspend fun checkCredentials(): CredentialProof {
         authenticate()
         return CredentialProof()
@@ -306,7 +306,7 @@ class S3Provider(
         }
     }
 
-    // #1178: S3 has no trash; delete already deletes the object (or the tree below a folder key) for good.
+    // archive#1178: S3 has no trash; delete already deletes the object (or the tree below a folder key) for good.
     override suspend fun deletePermanently(remotePath: String) {
         delete(remotePath, null)
     }
@@ -372,7 +372,7 @@ class S3Provider(
             copyObject(obj, target)
         }
         // The source goes the way a folder delete goes: a key the store refuses to delete, or a vendor without
-        // DeleteObjects, must not leave the source standing beside its copy under a success (#1063).
+        // DeleteObjects, must not leave the source standing beside its copy under a success (archive#1063).
         deleteKeys(keys, "$from/")
         return folderItem(pathOf(to))
     }

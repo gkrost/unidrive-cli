@@ -18,9 +18,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #560 U1: characterization tests for what the mirror engine ([SyncEngine]) does for the mount's
+ * archive#560 U1: characterization tests for what the mirror engine ([SyncEngine]) does for the mount's
  * enumeration (`enumerateRemoteIntoState`) and the scope-transition view invalidation. They pin what
- * the code does today, so each extraction PR of #560 proves parity. The mount operations themselves
+ * the code does today, so each extraction PR of archive#560 proves parity. The mount operations themselves
  * (`ensureHydrated`, `uploadFromCache`, `deleteRemote`, `renameRemote`, `createRemoteFolder`,
  * `remoteItemOrNull`) are pinned next to `MountEngine`, in :app:hydration's `MountOperationsParityTest`.
  */

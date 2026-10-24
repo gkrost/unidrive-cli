@@ -34,7 +34,7 @@ class LogCommand : Runnable {
             ProviderRegistry.getMetadata(profile.type)?.displayName
                 ?: profile.type.replaceFirstChar { it.uppercase() }
         // UD-764: prefix each rendered line with the running build's short commit. Restores
-        // the pre-greenfield #122 traceability — when a user pastes `unidrive log` output we
+        // the pre-greenfield archive#122 traceability — when a user pastes `unidrive log` output we
         // can tie the rows to a specific build, narrowing bug-report ambiguity across deploy
         // boundaries. The DB doesn't yet track which build wrote each row (deferred —
         // requires schema migration); for now every line shows the *current* build, which

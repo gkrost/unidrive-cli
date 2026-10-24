@@ -54,7 +54,7 @@ open class AuthService(
     @Volatile
     private var credentials: InternxtCredentials? = null
 
-    // #1066: set while the proactive refresh keeps failing transiently, so the fallback is logged once per outage.
+    // archive#1066: set while the proactive refresh keeps failing transiently, so the fallback is logged once per outage.
     @Volatile private var transientRefreshFailureLogged = false
 
     // UD-338: shared mutex + NonCancellable wrap lifted to :app:core/auth.
@@ -113,7 +113,7 @@ open class AuthService(
     }
 
     /**
-     * Drops the credentials from memory after a sign-out removed the stored ones (#1186): [getValidCredentials] fails
+     * Drops the credentials from memory after a sign-out removed the stored ones (archive#1186): [getValidCredentials] fails
      * as not authenticated from now on, and a refresh still under way stores nothing. The stored credentials are not
      * touched.
      */
@@ -122,7 +122,7 @@ open class AuthService(
         transientRefreshFailureLogged = false
     }
 
-    // Console-only readers. #865: authenticateInteractive refuses to run without an interactive
+    // Console-only readers. archive#865: authenticateInteractive refuses to run without an interactive
     // terminal, so there is deliberately no stdin fallback here — a headless caller must get the
     // typed refusal above, never a blocking read on a stdin nobody will answer.
     private fun readLine(prompt: String): String =
@@ -212,7 +212,7 @@ open class AuthService(
         val loginResult = json.decodeFromString<LoginAccessResponse>(accessText)
 
         val rootFolderId = loginResult.rootFolderId()
-        // Before anything is stored: another user than the one the profile's state belongs to is refused (#1241).
+        // Before anything is stored: another user than the one the profile's state belongs to is refused (archive#1241).
         val unprovenId = requireSameUserOfSignIn(loginResult)
 
         // Step 5: decrypt mnemonic with the password characters.
@@ -306,7 +306,7 @@ open class AuthService(
     }
 
     /**
-     * #865: a real interactive terminal on stdin, not merely a Console handle. JDK 22+ hands out a
+     * archive#865: a real interactive terminal on stdin, not merely a Console handle. JDK 22+ hands out a
      * Console even when the streams are redirected (its isTerminal() then answers false), so the
      * method is consulted reflectively; on the JDK 21 toolchain it does not exist and console
      * presence is the answer (a console exists only when input and output are a terminal).
@@ -321,7 +321,7 @@ open class AuthService(
     /**
      * Interactive email / password / 2FA sign-in, for a human on a terminal (`unidrive auth`).
      *
-     * #865: without an interactive terminal there is nobody to answer the prompts — a daemon or
+     * archive#865: without an interactive terminal there is nobody to answer the prompts — a daemon or
      * mount start here used to camp on `Internxt email: ` forever (hidden window, closed stdin).
      * Such a caller gets the typed [AuthRequiredException] instead, fast and non-interactively;
      * a front-end signs in via `auth login`, which takes the credentials without a console.
@@ -395,7 +395,7 @@ open class AuthService(
      * [RefreshableTokenLatch] (UD-338) — we deliberately do not duplicate any of
      * that machinery here.
      *
-     * #1066: a proactive refresh that fails transiently (408/429/5xx, see [fetchRefreshedJwt]) leaves
+     * archive#1066: a proactive refresh that fails transiently (408/429/5xx, see [fetchRefreshedJwt]) leaves
      * the call on the stored token while that has not expired — the margin exists to rotate early, it
      * says nothing against a token that is still good, and a failing refresh route must not fail the
      * Drive and bridge calls that do not need a new one. The next call tries the refresh again. A
@@ -430,7 +430,7 @@ open class AuthService(
     private fun signedIn(): InternxtCredentials = credentials ?: throw AuthenticationException("Not authenticated")
 
     /**
-     * #334: the pre-expiry margin in effect for the stored JWT. The fixed
+     * archive#334: the pre-expiry margin in effect for the stored JWT. The fixed
      * [JWT_REFRESH_MARGIN_MS] assumes a token lifetime well above 24 h; if the
      * vendor shortens the lifetime below it, every fresh token counts as near
      * expiry and each [getValidCredentials] burns a sequential /users/refresh

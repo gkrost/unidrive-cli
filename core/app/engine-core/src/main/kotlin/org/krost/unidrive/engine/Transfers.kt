@@ -11,9 +11,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * #560 U3: the transfer bookkeeping the mirror pass (`SyncEngine`) and the mount operations
+ * archive#560 U3: the transfer bookkeeping the mirror pass (`SyncEngine`) and the mount operations
  * (`MountEngine`) share: how a download is addressed, which stats an upload records, and when a
- * recorded local hash (#396) still describes the bytes. Moved out of `SyncEngine` unchanged; the
+ * recorded local hash (archive#396) still describes the bytes. Moved out of `SyncEngine` unchanged; the
  * callers pass their logger so the log lines keep their logger name.
  */
 object Transfers {
@@ -53,15 +53,15 @@ object Transfers {
         }
 
     /**
-     * #396: [entry] with the SHA-256 of [local] as its local hash, for a provider without a content
+     * archive#396: [entry] with the SHA-256 of [local] as its local hash, for a provider without a content
      * hash ([algorithm] null). The hash is kept only if the file still has [mtime] and [size], so a
      * write that lands while it is hashed cannot turn the new bytes into the tracked baseline. The
      * callers pass a row that already carries the new mtime/size but may still hold the hash of the
      * previous contents, so a failed hash clears it rather than keeping it.
      *
-     * #439 residual: on NTFS an mtime update can be deferred until the last handle closes, so a
+     * archive#439 residual: on NTFS an mtime update can be deferred until the last handle closes, so a
      * same-size rewrite that overlaps the hash can land hash(new) under the old baseline and later
-     * read as touch-only. The window is sub-second; the same race exists in the #112 remote-hash
+     * read as touch-only. The window is sub-second; the same race exists in the archive#112 remote-hash
      * compare, which relies on the file's stats the same way.
      */
     fun withLocalHash(
@@ -87,7 +87,7 @@ object Transfers {
     }
 
     /**
-     * An upload row records the file's stats as they were BEFORE the transfer (#337/#148), so a
+     * An upload row records the file's stats as they were BEFORE the transfer (archive#337/#148), so a
      * write landing during a long upload keeps a newer mtime than the recorded baseline and the next
      * scan re-uploads it. Hashing the bytes that were sent is therefore only safe while the file still
      * matches those pre-upload stats ([sent]): if the file changed while it was being sent, it gets no

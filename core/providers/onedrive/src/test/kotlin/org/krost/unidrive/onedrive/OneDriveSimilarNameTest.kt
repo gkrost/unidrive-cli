@@ -264,7 +264,7 @@ class OneDriveSimilarNameTest {
             provider.close()
         }
 
-    // ── #1178: delete for good ───────────────────────────────────────────────────────────────────
+    // ── archive#1178: delete for good ───────────────────────────────────────────────────────────────────
 
     @Test
     fun `deletePermanently posts permanentDelete for the exact item and never the plain DELETE`() =

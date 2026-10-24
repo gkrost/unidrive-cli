@@ -48,7 +48,7 @@ class HashVerifierTest {
     }
 
     // Known answers computed outside this code base (Python hashlib, Dropbox's published block definition), so they
-    // do not restate the implementation (#1088, item 9).
+    // do not restate the implementation (archive#1088, item 9).
     @Test
     fun `dropbox content hash known answers`() {
         assertEquals("4f8b42c22dd3729b519ba6f68d2da7cc5b2d606d05daed5ad5128cc03e6c6358", HashVerifier.computeDropboxContentHash(createFile("abc.txt", "abc")))
@@ -76,7 +76,7 @@ class HashVerifierTest {
         )
     }
 
-    // The value a Graph item reports for a file of the single byte 'a' (Microsoft's reference vector, #1055).
+    // The value a Graph item reports for a file of the single byte 'a' (Microsoft's reference vector, archive#1055).
     @Test
     fun `QuickXor of a file is Microsoft's reference value`() {
         val file = createFile("a.txt", "a")

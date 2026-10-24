@@ -11,7 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-// #560 U2: the guards SyncEngine and the mount operations share, pinned on their own.
+// archive#560 U2: the guards SyncEngine and the mount operations share, pinned on their own.
 class RemoteOperationGuardTest {
     private fun guard(
         standingScope: List<String> = emptyList(),
@@ -82,7 +82,7 @@ class RemoteOperationGuardTest {
         assertFalse(RemoteErrors.isAlreadyGone(RuntimeException("Item not found: /a/b")))
     }
 
-    // #660 / #778: the download of a cloud-only rule file, asked by the ignore rules' blocking probe.
+    // archive#660 / archive#778: the download of a cloud-only rule file, asked by the ignore rules' blocking probe.
     private class FakePause : TransferPause {
         @Volatile var paused = false
         val tracked = mutableListOf<String>()

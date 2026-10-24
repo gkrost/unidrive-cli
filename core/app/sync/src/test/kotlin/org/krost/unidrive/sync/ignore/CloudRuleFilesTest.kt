@@ -10,7 +10,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
-/** #660: rule files only the cloud holds are downloaded on purpose, once per cloud copy, capped and fail closed. */
+/** archive#660: rule files only the cloud holds are downloaded on purpose, once per cloud copy, capped and fail closed. */
 class CloudRuleFilesTest {
     private val dir: Path = Files.createTempDirectory("ud-cloud-rules")
     private val cloud = mutableMapOf<String, Pair<CloudRuleFile, String>>()

@@ -17,7 +17,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 
 /**
- * gkrost/unidrive#1219: the proof that a local file is the stored file by the ciphertext hash the network recorded, with injected lookups
+ * archive#1219: the proof that a local file is the stored file by the ciphertext hash the network recorded, with injected lookups
  * (no HTTP, no account). The expected ciphertext and its hashes are made here with `javax.crypto` directly, not with the code under test,
  * so a wrong cipher mode, a wrong IV slice or a wrong hash shape in the production code cannot agree with itself.
  */

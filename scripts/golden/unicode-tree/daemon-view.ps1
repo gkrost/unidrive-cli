@@ -81,7 +81,7 @@ function Get-Tree([string]$prefix) {
     , @($out.Values)
 }
 
-# state.db keys every path in NFC (gkrost/unidrive#171), so the daemon can only ever answer the NFC form of a name. Each manifest
+# state.db keys every path in NFC (archive#171), so the daemon can only ever answer the NFC form of a name. Each manifest
 # entry is looked up by its NFC form; an NFD name that collapses onto another entry's NFC form (hazards/nfc-nfd-twins) can never have
 # a row of its own and is reported as NFCMERGE, not as MISSING.
 $expected = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)

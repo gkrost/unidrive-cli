@@ -336,7 +336,7 @@ class InternxtCursorListingTest {
             val page = provider(drive.engine).delta(null, null, ScanContext(unstarted, emptyList(), { _, _ -> }))
 
             assertEquals(standardPaths, page.items.map { it.path }.toSet())
-            // The offset advances by the rows a page returned, not always by the limit (#312), so a
+            // The offset advances by the rows a page returned, not always by the limit (archive#312), so a
             // stride check would lie; what the marker test is about is where the listing began.
             val offsets = drive.other.map { Regex("offset=(\\d+)").find(it)!!.groupValues[1].toInt() }
             assertTrue(offsets.contains(0), "the offset listing began at 0: $offsets")
@@ -424,7 +424,7 @@ class InternxtCursorListingTest {
             assertTrue(drive.other.count { it.contains("/folders/content/") } >= 4, "both gathers walked the tree: ${drive.other}")
         }
 
-    // #523/#647: the folder "big" holds [count] files, listed by the paged per-folder endpoints; its parent is the drive ROOT.
+    // archive#523/#647: the folder "big" holds [count] files, listed by the paged per-folder endpoints; its parent is the drive ROOT.
     // The items have the shape of the public server's FileDto/FolderDto replies (the cursor endpoints carry no
     // removed/deleted flag on files, and add fields the engine does not read).
     private fun bigFolder(count: Int): Map<String, Pair<List<String>, List<String>>> =
@@ -457,14 +457,14 @@ class InternxtCursorListingTest {
     @Test
     fun `a big folder the combined call cannot serve is listed through the cursor endpoints in pages of 1000`() =
         runTest {
-            // The #523 wall: a 29k-file folder's combined content call is one 30 MB body the gateway cuts at its ~125 s
-            // origin cap. The fallback pages GET /folders/v2/content/{uuid}/files and /folders by cursor; #647: the offset
+            // The archive#523 wall: a 29k-file folder's combined content call is one 30 MB body the gateway cuts at its ~125 s
+            // origin cap. The fallback pages GET /folders/v2/content/{uuid}/files and /folders by cursor; archive#647: the offset
             // endpoints take at most 50 per page and answered the old fallback's limit of 999 with a 400.
             val drive =
                 DriveMock(
                     contentStatus = 503,
                     // The cursor listing fails server-side too, so the gather hands over to the walk
-                    // (the #533 fallback); it is the walk whose per-folder call this test is about.
+                    // (the archive#533 fallback); it is the walk whose per-folder call this test is about.
                     failure = { _, _ -> Failure.Status(503) },
                     pagedContent = bigFolder(1200),
                 )
@@ -729,7 +729,7 @@ class InternxtCursorListingTest {
     @Test
     fun `an outage that outlasts the retry window mid-listing keeps the cursor marker and opens no walk window, and the next gather resumes the cursor`() =
         runTest {
-            // #693: the network is gone for longer than the 180 s an enumeration waits out. The attempt fails; what
+            // archive#693: the network is gone for longer than the 180 s an enumeration waits out. The attempt fails; what
             // it stored stays, the next gather continues the cursors instead of starting the walk from item 0.
             val staging = FakeStaging()
             var down = true
@@ -928,7 +928,7 @@ class InternxtCursorListingTest {
     @Test
     fun `a change that lands while the poll gathers is delivered and the cursor is the newest updatedAt seen`() =
         runTest {
-            // #312: r2 changes while the poll gathers, so the server serves it again, changed, after
+            // archive#312: r2 changes while the poll gathers, so the server serves it again, changed, after
             // the pages that held its old version. The offset listing cannot do this: the change
             // moves r2 inside the updatedAt order, every later row shifts up one, and the row at a
             // page boundary is never returned — its updatedAt is below the promoted cursor, so no
@@ -1018,7 +1018,7 @@ class InternxtCursorListingTest {
     @Test
     fun `a listing that moves while the offset poll gathers does not advance the cursor`() =
         runTest {
-            // #312: the re-fetch of the last page sees a different tail than the gather read — the
+            // archive#312: the re-fetch of the last page sees a different tail than the gather read — the
             // listing moved under the poll. The gathered rows are still delivered, and the poll
             // leaves the cursor where it was, so the next poll re-reads the window instead of
             // stepping over what it may have missed. The page stays complete: an incomplete one

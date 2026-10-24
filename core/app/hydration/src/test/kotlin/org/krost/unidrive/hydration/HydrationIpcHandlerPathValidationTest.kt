@@ -220,7 +220,7 @@ class HydrationIpcHandlerPathValidationTest {
     @Test
     fun `rmdir is strict unless the request opts into the whole tree`() =
         runTest {
-            // #1035: only a literal true opts in; a missing, false or malformed flag stays the strict rmdir.
+            // archive#1035: only a literal true opts in; a missing, false or malformed flag stays the strict rmdir.
             for ((request, expected) in listOf(
                 """{"verb":"hydration.rmdir","path":"/docs"}""" to "recursive=false",
                 """{"verb":"hydration.rmdir","path":"/docs","recursive":false}""" to "recursive=false",

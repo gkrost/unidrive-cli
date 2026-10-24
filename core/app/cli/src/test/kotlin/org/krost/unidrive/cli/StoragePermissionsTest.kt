@@ -109,7 +109,7 @@ class StoragePermissionsTest {
         assertTrue(Files.notExists(root.resolve("no-profile")))
     }
 
-    // #626 item 1: a dry run writes nothing and must not tighten the profile folder either — an
+    // archive#626 item 1: a dry run writes nothing and must not tighten the profile folder either — an
     // elevated dry run once left it unreadable for a later non-elevated invocation.
     @Test
     fun `a dry run leaves the profile permissions alone and the real run tightens them`() {
@@ -147,7 +147,7 @@ class StoragePermissionsTest {
         }
     }
 
-    // #1054 S5: the PKCE verifier of a Dropbox sign-in that has begun is a credential like device-flow.json.
+    // archive#1054 S5: the PKCE verifier of a Dropbox sign-in that has begun is a credential like device-flow.json.
     @Test
     fun `a pending Dropbox sign-in is a credential file and a sign-out removes it`() {
         assertTrue("pending_dropbox_flow.json" in StoragePermissions.CREDENTIAL_FILES, "${StoragePermissions.CREDENTIAL_FILES}")

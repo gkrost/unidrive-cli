@@ -22,7 +22,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The daemon's coroutine-dump facility (gkrost/unidrive#613 ask 1): with the probes installed,
+ * The daemon's coroutine-dump facility (archive#613 ask 1): with the probes installed,
  * a coroutine suspended forever — the shape the hung mount uploads presented as — names its
  * suspension point in the dump, and the trigger file in the profile folder is what requests it.
  *
@@ -75,7 +75,7 @@ class CoroutineDebugTest {
     @Test
     fun `creating the trigger file in the watched folder produces a dump`() = runBlocking {
         // install() and the dump swallow their errors (best effort in the daemon); the hook is how this test sees them
-        // instead of waiting out the budget below with no reason (#713).
+        // instead of waiting out the budget below with no reason (archive#713).
         val failures = CopyOnWriteArrayList<String>()
         CoroutineDebug.onFailure = { what, cause -> failures.add("$what: ${cause::class.simpleName}: ${cause.message}") }
         CoroutineDebug.install()
@@ -152,7 +152,7 @@ object CoroutineDebugDumpMain {
         runBlocking {
             CoroutineDebug.install()
             val hung = launch(Dispatchers.Default) {
-                CompletableDeferred<Unit>().await() // the shape of the #613 hang: a silent, forever wait
+                CompletableDeferred<Unit>().await() // the shape of the archive#613 hang: a silent, forever wait
             }
             delay(500) // let it reach the suspension
             CoroutineDebug.dumpCoroutines(dir)

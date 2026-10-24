@@ -111,7 +111,7 @@ Two may ask the provider for a view's list (ipc-write-protocol.md section 4.2): 
 for a list no longer than one already asked for (`view.page` rounds its size up to a multiple of 50, at most 1,000 references),
 so a read connection cannot make the daemon ask the provider more than a few times a minute. Neither downloads content.
 
-**`hydration.matches_local` is a write-class verb although it changes nothing** (gkrost/unidrive#1219). It reads a local file the caller names and answers whether that file holds the bytes of a cloud item (`same`, `differs`, `unknown`). On a `read` connection that would be an oracle over any file the user can read ("is this file the cloud copy of X?"), so it needs scope `full`, like the mount's own calls. The reply carries a method token, never a hash.
+**`hydration.matches_local` is a write-class verb although it changes nothing** (archive#1219). It reads a local file the caller names and answers whether that file holds the bytes of a cloud item (`same`, `differs`, `unknown`). On a `read` connection that would be an oracle over any file the user can read ("is this file the cloud copy of X?"), so it needs scope `full`, like the mount's own calls. The reply carries a method token, never a hash.
 
 `IpcContractCorpusTest` keeps the table equal to the contract corpus: every corpus verb has a class and
 the table holds no verb the daemon does not register.
@@ -132,9 +132,9 @@ the table holds no verb the daemon does not register.
   `read`; `daemon stop` and `refresh` with `full`.
 
 The Linux co-daemon and the MCP bridge still carry the protocol-1 fallback; they drop it in a later
-release (gkrost/unidrive#612). Every daemon of this engine is protocol-2 only, on every platform.
+release (archive#612). Every daemon of this engine is protocol-2 only, on every platform.
 
-## 5a. Sign-in for front-ends: begin / complete (#866)
+## 5a. Sign-in for front-ends: begin / complete (archive#866)
 
 A front-end signs a profile in across two processes with `auth begin` and `auth complete` (the CLI verbs;
 the MCP `auth_begin` / `auth_complete` tools drive the same factory methods). OneDrive answers a device

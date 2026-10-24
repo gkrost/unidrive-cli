@@ -13,7 +13,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
-// #464: Internxt has no etag or hash. The write token the engine hands back to upload() is "<uuid>|<modificationTime>|<size>" of
+// archive#464: Internxt has no etag or hash. The write token the engine hands back to upload() is "<uuid>|<modificationTime>|<size>" of
 // the listing; upload() compares it with fresh metadata right before the replace. These tests pin the two halves: the token
 // changes when the cloud copy changes, and a stale token stops the replace before anything is sent.
 class InternxtVersionTokenTest {

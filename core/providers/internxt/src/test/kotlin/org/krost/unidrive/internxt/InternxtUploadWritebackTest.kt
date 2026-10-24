@@ -455,7 +455,7 @@ class InternxtUploadWritebackTest {
         }
 
     // ---------------------------------------------------------------------------
-    // Windows only (#802): another process (antivirus, indexer) holds the upload
+    // Windows only (archive#802): another process (antivirus, indexer) holds the upload
     // source open without read sharing. Files.newInputStream throws a sharing
     // violation; the encrypt step must wait it out (withLocalIoRetry) and carry on
     // into the upload instead of failing the whole sync cycle. If the wrapper is

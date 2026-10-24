@@ -21,7 +21,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * #335: multi-shard files used to download only the first shard; the decrypted
+ * archive#335: multi-shard files used to download only the first shard; the decrypted
  * truncation then tripped the length guard as a RETRIABLE error, so the engine
  * burned retries forever instead of quarantining. More than one usable shard
  * must fail as a permanent (quarantining) download failure before any download
@@ -31,7 +31,7 @@ class InternxtMultiShardDownloadTest {
     private val fileUuid = "file-uuid-1"
     private val fileId = "bridge-file-id-1"
     private val bucket = "6928426c1a2316b856c9ab81"
-    // BridgeFileInfo.index is a 64-char hex encryption index (#333 now validates it).
+    // BridgeFileInfo.index is a 64-char hex encryption index (archive#333 now validates it).
     private val index64 = "11".repeat(32)
     private val shardUrl1 = "https://shard-host.invalid/get/shard-0"
     private val shardUrl2 = "https://shard-host.invalid/get/shard-1"
@@ -116,7 +116,7 @@ class InternxtMultiShardDownloadTest {
         bridgeInfoJson = bridgeInfoJsonWith(listOf(shardUrl1, shardUrl2))
         val provider = newProvider()
 
-        // #941: an unsupported object is its own type (it reaches the client as `unsupported_object`, not `not_found`),
+        // archive#941: an unsupported object is its own type (it reaches the client as `unsupported_object`, not `not_found`),
         // still a PermanentDownloadFailureException so the engine quarantines it as before.
         val e =
             assertFailsWith<UnsupportedRemoteObjectDownloadException> {
@@ -138,7 +138,7 @@ class InternxtMultiShardDownloadTest {
         )
     }
 
-    // #333 review: a malformed (non-hex) index must quarantine the row, not retry forever.
+    // archive#333 review: a malformed (non-hex) index must quarantine the row, not retry forever.
     @Test
     fun `a malformed bridge index fails permanently without downloading`() {
         bridgeInfoJson = bridgeInfoJsonWith(listOf(shardUrl1)).replace(index64, "zz".repeat(32))

@@ -1073,7 +1073,7 @@ class TrackingEngineIntegrationTest {
     /**
      * DEFAULT behaviour preserved: when both hashes are null (Internxt first-scan)
      * and NO auto-match is configured, the engine must surface a ReportCollision.
-     * This is the #104 invariant — verifying the default is unbroken by this change.
+     * This is the archive#104 invariant — verifying the default is unbroken by this change.
      */
     @Test
     fun `default_no_auto_match_null_hash_same_size_still_surfaces_collision`() {

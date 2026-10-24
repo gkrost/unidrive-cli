@@ -14,11 +14,11 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 | `/drive/root/delta` with deltaLink persistence | used | dedupe by `id`; ignore `parentReference.path` |
 | `?token=latest` skip initial crawl on reconnect | used | `GraphApiService.getDelta` (`fromLatest`) |
 | 410 Gone `resyncChanges*` restart | used | `OneDriveProvider.getDeltaConverting410` → `DeltaCursorExpiredException` → full re-enumeration |
-| `$select` on delta to slim payload | gap | #127 |
+| `$select` on delta to slim payload | gap | archive#127 |
 | `Prefer: deltashow*` | n/a | SPO/ODB only |
 | Webhook subscription on driveItem | partial | `GraphApiService.createSubscription`; validation endpoint missing |
 | Subscription lifetime auto-renewal | used | `SubscriptionRenewalScheduler` |
-| Lifecycle events handling | gap | #111 |
+| Lifecycle events handling | gap | archive#111 |
 | Periodic delta sweep as safety net | used | `AdaptiveInterval` |
 
 ### Upload
@@ -31,36 +31,36 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 | `deferCommit: true` | n/a | |
 | `If-Match` on createUploadSession | used | `ifMatchETag` on `createUploadSession`; stored sessions are bound to it |
 | `If-Match`/`@odata.etag` on mutating calls | used | `uploadSimple`, `moveItem`, `deleteItem` |
-| `fileSize` precheck → early 507 | gap | #154 |
+| `fileSize` precheck → early 507 | gap | archive#154 |
 
 ### Download
 | Capability | Status | Key refs |
 |---|---|---|
 | `@microsoft.graph.downloadUrl` preauth (~1h) | used | `GraphApiService.downloadFile`; refreshed when the tempauth token expires |
-| `Range` header parallel segments | gap | #125 |
-| `If-None-Match` + cTag conditional GET | gap | #126 |
+| `Range` header parallel segments | gap | archive#125 |
+| `If-None-Match` + cTag conditional GET | gap | archive#126 |
 
 ### Hashes and metadata
 | Capability | Status | Key refs |
 |---|---|---|
 | `file.hashes.quickXorHash`/`sha1Hash`/`sha256Hash` | used | `OneDriveProvider` prefers `quickXorHash`, falls back to `sha256Hash`; `hashAlgorithm()` is QuickXor |
 | `fileSystemInfo` round-trip | used | `GraphApiService.patchFileSystemInfo`, `FileSystemInfo` in `DriveItem.kt` |
-| `malware` facet skip download | gap | #153 |
+| `malware` facet skip download | gap | archive#153 |
 | `quota` facet on `/me/drive` | used | `GraphApiService.getQuota` |
 
 ### Batch / throttle
 | Capability | Status | Key refs |
 |---|---|---|
-| `$batch` max 20, `dependsOn` ordering | gap | #124 |
+| `$batch` max 20, `dependsOn` ordering | gap | archive#124 |
 | Per-inner 429 retry inside batch | gap | |
 | `Retry-After` strict + pause-all-threads on 429 | used | `HttpRetryBudget` (`:app:core`) |
-| Per-tenant concurrency calibration | gap | #130 |
-| `HttpRetryBudget` per-provider override | gap | #131 |
+| Per-tenant concurrency calibration | gap | archive#130 |
+| `HttpRetryBudget` per-provider override | gap | archive#131 |
 
 ### Sharing
 | Capability | Status | Key refs |
 |---|---|---|
-| `createLink` idempotent | partial | `GraphApiService.createSharingLink`; client-side dedupe #129 |
+| `createLink` idempotent | partial | `GraphApiService.createSharingLink`; client-side dedupe archive#129 |
 
 ### Long-running
 | Capability | Status | Key refs |
@@ -93,14 +93,14 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 |---|---|---|
 | `updatedAt` modified-since poll | used | `InternxtApiService.listFiles`/`listFolders` (`updatedAt`) |
 | Sync-token / cursor | used | cursor listing above (`nextCursor`) |
-| WebSocket gateway integration | partial | `NotificationsClient` (socket.io wake signal, opened only by `sync --watch`, off with `INTERNXT_NOTIFICATIONS=off`); stops for the process when the endpoint is the wrong server (TLS identity or non-upgrade answer, #679); as of 2026-10-09 `notifications.internxt.com` presents a certificate for another host, so it never connects; #244 |
+| WebSocket gateway integration | partial | `NotificationsClient` (socket.io wake signal, opened only by `sync --watch`, off with `INTERNXT_NOTIFICATIONS=off`); stops for the process when the endpoint is the wrong server (TLS identity or non-upgrade answer, archive#679); as of 2026-10-09 `notifications.internxt.com` presents a certificate for another host, so it never connects; archive#244 |
 | WebSocket reconnect / replay | partial | reconnect with exponential backoff by socket.io; no replay of missed events |
 
 ### Upload
 | Capability | Status | Key refs |
 |---|---|---|
 | Two-layer: metadata + blob bridge | used | `InternxtApiService.startUpload`/`finishUpload`, `createFile`/`replaceFile` |
-| Multipart at ≥100 MiB threshold | gap | `InternxtConfig.MULTIPART_*` constants unconsumed, #578 |
+| Multipart at ≥100 MiB threshold | gap | `InternxtConfig.MULTIPART_*` constants unconsumed, archive#578 |
 | File size cap | used | `InternxtProvider.maxFileSizeBytes` (`GET /files/limits`) |
 | Resumable upload protocol | API gap | client-side only: `UploadTombstoneStore` |
 | Hash-based dedup | API gap | |
@@ -151,23 +151,23 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 ## Adopt next — ranked
 
 High — correctness or large efficiency win:
-1. Internxt multipart upload (#578)
-2. OneDrive lifecycle webhook events + notification endpoint (#111)
-3. Internxt WebSocket gateway: verify the live endpoint (#244)
+1. Internxt multipart upload (archive#578)
+2. OneDrive lifecycle webhook events + notification endpoint (archive#111)
+3. Internxt WebSocket gateway: verify the live endpoint (archive#244)
 
 Medium — efficiency:
-4. OneDrive `Range` parallel-segment download (#125)
-5. OneDrive `If-None-Match` + cTag conditional GET (#126)
-6. OneDrive `$select` slim delta payload (#127)
-7. OneDrive `$batch` with `dependsOn` + per-inner 429 retry (#124)
+4. OneDrive `Range` parallel-segment download (archive#125)
+5. OneDrive `If-None-Match` + cTag conditional GET (archive#126)
+6. OneDrive `$select` slim delta payload (archive#127)
+7. OneDrive `$batch` with `dependsOn` + per-inner 429 retry (archive#124)
 8. OneDrive `createUploadSession` 416 branch
 9. OneDrive `conflictBehavior` user-selectable
-10. OneDrive `createLink` client-side dedupe (#129)
-11. OneDrive per-tenant concurrency calibration (#130)
-12. OneDrive `HttpRetryBudget` per-provider override (#131)
+10. OneDrive `createLink` client-side dedupe (archive#129)
+11. OneDrive per-tenant concurrency calibration (archive#130)
+12. OneDrive `HttpRetryBudget` per-provider override (archive#131)
 
 Low — guards and UX:
-13. OneDrive `malware` facet skip (#153)
-14. OneDrive `fileSize` precheck → early 507 (#154)
+13. OneDrive `malware` facet skip (archive#153)
+14. OneDrive `fileSize` precheck → early 507 (archive#154)
 15. Internxt `encryptVersion` legacy `02-rsa` support
 16. Document Internxt API limitations

@@ -30,7 +30,7 @@ import kotlin.test.assertTrue
 
 /**
  * `verify --remote-objects` through the real picocli command against a fake provider and auditor: exit
- * codes, the saved report, and the read-only promise (#769).
+ * codes, the saved report, and the read-only promise (archive#769).
  */
 class VerifyRemoteObjectsTest {
     private lateinit var configDir: Path

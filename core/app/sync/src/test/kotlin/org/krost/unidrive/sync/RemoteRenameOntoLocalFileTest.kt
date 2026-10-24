@@ -14,7 +14,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #1046: a remote rename `/a` -> `/b` while an unsynced local `/b` of the same size exists. Both sides are new at
+ * archive#1046: a remote rename `/a` -> `/b` while an unsynced local `/b` of the same size exists. Both sides are new at
  * `/b` and the same size, which the reconciler adopts and rename detection then turns into a move of `/a` onto `/b`.
  * The move used to replace the user's file. (Different sizes are a plain conflict, SyncEngineTest.)
  */

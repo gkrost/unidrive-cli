@@ -52,7 +52,7 @@ class GraphApiService(
     // The seam the daemon attaches its request-attempt recorder to; no sink, no metrics (see attachRequestMetrics).
     private val requestMetrics = RequestMetricsTap()
 
-    // #644: the token path's leaf is the profile name, so the request log lines carry the account.
+    // archive#644: the token path's leaf is the profile name, so the request log lines carry the account.
     private val httpClient = graphHttpClient(requestMetrics, config.userAgent, engine, profile = config.tokenPath.fileName.toString())
 
     fun attachRequestMetrics(sink: RequestMetricsSink?) {
@@ -235,7 +235,7 @@ class GraphApiService(
         // Content-Type: text/html) instead of bytes can't be recovered by
         // re-GETting the same stale URL. Re-resolve the download URL once.
         var htmlReresolved = false
-        // #329: the pre-authenticated @microsoft.graph.downloadUrl carries a tempauth
+        // archive#329: the pre-authenticated @microsoft.graph.downloadUrl carries a tempauth
         // token that expires (~1 h). A 401/403 on that URL says nothing about account
         // auth: re-resolve the item once for a fresh URL before treating it as an
         // authentication failure. Bounded to a single re-resolve (no loop).
@@ -277,7 +277,7 @@ class GraphApiService(
                         val written =
                             withContext(Dispatchers.IO) {
                                 Files.createDirectories(destPath.parent)
-                                // #529: a name near the 255-byte component limit cannot take the suffix — stage short.
+                                // archive#529: a name near the 255-byte component limit cannot take the suffix — stage short.
                                 val tmpPath = destPath.parent.resolve(
                                     org.krost.unidrive.io.stagingSiblingName(destPath.fileName.toString(), ".unidrive-tmp"),
                                 )
@@ -294,7 +294,7 @@ class GraphApiService(
                                             }
                                             n
                                         }
-                                    // #354: the truncation guard runs on the TEMP file, before the
+                                    // archive#354: the truncation guard runs on the TEMP file, before the
                                     // atomic move. A connection that closes mid-body without throwing
                                     // used to have its short temp promoted over the destination
                                     // first and only detected afterwards — the intact previous
@@ -326,15 +326,15 @@ class GraphApiService(
                         continue
                     }
                     is DownloadOutcome.ExpiredUrl -> {
-                        // #329: the tempauth token of the pre-authenticated downloadUrl
+                        // archive#329: the tempauth token of the pre-authenticated downloadUrl
                         // expired — not an account-auth problem. Re-resolve the item once
                         // for a fresh URL (mirrors the HTML re-resolve arm below); only a
                         // 401/403 on the fresh URL is surfaced as an authentication failure.
                         if (authUrlReresolved) {
                             // Only a 401 is an authentication failure. A 403 that persists on a
-                            // fresh URL is an access refusal (before #329 it surfaced as the
+                            // fresh URL is an access refusal (before archive#329 it surfaced as the
                             // generic download failure): keep that, so it cannot latch the
-                            // stale-auth UX (#157).
+                            // stale-auth UX (archive#157).
                             if (outcome.statusCode == HttpStatusCode.Forbidden.value) {
                                 throw GraphApiException(
                                     "Download failed: ${HttpStatusCode.Forbidden} - ${outcome.body}",
@@ -478,7 +478,7 @@ class GraphApiService(
                     socketTimeoutMillis = uploadTimeoutMs
                 }
                 contentType(ContentType.Application.OctetStream)
-                // #291: If-Match makes the content PUT conditional on the caller's view of the item
+                // archive#291: If-Match makes the content PUT conditional on the caller's view of the item
                 // being current. A concurrent edit between the engine's plan and this PUT flips the
                 // server-side eTag and Graph returns 412 Precondition Failed instead of silently
                 // overwriting the other editor's change. Caller passes null to opt out (a NEW file,
@@ -532,7 +532,7 @@ class GraphApiService(
     suspend fun deleteItem(itemId: String, ifMatchETag: String? = null) {
         val response =
             sendThrottled(itemUrl(itemId), HttpMethod.Delete) {
-                // #291: If-Match guards the delete against a concurrent edit between plan and apply.
+                // archive#291: If-Match guards the delete against a concurrent edit between plan and apply.
                 // A non-null eTag makes Graph return 412 Precondition Failed if the item moved on,
                 // rather than destroying a version the engine never saw. Null = legacy unconditional.
                 if (ifMatchETag != null) header(HttpHeaders.IfMatch, ifMatchETag)
@@ -547,7 +547,7 @@ class GraphApiService(
     }
 
     /**
-     * #1178: permanently delete the item, bypassing the recycle bin (`POST .../items/{id}/permanentDelete`).
+     * archive#1178: permanently delete the item, bypassing the recycle bin (`POST .../items/{id}/permanentDelete`).
      * Only `rm --permanent` reaches this. 404 is already-gone (idempotent), like [deleteItem]; every other
      * non-success is an error (a SharePoint library can answer 501 for what its settings do not allow).
      */
@@ -855,7 +855,7 @@ class GraphApiService(
     // stored expiry is an upper-bound hint, not authoritative. Only an answer that says the session is gone or unusable
     // discards it (null: a fresh one is created). A probe that breaks off or meets a 5xx/408/429 is retried on the chunk
     // back-off; when that is spent the failure is thrown and the session stays stored, so a dropping uplink does not
-    // lose the progress once per attempt (#1175).
+    // lose the progress once per attempt (archive#1175).
     private suspend fun resumeStoredSession(
         remotePath: String,
         stored: UploadSessionStore.StoredSession,
@@ -1024,7 +1024,7 @@ class GraphApiService(
      * of the range), or a PUT that broke off with an IOException (a dropped connection, a timeout, the watchdog's cut of
      * a server that never answers). Before a retry (but a 429's) the session is queried for the offset the server
      * holds, so bytes it accepted are not sent again. When the retries are spent the last failure is thrown; the stored
-     * session stays for the next attempt (#1175: one dropped connection used to cost the whole attempt).
+     * session stays for the next attempt (archive#1175: one dropped connection used to cost the whole attempt).
      */
     private suspend fun uploadChunkWithRetry(
         uploadUrl: String,
@@ -1083,7 +1083,7 @@ class GraphApiService(
         throw GraphApiException("Upload chunk failed at offset $currentOffset")
     }
 
-    // One chunk PUT under the write-progress watchdog: a server that takes the body and never answers (#1175: one PUT
+    // One chunk PUT under the write-progress watchdog: a server that takes the body and never answers (archive#1175: one PUT
     // hung for more than 28 minutes with no error) is cut after the response wait, a link that stops moving after the
     // idle window. The engine's own timeouts become the outer net behind both.
     private suspend fun putChunk(
@@ -1201,7 +1201,7 @@ class GraphApiService(
         )
 
     /**
-     * #293: the one path every Graph request that does not stream goes through, reads and writes alike.
+     * archive#293: the one path every Graph request that does not stream goes through, reads and writes alike.
      *
      * Before each attempt it takes a slot from [throttleBudget] (the shared circuit breaker and token
      * bucket), so a throttle storm brakes writes as well as reads. A 401 is retried once with a forced
@@ -1339,7 +1339,7 @@ class GraphApiService(
 
         data object RetryAuth : DownloadOutcome()
 
-        // #329: the pre-authenticated downloadUrl's tempauth token expired (401/403 on
+        // archive#329: the pre-authenticated downloadUrl's tempauth token expired (401/403 on
         // an authNeeded == false request). Carries the status for the failure surface.
         data class ExpiredUrl(
             val statusCode: Int,
@@ -1359,7 +1359,7 @@ class GraphApiService(
         private const val DEFAULT_BACKOFF_START_MS = 2_000L
         private const val MAX_FLAKE_ATTEMPTS = 3
 
-        // The waits before the retries of one chunk (#1175: a dropped connection is retried as a chunk, not as an attempt).
+        // The waits before the retries of one chunk (archive#1175: a dropped connection is retried as a chunk, not as an attempt).
         private val CHUNK_RETRY_DELAYS_MS = listOf(2_000L, 4_000L, 8_000L)
 
         // The floor rate of the outer net behind the chunk watchdog: far below any usable link, as for the Internxt shards.
@@ -1596,7 +1596,7 @@ private class TransientProbe(
 ) : SessionProbeOutcome
 
 /**
- * #1175: whether a stored session of the same local revision may be resumed by an upload that asks for
+ * archive#1175: whether a stored session of the same local revision may be resumed by an upload that asks for
  * [conflictBehavior] under [ifMatchETag]. One file revision keeps one session (and the conflict behaviour it was created
  * with) through every failed attempt and replay, as long as resuming cannot overwrite more than the asking upload
  * allows:

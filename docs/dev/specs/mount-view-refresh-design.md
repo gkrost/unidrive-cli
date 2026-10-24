@@ -1,6 +1,6 @@
 # Mount-view refresh — design
 
-**Status:** design. Supersedes the narrow BACKLOG row "mount-safe refresh: `refresh.run` reuses the full sync_root deletion reconcile" (PR #84) — that row is the symptom; this is the architectural cut.
+**Status:** design. Supersedes the narrow BACKLOG row "mount-safe refresh: `refresh.run` reuses the full sync_root deletion reconcile" (PR archive#84) — that row is the symptom; this is the architectural cut.
 
 **Evidence base:** `docs/dev/research/sync-mount-architecture-knot.md` (code map, constraints A–H, `file:line` index) and `docs/dev/research/live-sync-prior-art.md` (how rclone / OneDrive / Dropbox / Nextcloud / DriveFS do it).
 
@@ -63,16 +63,16 @@ The second enumeration has to be a **full listing**. A pass that defers on an in
 
 New verb **`sync.enumerate`** (JSON-line, daemon-internal), parallel to `refresh.run`:
 - Request: `{"verb":"sync.enumerate","reset":false}`
-- Terminal event: `{"event":"enumerate.done","job_id":"…","ok":true,"upserted":N,"reaped":M,"complete":true}` or `{"ok":false,"error":"provider_error","message":"…"}`; with `"reset":true`, when another enumeration held the single-flight guard, `{"ok":false,"error":"busy","message":"…"}` (the cursor was not cleared; #1037). `reset` counts only as a top-level boolean of the request.
+- Terminal event: `{"event":"enumerate.done","job_id":"…","ok":true,"upserted":N,"reaped":M,"complete":true}` or `{"ok":false,"error":"provider_error","message":"…"}`; with `"reset":true`, when another enumeration held the single-flight guard, `{"ok":false,"error":"busy","message":"…"}` (the cursor was not cleared; archive#1037). `reset` counts only as a top-level boolean of the request.
 - Guarded by the same in-flight `AtomicReference` pattern as `RefreshRpcHandler` (one enumeration per profile at a time; concurrent request → `busy`).
 
 `refresh.run` stays for the legacy real-`sync_root` use. `RefreshRpcHandler` routes: **mount client connected → `sync.enumerate`; else → legacy `syncOnce`.** (Keeps `unidrive refresh` working for both; the operator need not learn a new verb.)
 
 ## 5. Auto-poll (`daemon_poll_seconds`, `--poll-interval`)
 
-`unidrive daemon run` polls by default (#463): the profile key `daemon_poll_seconds` (default 60 s) sets the interval, `--poll-interval <duration>` overrides it, `0` turns it off. The first poll runs at start (catch-up after a stop or an outage); a poll is skipped while an enumerate holds the guard or a `refresh.run` is in flight; a failure backs off (×4, capped at 10 min) and a successful hydration or upload ends the back-off. `daemon.status` reports the interval as `poll_interval_ms`. (Originally: `--poll-interval` with default `0` = off.) When > 0, the daemon fires `sync.enumerate` on a timer **with ±10% jitter**, serialized by the in-flight guard, and **honours provider `Retry-After`** (on 429 from a provider, pause that profile's poll and back off). On each enumeration that changes `state.db`, the daemon **invalidates the FUSE co-daemon's dir/attr cache** for affected paths (see §6) so the next `ls` re-reads the DB.
+`unidrive daemon run` polls by default (archive#463): the profile key `daemon_poll_seconds` (default 60 s) sets the interval, `--poll-interval <duration>` overrides it, `0` turns it off. The first poll runs at start (catch-up after a stop or an outage); a poll is skipped while an enumerate holds the guard or a `refresh.run` is in flight; a failure backs off (×4, capped at 10 min) and a successful hydration or upload ends the back-off. `daemon.status` reports the interval as `poll_interval_ms`. (Originally: `--poll-interval` with default `0` = off.) When > 0, the daemon fires `sync.enumerate` on a timer **with ±10% jitter**, serialized by the in-flight guard, and **honours provider `Retry-After`** (on 429 from a provider, pause that profile's poll and back off). On each enumeration that changes `state.db`, the daemon **invalidates the FUSE co-daemon's dir/attr cache** for affected paths (see §6) so the next `ls` re-reads the DB.
 
-**Spec amendment (done, #463):** `unidrive-daemon-design.md` G3 describes the default poll. The verb (`sync.enumerate`) itself is reactive; the poll is an in-process timer over the same path.
+**Spec amendment (done, archive#463):** `unidrive-daemon-design.md` G3 describes the default poll. The verb (`sync.enumerate`) itself is reactive; the poll is an in-process timer over the same path.
 
 Defaults rationale (prior-art doc): 60s balances freshness vs API cost on a 195k-file account (a no-change incremental delta is one cheap call); jitter avoids thundering-herd across profiles; Internxt has no push so polling is the only signal (and its deletion-visibility lag is inherent — documented, not fixable client-side).
 
@@ -89,27 +89,27 @@ After `enumerateRemoteIntoStateLocked` mutates `state.db` (upserts **and/or** re
 | Condition | Emitted line |
 |---|---|
 | ≤ 256 changed paths | `{"event":"view.invalidated","paths":["/a","/b",…]}` |
-| … with renames (#595) | `…,"moved":[{"from":"/a","to":"/b"}]` — additive, omitted when there are none |
+| … with renames (archive#595) | `…,"moved":[{"from":"/a","to":"/b"}]` — additive, omitted when there are none |
 | > 256 changed paths | `{"event":"view.invalidated","full":true}` |
 
 The cap (256) is `HydrationEvent.VIEW_INVALIDATED_PATH_CAP`. A `full:true` event means the co-daemon should invalidate its entire cache, not just the listed paths. A rename's old and new path always both appear in `paths`; `moved` is a hint a co-daemon may use to move its placeholder (keeping hydration state and pins) instead of deleting and recreating it — ignoring it and reconciling from `paths` is always correct.
 
-**When it fires:** after a `state.db`-mutating enumeration, once per pass, only when `upserted > 0 || reaped > 0` — and `upserted` counts only rows whose view-relevant content actually changed (new row, or a different remote id, hash, size or modified time, #595). A quiescent incremental delta that re-delivers unchanged items (Internxt's cursor rewinds 120 s on purpose) does not fire the sink.
+**When it fires:** after a `state.db`-mutating enumeration, once per pass, only when `upserted > 0 || reaped > 0` — and `upserted` counts only rows whose view-relevant content actually changed (new row, or a different remote id, hash, size or modified time, archive#595). A quiescent incremental delta that re-delivers unchanged items (Internxt's cursor rewinds 120 s on purpose) does not fire the sink.
 
 **Skipped/failed enumeration:** the sink is never called when `enumerateRemoteIntoState` returns `skipped=true` (single-flight no-op) or `ok=false` (provider error) — state.db was not mutated in those cases.
 
 **Dependency direction:** `app:sync` does not import `app:hydration`. The `viewInvalidationSink` lambda is the seam. `DaemonRuntime` wires the lambda after constructing both `SyncEngine` and `HydrationIpcHandler` via a captured `var` slot; the lambda is only invoked after `enumerateRemoteIntoState` returns, by which time the ipc handler is fully initialised.
 
-### 6.2 Rust co-daemon half — REMAINING (issues #30, #31)
+### 6.2 Rust co-daemon half — REMAINING (issues archive#30, archive#31)
 
 Two remaining cross-repo tasks in `unidrive-mount-linux`:
 
-- **Subscribe on mount** (#30): the co-daemon must issue `hydration.subscribe` on mount so the daemon's subscriber set is non-empty before the first user `ls`. Until then the `view.invalidated` event is produced on the JVM side but no subscriber receives it.
-- **Consume `view.invalidated` + call `notify_inval_entry`** (#31): the co-daemon's subscribe reader must handle `event == "view.invalidated"`, parse `paths` or `full`, and call `fuse_lowlevel::notify_inval_entry` / `notify_inval_inode` for each affected path (requires `fuse3 ≥ 0.10`). With `full:true`, invalidate all cached `CachedAttr` entries.
+- **Subscribe on mount** (archive#30): the co-daemon must issue `hydration.subscribe` on mount so the daemon's subscriber set is non-empty before the first user `ls`. Until then the `view.invalidated` event is produced on the JVM side but no subscriber receives it.
+- **Consume `view.invalidated` + call `notify_inval_entry`** (archive#31): the co-daemon's subscribe reader must handle `event == "view.invalidated"`, parse `paths` or `full`, and call `fuse_lowlevel::notify_inval_entry` / `notify_inval_inode` for each affected path (requires `fuse3 ≥ 0.10`). With `full:true`, invalidate all cached `CachedAttr` entries.
 
-Option **(b)** — short attr/entry TTL — remains a valid cheaper interim until #30/#31 land.
+Option **(b)** — short attr/entry TTL — remains a valid cheaper interim until archive#30/#31 land.
 
-**Eviction/read race [review gap 7]:** enumerate evicts a cache file (step 5) while the co-daemon may hold it open. Linux fd semantics keep existing opens valid; a *new* `open()` after eviction gets ENOENT — but the row was also `markDeleted` (the path is gone on the remote), so `open_read` resolving a deleted row should fail cleanly (ENOENT to the kernel), not hang. For a row that is merely *re-hydratable* (not deleted), `open_read`'s existing cache-miss path re-downloads. The #31 task must verify the co-daemon's ENOENT-on-open path for a reaped path.
+**Eviction/read race [review gap 7]:** enumerate evicts a cache file (step 5) while the co-daemon may hold it open. Linux fd semantics keep existing opens valid; a *new* `open()` after eviction gets ENOENT — but the row was also `markDeleted` (the path is gone on the remote), so `open_read` resolving a deleted row should fail cleanly (ENOENT to the kernel), not hang. For a row that is merely *re-hydratable* (not deleted), `open_read`'s existing cache-miss path re-downloads. The archive#31 task must verify the co-daemon's ENOENT-on-open path for a reaped path.
 
 ## 7. Constraints any implementation must satisfy (from the knot doc §6–7)
 

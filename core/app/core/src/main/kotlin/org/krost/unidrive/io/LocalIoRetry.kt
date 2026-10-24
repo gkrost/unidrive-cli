@@ -8,7 +8,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * Retries a local file operation while another process holds the file open (#802): antivirus, the search
+ * Retries a local file operation while another process holds the file open (archive#802): antivirus, the search
  * indexer or a backup tool locks a file for a second and the operation used to fail a whole poll cycle.
  * Only a sharing violation or an access denial on a file that still exists is retried — three attempts,
  * 100/300/900 ms; anything else (and a file that is gone: "locked" is not "gone") is rethrown at once.

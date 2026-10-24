@@ -26,7 +26,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * `scope show | set | clear` (#395): the command edits `sync_path`, applies the scope transition to state.db and
+ * `scope show | set | clear` (archive#395): the command edits `sync_path`, applies the scope transition to state.db and
  * replaces the guard's persisted scope with the current one. Every test starts from a profile that has really run
  * scoped to `/_INBOX` (the mirror engine on the `localfs` provider, in-process), so the state the command meets is the
  * one a sync leaves behind. The daemon is a fake: a process lock held by the test.

@@ -111,7 +111,7 @@ class HydrationSubscribeTest {
         handler.onSubscriberDisconnect("conn2")
     }
 
-    // #1036: the cancelled writer of the first subscription ends after the second one is registered, and its cleanup
+    // archive#1036: the cancelled writer of the first subscription ends after the second one is registered, and its cleanup
     // removed the registry entry by connection id: the new subscriber's.
     @Test
     fun `a second subscribe on the same connection keeps receiving events`() = runTest {

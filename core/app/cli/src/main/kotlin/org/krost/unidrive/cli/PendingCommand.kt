@@ -22,7 +22,7 @@ import java.time.Instant
 import kotlin.io.path.fileSize
 
 /**
- * Inspect and safely drop stranded pending upload rows (#753): rows the daemon counts as pending whose
+ * Inspect and safely drop stranded pending upload rows (archive#753): rows the daemon counts as pending whose
  * cache content is empty or missing, so folder listings hide their paths behind "still uploading" for
  * ever. `list` shows the rows with their cache state; `drop` removes them — never a row with a real
  * remote id (the database guard only deletes `local:` rows), never deleting non-empty cache data (a

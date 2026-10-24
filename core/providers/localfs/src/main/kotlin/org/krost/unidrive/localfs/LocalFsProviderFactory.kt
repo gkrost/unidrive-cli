@@ -38,7 +38,7 @@ class LocalFsProviderFactory : ProviderFactory {
             signupUrl = null,
             tier = "Local",
             maxConcurrentTransfers = 8,
-            // #655: quota() probes the machine's FileStore — machine storage, not an
+            // archive#655: quota() probes the machine's FileStore — machine storage, not an
             // account plan — so daemon.status carries no quota snapshot for localfs.
             hasQuota = false,
         )
@@ -72,7 +72,7 @@ class LocalFsProviderFactory : ProviderFactory {
         return LocalFsProvider(root, rootSeen)
     }
 
-    // #917: `profile add` refuses an unusable root with the same tokens, without creating the folder.
+    // archive#917: `profile add` refuses an unusable root with the same tokens, without creating the folder.
     override fun preflightAdd(properties: Map<String, String?>): AddRefusal? {
         val allow = properties["allow_drive_root"]
         if (allow != null && allow != "true" && allow != "false") {
@@ -92,7 +92,7 @@ class LocalFsProviderFactory : ProviderFactory {
         allowDriveRoot: Boolean,
         create: Boolean,
     ): AddRefusal? {
-        // #910: a filesystem/drive root (X:\, /) holds the system folders and, for a two-way
+        // archive#910: a filesystem/drive root (X:\, /) holds the system folders and, for a two-way
         // mirror, everything else on the volume — refuse it unless the profile says otherwise.
         if (root.parent == null && !allowDriveRoot) {
             return AddRefusal(

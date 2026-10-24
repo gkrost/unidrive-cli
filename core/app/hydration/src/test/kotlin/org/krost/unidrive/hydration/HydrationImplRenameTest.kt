@@ -164,7 +164,7 @@ class HydrationImplRenameTest {
         assertTrue(!newEntry.isFolder, "renamed file row must keep isFolder=false")
     }
 
-    // #1086: on a case-insensitive file system (NTFS) the JDK's move treats a rename that only changes the case as
+    // archive#1086: on a case-insensitive file system (NTFS) the JDK's move treats a rename that only changes the case as
     // already done, and the cache copy kept its old name while the row took the new one.
     @Test
     fun `a rename that only changes the case moves the cache copy to the new name`() = runTest {

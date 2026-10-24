@@ -7,7 +7,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Known-answer tests for [QuickXorHash] (#1055). The expected values are not produced by this class: the small ones
+ * Known-answer tests for [QuickXorHash] (archive#1055). The expected values are not produced by this class: the small ones
  * are the reference outputs of Microsoft's published algorithm (the C# sample with three 64-bit cells), the larger
  * ones were computed with a Python transcription of that sample and cross-checked with a second Python model that
  * XORs each byte into its lane `k mod 160` at bit `11 * k mod 160`.

@@ -63,7 +63,7 @@ class DaemonRunCommand : Runnable {
     )
     var pollInterval: String? = null
 
-    // #578: the part parallelism of multipart uploads, overriding the profile's
+    // archive#578: the part parallelism of multipart uploads, overriding the profile's
     // upload_concurrency key the same way --poll-interval overrides daemon_poll_seconds.
     @Option(
         names = ["--upload-concurrency"],
@@ -83,10 +83,10 @@ class DaemonRunCommand : Runnable {
         val parent = daemonCmd.parent
         applyPositionalProfile(parent, profilePositional)
         val profile = parent.resolveCurrentProfile()
-        // #603 (U4): the hosting contract. The daemon serves both modes, but a profile without a mode is
+        // archive#603 (U4): the hosting contract. The daemon serves both modes, but a profile without a mode is
         // refused before any provider write, token rotation or mutable startup recovery.
         val mode = parent.requireAnyProfileMode(profile, "daemon run")
-        // #865: a daemon start never runs an interactive sign-in. When the offline credential
+        // archive#865: a daemon start never runs an interactive sign-in. When the offline credential
         // check says the profile cannot authenticate without one, refuse here — typed reason on
         // stderr (the start log a front-end reads), non-zero exit — instead of letting the
         // provider camp on its prompt. useVault = true because the start's own provider creation
@@ -109,7 +109,7 @@ class DaemonRunCommand : Runnable {
         )
         val pollIntervalMs = EnumeratePoller.effectiveIntervalMs(pollInterval, config.daemonPollSeconds(profile.name))
 
-        // #578: refuse an out-of-range override here, before a daemon starts with it.
+        // archive#578: refuse an out-of-range override here, before a daemon starts with it.
         uploadConcurrency?.let { n ->
             if (n !in 1..org.krost.unidrive.internxt.InternxtConfig.MAX_UPLOAD_CONCURRENCY) {
                 throw picocli.CommandLine.ParameterException(
@@ -132,32 +132,32 @@ class DaemonRunCommand : Runnable {
             trashFolderName = config.trashFolderName(profile.name),
             views = ConfiguredViews.of(config, profile.name),
             pollIntervalMs = pollIntervalMs,
-            // #891: the health line, one INFO line per minute in unidrive.log.
+            // archive#891: the health line, one INFO line per minute in unidrive.log.
             healthIntervalMs = 60_000,
             hydrationCacheMaxBytes = config.hydrationCacheMaxBytes(profile.name),
             profileMode = mode,
-            // #655: the quota snapshot's TTL (profile config quota_refresh_minutes, default 15
+            // archive#655: the quota snapshot's TTL (profile config quota_refresh_minutes, default 15
             // min, 0 = off) and whether the provider reports an ACCOUNT quota at all (localfs
             // probes machine storage — daemon.status carries no quota field for it).
             quotaRefreshMs = config.quotaRefreshMs(),
             providerHasQuota = org.krost.unidrive.ProviderRegistry.getMetadata(profile.type)?.hasQuota ?: true,
-            // #586: credential_health in daemon.status. The offline check reads token files only; the vault is left
+            // archive#586: credential_health in daemon.status. The offline check reads token files only; the vault is left
             // out (it may prompt for a passphrase, and a daemon has no one to answer).
             credentialHealthCheck = { parent.checkCredentialHealth(profile, lockFile.parent, useVault = false) },
             afterProfileLockAcquired = {
                 SyncEngine.migrateLegacyHydrationCacheRoot(SyncEngine.defaultHydrationCacheRoot(), profile.name)
             },
-            // #578: the --upload-concurrency flag's override of the profile's upload_concurrency key;
+            // archive#578: the --upload-concurrency flag's override of the profile's upload_concurrency key;
             // null leaves the key in force. Applied to the provider right after construction.
             uploadConcurrencyOverride = uploadConcurrency,
         )
-        // #813: the profile the sign-in verbs sign in (its non-secret config, as `auth begin/complete/login` resolve it).
+        // archive#813: the profile the sign-in verbs sign in (its non-secret config, as `auth begin/complete/login` resolve it).
         // A config that cannot be read for it leaves them answering sign_in_unavailable; the daemon runs either way.
         runtime.signInTarget =
             runCatching { resolveProfileTarget(parent, profile.name) }
                 .getOrNull()
                 ?.let { ProfileTarget(it.name, it.type, parent.providerConfigDir(), it.properties) }
-        // The startup banner reports the mode and the capabilities (#603 U4), so an operator — and a
+        // The startup banner reports the mode and the capabilities (archive#603 U4), so an operator — and a
         // client reading the log — can see what this daemon serves without asking it over IPC.
         println(
             "unidrive daemon ${BuildInfo.versionString()} — profile '${profile.name}' " +
@@ -298,7 +298,7 @@ class DaemonStopCommand : Runnable {
         const val FORCED_STOP_DEADLINE_MS: Long = 5_000  // wait after destroy() before giving up
     }
 
-    // #419: a daemon that was hard-killed never runs its shutdown code (`Process.destroy()` is
+    // archive#419: a daemon that was hard-killed never runs its shutdown code (`Process.destroy()` is
     // TerminateProcess on Windows, which skips JVM shutdown hooks), so its socket file and
     // .meta sibling outlive it. Remove them once the process is gone; a socket that still
     // answers a connect belongs to a live daemon and is left alone. Best-effort.
@@ -603,7 +603,7 @@ internal fun applyPositionalProfile(parent: Main, positional: String?) {
 }
 
 /**
- * #865: the one-line start refusal when the profile's offline credential health says the daemon
+ * archive#865: the one-line start refusal when the profile's offline credential health says the daemon
  * cannot authenticate without an interactive sign-in; null = the start may proceed. "Expired" is
  * decided by the same remainingMs-exact mapping daemon.status's credential_health uses
  * ([CredentialHealthMonitor.toReading]), so a start and a running daemon mean the same thing by

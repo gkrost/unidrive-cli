@@ -18,8 +18,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 
 /**
- * The watermark rule (#337, #148) for the mount's write-back (moved here from
- * `SyncEngineWatermarkStatTest` with the operation, #560 U3): an upload from the cache records the
+ * The watermark rule (archive#337, archive#148) for the mount's write-back (moved here from
+ * `SyncEngineWatermarkStatTest` with the operation, archive#560 U3): an upload from the cache records the
  * cache copy's stats as they were BEFORE the transfer started, so a write that lands while the
  * upload is in flight is never absorbed into the recorded baseline.
  */
@@ -66,7 +66,7 @@ class MountEngineWatermarkStatTest {
         runTest {
             provider.deltaItems = emptyList()
             engine.syncOnce()
-            // #319: the write-back requires the row the FUSE create flow wrote.
+            // archive#319: the write-back requires the row the FUSE create flow wrote.
             seedLocalOnlyRow("/local.txt")
             val cacheCopy = Files.createTempDirectory("ud-337-wb").resolve("local.txt")
             Files.writeString(cacheCopy, "first version")

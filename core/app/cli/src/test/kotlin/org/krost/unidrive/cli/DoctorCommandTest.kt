@@ -129,7 +129,7 @@ class DoctorCommandTest {
 
     @Test
     fun `a fresh state without any cached quota is ok, not a warning`() {
-        // #532: the missing-quota branch used to return WARN — the single warning that
+        // archive#532: the missing-quota branch used to return WARN — the single warning that
         // made `doctor` exit non-zero on a profile that had never run `quota`. Expected
         // state, not a finding.
         seedDb { }
@@ -477,7 +477,7 @@ class DoctorCommandTest {
         assertEquals(DoctorCommand.Severity.OK, check.severity)
     }
 
-    // ── Hydration cache size (#450) ───────────────────────────────────────
+    // ── Hydration cache size (archive#450) ───────────────────────────────────────
 
     @Test
     fun `hydration-cache check reports size against the budget and warns over it`() {
@@ -557,7 +557,7 @@ class DoctorCommandTest {
         )
     }
 
-    // #1083: a mount profile keeps the bytes of a hydrated row in its hydration cache; its sync root holds nothing.
+    // archive#1083: a mount profile keeps the bytes of a hydrated row in its hydration cache; its sync root holds nothing.
 
     private fun seedHydratedRows(
         count: Int,
@@ -602,7 +602,7 @@ class DoctorCommandTest {
         assertEquals(DoctorCommand.Severity.WARN, result(mirror, "hydration-drift").severity)
     }
 
-    // #1190: a mount profile has no sync root, so local-orphans must not warn about its absence.
+    // archive#1190: a mount profile has no sync root, so local-orphans must not warn about its absence.
     @Test
     fun `local-orphans is skipped on a mount profile and still warns on a mirror without a sync root`() {
         seedDb { db ->
@@ -642,7 +642,7 @@ class DoctorCommandTest {
         assertTrue("hydration cache" in drift.summary, drift.summary)
     }
 
-    // PR #47 Codex P2 -- local-orphans must respect exclude_patterns
+    // PR archive#47 Codex P2 -- local-orphans must respect exclude_patterns
 
     @Test
     fun `PR47-Codex local-orphans skips files matching exclude_patterns`() {

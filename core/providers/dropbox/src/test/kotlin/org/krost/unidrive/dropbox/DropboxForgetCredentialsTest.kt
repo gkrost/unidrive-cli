@@ -9,7 +9,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * `forgetCredentials()` (#1186): after a sign-out through the running daemon, the daemon's own instance drops the
+ * `forgetCredentials()` (archive#1186): after a sign-out through the running daemon, the daemon's own instance drops the
  * grant it holds in memory, without the browser fallback of `authenticate()` and without touching the token file.
  */
 class DropboxForgetCredentialsTest {

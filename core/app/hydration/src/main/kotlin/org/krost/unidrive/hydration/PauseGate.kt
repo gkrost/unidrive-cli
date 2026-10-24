@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * #778: the daemon's pause. While it is set, no upload starts, no cloud download starts and the poll's
+ * archive#778: the daemon's pause. While it is set, no upload starts, no cloud download starts and the poll's
  * cloud enumeration waits; local writes are still queued. The state is held in memory only: a restarted
  * daemon runs, and the client re-applies its rules.
  *

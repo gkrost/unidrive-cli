@@ -15,7 +15,7 @@ import java.time.Instant
 import kotlin.test.*
 
 /**
- * #421: renaming a synced local folder (`d1` -> `d2`, same parent) planned `mkdir-remote d2`,
+ * archive#421: renaming a synced local folder (`d1` -> `d2`, same parent) planned `mkdir-remote d2`,
  * `del-remote d1`, then the children's moves. The folder delete trashed the remote folder first,
  * so every move out of it failed with "Folder not found", the files fell out of the live remote
  * tree and the same move failed on every later sync.

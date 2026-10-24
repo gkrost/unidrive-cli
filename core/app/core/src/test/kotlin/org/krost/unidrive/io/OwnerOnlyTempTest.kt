@@ -11,7 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
-/** #1054 S4: a temp folder for a copy of user data is owner-only, not whatever the temp folder grants. */
+/** archive#1054 S4: a temp folder for a copy of user data is owner-only, not whatever the temp folder grants. */
 class OwnerOnlyTempTest {
     private lateinit var parent: Path
 

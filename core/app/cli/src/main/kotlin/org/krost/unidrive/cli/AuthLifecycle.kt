@@ -16,7 +16,7 @@ import java.util.concurrent.Callable
  * is read from standard input only. Nothing here prints, logs or returns a password, a TOTP code,
  * a device code or a token.
  *
- * A profile held by a running daemon is not refused (#813): each step is handed to that daemon over its
+ * A profile held by a running daemon is not refused (archive#813): each step is handed to that daemon over its
  * authenticated IPC socket (`auth.begin`, `auth.complete`, `auth.login`, docs/dev/specs/unidrive-daemon-design.md
  * §4.11), which runs the same step (AuthSteps.kt), stores the credentials and reloads them in place, so the mount
  * keeps running. A secret the step needs travels in the request body only.
@@ -101,7 +101,7 @@ class AuthCompleteCommand : Callable<Int> {
     @Option(names = ["--wait"], description = ["Keep polling until the sign-in succeeds, fails or expires"])
     var wait: Boolean = false
 
-    // #866: the code a no-redirect flow (Dropbox) shows the user. A one-time secret, so it is piped,
+    // archive#866: the code a no-redirect flow (Dropbox) shows the user. A one-time secret, so it is piped,
     // never an argument (precedent: auth login --password-stdin).
     @Option(names = ["--code-stdin"], description = ["Read the authorization code the provider showed from standard input"])
     var codeStdin: Boolean = false

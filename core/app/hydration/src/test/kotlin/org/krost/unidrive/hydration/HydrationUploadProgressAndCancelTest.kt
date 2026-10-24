@@ -191,7 +191,7 @@ class HydrationUploadProgressAndCancelTest {
 
     @Test
     fun `cancel of an upload that waits behind a same-path upload releases its queue permit`() = runTest {
-        // #1067: a second submission of the path suspends in the per-path mutex while it holds a waiting-queue
+        // archive#1067: a second submission of the path suspends in the per-path mutex while it holds a waiting-queue
         // permit; the permit is released only inside the lock, which a cancelled wait never enters.
         val env = HydrationTestEnv(recoveryUploadScope = this, uploadQueueDepth = 1, maxUploadAttempts = 1)
         val gate = CompletableDeferred<Unit>()

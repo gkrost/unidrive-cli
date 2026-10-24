@@ -36,7 +36,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * #586: `credential_health` in `daemon.status` over a live socket (docs/dev/specs/unidrive-daemon-design.md §4.3).
+ * archive#586: `credential_health` in `daemon.status` over a live socket (docs/dev/specs/unidrive-daemon-design.md §4.3).
  * The mapping of each check result is pinned in [CredentialHealthMonitorTest]; this pins the wiring: the check runs
  * off the request path, is cached for its TTL, and a provider that rejects the credentials turns the state to
  * `expired` without waiting for the next check.

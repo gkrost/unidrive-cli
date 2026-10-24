@@ -14,12 +14,12 @@ import org.krost.unidrive.hydration.PauseGate
 import org.krost.unidrive.sync.ignore.HeldBackDir
 
 /**
- * The health objects of the `daemon.status` reply (#658; docs/dev/specs/unidrive-daemon-design.md §4.3).
+ * The health objects of the `daemon.status` reply (archive#658; docs/dev/specs/unidrive-daemon-design.md §4.3).
  * A value the daemon does not have is `null` here, never 0 and never a "healthy" default.
  */
 
 /**
- * `uploads`: see [HydrationImpl.UploadHealth] for what each count includes and leaves out. `as_of_ms` (#747) is the epoch-milliseconds stamp of the reading: the last good one is served while state.db is busy, so a front-end tells fresh from frozen by the stamp not advancing. `blocked` is present only
+ * `uploads`: see [HydrationImpl.UploadHealth] for what each count includes and leaves out. `as_of_ms` (archive#747) is the epoch-milliseconds stamp of the reading: the last good one is served while state.db is busy, so a front-end tells fresh from frozen by the stamp not advancing. `blocked` is present only
  * while there is something blocked by name: absent means none, so a reply with nothing blocked is unchanged.
  */
 internal fun HydrationImpl.UploadHealth.toJson(): JsonObject =
@@ -28,24 +28,24 @@ internal fun HydrationImpl.UploadHealth.toJson(): JsonObject =
         put("in_flight", inFlight)
         put("failed", failed)
         put("oldest_pending_age_ms", oldestPendingAgeMs)
-        // #747: when the counts were taken. The last good reading is served when state.db is busy, so a
+        // archive#747: when the counts were taken. The last good reading is served when state.db is busy, so a
         // front-end tells fresh from frozen by the stamp not advancing. Absent when never read.
         put("as_of_ms", asOfMs)
-        // #1095: uploads in a retry backoff, and when the earliest next attempt starts (null while none waits).
+        // archive#1095: uploads in a retry backoff, and when the earliest next attempt starts (null while none waits).
         put("retrying", retrying)
         put("next_try_at_ms", nextTryAtMs)
         if (blocked.count > 0) put("blocked", blocked.toJson())
         if (running.count > 0) put("running", running.toJson())
     }
 
-/** The `daemon.status` capability that says `uploads` names the uploads under way (`uploads.running`, #1200). */
+/** The `daemon.status` capability that says `uploads` names the uploads under way (`uploads.running`, archive#1200). */
 internal const val RUNNING_UPLOADS_CAPABILITY = "uploads.running"
 
-/** The `daemon.status` capability that says the daemon answers `hydration.matches_local` (gkrost/unidrive#1219). */
+/** The `daemon.status` capability that says the daemon answers `hydration.matches_local` (archive#1219). */
 internal const val MATCHES_LOCAL_CAPABILITY = "hydration.matches_local"
 
 /**
- * `uploads.running` (#1200): the uploads holding a transfer permit right now, present only while there is one. `count` is all
+ * `uploads.running` (archive#1200): the uploads holding a transfer permit right now, present only while there is one. `count` is all
  * of them, `items` the first [HydrationImpl.RUNNING_ITEMS_CAP] by start time, `more` the rest. Each item: `path`,
  * `started_at_ms` (epoch ms the attempt began), `bytes_done` (as the provider last reported) and `bytes_total` (null while the
  * provider has not said). A retry starts a new attempt, so `started_at_ms` is the current attempt's. Paths are user data:
@@ -102,7 +102,7 @@ internal fun HydrationImpl.CacheHealth.toJson(): JsonObject =
 internal const val NOTIFICATIONS_STATUS_CAPABILITY = "notifications.status"
 
 /**
- * `notifications` in `daemon.status` (#111): the provider's remote-change push channel. A provider that reports none
+ * `notifications` in `daemon.status` (archive#111): the provider's remote-change push channel. A provider that reports none
  * ([org.krost.unidrive.CloudProvider.remoteChangeChannelStatus] null) is `unsupported`. Never the endpoint: a credential.
  */
 internal fun notificationsStatusJson(status: RemoteChangeChannelStatus?): JsonObject =
@@ -132,7 +132,7 @@ internal fun remoteIncompleteJson(count: Int): JsonObject =
     }
 
 /**
- * `paused` (#778): present only while the daemon is paused. `since_ms` is epoch ms of the first request of the
+ * `paused` (archive#778): present only while the daemon is paused. `since_ms` is epoch ms of the first request of the
  * pause; `auto` says whether a rule of the client (true) or a person (false) paused; `until_ms` (epoch ms at which
  * the daemon resumes by itself) is present only for a timed pause. The same object is the reply of
  * `daemon.pause` and the body of the `paused` event.
@@ -146,7 +146,7 @@ internal fun PauseGate.State.toJson(): JsonObject =
     }
 
 /**
- * #813: the credential rejection `credential_health` still has to report: [authRejectedAtMs] unless a sign-in through
+ * archive#813: the credential rejection `credential_health` still has to report: [authRejectedAtMs] unless a sign-in through
  * the daemon loaded new credentials after it ([signedInAtMs]); a rejection of the replaced credentials is history.
  */
 internal fun rejectionAfterSignIn(
@@ -169,7 +169,7 @@ internal fun lastProviderContactMs(
     }
 
 /**
- * `credential_health` (#586): `state` is one of `ok`, `expiring`, `expired`, `missing`, `unknown`. `expires_in_ms` is the
+ * `credential_health` (archive#586): `state` is one of `ok`, `expiring`, `expired`, `missing`, `unknown`. `expires_in_ms` is the
  * time left at this reply (0 for `expired`), null when no expiry is known; `checked_at_ms` is when the daemon last
  * checked, or saw the provider reject the credentials, null while it has not checked yet.
  */
@@ -226,7 +226,7 @@ internal fun viewsStatusJson(views: List<ViewStatus>): JsonArray =
     }
 
 /**
- * `ignore` in `daemon.status` (#660): the folders whose uploads are held back because a rule file in them cannot be
+ * `ignore` in `daemon.status` (archive#660): the folders whose uploads are held back because a rule file in them cannot be
  * read (fail closed). `held_back.count` counts the folders found so far: a folder's rules are read when something below
  * it is written or asked about, so a folder nothing was written to is not known yet. `items` is capped
  * ([HELD_BACK_ITEMS_CAP]) and `more` counts the rest; each item names the folder, the rule file and why it cannot be read.

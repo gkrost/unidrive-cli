@@ -105,7 +105,7 @@ class HydrationOpenSetConcurrencyTest {
             )
         }
 
-    // #438: a pooled client can close on a connection other than the one that served open_read. The
+    // archive#438: a pooled client can close on a connection other than the one that served open_read. The
     // close must find the handle across connections, and one client's close must never release another
     // client's handle that happens to carry the same id.
     @Test

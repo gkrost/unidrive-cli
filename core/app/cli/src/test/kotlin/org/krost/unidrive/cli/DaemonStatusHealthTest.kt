@@ -39,7 +39,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * #658: the `uploads`, `cache` and `provider_health` objects of `daemon.status` (docs/dev/specs/unidrive-daemon-design.md
+ * archive#658: the `uploads`, `cache` and `provider_health` objects of `daemon.status` (docs/dev/specs/unidrive-daemon-design.md
  * §4.3). Unknown stays unknown: a value the daemon does not have is `null` (or the whole object is absent), never 0.
  */
 class DaemonStatusHealthTest {
@@ -220,7 +220,7 @@ class DaemonStatusHealthTest {
             assertEquals(JsonNull, uploads.getValue("oldest_pending_age_ms"), "nothing pending has no age; never 0")
             assertEquals(0, uploads.getValue("retrying").jsonPrimitive.long, "nothing waits in a retry backoff")
             assertEquals(JsonNull, uploads.getValue("next_try_at_ms"), "no retry is scheduled: null, never 0")
-            // #747: the stamp of the reading, null until the first one — the key is always present.
+            // archive#747: the stamp of the reading, null until the first one — the key is always present.
             assertTrue(uploads.getValue("as_of_ms") is JsonNull || uploads.getValue("as_of_ms").jsonPrimitive.long > 0)
             val cache = s.getValue("cache").jsonObject
             assertEquals(setOf("bytes", "budget_bytes"), cache.keys)

@@ -23,7 +23,7 @@ class BuildInfoTest {
 
     @Test
     fun `UD-733 - versionString includes the dirty marker when DIRTY=true`() {
-        // #574: the marker lives in the semver build metadata (`+<commit>.dirty`), not as a "-dirty"
+        // archive#574: the marker lives in the semver build metadata (`+<commit>.dirty`), not as a "-dirty"
         // suffix of the old "(commit-dirty)" shape.
         if (BuildInfo.DIRTY) {
             assertTrue(
@@ -40,7 +40,7 @@ class BuildInfoTest {
 
     // spec §3.5 (unidrive-distribution-design): tagged-release builds print
     // the bare semver with NO commit suffix; non-tag (dev) builds carry the
-    // commit id as semver build metadata ("+<commit>[.dirty]", #574). These
+    // commit id as semver build metadata ("+<commit>[.dirty]", archive#574). These
     // two invariants share
     // versionString()'s code path but are orthogonal — one named test each so
     // a future edit can't silently weaken one while the other still passes.
@@ -76,7 +76,7 @@ class BuildInfoTest {
         )
     }
 
-    // #574 (owner decision): Kubernetes style — `<major>.<minor>.<patch>+<commit>`; clients order on the
+    // archive#574 (owner decision): Kubernetes style — `<major>.<minor>.<patch>+<commit>`; clients order on the
     // release part and use the commit id only to identify the build. A dirty build says so in the
     // metadata, never in the release part.
 

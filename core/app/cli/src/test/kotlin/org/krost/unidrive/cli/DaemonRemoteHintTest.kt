@@ -22,7 +22,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * #111: a provider's remote-change hint ([CloudProvider.onRemoteChangeHint]) wakes the poll of a mount daemon; a mirror
+ * archive#111: a provider's remote-change hint ([CloudProvider.onRemoteChangeHint]) wakes the poll of a mount daemon; a mirror
  * daemon, and a mount daemon with the poll off, register nothing.
  */
 class DaemonRemoteHintTest {

@@ -10,7 +10,7 @@ import java.nio.file.StandardOpenOption
 import java.time.Instant
 
 /**
- * The Dropbox upload sessions in flight, keyed by remote path (#867): a session id and the offset the
+ * The Dropbox upload sessions in flight, keyed by remote path (archive#867): a session id and the offset the
  * next `append_v2` must carry, bound to the local file's identity (size and mtime — a changed file
  * invalidates the session) and its creation instant. Sessions live [SESSION_TTL] (Dropbox keeps a
  * session for 7 days) and older ones are dropped at construction, so an upload that was interrupted

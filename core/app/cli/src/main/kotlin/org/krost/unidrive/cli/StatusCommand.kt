@@ -140,7 +140,7 @@ internal fun computeLocalSizeBuckets(entries: List<org.krost.unidrive.sync.model
     var hydrated = 0L
     var pending = 0L
     for (e in entries) {
-        // The !isHydrated guard stays OUTSIDE the predicate on purpose (#136): a
+        // The !isHydrated guard stays OUTSIDE the predicate on purpose (archive#136): a
         // sparse partial-download row (remoteId == null, isHydrated == false) has no
         // real bytes on disk, so it belongs in neither bucket (the SPARSE column
         // reports it). For the hydrated rows that remain, pending is the whole
@@ -179,7 +179,7 @@ class StatusCommand : Runnable {
     var json: Boolean = false
 
     override fun run() {
-        // #646: without -p, profile resolution falls back to the implicit localfs default when
+        // archive#646: without -p, profile resolution falls back to the implicit localfs default when
         // `[general] default_profile` is unset — a status that renders the localfs row ("never")
         // and looks like nothing is configured even though real profiles exist. Name the remedy
         // instead of guessing. -a shows everything and --check-auth walks every profile, so both
@@ -247,7 +247,7 @@ class StatusCommand : Runnable {
                     continue
                 }
                 if (!entry.isPendingUpload) continue
-                // #136: hydrated rows use the whole UD-901 predicate; the !isHydrated
+                // archive#136: hydrated rows use the whole UD-901 predicate; the !isHydrated
                 // branch above already routed sparse partial-downloads to downloads.
                 val refusal = db.uploadRefusal(entry.path)
                 val watermark = "${entry.localMtime}|${entry.localSize}|"
@@ -322,7 +322,7 @@ class StatusCommand : Runnable {
                 nonHydrated = files.count { !it.isHydrated }
                 lastFullScan = db.getSyncState("last_full_scan")
                 pendingCursor = db.getSyncState("pending_cursor")
-                // #403: the items kept under a decorated name (unresolved duplicates).
+                // archive#403: the items kept under a decorated name (unresolved duplicates).
                 duplicateNames = duplicateNamesOf(db)
             } finally {
                 db.close()
@@ -376,12 +376,12 @@ class StatusCommand : Runnable {
             if (resolvesSingleProfileViaConfig(requestedName, raw)) {
                 // Name resolves to a configured / type-resolved profile — use the
                 // full resolution path so side-effects (MDC stamp, memoisation,
-                // error formatting) are unchanged.  This is the pre-#117 path and
-                // must run FIRST (PR #196 review fix).
+                // error formatting) are unchanged.  This is the pre-archive#117 path and
+                // must run FIRST (PR archive#196 review fix).
                 parent.resolveCurrentProfile()
             } else {
                 // No configured profile matched: look for an orphan dir with that
-                // exact name (#117 addition). If none exists either, let
+                // exact name (archive#117 addition). If none exists either, let
                 // resolveCurrentProfile handle the error surface (exits with code 1).
                 discoverProfiles(baseDir).find { it.name == requestedName && it.isOrphan }
                     ?: parent.resolveCurrentProfile()
@@ -399,7 +399,7 @@ class StatusCommand : Runnable {
         StatusAudit.duplicateNameLines(readDuplicateNames(configDir)).forEach(::println)
     }
 
-    // #403: the unresolved duplicates of the profile at [configDir], as (decorated local path, cloud path); none on any
+    // archive#403: the unresolved duplicates of the profile at [configDir], as (decorated local path, cloud path); none on any
     // read failure (status must not crash on a legacy or unreadable state.db).
     private fun readDuplicateNames(configDir: Path): List<Pair<String, String>> =
         runCatching {
@@ -461,7 +461,7 @@ class StatusCommand : Runnable {
         val baseDir = parent.configBaseDir()
         val ansi = AnsiHelper.isAnsiSupported()
         val profiles = discoverProfiles(baseDir)
-        // #248: nothing configured, no profile dirs: give the same answer as plain `status`
+        // archive#248: nothing configured, no profile dirs: give the same answer as plain `status`
         // instead of listing the registered provider types as if they were accounts.
         if (profiles.isEmpty()) parent.reportConfigMissingAndExit(baseDir.resolve("config.toml"))
         val accountsByType = mutableMapOf<String, MutableList<AccountRow>>()
@@ -480,7 +480,7 @@ class StatusCommand : Runnable {
                 }.sortedBy { it.displayName }
 
         renderTable(groups, ansi)
-        // #395: the table has no room for a scope column, and a scoped profile must not look
+        // archive#395: the table has no room for a scope column, and a scoped profile must not look
         // like a whole-drive one: name each scoped profile under the table.
         scopeLinesForProfiles(profiles, baseDir).forEach { println(it) }
     }
@@ -568,7 +568,7 @@ class StatusCommand : Runnable {
         // next to `onedrive-test`).
         val label = profile.name
 
-        // #117: orphan profiles (dir on disk, no config.toml declaration) are
+        // archive#117: orphan profiles (dir on disk, no config.toml declaration) are
         // surfaced with an explicit [ORPHAN] marker. They have no provider type
         // to authenticate against; we read state.db if it exists so we can show
         // whatever was synced before the profile lost its config.toml section.
@@ -584,7 +584,7 @@ class StatusCommand : Runnable {
         // explicitly designed to co-exist with state.db, and showing TS figures
         // is more accurate for a profile that has switched engines.
         //
-        // PR #198 P2: do NOT bypass the auth/stale health check — pass the
+        // PR archive#198 P2: do NOT bypass the auth/stale health check — pass the
         // offline credential health through so a TS profile with missing or
         // stale credentials renders the auth problem instead of a blanket [TS].
         val trackingDbPath = configDir.resolve("tracking.db")
@@ -667,12 +667,12 @@ class StatusCommand : Runnable {
                     lastSync = lastSyncFormatted,
                 )
             } else {
-                // #232: a live `sync --watch` daemon refreshes last_full_scan
+                // archive#232: a live `sync --watch` daemon refreshes last_full_scan
                 // every poll, so an expiring token whose last scan is recent
                 // renders OK (the daemon is refreshing it), not STALE. See
-                // legacyRowStatus / STALE_GRACE; #157 (STALE on genuinely-stale
+                // legacyRowStatus / STALE_GRACE; archive#157 (STALE on genuinely-stale
                 // auth, i.e. no recent scan) is preserved.
-                // #243 review: scale the STALE grace to the profile's configured
+                // archive#243 review: scale the STALE grace to the profile's configured
                 // max_poll_interval so a slow-polling but healthy daemon isn't flagged.
                 val (rowStatus, statusLabel) =
                     legacyRowStatus(isExpiring, lastSyncRaw, Instant.now(), staleGraceFor(baseDir))
@@ -1068,14 +1068,14 @@ internal fun trackingSetRowStatus(health: CredentialHealth): Pair<String, String
         else -> "auth" to GlyphRenderer.authFailLabel()
     }
 
-// #232: grace window FLOOR — a live `sync --watch` daemon rewrites last_full_scan on
+// archive#232: grace window FLOOR — a live `sync --watch` daemon rewrites last_full_scan on
 // every poll (SyncEngine promotePendingCursor / gather), so a recent timestamp means it
 // is actively refreshing credentials. This is the FLOOR; effectiveStaleGrace() scales it
-// up for tuned profiles. A dead daemon's timestamp ages out and STALE reappears, so #157
+// up for tuned profiles. A dead daemon's timestamp ages out and STALE reappears, so archive#157
 // is not regressed.
 internal val STALE_GRACE: Duration = Duration.ofMinutes(15)
 
-// #232 (PR #243 review): the daemon's heartbeat is its poll interval, so the grace must
+// archive#232 (PR archive#243 review): the daemon's heartbeat is its poll interval, so the grace must
 // comfortably exceed the configured max_poll_interval — otherwise a healthy idle daemon
 // that polls less often than 15 min is re-labelled STALE before its next poll rewrites
 // last_full_scan. Floor at STALE_GRACE (so the default 300s config keeps the documented
@@ -1117,10 +1117,10 @@ internal fun lastScanIsRecent(
 
 /**
  * Pure helper: derive the (status, statusLabel) pair for a legacy state.db
- * profile row. #232: a live daemon refreshes last_full_scan every poll, so an
+ * profile row. archive#232: a live daemon refreshes last_full_scan every poll, so an
  * expiring token whose last scan is recent renders OK (the daemon is refreshing
  * it); an expiring token with no recent scan still renders [⚠ STALE], preserving
- * #157 (STALE on genuinely-stale auth).
+ * archive#157 (STALE on genuinely-stale auth).
  *
  * Extracted as a top-level function so tests can drive it directly without a
  * live [StatusCommand] + [Main] wiring (mirrors [trackingSetRowStatus]).
@@ -1256,7 +1256,7 @@ internal fun buildOrphanProfile(dirName: String): ProfileInfo =
     )
 
 /**
- * PR #196 review fix: pure predicate for the precedence gate in
+ * PR archive#196 review fix: pure predicate for the precedence gate in
  * [StatusCommand.showSingleProviderStatus].
  *
  * Returns `true` when [requestedName] resolves to a configured or type-known
@@ -1272,7 +1272,7 @@ internal fun buildOrphanProfile(dirName: String): ProfileInfo =
  *
  * Returns `false` only when the name is genuinely absent from all config paths
  * (no section, no type match, no single-type disambiguation) — in that case
- * the caller may look for an orphan directory with that name (#117 addition).
+ * the caller may look for an orphan directory with that name (archive#117 addition).
  *
  * The distinction matters: an orphan dir named `onedrive` with a configured
  * `[providers.personal] type = "onedrive"` must NOT render as `[? ORPHAN]` —

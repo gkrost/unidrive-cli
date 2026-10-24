@@ -13,8 +13,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * An edit in the cache copy of a cloud-backed file that the cloud has not seen yet (#1070, #1069, and the
- * candidate M1 of #1040): the mount remembers it, with the cloud version it started from, until an upload
+ * An edit in the cache copy of a cloud-backed file that the cloud has not seen yet (archive#1070, archive#1069, and the
+ * candidate M1 of archive#1040): the mount remembers it, with the cloud version it started from, until an upload
  * lands, so that no replay or read loses it and no replay overwrites a newer cloud version.
  */
 class HydrationUnsyncedEditTest {
@@ -33,7 +33,7 @@ class HydrationUnsyncedEditTest {
         env.hydration.closeHandle("conn1", "h1")
     }
 
-    // #1070: openWriteBegin leaves the row of a cloud-only file unhydrated, so neither replay loop saw the bytes.
+    // archive#1070: openWriteBegin leaves the row of a cloud-only file unhydrated, so neither replay loop saw the bytes.
     @Test
     fun `an edit begun on a never-hydrated cloud row is replayed after a restart`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this)
@@ -47,7 +47,7 @@ class HydrationUnsyncedEditTest {
         assertEquals("my edit", env.syncEngine.remoteContentSeen("/q/f.txt"))
     }
 
-    // #1070: after a failed ladder the cache copy is the only copy of the edit; a read must not download over it.
+    // archive#1070: after a failed ladder the cache copy is the only copy of the edit; a read must not download over it.
     @Test
     fun `a failed upload of an edit begun on a never-hydrated row leaves the bytes to read, not to download over`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this, maxUploadAttempts = 1)
@@ -89,7 +89,7 @@ class HydrationUnsyncedEditTest {
         assertNotNull(env.stateDb.editBaseOf("/q/f.txt"), "the edit remains marked for replay")
     }
 
-    // #1069: the replay used the row's CURRENT remote hash as the write token. A poll that delivered another
+    // archive#1069: the replay used the row's CURRENT remote hash as the write token. A poll that delivered another
     // device's version after the edit began moves it, and the replay then overwrote that version.
     @Test
     fun `the replay does not send an edit over a cloud version that arrived after the edit began`() = runTest {
@@ -141,7 +141,7 @@ class HydrationUnsyncedEditTest {
         assertEquals("v1", env.syncEngine.lastUploadIfMatch(), "the write token is the version the edit started from")
     }
 
-    // #511: for a provider with write tokens of its own (OneDrive's eTag) the edit is noted with the row's version, and
+    // archive#511: for a provider with write tokens of its own (OneDrive's eTag) the edit is noted with the row's version, and
     // the replay hands exactly that version to the provider as If-Match.
     @Test
     fun `the replay sends an edit with the provider version it started from`() = runTest {
@@ -209,7 +209,7 @@ class HydrationUnsyncedEditTest {
         assertNull(env.syncEngine.lastUploadIfMatch(), "a content hash is never sent as the provider's If-Match")
     }
 
-    // M1 of #1040: a warm copy was one whose size equals the row's remote size; an edit of another size was
+    // M1 of archive#1040: a warm copy was one whose size equals the row's remote size; an edit of another size was
     // downloaded over by the next read.
     @Test
     fun `a read does not download over an unsynced edit of another size`() = runTest {

@@ -16,9 +16,9 @@ import org.slf4j.Logger
 import java.time.Instant
 
 /**
- * The remote gather of one profile (#560 U2b): provider delta paging into a map of
+ * The remote gather of one profile (archive#560 U2b): provider delta paging into a map of
  * changes, the per-page staging in `scan_staging` and the pending/delta cursor in
- * `sync_state`, the collision rule for same-named remote items (#401), the
+ * `sync_state`, the collision rule for same-named remote items (archive#401), the
  * absence sweep of a full listing, the tracked-scope transition, and the commit of
  * gathered items into `sync_entries`.
  *
@@ -39,13 +39,13 @@ class RemoteGather(
     private val guard: RemoteOperationGuard,
     private val options: Options,
     private val listener: Listener,
-    // #115: canonical top-level remote name -> the locale-aliased local folder that
+    // archive#115: canonical top-level remote name -> the locale-aliased local folder that
     // stands for it. The alias rule reads the sync root and the XDG user dirs, so
     // the mirror engine supplies it; no alias means identity paths.
     private val localTopAliases: (remoteChanges: Map<String, CloudItem>) -> Map<String, String> = { emptyMap() },
     // The engine's logger, so the moved log lines keep their logger name.
     private val log: Logger,
-    // #401/#309: whether the collision key folds case: the profile's case policy (NameKey.foldsCase), true when the
+    // archive#401/#309: whether the collision key folds case: the profile's case policy (NameKey.foldsCase), true when the
     // provider or the local file system folds case. The engine passes it; a test runs the case-twin rules on any host.
     private val foldGatherKeys: Boolean = NameKey.foldsCase(provider.caseSensitivity, NameKey.platformFoldsCase),
 ) {
@@ -80,7 +80,7 @@ class RemoteGather(
 
         /**
          * Rows changed in state.db: [changedPaths], or the whole view when [full].
-         * [moved] carries the renames the merge detected (#595) — a consumer can move
+         * [moved] carries the renames the merge detected (archive#595) — a consumer can move
          * a placeholder instead of deleting and recreating it; consumers that only
          * read [changedPaths] see both the old and the new path there regardless.
          */
@@ -91,7 +91,7 @@ class RemoteGather(
         ) {}
     }
 
-    // #116: set true when a gather actually took the fast-bootstrap branch (cursor
+    // archive#116: set true when a gather actually took the fast-bootstrap branch (cursor
     // adopted with zero enumeration). The mirror engine reads it in its apply pass
     // (adopt-on-name-match for top-level folders) and resets it at the start of
     // every sync pass.
@@ -129,7 +129,7 @@ class RemoteGather(
     internal fun trackedRow(remoteId: String): CloudItem? {
         if (remoteId == TrashNamespace.ROOT_ID) return null
         val entry = db.getEntryByRemoteId(remoteId) ?: return null
-        // #491: the gather's key space is NFC; a row may keep its item's own spelling in remote_path.
+        // archive#491: the gather's key space is NFC; a row may keep its item's own spelling in remote_path.
         val path = PathNormalizer.nfc(entry.remotePath ?: entry.path)
         val parentPath = path.substringBeforeLast('/')
         val parentId =
@@ -157,7 +157,7 @@ class RemoteGather(
     /** Reads the place of the trash root from state.db again: its row has appeared, moved or been reaped. */
     fun refreshTrash() = guard.trash.refresh(db)
 
-    /** #115: see the constructor's `localTopAliases`. */
+    /** archive#115: see the constructor's `localTopAliases`. */
     fun canonicalToLocalTop(remoteChanges: Map<String, CloudItem>): Map<String, String> = localTopAliases(remoteChanges)
 
     /** Tell the view consumer which rows changed. */
@@ -167,7 +167,7 @@ class RemoteGather(
         moved: List<RemoteMerge.Move> = emptyList(),
     ) = listener.onViewInvalidated(changedPaths, full, moved)
 
-    /** #401: true when the last gather found two live remote items at [path]. */
+    /** archive#401: true when the last gather found two live remote items at [path]. */
     fun isCollided(path: String): Boolean = path in collidedPaths
 
     // Paths the engine itself uploaded, mapped to the upload instant. Consulted by
@@ -187,13 +187,13 @@ class RemoteGather(
         recentlyUploaded.entries.removeIf { it.value.isBefore(cutoff) }
     }
 
-    // #401: paths the last gather flagged as collided — two live remote items resolving
+    // archive#401: paths the last gather flagged as collided — two live remote items resolving
     // to one path key. A path-addressed delete/move on one of these could hit either
-    // twin, so apply refuses them unless the action carries a real remote id (#402).
+    // twin, so apply refuses them unless the action carries a real remote id (archive#402).
     // Rebuilt by every gather: the collision exists for as long as the twins do.
     private val collidedPaths: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
-    // #491: remote id -> the item's path as the provider spells it, for the items whose spelling is not NFC
+    // archive#491: remote id -> the item's path as the provider spells it, for the items whose spelling is not NFC
     // ([resolveItemPath] keys them in NFC). Two such items can meet at one NFC key (an NFC/NFD pair, U+212B next to
     // U+00C5); the rows of a collision keep their item's own spelling as their remote path, so a drive that addresses
     // by path reaches that item and never its twin. Only non-NFC names are held: few, and replaced on every delivery.
@@ -204,54 +204,54 @@ class RemoteGather(
     private val refusedPathIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /**
-     * #491: [item]'s path as the provider spells it: its [CloudItem.path] is the NFC key. The spelling of its last
+     * archive#491: [item]'s path as the provider spells it: its [CloudItem.path] is the NFC key. The spelling of its last
      * delivery, as long as it is still the spelling of that path (an item the engine moved since has the path it was
      * given).
      */
     fun cloudPathOf(item: CloudItem): String =
         cloudSpellings[item.id]?.takeIf { it == item.path || PathNormalizer.nfc(it) == item.path } ?: item.path
 
-    // #491: whether the provider spells [item]'s path in NFC, so that the NFC key is its own name.
+    // archive#491: whether the provider spells [item]'s path in NFC, so that the NFC key is its own name.
     private fun spelledInNfc(item: CloudItem): Boolean = !cloudSpellings.containsKey(item.id)
 
-    // #401/#309: the collision key folds case when the provider or the local file system is
+    // archive#401/#309: the collision key folds case when the provider or the local file system is
     // case-insensitive (foldGatherKeys), so case-only twins collide (and get reported) instead of
     // writing two rows that are one item at the provider or one file on disk. NFC is already
     // applied by resolveItemPath. The key function is NameKey's, which the virtual folders, the
     // names inside a view and the mirror's planner compare by as well.
     private fun gatherKey(path: String): String = NameKey.of(path, foldGatherKeys)
 
-    // #401: one collision path's winner and the twins it displaced. A later item can still take the key, so the winner
+    // archive#401: one collision path's winner and the twins it displaced. A later item can still take the key, so the winner
     // moves with it. A tombstone that lost to a live item is kept apart: it is no twin, but it may be the deletion of
-    // a twin state.db holds under its decorated name (#403), which placeTwins puts back there.
+    // a twin state.db holds under its decorated name (archive#403), which placeTwins puts back there.
     class CollisionRecord(
         var winner: CloudItem,
     ) {
         val losers = mutableListOf<CloudItem>()
         val tombstones = mutableListOf<CloudItem>()
 
-        // #403: loser id -> the decorated key placeTwins gave it.
+        // archive#403: loser id -> the decorated key placeTwins gave it.
         val placedAs = mutableMapOf<String, String>()
 
-        // #403: every loser was already kept under its decorated name: counted, not warned about again on every pass.
+        // archive#403: every loser was already kept under its decorated name: counted, not warned about again on every pass.
         var quiet = false
     }
 
-    // #403: a row state.db keeps under a decorated twin name: its key in the gather (DuplicateNames.keyOf) and its
-    // canonical remote path, in NFC like every key of the gather (#491: remote_path keeps the provider's spelling).
+    // archive#403: a row state.db keeps under a decorated twin name: its key in the gather (DuplicateNames.keyOf) and its
+    // canonical remote path, in NFC like every key of the gather (archive#491: remote_path keeps the provider's spelling).
     private class TwinRow(
         val key: String,
         val canonical: String,
     )
 
-    // #403: the twin rows by remote id, read once per gather (loadTwins), and the same rows by key.
+    // archive#403: the twin rows by remote id, read once per gather (loadTwins), and the same rows by key.
     @Volatile
     private var twins: Map<String, TwinRow> = emptyMap()
 
     @Volatile
     private var twinIdByKey: Map<String, String> = emptyMap()
 
-    /** #403: reads the rows state.db keeps under a decorated twin name; every gather calls it before it admits. */
+    /** archive#403: reads the rows state.db keeps under a decorated twin name; every gather calls it before it admits. */
     fun loadTwins() {
         val byId = HashMap<String, TwinRow>()
         for ((path, remotePath, id) in db.rowsWithRemotePath()) {
@@ -262,7 +262,7 @@ class RemoteGather(
         twinIdByKey = byId.entries.associate { (id, row) -> row.key to id }
     }
 
-    // #403: the id of the row that holds [key] as its own name: a twin row by its decorated key, else the row whose
+    // archive#403: the id of the row that holds [key] as its own name: a twin row by its decorated key, else the row whose
     // effective remote path it is, unless that is a twin's (its name is the decorated one).
     private fun trackedIdAt(key: String): String? {
         twinIdByKey[key]?.let { return it }
@@ -271,7 +271,7 @@ class RemoteGather(
     }
 
     /**
-     * #401: deterministic admission of remote delta items into the gather map.
+     * archive#401: deterministic admission of remote delta items into the gather map.
      *
      * Named justification (structural-safety property): reconcile keys are injective
      * and nothing the provider emits is dropped unreported. Replaces the gather's
@@ -283,7 +283,7 @@ class RemoteGather(
      * plus the DB, independent of emission order. The loser is recorded (reported
      * after the gather via [reportCollisions]) and dropped.
      *
-     * [key] is where the item goes: its path, or (#403, [placeTwins]) its place below a twin folder's decorated name.
+     * [key] is where the item goes: its path, or (archive#403, [placeTwins]) its place below a twin folder's decorated name.
      *
      * @return the item now holding the key (the winner), so callers can tell whether
      *   [item] survived.
@@ -305,7 +305,7 @@ class RemoteGather(
         val incumbent = changes.getValue(incumbentPath)
         if (incumbent.id == item.id) {
             // Same remote item re-reported on a later page — a mid-gather remote edit
-            // surfacing a newer version. Fresh data wins (pre-#401 last-wins), and a
+            // surfacing a newer version. Fresh data wins (pre-archive#401 last-wins), and a
             // version refresh is not a twin collision.
             changes[incumbentPath] = item
             return item
@@ -329,15 +329,15 @@ class RemoteGather(
         return winner
     }
 
-    // #401 winner rule: a live item beats a tombstone (the replacement at the same
+    // archive#401 winner rule: a live item beats a tombstone (the replacement at the same
     // path is the current truth); then folder beats file (the folder owns the path
-    // space); then (#403) an item state.db keeps under a decorated twin name loses to one
+    // space); then (archive#403) an item state.db keeps under a decorated twin name loses to one
     // it does not, so a twin keeps its decorated name; then the id state.db already tracks
     // at this path (stability across runs — the engine keeps syncing the twin it has been
     // syncing); then the smallest id, so two never-tracked twins resolve identically under
     // any emit order.
     //
-    // #1089: the two items can sit at keys that differ only in case ([aKey], [bKey]): the tracked row is at one of
+    // archive#1089: the two items can sit at keys that differ only in case ([aKey], [bKey]): the tracked row is at one of
     // them, and which one is the incumbent depends on the emit order. The state.db lookups therefore look at both
     // keys, and the verdict is a function of the two items, both keys and the DB — never of which came first.
     private fun collisionWinner(
@@ -355,14 +355,14 @@ class RemoteGather(
             a.isFolder != b.isFolder -> if (a.isFolder) a else b
             aDecorated != bDecorated -> if (aDecorated) b else a
             (a.id in tracked) != (b.id in tracked) -> if (a.id in tracked) a else b
-            // #491: of two names that differ only in normalisation, the one the provider spells in NFC holds the key.
+            // archive#491: of two names that differ only in normalisation, the one the provider spells in NFC holds the key.
             spelledInNfc(a) != spelledInNfc(b) -> if (spelledInNfc(a)) a else b
             a.id <= b.id -> a
             else -> b
         }
     }
 
-    // #403: state.db keeps [item] as the twin of whatever holds [key], under the decorated name.
+    // archive#403: state.db keeps [item] as the twin of whatever holds [key], under the decorated name.
     private fun isKeptDecorated(
         item: CloudItem,
         key: String,
@@ -372,7 +372,7 @@ class RemoteGather(
     }
 
     /**
-     * #403: gives every twin [admit] found a local key of its own, once the last page is in: the winner of a collision
+     * archive#403: gives every twin [admit] found a local key of its own, once the last page is in: the winner of a collision
      * keeps the path, every live loser goes to its decorated name ([DuplicateNames]), and what lies below a twin folder
      * follows that folder by parent id. Two more twins are found here: an item state.db already keeps under its
      * decorated name stays there for as long as its canonical path is the same (no auto-heal: deleting the winner leaves
@@ -527,7 +527,7 @@ class RemoteGather(
     private fun depthOf(path: String): Int = path.count { it == '/' }
 
     /**
-     * #401: report what the gather suppressed. Per collision: WARN with both ids,
+     * archive#401: report what the gather suppressed. Per collision: WARN with both ids,
      * sizes and mtimes, `listener.onWarning`, a skipped-ops.jsonl entry; then the
      * run-level `sync_state` counters `status` renders. The loser ids come back so
      * the absence sweep (detectMissingAfterFullSync) keeps treating them as seen —
@@ -582,7 +582,7 @@ class RemoteGather(
         readOnly: Boolean = false,
         progress: EnumerationTracker? = null,
     ): Map<String, CloudItem> = withContext(Priority.Background) {
-        // #268: after any incomplete gather, its promoted cursor cannot prove that
+        // archive#268: after any incomplete gather, its promoted cursor cannot prove that
         // absent paths are truly absent. Retry from the provider's full-listing
         // entry point instead of treating an incremental delta as authoritative.
         val retryIncompleteEnumeration =
@@ -593,7 +593,7 @@ class RemoteGather(
         if (retryIncompleteEnumeration && db.getSyncState("last_gather_full") == "false") {
             db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID)?.let(db::completeScan)
         }
-        // #321: when the remote walk began. The absence sweep defers the deletion verdict
+        // archive#321: when the remote walk began. The absence sweep defers the deletion verdict
         // for any row written after this instant — the listing pages that follow cannot
         // have seen such a write.
         val gatherStartedAt = Instant.now()
@@ -601,10 +601,10 @@ class RemoteGather(
         val cursor = storedCursor?.ifEmpty { null }
         var isFullSync = cursor == null || provider.deltaIsFullListing
         var changes = mutableMapOf<String, CloudItem>()
-        // #401: every `changes[path] = item` site goes through admit() so same-named
+        // archive#401: every `changes[path] = item` site goes through admit() so same-named
         // remote items cannot silently drop a twin (see the admit doc).
         val keyToPath = HashMap<String, String>()
-        // #403: the twin rows of state.db, for the winner rule and placeTwins.
+        // archive#403: the twin rows of state.db, for the winner rule and placeTwins.
         loadTwins()
         val collisions = HashMap<String, CollisionRecord>()
         fun admitChange(item: CloudItem) {
@@ -625,7 +625,7 @@ class RemoteGather(
         // absence as deletion.
         if (options.fastBootstrap && cursor == null && !retryIncompleteEnumeration) {
             if (Capability.FastBootstrap in provider.capabilities()) {
-                // #532: the preview's bootstrap carries readOnly, so a dry-run --fast-bootstrap
+                // archive#532: the preview's bootstrap carries readOnly, so a dry-run --fast-bootstrap
                 // stamps nothing in the provider's own storage (OneDrive's delta_last_seen).
                 when (
                     val result =
@@ -674,10 +674,10 @@ class RemoteGather(
                                 "Items that already exist on the remote will stay invisible until they next mutate. " +
                                 "Upload-direction sync is unaffected."
                         // The log line only — reporter.onWarning duplicated it on every CLI
-                        // one-shot run (console appender + progress reporter, #532); the
+                        // one-shot run (console appender + progress reporter, archive#532); the
                         // daemon runs with the Silent reporter either way.
                         log.warn(msg)
-                        // #116: arm adopt-on-name-match for this run's apply pass.
+                        // archive#116: arm adopt-on-name-match for this run's apply pass.
                         fastBootstrapActive = true
                         return@withContext changes
                     }
@@ -734,7 +734,7 @@ class RemoteGather(
         val unreachable = HashSet<String>()
 
         // The entries the provider could not read (DeltaPage.skippedPaths): persisted with the
-        // completeness flag so the status can name the blocked folder (#1234).
+        // completeness flag so the status can name the blocked folder (archive#1234).
         val skippedPaths = LinkedHashSet<String>()
 
         // Resumable-scan lifecycle: a non-null activeScanId means this gather
@@ -806,14 +806,14 @@ class RemoteGather(
             db.setSyncState("pending_cursor", cursor)
             db.setSyncState("pending_cursor_complete", if (allComplete) "true" else "false")
             // The entries the listing could not read, capped (a localfs walk of E:\ names its recycle bin,
-            // #1234); a pass that ends complete leaves the key empty.
+            // archive#1234); a pass that ends complete leaves the key empty.
             db.setSyncState(
                 PENDING_SKIPPED_PATHS_KEY,
                 if (allComplete) "" else skippedPaths.take(SKIPPED_PATHS_KEPT).joinToString("\n"),
             )
         }
 
-        // #110: a persisted delta cursor can age out (OneDrive Graph 410 Gone).
+        // archive#110: a persisted delta cursor can age out (OneDrive Graph 410 Gone).
         // Catch DeltaCursorExpiredException specifically — NOT the generic
         // ProviderException — so non-410 failures keep their existing behaviour.
         // On 410: clear the cursor, discard partial results, and re-run a full
@@ -830,7 +830,7 @@ class RemoteGather(
             }
             persistPendingCursor(page.cursor)
             // UD-742: heartbeat after each remote page. Internxt paginates
-            // LISTING_PAGE_SIZE = 999 per page (measured + source-verified, #392
+            // LISTING_PAGE_SIZE = 999 per page (measured + source-verified, archive#392
             // 2026-09-29), so a 113k-item drive emits ~113 update events — cheap,
             // and the reporter is responsible for throttling display
             // (CliProgressReporter overwrites the same line via printInline).
@@ -939,7 +939,7 @@ class RemoteGather(
             db.completeScan(scanId)
         }
 
-        // #401: report suppressed twins BEFORE the absence sweep so their ids are
+        // archive#401: report suppressed twins BEFORE the absence sweep so their ids are
         // excluded from reaping.
         placeTwins(changes, collisions, isFullSync)
         val collisionLoserIds = reportCollisions(collisions, readOnly)
@@ -972,7 +972,7 @@ class RemoteGather(
         val change = ScopeTransition.apply(db, guard.trackScope) ?: return
         // Silent when nothing was untracked: the first run of a new profile
         // narrows from "whole drive" to its scope over an empty db, and a
-        // "stopped tracking 0 row(s)" line reads as if state were lost (#395).
+        // "stopped tracking 0 row(s)" line reads as if state were lost (archive#395).
         if (change.untracked > 0) {
             log.info("Sync scope narrowed to {}: stopped tracking {} row(s); local files left in place", guard.trackScope, change.untracked)
         }
@@ -1152,7 +1152,7 @@ class RemoteGather(
             )
             return null
         }
-        // #171: canonicalize the remote path to NFC so it matches the NFC local key
+        // archive#171: canonicalize the remote path to NFC so it matches the NFC local key
         // in the reconciler (copy only when the form actually changes).
         if (item.path != "/" && item.path.isNotEmpty() && pathIssue == null) {
             if (refusedPathIds.isNotEmpty()) refusedPathIds.remove(item.id)
@@ -1161,11 +1161,11 @@ class RemoteGather(
                 if (cloudSpellings.isNotEmpty()) cloudSpellings.remove(item.id)
                 return item
             }
-            // #491: the provider's own spelling, for the rows of a collision (see cloudSpellings).
+            // archive#491: the provider's own spelling, for the rows of a collision (see cloudSpellings).
             cloudSpellings[item.id] = item.path
             return item.copy(path = n)
         }
-        // #183: access-revoked tombstone — Graph `@microsoft.graph.removed` state="removed",
+        // archive#183: access-revoked tombstone — Graph `@microsoft.graph.removed` state="removed",
         // no parentReference, so path resolved to "/". The item still physically exists on the
         // remote; the local file MUST be kept. Retire the DB row via TRASHED (removed from the
         // alive view, no longer an unreapable orphan) and return null so the item doesn't flow
@@ -1208,10 +1208,10 @@ class RemoteGather(
         unreachableIds: Set<String> = emptySet(),
     ) {
         val seenRemoteIds = remoteChanges.values.mapTo(mutableSetOf()) { it.id }
-        // #401: a twin suppressed by the gather collision winner-rule keeps its DB row
+        // archive#401: a twin suppressed by the gather collision winner-rule keeps its DB row
         // alive but holds no key in remoteChanges; without this it would look absent
         // and the sweep would synthesize a path-addressed DeleteRemote for it — the
-        // wrong-twin delete #402 closed. Suppressed ≠ deleted.
+        // wrong-twin delete archive#402 closed. Suppressed ≠ deleted.
         seenRemoteIds.addAll(admittedLoserIds)
         // The same for an item the provider listed but could not place, because a folder
         // above it is permanently gone: it has no path this pass, the server still holds
@@ -1226,7 +1226,7 @@ class RemoteGather(
         // walk could have seen.
         val sweptAt = Instant.now()
 
-        // #1027: the table is read in steps and only the rows the listing did not see become objects; the rows of the
+        // archive#1027: the table is read in steps and only the rows the listing did not see become objects; the rows of the
         // unreachable items are read for their paths alone.
         val unseen = ArrayList<SyncEntry>()
         val heldAbove = HashSet<String>()
@@ -1242,17 +1242,17 @@ class RemoteGather(
                 log.debug("Full sync: DB entry {} (remoteId={}) not in delta but unreachable rows hang below it; keeping it", entry.path, entry.remoteId)
                 continue
             }
-            // #115: the delta and the recently-uploaded marks live in the REMOTE
+            // archive#115: the delta and the recently-uploaded marks live in the REMOTE
             // namespace, so test against the row's effective remote path
             // (`remotePath ?: path`). For a non-aliased row this is just
-            // entry.path — byte-identical to pre-#115 behaviour.
+            // entry.path — byte-identical to pre-archive#115 behaviour.
             val effectiveRemote = PathNormalizer.nfc(entry.remotePath ?: entry.path)
             if (!guard.isTracked(effectiveRemote)) continue
-            // #403: a twin's row shares its remote path with the item that holds the name; its key is the decorated one.
+            // archive#403: a twin's row shares its remote path with the item that holds the name; its key is the decorated one.
             val sweepKey = DuplicateNames.keyOf(entry.path, entry.remotePath) ?: effectiveRemote
             if (sweepKey in remoteChanges) continue
 
-            // #321: a write-back that landed while this gather walked — a mount upload
+            // archive#321: a write-back that landed while this gather walked — a mount upload
             // during a multi-hour enumeration, or one whose in-memory grace mark a daemon
             // restart lost — has its completion recorded on the row itself. The listing
             // pages predate that write, so their silence about the path proves nothing
@@ -1260,7 +1260,7 @@ class RemoteGather(
             // write. Unlike the wall-clock grace below, this survives restarts and does
             // not expire under a long gather. A stamp in the future is clock noise, not a
             // mid-gather write (production never writes one); that row stays with the
-            // #301 watermark guard, which compares the stamp against the cache file.
+            // archive#301 watermark guard, which compares the stamp against the cache file.
             val lastSynced = entry.lastSynced
             if (lastSynced != null && !lastSynced.isAfter(sweptAt) && lastSynced.isAfter(gatherStartedAt)) {
                 log.debug(
@@ -1320,7 +1320,7 @@ class RemoteGather(
 
     /**
      * The expansion of [expandDeletedFolders] whatever the last gather was: each alive row below a folder tombstone of
-     * [changes] that [changes] does not mention gets a tombstone of its own. #580: the mount's tombstone of a folder the
+     * [changes] that [changes] does not mention gets a tombstone of its own. archive#580: the mount's tombstone of a folder the
      * provider confirmed gone by its id ([GoneFolderTombstone]) has no listing behind it, full or not.
      */
     fun expandFolderTombstones(changes: MutableMap<String, CloudItem>) {
@@ -1351,7 +1351,7 @@ class RemoteGather(
     }
 
     /**
-     * What one [updateRemoteEntries] pass changed, as the view consumers need it (#595):
+     * What one [updateRemoteEntries] pass changed, as the view consumers need it (archive#595):
      * [changedPaths] holds exactly the paths whose row is new or whose view-relevant
      * content (remote id, hash, size, modified time, path) changed — a delta that
      * re-delivers unchanged items (Internxt's rewound cursor) changes nothing and must
@@ -1362,7 +1362,7 @@ class RemoteGather(
     class RemoteMerge(
         val changedPaths: Set<String>,
         val moved: List<Move>,
-        // The rows an item of the other kind replaced at its path (a file by a folder, or the reverse, #1030): the
+        // The rows an item of the other kind replaced at its path (a file by a folder, or the reverse, archive#1030): the
         // enumeration clears their cache copies.
         val replaced: List<SyncEntry> = emptyList(),
     ) {
@@ -1376,18 +1376,18 @@ class RemoteGather(
         updateRemoteEntries(remoteChanges, localTopAliases(remoteChanges))
 
     /**
-     * #147: the chunked caller derives the alias map once from the FULL change set and passes it
+     * archive#147: the chunked caller derives the alias map once from the FULL change set and passes it
      * in. The aliases come from the change set's top-level names, and a chunk on its own may not
      * contain the top-level folder an aliased path inside it needs — deriving per chunk would key
      * that path at its canonical name, where LocalScanner can never find it on disk.
      *
-     * [guardContext] is the same story for the #601 parent guard: it asks whether the parent was
+     * [guardContext] is the same story for the archive#601 parent guard: it asks whether the parent was
      * delivered (alive or deleted) in this enumeration, and a chunk's own map does not hold a
      * parent that landed in an earlier chunk — a deleted parent would read as absent and fall back
      * to its still-present row, letting the dead folder's stale child through. Defaults to the
      * chunk itself (the unchunked call).
      *
-     * [keepPendingUploads] (#1040 S2): the mount's enumeration leaves a pending-upload row alone when an item arrives at
+     * [keepPendingUploads] (archive#1040 S2): the mount's enumeration leaves a pending-upload row alone when an item arrives at
      * its path ([keepsPendingUpload]); a tracked item RENAMED onto that path moves the pending row aside under a keep-both
      * name first ([MergeDisplacement.movePendingUploadAside]). The mirror merges it, as before: its reconciler sees the
      * file new on both sides and keeps both from the sync root's copy.
@@ -1398,12 +1398,12 @@ class RemoteGather(
         guardContext: Map<String, CloudItem> = remoteChanges,
         keepPendingUploads: Boolean = false,
     ): RemoteMerge {
-        // #115: the remoteChanges keys are canonical remote paths. An aliased item is
+        // archive#115: the remoteChanges keys are canonical remote paths. An aliased item is
         // persisted at its REAL-LOCAL path (with the canonical in remote_path),
         // not as a phantom canonical-keyed row that LocalScanner can never find
         // on disk. Existing rows are matched by effective remote path so the
         // merge preserves their real-local path + remote_path. No alias active
-        // → both helpers are identity and this is byte-identical to pre-#115.
+        // → both helpers are identity and this is byte-identical to pre-archive#115.
         val folderOverrides = serverNamedFolders()
         val changed = java.util.LinkedHashSet<String>()
         val moved = mutableListOf<RemoteMerge.Move>()
@@ -1413,7 +1413,7 @@ class RemoteGather(
             changed += move.from
             changed += move.to
         }
-        // #1029: a row on a path an item of this delivery takes, whose own item the delivery moves away, moves first.
+        // archive#1029: a row on a path an item of this delivery takes, whose own item the delivery moves away, moves first.
         val displacement =
             MergeDisplacement(
                 db = db,
@@ -1427,7 +1427,7 @@ class RemoteGather(
             if (item.deleted) continue // skip deleted items
             if (staleDeltaItem(path, item, guardContext)) continue
             val realLocalPath = applyReverseFolders(path, folderOverrides).takeIf { it != path } ?: applyReverseTop(path, remoteToLocalTop)
-            // #403: a twin is keyed at its decorated name (placeTwins) and carries the canonical path.
+            // archive#403: a twin is keyed at its decorated name (placeTwins) and carries the canonical path.
             val twinKey = path != item.path && DuplicateNames.keyOf(path, item.path) != null
             val ownSpelling = ownSpellingOf(path, item, twinKey)
             val remoteOf = ownSpelling ?: if (twinKey) item.path else path
@@ -1437,7 +1437,7 @@ class RemoteGather(
             val merged =
                 if (existing == null) {
                     SyncEntry(
-                        // #115: key a newly-arrived aliased item at its real-local
+                        // archive#115: key a newly-arrived aliased item at its real-local
                         // path; record the canonical in remotePath so LocalScanner
                         // finds the row and the next delta matches by effective
                         // remote path.
@@ -1479,7 +1479,7 @@ class RemoteGather(
                         // A rename moves the row to the new path (preserving
                         // localMtime, localSize, isHydrated and isPinned — the
                         // hydration cache and pins travel with it, so a client can
-                        // move the placeholder instead of redownloading, #595). A
+                        // move the placeholder instead of redownloading, archive#595). A
                         // path-matched merge keeps its path and remote_path: the
                         // row was found BY that effective remote path, and only a
                         // rename — never a re-delivery — may re-key it.
@@ -1492,7 +1492,7 @@ class RemoteGather(
             if (renamedFrom != null && item.id == TrashNamespace.ROOT_ID) db.renamePrefix(renamedFrom, realLocalPath)
             db.upsertEntry(merged, keepMarks = true)
             clearQuarantineOf(existing)
-            // #595: the view only learns what actually changed. A re-delivered
+            // archive#595: the view only learns what actually changed. A re-delivered
             // unchanged item (Internxt's rewound cursor re-names the same items every
             // poll) must not invalidate it.
             val contentChanged =
@@ -1518,7 +1518,7 @@ class RemoteGather(
     }
 
     // The remote path of a row the merge keeps: on a rename the new one ([aliasedRemote], null when it is the path); else
-    // the row's own, which a collision row that kept the NFC key learns its item's spelling in (#491), and a spelling the
+    // the row's own, which a collision row that kept the NFC key learns its item's spelling in (archive#491), and a spelling the
     // item left goes from.
     private fun mergedRemotePath(
         existing: SyncEntry,
@@ -1532,7 +1532,7 @@ class RemoteGather(
         return ownSpelling ?: existing.remotePath?.let { r -> staleSpellingCleared(r, item, twinKey) }
     }
 
-    // #491: the rows of a collision address their item under its own spelling: a twin under the canonical path as the
+    // archive#491: the rows of a collision address their item under its own spelling: a twin under the canonical path as the
     // provider spells it, the item that holds the name under its spelling when that is not the key's. Null otherwise.
     private fun ownSpellingOf(
         path: String,
@@ -1540,7 +1540,7 @@ class RemoteGather(
         twinKey: Boolean,
     ): String? = if (twinKey || isCollided(path)) cloudPathOf(item).takeIf { it != item.path } else null
 
-    // #491: a row's remote path that is the provider's spelling of a name it no longer spells that way (the item was
+    // archive#491: a row's remote path that is the provider's spelling of a name it no longer spells that way (the item was
     // renamed to the NFC form in the cloud) goes: a twin's back to the canonical path, any other row's to its path.
     private fun staleSpellingCleared(
         remotePath: String,
@@ -1553,7 +1553,7 @@ class RemoteGather(
 
     // Folders the drive holds under another name than their local one (a name it refused, landed under a server
     // name), longest remote path first: an item beneath such a folder arrives at the server path and is keyed at the
-    // local path. #403: a twin folder's row is no server name. Its remote_path is the canonical path of the folder that
+    // local path. archive#403: a twin folder's row is no server name. Its remote_path is the canonical path of the folder that
     // keeps the name, and what lies below the twin is already keyed below its decorated name by parent id (placeTwins);
     // read as a server name it would re-root everything below the kept folder under the twin.
     private fun serverNamedFolders(): List<Pair<String, String>> =
@@ -1570,11 +1570,11 @@ class RemoteGather(
         }
     }
 
-    // #1040 S2 (the owner's decision of 2026-10-20), the mount: another device created an item at the path of a file whose
+    // archive#1040 S2 (the owner's decision of 2026-10-20), the mount: another device created an item at the path of a file whose
     // upload is still pending here, and the cache copy is its only copy. Merging it would give the pending row that item's id, hash and size while the cache holds the
     // local bytes: the replay and the reap guard would no longer see them as owed, and no conflict would ever be raised.
     // The row stays pending; its upload meets the cloud item as a create collision, which the provider settles (keep-both
-    // after a content compare, #1008). The item is not tracked until then. (A copy of this device's own upload that landed
+    // after a content compare, archive#1008). The item is not tracked until then. (A copy of this device's own upload that landed
     // without the row learning it meets the same compare and is adopted, not duplicated.)
     private fun keepsPendingUpload(
         enabled: Boolean,
@@ -1588,11 +1588,11 @@ class RemoteGather(
     }
 
     // The row an item of the gather merges into, and the path it moves from when the merge is a rename. The item's remote
-    // id owns its row (#1029): the row it already has is the one it merges into, at its old path or at the path it is
+    // id owns its row (archive#1029): the row it already has is the one it merges into, at its old path or at the path it is
     // delivered at, whichever row sits at the new path; a row that belongs to another item the delivery moves away is
     // moved first ([MergeDisplacement]). Only an item with no row of its own meets the row at its path, which is then
     // merged into (a replacement under a new id keeps the baseline, as before). A twin's row is found by id, never by the
-    // canonical path, which is the name the winner holds (#403).
+    // canonical path, which is the name the winner holds (archive#403).
     private fun rowToMerge(
         path: String,
         item: CloudItem,
@@ -1603,7 +1603,7 @@ class RemoteGather(
         changed: MutableSet<String>,
     ): Pair<SyncEntry?, String?> {
         val (found, renamedFrom) = findRowToMerge(path, item, realLocalPath, twinKey, displacement)
-        // #1030: a file where a folder was (or the reverse) is another item that took the name: its row starts over.
+        // archive#1030: a file where a folder was (or the reverse) is another item that took the name: its row starts over.
         // The old kind, hydration, baseline and pin describe an item that is gone. A pending upload keeps the old rule
         // (it is the local file's row, not an item the cloud held).
         if (found != null && found.remoteId != null && found.isFolder != item.isFolder) {
@@ -1629,10 +1629,10 @@ class RemoteGather(
         if (byId != null && DuplicateNames.keyOf(byId.path, byId.remotePath) == null) {
             // A re-delivery never re-keys the row; only a rename does.
             if ((byId.remotePath ?: byId.path) == PathNormalizer.nfc(path)) return byId to null
-            // #595: a renamed item arrives under its new path. Its row moves there, and the row on the new path (a
+            // archive#595: a renamed item arrives under its new path. Its row moves there, and the row on the new path (a
             // different item, replaced by the upsert) is moved out of the way first when the delivery says where it goes.
             displacement.makeRoomFor(path, item)
-            // A pending upload on the new path (the mount, the S2 residual of #1040) has no cloud identity to move to: it
+            // A pending upload on the new path (the mount, the S2 residual of archive#1040) has no cloud identity to move to: it
             // moves aside under a keep-both name instead of being evicted by the upsert with its unsent bytes.
             displacement.movePendingUploadAside(realLocalPath)?.let { aside ->
                 log.info("remote merge: a renamed item took the path of a pending upload; the upload goes on under {}", aside)
@@ -1744,7 +1744,7 @@ class RemoteGather(
             val row = db.getEntryByRemoteId(item.id) ?: continue
             val to = applyReverseFolders(path, folderOverrides).takeIf { it != path } ?: applyReverseTop(path, remoteToLocalTop)
             if (!row.isFolder || row.path == to) continue
-            // #403: below a twin folder the key is the decorated path; the cloud path is the item's canonical one.
+            // archive#403: below a twin folder the key is the decorated path; the cloud path is the item's canonical one.
             val cloudPath = if (path != item.path && DuplicateNames.keyOf(path, item.path) != null) item.path else path
             pending += PendingFolder(item.id, to, cloudPath, row.path)
         }
@@ -1904,7 +1904,7 @@ class RemoteGather(
         }
     }
 
-    // #1199: for the mount's merge ([mount]), the delivery without the items its own delete has just removed: a
+    // archive#1199: for the mount's merge ([mount]), the delivery without the items its own delete has just removed: a
     // provider whose listing lags a trash (Internxt's /files shows it for an hour or more) still returns them. An item
     // is held back when its cloud id belongs to a row tombstoned within [LAGGING_LISTING_WINDOW] and no alive row has it.
     private fun ownDeletesRemoved(
@@ -1921,7 +1921,7 @@ class RemoteGather(
         }
     }
 
-    // #601: the lagging-delta parent guard. Internxt does not cascade a folder's
+    // archive#601: the lagging-delta parent guard. Internxt does not cascade a folder's
     // deletion to its children (the server flags the folder alone), so a trashed
     // folder's child keeps reporting EXISTS with the DEAD folder as its parent id.
     // When such a stale row arrives after the path was re-created under the same
@@ -1961,7 +1961,7 @@ class RemoteGather(
 
     companion object {
         /**
-         * #1199: how long after the mount's own delete a listing that still returns the item is a lagging one, not a
+         * archive#1199: how long after the mount's own delete a listing that still returns the item is a lagging one, not a
          * restore. Internxt's /files status lags a trash by 60 minutes or more (mount-view-refresh-design.md 3.2).
          */
         val LAGGING_LISTING_WINDOW: java.time.Duration = java.time.Duration.ofHours(2)
@@ -1974,7 +1974,7 @@ class RemoteGather(
 
         /**
          * sync_state key: the entries the last gather could not read (DeltaPage.skippedPaths), newline-joined and
-         * capped at [SKIPPED_PATHS_KEPT]; empty once a gather ends complete. `daemon.status` `skipped_paths` (#1234).
+         * capped at [SKIPPED_PATHS_KEPT]; empty once a gather ends complete. `daemon.status` `skipped_paths` (archive#1234).
          */
         const val PENDING_SKIPPED_PATHS_KEY = "pending_cursor_skipped_paths"
 
@@ -2026,7 +2026,7 @@ class RemoteGather(
 
         const val SCAN_CHECKPOINT_STALE_HOURS: Long = 6L
 
-        // #401: sync_state keys backing the `status` collision surface. The paths
+        // archive#401: sync_state keys backing the `status` collision surface. The paths
         // value is TAB-joined, capped so a drive-wide naming collision cannot bloat
         // either the row or the status output.
         const val REMOTE_COLLISIONS_KEY: String = "remote_collisions"
@@ -2047,7 +2047,7 @@ class RemoteGather(
             return path
         }
 
-        /** #115: [path] with its canonical top-level folder replaced by the local alias, if any. */
+        /** archive#115: [path] with its canonical top-level folder replaced by the local alias, if any. */
         fun applyReverseTop(
             path: String,
             canonicalToLocalTop: Map<String, String>,

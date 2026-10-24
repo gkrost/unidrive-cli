@@ -6,7 +6,7 @@
     Ad-hoc probe, read-only. Joins hydration.list (remote_modified_ms, remote_id, pending_upload) with the file system of the mount and
     prints one line per uploaded file, ordered by the cloud time: ORIGINAL when the local file still has the fixed golden time,
     changed otherwise, plus the attributes (ReparsePoint = a placeholder). It showed that the mount's placeholders lose the time
-    unevenly (gkrost/unidrive#486). Authenticates with the profile's read token (ipc-auth.ps1; -ConfigDir overrides where the
+    unevenly (archive#486). Authenticates with the profile's read token (ipc-auth.ps1; -ConfigDir overrides where the
     profile's config folder is). Needs PowerShell 7.
 #>
 param(

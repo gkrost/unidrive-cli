@@ -45,7 +45,7 @@ delete-detect-correct ──> reconcile-in-daemon
 | `**/*.part`, `**/*.crdownload` | partial downloads |
 | `**/*.swp`, `**/*.swx`, `**/.*.sw?` | vim swap |
 | `**/*.tmp`, `**/*~` | generic temp / backup |
-| `**/*.unidrive-tmp` | a provider's staging file of a download, also the short form `.ud-<hex>.unidrive-tmp` (#1049 X2: an interrupted download left it in the sync root and the next scan uploaded the partial) |
+| `**/*.unidrive-tmp` | a provider's staging file of a download, also the short form `.ud-<hex>.unidrive-tmp` (archive#1049 X2: an interrupted download left it in the sync root and the next scan uploaded the partial) |
 
 **Boundaries + placement (implementation note).** Today exclusions live in three uncoordinated layers: TOML global + per-profile via `SyncConfig.effectiveExcludePatterns(provider)`; CLI `--exclude` folded in at `SyncCommand.kt:424`; and **then** the engine hardcodes `/.unidrive-trash/**` + `/.unidrive-versions/**` at `SyncEngine.kt:119` — so those two are invisible to `doctor` and to `effectiveExcludePatterns`. This sub-project **consolidates**: add the junk list **and** the trash/versions patterns as a `SyncConfig.DEFAULT_EXCLUDE_PATTERNS` companion, fold them into `effectiveExcludePatterns` so a single set flows uniformly to `LocalScanner`, `Reconciler`, and `doctor`, and **remove** the hardcoded list from `SyncEngine.kt:119`. Reuse the existing `Reconciler.matchesGlob` matcher (already handles `**/`, `*`, `?`) — no new matcher. The CLI/TOML user layers stay additive on top of the defaults.
 

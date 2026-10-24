@@ -208,7 +208,7 @@ class DownloadContentTypeGuardTest {
             runCatching { Files.deleteIfExists(tempDir) }
         }
 
-    // #354: the truncation guard must run BEFORE the temp file is moved over the
+    // archive#354: the truncation guard must run BEFORE the temp file is moved over the
     // destination. A silent short read used to be atomically promoted first and only
     // detected afterwards, so the destination held the truncated bytes and the intact
     // previous version was gone before the failure surfaced.
@@ -266,7 +266,7 @@ class DownloadContentTypeGuardTest {
             runCatching { Files.deleteIfExists(tempDir) }
         }
 
-    // #354 control: a complete download (body length == Content-Length) still replaces
+    // archive#354 control: a complete download (body length == Content-Length) still replaces
     // a pre-existing destination.
     @Test
     fun `a complete download still replaces the previous destination`() =

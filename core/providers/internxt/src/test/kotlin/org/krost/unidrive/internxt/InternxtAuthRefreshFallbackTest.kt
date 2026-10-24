@@ -17,7 +17,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 /**
- * #1066: inside the pre-expiry refresh window (24 h, or a quarter of the token's lifetime) a refresh answered with
+ * archive#1066: inside the pre-expiry refresh window (24 h, or a quarter of the token's lifetime) a refresh answered with
  * 408/429/5xx failed every call, bridge calls included, although the stored JWT was still valid for hours. A
  * transient refresh failure now leaves the call on the stored credentials, and the next call tries the refresh
  * again. An expired token and a forced (reactive 401) refresh still fail.

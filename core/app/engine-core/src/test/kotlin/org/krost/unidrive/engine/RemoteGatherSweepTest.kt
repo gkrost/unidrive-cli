@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
 
 /**
  * The absence sweep of a full listing (`RemoteGather.detectMissingAfterFullSync`) reads the table in steps: it needs the
- * rows the listing did not see, not every row as an object under one hold of the database monitor (#1027).
+ * rows the listing did not see, not every row as an object under one hold of the database monitor (archive#1027).
  */
 class RemoteGatherSweepTest {
     private lateinit var tmp: Path

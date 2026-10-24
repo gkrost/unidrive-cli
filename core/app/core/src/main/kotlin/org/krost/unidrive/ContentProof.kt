@@ -2,7 +2,7 @@ package org.krost.unidrive
 
 /**
  * The outcome of a proof, made WITHOUT downloading the cloud copy, that a local file does or does not hold the bytes of a
- * cloud item ([CloudProvider.contentMatchesLocal], gkrost/unidrive#1219).
+ * cloud item ([CloudProvider.contentMatchesLocal], archive#1219).
  *
  * [same] is true only when a real comparison found the two equal (a content hash or the provider's own checksum of
  * the stored object matched), false only when one found them different (a hash that can be compared did not match, the

@@ -14,7 +14,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #1203: on Windows the rename of the sidecar over an existing one fails with AccessDeniedException while another handle holds the
+ * archive#1203: on Windows the rename of the sidecar over an existing one fails with AccessDeniedException while another handle holds the
  * target; the write tries a few times before the caller sees it, and a write that finally fails leaves no temp file behind.
  */
 class UploadTombstoneStoreWriteTest {

@@ -9,7 +9,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * #309: a local rename that changes only the case of a tracked name (`case1.txt` to `CASE1.txt`, `docs` to `DOCS`)
+ * archive#309: a local rename that changes only the case of a tracked name (`case1.txt` to `CASE1.txt`, `docs` to `DOCS`)
  * where case folds. The scan reports the new name NEW, and the old one DELETED on a case-sensitive disk or not at all
  * on a folding one (the old name still opens the same file). Left to the reconciler's case guard it was a refused twin
  * (and for a folder a remote mkdir of the new name), plus a remote delete of the old name on a case-sensitive disk. It

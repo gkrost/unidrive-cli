@@ -172,7 +172,7 @@ class ThrottledProviderTest {
             }
         }
 
-    // #1059: the engine downloads through the *WithHash variants.
+    // archive#1059: the engine downloads through the *WithHash variants.
     @Test
     fun `downloads through the WithHash variants are throttled and keep the inner receipt`() =
         runBlocking {

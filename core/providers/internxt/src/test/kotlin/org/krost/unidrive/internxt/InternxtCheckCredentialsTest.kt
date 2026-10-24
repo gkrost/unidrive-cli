@@ -24,7 +24,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * `checkCredentials()` (#1240): one authenticated GET of the usage figure with the stored session, no console prompt
+ * `checkCredentials()` (archive#1240): one authenticated GET of the usage figure with the stored session, no console prompt
  * whatever is stored. The server's answers are scripted on a MockEngine; every value is made up.
  */
 class InternxtCheckCredentialsTest {

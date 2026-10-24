@@ -29,13 +29,13 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * #450: the hydration cache has a per-profile budget and an eviction pass. The rules that matter most are
- * the ones that never evict: an open handle, a queued or in-flight upload (#301, #318), a row whose upload
- * is pending or failed (#136), a copy that was modified since it was recorded, a file no row owns. After
- * those, least recently used first. (#560 U6 retired the sync-root-copy ordering: every cache copy is the
+ * archive#450: the hydration cache has a per-profile budget and an eviction pass. The rules that matter most are
+ * the ones that never evict: an open handle, a queued or in-flight upload (archive#301, archive#318), a row whose upload
+ * is pending or failed (archive#136), a copy that was modified since it was recorded, a file no row owns. After
+ * those, least recently used first. (archive#560 U6 retired the sync-root-copy ordering: every cache copy is the
  * row's only local file.)
  *
- * #728: a triggered pass is cheap when the cache is not plausibly over budget and does not repeat inside
+ * archive#728: a triggered pass is cheap when the cache is not plausibly over budget and does not repeat inside
  * the pass interval (the walk itself is the expensive part); these tests pin that accounting gate, the
  * interval and the batched row lookups, with [HydrationImpl.cacheWalkCount] as the counting seam.
  */
@@ -199,7 +199,7 @@ class HydrationCacheBudgetTest {
             val recordedMtimeMs = env.db.getEntry("/synced.txt")?.localMtime ?: 0L
             Files.write(cache, bytesOf(200))
             // The engine compares mtimes in whole milliseconds, so a same-size rewrite that lands in the very
-            // millisecond the baseline was recorded looks unchanged (#718). The test must not race the clock
+            // millisecond the baseline was recorded looks unchanged (archive#718). The test must not race the clock
             // for that: give the edit an mtime that is clearly not the recorded one, as a later edit has.
             Files.setLastModifiedTime(cache, FileTime.fromMillis(maxOf(recordedMtimeMs, System.currentTimeMillis()) + 5_000))
             // Mount-only file: no sync-root file, the cache copy is the row's local file, then edited.
@@ -255,7 +255,7 @@ class HydrationCacheBudgetTest {
             age(cache.getValue("a.txt"), 3)
             age(cache.getValue("b.txt"), 2)
             age(cache.getValue("c.txt"), 1)
-            // #560 U6: the cache copy is the row's local file, so aging it means re-recording the
+            // archive#560 U6: the cache copy is the row's local file, so aging it means re-recording the
             // baseline — an mtime the row does not know is indistinguishable from an edit, and the
             // copy would be protected as a possible unsynced change instead of evictable.
             for ((name, path) in cache) {
@@ -274,7 +274,7 @@ class HydrationCacheBudgetTest {
             assertEquals(2, report.evictedFiles)
             assertEquals(1000L, hydration.cacheSizeBytes())
             // The mirror pass's sync-root files are untouched (the mount writes nothing there), and
-            // the row's local copy is gone with the eviction: #560 U6 marks it not hydrated, and the
+            // the row's local copy is gone with the eviction: archive#560 U6 marks it not hydrated, and the
             // next open refills it from the remote.
             assertTrue(Files.exists(env.syncRoot.resolve("a.txt")))
             assertEquals(false, env.db.getEntry("/a.txt")?.isHydrated)
@@ -380,7 +380,7 @@ class HydrationCacheBudgetTest {
             assertContentEquals(bytesOf(1), Files.readAllBytes(env.syncRoot.resolve("a.txt")), "the sync-root file is untouched")
         }
 
-    // #1071: the sweep matched any name that contains ".hydrating-" and asked no row, so the cache copy of a file
+    // archive#1071: the sweep matched any name that contains ".hydrating-" and asked no row, so the cache copy of a file
     // that never reached the cloud (its only copy) was deleted at the next start.
     @Test
     fun `the start sweep spares a cache copy that looks like a staging name but is a user's file`() =
@@ -450,7 +450,7 @@ class HydrationCacheBudgetTest {
             assertTrue(sweep.isCancelled, "the cancelled sweep must not continue into eviction")
         }
 
-    // ── #728: what a trigger is worth ───────────────────────────────────────────────────────────
+    // ── archive#728: what a trigger is worth ───────────────────────────────────────────────────────────
 
     @Test
     fun `a trigger with the cache under budget does not walk it, an over-budget one does`() =

@@ -29,7 +29,7 @@ token is written by the same code that writes it everywhere (under the provider'
 - **A stopped profile**: the CLI, holding the profile lock for the call (so no daemon or sync can start meanwhile and
   the token file has one writer).
 - **A profile held by a running daemon**: the CLI hands the check to the daemon over its authenticated IPC socket
-  (`auth.check`, daemon design §4.12), the way `auth login` is handed over (#813). The daemon makes the call through its
+  (`auth.check`, daemon design §4.12), the way `auth login` is handed over (archive#813). The daemon makes the call through its
   own provider instance, which is the one that holds and refreshes the token: there is no second refresher, so no refresh
   write races the daemon's. The CLI itself reads no token and calls no provider.
 - A profile held by a sync is `profile_in_use`.
@@ -43,7 +43,7 @@ Success, exit 0:
 ```
 
 `account` is absent (never `null`) when the provider does not say it. Refusal, exit 1 (the CLI convention for a
-failed command, #1126), on stdout with `--json`:
+failed command, archive#1126), on stdout with `--json`:
 
 ```json
 {"ok":false,"error":"credentials_rejected","message":"the provider did not accept the stored sign-in (revoked, expired or another account)"}

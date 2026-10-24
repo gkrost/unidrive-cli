@@ -16,7 +16,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #778: the pause state and the in-flight rule. A transfer whose estimated time remaining is under ten
+ * archive#778: the pause state and the in-flight rule. A transfer whose estimated time remaining is under ten
  * seconds is left to finish; any other is aborted (and its owner re-queues it).
  */
 class PauseGateTest {

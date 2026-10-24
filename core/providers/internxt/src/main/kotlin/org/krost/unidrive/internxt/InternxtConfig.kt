@@ -13,7 +13,7 @@ data class InternxtConfig(
     val desktopHeader: String? = System.getenv("INTERNXT_DESKTOP_HEADER")?.takeIf { it.isNotBlank() },
     val notificationsUrl: String = System.getenv("INTERNXT_NOTIFICATIONS_URL") ?: NOTIFICATIONS_URL,
     val keepOverwritten: Boolean = false,
-    // #578: the multipart upload policy, per profile. Files whose ciphertext is at or
+    // archive#578: the multipart upload policy, per profile. Files whose ciphertext is at or
     // below [uploadCutoffMb] keep the single PUT; above it they go out in
     // [uploadChunkMb] parts, [uploadConcurrency] at a time. Validated by the factory.
     val uploadConcurrency: Int = DEFAULT_UPLOAD_CONCURRENCY,
@@ -33,7 +33,7 @@ data class InternxtConfig(
         const val CLIENT_VERSION = "0.0.1"
         const val NOTIFICATIONS_URL = "https://notifications.internxt.com"
 
-        // #578 defaults and bounds (the issue's item 3): concurrency 1 = today's single
+        // archive#578 defaults and bounds (the issue's item 3): concurrency 1 = today's single
         // stream, 16 = the upper bound; 5 MB is the smallest part the bridge accepts;
         // the cutoff default keeps files at or below 100 MB on the single PUT.
         const val DEFAULT_UPLOAD_CONCURRENCY: Int = 4
@@ -55,13 +55,13 @@ data class InternxtConfig(
 
         /**
          * Page size of the cursor listing of one folder (`GET /folders/v2/content/{uuid}/files|folders`): the
-         * server validates `limit` as 50..1000 there (#647), so 1000 is the largest the endpoint takes.
+         * server validates `limit` as 50..1000 there (archive#647), so 1000 is the largest the endpoint takes.
          */
         const val FOLDER_CONTENT_CURSOR_PAGE_SIZE: Int = 1000
 
         /**
          * Page size of the deprecated offset listing of one folder (`GET /folders/content/{uuid}/files|folders`):
-         * the server validates `limit` as REQUIRED 1..50 there (#647); 999 answers 400.
+         * the server validates `limit` as REQUIRED 1..50 there (archive#647); 999 answers 400.
          */
         const val FOLDER_CONTENT_OFFSET_PAGE_SIZE: Int = 50
 

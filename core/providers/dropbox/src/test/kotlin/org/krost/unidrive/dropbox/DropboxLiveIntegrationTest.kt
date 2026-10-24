@@ -10,7 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * The live Dropbox checks (#867): run them by hand with a TEST app and account — never a real one:
+ * The live Dropbox checks (archive#867): run them by hand with a TEST app and account — never a real one:
  * ```
  * UNIDRIVE_INTEGRATION_TESTS=true UNIDRIVE_TEST_ACCESS_TOKEN=... ./gradlew :providers:dropbox:test --tests '*DropboxLiveIntegrationTest'
  * ```

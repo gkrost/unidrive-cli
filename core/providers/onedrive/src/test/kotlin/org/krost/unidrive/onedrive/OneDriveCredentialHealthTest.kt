@@ -59,7 +59,7 @@ class OneDriveCredentialHealthTest {
         )
     }
 
-    // #586: an access token past its life with no refresh token can never be renewed. It is expired (not a
+    // archive#586: an access token past its life with no refresh token can never be renewed. It is expired (not a
     // free-form warning), so that daemon.status can say "sign in again" for it.
     @Test
     fun `an expired access token without a refresh token is expired, with the re-auth text`() {

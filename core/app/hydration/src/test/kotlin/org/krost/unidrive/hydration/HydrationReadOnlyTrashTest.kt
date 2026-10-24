@@ -92,7 +92,7 @@ class HydrationReadOnlyTrashTest {
             assertEquals(emptyList(), env.syncEngine.createdFolders())
         }
 
-    // #1074: the namespace lies outside a scoped profile's sync_path set. The verbs asked for the scope first and
+    // archive#1074: the namespace lies outside a scoped profile's sync_path set. The verbs asked for the scope first and
     // answered outside_scope, where ipc-write-protocol.md (sections 4.1 and 7) promises read_only for the trash.
     @Test
     fun `in a scoped profile a write to the namespace answers read_only, not outside_scope`() =

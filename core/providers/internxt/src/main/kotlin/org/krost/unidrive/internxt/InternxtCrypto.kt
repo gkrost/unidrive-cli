@@ -23,8 +23,8 @@ open class InternxtCrypto {
         private const val BIP39_ITERATIONS = 2048
         private const val BIP39_KEY_LENGTH = 512
 
-        // #333: fail loud on non-hex input, which used to fold silently into garbage keys/IVs.
-        // #1087: only 0-9, a-f, A-F count. Character.digit also accepts the decimal digits of other
+        // archive#333: fail loud on non-hex input, which used to fold silently into garbage keys/IVs.
+        // archive#1087: only 0-9, a-f, A-F count. Character.digit also accepts the decimal digits of other
         // scripts (U+0660 is 0) and the fullwidth Latin letters (U+FF21 is 10).
         fun hexToBytes(hex: String): ByteArray {
             require(hex.length % 2 == 0) { "Hex string must have an even length, got ${hex.length} characters" }
@@ -121,7 +121,7 @@ open class InternxtCrypto {
      * BIP39 mnemonic to 512-bit seed.
      * PBKDF2-SHA512 with "mnemonic" as salt, 2048 iterations.
      *
-     * #730: open so a counting subclass can assert the caller's cache derives once.
+     * archive#730: open so a counting subclass can assert the caller's cache derives once.
      */
     open fun mnemonicToSeed(mnemonic: String): ByteArray {
         val spec =

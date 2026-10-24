@@ -12,7 +12,7 @@ import java.time.Instant
 import kotlin.test.*
 
 /**
- * #396: for a provider with no remote content hash (Internxt), an mtime-only change of a
+ * archive#396: for a provider with no remote content hash (Internxt), an mtime-only change of a
  * synced file made the next sync upload it again — a Windows shell handler bumped the mtime
  * of a just-downloaded .eml via an NTFS alternate stream, and LocalScanner had nothing to
  * compare the unchanged bytes against. The engine now records its own SHA-256 of the bytes
@@ -217,7 +217,7 @@ class SyncEngineLocalHashTest {
         assertNull(result.localHash)
     }
 
-    // #337: an upload row takes the file's stats after the transfer, so an edit that lands
+    // archive#337: an upload row takes the file's stats after the transfer, so an edit that lands
     // mid-upload is already in the baseline. Its hash must not be recorded too, or a later
     // touch would be absorbed as unchanged and the edit would never reach the remote.
 
@@ -347,7 +347,7 @@ class SyncEngineLocalHashTest {
             assertTrue(provider.uploadedPaths.isEmpty(), "a remote rename must never turn into an upload")
         }
 
-    // ---- #439: a detected move is verified against the delete row's recorded local hash ----
+    // ---- archive#439: a detected move is verified against the delete row's recorded local hash ----
 
     @Test
     fun `a same-size replacement for a deleted file is not converted into a remote move when the row has a hash`() =
@@ -361,7 +361,7 @@ class SyncEngineLocalHashTest {
 
             quietRemote("cursor-2")
             Files.delete(syncRoot.resolve("a.txt"))
-            // Same length as the deleted file, different bytes — the #296 shape an
+            // Same length as the deleted file, different bytes — the archive#296 shape an
             // anchor+size match cannot tell apart from a move on its own.
             Files.writeString(syncRoot.resolve("b.txt"), "replaced-content")
             eng.syncOnce()

@@ -134,6 +134,13 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 - `HydrationImpl.kt` — physical payload de/reconstruction lifecycle
 - `MountEngine.kt` — mount operations (cache, hydration verbs, mirror hand-off) since the engine split
 
+## Issue references
+
+Comments and documents cite `archive#N`. That is issue or pull request N of the engine's issue tracker before this repository
+was created from the release tree; that tracker is archived and private. Issues still open at the release were filed again here,
+each starting with "Moved from archive#N". A plain `#N` in a comment or document written after the release is an issue or pull
+request of this repository.
+
 ## Contact
 
 Questions about the open-source engine, licensing of contributions and security reports that cannot go through

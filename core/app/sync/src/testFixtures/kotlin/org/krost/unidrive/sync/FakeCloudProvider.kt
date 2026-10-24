@@ -18,13 +18,13 @@ class FakeCloudProvider : CloudProvider {
     var deltaCalls = 0
     val deltaCursorArguments = mutableListOf<String?>()
 
-    // #396: null = hashless provider (Internxt-style, the default); set before the
+    // archive#396: null = hashless provider (Internxt-style, the default); set before the
     // engine is constructed to stand in for a hash-capable one (OneDrive-style).
     var hashAlgorithmOverride: HashAlgorithm? = null
 
     override fun hashAlgorithm(): HashAlgorithm? = hashAlgorithmOverride
 
-    // #309: the case policy the fake declares; the interface default (folding) unless a test sets another.
+    // archive#309: the case policy the fake declares; the interface default (folding) unless a test sets another.
     override var caseSensitivity: CaseSensitivity = CaseSensitivity.INSENSITIVE_PRESERVING
 
     override fun capabilities(): Set<org.krost.unidrive.Capability> =
@@ -51,7 +51,7 @@ class FakeCloudProvider : CloudProvider {
     var deltaItems = listOf<CloudItem>()
     var deltaCursor = "cursor-1"
 
-    // #321: runs at the top of every delta() call, so a test can land a state.db write
+    // archive#321: runs at the top of every delta() call, so a test can land a state.db write
     // mid-gather (a mount write-back completing while a long enumeration walks).
     var duringDelta: (() -> Unit)? = null
 
@@ -67,7 +67,7 @@ class FakeCloudProvider : CloudProvider {
     val deletedPaths = mutableListOf<String>()
     val files = mutableMapOf<String, ByteArray>()
 
-    // #123: created-folder order, captured under the bounded-concurrency
+    // archive#123: created-folder order, captured under the bounded-concurrency
     // create-folder run. Thread-safe because createFolder runs from
     // concurrent coroutines; the synchronized list preserves completion
     // order for the parent-before-child ordering assertion.
@@ -83,7 +83,7 @@ class FakeCloudProvider : CloudProvider {
     var deltaFailCount = 0
     var authFailOnDownload = false
     var authFailOnUpload = false
-    // #110: when true, delta() throws DeltaCursorExpiredException if called
+    // archive#110: when true, delta() throws DeltaCursorExpiredException if called
     // with a non-null cursor (simulating an aged-out OneDrive delta cursor),
     // and clears itself after the first throw so the recovery full-enum
     // (cursor=null) proceeds normally.
@@ -99,12 +99,12 @@ class FakeCloudProvider : CloudProvider {
 
     override suspend fun logout() {}
 
-    // #116: pre-existing remote tree the fast-bootstrap planner can't see.
+    // archive#116: pre-existing remote tree the fast-bootstrap planner can't see.
     // Keyed by parent path; listChildren returns the configured children so a
     // test can stage top-level folders that already exist on the cloud.
     val childrenByParent = mutableMapOf<String, List<CloudItem>>()
 
-    // #419: every listChildren() path, and per-path exceptions to throw from it, so a
+    // archive#419: every listChildren() path, and per-path exceptions to throw from it, so a
     // reaper test can prove which directories were probed and simulate a 404 on one.
     val listChildrenCalls = mutableListOf<String>()
     val listChildrenThrow = mutableMapOf<String, Throwable>()
@@ -115,10 +115,10 @@ class FakeCloudProvider : CloudProvider {
         return childrenByParent[path] ?: emptyList()
     }
 
-    // #504 review: when set, getMetadata throws it (a remote item that is gone, an outage).
+    // archive#504 review: when set, getMetadata throws it (a remote item that is gone, an outage).
     var getMetadataError: Exception? = null
 
-    // #531: folders that exist remotely but are invisible to the delta (the fast-bootstrap
+    // archive#531: folders that exist remotely but are invisible to the delta (the fast-bootstrap
     // adopted cursor never enumerated them) — getMetadata sees them, the delta does not.
     val remoteFoldersExisting = mutableSetOf<String>()
 
@@ -234,7 +234,7 @@ class FakeCloudProvider : CloudProvider {
     var lastUploadExistingRemoteId: String? = null
         private set
 
-    // #417: when set, upload() reports this as the item's modified time (what a real
+    // archive#417: when set, upload() reports this as the item's modified time (what a real
     // provider returns for the write: the time the server will list next).
     var uploadModified: Instant? = null
 
@@ -277,7 +277,7 @@ class FakeCloudProvider : CloudProvider {
     // When non-null, the NEXT delete() call throws this exception (single-use, cleared after throw).
     var deleteThrow: Throwable? = null
 
-    // #419: per-path variant of deleteThrow (not single-use), for failing one specific delete.
+    // archive#419: per-path variant of deleteThrow (not single-use), for failing one specific delete.
     val deleteThrowByPath = mutableMapOf<String, Throwable>()
 
     override suspend fun delete(remotePath: String, ifMatchETag: String?) {
@@ -295,7 +295,7 @@ class FakeCloudProvider : CloudProvider {
             throw ProviderException("Simulated createFolder failure for $path")
         }
         if (path in remoteFoldersExisting) {
-            // the live #531 shape: 409 nameAlreadyExists from OneDrive
+            // the live archive#531 shape: 409 nameAlreadyExists from OneDrive
             throw ProviderException("Create folder failed: 409 Conflict - nameAlreadyExists")
         }
         createdFolders.add(path)
@@ -353,11 +353,11 @@ class FakeCloudProvider : CloudProvider {
     // server, but with no place in the tree because a folder above them is gone for good.
     var deltaUnreachableIds: Set<String> = emptySet()
 
-    // The entries delta() could not read (DeltaPage.skippedPaths, #1234): named in the page, so a
+    // The entries delta() could not read (DeltaPage.skippedPaths, archive#1234): named in the page, so a
     // test can pin that the engine persists them for the status.
     var deltaSkippedPaths: List<String> = emptyList()
 
-    // #422: stands in for a provider whose delta() lists the whole tree on every call and
+    // archive#422: stands in for a provider whose delta() lists the whole tree on every call and
     // never sends tombstones (localfs).
     var deltaFullListing = false
     override val deltaIsFullListing: Boolean get() = deltaFullListing

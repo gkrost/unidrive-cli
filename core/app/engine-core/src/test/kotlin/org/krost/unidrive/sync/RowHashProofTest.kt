@@ -9,7 +9,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * gkrost/unidrive#1219: the proof from the content hash a cloud row carries. The recorded values are Microsoft's published quickXorHash
+ * archive#1219: the proof from the content hash a cloud row carries. The recorded values are Microsoft's published quickXorHash
  * answers (the known answers of QuickXorHashTest), not values computed by the code under test.
  */
 class RowHashProofTest {

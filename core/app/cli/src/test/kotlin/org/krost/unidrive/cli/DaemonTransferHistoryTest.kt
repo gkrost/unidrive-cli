@@ -33,7 +33,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #652: a mount daemon records its transfers in `telemetry.db` beside `state.db`, and the file is flushed and closed
+ * archive#652: a mount daemon records its transfers in `telemetry.db` beside `state.db`, and the file is flushed and closed
  * on the way out. A mirror daemon keeps none. A history that cannot be opened is never a reason to stop serving.
  */
 class DaemonTransferHistoryTest {

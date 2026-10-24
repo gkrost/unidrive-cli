@@ -3,7 +3,7 @@ package org.krost.unidrive.sync
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/** #463: `daemon_poll_seconds` in the profile section — how often `daemon run` polls the cloud. */
+/** archive#463: `daemon_poll_seconds` in the profile section — how often `daemon run` polls the cloud. */
 class SyncConfigDaemonPollTest {
     private fun parse(
         providerBody: String,

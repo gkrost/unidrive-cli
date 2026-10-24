@@ -24,7 +24,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * `checkCredentials()` (#1240): one authenticated GET of the drive root with the stored token, no sign-in whatever is
+ * `checkCredentials()` (archive#1240): one authenticated GET of the drive root with the stored token, no sign-in whatever is
  * stored. The Graph answers are scripted on a MockEngine; the token is made up.
  */
 class OneDriveCheckCredentialsTest {

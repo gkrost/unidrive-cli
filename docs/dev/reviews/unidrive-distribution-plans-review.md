@@ -21,14 +21,14 @@ unidrive-mount-linux, <infra-repo>, <dist-repo>).
 
 | Spec AC | Plan | Status |
 |---|---|---|
-| §10 AC #1 — JAR + SHA256 + ASC in GH Release | P1 Task 2 | ✅ Implemented |
-| §10 AC #2 — Per-arch tarballs + sigs in GH Release | P2 Task 3 | ✅ Implemented |
-| §10 AC #3 — End-user tarball bundle in <dist-repo> | P4a Tasks 7–9 | ✅ Implemented |
-| §10 AC #4 — `apt.unidrive.krost.org` signed repo | P3 Tasks 5, 10 (scaffold); content deferred to P5 | ⚠️ Deferred |
-| §10 AC #5 — `dnf.unidrive.krost.org` signed repo | Same as #4 | ⚠️ Deferred |
-| §10 AC #6 — AUR package | Deferred to P4b | ⏳ Pending |
-| §10 AC #7 — E2E manual smoke | P5 | ⏳ Pending |
-| §10 AC #8 — Install page on `unidrive.krost.org` | P5 | ⏳ Pending |
+| §10 AC archive#1 — JAR + SHA256 + ASC in GH Release | P1 Task 2 | ✅ Implemented |
+| §10 AC archive#2 — Per-arch tarballs + sigs in GH Release | P2 Task 3 | ✅ Implemented |
+| §10 AC archive#3 — End-user tarball bundle in <dist-repo> | P4a Tasks 7–9 | ✅ Implemented |
+| §10 AC archive#4 — `apt.unidrive.krost.org` signed repo | P3 Tasks 5, 10 (scaffold); content deferred to P5 | ⚠️ Deferred |
+| §10 AC archive#5 — `dnf.unidrive.krost.org` signed repo | Same as archive#4 | ⚠️ Deferred |
+| §10 AC archive#6 — AUR package | Deferred to P4b | ⏳ Pending |
+| §10 AC archive#7 — E2E manual smoke | P5 | ⏳ Pending |
+| §10 AC archive#8 — Install page on `unidrive.krost.org` | P5 | ⏳ Pending |
 
 ## Cross-repo coordination matrix
 

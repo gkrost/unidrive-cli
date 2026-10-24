@@ -18,7 +18,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #739: a file with no state row cannot be an engine placeholder (the engine's placeholders are
+ * archive#739: a file with no state row cannot be an engine placeholder (the engine's placeholders are
  * 0-byte files, and a freed or interrupted one always has a row). A real file that happens to be all
  * zeros (a preallocated database, a fresh disk image) used to be taken for a sparse stub, recorded as
  * not hydrated, and after a failed first upload no recovery loop picked it up again: its bytes never

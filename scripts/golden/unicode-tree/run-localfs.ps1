@@ -8,7 +8,7 @@
     (what Explorer does), waits until the uploads stop changing, and then checks every surface against the manifest:
 
         provider    the localfs remote directory (what the provider really holds: exact names, sizes, hashes, times)
-        mirror      the engine's copy in its sync root (#449)
+        mirror      the engine's copy in its sync root (archive#449)
         mount       the mount's own files (placeholders, hashes: reads hydrate)
         daemon      the daemon's listing (daemon-view.ps1)
         fresh       a new, empty mount root over the same daemon: every placeholder comes from the daemon's listing; names, sizes, hashes
@@ -170,7 +170,7 @@ function Placeholder-Counts([string]$root) {
         elseif ($rp) { $phF++ } else {
             $plF++
             $leaf = [IO.Path]::GetFileName($e)
-            # a name with a sibling that is the same name for the cloud (gkrost/unidrive#491) stays plain on purpose once the client
+            # a name with a sibling that is the same name for the cloud (archive#491) stays plain on purpose once the client
             # refuses such pairs: that is a clash, not a stuck queue
             $nfc = $leaf.Normalize([Text.NormalizationForm]::FormC)
             $clash = @([IO.Directory]::EnumerateFileSystemEntries([IO.Path]::GetDirectoryName($e)) | Where-Object { $n = [IO.Path]::GetFileName($_); -not [string]::Equals($n, $leaf, [StringComparison]::Ordinal) -and [string]::Equals($n.Normalize([Text.NormalizationForm]::FormC), $nfc, [StringComparison]::Ordinal) }).Count -gt 0

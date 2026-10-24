@@ -1,10 +1,10 @@
 # Testing JSON serialization for paths with `"` / `\` / newline — extract the formatter, don't round-trip through the FS
 
-**Surfaced 2026-05-17 fixing PR #46's Codex P2 review on UD-264's `skipped-ops.jsonl` writer.**
+**Surfaced 2026-05-17 fixing PR archive#46's Codex P2 review on UD-264's `skipped-ops.jsonl` writer.**
 
 ## Problem
 
-PR #46 reviewer flagged: the new `skipped-ops.jsonl` writer in `SyncEngine.logSkippedOp` used a hand-built triple-quoted JSON template:
+PR archive#46 reviewer flagged: the new `skipped-ops.jsonl` writer in `SyncEngine.logSkippedOp` used a hand-built triple-quoted JSON template:
 
 ```kotlin
 val line = """{"ts":"${Instant.now()}","action":"$kind","path":"${action.path}","reason":"$reason"}"""
@@ -87,7 +87,7 @@ In each case: don't try to round-trip through the layer that rejects the value. 
 
 ## Cross-refs
 
-- UD-264 (closed by PR #46) — the fix that landed.
+- UD-264 (closed by PR archive#46) — the fix that landed.
 - UD-264a (open) — same bug class in `logFailure`; same `formatFailureLogJson`-helper-then-unit-test pattern applies.
 - 2026-05-17 audit report §"Corrections" — the observed `/\ninternxt-cli.desktop` path that proves this is not hypothetical.
 - `core/app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncEngine.kt` — `Companion.formatSkippedOpJson` is the canonical lifted-helper for this lesson.

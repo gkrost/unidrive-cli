@@ -11,9 +11,9 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * #560 U3: the mount front-end runs on its host's shared core and there is one of it per host, as when the
+ * archive#560 U3: the mount front-end runs on its host's shared core and there is one of it per host, as when the
  * operations lived in SyncEngine. Two front-ends over one engine would each have their own per-path hydrate
- * locks (#318) and their own rescan guard (#504).
+ * locks (archive#318) and their own rescan guard (archive#504).
  */
 class MountEngineWiringTest {
     private lateinit var db: StateDatabase

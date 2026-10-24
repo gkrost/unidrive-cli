@@ -49,10 +49,10 @@ jobs:
           build-mode: none
         # java-kotlin is temporarily disabled: the CodeQL extractor hard-aborts
         # with "Kotlin version 2.4.0 is too recent (supports versions below
-        # 2.3.30)" since the #285 bump, failing the leg on every PR. CodeQL is
+        # 2.3.30)" since the archive#285 bump, failing the leg on every PR. CodeQL is
         # advisory (`./gradlew check` is the sole gate), so a leg
         # that cannot run must not paint every PR red. Re-enable by restoring
-        # this entry once the CodeQL bundle supports Kotlin 2.4.0 (#358).
+        # this entry once the CodeQL bundle supports Kotlin 2.4.0 (archive#358).
         # - language: java-kotlin
         #   # Manual build: autobuild can't build the Gradle project (it lives in core/,
         #   # not the repo root), and source-only (none) sees no Kotlin. Compile core/

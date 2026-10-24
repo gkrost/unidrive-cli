@@ -111,9 +111,9 @@ class VerifyCommand : Callable<Int> {
         // divergence in any of the three views.
         val config = parent.loadSyncConfig()
         val excludes = config.effectiveExcludePatterns(profile.name)
-        // #532: all three views must be cut to the same boundary, or the audit reports
+        // archive#532: all three views must be cut to the same boundary, or the audit reports
         // out-of-scope rows as db-only/remote-only divergences instead of ignoring them.
-        // The boundary is the one sync works within: --sync-path, else the profile's sync_path (#1083).
+        // The boundary is the one sync works within: --sync-path, else the profile's sync_path (archive#1083).
         val scope = effectiveScope(config.syncPaths)
         if (scope.isNotEmpty()) {
             val origin = if (syncPaths.isNotEmpty()) "--sync-path" else "the profile's sync_path"
@@ -339,7 +339,7 @@ class VerifyCommand : Callable<Int> {
      *
      * With a non-empty [scope] the walk starts at the scope roots instead of
      * the drive root, so the call count follows the audited subtree rather
-     * than the whole drive (#532).
+     * than the whole drive (archive#532).
      */
     private suspend fun listRemoteFiles(
         provider: CloudProvider,

@@ -34,7 +34,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * #578: multipart upload of a large file — parts in parallel up to the configured
+ * archive#578: multipart upload of a large file — parts in parallel up to the configured
  * cap, one part's retry ladder independent of the others, per-part resume from the
  * upload tombstone, a finish call that is never sent with an incomplete part list,
  * and the assembled ciphertext decrypting back to the plaintext (concurrency 1's

@@ -10,7 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * #491: state.db keys paths in NFC (#171), and so a remote path. A row of a normalisation collision keeps the
+ * archive#491: state.db keys paths in NFC (archive#171), and so a remote path. A row of a normalisation collision keeps the
  * provider's own spelling as its remote path instead: the twin under its decorated name and the item that holds the
  * NFC name. The lookup by remote path still finds the holder by the NFC key, a writer that only brings the NFC key
  * (a download, an upload) keeps the spelling, and every other remote path stays NFC. Names are built from code points,

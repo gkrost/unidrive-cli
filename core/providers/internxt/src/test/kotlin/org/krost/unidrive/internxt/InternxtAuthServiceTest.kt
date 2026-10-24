@@ -44,7 +44,7 @@ class InternxtAuthServiceTest {
     /**
      * Fake that counts network roundtrips and emits a monotonically increasing
      * jwt per call. No real HTTP. The first caller through the critical section
-     * sees call #1; any caller that was racing should NOT observe a second call.
+     * sees call archive#1; any caller that was racing should NOT observe a second call.
      */
     private class CountingAuthService(
         config: InternxtConfig,
@@ -238,7 +238,7 @@ class InternxtAuthServiceTest {
             }
         }
 
-    // --- #334: the 24 h pre-expiry margin must clamp to lifetime / 4 ---
+    // --- archive#334: the 24 h pre-expiry margin must clamp to lifetime / 4 ---
     //
     // A fixed 24 h margin makes every fresh token of a ≤24 h lifetime count as
     // near expiry: each getValidCredentials burns a sequential /users/refresh
@@ -400,7 +400,7 @@ class InternxtAuthServiceTest {
         }
 
     /**
-     * UD-308 follow-up (PR #23 Codex P2 regression guard).
+     * UD-308 follow-up (PR archive#23 Codex P2 regression guard).
      *
      * `isJwtExpired()` must decode payloads at every reachable base64-url
      * unpadded length-mod-4 class — `{0, 2, 3}` (mod-4 == 1 is structurally
@@ -471,7 +471,7 @@ class InternxtAuthServiceTest {
      * has the given unix-second value. Signature is irrelevant — `isJwtExpired()`
      * never validates it, it only decodes the payload.
      *
-     * UD-308 follow-up (PR #23 Codex P2): the previous version of this helper
+     * UD-308 follow-up (PR archive#23 Codex P2): the previous version of this helper
      * had to artificially pad the JSON payload to length `3k+1` because the
      * old `isJwtExpired()` used `decode(payload + "==")` which only worked when
      * the unpadded base64 length was `4k+2`. With the padding-aware fix in
@@ -719,7 +719,7 @@ class InternxtAuthServiceTest {
         assertNotNull(function)
     }
 
-    // #865: the interactive sign-in is terminal-only. A daemon or mount start of a profile with
+    // archive#865: the interactive sign-in is terminal-only. A daemon or mount start of a profile with
     // expired credentials has no console and used to camp on the email prompt forever; the
     // invariant is that it fails with the typed reason instead of reading stdin at all. The
     // Gradle test JVM has no console, which is exactly the refused situation; a run with one

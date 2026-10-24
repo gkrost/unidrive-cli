@@ -78,7 +78,7 @@ class DropboxProvider(
     private val log = org.slf4j.LoggerFactory.getLogger(DropboxProvider::class.java)
     private val api: DropboxApi = DropboxApi(config, { force -> auth.accessToken(force) }, engine)
 
-    // #867: upload sessions in flight, so an interrupted big upload resumes at the committed offset.
+    // archive#867: upload sessions in flight, so an interrupted big upload resumes at the committed offset.
     private val sessionStore = DropboxSessionStore(config.tokenPath)
     private val auth: DropboxAuth = DropboxAuth(config, api.httpClient)
     private val items = DropboxItems()
@@ -128,7 +128,7 @@ class DropboxProvider(
 
     override fun attachRequestMetrics(sink: org.krost.unidrive.http.RequestMetricsSink?) = api.attachRequestMetrics(sink)
 
-    // #1240: one users/get_space_usage with the stored grant; never the browser sign-in of authenticate().
+    // archive#1240: one users/get_space_usage with the stored grant; never the browser sign-in of authenticate().
     override suspend fun checkCredentials(): CredentialProof {
         if (!auth.isAuthenticated) auth.load()
         if (!auth.isAuthenticated) throw NotSignedInException("no Dropbox grant is stored for this profile")
@@ -141,7 +141,7 @@ class DropboxProvider(
         if (!auth.isAuthenticated) auth.signInWithBrowser()
     }
 
-    // #1052: auth/token/revoke disables the access token the call carries and the refresh token behind it. The
+    // archive#1052: auth/token/revoke disables the access token the call carries and the refresh token behind it. The
     // provider of a sign-out is built fresh, so the stored grant is read first; without one the call has no token.
     override suspend fun revokeToken(): TokenRevocation {
         auth.load()
@@ -149,7 +149,7 @@ class DropboxProvider(
         return TokenRevocation.REVOKED
     }
 
-    // #1186: the daemon's own instance after a sign-out; the token file is already gone.
+    // archive#1186: the daemon's own instance after a sign-out; the token file is already gone.
     override suspend fun forgetCredentials() {
         auth.forget()
         pathRootKnown = false
@@ -305,7 +305,7 @@ class DropboxProvider(
         onProgress: ((Long, Long) -> Unit)?,
     ): JsonObject {
         val mtime = withContext(Dispatchers.IO) { Files.getLastModifiedTime(localPath).toMillis() }
-        // #867: the session survives the process. A same-shaped local file resumes at the committed
+        // archive#867: the session survives the process. A same-shaped local file resumes at the committed
         // offset; a changed file (or an older session, or none) starts a new one.
         val stored = sessionStore.get(remotePath, size, mtime)
         val sessionId =
@@ -435,7 +435,7 @@ class DropboxProvider(
         remotePath: String,
     ) = remove(if (remoteId.startsWith("id:")) remoteId else apiPath(remotePath), null)
 
-    // #1178: rm --permanent. `files/permanently_delete` is plan-gated on Dropbox's side (a Basic account
+    // archive#1178: rm --permanent. `files/permanently_delete` is plan-gated on Dropbox's side (a Basic account
     // answers an error): that is a runtime failure the CLI reports as a failed delete, not a missing
     // capability here. Already-gone is tolerated, as remove() does.
     override suspend fun deletePermanently(remotePath: String) = purge(apiPath(remotePath))

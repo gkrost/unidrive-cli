@@ -15,9 +15,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #291: OneDrive lost-update — a MODIFIED file ≤4 MiB replaced via the simple content PUT
+ * archive#291: OneDrive lost-update — a MODIFIED file ≤4 MiB replaced via the simple content PUT
  * carried NO `If-Match` header, so a concurrent remote edit landing between the engine's
- * plan and the apply was blind-overwritten. #113 only guarded the >4 MiB upload-session
+ * plan and the apply was blind-overwritten. archive#113 only guarded the >4 MiB upload-session
  * path; the simple PUT (the majority of files) had no optimistic-concurrency token at all.
  *
  * Each test names one orthogonal invariant:

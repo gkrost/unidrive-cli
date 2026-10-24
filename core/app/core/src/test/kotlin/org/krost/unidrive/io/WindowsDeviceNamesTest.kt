@@ -6,7 +6,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #1090: the table every name check asks. The same names are run through `localNameIssue`, `RootNames`, the profile-name
+ * archive#1090: the table every name check asks. The same names are run through `localNameIssue`, `RootNames`, the profile-name
  * check and OneDrive's rule in their own modules; the client's `WindowsNames.Problem` mirrors this table.
  */
 class WindowsDeviceNamesTest {

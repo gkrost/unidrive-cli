@@ -187,7 +187,7 @@ class IpcProgressReporterTest {
             client.close()
         }
 
-    // UD-214: re-enabled. Was @Ignore'd ("Flaky IPC race; see #108") because
+    // UD-214: re-enabled. Was @Ignore'd ("Flaky IPC race; see archive#108") because
     // the delay(200)/yield() pattern couldn't reliably wait for the
     // Dispatchers.IO accept loop under runTest's virtual time.
     @Test
@@ -248,7 +248,7 @@ class IpcProgressReporterTest {
             client.close()
         }
 
-    // #1060: a provider exception can quote a pre-authenticated URL; IPC clients get host and path, not the query.
+    // archive#1060: a provider exception can quote a pre-authenticated URL; IPC clients get host and path, not the query.
     @Test
     fun `warnings and sync errors carry no URL query`() =
         runTest {

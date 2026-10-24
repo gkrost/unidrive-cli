@@ -32,7 +32,7 @@ class UploadSessionStore(
         val localSize: Long,
         val localMtimeMillis: Long,
         val ifMatchETag: String? = null,
-        // The conflict behaviour the session was created with (#1175: it stays the file's behaviour for the whole upload);
+        // The conflict behaviour the session was created with (archive#1175: it stays the file's behaviour for the whole upload);
         // null for an entry written before it was recorded.
         val conflictBehavior: String? = null,
     )

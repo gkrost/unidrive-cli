@@ -20,7 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * #491 on the mount: two cloud items whose names differ only in Unicode normalisation (the golden suite v2's
+ * archive#491 on the mount: two cloud items whose names differ only in Unicode normalisation (the golden suite v2's
  * `hazards/nfc-nfd-twins/caf{U+00E9}.txt` pair and `hazards/case-fold/{U+00C5}.txt` next to the ANGSTROM SIGN) list as two entries,
  * the member spelled in NFC under its name and the other under its decorated twin name, and every verb on either one
  * reaches that one at a drive that addresses its items by path: reading, uploading the cache copy, deleting.

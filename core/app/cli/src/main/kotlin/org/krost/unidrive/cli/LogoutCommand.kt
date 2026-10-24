@@ -124,7 +124,7 @@ internal fun profileLabel(target: ProfileTarget): String {
 }
 
 /**
- * What a sign-out did at the provider (#1052). [revoked] is the `revoked` of the reply: true only after the provider
+ * What a sign-out did at the provider (archive#1052). [revoked] is the `revoked` of the reply: true only after the provider
  * confirmed the revocation, false when it was asked and did not, null when nothing was asked of it. [token] is the
  * machine-readable reason, the `revocation` of the reply.
  */

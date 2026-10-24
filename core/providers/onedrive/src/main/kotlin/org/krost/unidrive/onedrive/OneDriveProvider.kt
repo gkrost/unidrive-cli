@@ -71,7 +71,7 @@ class OneDriveProvider(
         }
     }
 
-    // #1240: one GET of the drive root with the stored token; never the browser fallback of authenticate().
+    // archive#1240: one GET of the drive root with the stored token; never the browser fallback of authenticate().
     override suspend fun checkCredentials(): CredentialProof {
         if (!tokenManager.isAuthenticated) tokenManager.reload()
         if (!tokenManager.isAuthenticated) throw NotSignedInException("no OneDrive token is stored for this profile")
@@ -87,7 +87,7 @@ class OneDriveProvider(
         if (hintCallback != null) openChangeChannel()
     }
 
-    // #1186: the daemon's own instance after a sign-out; the token file is already gone.
+    // archive#1186: the daemon's own instance after a sign-out; the token file is already gone.
     override suspend fun forgetCredentials() {
         stopChangeChannel()
         tokenManager.forget()
@@ -107,7 +107,7 @@ class OneDriveProvider(
         graphApi.close()
     }
 
-    // ── remote-change hints (#111): Graph's socket.io endpoint, see OneDriveChangeChannel ──
+    // ── remote-change hints (archive#111): Graph's socket.io endpoint, see OneDriveChangeChannel ──
 
     private val channelLock = Any()
     private val channelCounters = ChangeChannelCounters()
@@ -166,7 +166,7 @@ class OneDriveProvider(
         remotePath: String,
         destination: Path,
     ): Long =
-        // #247: a 404 with Graph error code `itemNotFound` that escapes the download
+        // archive#247: a 404 with Graph error code `itemNotFound` that escapes the download
         // flow (the item is gone at the first path resolve, or still gone after the
         // bounded stale-URL re-resolve below) is a permanent failure, not a transient
         // one: the engine quarantines the row via PermanentDownloadFailureException —
@@ -232,7 +232,7 @@ class OneDriveProvider(
         }
     }
 
-    // #247: the Graph error body is embedded in the message by requireSuccess and the
+    // archive#247: the Graph error body is embedded in the message by requireSuccess and the
     // download path ("API error: 404 Not Found - {\"error\":{\"code\":\"itemNotFound\",...}}").
     // statusCode alone cannot distinguish "gone" from any other 404.
     private fun GraphApiException.isItemNotFound(): Boolean =
@@ -293,7 +293,7 @@ class OneDriveProvider(
         val sharedId = existingRemoteId?.takeIf { SharedItemId.isShared(it) }
         suspend fun put(conflictBehavior: String, etag: String? = null, target: String = remotePath, itemId: String? = null) =
             if (fileSize <= 4 * 1024 * 1024) {
-                // #802: the read races whatever holds the file open (indexer, backup); a short lock is retried.
+                // archive#802: the read races whatever holds the file open (indexer, backup); a short lock is retried.
                 val content = withLocalIoRetry { Files.readAllBytes(localPath) }
                 graphApi.uploadSimple(target, content, fsInfo, conflictBehavior, etag, itemId)
             } else {
@@ -331,11 +331,11 @@ class OneDriveProvider(
 
         if (existingRemoteId != null) {
             // MODIFIED file we own → replace-in-place, guarded by If-Match so a concurrent edit
-            // surfaces as 412 instead of silently overwriting the other editor's change. #291
+            // surfaces as 412 instead of silently overwriting the other editor's change. archive#291
             // extends this guard to the ≤4 MiB simple-PUT path (previously only >4 MiB sessions
-            // carried it, #113). Prefer the engine's PLAN-TIME eTag when supplied; otherwise fall
+            // carried it, archive#113). Prefer the engine's PLAN-TIME eTag when supplied; otherwise fall
             // back to an at-upload-time fetch (closes the narrower fetch→PUT window, not the
-            // engine's stale-view window — see #291 for the plan-time-persistence limitation).
+            // engine's stale-view window — see archive#291 for the plan-time-persistence limitation).
             val guardETag =
                 ifMatchETag
                     ?: runCatching { if (sharedId != null) graphApi.getItemById(sharedId) else itemAt(remotePath) }.getOrNull()?.eTag
@@ -349,7 +349,7 @@ class OneDriveProvider(
                 // A keep-both copy would land in the caller's own drive, not beside the shared item: the refusal stands.
                 if (e.statusCode == 412 && sharedId != null) throw e
                 if (e.statusCode == 412) {
-                    // #291: 412 Precondition Failed means a concurrent remote edit landed after the
+                    // archive#291: 412 Precondition Failed means a concurrent remote edit landed after the
                     // engine planned this replace. Overwriting it would be the classic lost update.
                     // Keep BOTH: the concurrent remote edit stays untouched and the local copy lands
                     // under a server-assigned name via "rename" (no If-Match — this is a fresh name,
@@ -452,7 +452,7 @@ class OneDriveProvider(
                 if (e.statusCode == 404) return // Already deleted
                 throw e
             }
-        // #291: when the engine supplies a plan-time eTag, guard the delete with If-Match so a
+        // archive#291: when the engine supplies a plan-time eTag, guard the delete with If-Match so a
         // concurrent edit since the plan surfaces as 412 rather than destroying an unseen version.
         // Null (the legacy default and the current engine call sites, which persist no plan-time
         // eTag) preserves the unconditional delete-by-id.
@@ -466,7 +466,7 @@ class OneDriveProvider(
         if (SharedItemId.isShared(remoteId)) graphApi.deleteItem(remoteId) else delete(remotePath)
     }
 
-    // #1178: rm --permanent. The item id resolves exactly as delete() does (a shared item by its
+    // archive#1178: rm --permanent. The item id resolves exactly as delete() does (a shared item by its
     // composite id, else by path); permanentDelete then bypasses the recycle bin.
     override suspend fun deletePermanently(remotePath: String) {
         rejectUnsupportedName(remotePath)
@@ -791,7 +791,7 @@ class OneDriveProvider(
         )
     }
 
-    // #287: a deletion tombstone is never the root item. Graph's documented minimal
+    // archive#287: a deletion tombstone is never the root item. Graph's documented minimal
     // tombstone shape carries just id + removal marker — parentReference, when present
     // at all, has no path — so the null-path heuristic would swallow it and the remote
     // delete would never propagate. Check the deletion facets first; the engine
@@ -837,18 +837,18 @@ class OneDriveProvider(
             isFolder = folder != null,
             modified = modifiedSource?.let { runCatching { Instant.parse(it) }.getOrNull() },
             created = createdSource?.let { runCatching { Instant.parse(it) }.getOrNull() },
-            // #112 / PR #193: prefer quickXorHash so remoteHash is consistent with
+            // archive#112 / PR archive#193: prefer quickXorHash so remoteHash is consistent with
             // hashAlgorithm()=QuickXor. Personal OneDrive reliably supplies quickXorHash
             // for all files; sha256Hash is a fallback for drives that omit it (e.g. some
             // SharePoint/business tenants). When neither field is present (folder, root,
-            // or draft item) hash is null and #112's isTouchOnly guard (remoteHash != null)
+            // or draft item) hash is null and archive#112's isTouchOnly guard (remoteHash != null)
             // safely falls back to mtime+size. One-time effect: existing DB entries whose
             // stored remoteHash was SHA-256 will mismatch on the next enumeration and get
             // re-stored as QuickXor — a single re-compare, not data loss.
             hash = file?.hashes?.quickXorHash ?: file?.hashes?.sha256Hash,
             mimeType = file?.mimeType,
             deleted = isHardDeleted(),
-            // #183: a `@microsoft.graph.removed` facet with state="removed" means the
+            // archive#183: a `@microsoft.graph.removed` facet with state="removed" means the
             // item's access was revoked (shared link revoked / moved out of scope). The
             // path resolver (SyncEngine.resolveItemPath) uses this flag to retire the
             // DB row via TRASHED without touching the local file.

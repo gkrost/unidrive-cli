@@ -19,7 +19,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #1060: Ktor's timeout exceptions quote the full request URL, query included, and the URLs of a Graph
+ * archive#1060: Ktor's timeout exceptions quote the full request URL, query included, and the URLs of a Graph
  * download or upload, an S3 presigned request or an Internxt shard carry their capability in it.
  */
 class UrlRedactionTest {

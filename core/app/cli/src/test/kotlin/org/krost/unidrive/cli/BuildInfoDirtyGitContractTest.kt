@@ -8,7 +8,7 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * #65 / UD-733: pins the git ground-truth that `generateBuildInfo`'s DIRTY
+ * archive#65 / UD-733: pins the git ground-truth that `generateBuildInfo`'s DIRTY
  * computation depends on.
  *
  * The dirty predicate in `core/app/cli/build.gradle.kts` consumes

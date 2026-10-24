@@ -2,7 +2,7 @@ package org.krost.unidrive.sync
 
 import java.text.Normalizer
 
-// #171: canonical path form for cross-platform matching. The same visible filename
+// archive#171: canonical path form for cross-platform matching. The same visible filename
 // can be encoded as different bytes — composed (NFC: "ö" = U+00F6) vs decomposed
 // (NFD: "o" + U+0308) — so byte-exact path comparison fails to match the same
 // logical name (macOS-origin names, decomposed accents). We canonicalize every path

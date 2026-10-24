@@ -36,7 +36,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * `auth check` (#1240): proves a profile's stored sign-in against the provider, once, without a daemon start, a scan or a
+ * `auth check` (archive#1240): proves a profile's stored sign-in against the provider, once, without a daemon start, a scan or a
  * sync, and never by signing in. Every test drives the real command line against a temp config directory with a fake
  * provider (no network, no real account); a daemon is a real IPC server serving the real [AuthCheckRpcHandler].
  */

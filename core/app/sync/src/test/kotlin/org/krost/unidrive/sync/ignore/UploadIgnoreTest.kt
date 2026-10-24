@@ -14,7 +14,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #660: [UploadIgnore], the ignore rules as the upload path asks them, and the cache cap of [IgnoreTree] it relies on
+ * archive#660: [UploadIgnore], the ignore rules as the upload path asks them, and the cache cap of [IgnoreTree] it relies on
  * in a long-running daemon.
  */
 class UploadIgnoreTest {

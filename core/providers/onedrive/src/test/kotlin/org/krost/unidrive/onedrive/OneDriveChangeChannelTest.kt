@@ -23,7 +23,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * [OneDriveChangeChannel] (#111) over a fake socket, a fake clock and a hand-driven scheduler: rotation at the
+ * [OneDriveChangeChannel] (archive#111) over a fake socket, a fake clock and a hand-driven scheduler: rotation at the
  * subscription's expiry, recovery after a server disconnect or a connect error, the back-off of a failing endpoint
  * request, the hints, and that a stop ends everything. No network. Every URL and token here is made up.
  */

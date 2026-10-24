@@ -11,7 +11,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * #142: auto-spawn `unidrive daemon run` on the first client connection. The daemon-design spec used to
+ * archive#142: auto-spawn `unidrive daemon run` on the first client connection. The daemon-design spec used to
  * require the operator to start the daemon explicitly; a client that finds nothing at the socket now
  * starts it (mode-agnostic: whichever mode the profile has, that profile's daemon starts — one process
  * lock per profile stays, so a double spawn is refused by the lock, never doubled).

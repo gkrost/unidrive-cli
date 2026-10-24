@@ -61,7 +61,7 @@ class RefreshCommand : Runnable {
         val profile = parent.resolveCurrentProfile()
         val socketPath = IpcServer.defaultSocketPath(profile.name)
 
-        // #142: the first client connection starts the profile's daemon — `unidrive refresh` works on a
+        // archive#142: the first client connection starts the profile's daemon — `unidrive refresh` works on a
         // fresh machine without the operator starting a daemon by hand. A stale socket file (a killed
         // daemon left it behind) also lands here: the probe connects before it believes.
         DaemonAutospawn.ensureDaemonRunning(
@@ -121,7 +121,7 @@ class RefreshCommand : Runnable {
 
                 // Check terminal event for failure
                 if (collected.contains("\"event\":\"refresh.done\"") && !collected.contains("\"ok\":true")) {
-                    // #1037: a reset that met a running enumeration (the daemon's own poll, say) did not run.
+                    // archive#1037: a reset that met a running enumeration (the daemon's own poll, say) did not run.
                     if (collected.contains("\"error\":\"busy\"")) {
                         System.err.println("unidrive refresh: a refresh is already running, so nothing was reset; try again when it has finished.")
                     }

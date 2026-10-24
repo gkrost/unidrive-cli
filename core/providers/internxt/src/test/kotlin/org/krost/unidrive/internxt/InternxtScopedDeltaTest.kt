@@ -91,8 +91,8 @@ class InternxtScopedDeltaTest {
     // ---- the account-wide listings cut: the tree walk takes over ---------------------------------------------------------
     //
     // /files and /folders page through the whole account with an offset, and on a large account they are slow server-side
-    // enough (25-56 s per folder page, #517 F3) that the client's own read-idle watchdog used to cut them at 60 s — over
-    // TLS indistinguishable from a server close (#517 F1). The mocks reproduce that close shape. After the retry ladder
+    // enough (25-56 s per folder page, archive#517 F3) that the client's own read-idle watchdog used to cut them at 60 s — over
+    // TLS indistinguishable from a server close (archive#517 F1). The mocks reproduce that close shape. After the retry ladder
     // that is a 503, and the gather used to end with it (a failing /folders) or to crawl the tree one folder at a time (a
     // failing /files).
 
@@ -175,9 +175,9 @@ class InternxtScopedDeltaTest {
             assertTrue(page.complete)
         }
 
-    // #463: an incremental delta is the daemon's poll. A cut listing ends it (the poller backs off and asks the
+    // archive#463: an incremental delta is the daemon's poll. A cut listing ends it (the poller backs off and asks the
     // cheap listing again from the same cursor); it used to walk the scope, which on a large scope is a whole
-    // enumeration for one blip. The poll's listing is the sync listing (#312); the offset one behind it answers
+    // enumeration for one blip. The poll's listing is the sync listing (archive#312); the offset one behind it answers
     // the same way.
     @Test
     fun `an incremental delta of a scoped profile, listings cut, fails without walking`() =
@@ -377,7 +377,7 @@ class InternxtScopedDeltaTest {
             val p = provider(engine)
             val scanContext = ScanContext(null, emptyList(), { _, _ -> }, scopeRoots = emptyList())
 
-            // #463: the failed poll ends as a failure, without a walk.
+            // archive#463: the failed poll ends as a failure, without a walk.
             kotlin.test.assertFailsWith<InternxtApiException> { p.delta("2026-10-03T10:00:00Z", null, scanContext) }
             assertTrue(requested.none { it.contains("/folders/content/") }, "the failed poll walked the folder tree: $requested")
             val before = requested.size
@@ -458,7 +458,7 @@ class InternxtScopedDeltaTest {
             assertEquals(0, account.first().items, "the listing is named before the first page is back")
             assertEquals(5, account.last().items, "files and folders together")
             // One report per page: the start, one page per stream, and the empty page each stream ends
-            // on since the listing ends on an empty page (#312).
+            // on since the listing ends on an empty page (archive#312).
             assertEquals(5, account.size, "the start and one report per page")
             assertTrue(account.zipWithNext().all { (a, b) -> b.items >= a.items }, "the count only grows: $reports")
         }

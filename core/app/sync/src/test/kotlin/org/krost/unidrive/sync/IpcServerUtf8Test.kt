@@ -23,7 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * #1054 S2: a request line is bytes until its newline. A read that ends inside a multi-byte UTF-8 character used to be
+ * archive#1054 S2: a request line is bytes until its newline. A read that ends inside a multi-byte UTF-8 character used to be
  * decoded on its own, so the character became U+FFFD and a path in create/rename/mkdir was corrupted (raw-UTF-8 clients
  * such as the FUSE co-daemon; the .NET client escapes non-ASCII).
  */

@@ -83,7 +83,7 @@ class Vault(
         val ciphertext = encrypt(key, iv, json.toByteArray(Charsets.UTF_8))
 
         Files.createDirectories(vaultPath.parent)
-        // #1053: the vault is the only copy of what `vault encrypt` takes out of config.toml and of what `change-passphrase`
+        // archive#1053: the vault is the only copy of what `vault encrypt` takes out of config.toml and of what `change-passphrase`
         // re-encrypts, so it is never truncated in place: the new bytes replace the old vault only once they decrypt.
         val blob = salt + iv + ciphertext
         OwnerOnlyAtomicWrite.replace(vaultPath, blob, beforeCommit) { tmp ->

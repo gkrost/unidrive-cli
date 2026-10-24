@@ -50,10 +50,10 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 // One class for the mount hydration front-end: the upload queue, the open set, the cache budget and
-// the #658 health view. Accepted as a LargeClass in-source rather than split.
+// the archive#658 health view. Accepted as a LargeClass in-source rather than split.
 @Suppress("LargeClass")
 class HydrationImpl(
-    // #560 U3: the mount operations (hydrate, upload, remote create/delete/rename) run on the mount
+    // archive#560 U3: the mount operations (hydrate, upload, remote create/delete/rename) run on the mount
     // front-end; this class owns the upload queue, the open set and the cache budget on top of it.
     private val mount: MountEngine,
     private val stateDb: StateDatabase,
@@ -68,7 +68,7 @@ class HydrationImpl(
     val uploadQueueDepth: Int = DEFAULT_UPLOAD_QUEUE_DEPTH,
     val maxUploadAttempts: Int = DEFAULT_MAX_UPLOAD_ATTEMPTS,
     val uploadRetryDelaysMs: List<Long> = DEFAULT_UPLOAD_RETRY_DELAYS_MS,
-    // Stall watchdog (the mount-upload hang, gkrost/unidrive#613): one transfer
+    // Stall watchdog (the mount-upload hang, archive#613): one transfer
     // attempt that has made no progress — no byte progress from the provider —
     // for this long is cancelled and runs the normal failed-attempt path (the
     // row is stamped, `failed` with retry_scheduled goes out, the retry ladder
@@ -80,23 +80,23 @@ class HydrationImpl(
     // coalesces provider progress callbacks to at most a few per second per
     // file. 0 emits every callback (tests).
     val uploadProgressMinIntervalMs: Long = DEFAULT_UPLOAD_PROGRESS_MIN_INTERVAL_MS,
-    // #450: per-profile budget of the hydration cache in bytes (`hydration_cache_max_bytes`);
+    // archive#450: per-profile budget of the hydration cache in bytes (`hydration_cache_max_bytes`);
     // 0 or less = unlimited. See [evictCache].
     private val cacheMaxBytes: Long = DEFAULT_CACHE_MAX_BYTES,
-    // #450: a cache file used within this window is never evicted: a read that has just been served
+    // archive#450: a cache file used within this window is never evicted: a read that has just been served
     // is not in the open-set until the handle is registered, and a client that is about to open it
     // would otherwise be handed a path that vanishes.
     private val cacheAccessGraceMs: Long = CACHE_ACCESS_GRACE_MS,
-    // #450: after a close or an upload completion the eviction pass runs once this much later, one
+    // archive#450: after a close or an upload completion the eviction pass runs once this much later, one
     // pass for any number of triggers (it walks the whole cache directory). 0 = immediately.
     private val evictionDelayMs: Long = EVICTION_DELAY_MS,
-    // #728: at most one triggered walk per this interval (see [EVICTION_MIN_INTERVAL_MS]). 0 = a
+    // archive#728: at most one triggered walk per this interval (see [EVICTION_MIN_INTERVAL_MS]). 0 = a
     // trigger walks whenever the pass is due (tests of the accounting alone).
     private val evictionMinIntervalMs: Long = EVICTION_MIN_INTERVAL_MS,
-    // #493: a row whose last upload attempt failed is replayed this much after the start instead of at once, so work
+    // archive#493: a row whose last upload attempt failed is replayed this much after the start instead of at once, so work
     // that can succeed (and the client's fresh writes) goes first. 0 = replay at once, as before.
     private val failedReplayDelayMs: Long = DEFAULT_FAILED_REPLAY_DELAY_MS,
-    // #652: where finished transfers are recorded (the daemon opens it per mount profile); null = no history.
+    // archive#652: where finished transfers are recorded (the daemon opens it per mount profile); null = no history.
     // The history never fails or slows a transfer: every call on it only hands a snapshot to its writer queue.
     private val history: TransferHistory? = null,
 ) : Hydration {
@@ -105,16 +105,16 @@ class HydrationImpl(
     internal var cacheScanCheckpoint: () -> Unit = {}
 
     /**
-     * Test seam (#729): one call for every row the replay asks its containment pass for the cache copy of. A
+     * Test seam (archive#729): one call for every row the replay asks its containment pass for the cache copy of. A
      * replay that starts from the rows calls it once per uploaded row; one that starts from the cache calls it
      * once per cache file.
      */
     internal var replayProbeCheckpoint: () -> Unit = {}
 
-    /** Test seam (#728): how many full walks of the cache directory this instance made. */
+    /** Test seam (archive#728): how many full walks of the cache directory this instance made. */
     internal val cacheWalkCount = AtomicInteger(0)
 
-    /** Test seam (#728): fired with the size of each row batch one eviction pass asks the database about. */
+    /** Test seam (archive#728): fired with the size of each row batch one eviction pass asks the database about. */
     internal var onDispositionBatch: (Int) -> Unit = {}
 
     /** Cancel and join all background work owned by this hydration layer before its state DB closes. */
@@ -123,7 +123,7 @@ class HydrationImpl(
     }
 
     /**
-     * #560 U3 compatibility adapter: hydration over the mount front-end of [syncEngine] (`MountEngine.over`,
+     * archive#560 U3 compatibility adapter: hydration over the mount front-end of [syncEngine] (`MountEngine.over`,
      * the one instance per engine the daemon wiring uses too). It keeps the call sites that build hydration on
      * a `SyncEngine` (`unidrive sync`, the tests) as they were until mount profiles get their own host (U4, U6).
      */
@@ -164,7 +164,7 @@ class HydrationImpl(
     // The read-only views (Recents, ...): their listing, and the real item a read verb on a view path is run on.
     private val views = HydrationViews(mount)
 
-    // #778: the daemon's pause, shared with the downloads of the mount front-end.
+    // archive#778: the daemon's pause, shared with the downloads of the mount front-end.
     private val pause: PauseGate = mount.pause
 
     private val _events = MutableSharedFlow<HydrationEvent>(extraBufferCapacity = 64)
@@ -240,21 +240,21 @@ class HydrationImpl(
         // launch; pruned by cancelUpload (completed jobs report false on
         // cancel). Dies with the slot when pending drops to zero.
         val jobs: ConcurrentLinkedQueue<Job> = ConcurrentLinkedQueue(),
-        // #658: when the slot's first outstanding upload was submitted (epoch ms): how long a dirty
+        // archive#658: when the slot's first outstanding upload was submitted (epoch ms): how long a dirty
         // overwrite, which has no never-uploaded row to carry the stamp, has been waiting.
         val enqueuedAtMs: Long = System.currentTimeMillis(),
     ) {
-        // #1095: epoch ms at which the slot's running upload starts its next attempt while it waits in a retry backoff
+        // archive#1095: epoch ms at which the slot's running upload starts its next attempt while it waits in a retry backoff
         // (set before the failed event goes out, cleared when the backoff ends); null otherwise. Read by the status.
         @Volatile var retryAtMs: Long? = null
     }
     private val uploadSlots = ConcurrentHashMap<String, UploadSlot>()
 
-    // #658: transfer attempts that hold a transfer permit right now (the rest of the slots wait for
+    // archive#658: transfer attempts that hold a transfer permit right now (the rest of the slots wait for
     // their path's turn, the daemon-wide budget, or a retry backoff).
     private val uploadsInFlight = AtomicInteger(0)
 
-    // #1200: the same attempts by path (one per path: uploads of a path are serialised), for `daemon.status.uploads.running`.
+    // archive#1200: the same attempts by path (one per path: uploads of a path are serialised), for `daemon.status.uploads.running`.
     // Memory only; the paths leave this object only through the authenticated local IPC reply.
     private class RunningUpload(val startedAtMs: Long) {
         @Volatile var done: Long = 0L
@@ -263,7 +263,7 @@ class HydrationImpl(
     }
     private val runningUploads = ConcurrentHashMap<String, RunningUpload>()
 
-    // #658: false until a cache walk has been reconciled into [cacheBytes] (the accounting starts empty,
+    // archive#658: false until a cache walk has been reconciled into [cacheBytes] (the accounting starts empty,
     // so before that its total says nothing). Thereafter the health view reads the running total and
     // walks reconcile it periodically.
     @Volatile private var cacheSeeded = false
@@ -277,21 +277,21 @@ class HydrationImpl(
     // client instead of unbounded queue growth.
     private val queueSlots = Semaphore(uploadQueueDepth)
 
-    // #450: when each path was last opened, created or written through this instance (epoch ms), for
+    // archive#450: when each path was last opened, created or written through this instance (epoch ms), for
     // the least-recently-used order. After a restart a path has no entry and the file's own access and
     // modification times stand in.
     private val lastAccess = ConcurrentHashMap<String, Long>()
     private val evictionMutex = Mutex()
     private val evictionRequested = AtomicBoolean(false)
 
-    // #728: the size of the hydration cache as the sites that change it account it ([accountCacheFile],
+    // archive#728: the size of the hydration cache as the sites that change it account it ([accountCacheFile],
     // [forgetCacheFile]), for the cheap "is a walk even worth it" test a trigger makes. Deliberately
     // approximate: every walk replaces the sizes it observed and drops what it did not find
     // ([reconcileAccounting]), and [EVICTION_RECONCILE_INTERVAL_MS] bounds how long a drift can persist.
     private val accountedBytes = ConcurrentHashMap<String, Long>()
     private val cacheBytes = AtomicLong(0)
 
-    // #728: epoch ms of the last walk of the cache directory (0 = none yet). One walk per
+    // archive#728: epoch ms of the last walk of the cache directory (0 = none yet). One walk per
     // [evictionMinIntervalMs] and never two at once ([evictionMutex]); a trigger inside the interval is
     // dropped, not queued — triggers keep coming while the mount is used.
     private val lastWalkAtMs = AtomicLong(0L)
@@ -324,15 +324,15 @@ class HydrationImpl(
         /** Default coalescing gap for `uploading` progress events (see [uploadProgressMinIntervalMs]). */
         const val DEFAULT_UPLOAD_PROGRESS_MIN_INTERVAL_MS = 400L
 
-        /** #450: default hydration cache budget per profile, 20 GiB. */
+        /** archive#450: default hydration cache budget per profile, 20 GiB. */
         // The value of SyncConfig.DEFAULT_HYDRATION_CACHE_MAX_BYTES (:app:sync, which this module no longer
-        // depends on, #560 U3); HydrationCacheDefaultTest in :app:cli pins that the two agree.
+        // depends on, archive#560 U3); HydrationCacheDefaultTest in :app:cli pins that the two agree.
         const val DEFAULT_CACHE_MAX_BYTES: Long = 20L * 1024 * 1024 * 1024
         const val CACHE_ACCESS_GRACE_MS: Long = 60_000
         const val EVICTION_DELAY_MS: Long = 5_000
 
         /**
-         * #728: a triggered pass walks the cache at most once per this interval. The walk stats every
+         * archive#728: a triggered pass walks the cache at most once per this interval. The walk stats every
          * cache file (8.6k files and 20 GiB on the live profile, a third of the daemon's filesystem
          * samples), while the triggers — every handle close, every completed upload — used to overlap
          * walk after walk all day. The budget bounds disk usage, not latency, so a minute of overshoot
@@ -341,7 +341,7 @@ class HydrationImpl(
         const val EVICTION_MIN_INTERVAL_MS: Long = 60_000
 
         /**
-         * #728: the accounting drift safety net. The running byte counter is maintained by the sites
+         * archive#728: the accounting drift safety net. The running byte counter is maintained by the sites
          * that change the cache, and every walk reconciles it with what it found; this is the longest a
          * drift can survive before a triggered pass walks anyway. Drift comes from a cache copy deleted
          * outside this layer (the enumeration's reap), a crash between a delete and its accounting, or a
@@ -349,7 +349,7 @@ class HydrationImpl(
          */
         const val EVICTION_RECONCILE_INTERVAL_MS: Long = 10L * 60_000
 
-        /** #728: cache files one `alive_entries` query classifies in an eviction pass. */
+        /** archive#728: cache files one `alive_entries` query classifies in an eviction pass. */
         const val EVICTION_DISPOSITION_BATCH: Int = 128
 
         /** How many blocked entries `daemon.status` lists (the rest are counted): the cap of the collision paths there is 50 as well. */
@@ -358,19 +358,19 @@ class HydrationImpl(
         /** How many running uploads `daemon.status` names (the rest are counted). */
         const val RUNNING_ITEMS_CAP: Int = 20
 
-        /** #658: a status request re-reads the upload queue from state.db when the last reading is older than this. */
+        /** archive#658: a status request re-reads the upload queue from state.db when the last reading is older than this. */
         const val UPLOAD_SNAPSHOT_TTL_MS: Long = 1_000
 
-        /** #658: how long a status request waits for the very first reading (it has nothing to serve until then). */
+        /** archive#658: how long a status request waits for the very first reading (it has nothing to serve until then). */
         const val UPLOAD_SNAPSHOT_WAIT_MS: Long = 1_000
 
-        /** #747: the "upload health unavailable" WARN repeats at most this often (per cause). */
+        /** archive#747: the "upload health unavailable" WARN repeats at most this often (per cause). */
         const val SNAPSHOT_WARN_INTERVAL_MS: Long = 60_000
 
-        /** #658: how long a status request waits for a re-reading when it has a previous reading to serve. */
+        /** archive#658: how long a status request waits for a re-reading when it has a previous reading to serve. */
         const val UPLOAD_SNAPSHOT_REFRESH_WAIT_MS: Long = 100
 
-        /** #493: default delay of the replay of rows whose last upload attempt failed (see [failedReplayDelayMs]). */
+        /** archive#493: default delay of the replay of rows whose last upload attempt failed (see [failedReplayDelayMs]). */
         const val DEFAULT_FAILED_REPLAY_DELAY_MS: Long = 10L * 60 * 1000
 
         // Temp files the engine stages beside their destination (`<name>.hydrating-<uuid>` for a
@@ -430,7 +430,7 @@ class HydrationImpl(
             return OpenResult.Failed(error)
         }
         touch(path)
-        // #652: a cold read is a download in the history; a warm serve never starts the handle, so it leaves no row.
+        // archive#652: a cold read is a download in the history; a warm serve never starts the handle, so it leaves no row.
         val tx = history?.begin(TransferDirection.DOWNLOAD, path, bytesTotal = entry.remoteSize.takeIf { it > 0 })
 
         val cachePath = try {
@@ -454,7 +454,7 @@ class HydrationImpl(
             // 0-byte/short read, which a file-manager copy turns into a corrupt
             // 0-byte destination. Fail loudly (→ EIO, retryable) instead of serving
             // truncated content as success.
-            // An unsynced edit is served as it is: its size is its own (#1070).
+            // An unsynced edit is served as it is: its size is its own (archive#1070).
             val remoteExpectsFullFile = current.remoteId != null && !current.isFolder && current.remoteSize > 0 && current.editBase == null
             if (remoteExpectsFullFile && bytes != current.remoteSize) {
                 throw IllegalStateException(
@@ -474,9 +474,9 @@ class HydrationImpl(
             p
         } catch (e: Exception) {
             // A genuinely-gone read (provider download still not-found after the
-            // #176 re-resolve) must surface a typed not_found token so the mount
+            // archive#176 re-resolve) must surface a typed not_found token so the mount
             // maps it to ENOENT, not the catch-all EIO. A stored object of a different
-            // size than the drive reports (#536) is not a gone file: its own
+            // size than the drive reports (archive#536) is not a gone file: its own
             // token carries the numbers. Any other failure stays Generic (→ EIO).
             val err: HydrationError = downloadFailureOf(e, fallback = "download failed")
             tx.endDownloadFailed(e)
@@ -523,7 +523,7 @@ class HydrationImpl(
             return OpenResult.Failed(HydrationError.InvalidPath)
         }
         touch(path)
-        // #660: a rule file of the ignore rules takes effect for the next decision, this file's own included.
+        // archive#660: a rule file of the ignore rules takes effect for the next decision, this file's own included.
         mount.ignoreRuleFileWritten(path)
 
         // Excluded paths (exclude_patterns, ignore rules) are keep-local: the write is
@@ -556,7 +556,7 @@ class HydrationImpl(
             return OpenResult.Ok(cachePath, excluded = true)
         }
 
-        // Optimistic-concurrency guard (#434): refuse a write whose base etag no
+        // Optimistic-concurrency guard (archive#434): refuse a write whose base etag no
         // longer matches the row's write token BEFORE any upload runs —
         // the point is to not silently overwrite a newer remote version, so the
         // refusal must happen before the background upload can clobber it. The
@@ -576,7 +576,7 @@ class HydrationImpl(
             return OpenResult.Failed(HydrationError.Conflict)
         }
 
-        // #1070/#1069: from here the cache copy holds an edit the cloud has not seen, and the upload below may fail
+        // archive#1070/#1069: from here the cache copy holds an edit the cloud has not seen, and the upload below may fail
         // or be cut short by a stop. The row remembers the version the edit started from (the client's, else the
         // row's now), so that the replay at the next start sends it from that base and nothing downloads over it.
         // An edit begun by open_write_begin has been noted since then.
@@ -641,7 +641,7 @@ class HydrationImpl(
         handleId: String,
         baseEtag: String?,
     ) {
-        // #652: the logical transfer starts being queued here (the wait for a waiting slot is queue time); nothing is
+        // archive#652: the logical transfer starts being queued here (the wait for a waiting slot is queue time); nothing is
         // written until it gets a transfer permit or ends.
         val tx = history?.begin(
             TransferDirection.UPLOAD,
@@ -708,7 +708,7 @@ class HydrationImpl(
                     // while queued, mid-transfer, or in a retry backoff: the
                     // handle's correlation must end with a cause, not hang.
                     // tryEmit — a cancelled coroutine can no longer suspend.
-                    // #652: neither a success nor a failure: the row, if the transfer had started, ends interrupted.
+                    // archive#652: neither a success nor a failure: the row, if the transfer had started, ends interrupted.
                     tx?.finish(TransferResult.INTERRUPTED, errorClass = "cancelled", attempted = tx.hasStarted)
                     _events.tryEmit(
                         HydrationEvent.Completed(
@@ -722,11 +722,11 @@ class HydrationImpl(
                     throw e
                 }
             } finally {
-                // #1067: the waiting slot also goes back when the job ends before it got a transfer permit:
+                // archive#1067: the waiting slot also goes back when the job ends before it got a transfer permit:
                 // a wait for the path's turn cancelled in Mutex.lock never enters the lock, so only this
                 // outermost finally sees it.
                 if (waitingSlotHeld) queueSlots.release()
-                // #319: decrement the CAPTURED slot — a concurrent rename may have
+                // archive#319: decrement the CAPTURED slot — a concurrent rename may have
                 // re-keyed it under the destination path (the running coroutine's
                 // captured path is stale). Removal is by slot IDENTITY, not by path:
                 // when this coroutine's upload was the last pending one, every map
@@ -784,7 +784,7 @@ class HydrationImpl(
     // attempt runs under the stall watchdog (runWatchedTransferAttempt): an
     // attempt with no provider progress for [uploadStallTimeoutMs] fails like
     // any transient failure, so even a lost wakeup cannot hold a path's slot
-    // past the ladder (gkrost/unidrive#613).
+    // past the ladder (archive#613).
     @Suppress("LongParameterList") // one parameter per fact of the submission and its slot; a record for them would only move the list
     private suspend fun runUploadWithRetries(
         submittedPath: String,
@@ -798,12 +798,12 @@ class HydrationImpl(
     ): HydrationEvent.Completed {
         // A new run of the slot starts with no backoff on record (a cancel that struck between the record and the wait leaves none behind).
         slot.retryAtMs = null
-        // #610: a never-uploaded file renamed while its upload waits (queued, or in a retry backoff) is uploaded at the
+        // archive#610: a never-uploaded file renamed while its upload waits (queued, or in a retry backoff) is uploaded at the
         // path the rename moved it to; see [followRename]. The path and the cache copy are the slot's current ones.
         var path = submittedPath
         var cachePath = submittedCachePath
         val followsRenames = followsRenames(slot, path, baseEtag)
-        // #493: the provider refused exactly these bytes before; asking again would be refused again.
+        // archive#493: the provider refused exactly these bytes before; asking again would be refused again.
         refusedEarlier(path, cachePath)?.let { reason ->
             val err = HydrationError.ParentGone.parse(reason) ?: HydrationError.Generic("refused earlier: $reason")
             _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
@@ -813,7 +813,7 @@ class HydrationImpl(
         }
         var lastError: HydrationError = HydrationError.Generic("upload failed")
         var lastFailure: Exception? = null
-        // #1217: an attempt that landed its item while a rename moved the row, and whose move to the new path failed:
+        // archive#1217: an attempt that landed its item while a rename moved the row, and whose move to the new path failed:
         // the next attempt retries that move instead of uploading the bytes a second time.
         var strayed: UploadOutcome? = null
         for (attempt in 1..maxUploadAttempts) {
@@ -833,7 +833,7 @@ class HydrationImpl(
                     cachePath = mount.resolveCachePath(it)
                 }
                 val bytes = Files.size(cachePath)
-                // #652: identical bytes the cloud already holds are a skipped transfer; nothing moved, so no byte count.
+                // archive#652: identical bytes the cloud already holds are a skipped transfer; nothing moved, so no byte count.
                 tx?.finish(
                     if (outcome.sent) TransferResult.SUCCESS else TransferResult.SKIPPED,
                     bytesDone = if (outcome.sent) outcome.size ?: bytes else null,
@@ -884,7 +884,7 @@ class HydrationImpl(
             } catch (e: org.krost.unidrive.PermanentUploadFailureException) {
                 return completeRefused(path, handleId, cachePath, e, tx)
             } catch (e: Exception) {
-                // #610: the rename may have struck during this attempt; the retry (and the row stamped) is the new path's.
+                // archive#610: the rename may have struck during this attempt; the retry (and the row stamped) is the new path's.
                 val moved = followed(slot, path, cachePath, followsRenames)
                 path = moved.first
                 cachePath = moved.second
@@ -892,18 +892,18 @@ class HydrationImpl(
                 // A vanished row (renamed away, unlinked, or reaped while queued) or a vanished cache copy: nothing a
                 // later attempt can change. Retrying would only hold the path's slot (busy to dehydrate and
                 // replace-rename) through the whole backoff schedule before reporting the same failure. (A remote
-                // conflict, #434/#470, never reaches here: it has its own terminal branch above.)
+                // conflict, archive#434/#470, never reaches here: it has its own terminal branch above.)
                 val gone = runCatching { stateDb.getEntry(path) }.getOrNull() == null || !Files.exists(cachePath)
                 val err = HydrationError.Generic(e.message ?: "upload failed")
                 lastError = err
                 lastFailure = e
                 val retryScheduled = !gone && attempt < maxUploadAttempts
-                // #1095: the wait is on record (status, history row) before the failed event announces it, with the one instant
+                // archive#1095: the wait is on record (status, history row) before the failed event announces it, with the one instant
                 // the delay below is measured from.
                 val backoffMs = retryDelayMs(attempt)
                 val nextTryAtMs = if (retryScheduled) System.currentTimeMillis() + backoffMs else null
                 slot.retryAtMs = nextTryAtMs
-                // #652: one logical transfer; the failed attempt is counted on its row, not a row of its own.
+                // archive#652: one logical transfer; the failed attempt is counted on its row, not a row of its own.
                 if (retryScheduled) tx?.attemptFailed(e.javaClass.simpleName, e.message, nextTryAtMs)
                 _events.emit(HydrationEvent.Failed(path, err, retryScheduled = retryScheduled))
                 if (retryScheduled) {
@@ -937,7 +937,7 @@ class HydrationImpl(
         )
     }
 
-    /** A refusal of the request itself (#493): the row remembers it with the content's stamp, and nothing is retried. */
+    /** A refusal of the request itself (archive#493): the row remembers it with the content's stamp, and nothing is retried. */
     private suspend fun completeRefused(
         path: String,
         handleId: String,
@@ -945,12 +945,12 @@ class HydrationImpl(
         e: org.krost.unidrive.PermanentUploadFailureException,
         tx: TransferHandle?,
     ): HydrationEvent.Completed {
-        // #493: the provider refused the request itself; the same bytes and the same call would be refused again,
+        // archive#493: the provider refused the request itself; the same bytes and the same call would be refused again,
         // so the retry ladder would only hold a transfer slot through its whole backoff schedule.
         runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
         // Persisted with the content's stamp and retry deadline: replay and a resubmission of the same bytes skip the
-        // provider until the deadline (#493). New content, an expired deadline, or any rewrite makes it eligible.
-        // #580: a folder the provider's walk proved gone is reported (and remembered on the row) as its own token.
+        // provider until the deadline (archive#493). New content, an expired deadline, or any rewrite makes it eligible.
+        // archive#580: a folder the provider's walk proved gone is reported (and remembered on the row) as its own token.
         val err = refusalError(e)
         val reason = if (err is HydrationError.ParentGone) err.message else e.message ?: "refused"
         refusalStamp(cachePath)?.let { stamp ->
@@ -970,7 +970,7 @@ class HydrationImpl(
         )
     }
 
-    // #1095: the wait between two attempts. The slot says so to the status while it lasts (a cancel ends it too); the history row
+    // archive#1095: the wait between two attempts. The slot says so to the status while it lasts (a cancel ends it too); the history row
     // stops saying it when it is over.
     private suspend fun backOff(
         slot: UploadSlot,
@@ -986,7 +986,7 @@ class HydrationImpl(
     }
 
     /**
-     * One transfer attempt of an upload, held back by a pause (#778). While the daemon is paused nothing starts:
+     * One transfer attempt of an upload, held back by a pause (archive#778). While the daemon is paused nothing starts:
      * the attempt waits for the resume, outside the stall watchdog and without holding the queue's waiting slot.
      * An attempt that was running when a pause began and needed ten seconds or more is aborted
      * ([PauseGate.abortSlowTransfers]) and waits the same way. Neither is a failure: no row is stamped, no
@@ -1019,7 +1019,7 @@ class HydrationImpl(
     }
 
     /**
-     * One transfer attempt under the stall watchdog (gkrost/unidrive#613): runs the
+     * One transfer attempt under the stall watchdog (archive#613): runs the
      * transfer-permit wait and the transfer itself, and cancels both when [uploadStallTimeoutMs]
      * elapses with no byte progress from the provider. The wait for the permit, the provider's
      * pre-transfer work (its identical-bytes check, its resume bookkeeping) and the transfer all
@@ -1096,7 +1096,7 @@ class HydrationImpl(
         }
     }
 
-    // #658: [block] runs inside a transfer permit; it counts as one upload in flight.
+    // archive#658: [block] runs inside a transfer permit; it counts as one upload in flight.
     private suspend fun <T> holdingPermit(
         path: String,
         block: suspend () -> T,
@@ -1132,7 +1132,7 @@ class HydrationImpl(
      * enqueued at once; every enqueued upload goes through the same per-path
      * serialization and transfer budget as client-submitted ones.
      *
-     * #493: a row whose last attempt failed (last_error_at set) is replayed
+     * archive#493: a row whose last attempt failed (last_error_at set) is replayed
      * [failedReplayDelayMs] later instead: replayed at once, two uploads that
      * keep failing held both transfer slots for their whole retry ladder
      * (about 10 minutes) after every start, and nothing else uploaded. When its
@@ -1144,7 +1144,7 @@ class HydrationImpl(
         var queued = 0
         var deferred = 0
         var refused = 0
-        // #729: one containment pass for the whole replay. The folder's real path is taken once and every path
+        // archive#729: one containment pass for the whole replay. The folder's real path is taken once and every path
         // it probes is remembered, so the rows that share an ancestor — and the rows whose cache copy is gone —
         // do not pay for the same walk (and its internally thrown Windows probes) again.
         val pass = CachePaths.Pass(mount.hydrationCacheDir())
@@ -1158,11 +1158,11 @@ class HydrationImpl(
             log.warn("retry of the blocked folders failed: {}", e.message)
         }
         for (path in stateDb.pendingUploadPaths()) {
-            // #678: the walk between records is blocking file-system work with no suspension
+            // archive#678: the walk between records is blocking file-system work with no suspension
             // point, so a stop is only honoured if the loop itself checks for it.
             coroutineContext.ensureActive()
             val cachePath = cacheCopy(pass, path) ?: continue
-            if (refusedEarlier(path, cachePath) != null) { refused++; continue } // #493: not replayed at every start
+            if (refusedEarlier(path, cachePath) != null) { refused++; continue } // archive#493: not replayed at every start
             if (failedReplayDelayMs > 0 && stateDb.getEntry(path)?.lastErrorAt != null) {
                 deferred++
                 val handleId = "engine-replay-late-$deferred"
@@ -1179,15 +1179,15 @@ class HydrationImpl(
             launchSerializedUpload(path, cachePath, "engine-replay-${queued + 1}", baseEtag = null)
             queued++
         }
-        // #605 (U6 cutover): dirty overwrites. A row whose bytes reached the cloud at least once is
+        // archive#605 (U6 cutover): dirty overwrites. A row whose bytes reached the cloud at least once is
         // replayed when its cache copy no longer matches the row's baseline — a write that never
         // reached its upload before the daemon stopped. A mount profile's cache copy is the row's
         // only local file, so without this the edit would sit in the cache until a mount client's
-        // recovery scanner happened to replay it (and never, if none came). The #493 rules are the
+        // recovery scanner happened to replay it (and never, if none came). The archive#493 rules are the
         // same as for pending rows: a failed row waits, and a refusal for exactly the content the
         // cache holds now is not retried at every start.
         //
-        // #729: the candidates are the files the cache holds, not the uploaded rows. The row-driven
+        // archive#729: the candidates are the files the cache holds, not the uploaded rows. The row-driven
         // scan named every alive uploaded file row — 137,534 on the live profile — and resolved and
         // probed a cache path for each one, walking it component by component: on Windows every absent
         // component threw internally (341,451 recorded exceptions, 67.7 % of the JFR window, 13–17
@@ -1196,7 +1196,7 @@ class HydrationImpl(
         var dirty = 0
         var dirtyDeferred = 0
         for (file in cacheFileCandidates()) {
-            coroutineContext.ensureActive() // #678: see the pending loop above
+            coroutineContext.ensureActive() // archive#678: see the pending loop above
             // The row this cache file belongs to. A file whose on-disk spelling drifted from the row's path
             // (a case-only change) still names it on a case-insensitive volume: getEntryCaseInsensitive walks
             // the row index on lower-cased paths, and is reached only when the exact path missed.
@@ -1205,7 +1205,7 @@ class HydrationImpl(
             // What the row-driven scan selected: alive file rows with a real remote id (toSyncEntry surfaces
             // the `local:` synthetic of a never-uploaded row as a null id, and a row stored without one reads
             // null too). A folder row has no file in the cache — a directory at its path is not a cache copy —
-            // and a never-uploaded row is the pending loop's above. #1070: a row that carries an unsynced edit
+            // and a never-uploaded row is the pending loop's above. archive#1070: a row that carries an unsynced edit
             // (editBase) qualifies hydrated or not; a cloud-only row has no baseline to drift from.
             if (!isDirtyReplayCandidate(entry)) continue
             if (uploadSlots.containsKey(path)) continue
@@ -1247,13 +1247,13 @@ class HydrationImpl(
     }
 
     // The rows the dirty-overwrite scan takes up: alive file rows with a real remote id, hydrated or carrying a noted
-    // unsynced edit (#1070; a cloud-only row has no baseline to drift from). A folder row has no file in the cache, and
+    // unsynced edit (archive#1070; a cloud-only row has no baseline to drift from). A folder row has no file in the cache, and
     // a never-uploaded row is the pending loop's.
     private fun isDirtyReplayCandidate(entry: org.krost.unidrive.sync.model.SyncEntry): Boolean =
         !entry.isFolder && entry.remoteId != null && (entry.isHydrated || entry.editBase != null)
 
     /**
-     * #1069: queues the replay of a dirty overwrite, from the cloud version the edit started from. The row's own
+     * archive#1069: queues the replay of a dirty overwrite, from the cloud version the edit started from. The row's own
      * token is no substitute: a poll moves it to whatever another device wrote since, and the cloud then accepts the
      * edit as based on that version and overwrites it. [SyncEntry.editBase] is that version; a row that carries none
      * (an edit found by its baseline alone, from before the mark existed) can only offer its current token.
@@ -1291,7 +1291,7 @@ class HydrationImpl(
     }
 
     /**
-     * #729: the candidates of the dirty-overwrite scan — the files the cache holds now, ordered by path so a
+     * archive#729: the candidates of the dirty-overwrite scan — the files the cache holds now, ordered by path so a
      * replay stays deterministic (the handles it hands out follow them). `listCacheFiles` walks the cache once
      * and names each regular file's logical path, so the scan reaches the rows with a cache copy without
      * resolving or probing a path per row. The same walk the cache-budget pass makes.
@@ -1306,7 +1306,7 @@ class HydrationImpl(
     private fun skipsReplay(path: String): Boolean = mount.isExcludedPath(path) || mount.isReadOnlyPath(path) || mount.isOutOfScope(path)
 
     /**
-     * #526/#729: the cache copy of [path] through this replay's containment [pass], or null. Null covers every
+     * archive#526/#729: the cache copy of [path] through this replay's containment [pass], or null. Null covers every
      * row the replay skips before any filesystem work: excluded (keep-local) and out-of-scope rows, rows whose
      * local name the platform rejects (warned as before) and rows whose cache copy is gone.
      */
@@ -1326,12 +1326,12 @@ class HydrationImpl(
         return if (Files.exists(cachePath)) cachePath else null
     }
 
-    // #526: the same check for the deferred rows, which run after the replay pass and resolve on their own.
+    // archive#526: the same check for the deferred rows, which run after the replay pass and resolve on their own.
     private fun replayable(path: String): Boolean =
         cacheCopy(CachePaths.Pass(mount.hydrationCacheDir()), path) != null
 
-    // #493: <cache mtime ms>|<cache size> of the bytes an upload sends; null when the cache copy is gone.
-    // The token of a provider's permanent upload refusal: `parent_gone` for a folder its walk proved gone (#580), else the
+    // archive#493: <cache mtime ms>|<cache size> of the bytes an upload sends; null when the cache copy is gone.
+    // The token of a provider's permanent upload refusal: `parent_gone` for a folder its walk proved gone (archive#580), else the
     // provider's own text.
     private fun refusalError(e: org.krost.unidrive.PermanentUploadFailureException): HydrationError =
         if (e is org.krost.unidrive.ParentGoneException) {
@@ -1340,7 +1340,7 @@ class HydrationImpl(
             HydrationError.Generic(e.message ?: "upload refused")
         }
 
-    // #580: after a parent_gone refusal ([refusal]) of [refusedPath], the mount asks the provider for the folder by its id
+    // archive#580: after a parent_gone refusal ([refusal]) of [refusedPath], the mount asks the provider for the folder by its id
     // and tombstones its subtree only when the answer confirms it gone, keeping the refused row and every unsent edit
     // ([MountEngine.tombstoneFolderIfGone]). In the background, so the refusal reaches the client without waiting for the
     // lookup or for an enumeration in flight; a failure there changes nothing and is only logged. Any other refusal: nothing.
@@ -1388,10 +1388,10 @@ class HydrationImpl(
     }
 
     override suspend fun closeHandle(connectionId: String, handleId: String) {
-        // #728: the client wrote through this handle, not through the engine: its bytes only become
+        // archive#728: the client wrote through this handle, not through the engine: its bytes only become
         // visible here, and the trigger below must see them (a close of a read handle accounts the same
         // size again, a no-op).
-        // #438: a pooled client can close on a connection other than the one that served open_read, so the
+        // archive#438: a pooled client can close on a connection other than the one that served open_read, so the
         // caller's own connection is looked up first and a miss falls through to the others. A handle id is
         // the client's own name (wh-N): a match on another connection counts only when it is unique across
         // them, so a close from one client never releases the handle of another using the same id. Unique now
@@ -1411,7 +1411,7 @@ class HydrationImpl(
         requestEviction()
     }
 
-    // ── #450 cache budget ───────────────────────────────────────────────────────────────────────
+    // ── archive#450 cache budget ───────────────────────────────────────────────────────────────────────
 
     /** What one [evictCache] pass found and did. */
     data class CacheEvictionReport(
@@ -1440,7 +1440,7 @@ class HydrationImpl(
     }
 
     /**
-     * #728: the pass a trigger asks for. It walks only when the accounted cache crossed [cacheMaxBytes],
+     * archive#728: the pass a trigger asks for. It walks only when the accounted cache crossed [cacheMaxBytes],
      * or when the last walk is older than [EVICTION_RECONCILE_INTERVAL_MS] (the drift safety net), and at
      * most once per [evictionMinIntervalMs] — a trigger inside that window is dropped, not queued.
      * [evictCache] itself always walks: the start sweep and the budget tests want the truth.
@@ -1491,12 +1491,12 @@ class HydrationImpl(
         return evictCache()
     }
 
-    // #1071: only the exact shape of a staging name counts (`<name>.hydrating-<uuid>`, MountEngine.ensureHydratedLocked,
-    // also as the short `.ud-<hex>.hydrating-<uuid>` of #529): a user's `report.hydrating-v2.docx` is not one.
+    // archive#1071: only the exact shape of a staging name counts (`<name>.hydrating-<uuid>`, MountEngine.ensureHydratedLocked,
+    // also as the short `.ud-<hex>.hydrating-<uuid>` of archive#529): a user's `report.hydrating-v2.docx` is not one.
     private fun isStagingTemp(name: String): Boolean =
         STAGING_DOWNLOAD_SUFFIX.containsMatchIn(name) || (name.startsWith(".ud-serve-") && name.endsWith(".tmp"))
 
-    // #1071: whether a row names the cache file, as its cache copy. A file a row owns is a copy of a file (a
+    // archive#1071: whether a row names the cache file, as its cache copy. A file a row owns is a copy of a file (a
     // never-uploaded or failed-upload one is the only copy), whatever its name looks like; a lookup that fails
     // counts as named, so nothing is deleted on a guess.
     private fun namedByRow(cacheDir: Path, file: Path): Boolean {
@@ -1521,7 +1521,7 @@ class HydrationImpl(
                     checkCancelled()
                     val f = paths.next()
                     try {
-                        // #728: one stat per entry. The attributes answer the regular-file test, the size
+                        // archive#728: one stat per entry. The attributes answer the regular-file test, the size
                         // and both timestamps; the separate isRegularFile() call this used to make doubled
                         // the walk's filesystem calls (a third of the daemon's filesystem samples).
                         val attrs = Files.readAttributes(f, java.nio.file.attribute.BasicFileAttributes::class.java)
@@ -1544,7 +1544,7 @@ class HydrationImpl(
         return result
     }
 
-    // #728: the running size of the cache, keyed by path so repeated accounting of the same file (a warm
+    // archive#728: the running size of the cache, keyed by path so repeated accounting of the same file (a warm
     // open, a close without a write) is a no-op instead of a double count. Every walk replaces the sizes
     // it observed ([reconcileAccounting]).
     private fun accountCacheFile(path: String, size: Long) {
@@ -1583,7 +1583,7 @@ class HydrationImpl(
         accountCacheFile(newPath, bytes)
     }
 
-    // The checks only this layer can make: an open handle, a queued or in-flight upload (#301, #318),
+    // The checks only this layer can make: an open handle, a queued or in-flight upload (archive#301, archive#318),
     // and the access grace window.
     private fun inUse(path: String): Boolean =
         openSets.values.any { it.containsValue(path) } ||
@@ -1591,15 +1591,15 @@ class HydrationImpl(
             (lastAccess[path]?.let { System.currentTimeMillis() - it < cacheAccessGraceMs } ?: false)
 
     /**
-     * #450: bring the cache directory under [cacheMaxBytes], least recently used first, copies that are
+     * archive#450: bring the cache directory under [cacheMaxBytes], least recently used first, copies that are
      * cheapest first. A file is evicted only if the engine
      * vouches for it ([MountEngine.cacheDisposition]: it holds nothing the cloud
      * has no local copy) and nothing here uses it: no open handle, no queued or in-flight upload
      * (also re-checked by the engine's own lock at deletion), not accessed within the grace window.
-     * Files without a row (an upload target that was renamed away, #319), unfinished creates, failed
+     * Files without a row (an upload target that was renamed away, archive#319), unfinished creates, failed
      * uploads and modified copies are never touched, so the cache can stay over budget.
      *
-     * #728: unconditional here — the start sweep and a caller that wants the truth go through it; the
+     * archive#728: unconditional here — the start sweep and a caller that wants the truth go through it; the
      * triggered path is [evictCacheIfDue]. Candidates are classified in LRU order in batches of
      * [EVICTION_DISPOSITION_BATCH], one `alive_entries` query per batch ([StateDatabase.getEntriesByPaths])
      * instead of one per cache file, and the pass stops as soon as the budget is met: a cache that is a
@@ -1631,7 +1631,7 @@ class HydrationImpl(
         }
         lastWalkAtMs.set(System.currentTimeMillis())
         reconcileAccounting(files, evicted)
-        cacheSeeded = true // #658: only now does the running total vouch for the cache (not while the pass is still evicting)
+        cacheSeeded = true // archive#658: only now does the running total vouch for the cache (not while the pass is still evicting)
         return CacheEvictionReport(cacheMaxBytes, before, total, evicted.size)
     }
 
@@ -1661,7 +1661,7 @@ class HydrationImpl(
         return freed
     }
 
-    // #728: after a walk the accounting is what the walk found — the size of every cache file it saw,
+    // archive#728: after a walk the accounting is what the walk found — the size of every cache file it saw,
     // minus the copies this pass evicted — plus whatever a hydration accounted while the walk ran. A path
     // the walk did not see is gone (the enumeration's reap deletes cache copies outside this layer, a
     // crash can leave a delete half done, a user can clear the folder): the file itself decides, and the
@@ -1683,7 +1683,7 @@ class HydrationImpl(
         }
     }
 
-    // ── #658 health numbers for daemon.status ───────────────────────────────────────────────────
+    // ── archive#658 health numbers for daemon.status ───────────────────────────────────────────────────
 
     /**
      * The upload queue as `daemon.status.uploads` reports it.
@@ -1708,17 +1708,17 @@ class HydrationImpl(
         val failed: Int,
         val oldestPendingAgeMs: Long?,
         val blocked: BlockedUploads = BlockedUploads(),
-        // #747: when the snapshot was taken (epoch ms). A failing state.db keeps the last counts served
+        // archive#747: when the snapshot was taken (epoch ms). A failing state.db keeps the last counts served
         // for ever, so a front-end needs the stamp to tell fresh from frozen. Null when never read.
         val asOfMs: Long? = null,
         val retrying: Int = 0,
         val nextTryAtMs: Long? = null,
-        // #1200: the attempts holding a transfer permit, by name. Read live, not from the cached snapshot.
+        // archive#1200: the attempts holding a transfer permit, by name. Read live, not from the cached snapshot.
         val running: RunningUploads = RunningUploads(),
     )
 
     /**
-     * The uploads under way right now (#1200): [count] is all of them, [items] the first [RUNNING_ITEMS_CAP] by start
+     * The uploads under way right now (archive#1200): [count] is all of them, [items] the first [RUNNING_ITEMS_CAP] by start
      * time, [more] the rest. A path is user data: it is for the authenticated local IPC reply only.
      */
     data class RunningUploads(
@@ -1821,7 +1821,7 @@ class HydrationImpl(
             since(row.lastSynced.toEpochMilli())
         }
         // Slots without such a row: dirty overwrites. A slot of a row counted above adds nothing.
-        // #1095: a slot whose upload waits in a retry backoff is read from memory (no lock, no database), by path like pending.
+        // archive#1095: a slot whose upload waits in a retry backoff is read from memory (no lock, no database), by path like pending.
         val retryAt = HashMap<String, Long>()
         for ((path, slot) in uploadSlots) {
             if (skipsReplay(path)) continue
@@ -1846,7 +1846,7 @@ class HydrationImpl(
 
     private val uploadSnapshot = java.util.concurrent.atomic.AtomicReference<UploadSnapshot?>(null)
 
-    // #747: the last "upload health unavailable" WARN and its cause, so the warning repeats at most once
+    // archive#747: the last "upload health unavailable" WARN and its cause, so the warning repeats at most once
     // per minute per cause instead of once per status request.
     @Volatile private var lastSnapshotWarnCause: String? = null
 
@@ -1864,7 +1864,7 @@ class HydrationImpl(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    // #747: a permanently busy state.db used to repeat this WARN on every status request;
+                    // archive#747: a permanently busy state.db used to repeat this WARN on every status request;
                     // once per minute per cause is enough to keep it in the log without flooding it.
                     val message = e.message
                     val now = System.currentTimeMillis()
@@ -1945,7 +1945,7 @@ class HydrationImpl(
         }
     }
 
-    // #301: whether a background upload of [path] is queued or in flight. The
+    // archive#301: whether a background upload of [path] is queued or in flight. The
     // engine's enumerate-reap consults this (via the engine's uploadInFlight hook,
     // wired by app:cli) before evicting a hydration-cache file, so a queued edit's
     // only copy is never reaped out from under its upload.
@@ -1995,14 +1995,14 @@ class HydrationImpl(
         val anyOpen = openSets.values.any { perConn -> perConn.containsValue(path) }
         if (anyOpen) return DehydrateResult.Busy
 
-        // #301: refuse while an upload of this path is queued or in flight — the
+        // archive#301: refuse while an upload of this path is queued or in flight — the
         // FUSE handle is closed (so the open-set is empty) but the bytes have not
         // landed on the remote yet; deleting the cache here destroyed them
         // everywhere. Busy tells the client to retry once the upload's completed
         // event has arrived.
         if (uploadSlots.containsKey(path)) return DehydrateResult.Busy
 
-        // #301/#136: a pending upload (remoteId == null && isHydrated) has NO remote
+        // archive#301/#136: a pending upload (remoteId == null && isHydrated) has NO remote
         // copy at all — the cache is the only copy of the file. Dehydrate is
         // meaningless for it until the upload lands (which flips remoteId), so
         // refuse rather than destroy the bytes.
@@ -2010,9 +2010,9 @@ class HydrationImpl(
         // The remote-backed row may also hold an edit that failed to upload.
         // Its cache is the only copy until replay succeeds or the conflict is resolved.
         if (entry.editBase != null) return DehydrateResult.Busy
-        // #1040 M5: an edit nothing noted is still an edit: a cache copy that changed while the daemon was stopped
+        // archive#1040 M5: an edit nothing noted is still an edit: a cache copy that changed while the daemon was stopped
         // (no longer the row's baseline) or one written after the row's last sync. The replay or the next upload
-        // sends it; until then this copy is the only one. The same rule as a recursive rmdir's (#1035).
+        // sends it; until then this copy is the only one. The same rule as a recursive rmdir's (archive#1035).
         if (holdsUnsyncedBytes(entry)) return DehydrateResult.Busy
 
         return try {
@@ -2039,7 +2039,7 @@ class HydrationImpl(
         return LastSyncedResult.Ok(mtime)
     }
 
-    // gkrost/unidrive#1219: a path in a view is read as the real row it refers to, like every read verb.
+    // archive#1219: a path in a view is read as the real row it refers to, like every read verb.
     override suspend fun matchesLocal(
         path: String,
         localPath: Path,
@@ -2091,7 +2091,7 @@ class HydrationImpl(
             // folder size wrapped past Int.MAX to a negative) must never reach the
             // wire — a negative size breaks strict u64 list parsers and EIO'd the
             // FUSE co-daemon's whole directory listing.
-            // #524: while the upload is pending the cache file is the only copy
+            // archive#524: while the upload is pending the cache file is the only copy
             // and the upload sends ITS size — the row (written when the copy
             // began) often still records 0 for both remote and local size, and a
             // 0-byte file on the wire reads as data loss and invites a delete.
@@ -2115,7 +2115,7 @@ class HydrationImpl(
                 // its upload lands: that window is exactly the upload slot's lifetime.
                 // last_error_at marks the last attempt as failed (cleared by a later
                 // successful upload).
-                // #136: deliberately BROADER than SyncEntry.isPendingUpload (the
+                // archive#136: deliberately BROADER than SyncEntry.isPendingUpload (the
                 // UD-901 predicate) — this wire flag must also cover a remote-backed
                 // file whose cached edit is still queued in an upload slot, which
                 // the predicate (remoteId == null) cannot see.
@@ -2135,7 +2135,7 @@ class HydrationImpl(
      * The wire size of a listed row: the recorded sizes, except for a pending
      * upload whose cache file holds the bytes (a folder never has a cache file).
      * The recorded size is the fallback for every stat failure — [list] must not
-     * fail a whole directory because one row's name will not resolve (#526 class).
+     * fail a whole directory because one row's name will not resolve (archive#526 class).
      */
     private fun reportedSize(
         e: org.krost.unidrive.sync.model.SyncEntry,
@@ -2155,7 +2155,7 @@ class HydrationImpl(
         // would land in the cloud but never show in the mounted view (the view
         // only lists the scope). Refuse before touching the provider.
         // The read-only paths (the trash) are asked first: they lie outside a scoped profile's sync_path set, and the
-        // contract answers read_only for them (#1074).
+        // contract answers read_only for them (archive#1074).
         if (mount.isReadOnlyPath(normalised)) return MkdirResult.Failed(HydrationError.ReadOnly)
         if (mount.isOutOfScope(normalised)) return MkdirResult.Failed(HydrationError.OutOfScope)
         return runCatching {
@@ -2207,7 +2207,7 @@ class HydrationImpl(
         permanent: Boolean,
     ): UnlinkResult = unlinkRow(path, permanent).also { if (it is UnlinkResult.Ok) announceRemoved(path) }
 
-    // #1199: a delete through this verb may come from the CLI (`unidrive rm`), not from the client that shows the
+    // archive#1199: a delete through this verb may come from the CLI (`unidrive rm`), not from the client that shows the
     // mount, and a provider whose listing lags a trash never reports it back. The subscribers learn of it here.
     private suspend fun announceRemoved(path: String) {
         _events.emit(HydrationEvent.ViewInvalidated(paths = listOf(path.trimEnd('/').ifEmpty { "/" })))
@@ -2223,9 +2223,9 @@ class HydrationImpl(
             ?: return UnlinkResult.Failed(HydrationError.UnknownPath)
         if (entry.isFolder) return UnlinkResult.PathIsFolder
 
-        // WB-3 (#87): the file's own upload is queued or in flight — deleting the row and the cache
+        // WB-3 (archive#87): the file's own upload is queued or in flight — deleting the row and the cache
         // copy under it would orphan the cloud copy the upload is about to create (the row is gone
-        // when the upload lands). Answer busy, the same refusal dehydrate has given since #301; the
+        // when the upload lands). Answer busy, the same refusal dehydrate has given since archive#301; the
         // client cancels the upload (cancelUpload) and retries, or retries after the completed event.
         if (hasUploadSlot(normalised)) return UnlinkResult.Busy
 
@@ -2267,7 +2267,7 @@ class HydrationImpl(
             }
             return runCatching {
                 evictCacheFile(normalised)
-                // WB-3 (#87): the staged encrypted copy of a failed upload is the only other copy of
+                // WB-3 (archive#87): the staged encrypted copy of a failed upload is the only other copy of
                 // the content — the user deleted the file, so it goes too, instead of staying in the
                 // resume directory for days.
                 discardStagedUploadBestEffort(normalised)
@@ -2290,7 +2290,7 @@ class HydrationImpl(
         }
     }
 
-    // #1178: a provider without the permanent-delete capability is a typed refusal, not a failed delete.
+    // archive#1178: a provider without the permanent-delete capability is a typed refusal, not a failed delete.
     private fun permanentRefusalOrNull(e: Throwable): HydrationError? =
         if (e is org.krost.unidrive.UnsupportedCapabilityException && e.capability == org.krost.unidrive.Capability.PermanentDelete) {
             HydrationError.PermanentUnsupported
@@ -2298,7 +2298,7 @@ class HydrationImpl(
             null
         }
 
-    // WB-3 (#87): the staged copy goes with a delete, but failing to remove it must not fail a
+    // WB-3 (archive#87): the staged copy goes with a delete, but failing to remove it must not fail a
     // delete that already happened (the cloud copy is trashed, or the row is about to go): the
     // resume store's TTL GC is the backstop.
     private suspend fun discardStagedUploadBestEffort(path: String) {
@@ -2328,13 +2328,13 @@ class HydrationImpl(
             ?: return RmdirResult.Failed(HydrationError.UnknownPath)
         if (!entry.isFolder) return RmdirResult.PathIsFile
 
-        // WB-3 (#87): the delete tombstones every row below the folder and evicts its cache tree.
+        // WB-3 (archive#87): the delete tombstones every row below the folder and evicts its cache tree.
         // An upload queued or in flight for a file below it would read its cache copy while it is
         // evicted and land its cloud copy into a trashed folder. Answer busy, as unlink does.
         val below = if (normalised == "/") "/" else "$normalised/"
         if (uploadSlots.keys.any { it.startsWith(below) }) return RmdirResult.Busy
 
-        // #1035: no provider refuses a folder with children (they delete the tree), so the engine decides before any
+        // archive#1035: no provider refuses a folder with children (they delete the tree), so the engine decides before any
         // provider call. A plain rmdir is strict: a folder with alive rows below is not_empty, as the protocol says.
         // "Below" is any depth: a row can lack its parent folder row (listDirectChildren, which goes one level by
         // path, would call /dir empty with only /dir/sub/file.txt in the database).
@@ -2379,12 +2379,12 @@ class HydrationImpl(
     private val unsyncedGuard = RemoteEnumeration.ReapGuards(cachePathOf = { mount.resolveCachePath(it) })
 
     /**
-     * #1035: whether the file at [entry] may hold bytes the cloud has not seen, so that a recursive rmdir must not
+     * archive#1035: whether the file at [entry] may hold bytes the cloud has not seen, so that a recursive rmdir must not
      * tombstone its row and evict its cache copy. The two rules that name such a copy elsewhere:
      * - a never-uploaded row, a noted unsynced edit ([SyncEntry.editBase]) or a cache copy newer than the row's
      *   last-synced watermark ([RemoteEnumeration.ReapGuards.holdsUnsyncedEdit], the reap's rule);
      * - a cache copy that no longer matches the row's baseline (its mtime and size), as [replayPendingUploads]
-     *   finds a dirty overwrite (#605): a write that reached the cache while the daemon was stopped leaves no
+     *   finds a dirty overwrite (archive#605): a write that reached the cache while the daemon was stopped leaves no
      *   editBase and no pending row, only this difference.
      * A row that is not hydrated and carries no mark has no cache copy that could differ from anything.
      */
@@ -2406,9 +2406,9 @@ class HydrationImpl(
         val newCache = mount.resolveCachePath(newNorm)
         try {
             Files.createDirectories(newCache.parent)
-            // #1086: a rename that only changes the case needs a name in between on a case-insensitive file system.
+            // archive#1086: a rename that only changes the case needs a name in between on a case-insensitive file system.
             moveFile(oldCache, newCache, replaceExisting = true)
-            // #728: the same bytes under the new path.
+            // archive#728: the same bytes under the new path.
             moveCacheAccounting(oldNorm, newNorm)
         } catch (_: NoSuchFileException) {
             // Cache file absent — nothing to move; the state.db repath suffices.
@@ -2419,7 +2419,7 @@ class HydrationImpl(
     // Idempotent: a missing cache file (never hydrated) is a no-op, and any
     // IO failure is swallowed — the cloud delete already committed, so a stale
     // cache byte is a disk-space concern, never a reason to fail the unlink.
-    // #728: the accounting follows the delete (the copy really gone).
+    // archive#728: the accounting follows the delete (the copy really gone).
     private fun evictCacheFile(path: String) {
         val cachePath = runCatching { mount.resolveCachePath(path) }.getOrNull() ?: return
         runCatching { Files.deleteIfExists(cachePath) }
@@ -2442,7 +2442,7 @@ class HydrationImpl(
                 }
             }
         }
-        // #728: the whole subtree left the accounting with the folder. (A partial failure over-counts
+        // archive#728: the whole subtree left the accounting with the folder. (A partial failure over-counts
         // until the next walk, which finds the leftovers and reconciles them.)
         forgetCachePrefix(path)
     }
@@ -2466,23 +2466,23 @@ class HydrationImpl(
         if (!resolvesInsideCache(normalised)) return OpenResult.Failed(HydrationError.InvalidPath)
         // Scope guard: same rationale as mkdir — a truncate outside the
         // profile's sync_path set would touch cloud data the view never shows.
-        // Read-only before scope, as for mkdir (#1074).
+        // Read-only before scope, as for mkdir (archive#1074).
         if (mount.isReadOnlyPath(normalised)) return OpenResult.Failed(HydrationError.ReadOnly)
         if (mount.isOutOfScope(normalised)) return OpenResult.Failed(HydrationError.OutOfScope)
         val entry = stateDb.getEntry(normalised)
             ?: return OpenResult.Failed(HydrationError.UnknownPath)
         if (entry.isFolder) return OpenResult.Failed(HydrationError.Generic("path_is_folder"))
-        // #450: a bare truncate (handleId null) registers no open-set entry, so the
+        // archive#450: a bare truncate (handleId null) registers no open-set entry, so the
         // access-grace window of the eviction pass is the only thing standing between
         // this cache file and a concurrent budget eviction while the write runs.
         touch(normalised)
         return try {
-            // #1070/#1069: the truncated copy is the start of an edit the cloud has not seen, noted before the
+            // archive#1070/#1069: the truncated copy is the start of an edit the cloud has not seen, noted before the
             // truncation so that a stop in between cannot leave the bytes unnoticed (a row that was never
             // hydrated has no baseline to tell them by).
             if (entry.remoteId != null) stateDb.markEdited(normalised, entry.writeToken.orEmpty())
             val cachePath = prepareEmptyCache(normalised)
-            // #728: a truncate of a cached copy frees its bytes; the accounting follows the file.
+            // archive#728: a truncate of a cached copy frees its bytes; the accounting follows the file.
             accountCacheFileOnDisk(normalised)
             // When a live handle id is provided (O_TRUNC open), register it in
             // the connection's open-set so dehydrate/busy-checks see the file as
@@ -2504,7 +2504,7 @@ class HydrationImpl(
         return mutex.withLock {
             // Scope guard: a file created outside the profile's sync_path set
             // would upload to the cloud but never show in the mounted view.
-            // Read-only before scope, as for mkdir (#1074).
+            // Read-only before scope, as for mkdir (archive#1074).
             if (mount.isReadOnlyPath(normalised)) return@withLock CreateResult.Failed(HydrationError.ReadOnly)
             if (mount.isOutOfScope(normalised)) return@withLock CreateResult.Failed(HydrationError.OutOfScope)
 
@@ -2545,7 +2545,7 @@ class HydrationImpl(
                     ),
                 )
                 registerHandle(connectionId, handleId, normalised)
-                // #450: the bytes that follow are the only copy until the upload lands.
+                // archive#450: the bytes that follow are the only copy until the upload lands.
                 touch(normalised)
                 CreateResult.Ok(cachePath = cachePath, handleId = handleId, excluded = excluded)
             } catch (e: Exception) {
@@ -2574,7 +2574,7 @@ class HydrationImpl(
         if (oldNorm == newNorm) return RenameResult.Ok
 
         // The trash namespace is read-only: nothing is moved out of it, into it or within it. Asked before the scope
-        // (#1074): the trash lies outside a scoped profile's sync_path set, and the contract answers read_only for it.
+        // (archive#1074): the trash lies outside a scoped profile's sync_path set, and the contract answers read_only for it.
         if (mount.isReadOnlyPath(oldNorm) || mount.isReadOnlyPath(newNorm)) {
             return RenameResult.Failed(HydrationError.ReadOnly)
         }
@@ -2592,7 +2592,7 @@ class HydrationImpl(
         val sourceEntry = stateDb.getEntry(oldNorm)
             ?: return RenameResult.OldPathNotFound
 
-        // Excluded destination (#461 route guard): a rename MOVES the remote
+        // Excluded destination (archive#461 route guard): a rename MOVES the remote
         // object. Exclusion means the sync engine never plans an action for the
         // name — the Reconciler and LocalScanner skip it on every pass — so a
         // synced file moved onto an excluded name silently leaves every sync
@@ -2721,7 +2721,7 @@ class HydrationImpl(
         }
 
         // Cloud-backed source: move on the provider, then bring the local state
-        // along. #319: the cache file moves too (it previously stayed behind under
+        // along. archive#319: the cache file moves too (it previously stayed behind under
         // the old path), and a live upload slot is re-keyed so busy-checks and the
         // list pending flag keep tracking the queued upload. A queued upload for
         // the old path will find its row gone (renamePrefix repathed it) and
@@ -2738,7 +2738,7 @@ class HydrationImpl(
         }
     }
 
-    // #319: move a live upload slot from the old to the new path across a rename,
+    // archive#319: move a live upload slot from the old to the new path across a rename,
     // so dehydrate's busy check, the replace-rename refusal, and list's
     // pendingUpload flag keep tracking the queued upload under its new key. The
     // running coroutine captured the old path and old cache path: its upload fails
@@ -2747,8 +2747,8 @@ class HydrationImpl(
     // it. A submitter that lands between the remove and the put creates a fresh
     // slot at the old path and cleans it up itself.
     //
-    // #1217: a FOLDER's rename moves every slot below it with the same step, so
-    // each waiting child's retry takes the row at its new path (#610) instead of
+    // archive#1217: a FOLDER's rename moves every slot below it with the same step, so
+    // each waiting child's retry takes the row at its new path (archive#610) instead of
     // finding it gone and being given up until the next start. The same identity
     // rule holds per moved slot.
     private fun rekeyUploadSlot(oldPath: String, newPath: String) {
@@ -2764,11 +2764,11 @@ class HydrationImpl(
     }
 
     /**
-     * #610: whether an upload submitted for [path] follows a rename of its file to the new path. Only the upload of a
+     * archive#610: whether an upload submitted for [path] follows a rename of its file to the new path. Only the upload of a
      * file that never reached the cloud (a pending row) with no base version does: its bytes are the file's only copy
      * wherever the row now lives, and there is no version to translate, so the upload at the new path is the same
-     * upload. Given up instead (#319), the row at the new path waited for the next start with nothing uploading it.
-     * An edit of a cloud-backed file keeps #319's rule: it was based on the version at the old path, and the dirty
+     * upload. Given up instead (archive#319), the row at the new path waited for the next start with nothing uploading it.
+     * An edit of a cloud-backed file keeps archive#319's rule: it was based on the version at the old path, and the dirty
      * replay sends it from the new one.
      */
     private fun followsRenames(
@@ -2783,7 +2783,7 @@ class HydrationImpl(
     }
 
     /**
-     * #610: where a rename moved [slot]'s file from [path]: the path the slot is now keyed under ([rekeyUploadSlot])
+     * archive#610: where a rename moved [slot]'s file from [path]: the path the slot is now keyed under ([rekeyUploadSlot])
      * and its cache copy there, or null when it was not renamed, or no row lives there to upload for. The upload then
      * asks the cloud about the new path with the row there: an item the rename's ghost probe moved along is updated in
      * place (the row carries its id), never created a second time beside itself.
@@ -2798,7 +2798,7 @@ class HydrationImpl(
         return current to mount.resolveCachePath(current)
     }
 
-    // #610: the upload's path and cache copy for its next step: where [followRename] says the file went, else unchanged.
+    // archive#610: the upload's path and cache copy for its next step: where [followRename] says the file went, else unchanged.
     private fun followed(
         slot: UploadSlot,
         path: String,
@@ -2807,8 +2807,8 @@ class HydrationImpl(
     ): Pair<String, Path> = (if (followsRenames) followRename(slot, path) else null) ?: (path to cachePath)
 
     /**
-     * #1217: the attempt ([outcome], null when the upload does not follow renames) landed its item after a rename had moved the row away from [path] while the attempt
-     * ran (the in-flight form of #319). The item is moved to the row's new path by its id and the row adopts it
+     * archive#1217: the attempt ([outcome], null when the upload does not follow renames) landed its item after a rename had moved the row away from [path] while the attempt
+     * ran (the in-flight form of archive#319). The item is moved to the row's new path by its id and the row adopts it
      * ([MountEngine.adoptLandedAfterRename]): never a second upload at the new path, never an item left at the old one.
      * Returns the new path, or null when the slot was not renamed (a delete or reap raced the upload: the next
      * enumeration decides, as before) or no pending row waits there. [retrying]: an earlier move failed, and [path]
@@ -2825,7 +2825,7 @@ class HydrationImpl(
         return current.takeIf { mount.adoptLandedAfterRename(landed, it) }
     }
 
-    // #610: the path [slot] is keyed under now when a rename moved it away from [path], else null.
+    // archive#610: the path [slot] is keyed under now when a rename moved it away from [path], else null.
     private fun renamedTo(
         slot: UploadSlot,
         path: String,
@@ -2881,14 +2881,14 @@ class HydrationImpl(
     }
 
     override fun onConnectionClosed(connectionId: String) {
-        // #728: a client that wrote through the mount and died without closing its handles never
+        // archive#728: a client that wrote through the mount and died without closing its handles never
         // reaches closeHandle: pick the sizes up here, while the paths are still known.
         val handles = openSets.remove(connectionId) ?: return
         handles.keys.forEach { forgetSharedIdIfUnheld(it) }
         handles.values.forEach { accountCacheFileOnDisk(it) }
     }
 
-    // #652: the end of a download's logical transfer. A read served from the cache, and a cold read refused for a pause
+    // archive#652: the end of a download's logical transfer. A read served from the cache, and a cold read refused for a pause
     // before it began, never started their handle and leave no row. A download the pause aborted ends interrupted: the
     // client reads again later, which is a new transfer.
     private fun TransferHandle?.endDownload(bytes: Long) {
@@ -2905,13 +2905,13 @@ class HydrationImpl(
     }
 
     // One classification for a failed download, shared by the open_read path and the hydrate verb:
-    // a refusal for a pause (#778) carries the paused token, a stored object of a different size than the
-    // drive reports (#536) carries its own token with the numbers, a download whose content failed its
-    // integrity check (#940) content_refused and an object this client cannot read as stored
-    // unsupported_object (#941), both with a short reason that names no file; a genuinely-gone read the
+    // a refusal for a pause (archive#778) carries the paused token, a stored object of a different size than the
+    // drive reports (archive#536) carries its own token with the numbers, a download whose content failed its
+    // integrity check (archive#940) content_refused and an object this client cannot read as stored
+    // unsupported_object (archive#941), both with a short reason that names no file; a genuinely-gone read the
     // not_found token, everything else stays Generic (→ EIO).
     private fun downloadFailureOf(e: Exception, fallback: String): HydrationError = when {
-        // #778: the daemon is paused (or paused while this download ran): not a failure of the download.
+        // archive#778: the daemon is paused (or paused while this download ran): not a failure of the download.
         e is TransferPausedException -> HydrationError.Paused
         e is RemoteIncompleteDownloadException -> HydrationError.RemoteIncomplete(e.storedBytes, e.declaredBytes)
         e is RemoteObjectMissingDownloadException -> HydrationError.RemoteObjectMissing

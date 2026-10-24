@@ -4,7 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** #1090: a profile name is a folder name, so the shared Windows device-name table applies to it. */
+/** archive#1090: a profile name is a folder name, so the shared Windows device-name table applies to it. */
 class ProfileNameDeviceTest {
     @Test
     fun `profile names that are Windows device names are refused`() {

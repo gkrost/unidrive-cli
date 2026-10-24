@@ -336,7 +336,7 @@ class InternxtGatewayOriginErrorTest {
         }
 
     // The walk: a folder whose combined content call the gateway or the origin cannot serve is re-listed
-    // through the paginated per-folder endpoints (#523). When those fail the same way, the folder is
+    // through the paginated per-folder endpoints (archive#523). When those fail the same way, the folder is
     // skipped like before: the walk goes on, the folder's files are missing, the gather is incomplete.
     @Test
     fun `a 524 on one folder's content call falls back to the paged listing and is skipped when that fails too`() =
@@ -408,11 +408,11 @@ class InternxtGatewayOriginErrorTest {
             assertEquals(404, failure.statusCode)
         }
 
-    // #463: the daemon polls by default, so an incremental delta is the poll. One unavailable answer on its cheap
+    // archive#463: the daemon polls by default, so an incremental delta is the poll. One unavailable answer on its cheap
     // updatedAt-filtered listing used to send the poll into a walk of the whole folder tree (about half an hour on a
     // large drive, for one blip). It ends the poll instead: the poller backs off and the next poll asks the cheap
     // listing again from the same cursor. Only a full gather has a reason to walk. The poll's listing is the sync
-    // listing (#312); the offset one is the fallback for a server without those endpoints, and answers the same way.
+    // listing (archive#312); the offset one is the fallback for a server without those endpoints, and answers the same way.
     @Test
     fun `an unavailable listing ends an incremental delta instead of walking the whole tree`() =
         runTest {
@@ -443,7 +443,7 @@ class InternxtGatewayOriginErrorTest {
             }
         }
 
-    // #463 review: failing fast on a blip must not become failing forever. When the cheap incremental listing stays
+    // archive#463 review: failing fast on a blip must not become failing forever. When the cheap incremental listing stays
     // unavailable (a cursor whose query the gateway keeps cutting), the poll walks the tree once after
     // INCREMENTAL_WALK_AFTER, as it always did; the walk's fresh cursor starts the cheap polls over.
     @Test

@@ -21,7 +21,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #318: ensureHydrated serialises the warm-cache check + download per path, and
+ * archive#318: ensureHydrated serialises the warm-cache check + download per path, and
  * re-downloads into a staged temp file that is atomically swapped in, so a
  * re-hydration can neither double-download a path under concurrent cold opens
  * nor truncate a cache file another handle is reading.

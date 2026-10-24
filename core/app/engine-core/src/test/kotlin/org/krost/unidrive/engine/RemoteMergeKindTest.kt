@@ -22,7 +22,7 @@ import kotlin.test.assertTrue
 /**
  * An item that replaces another of the other kind at the same path (a file deleted and a folder created under its name,
  * or the reverse) is a new row, not the old row with new cloud fields: the old row's kind, hydration, local baseline and
- * pin describe an item that is gone (#1030).
+ * pin describe an item that is gone (archive#1030).
  */
 class RemoteMergeKindTest {
     private lateinit var tmp: Path

@@ -12,7 +12,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The Linux launcher runs unidrive on the system's JDK and prefers Java 25+ (the JVM runtime spike, #624,
+ * The Linux launcher runs unidrive on the system's JDK and prefers Java 25+ (the JVM runtime spike, archive#624,
  * measured Java 21 at ~30 % more CPU to a ready daemon). The template is rendered like the deploys render it
  * and run by the real bash against fake JDKs: each fake `java` prints which JDK it is and its arguments.
  */

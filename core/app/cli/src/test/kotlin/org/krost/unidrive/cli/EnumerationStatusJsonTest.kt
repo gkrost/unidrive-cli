@@ -124,7 +124,7 @@ class EnumerationStatusJsonTest {
         assertEquals("estimate", estimating.getValue("eta_kind").jsonPrimitive.content)
     }
 
-    // #878: last_error_code is its own key beside last_error, and absent (never null) when unknown.
+    // archive#878: last_error_code is its own key beside last_error, and absent (never null) when unknown.
     @Test
     fun `a failed status names last_error_code and leaves it out when unknown`() {
         val coded =
@@ -146,7 +146,7 @@ class EnumerationStatusJsonTest {
         assertFalse("unreachable_items" in none.keys, "none means absent: $none")
     }
 
-    // #926: a running attempt that lists again because the last scan was incomplete says so; the items the last full
+    // archive#926: a running attempt that lists again because the last scan was incomplete says so; the items the last full
     // listing did not return stay as a count after it. Both are absent (never false or 0) otherwise.
     @Test
     fun `recovery is true only while it runs and dropped_items is absent when there are none`() {

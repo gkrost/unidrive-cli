@@ -548,7 +548,7 @@ class CliProgressReporterTest {
         assertEquals(590L, result)
     }
 
-    // #1060: the text of a provider exception can quote a pre-authenticated URL.
+    // archive#1060: the text of a provider exception can quote a pre-authenticated URL.
     @Test
     fun `onWarning prints a URL without its query`() {
         val originalErr = System.err

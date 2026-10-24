@@ -76,7 +76,7 @@ class TrackingReconcilerTest {
     }
 
     /**
-     * Safety invariant (#104): when BOTH hashes are null (Internxt first-scan),
+     * Safety invariant (archive#104): when BOTH hashes are null (Internxt first-scan),
      * equal size must NOT produce a silent adopt. Content identity is unprovable
      * → surface ReportCollision (loud) rather than silently treating divergent
      * files as identical.
@@ -101,7 +101,7 @@ class TrackingReconcilerTest {
     }
 
     /**
-     * Regression guard (#104): a genuine hash match (OneDrive — both hashes
+     * Regression guard (archive#104): a genuine hash match (OneDrive — both hashes
      * present and equal) must still adopt cleanly; no collision introduced.
      */
     @Test
@@ -114,7 +114,7 @@ class TrackingReconcilerTest {
     }
 
     /**
-     * Regression guard (#104): a clear size mismatch (both hashes null) must
+     * Regression guard (archive#104): a clear size mismatch (both hashes null) must
      * also emit a collision — not silently adopt. Behaviour unchanged from
      * before the fix for this sub-case (size fallback also rejected mismatched
      * sizes), but explicitly asserted so a future refactor can't regress it.
@@ -185,7 +185,7 @@ class TrackingReconcilerTest {
     }
 
     /**
-     * DEFAULT (no auto-match): null-hash same-size → ReportCollision — #104 preserved.
+     * DEFAULT (no auto-match): null-hash same-size → ReportCollision — archive#104 preserved.
      * Belt-and-braces assertion on the reconciler directly (complements the integration test).
      */
     @Test

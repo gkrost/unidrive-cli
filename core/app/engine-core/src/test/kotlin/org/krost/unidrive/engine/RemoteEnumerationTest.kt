@@ -30,7 +30,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-// #560 U2b: the remote gather and the mount's enumeration run on their own, with
+// archive#560 U2b: the remote gather and the mount's enumeration run on their own, with
 // explicit collaborators and no SyncEngine. The behaviour itself is pinned through
 // SyncEngine by EnumerateRemoteIntoStateTest, EnumerateCorroborationGuardTest,
 // RemoteGatherCollisionTest and EnumerationParityTest in :app:sync.
@@ -124,7 +124,7 @@ class RemoteEnumerationTest {
         return p
     }
 
-    // ---- #147: the merge runs in transactions of mergeChunkRows rows ----
+    // ---- archive#147: the merge runs in transactions of mergeChunkRows rows ----
 
     @Test
     fun `a chunk without its top-level folder still keys an aliased path at its real-local path`() =
@@ -152,7 +152,7 @@ class RemoteEnumerationTest {
     @Test
     fun `a child merges against the parent row its own pass just wrote across a chunk boundary`() =
         runTest {
-            // #601 shape: the folder at /p was deleted remotely and re-created under the same
+            // archive#601 shape: the folder at /p was deleted remotely and re-created under the same
             // name with a new id; the stale row is in state.db. Parent and child land in
             // different transactions here — the child's parent guard must fall back to the DB
             // and see the fresh parent id, not the dead row's.
@@ -187,7 +187,7 @@ class RemoteEnumerationTest {
     @Test
     fun `a stale child of a parent deleted in an earlier chunk is still skipped`() =
         runTest {
-            // #601 across a chunk boundary: /p is delivered deleted, its child still reports the
+            // archive#601 across a chunk boundary: /p is delivered deleted, its child still reports the
             // dead folder as parent. The guard must see the deletion in the FULL change set, not
             // fall back to the still-present row whose id equals the child's parentId.
             db.upsertEntry(
@@ -384,7 +384,7 @@ class RemoteEnumerationTest {
     @Test
     fun `the mount's enumeration keeps a duplicate under its decorated name and the status counts it`() =
         runTest {
-            // #403: the mount lists the rows of state.db, so the twin's row is what its view shows.
+            // archive#403: the mount lists the rows of state.db, so the twin's row is what its view shows.
             provider.items = listOf(file("bbbbbbbb-2", "/dup.txt"), file("aaaaaaaa-1", "/dup.txt"), file("cccccccc-3", "/a.txt"))
             val enumeration = enumeration()
 
@@ -452,7 +452,7 @@ class RemoteEnumerationTest {
             assertEquals("1", db.getSyncState(RemoteGather.REMOTE_COLLISIONS_KEY))
         }
 
-    // ---- #595: what the view.invalidated push names --------------------------------------------------------------------------------
+    // ---- archive#595: what the view.invalidated push names --------------------------------------------------------------------------------
 
     @Test
     fun `a remote rename reports the old path beside the new one and carries the move hint`() =
@@ -729,9 +729,9 @@ class RemoteEnumerationTest {
             assertEquals(42, db.getEntry("/a.txt")?.remoteSize)
         }
 
-    // ── #601: the lagging-delta parent guard ────────────────────────────────
+    // ── archive#601: the lagging-delta parent guard ────────────────────────────────
 
-    // The #601 repro: the old folder generation was trashed, a new one was created under the
+    // The archive#601 repro: the old folder generation was trashed, a new one was created under the
     // same path, and the lagging delta re-delivers the dead generation's child as EXISTS.
     private fun seedFolderRow(
         path: String,
@@ -826,7 +826,7 @@ class RemoteEnumerationTest {
             assertEquals("x", db.getEntry("/again/x.txt")?.remoteId)
         }
 
-    // #878: an API failure with an HTTP status answers last_error_code http_<status>, and the reason
+    // archive#878: an API failure with an HTTP status answers last_error_code http_<status>, and the reason
     // loses the response body.
     @Test
     fun `an api failure reports its status as the last error code`() =
@@ -850,7 +850,7 @@ class RemoteEnumerationTest {
     // Stands in for kotlinx.serialization's class, which this module's classpath does not carry: matched by name.
     private class SerializationException(message: String) : RuntimeException(message)
 
-    // #900: io means transport I/O only; an unreadable answer is decode, an unexpected exception is internal.
+    // archive#900: io means transport I/O only; an unreadable answer is decode, an unexpected exception is internal.
     private fun codeOf(failure: ProviderException): String? =
         kotlinx.coroutines.runBlocking {
             val e = enumeration()
@@ -1020,7 +1020,7 @@ class RemoteEnumerationTest {
         assertEquals(false to "true", settle(reapsDeferred = true))
     }
 
-    // ---- a folder tombstone of an incremental delta stands for the rows below the folder (candidate S1 of #1040) ----
+    // ---- a folder tombstone of an incremental delta stands for the rows below the folder (candidate S1 of archive#1040) ----
 
     private fun deletedFolderDelta() =
         listOf(folder("p", "/p"), file("c", "/p/c.txt"), folder("s", "/p/s"), file("e", "/p/s/e.txt"), file("k", "/keep.txt"))
@@ -1062,7 +1062,7 @@ class RemoteEnumerationTest {
             assertNull(db.getEntry("/p"))
         }
 
-    // ---- #580: the tombstone of a folder the provider confirmed gone by its id ----
+    // ---- archive#580: the tombstone of a folder the provider confirmed gone by its id ----
 
     @Test
     fun `a folder confirmed gone by its id takes its subtree along after a full listing, keeping unsent rows`() =
@@ -1138,7 +1138,7 @@ class RemoteEnumerationTest {
         }
 
 
-    // ---- #1033: a tombstone is keyed by the item's remote path, its row can live under another local path ----
+    // ---- archive#1033: a tombstone is keyed by the item's remote path, its row can live under another local path ----
 
     @Test
     fun `a full listing without an item reaps its row although the row lives under another local path`() =
@@ -1312,7 +1312,7 @@ class RemoteEnumerationTest {
             assertNull(enumeration.status().skippedPaths, "and the status stops naming them")
         }
 
-    // ---- #926: a recovery that cannot succeed is bounded: the same dropped set twice is accepted --------------------------------
+    // ---- archive#926: a recovery that cannot succeed is bounded: the same dropped set twice is accepted --------------------------------
 
     private val a get() = file("1", "/a.txt")
     private val b get() = file("2", "/b.txt")

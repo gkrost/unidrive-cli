@@ -1,7 +1,7 @@
 package org.krost.unidrive.io
 
 /**
- * #1091: names the engine builds from a user's name (a conflict copy, an archived overwrite, a keep-both side copy) append
+ * archive#1091: names the engine builds from a user's name (a conflict copy, an archived overwrite, a keep-both side copy) append
  * text to it. A name that was 232 characters long then came out at about 250 plus its extension, over the 255 UTF-16 units
  * one path component may hold: Explorer does not show it and every IPC verb on it answers `invalid_path`. The stem is cut
  * so that the whole name fits.

@@ -20,7 +20,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #586: the `credential_health` object of `daemon.status`. Unknown stays unknown: nothing is `ok` until a check
+ * archive#586: the `credential_health` object of `daemon.status`. Unknown stays unknown: nothing is `ok` until a check
  * said so, and a status read never waits for the check.
  */
 class CredentialHealthMonitorTest {

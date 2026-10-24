@@ -16,7 +16,7 @@ import java.nio.file.Path
 import kotlin.system.exitProcess
 
 /**
- * #891: the retained-heap probe of a full enumeration. A fake provider streams N items in cursor-sized
+ * archive#891: the retained-heap probe of a full enumeration. A fake provider streams N items in cursor-sized
  * pages through the real [RemoteGather]/[RemoteEnumeration] into a temp `state.db`, in two variants:
  * fresh (one full pass) and resumed (a first pass over N/2 items leaves its rows staged, then the full
  * pass runs over that database, as the 2026-10-14 capture resumed). During each gather, after the same

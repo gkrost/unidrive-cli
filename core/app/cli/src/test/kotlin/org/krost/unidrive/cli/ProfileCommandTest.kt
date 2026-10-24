@@ -48,7 +48,7 @@ class ProfileCommandTest {
         assertContains(toml, "[providers.work]")
         assertContains(toml, "type = \"onedrive\"")
         assertContains(toml, "sync_root = \"~/OneDrive-Work\"")
-        // mode, type + sync_root; no credential fields (#603)
+        // mode, type + sync_root; no credential fields (archive#603)
         assertTrue(toml.lines().count { it.contains("=") } == 3) // mode + type + sync_root
         assertContains(toml, "mode = \"mount\"")
     }
@@ -176,7 +176,7 @@ class ProfileCommandTest {
         assertTrue(result.none { it.contains("bucket") })
     }
 
-    // #1085: TOML allows a comment after a header and the parser reads such a profile, so the remover must find it.
+    // archive#1085: TOML allows a comment after a header and the parser reads such a profile, so the remover must find it.
     @Test
     fun `removeProfileSection finds a header with a trailing comment`() {
         val config = listOf("[general]", "", "[providers.a] # main", "type = \"x\"", "", "[providers.b]", "type = \"y\"")
@@ -345,7 +345,7 @@ class ProfileCommandTest {
         assertNull(SyncConfig.detectRootIsolationConflicts(raw))
     }
 
-    // ── New-account hint (#457) ──────────────────────────────────────────────
+    // ── New-account hint (archive#457) ──────────────────────────────────────────────
 
     @Test
     fun `the new-account hint for Internxt carries the referral link`() {
@@ -366,7 +366,7 @@ class ProfileCommandTest {
         assertTrue(newAccountHint(null).isEmpty(), "an unknown provider prints no hint")
     }
 
-    // ── setDefaultProfile (#646) ─────────────────────────────────────────────
+    // ── setDefaultProfile (archive#646) ─────────────────────────────────────────────
 
     @Test
     fun `setDefaultProfile inserts under the general header and keeps everything else`() {
@@ -411,7 +411,7 @@ class ProfileCommandTest {
         assertContains(result, "default_profile = \"weird\\\"name\"")
     }
 
-    // ── the mirror sync-root suggestion (#646) ───────────────────────────────
+    // ── the mirror sync-root suggestion (archive#646) ───────────────────────────────
 
     @Test
     fun `the official Internxt client folders are never a suggestion`() {

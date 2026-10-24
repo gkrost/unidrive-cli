@@ -175,11 +175,11 @@ open class Main : Runnable {
     }
 
     /**
-     * #603 (U4, the hosting contract): the gate every mode-bound command runs right after
+     * archive#603 (U4, the hosting contract): the gate every mode-bound command runs right after
      * [resolveCurrentProfile], before any provider write or mutable startup recovery. A profile without
      * a `mode` is refused with one clear message (owner decision: no legacy support, nothing assumes a
      * legacy profile); a profile of the wrong mode is refused with what to run instead. A profile's
-     * mode is fixed — the way to the other mode is a second profile (#564 defers a switch).
+     * mode is fixed — the way to the other mode is a second profile (archive#564 defers a switch).
      *
      * Does not return on refusal — exits 78 ([MountCommand.EX_CONFIG], a config-shaped refusal).
      */
@@ -221,7 +221,7 @@ open class Main : Runnable {
                 @Suppress("UNREACHABLE_CODE") throw IllegalStateException("unreachable")
             }
 
-    /** Exit code of a hosting-contract refusal (#603): config-shaped, like [MountCommand.EX_CONFIG]. */
+    /** Exit code of a hosting-contract refusal (archive#603): config-shaped, like [MountCommand.EX_CONFIG]. */
     val MODE_REFUSAL_EXIT: Int = 78
 
 
@@ -958,9 +958,9 @@ internal val cliExecutionExceptionHandler =
     }
 
 fun main(rawArgs: Array<String>) {
-    // #487: on Windows the arguments arrive in the ANSI code page; read them back from the UTF-16 command line.
+    // archive#487: on Windows the arguments arrive in the ANSI code page; read them back from the UTF-16 command line.
     val args = WindowsArgv.recover(rawArgs)
-    // #391: choose stdout/stderr charsets before anything prints — redirected
+    // archive#391: choose stdout/stderr charsets before anything prints — redirected
     // output must be UTF-8 so captured plan lines round-trip non-ASCII names.
     CliEncoding.apply()
     org.slf4j.MDC.put("build", BuildInfo.COMMIT)

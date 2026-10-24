@@ -512,7 +512,7 @@ class HydrationImplNamespaceTest {
         )
     }
 
-    // ── #1035: a plain rmdir is strict, a whole tree needs the recursive opt-in ──
+    // ── archive#1035: a plain rmdir is strict, a whole tree needs the recursive opt-in ──
 
     private fun row(
         path: String,
@@ -642,7 +642,7 @@ class HydrationImplNamespaceTest {
 
     @Test
     fun rmdir_recursive_refuses_a_synced_file_whose_cache_copy_changed_while_the_daemon_was_stopped() = runTest {
-        // The replay's dirty overwrite (#605): no editBase, not a pending upload, but the cache copy is not the baseline.
+        // The replay's dirty overwrite (archive#605): no editBase, not a pending upload, but the cache copy is not the baseline.
         // Each change leaves the copy's mtime before the row's last sync, so only the baseline comparison can see it.
         val before = java.nio.file.attribute.FileTime.fromMillis(Instant.now().minusSeconds(60).toEpochMilli())
         for (change in listOf<Pair<String, (Path) -> Unit>>(
@@ -698,11 +698,11 @@ class HydrationImplNamespaceTest {
         assertEquals("/dir", env.provider.lastDeletedPath)
     }
 
-    // ── #1040 M5: Free up space (dehydrate) never deletes the only copy of an edit ──
+    // ── archive#1040 M5: Free up space (dehydrate) never deletes the only copy of an edit ──
 
     @Test
     fun dehydrate_keeps_a_synced_file_whose_cache_copy_changed_while_the_daemon_was_stopped() = runTest {
-        // No editBase and not a pending upload: only the copy against the row's baseline shows the edit (#605's test).
+        // No editBase and not a pending upload: only the copy against the row's baseline shows the edit (archive#605's test).
         val before = java.nio.file.attribute.FileTime.fromMillis(Instant.now().minusSeconds(60).toEpochMilli())
         for (change in listOf<Pair<String, (Path) -> Unit>>(
             "another size" to { p ->

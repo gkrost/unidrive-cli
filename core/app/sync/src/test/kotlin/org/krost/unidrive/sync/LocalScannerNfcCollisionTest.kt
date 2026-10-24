@@ -18,7 +18,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * #503 / #491: two local siblings whose names are equal after NFC but differ in code points
+ * archive#503 / archive#491: two local siblings whose names are equal after NFC but differ in code points
  * are refused: neither is synced, no churn, one WARN per pass naming both, files untouched.
  * All names are built from escapes so this file stays ASCII.
  */

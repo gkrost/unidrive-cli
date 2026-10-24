@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
 
 /**
  * Unit-level pins for [InternxtRemoteObjectAuditor] with injected lookups (no HTTP): the failure and
- * "unknown" paths of the classification, which the end-to-end mock test does not reach (#769).
+ * "unknown" paths of the classification, which the end-to-end mock test does not reach (archive#769).
  */
 class InternxtRemoteObjectAuditorTest {
     private val bucket = "bucket-1"

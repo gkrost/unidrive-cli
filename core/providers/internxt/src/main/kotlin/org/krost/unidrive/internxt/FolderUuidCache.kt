@@ -55,7 +55,7 @@ class FolderUuidCache {
     fun invalidate(parentUuid: String, sanitizedName: String) { map.remove(Key(parentUuid, sanitizedName)) }
 
     /**
-     * #580: drop every entry that resolves to the folder [uuid] (its name under its parent), and those of the folders
+     * archive#580: drop every entry that resolves to the folder [uuid] (its name under its parent), and those of the folders
      * right below it: the folder is gone in the cloud, and a walk must ask the listing again instead of reaching it by
      * a uuid that no longer leads anywhere.
      */

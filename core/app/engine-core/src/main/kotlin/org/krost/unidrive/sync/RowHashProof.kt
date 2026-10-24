@@ -6,7 +6,7 @@ import java.nio.file.Path
 import java.util.Base64
 
 /**
- * The proof that a local file is the cloud copy, from the content hash the cloud row carries (gkrost/unidrive#1219): the file is hashed
+ * The proof that a local file is the cloud copy, from the content hash the cloud row carries (archive#1219): the file is hashed
  * locally with the row's algorithm and compared with the recorded value, so nothing is downloaded.
  *
  * Unlike [HashVerifier.verify] ("true when unverifiable") and [HashVerifier.matches] ("false when unverifiable"), this answers three ways, because

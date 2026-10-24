@@ -8,7 +8,7 @@ import java.time.Instant
 import kotlin.test.*
 
 /**
- * #300: the engine's manual batch ([StateDatabase.beginBatch] .. [StateDatabase.commitBatch] /
+ * archive#300: the engine's manual batch ([StateDatabase.beginBatch] .. [StateDatabase.commitBatch] /
  * [StateDatabase.rollbackBatch], or [StateDatabase.batch]) owns the connection's one SQLite transaction,
  * and it stays open across network I/O. A write from another thread (an IPC hydration verb running while
  * `unidrive sync` is in Pass 1) used to join that transaction: the engine's rollback discarded it, and it

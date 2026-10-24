@@ -291,7 +291,7 @@ class SimilarNameGraph(
     }
 
     private fun MockRequestHandleScope.byIdRequest(request: HttpRequestData, id: String): HttpResponseData {
-        // #1178: POST items/{id}/permanentDelete removes the node outright, bypassing the recycle bin.
+        // archive#1178: POST items/{id}/permanentDelete removes the node outright, bypassing the recycle bin.
         if (request.method == HttpMethod.Post && id.endsWith("/permanentDelete")) {
             val target = byId[id.removeSuffix("/permanentDelete")] ?: return itemNotFound()
             target.parent?.children?.remove(target.name)

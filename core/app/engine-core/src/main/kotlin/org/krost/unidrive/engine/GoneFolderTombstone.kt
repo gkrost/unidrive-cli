@@ -10,8 +10,8 @@ import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * #580: the tombstone of a tracked folder that the provider confirmed gone by its id, for the mount. An upload into a
- * folder trashed in the cloud is refused (`parent_gone`), and the lagging delta (#132) can take a long time to report the
+ * archive#580: the tombstone of a tracked folder that the provider confirmed gone by its id, for the mount. An upload into a
+ * folder trashed in the cloud is refused (`parent_gone`), and the lagging delta (archive#132) can take a long time to report the
  * folder: until then the mount lists it. The caller asks the provider by the folder's id (`CloudProvider.folderStateById`)
  * and calls [tombstone] only on an answer that the folder is gone; a failed or degraded lookup changes nothing.
  *

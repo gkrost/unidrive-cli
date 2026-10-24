@@ -37,7 +37,7 @@ class PlaceholderManagerTest {
         assertEquals(0, Files.size(file))
     }
 
-    // ── #230: local-name representability ────────────────────────────────────
+    // ── archive#230: local-name representability ────────────────────────────────────
 
     @Test
     fun `localNameIssue allows normal names including spaces`() {
@@ -72,7 +72,7 @@ class PlaceholderManagerTest {
         assertNotNull(localNameIssue(withNul, windows = false))
     }
 
-    // ── #600: component length ───────────────────────────────────────────────
+    // ── archive#600: component length ───────────────────────────────────────────────
 
     @Test
     fun `localNameIssue allows a 255-character component and rejects 256`() {

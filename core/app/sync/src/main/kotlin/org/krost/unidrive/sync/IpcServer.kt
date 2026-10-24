@@ -101,11 +101,11 @@ class IpcServer(
     private val closeListeners = CopyOnWriteArrayList<(String) -> Unit>()
     private var serverChannel: ServerSocketChannel? = null
 
-    // Wakes the connection readers when their socket has data (#687); set by start(), cleared by close().
+    // Wakes the connection readers when their socket has data (archive#687); set by start(), cleared by close().
     @Volatile
     private var readSelector: IpcReadSelector? = null
 
-    // #419: set once start() has bound the socket, so close() removes only files this server owns.
+    // archive#419: set once start() has bound the socket, so close() removes only files this server owns.
     @Volatile
     private var ownsSocketFiles = false
     private var acceptJob: Job? = null
@@ -328,7 +328,7 @@ class IpcServer(
                         log.debug("IPC: client connected id={} (total={})", connId, clients.size)
                         scope.launch(transport) {
                             val buf = ByteBuffer.allocate(MAX_REQUEST_BYTES)
-                            // #1054 S2: bytes, decoded one whole line at a time. A read can end inside a multi-byte
+                            // archive#1054 S2: bytes, decoded one whole line at a time. A read can end inside a multi-byte
                             // character; decoding each read on its own turned that character into U+FFFD.
                             val pending = java.io.ByteArrayOutputStream()
                             try {
@@ -346,7 +346,7 @@ class IpcServer(
                                             log.info("IPC: closing idle connection id={} (no request for {} ms)", connId, idleTimeoutMs)
                                             break
                                         }
-                                        // Sleep until the socket has data (#687); the timeout only re-runs the checks above.
+                                        // Sleep until the socket has data (archive#687); the timeout only re-runs the checks above.
                                         selector.awaitReadable(sc, recheckDelayMs(connId, entry))
                                         continue
                                     }
@@ -432,7 +432,7 @@ class IpcServer(
         syncSubscribers.clear()
         pendingPostReply.clear()
         authSessions.clear()
-        // #419: only remove the files of a socket THIS server bound. A start() that was refused
+        // archive#419: only remove the files of a socket THIS server bound. A start() that was refused
         // ("Another daemon is already listening") or failed to bind still gets close()d by its
         // caller's cleanup, and must not unlink the live daemon's socket. Cleared afterwards so a
         // second close() cannot delete a successor's socket.
@@ -934,7 +934,7 @@ class IpcServer(
             "unidrive-${canonicalDiskName(profileName, defaultSocketDirectory())}.sock"
 
         /**
-         * #135: the one canonical on-disk name for a profile — verbatim when it is short
+         * archive#135: the one canonical on-disk name for a profile — verbatim when it is short
          * enough for every consumer, the 8-hex SHA-1 truncation when the socket path would
          * exceed [MAX_SOCKET_PATH_LENGTH]. `hydrationCacheRoot` derives its directory from
          * the same function, so the socket and the cache never disagree about what
@@ -969,7 +969,7 @@ class IpcServer(
         }
 
         /**
-         * #419: remove the socket file at [socketPath] and its `.meta` sibling after the
+         * archive#419: remove the socket file at [socketPath] and its `.meta` sibling after the
          * daemon that owned them is gone, ignoring failures. [close] never runs when the
          * daemon is hard-killed (`daemon stop` on Windows is TerminateProcess, which skips
          * shutdown hooks), so `daemon stop` calls this once the process has exited. A socket
@@ -1046,7 +1046,7 @@ class IpcServer(
     }
 }
 
-// The index of the first '\n' byte at or after [from], or -1 (#1054 S2).
+// The index of the first '\n' byte at or after [from], or -1 (archive#1054 S2).
 private fun ByteArray.indexOfNewline(from: Int): Int {
     for (i in from until size) if (this[i] == '\n'.code.toByte()) return i
     return -1

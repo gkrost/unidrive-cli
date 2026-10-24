@@ -3,7 +3,7 @@ package org.krost.unidrive.io
 import java.util.Locale
 
 /**
- * #1090: the one list of file names Windows reserves for devices, and the one rule that applies it. The engine's local
+ * archive#1090: the one list of file names Windows reserves for devices, and the one rule that applies it. The engine's local
  * name check (`localNameIssue`), the names of the virtual top-level folders (`RootNames`), the profile names
  * (`isValidProfileName`) and OneDrive's pre-upload check all ask here; the Windows client mirrors the same table in
  * `WindowsNames.cs`, so a name one side accepts is not refused by the other.

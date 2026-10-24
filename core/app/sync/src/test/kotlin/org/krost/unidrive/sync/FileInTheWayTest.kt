@@ -14,7 +14,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * #737: when the remote needs a folder where the sync root holds a regular file (the remote turned
+ * archive#737: when the remote needs a folder where the sync root holds a regular file (the remote turned
  * `/x` into a folder, or Internxt holds a file and a folder of the same name), creating a placeholder
  * under that folder used to delete the file. A file whose bytes never reached the cloud was lost.
  * Its bytes must survive as a conflict copy next to the new folder.

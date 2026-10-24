@@ -14,7 +14,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #910: `profile add` must refuse an unusable `root_path` with a token the wizard can map,
+ * archive#910: `profile add` must refuse an unusable `root_path` with a token the wizard can map,
  * instead of accepting the profile and failing forever on the first scan. Drive roots are
  * their own token: a two-way mirror over `X:\` would pull in the system folders and
  * everything else on the volume.

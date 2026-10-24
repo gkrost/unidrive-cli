@@ -271,7 +271,7 @@ subprojects {
         // The advisory flakyTest run (below) is not part of the coverage report, and the report's input is the
         // stable `test` task: finalizing flakyTest with it would run the whole stable suite behind it.
         if (name != flakyTestTask) finalizedBy(tasks.withType<JacocoReport>())
-        // #453: redirect the test JVM's home to the build dir. Tests that build a
+        // archive#453: redirect the test JVM's home to the build dir. Tests that build a
         // provider config without an explicit path (OneDriveConfig's default
         // tokenPath, the XDG/user-dir resolvers, …) then read and write under
         // build/test-home instead of the developer's real ~/.config/unidrive —
@@ -715,12 +715,12 @@ tasks.register<JacocoReport>("jacocoMergedReport") {
     }
 }
 
-// #560 (4A.5): module dependency edges between our own modules, main source
+// archive#560 (4A.5): module dependency edges between our own modules, main source
 // sets only. A cloud provider implements the SPI in :app:core and must not
 // reach into the sync engine, the mount, or the CLI; :app:sync-tracking
 // is a pure engine (the `ts` commands live in :app:cli) and must not depend on
 // the CLI. :app:engine-core holds the primitives the mirror engine
-// and the mount share (#560 U2) and depends only on :app:core, so neither
+// and the mount share (archive#560 U2) and depends only on :app:core, so neither
 // orchestration can leak into it. Wired into every module's `check`. Run
 // with --info to print the graph.
 val mainProjectEdges: () -> Map<String, Set<String>> = {
@@ -755,7 +755,7 @@ tasks.register("checkModuleEdges") {
         val edges = mainProjectEdges()
         // The mount front-end's tests run on a SyncEngine host (the only MountHost in production), so
         // :app:hydration's tests depend on :app:sync. The reverse test edge made the two test scopes
-        // mutually dependent (#560 U3); the mount-operation tests live in :app:hydration since U8.
+        // mutually dependent (archive#560 U3); the mount-operation tests live in :app:hydration since U8.
         val testEdges = testProjectEdges()
         edges.toSortedMap().forEach { (from, to) ->
             if (to.isNotEmpty()) logger.info("module edge: $from -> ${to.joinToString(", ")}")
@@ -773,7 +773,7 @@ tasks.register("checkModuleEdges") {
                     violations += "$from -> $it (the shared engine core may depend only on :app:core; :app:sync and :app:hydration depend on it)"
                 }
             }
-            // #560 U3: the mirror front-end (SyncEngine, :app:sync) and the mount front-end
+            // archive#560 U3: the mirror front-end (SyncEngine, :app:sync) and the mount front-end
             // (MountEngine, :app:hydration) meet only in :app:engine-core and in the CLI that wires them.
             if (from == ":app:hydration" && ":app:sync" in to) {
                 violations += "$from -> :app:sync (the mount front-end builds on :app:engine-core, not on the mirror engine)"

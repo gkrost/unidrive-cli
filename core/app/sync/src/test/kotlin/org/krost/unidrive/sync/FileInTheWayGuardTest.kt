@@ -19,7 +19,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #737: a file in the way of a remote folder is replaced without a copy only when its state row
+ * archive#737: a file in the way of a remote folder is replaced without a copy only when its state row
  * proves its bytes are in the cloud ([CloudCopyProof], installed by the sync engine). Every other
  * file is kept as a conflict copy, and a file that cannot be kept is left alone.
  */

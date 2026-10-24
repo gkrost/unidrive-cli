@@ -114,7 +114,7 @@ class ProcessLockTest {
         }
     }
 
-    // -- #1054 S3: only the holder removes the pid file ---------------------------------------------------------
+    // -- archive#1054 S3: only the holder removes the pid file ---------------------------------------------------------
 
     @Test
     fun `a contender that lost the lock does not delete the holder's pid file on unlock`() {
@@ -196,7 +196,7 @@ class ProcessLockTest {
         }
     }
 
-    // #570 review: a crash leaves the PID file of the last holder behind, and the read-only hold writes none. A
+    // archive#570 review: a crash leaves the PID file of the last holder behind, and the read-only hold writes none. A
     // contention message must not name that dead PID (its kill hint could hit an unrelated process reusing it).
     @Test
     fun read_live_holder_info_ignores_a_dead_pid_left_by_a_crash() {
@@ -295,7 +295,7 @@ class ProcessLockTest {
         }
     }
 
-    // -- #560 U5a: a read-only hold for the legacy-profile inventory ------------------------------
+    // -- archive#560 U5a: a read-only hold for the legacy-profile inventory ------------------------------
 
     @Test
     fun `read-only hold on a missing lock file creates nothing`() {

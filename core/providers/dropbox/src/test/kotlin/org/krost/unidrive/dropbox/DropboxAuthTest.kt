@@ -57,7 +57,7 @@ class DropboxAuthTest {
         assertTrue(factory.isAuthenticated(mapOf("client_id" to "k"), dir))
     }
 
-    // -- #866: the no-redirect code flow ------------------------------------------
+    // -- archive#866: the no-redirect code flow ------------------------------------------
 
     @Test
     fun `the no-redirect url carries no redirect uri`() =

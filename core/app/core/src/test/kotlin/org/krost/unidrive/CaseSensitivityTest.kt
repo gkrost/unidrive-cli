@@ -7,7 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** #309: the case policy a provider declares, and the probe that asks a file system how it tells names apart. */
+/** archive#309: the case policy a provider declares, and the probe that asks a file system how it tells names apart. */
 class CaseSensitivityTest {
     // What the file system holding [dir] answers when asked for [dir] under its swapped-case name directly.
     private fun folds(dir: Path): Boolean {

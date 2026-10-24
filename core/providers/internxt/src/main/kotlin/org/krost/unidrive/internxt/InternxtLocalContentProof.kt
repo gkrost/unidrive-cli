@@ -12,7 +12,7 @@ import java.nio.file.Path
 import java.security.MessageDigest
 
 /**
- * Proves, without downloading the stored object, that a local file holds the bytes of an Internxt file (gkrost/unidrive#1219).
+ * Proves, without downloading the stored object, that a local file holds the bytes of an Internxt file (archive#1219).
  *
  * The content is encrypted with AES-256-CTR under a key derived from the account's bucket key and the file's own 32-byte `index`
  * (its first 16 bytes are the IV), and the network records a hash of the CIPHERTEXT as the shard's `hash`: RIPEMD-160(SHA-256(ciphertext))
@@ -45,12 +45,12 @@ internal class InternxtLocalContentProof(
         val bucket = meta.bucket
         val fileId = meta.fileId
         if (bucket.isNullOrBlank() || fileId.isNullOrBlank()) {
-            // An empty file is a drive entry of size 0 with no stored object (#485): there is nothing to hash, the sizes decide. A drive
+            // An empty file is a drive entry of size 0 with no stored object (archive#485): there is nothing to hash, the sizes decide. A drive
             // entry that declares bytes and has no object is broken, not a file to judge.
             if (declared != 0L) return null
             return ContentProof(same = localSize == 0L, method = METHOD_EMPTY)
         }
-        // A declared size of 0 WITH a file id is the older "size unknown" shape (#485): it is no evidence of a difference.
+        // A declared size of 0 WITH a file id is the older "size unknown" shape (archive#485): it is no evidence of a difference.
         if (declared > 0L && localSize != declared) return ContentProof(same = false, method = METHOD_SIZE)
         if ((meta.encryptVersion ?: SUPPORTED_ENCRYPT_VERSION) != SUPPORTED_ENCRYPT_VERSION) return null
 
@@ -63,7 +63,7 @@ internal class InternxtLocalContentProof(
                 return null
             }
         if (index.size < IV_BYTES) return null
-        // One hash is recorded per shard. A multi-shard object is not read by this client either (#335), and a hash of one part says
+        // One hash is recorded per shard. A multi-shard object is not read by this client either (archive#335), and a hash of one part says
         // nothing about the whole.
         val shard = info.shards.singleOrNull() ?: return null
         val expectation = ShardHashExpectation.parse(shard.hash) as? ShardHashExpectation.Checkable ?: return null

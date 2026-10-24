@@ -11,7 +11,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #493: a refused upload is recorded on its row (`upload_refused`, an additive column like `cache_backed`), read back,
+ * archive#493: a refused upload is recorded on its row (`upload_refused`, an additive column like `cache_backed`), read back,
  * cleared by any rewrite of the row, and added to a state.db written before the column existed.
  */
 class StateDatabaseUploadRefusalTest {
@@ -76,7 +76,7 @@ class StateDatabaseUploadRefusalTest {
     fun `a state db written before the column gets it on open, and its rows read as not refused`() {
         val dbPath = Files.createTempDirectory("ud-refusal-old").resolve("state.db")
         open(dbPath).also { it.upsertEntry(entry("/old.txt")) }.close()
-        // Turn it into a pre-#493 database: no upload_refused column (the view goes first, it selects *).
+        // Turn it into a pre-archive#493 database: no upload_refused column (the view goes first, it selects *).
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
             conn.createStatement().use { stmt ->
                 stmt.executeUpdate("DROP VIEW IF EXISTS alive_entries")

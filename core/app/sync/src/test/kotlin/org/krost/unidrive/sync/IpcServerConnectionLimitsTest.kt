@@ -20,7 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * How the IPC server limits connections (private tracker, item F7; engine #494): the cap is 32
+ * How the IPC server limits connections (private tracker, item F7; engine archive#494): the cap is 32
  * by default and configurable, a connection over it is told why before it is closed, and a connection that sent no
  * request for the idle timeout is closed, unless it subscribed to sync progress or used one of
  * the verbs the daemon exempts (the hydration verbs). Time is a manual clock, so no test waits
@@ -114,7 +114,7 @@ class IpcServerConnectionLimitsTest {
     // A refused connection is kept open for REFUSAL_LINGER_MS (200 ms) and then closed whether or not its peer has
     // sent: a request that arrives after that is outside what the server promises. This client's timeline (up to 100 ms
     // before it sends, 40 ms after) is wall-clock, and on a runner that stalls it for 100 ms it ran past that window
-    // and lost its reason to the reset of the closed socket (#905, round 3, request after 60 ms). So the test widens the
+    // and lost its reason to the reset of the closed socket (archive#905, round 3, request after 60 ms). So the test widens the
     // window for itself: the server still must not close early, which is what the reset exposes, but how fast the
     // runner schedules this client is no longer part of the outcome.
     @Test

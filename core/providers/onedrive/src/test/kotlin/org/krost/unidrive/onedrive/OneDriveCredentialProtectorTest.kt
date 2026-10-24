@@ -22,7 +22,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #1261: OneDrive's token.json goes through [OneDriveConfig.credentialProtector], as
+ * archive#1261: OneDrive's token.json goes through [OneDriveConfig.credentialProtector], as
  * Internxt's credentials do. One named test per invariant:
  *  1. a token saved with a protector loads back, and the file holds only the protector's reference;
  *  2. a plaintext token.json from before still loads, and loading it rewrites it protected;

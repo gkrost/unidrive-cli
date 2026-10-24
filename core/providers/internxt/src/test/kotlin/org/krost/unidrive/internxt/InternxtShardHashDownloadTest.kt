@@ -28,10 +28,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #940: the official Internxt clients record a shard as RIPEMD-160(SHA-256(ciphertext)) (40 hex characters); the
+ * archive#940: the official Internxt clients record a shard as RIPEMD-160(SHA-256(ciphertext)) (40 hex characters); the
  * check used to know only SHA-256 hex and refused every such object as a "SHA-256 mismatch" (310 files of one account,
  * all downloaded in full first). Each recorded shape is verified with its own algorithm, a real mismatch still
- * refuses (#295), and a value in no known shape is reported as such and read unverified instead of being called a
+ * refuses (archive#295), and a value in no known shape is reported as such and read unverified instead of being called a
  * mismatch.
  */
 class InternxtShardHashDownloadTest {
@@ -176,7 +176,7 @@ class InternxtShardHashDownloadTest {
 
     // ---- RIPEMD-160(SHA-256) hex (40 characters): what every official client records ---------------------------------
 
-    // The regression of #940: the 40 hex the official clients record verifies when it is right.
+    // The regression of archive#940: the 40 hex the official clients record verifies when it is right.
     @Test
     fun `a 40 hex shard hash of the known RIPEMD-160 vector downloads`() =
         runTest {

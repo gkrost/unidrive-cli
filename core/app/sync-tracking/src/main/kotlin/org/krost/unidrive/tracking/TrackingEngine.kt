@@ -646,7 +646,7 @@ class TrackingEngine(
                         out[targetPath] = RemoteObservation(false, item.id, null, null, null, null)
                         continue
                     }
-                    // #401 detector: two live remote items sharing one path cannot both
+                    // archive#401 detector: two live remote items sharing one path cannot both
                     // be represented in the path-keyed tracking set. Marking the pass
                     // incomplete suppresses delete actions for it (no wrong-twin reap
                     // on a name the provider resolves arbitrarily). No migration: the

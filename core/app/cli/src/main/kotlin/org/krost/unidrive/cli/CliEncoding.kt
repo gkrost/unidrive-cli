@@ -7,7 +7,7 @@ import java.lang.management.ManagementFactory
 import java.nio.charset.Charset
 
 /**
- * #391: the CLI chooses its stdout/stderr charset explicitly instead of
+ * archive#391: the CLI chooses its stdout/stderr charset explicitly instead of
  * inheriting whatever the JVM guessed.
  *
  * On Windows the JVM derives the stream charset from the console code page
@@ -15,7 +15,7 @@ import java.nio.charset.Charset
  * redirected. Redirected output is what scripts, CI and agents capture, and
  * they decode UTF-8 — so a plan line like `mkdir /_INBOX/Köln …` reached its
  * reader as U+FFFD-mangled bytes whenever no launcher flag happened to force
- * UTF-8 (verified in #391: the same run with `-Dstdout.encoding=UTF-8` was
+ * UTF-8 (verified in archive#391: the same run with `-Dstdout.encoding=UTF-8` was
  * correct, the log file and state.db always were — stdout encoding only).
  *
  * The deploy launchers (unidrive.ps1/cmd, the Git Bash launcher) already pass
@@ -50,7 +50,7 @@ object CliEncoding {
      * `System.getProperty("stdout.encoding")` is defined by the JVM itself on
      * every start (JDK 19+) — on Windows with redirected output it reads
      * "Cp1252" with no flag anywhere — so honoring the property unconditionally
-     * pins the #391 mangling in place. Only a flag on the actual command line
+     * pins the archive#391 mangling in place. Only a flag on the actual command line
      * counts as a request (launcher invocations, explicit user override).
      */
     internal fun explicitProperty(name: String): String? {

@@ -8,7 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * #487: arguments outside the ANSI code page reach `main` as `?` on Windows. [WindowsArgv] reads them back from the
+ * archive#487: arguments outside the ANSI code page reach `main` as `?` on Windows. [WindowsArgv] reads them back from the
  * UTF-16 command line and accepts them only when they provably are what the JVM degraded. Non-ASCII characters are built
  * from code points so the source stays ASCII.
  */
@@ -54,7 +54,7 @@ class WindowsArgvTest {
         assertNull(WindowsArgv.pickTrailing(listOf("x"), arrayOf("a", "b"), cp1252))
     }
 
-    // ── #528: an argument made ONLY of unrepresentable characters arrives all-ASCII (`?`) ──
+    // ── archive#528: an argument made ONLY of unrepresentable characters arrives all-ASCII (`?`) ──
 
     @Test
     fun `an argument made only of emoji characters is recovered from its all-question-mark form`() {

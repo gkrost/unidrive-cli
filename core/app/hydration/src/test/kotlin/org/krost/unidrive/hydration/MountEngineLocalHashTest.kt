@@ -16,8 +16,8 @@ import java.time.Instant
 import kotlin.test.*
 
 /**
- * #396: the local hash the mount operations record (moved here from `SyncEngineLocalHashTest`
- * with the operations, #560 U3). A write-back through the cache and a mount-mode re-download must
+ * archive#396: the local hash the mount operations record (moved here from `SyncEngineLocalHashTest`
+ * with the operations, archive#560 U3). A write-back through the cache and a mount-mode re-download must
  * record the hash of the bytes they just sent or placed, so LocalScanner's touch check never pairs
  * stale bytes with fresh stats. Driven end to end on the mount front-end of a `SyncEngine` host with
  * a fake hashless provider.
@@ -89,7 +89,7 @@ class MountEngineLocalHashTest {
         assertTrue(Files.exists(syncRoot.resolve(name)), "precondition: $name was downloaded")
     }
 
-    // #337: an upload row takes the file's stats after the transfer, so an edit that lands
+    // archive#337: an upload row takes the file's stats after the transfer, so an edit that lands
     // mid-upload is already in the baseline. Its hash must not be recorded too.
     private fun editDuringUpload(edited: ByteArray) {
         provider.duringUpload = { path ->
@@ -109,7 +109,7 @@ class MountEngineLocalHashTest {
             val eng = engine()
             provider.deltaItems = emptyList()
             eng.syncOnce()
-            // #319: the write-back requires the row the FUSE create flow wrote
+            // archive#319: the write-back requires the row the FUSE create flow wrote
             // (HydrationImpl.create) — a row-less upload is refused so it cannot
             // resurrect a vanished path. Seed the never-uploaded row here.
             seedLocalOnlyRow("/local.txt")
@@ -179,7 +179,7 @@ class MountEngineLocalHashTest {
             val eng = engine()
             provider.deltaItems = emptyList()
             eng.syncOnce()
-            // #319: the write-back requires the row the FUSE create flow wrote.
+            // archive#319: the write-back requires the row the FUSE create flow wrote.
             seedLocalOnlyRow("/local.txt")
             val cacheCopy = Files.createTempDirectory("ud-396-wb-race").resolve("local.txt")
             Files.writeString(cacheCopy, "first version")

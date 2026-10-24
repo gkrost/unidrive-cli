@@ -146,7 +146,7 @@ class LauncherTemplateTest {
         }
     }
 
-    // #859: piped-in input is the script's $input; the JVM start must receive it (ignore_rules from a file,
+    // archive#859: piped-in input is the script's $input; the JVM start must receive it (ignore_rules from a file,
     // auth login --password-stdin) instead of seeing an empty standard input and, for ignore_rules, clearing.
     @Test
     fun `the powershell launcher hands redirected standard input to the jvm`() {

@@ -184,7 +184,7 @@ class ShareCommandTest {
         assertEquals(0, exit, "--revoke alone should parse cleanly")
     }
 
-    // ── #527: share authenticates before its first provider call ───────────────
+    // ── archive#527: share authenticates before its first provider call ───────────────
 
     /**
      * Records the provider-call order and answers the share capabilities. The

@@ -40,7 +40,7 @@ class MountCommand : Runnable {
             parent.invalidateProfileCaches()
         }
         val profile = parent.resolveCurrentProfile()
-        // #603 (U4): the hosting contract, before anything mutates — `mount` is the mount-mode command.
+        // archive#603 (U4): the hosting contract, before anything mutates — `mount` is the mount-mode command.
         parent.requireProfileMode(profile, ProfileMode.MOUNT, "mount")
 
         // Per spec unidrive-daemon-design.md §3.3: mount no longer acquires
@@ -71,7 +71,7 @@ class MountCommand : Runnable {
             return
         }
 
-        // #142: the first client connection starts the profile's daemon — a fresh machine's
+        // archive#142: the first client connection starts the profile's daemon — a fresh machine's
         // `unidrive mount /path` works without the operator having seen the word "daemon". When the
         // spawn is not possible the co-daemon's own error below still speaks, unchanged.
         DaemonAutospawn.ensureDaemonRunning(
@@ -80,7 +80,7 @@ class MountCommand : Runnable {
         )
 
         Files.createDirectories(cacheRoot)
-        // IPC protocol 2 (#632): the co-daemon authenticates every connection with the profile's
+        // IPC protocol 2 (archive#632): the co-daemon authenticates every connection with the profile's
         // full-scope token, which the daemon rewrites at each start; the co-daemon re-reads it on
         // every connect. Without these two arguments it cannot connect to a protocol-2 daemon.
         val tokenFile = IpcAuth.tokenFile(parent.providerConfigDir(), IpcAuth.Scope.FULL)
@@ -95,7 +95,7 @@ class MountCommand : Runnable {
             )
         } else if (exit != 0) {
             // The co-daemon's inherited stderr already says why it stopped. Ask the daemon before
-            // blaming it: only a failed status check may claim it is not running (#202).
+            // blaming it: only a failed status check may claim it is not running (archive#202).
             val daemonStatus =
                 resolveDaemonStatus(
                     answers = DaemonAutospawn.daemonAnswers(profile.name, socketPath, parent.providerConfigDir()),
@@ -165,7 +165,7 @@ class MountCommand : Runnable {
             )
 
         /**
-         * The co-daemon's log filter when the operator set none or a blank one (#150). Its start and
+         * The co-daemon's log filter when the operator set none or a blank one (archive#150). Its start and
          * teardown breadcrumbs ("co-daemon starting", "co-daemon shutting down (signal|session ended)")
          * are info-level, so a `warn` default would drop exactly the lines a teardown needs; `info` is
          * also the co-daemon's own default when RUST_LOG is unset.

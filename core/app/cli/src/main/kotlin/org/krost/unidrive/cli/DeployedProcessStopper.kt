@@ -21,7 +21,7 @@ internal fun awaitDeployedProcessExit(
     }
 
 /**
- * #1194: the running engine processes a `deploy` must stop before it overwrites the jar. `ProcessHandle`'s command
+ * archive#1194: the running engine processes a `deploy` must stop before it overwrites the jar. `ProcessHandle`'s command
  * line reads empty for them on Windows (measured: the old kill step matched nothing while two daemons held the jar,
  * and the copy failed on the lock), so the holders are found by their profiles' `.lock.pid` sidecars instead: every
  * live lock holder under the config dir is stopped — a daemon gracefully through the `daemon.shutdown` verb (clean

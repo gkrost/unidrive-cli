@@ -25,7 +25,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
- * #946: a new upload records RIPEMD-160(SHA-256(ciphertext)) as the shard hash in `files/finish`, 40 hex, like the official clients
+ * archive#946: a new upload records RIPEMD-160(SHA-256(ciphertext)) as the shard hash in `files/finish`, 40 hex, like the official clients
  * (it used to record the plain SHA-256, 64 hex, which the official clients do not expect). The test hashes the ciphertext the provider
  * really PUT and compares: the value on the wire is derived from those bytes, and the download verification accepts it.
  */

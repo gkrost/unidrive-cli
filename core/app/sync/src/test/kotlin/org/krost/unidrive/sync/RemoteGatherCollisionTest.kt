@@ -19,7 +19,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * #401: two live remote items resolving to one path key must not silently drop a
+ * archive#401: two live remote items resolving to one path key must not silently drop a
  * twin. The gather admits through a deterministic winner rule (folder > file >
  * the id state.db already tracks > smallest id), reports every suppressed twin
  * (warning + sync_state counters), keeps the gather COMPLETE (a collision must not
@@ -76,7 +76,7 @@ class RemoteGatherCollisionTest {
             val row = db.getEntry("/dup.txt")
             assertNotNull(row)
             assertEquals("a-twin", row.remoteId, "smallest id must win regardless of emit order")
-            // #403: the loser twin is kept under its decorated name, not dropped.
+            // archive#403: the loser twin is kept under its decorated name, not dropped.
             assertEquals(2, db.getEntryCount())
             assertEquals("b-twin", db.getEntry(DuplicateNames.decorate("/dup.txt", "b-twin"))?.remoteId)
         }
@@ -117,7 +117,7 @@ class RemoteGatherCollisionTest {
             assertEquals("z-older", db.getEntry("/dup.txt")?.remoteId)
 
             // Run 2 (full re-enumeration) emits both twins, larger id FIRST. The
-            // row's id must hold the path — flipping rows per run is the #401 churn.
+            // row's id must hold the path — flipping rows per run is the archive#401 churn.
             db.setSyncState("delta_cursor", "")
             provider.deltaItems =
                 listOf(
@@ -141,7 +141,7 @@ class RemoteGatherCollisionTest {
                 )
             engine.enumerateRemoteIntoState(reset = false)
             // resolveItemPath normalizes to NFC before admission, so the twins meet
-            // at one key; the winner holds the name and the other twin its decorated one (#403).
+            // at one key; the winner holds the name and the other twin its decorated one (archive#403).
             assertEquals(2, db.getEntryCount())
             assertEquals("nfd-twin", db.getEntry(DuplicateNames.decorate(nfc, "nfd-twin"))?.remoteId)
             assertEquals("nfc-twin", db.getEntry(nfc)?.remoteId, "smallest id wins")
@@ -211,7 +211,7 @@ class RemoteGatherCollisionTest {
             assertEquals(1, r.reaped, "the genuinely-deleted row must still be reaped")
             assertEquals(0, provider.deletedPaths.size, "reaping is a DB flip, never provider.delete")
             assertEquals(0, provider.deletedByIds.size)
-            // The name still resolves to the winner; the twin keeps its decorated row (#403).
+            // The name still resolves to the winner; the twin keeps its decorated row (archive#403).
             assertEquals("a-twin", db.getEntry("/dup.txt")?.remoteId)
             assertEquals("b-twin", db.getEntry(DuplicateNames.decorate("/dup.txt", "b-twin"))?.remoteId)
             assertEquals(2, db.getEntryCount())
@@ -220,7 +220,7 @@ class RemoteGatherCollisionTest {
     @Test
     fun `an incremental delta carrying only the other twin re-keys the row with a warning recorded`() =
         runTest {
-            // The residual hazard #401 documents (durable fix: #403 decorated names):
+            // The residual hazard archive#401 documents (durable fix: archive#403 decorated names):
             // a delta that carries ONLY the untracked twin flips the row to it. It must
             // not vanish silently and must not crash — the row ends up bound to the
             // newly-reported twin.

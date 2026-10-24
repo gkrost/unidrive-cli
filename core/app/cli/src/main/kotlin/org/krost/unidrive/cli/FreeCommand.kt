@@ -41,7 +41,7 @@ class FreeCommand : Callable<Int> {
             }
 
             // A row without a cloud id is a file that was never uploaded: the local bytes are the only copy, and
-            // dehydrating truncates them (#1047).
+            // dehydrating truncates them (archive#1047).
             if (entry.isPendingUpload) {
                 System.err.println("Not uploaded yet: $normalizedPath. Freeing it would delete the only copy; wait for the upload.")
                 db.close()

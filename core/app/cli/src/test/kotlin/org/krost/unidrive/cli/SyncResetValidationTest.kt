@@ -12,7 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-/** `sync --reset` clears the state; an option it will refuse anyway must be refused first (#1085). */
+/** `sync --reset` clears the state; an option it will refuse anyway must be refused first (archive#1085). */
 class SyncResetValidationTest {
     @Test
     fun `a bad streaming-reconciliation value is refused before --reset clears the state`() {

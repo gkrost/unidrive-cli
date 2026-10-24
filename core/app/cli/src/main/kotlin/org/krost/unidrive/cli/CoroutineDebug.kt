@@ -15,7 +15,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 
 /**
- * The daemon's window into its own coroutines (gkrost/unidrive#613, ask 1). A hung upload
+ * The daemon's window into its own coroutines (archive#613, ask 1). A hung upload
  * suspends silently: a thread dump shows no thread in any `org.krost` frame, so nothing names
  * the wait. The coroutines debug probes capture each coroutine's suspension stack, turning a
  * hang into one dump that names the suspension point.
@@ -53,7 +53,7 @@ object CoroutineDebug {
     /**
      * Called with what failed and why each time this facility swallows an error (installing the probes, dumping,
      * removing the trigger). Production leaves the default no-op: the error is logged and the daemon carries on. A test
-     * sets it to see why no dump appeared, instead of waiting for a timeout (#713).
+     * sets it to see why no dump appeared, instead of waiting for a timeout (archive#713).
      */
     @Volatile
     internal var onFailure: (what: String, cause: Throwable) -> Unit = { _, _ -> }
@@ -74,7 +74,7 @@ object CoroutineDebug {
     /**
      * File-name prefix of the standalone probe jar the deploy places beside the fat jar: the `kotlinx-coroutines-debug`
      * artifact that build.gradle.kts stages (`copyCoroutineDebugAgent`, the deploy tasks) and dist/install.sh copies
-     * (#1076: this said `kotlinx-coroutines-core-jvm-` while all of those staged the debug jar, so no deploy ever had an
+     * (archive#1076: this said `kotlinx-coroutines-core-jvm-` while all of those staged the debug jar, so no deploy ever had an
      * agent for [agentJarBeside] to find). Both jars carry the same Premain-Class.
      */
     const val AGENT_JAR_PREFIX = "kotlinx-coroutines-debug-"

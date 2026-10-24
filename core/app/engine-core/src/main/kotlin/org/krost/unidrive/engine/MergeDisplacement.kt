@@ -7,7 +7,7 @@ import org.krost.unidrive.sync.model.SyncEntry
 import java.time.Instant
 
 /**
- * The rows that sit on the paths the items of a merge are about to take (#1029).
+ * The rows that sit on the paths the items of a merge are about to take (archive#1029).
  *
  * A delta can carry several renames at once: a swap through a temporary name, a chain (`/b` goes to `/c`, `/a` to `/b`),
  * a create on a path a rename has just left. The merge puts an item's row where the item now lives, and the row there
@@ -76,7 +76,7 @@ internal class MergeDisplacement(
         return null
     }
 
-    // An alive file row of another remote id. A twin's row (#403) is no holder of the name.
+    // An alive file row of another remote id. A twin's row (archive#403) is no holder of the name.
     private fun holdsName(
         row: SyncEntry,
         besidesId: String,

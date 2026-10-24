@@ -31,7 +31,7 @@ package org.krost.unidrive
  * a directory or file whose listing or stat failed, so items under it are not in [items] and the page is
  * not [complete]. A skip by policy (a system folder, a link that escapes the root) is deliberate and
  * stays out. Oldest first, capped by the provider (localfs keeps twenty); the engine persists them so
- * the status can name the blocked folder (#1234). Providers that name none leave the default empty list.
+ * the status can name the blocked folder (archive#1234). Providers that name none leave the default empty list.
  */
 data class DeltaPage(
     val items: List<CloudItem>,

@@ -118,7 +118,7 @@ class HydrationOpenReadNotFoundTest {
         assertEquals("""{"ok":false,"error":"not_found"}""", reply.trim())
     }
 
-    // #536: a stored object shorter than the size the drive reports (a truncated multipart upload
+    // archive#536: a stored object shorter than the size the drive reports (a truncated multipart upload
     // another client wrote) is NOT a gone file — every download of it fails, so it carries its own
     // token with the numbers instead of not_found ("file is gone") or a generic message.
     @Test

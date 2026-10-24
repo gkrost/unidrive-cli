@@ -18,7 +18,7 @@ class OneDriveNameRulesTest {
             "/con.txt" to "name is a reserved device name",
             "/COM9" to "name is a reserved device name",
             "/COM10" to null,
-            // #1090: the shared table (WindowsDeviceNames): COM0/LPT0, the superscript digits, the console handles, a space before the dot
+            // archive#1090: the shared table (WindowsDeviceNames): COM0/LPT0, the superscript digits, the console handles, a space before the dot
             "/COM0" to "name is a reserved device name",
             "/lpt0.txt" to "name is a reserved device name",
             "/COM¹" to "name is a reserved device name",

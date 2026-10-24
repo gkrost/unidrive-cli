@@ -24,7 +24,7 @@ with everything in it, through the provider's own delete. Source: `core/app/cli/
 | localfs | `permanent` | Deleted from the disk (a folder recursively; symlinks are not followed). |
 | S3 | `permanent` | The object (a folder: every key below it) is deleted; a bucket with versioning keeps the old versions. |
 
-`--permanent` (#1178) deletes for good, bypassing the provider's trash where one exists: Internxt (`DELETE /files/{uuid}`
+`--permanent` (archive#1178) deletes for good, bypassing the provider's trash where one exists: Internxt (`DELETE /files/{uuid}`
 / `DELETE /folders` with the folder uuid in the body), OneDrive (`POST .../items/{id}/permanentDelete`), Dropbox (`files/permanently_delete`,
 plan-gated: a Basic account's refusal is a failed delete, `delete_failed`); localfs and S3 delete for good anyway, so
 their `--permanent` is their delete. Every provider of this repo has the capability (`Capability.PermanentDelete`);
@@ -49,10 +49,10 @@ refusals). Tokens: `root_refused`, `mirror_profile`, `mode_missing`, `profile_in
 `no_reply` (the daemon took the request but did not answer in time; the delete may still happen),
 `daemon_not_running`, `not_found`, `path_is_folder`, `path_is_file`, `folder_not_empty`, `confirmation_required`,
 `cancelled`, `busy` (an upload in flight), `unsynced_below` (a recursive delete over a file whose bytes the cloud has
-not received, #1035), `read_only`, `outside_scope`, `auth_required`, `delete_failed`, plus the profile-resolution
+not received, archive#1035), `read_only`, `outside_scope`, `auth_required`, `delete_failed`, plus the profile-resolution
 tokens shared with `logout` (`config_not_found`, `profile_not_found`, ...).
 
-## What the mount shows afterwards (#1199)
+## What the mount shows afterwards (archive#1199)
 
 The daemon tombstones the row and sends `view.invalidated` for the deleted path (and for the folder, once) to its
 subscribers, so a client drops the item within one refresh without waiting for a listing. A provider whose listing

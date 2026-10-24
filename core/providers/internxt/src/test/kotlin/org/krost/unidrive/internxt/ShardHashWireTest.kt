@@ -7,7 +7,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
- * #946: the shard hash an upload records in `files/finish` is RIPEMD-160(SHA-256(ciphertext)), 40 hex, like every official client's.
+ * archive#946: the shard hash an upload records in `files/finish` is RIPEMD-160(SHA-256(ciphertext)), 40 hex, like every official client's.
  * It is derived from the SHA-256 digest the encrypt pass produced (and the tombstone pins), at the moment it is sent.
  */
 class ShardHashWireTest {

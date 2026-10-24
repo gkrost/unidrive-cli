@@ -5,7 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** #1091: the keep-both side copy of a long name must still be a name one path component can hold (255 UTF-16 units). */
+/** archive#1091: the keep-both side copy of a long name must still be a name one path component can hold (255 UTF-16 units). */
 class KeepBothCopyNameLengthTest {
     private val stamp = "20260505T102030"
     private val emoji = "😀"

@@ -5,7 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** #1091: a stem cut to leave room for what is appended, never in the middle of a surrogate pair. */
+/** archive#1091: a stem cut to leave room for what is appended, never in the middle of a surrogate pair. */
 class NameLimitTest {
     private val emoji = "😀" // U+1F600, two UTF-16 units
 

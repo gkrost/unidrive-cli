@@ -58,7 +58,7 @@ class LocalFsProviderTest {
 
     @Test
     fun the_case_policy_is_the_one_of_the_file_system_that_holds_the_root() {
-        // #309: the drive is a directory, so it folds case exactly where its file system does.
+        // archive#309: the drive is a directory, so it folds case exactly where its file system does.
         val root = newRoot()
         assertEquals(CaseSensitivity.ofDirectory(root), LocalFsProvider(root).caseSensitivity)
     }
@@ -66,7 +66,7 @@ class LocalFsProviderTest {
     @Test
     fun a_move_that_only_changes_the_case_renames_the_item() =
         runTest {
-            // #309: on a case-insensitive file system (NTFS) the new name is the same file, so a plain move refused it
+            // archive#309: on a case-insensitive file system (NTFS) the new name is the same file, so a plain move refused it
             // as "the target exists already". On a case-sensitive one it is an ordinary rename.
             val root = newRoot()
             val p = LocalFsProvider(root)
@@ -301,7 +301,7 @@ class LocalFsProviderTest {
             }
         }
 
-    // ---- #1057: a copy goes through a staging file, so a failed one leaves the destination alone ----
+    // ---- archive#1057: a copy goes through a staging file, so a failed one leaves the destination alone ----
 
     /**
      * Runs [body] while [file] cannot be opened for reading: a handle with no sharing on Windows (a sharing
@@ -403,7 +403,7 @@ class LocalFsProviderTest {
             Files.list(root).use { names -> assertEquals(listOf("r.txt"), names.map { it.fileName.toString() }.toList()) }
         }
 
-    // ---- #1057: a move never overwrites ----
+    // ---- archive#1057: a move never overwrites ----
 
     @Test
     fun move_onto_an_existing_target_is_refused_and_changes_nothing() =

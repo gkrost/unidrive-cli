@@ -49,7 +49,7 @@ data class UploadDescriptor(
     val index: Int = 0,
     val uuid: String,
     val url: String? = null,
-    // #578: a multipart session answers ONE descriptor whose `urls` array holds one
+    // archive#578: a multipart session answers ONE descriptor whose `urls` array holds one
     // presigned PUT URL per part, plus the S3-style multipart upload id the finish
     // call echoes back. `url` stays the single-part form.
     val urls: List<String> = emptyList(),
@@ -67,7 +67,7 @@ data class ShardMeta(
     val uuid: String,
 )
 
-// #578: the multipart finish echoes the session's upload id and the completed part
+// archive#578: the multipart finish echoes the session's upload id and the completed part
 // list (S3 conventions: 1-based part numbers, the server's ETag per part). The wire
 // keys are capitalised the way the bridge expects ("UploadId", "PartNumber", "ETag").
 @Serializable

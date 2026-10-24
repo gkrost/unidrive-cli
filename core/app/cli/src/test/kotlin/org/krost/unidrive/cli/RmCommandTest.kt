@@ -222,7 +222,7 @@ class RmCommandTest {
         assertTrue(Files.exists(remoteRoot.resolve("dir")), "the daemon deletes, not the command behind its back")
     }
 
-    // ── --permanent (#1178) ──────────────────────────────────────────────────────
+    // ── --permanent (archive#1178) ──────────────────────────────────────────────────────
 
     @Test
     fun `rm --permanent --yes deletes a file for good on the provider route`() {

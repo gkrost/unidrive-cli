@@ -112,7 +112,7 @@ internal class CredentialHealthMonitor(
     }
 
     /**
-     * Runs the check now, on the caller's thread, and keeps its result: after a sign-in through the daemon (#813) the next
+     * Runs the check now, on the caller's thread, and keeps its result: after a sign-in through the daemon (archive#813) the next
      * status must report the new credentials, not the last reading of the replaced ones. Without a check it does nothing.
      */
     fun refreshNow() {

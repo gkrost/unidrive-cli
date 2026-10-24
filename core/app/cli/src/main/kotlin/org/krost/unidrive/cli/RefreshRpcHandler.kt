@@ -49,7 +49,7 @@ class RefreshRpcHandler(
     // Whether a hydration upload of the path is queued or in flight (HydrationImpl.hasUploadSlot, late-bound
     // by the daemon wiring). A reset keeps the row of such a path.
     private val uploadInFlight: (path: String) -> Boolean = { false },
-    // #778: true while the daemon is paused. A refresh enumerates the cloud on either path, so it is refused
+    // archive#778: true while the daemon is paused. A refresh enumerates the cloud on either path, so it is refused
     // as `paused` and nothing is reserved.
     private val paused: () -> Boolean = { false },
     // Terminal-event sink. Defaults to the broadcast channel; injectable for tests.
@@ -104,7 +104,7 @@ class RefreshRpcHandler(
                             // rather than throwing, so a false result must be surfaced — not emitted as success.
                             val result = engine.enumerateRemoteIntoState(reset)
                             if (result.ok && result.skipped && reset) {
-                                // #1037: another pass held the single-flight flag, so the cursor reset never ran. A plain
+                                // archive#1037: another pass held the single-flight flag, so the cursor reset never ran. A plain
                                 // refresh is served by that pass; a reset is not, and "done" would leave an operator who
                                 // meant to recover from a poisoned cursor with it.
                                 log.info("refresh.run reset skipped: another enumeration is running: job_id=$jobId")
@@ -151,7 +151,7 @@ class RefreshRpcHandler(
                         // See jsonString() — full JSON-string escaping, not quote-only.
                         // The engine's scope/empty-local guards throw IllegalStateException
                         // before any provider call — a client scripting on the token must
-                        // not read them as provider failures (#532).
+                        // not read them as provider failures (archive#532).
                         val token = if (e is IllegalStateException) "engine_guard" else "provider_error"
                         val msg = jsonString(e.message?.let(UrlRedaction::redact))
                         """{"event":"refresh.done","job_id":"$jobId","ok":false,"error":"$token","message":$msg}"""

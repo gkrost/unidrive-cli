@@ -10,7 +10,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CliEncodingTest {
-    // The umlauts + ß from the #391 report; box-drawing is what the legacy
+    // The umlauts + ß from the archive#391 report; box-drawing is what the legacy
     // console code pages could not encode at all.
     private val name = "/_INBOX/Köln – Karten Stadt Köln – ä ö ü ß"
 
@@ -56,7 +56,7 @@ class CliEncodingTest {
     }
 
     /**
-     * The bare `java -jar` shape from #391: the test JVM's output is redirected
+     * The bare `java -jar` shape from archive#391: the test JVM's output is redirected
      * and no encoding flag was passed, yet the JVM still defines
      * stdout.encoding itself (Cp1252 on Windows). [CliEncoding.apply] must
      * ignore that JVM-guessed value and rebind to UTF-8.
@@ -80,7 +80,7 @@ class CliEncodingTest {
     }
 
     /**
-     * The #391 acceptance print: a plan line with non-ASCII names through the
+     * The archive#391 acceptance print: a plan line with non-ASCII names through the
      * progress reporter, captured into a buffer with the chosen charset, must
      * decode byte-exact.
      */

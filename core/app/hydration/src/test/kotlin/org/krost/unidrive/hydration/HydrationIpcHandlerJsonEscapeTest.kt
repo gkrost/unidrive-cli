@@ -24,7 +24,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #416: the IPC request scanner must decode the full JSON string-escape set. The .NET client
+ * archive#416: the IPC request scanner must decode the full JSON string-escape set. The .NET client
  * (System.Text.Json default writer) escapes every non-ASCII char as a backslash-u sequence, so
  * a misread there addresses the wrong name: hydration.list silently returned an empty folder,
  * and the write verbs would create/rename to a name containing the literal text "u00f6".

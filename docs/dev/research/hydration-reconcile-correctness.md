@@ -6,31 +6,31 @@ hydration (`HydrationImpl`, `SyncEngine.ensureHydrated`) and streaming-reconcile
 plus `StateDatabase` NFC coverage and the provider download contract.
 
 Both agents reached the same conclusions independently on every load-bearing point
-below. Line numbers are as of the PR #212 tip; treat them as anchors, re-verify
+below. Line numbers are as of the PR archive#212 tip; treat them as anchors, re-verify
 before editing. Scope: the `SyncEngine` / `state.db` engine only (not `TrackingEngine`).
 
 **Status: shipped.** Every confirmed finding and the load-bearing adjacent issue (A1)
-landed across #212–#218; the bot flagged and we fixed two P1s on the way (over-broad
-deferred-delete suppression in #214, a concurrent same-path-download overwrite in
-#217). The two deliberately deferred items are listed at the end. The body below is
+landed across archive#212–archive#218; the bot flagged and we fixed two P1s on the way (over-broad
+deferred-delete suppression in archive#214, a concurrent same-path-download overwrite in
+archive#217). The two deliberately deferred items are listed at the end. The body below is
 kept as the point-in-time analysis that drove the work.
 
 ## Verdict summary
 
 | Finding | Verdict | Severity | Status |
 |---|---|---|---|
-| C1 stale `remoteSize` → false EIO when a remote changed size since the last enum | confirmed | High | shipped #215 (with C7; #212's ineffective re-read removed first) |
-| C2 `deleteEntry` no NFC | confirmed (was real) | Med | shipped #212 |
-| C3 `markUnhydrated` no NFC | confirmed (was real) | Med | shipped #212 |
-| C4 `renamePrefix` no NFC | confirmed (was real) | Med–High | shipped #212 |
-| C5 prefix/children/descendant/count no NFC | confirmed (was real) | Med | shipped #212 |
-| C6 `drainDeferred` not filtered vs `safePaths` | confirmed — exploitable, local data loss | Med–High | shipped #214 |
-| C7 `ensureHydrated` never updates `remoteSize` (root cause of C1) | confirmed | High | shipped #215 |
-| C8 "stale `entryByPath`" → dup actions | refined — misdiagnosed cause, real bug underneath | Med–High | shipped #216 (upload dedup) + #217 (content-aware download dedup + per-path serialization) |
+| C1 stale `remoteSize` → false EIO when a remote changed size since the last enum | confirmed | High | shipped archive#215 (with C7; archive#212's ineffective re-read removed first) |
+| C2 `deleteEntry` no NFC | confirmed (was real) | Med | shipped archive#212 |
+| C3 `markUnhydrated` no NFC | confirmed (was real) | Med | shipped archive#212 |
+| C4 `renamePrefix` no NFC | confirmed (was real) | Med–High | shipped archive#212 |
+| C5 prefix/children/descendant/count no NFC | confirmed (was real) | Med | shipped archive#212 |
+| C6 `drainDeferred` not filtered vs `safePaths` | confirmed — exploitable, local data loss | Med–High | shipped archive#214 |
+| C7 `ensureHydrated` never updates `remoteSize` (root cause of C1) | confirmed | High | shipped archive#215 |
+| C8 "stale `entryByPath`" → dup actions | refined — misdiagnosed cause, real bug underneath | Med–High | shipped archive#216 (upload dedup) + archive#217 (content-aware download dedup + per-path serialization) |
 
 C2–C5 were genuine *functional* gaps (not merely defensive): `HydrationImpl.dehydrate`
 / `unlink` / `list` pass un-normalized co-daemon paths straight through, so an NFD op
-silently no-ops against the NFC-stored row before #212.
+silently no-ops against the NFC-stored row before archive#212.
 
 ## C6 — streaming `drainDeferred` can trash a just-downloaded file (data loss)
 
@@ -109,7 +109,7 @@ The literal "stale `entryByPath`" claim is **refuted** — `resolveSlice` fetche
 **every** page. A MODIFIED-local file absent from a page's remote delta yields
 `Upload(path)` per page. The mid-gather executor `launch`es a dispatch per channel
 item with **no `executedPaths` precheck** (that gate exists only in Pass 2), and the
-`#210` skip covers only NEW. Result: for a MODIFIED file spanning K pages, K
+`archive#210` skip covers only NEW. Result: for a MODIFIED file spanning K pages, K
 concurrent `applyUpload(samePath)` fire — wasted round-trips and racing
 replace-PUTs/DB-writebacks.
 
@@ -119,7 +119,7 @@ continue` at the executor send site), and make `executedPaths` a concurrent set
 
 ## Adjacent issues
 
-- **A1 — NFC fix is incomplete (high-value follow-up). Shipped #218.** #212 normalized
+- **A1 — NFC fix is incomplete (high-value follow-up). Shipped archive#218.** archive#212 normalized
   only the `StateDatabase` lookups. Mount **write** ops (`unlink`/`rename`/`mkdir`/`rmdir`)
   still passed raw NFD into `provider.delete`/`createFolder`/`renameRemote` **and**
   `resolveCachePath`. An NFD `deleteRemote` of an NFC-stored cloud file can 404 →
@@ -132,7 +132,7 @@ continue` at the executor send site), and make `executedPaths` a concurrent set
   (post-MVP).** The warm-cache trust check is size-only; a same-byte-size remote edit is
   served from the old cache forever. Pre-existing; not closed by the C7 fix (still
   size-only). Low priority — spec note, not yet implemented.
-- **Verified correct (no action):** #212's `getEntryByRemotePath` NFC + remote_path
+- **Verified correct (no action):** archive#212's `getEntryByRemotePath` NFC + remote_path
   on write; the `safeResolveLocal` ASCII fast-path (only non-ASCII leaves have a
   decomposed variant); DeleteRemote×Upload is *not* exploitable (localState is
   constant per path, so DeleteRemote needs DELETED while a safe-now transfer needs
@@ -141,23 +141,23 @@ continue` at the executor send site), and make `executedPaths` a concurrent set
 
 ## Fix sequence (one concern per PR, per-invariant tests) — all shipped
 
-1. **#212** — NFC coverage + ASCII fast-path; the ineffective post-hydration re-read
+1. **archive#212** — NFC coverage + ASCII fast-path; the ineffective post-hydration re-read
    removed (it needed C7 to mean anything).
-2. **C6 → #214** — `drainDeferred` filtered against remote-content landings (not all
+2. **C6 → archive#214** — `drainDeferred` filtered against remote-content landings (not all
    `safePaths`, after the bot's P1: a per-page `Upload` must not suppress a real
    delete/modify conflict). First `StreamingReconcileBuffer` unit coverage.
-3. **C1/C7 → #215** — OneDrive (vs `Content-Length`) and Internxt (vs declared plaintext
+3. **C1/C7 → archive#215** — OneDrive (vs `Content-Length`) and Internxt (vs declared plaintext
    size) reject short downloads and return the authoritative size; `ensureHydrated`
    persists it as `remoteSize`. The pre-existing incomplete-hydration guard stays green,
    now satisfied at the download site. (Internxt's provider-level short-read test is
    deferred — the provider builds its api/crypto internally, no DI seam yet; covered
    generically by the hydration EIO test.)
-4. **C8 → #216 then #217** — #216 deduped the streaming-executor dispatch (+ concurrent
-   `executedPaths`). #216's path-only claim also deduped downloads, which could drop a
-   newer same-path version; #217 made the download claim content-aware AND serialized
+4. **C8 → archive#216 then archive#217** — archive#216 deduped the streaming-executor dispatch (+ concurrent
+   `executedPaths`). archive#216's path-only claim also deduped downloads, which could drop a
+   newer same-path version; archive#217 made the download claim content-aware AND serialized
    same-path transfers per path (the bot's P1: concurrent same-path downloads could
    overwrite the newer with a slower older one).
-5. **NFC completeness (A1) → #218** — `HydrationIpcHandler` NFC-normalizes co-daemon
+5. **NFC completeness (A1) → archive#218** — `HydrationIpcHandler` NFC-normalizes co-daemon
    logical path fields at the boundary.
 
 No DB migration was required for any item (`--reset` remains the escape hatch).

@@ -8,7 +8,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #361: a Windows path with backslashes in a double-quoted (TOML basic) string is an invalid
+ * archive#361: a Windows path with backslashes in a double-quoted (TOML basic) string is an invalid
  * escape. These tests drive the real ktoml reader, no mock: the configs are parsed from text.
  * The backslash is built from its char code so the test source holds no escape sequences.
  */

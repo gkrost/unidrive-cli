@@ -138,7 +138,7 @@ class CliFailureExitCodeTest {
             assertEquals("x", Files.readString(file))
         }
 
-    // #1047: a row written for a file that was never uploaded (no cloud id, hydrated) passes the mtime check;
+    // archive#1047: a row written for a file that was never uploaded (no cloud id, hydrated) passes the mtime check;
     // dehydrating it truncated the only copy.
     @Test
     fun `free refuses a file that was never uploaded and leaves its bytes`() =

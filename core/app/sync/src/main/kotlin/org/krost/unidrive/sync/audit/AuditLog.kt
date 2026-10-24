@@ -84,7 +84,7 @@ class AuditLog(
     fun emit(entry: AuditEntry) {
         try {
             synchronized(writeLock) {
-                // The result carries exception text, which can quote a pre-authenticated URL (#1060).
+                // The result carries exception text, which can quote a pre-authenticated URL (archive#1060).
                 val line = json.encodeToString(entry.copy(result = UrlRedaction.redact(entry.result))) + "\n"
                 Files.write(
                     pathForToday(),

@@ -390,7 +390,7 @@ class S3Api(
                 httpClient.request {
                     signed(method, key, query, headers, payloadHash)
                     // The socket timeout is a read-idle timer that runs from the start of the request, and S3 is silent
-                    // until the body is in: left at 60 s it cuts every upload a slow uplink needs longer than that for (#1058).
+                    // until the body is in: left at 60 s it cuts every upload a slow uplink needs longer than that for (archive#1058).
                     if (timeoutMs != null) {
                         timeout {
                             requestTimeoutMillis = timeoutMs
@@ -432,7 +432,7 @@ class S3Api(
         return when {
             // Only the credentials are an authentication failure. A 403 for one object (a policy deny, an object lock,
             // a KMS key one may not use) is that object's refusal: as an AuthenticationException it stopped the whole
-            // sync (#1063). `authenticate` still treats a 403 on its probe listing as a refused sign-in.
+            // sync (archive#1063). `authenticate` still treats a 403 on its probe listing as a refused sign-in.
             response.status.value == 401 || (response.status.value == 403 && code in CREDENTIAL_CODES) ->
                 AuthenticationException(message, requestId = requestId)
             response.status.value == 412 -> RemoteConflictException(message, requestId = requestId)
@@ -592,7 +592,7 @@ internal fun s3HttpClient(
             requestTimeoutMillis = HttpDefaults.REQUEST_TIMEOUT_MS
         }
         // Every path segment is a bucket or a key, so every one becomes {id}: nothing identifying reaches the metrics.
-        // #644: the token path's leaf is the profile name; S3 answers x-amz-request-id.
+        // archive#644: the token path's leaf is the profile name; S3 answers x-amz-request-id.
         install(RequestId) {
             metrics = tap
             provider = "s3"

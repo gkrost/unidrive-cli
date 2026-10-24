@@ -499,7 +499,7 @@ class InternxtCreateCollisionTest {
         }
 
     // -------------------------------------------------------------------------
-    // #1002: same size, different bucket entry — the bytes decide
+    // archive#1002: same size, different bucket entry — the bytes decide
     // -------------------------------------------------------------------------
 
     private class SameSizeCollision(
@@ -604,7 +604,7 @@ class InternxtCreateCollisionTest {
         }
     }
 
-    // #1002: a fresh upload always lands in a new bucket entry, so a remote that already holds the very same bytes
+    // archive#1002: a fresh upload always lands in a new bucket entry, so a remote that already holds the very same bytes
     // never shares its fileId. That case was duplicated as "(conflict <date>)"; the content decides now.
     @Test
     fun `create collision with a same-size remote of the same content adopts it and makes no conflict copy`() =

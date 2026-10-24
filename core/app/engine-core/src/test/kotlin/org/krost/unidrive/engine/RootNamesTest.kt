@@ -6,7 +6,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** #1090: a configured trash or view folder is a top-level name the client must be able to show, so it gets the device-name check too. */
+/** archive#1090: a configured trash or view folder is a top-level name the client must be able to show, so it gets the device-name check too. */
 class RootNamesTest {
     private val deviceNames =
         listOf("CON", "prn", "Aux.txt", "NUL", "NUL .x", "COM0", "COM1", "LPT9", "COM¹", "LPT²", "CONIN$", "CONOUT$")

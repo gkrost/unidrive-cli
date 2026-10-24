@@ -243,7 +243,7 @@ drive-desktop's `on-event.ts:31-41` re-checks file existence after the debounce 
 
 Our `LocalWatcher` debounces every event by 2000ms (`LocalWatcher.kt:163-175`) which collapses delete+create within the window. Editor saves that emit `delete + create + modify` get coalesced to one trailing-edge event; engine re-stats on dequeue. **Functionally equivalent without the explicit `existsSync` checks &mdash; the debounce-then-re-stat pattern delivers the same correctness.** No new work.
 
-### 21. `INGRESSCOOKIE` &mdash; see Auth #15.
+### 21. `INGRESSCOOKIE` &mdash; see Auth archive#15.
 
 ---
 
@@ -269,7 +269,7 @@ drive-desktop: `TWO_MINUTES_IN_MILLISECONDS` rewind on checkpoint read (`get-che
 
 ### R-5. Recovery sync 30s inter-page sleep &mdash; we don't have a recovery sync
 
-See booster #5. The 30s sleep is what makes the background walk polite enough to not interfere with foreground delta. Adopt as part of #5.
+See booster archive#5. The 30s sleep is what makes the background walk polite enough to not interfere with foreground delta. Adopt as part of archive#5.
 
 ### R-6. Loopback-elision on notifications &mdash; we deliberately do not drop self-originating events
 
@@ -285,20 +285,20 @@ drive-desktop's `processWebSocketEvent` (`process-web-socket-event.ts:17-20`) tr
 
 | Tier | Item | Rationale |
 |---|---|---|
-| **High** | #1 page size 50 &rarr; 1000 | 20&times; fewer pages = direct wall-clock win |
-| **High** | #2 sort=updatedAt on delta | Cursor convergence; less re-walk on restart |
-| **High** | #3 status=EXISTS on first scan | Smaller payload, less reconciler work |
-| **High** | #4 built-in temp-file filter | Avoid wasted PUTs of editor `.swp` etc. |
-| **High** | #5 background drift recovery sync | Catches missed-notification drift without user action |
-| **Medium** | #6 wait-for-stable-size pre-upload | Catches mid-write watcher fire |
-| **Medium** | #7 mid-upload size-drift abort | Prevents corrupt-upload-then-silent-success |
-| **Medium** | #11 raise/remove retry cap on 5xx+NETWORK | Survive multi-hour Cloudflare outage |
+| **High** | archive#1 page size 50 &rarr; 1000 | 20&times; fewer pages = direct wall-clock win |
+| **High** | archive#2 sort=updatedAt on delta | Cursor convergence; less re-walk on restart |
+| **High** | archive#3 status=EXISTS on first scan | Smaller payload, less reconciler work |
+| **High** | archive#4 built-in temp-file filter | Avoid wasted PUTs of editor `.swp` etc. |
+| **High** | archive#5 background drift recovery sync | Catches missed-notification drift without user action |
+| **Medium** | archive#6 wait-for-stable-size pre-upload | Catches mid-write watcher fire |
+| **Medium** | archive#7 mid-upload size-drift abort | Prevents corrupt-upload-then-silent-success |
+| **Medium** | archive#11 raise/remove retry cap on 5xx+NETWORK | Survive multi-hour Cloudflare outage |
 | **Medium** | R-4 cursor rewind 120s on delta start | Defence against the "updatedAt arrived 30s before cursor advanced" race |
-| **Medium** | #17 parallel stat in LocalScanner | Win for spinning-disk users |
-| **Low** | #8 finer per-endpoint priority | Marginal benefit over our Foreground/Background lanes |
-| **Low** | #10 hydration single-flight | N/A until VFS lands |
-| **Low** | #15 INGRESSCOOKIE | Only if WS flap reported |
-| **Low** | #19 thumbnails | Out of scope &mdash; needs heavy deps for CLI-only client |
+| **Medium** | archive#17 parallel stat in LocalScanner | Win for spinning-disk users |
+| **Low** | archive#8 finer per-endpoint priority | Marginal benefit over our Foreground/Background lanes |
+| **Low** | archive#10 hydration single-flight | N/A until VFS lands |
+| **Low** | archive#15 INGRESSCOOKIE | Only if WS flap reported |
+| **Low** | archive#19 thumbnails | Out of scope &mdash; needs heavy deps for CLI-only client |
 
 ---
 

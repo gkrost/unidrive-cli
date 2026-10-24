@@ -13,13 +13,13 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #580 part 2: an upload refused with `parent_gone` (the provider's walk proved its folder gone in the cloud) makes the
+ * archive#580 part 2: an upload refused with `parent_gone` (the provider's walk proved its folder gone in the cloud) makes the
  * mount ask the provider for that tracked folder by its id. Only an answer that the folder is trashed or not found
  * tombstones its subtree; the refused file's row and every row with unsent bytes stay. A lookup that fails, or an answer
  * that the folder is live or cannot be told, changes nothing.
  */
 class HydrationParentGoneTombstoneTest {
-    // #580 part 2: the tracked folder of a parent_gone refusal and what lies below it, plus a row outside it. Returns the
+    // archive#580 part 2: the tracked folder of a parent_gone refusal and what lies below it, plus a row outside it. Returns the
     // cache copy of the refused upload.
     private fun HydrationTestEnv.seedTrashedFolder(): Path {
         stateDb.insertFolderEntry("/trashed")
@@ -39,7 +39,7 @@ class HydrationParentGoneTombstoneTest {
         return cache
     }
 
-    // #580 part 2: after a parent_gone refusal the engine asks the provider for the tracked folder by its id. The answer
+    // archive#580 part 2: after a parent_gone refusal the engine asks the provider for the tracked folder by its id. The answer
     // "trashed" tombstones the subtree (the folder, the folder below it, the clean rows) and the view learns the paths;
     // the refused file's row and a row with an unsent edit are kept, with their bytes, and nothing outside it changes.
     @Test
@@ -66,7 +66,7 @@ class HydrationParentGoneTombstoneTest {
         assertTrue(env.viewInvalidations.any { "/trashed" in it }, "the view learns the tombstoned folder: ${env.viewInvalidations}")
     }
 
-    // #580 part 2: a lookup that fails (a 503-class gateway, #387; an I/O error) proves nothing: no row changes.
+    // archive#580 part 2: a lookup that fails (a 503-class gateway, archive#387; an I/O error) proves nothing: no row changes.
     @Test
     fun `a parent_gone refusal whose id lookup fails changes no row`() = runTest {
         for (failure in listOf(java.io.IOException("connection reset"), ProviderException("HTTP 503 Service Unavailable"))) {
@@ -87,7 +87,7 @@ class HydrationParentGoneTombstoneTest {
         }
     }
 
-    // #580 part 2: the provider answers that the folder is live (a trash undone in the lag window, #132) or cannot tell:
+    // archive#580 part 2: the provider answers that the folder is live (a trash undone in the lag window, archive#132) or cannot tell:
     // the subtree's rows stay.
     @Test
     fun `a parent_gone refusal whose folder the id lookup finds live or cannot tell changes no row`() = runTest {
@@ -106,7 +106,7 @@ class HydrationParentGoneTombstoneTest {
         }
     }
 
-    // #580 part 2: not found from a call that succeeded is as good as trashed.
+    // archive#580 part 2: not found from a call that succeeded is as good as trashed.
     @Test
     fun `a parent_gone refusal whose folder the id lookup does not find tombstones its subtree`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this)

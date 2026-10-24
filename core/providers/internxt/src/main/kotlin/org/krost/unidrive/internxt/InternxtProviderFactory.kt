@@ -31,7 +31,7 @@ class InternxtProviderFactory(
             tier = "EU-hosted",
             userRating = 4.3,
             benchmarkGrade = "C",
-            // #457: the wizard for a NEW profile prints this ("no account yet?"); a sign-up through it credits the project.
+            // archive#457: the wizard for a NEW profile prints this ("no account yet?"); a sign-up through it credits the project.
             affiliateUrl = "https://internxt.cello.so/wboSPv4MM19",
             // UD-263: matches the official Internxt SDK's 2-drive Bottleneck
             // pacer. The encryption-vs-retry boundary in the 5-stage upload
@@ -48,7 +48,7 @@ class InternxtProviderFactory(
         // `[providers.<name>] keep_overwritten = true`. ProfileResolver
         // funnels TOML keys through the properties map.
         val keepOverwritten = properties["keep_overwritten"]?.toBooleanStrictOrNull() ?: false
-        // #578: the multipart upload policy keys, per profile. A malformed or
+        // archive#578: the multipart upload policy keys, per profile. A malformed or
         // out-of-range value is refused loudly — silently falling back to the
         // default would make a typo'd key change nothing and hide why.
         fun intKey(

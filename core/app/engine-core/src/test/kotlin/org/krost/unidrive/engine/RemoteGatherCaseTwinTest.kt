@@ -18,7 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * #1089: on a case-folding host two remote items that differ only in case collide in the gather. The winner must not
+ * archive#1089: on a case-folding host two remote items that differ only in case collide in the gather. The winner must not
  * depend on which one the provider listed first: state.db tracks one of them, at the path of that one, and the lookup
  * has to look at both paths. The fold is a parameter of [RemoteGather], so the rule runs the same on any host.
  */

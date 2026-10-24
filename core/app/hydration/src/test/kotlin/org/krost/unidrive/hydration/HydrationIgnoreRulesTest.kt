@@ -15,7 +15,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #660: the mount's uploads follow the ignore rules (docs/dev/specs/ignore-layering-design.md). An ignored path is
+ * archive#660: the mount's uploads follow the ignore rules (docs/dev/specs/ignore-layering-design.md). An ignored path is
  * keep-local: written, kept and listed, never uploaded. Downloads and the listing of cloud items are not touched.
  * The rule files are read from the hydration cache.
  */

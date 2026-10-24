@@ -136,7 +136,7 @@ class LsCommandTest {
         assertTrue(root is DaemonLsView.Listing)
     }
 
-    // #145 P2: `ls` mirrors the daemon view only when a DAEMON holds the lock. A plain
+    // archive#145 P2: `ls` mirrors the daemon view only when a DAEMON holds the lock. A plain
     // `unidrive sync` watcher binds the same socket + hydration verbs but isn't the mount
     // view, so a sync-mode (or absent) holder must fall through to the live provider query.
     @Test

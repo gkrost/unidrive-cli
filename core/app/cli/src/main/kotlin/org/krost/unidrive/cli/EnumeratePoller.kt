@@ -11,7 +11,7 @@ import org.slf4j.LoggerFactory
 import kotlin.random.Random
 
 /**
- * The daemon's remote-change discovery (mount-view-refresh-design.md §5, #463). When
+ * The daemon's remote-change discovery (mount-view-refresh-design.md §5, archive#463). When
  * [intervalMs] > 0 the daemon launches ONE periodic coroutine on its serve scope that fires the
  * enumerate path (engine.enumerateRemoteIntoState(reset=false)) every interval — the same
  * operation `sync.enumerate` runs — serialised by the shared in-flight guard so a tick never
@@ -26,18 +26,18 @@ import kotlin.random.Random
  * - On a provider failure / 429 it extends the next interval (back-off) rather than hammering, the
  *   back-off ESCALATES with consecutive failures (each failure multiplies the previous interval,
  *   capped at [maxBackoffMs], or at the interval when that is longer) — a flat first step repeated forever re-ran a doomed cycle every
- *   ~7 min for hours on the live account (#517 R3) — and it reports through [onNextAttempt] when it
+ *   ~7 min for hours on the live account (archive#517 R3) — and it reports through [onNextAttempt] when it
  *   will try again (the jittered sleep it really takes) until the next run starts.
  * - A pass that succeeds but leaves the recovery latch set (`EnumerateResult.recoveryPending`: the scan was incomplete, so
  *   the next pass lists the whole drive again) backs off the same way, so a drive that cannot be listed completely is not
- *   listed again one interval after each attempt (#926). Unlike a failure it is no `failed` state: no `next_attempt_at_ms`.
+ *   listed again one interval after each attempt (archive#926). Unlike a failure it is no `failed` state: no `next_attempt_at_ms`.
  * - [providerReachable] ends a back-off early: when a transfer through the daemon succeeded, the
  *   provider answers again, and the next poll runs one plain interval after the failed one instead
  *   of up to [maxBackoffMs] later. Outside a back-off the signal changes nothing.
  *
- * - While the daemon is paused (#778) no tick enumerates: a tick waits for the resume ([awaitResumed]) and runs
+ * - While the daemon is paused (archive#778) no tick enumerates: a tick waits for the resume ([awaitResumed]) and runs
  *   at once when the pause ends.
- * - A provider's remote-change hint ([wake], #111) ends a plain sleep early: the enumerate runs after a 2 s quiet
+ * - A provider's remote-change hint ([wake], archive#111) ends a plain sleep early: the enumerate runs after a 2 s quiet
  *   window instead of up to one interval later. The poll itself stays (the push channels are best effort).
  *
  * Cancelled cleanly when the serve scope is cancelled at shutdown.
@@ -65,22 +65,22 @@ class EnumeratePoller(
     // otherwise pay for immediately. The escalated first sleep is reported
     // through [onNextAttempt] like any post-failure one.
     private val consecutiveFailuresAtStart: Int = 0,
-    // #463: delay of the first poll after start when no failure streak is on record; 0 = at once.
+    // archive#463: delay of the first poll after start when no failure streak is on record; 0 = at once.
     // A value > 0 is jittered like every later sleep.
     private val firstPollDelayMs: Long = 0,
-    // #463: true while something else works the state database the way a poll would (a refresh);
+    // archive#463: true while something else works the state database the way a poll would (a refresh);
     // the tick is then skipped like one that met the enumerate guard.
     private val isBusy: () -> Boolean = { false },
-    // #778: returns at once while the daemon runs and suspends while it is paused. A tick whose sleep ends in a
+    // archive#778: returns at once while the daemon runs and suspends while it is paused. A tick whose sleep ends in a
     // pause waits here and runs the moment the pause ends, so the poll catches up instead of losing an interval.
     private val awaitResumed: suspend () -> Unit = {},
-    // #111: the quiet window after a remote-change hint ([wake]); the mirror's SyncEngine.registerRemoteWakeListener uses 2 s too.
+    // archive#111: the quiet window after a remote-change hint ([wake]); the mirror's SyncEngine.registerRemoteWakeListener uses 2 s too.
     private val hintQuietMs: Long = DEFAULT_HINT_QUIET_MS,
 ) {
     private val log = LoggerFactory.getLogger(EnumeratePoller::class.java)
 
     // A back-off is never shorter than the plain interval: with daemon_poll_seconds = 3600 a cap of 10 minutes
-    // made the poll after a failure come sooner than the poll after a success (#1084).
+    // made the poll after a failure come sooner than the poll after a success (archive#1084).
     private val backoffCapMs = maxOf(maxBackoffMs, intervalMs)
 
     // Conflated: any number of signals during one sleep count as one.
@@ -90,7 +90,7 @@ class EnumeratePoller(
     private val hints = Channel<Unit>(Channel.CONFLATED)
 
     /**
-     * #463: something proved that the provider answers (a download or upload through the daemon
+     * archive#463: something proved that the provider answers (a download or upload through the daemon
      * succeeded). Cuts a back-off short; no effect outside one. Never starts more than one poll per
      * plain interval.
      */
@@ -99,7 +99,7 @@ class EnumeratePoller(
     }
 
     /**
-     * #111: the provider's push channel says something changed in the cloud ([org.krost.unidrive.CloudProvider.onRemoteChangeHint]).
+     * archive#111: the provider's push channel says something changed in the cloud ([org.krost.unidrive.CloudProvider.onRemoteChangeHint]).
      * Ends the current plain sleep: the enumerate runs once no further hint came for [hintQuietMs] (a burst is one run), and
      * never later than the scheduled poll. It goes through the same pause gate and in-flight guard as every poll; a run the
      * guard or a refresh skips is tried again after the next quiet window. A hint during a failure back-off (or the back-off
@@ -123,9 +123,9 @@ class EnumeratePoller(
             // The seeded schedule is reported like a post-failure one: a status
             // client sees when the first try of a restarted daemon actually is.
             var afterFailure = consecutiveFailuresAtStart > 0
-            // Without a failure streak the first poll is the catch-up after start (#463).
+            // Without a failure streak the first poll is the catch-up after start (archive#463).
             var firstSleepMs: Long? = if (afterFailure) null else firstPollDelayMs.coerceAtLeast(0)
-            // #111: only a plain sleep (after a success, a skipped poll, or before the first poll) ends early on a hint.
+            // archive#111: only a plain sleep (after a success, a skipped poll, or before the first poll) ends early on a hint.
             var hintsMayWake = !afterFailure
             while (true) {
                 try {
@@ -172,7 +172,7 @@ class EnumeratePoller(
     ): Long =
         when {
             result == null -> intervalMs // busy: another enumerate or a refresh held the profile, skip
-            // #926: the pass worked but ended incomplete, and the next one lists the whole drive again
+            // archive#926: the pass worked but ended incomplete, and the next one lists the whole drive again
             // (EnumerateResult.recoveryPending). A listing takes minutes on a large drive: it must not start
             // again one plain interval after the last one ended, so it backs off like a failure. A pass that
             // ends the recovery (complete, or the same dropped set twice) returns to the plain interval.
@@ -189,7 +189,7 @@ class EnumeratePoller(
             }
         }
 
-    // #111: a plain sleep that a hint ends early. After the first hint it waits until [hintQuietMs] pass without another
+    // archive#111: a plain sleep that a hint ends early. After the first hint it waits until [hintQuietMs] pass without another
     // one; the whole wait, quiet window included, never runs past the scheduled poll. True when a hint ended the sleep.
     private suspend fun sleepUntilTickOrHint(sleepMs: Long): Boolean {
         var hinted = false
@@ -227,7 +227,7 @@ class EnumeratePoller(
         private val DURATION_REGEX = Regex("^(\\d+)(ms|s|m|h)?$")
 
         /**
-         * #463: the poll interval `daemon run` uses: `--poll-interval` when given ([cliValue]),
+         * archive#463: the poll interval `daemon run` uses: `--poll-interval` when given ([cliValue]),
          * otherwise the profile's `daemon_poll_seconds` ([configSeconds], default 60). 0 = off.
          */
         fun effectiveIntervalMs(

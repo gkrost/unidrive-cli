@@ -149,7 +149,7 @@ class IpcServerJsonTest {
             }
         }
 
-    // #1060: the exception of a handler can quote a pre-authenticated URL; the reply carries host and path only.
+    // archive#1060: the exception of a handler can quote a pre-authenticated URL; the reply carries host and path only.
     @Test
     fun `handler_threw reply carries no URL query`() =
         runBlocking(Dispatchers.IO) {

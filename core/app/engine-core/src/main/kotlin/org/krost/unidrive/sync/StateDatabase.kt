@@ -35,7 +35,7 @@ import java.util.UUID
  * - Neither tombstone says whether the bytes are recoverable: TRASHED is
  *   written when a remote delta reports the deletion, DELETED when the
  *   engine itself deletes or reaps the row, and the provider may have
- *   routed either to its own trash (#151). Recovery asking "can this be
+ *   routed either to its own trash (archive#151). Recovery asking "can this be
  *   restored?" must consult the provider's trash; the status only says
  *   which side noticed.
  *
@@ -72,7 +72,7 @@ class StateDatabase(
 
     // The thread that opened the manual batch ([beginBatch]) holding the connection's one SQLite
     // transaction, or null when no manual batch is open. SQLite has no per-thread transactions, so every
-    // other thread's write would silently join it (#300); [beginWrite] uses this to tell them apart.
+    // other thread's write would silently join it (archive#300); [beginWrite] uses this to tell them apart.
     // Both fields are guarded by the instance monitor.
     private var batchOwner: Thread? = null
 
@@ -82,7 +82,7 @@ class StateDatabase(
 
     // The number of alive rows (what [getEntryCount] answers), kept in step with every write that changes it, so that
     // asking is a read of this field and not a scan of the table: the scan was two per enumeration pass, 128 ms each on a
-    // 388,000-row table, held under the monitor (#983). Guarded by the monitor, like the connection. [ALIVE_COUNT_UNKNOWN]
+    // 388,000-row table, held under the monitor (archive#983). Guarded by the monitor, like the connection. [ALIVE_COUNT_UNKNOWN]
     // until counted: the next [getEntryCount] counts once. Every write that changes the number of alive rows says by
     // how much ([countAlive]); a write that cannot say sets the number back to unknown ([forgetAliveCount]).
     private var aliveCount: Int = ALIVE_COUNT_UNKNOWN
@@ -103,10 +103,10 @@ class StateDatabase(
     internal var tableCounts: Int = 0
         private set
 
-    // Test seam (#149): fired after a top-level [batch] has COMMITTED, before control
+    // Test seam (archive#149): fired after a top-level [batch] has COMMITTED, before control
     // returns to the caller. Lets the sync tests observe filesystem side effects that
     // must happen outside the transaction (the reap's cache eviction). Public, not internal,
-    // since #560 U2: the class lives in :app:engine-core and the tests that use the seam
+    // since archive#560 U2: the class lives in :app:engine-core and the tests that use the seam
     // drive SyncEngine in :app:sync. Production code never sets it.
     var batchCommitHook: (() -> Unit)? = null
 
@@ -215,7 +215,7 @@ class StateDatabase(
                 // The one scan: from here on the writes keep the number (a read-only handle counts at its first ask).
                 recountAlive(dataVersion())
             } catch (e: Throwable) {
-                // A refused open (#323) must not leak the connection it opened.
+                // A refused open (archive#323) must not leak the connection it opened.
                 runCatching { _conn?.close() }
                 _conn = null
                 throw e
@@ -255,7 +255,7 @@ class StateDatabase(
 
     /**
      * WAL: a reader in another connection (a CLI command reading the whole table) no longer fails this connection's
-     * commits with SQLITE_BUSY, and a small commit costs a fifth of one with a rollback journal (#951). `synchronous=FULL`
+     * commits with SQLITE_BUSY, and a small commit costs a fifth of one with a rollback journal (archive#951). `synchronous=FULL`
      * keeps every commit durable across a power loss, as the rollback journal did: a pending-upload row is the only
      * record of an edit the cloud has not seen. The mode is persistent (an older build keeps running in it). Anything
      * but `wal` as the answer (a file system without shared memory, a reader holding the file while the switch needs it
@@ -342,7 +342,7 @@ class StateDatabase(
 
     /**
      * Rewrites the file once when more than a quarter of its pages are free (`VACUUM`): the staged listing of a large
-     * drive used to leave a third of a 434 MB file free, with the live rows scattered over the rest (#951 measured 17.6 s
+     * drive used to leave a third of a 434 MB file free, with the live rows scattered over the rest (archive#951 measured 17.6 s
      * and 266 MB for that file). Once per file: the time is recorded under [COMPACTED_KEY], and a file that has it is
      * never rewritten again. Skipped while a manual batch is open, and when the folder has less free space than twice
      * the logical database (`page_count * page_size`, plus the current `-wal` if it is there): the rewrite and the WAL
@@ -393,7 +393,7 @@ class StateDatabase(
     fun resetAll() {
         locked("resetAll") {
             // sync_state also holds the schema stamp. Wiping it without restamping makes the
-            // next open read this file as a pre-redesign database and drop sync_entries (#411),
+            // next open read this file as a pre-redesign database and drop sync_entries (archive#411),
             // so the restamp shares the transaction with the deletes. The staged scan goes first, in its own file: a
             // scan that finds no checkpoint starts again, while a checkpoint left over the reset would resume a listing
             // the reset has discarded.
@@ -465,7 +465,7 @@ class StateDatabase(
                         stmt.executeUpdate("DROP TABLE reset_keep")
                     }
                 }
-                // sync_state holds the schema stamp too: restamp in the same transaction (see resetAll, #411).
+                // sync_state holds the schema stamp too: restamp in the same transaction (see resetAll, archive#411).
                 conn.createStatement().use { stmt -> stmt.executeUpdate("DELETE FROM sync_state") }
                 stampSchemaVersion()
                 // Every row left is one of the alive rows [keep] names, each by its primary key.
@@ -498,7 +498,7 @@ class StateDatabase(
                     stmt.executeUpdate("DROP TABLE IF EXISTS sync_entries")
                 }
             } else {
-                // #323: an older jar must never stamp the version downward — the
+                // archive#323: an older jar must never stamp the version downward — the
                 // next upgrade would believe nothing changed and skip migrations.
                 // Refuse before any write (mirrors the read-only and snapshot
                 // guards); equal or lower versions behave as before.
@@ -642,10 +642,10 @@ class StateDatabase(
                     "ALTER TABLE sync_entries ADD COLUMN last_error_at TEXT",
                 )
             }
-            // #115: canonical REMOTE path for XDG locale-aliased rows. Mirrors
+            // archive#115: canonical REMOTE path for XDG locale-aliased rows. Mirrors
             // the additive-column pattern above — no schema_version bump
             // because the column carries a safe default (NULL = remote path
-            // equals `path`), so any pre-#115 row reads as non-aliased, which
+            // equals `path`), so any pre-archive#115 row reads as non-aliased, which
             // is the correct, byte-identical-to-today initial state. Existing
             // deployed state.db files open unchanged: the ADD COLUMN runs once
             // when the column is missing, every existing row's remote_path is
@@ -657,9 +657,9 @@ class StateDatabase(
                     "ALTER TABLE sync_entries ADD COLUMN remote_path TEXT",
                 )
             }
-            // #396: SHA-256 of the local bytes the engine last wrote or sent, for
+            // archive#396: SHA-256 of the local bytes the engine last wrote or sent, for
             // providers with no remote content hash. Same additive-column pattern —
-            // no schema_version bump, NULL = "unknown" so every pre-#396 row keeps
+            // no schema_version bump, NULL = "unknown" so every pre-archive#396 row keeps
             // today's mtime+size behaviour until the engine next transfers the file.
             // The CREATE TABLE above already includes it for fresh installs.
             if (!columnExists("sync_entries", "local_hash")) {
@@ -667,7 +667,7 @@ class StateDatabase(
                     "ALTER TABLE sync_entries ADD COLUMN local_hash TEXT",
                 )
             }
-            // #449: where the row's local baseline lives (see SyncEntry.cacheBacked). NULL = unknown, 1 = the
+            // archive#449: where the row's local baseline lives (see SyncEntry.cacheBacked). NULL = unknown, 1 = the
             // hydration cache copy, 0 = not the cache copy. Same additive pattern, no schema_version bump.
             // The CREATE TABLE above includes it for fresh installs.
             if (!columnExists("sync_entries", "cache_backed")) {
@@ -675,7 +675,7 @@ class StateDatabase(
                     "ALTER TABLE sync_entries ADD COLUMN cache_backed INTEGER",
                 )
             }
-            // #493: the provider refused the upload of this row's content as a request (PermanentUploadFailureException).
+            // archive#493: the provider refused the upload of this row's content as a request (PermanentUploadFailureException).
             // Hydration stores the content stamp, retry deadline and reason. Same additive pattern, no schema_version bump:
             // NULL = not refused, which is every older row. Any upsert of the row clears it, a successful upload included.
             if (!columnExists("sync_entries", "upload_refused")) {
@@ -692,7 +692,7 @@ class StateDatabase(
                     "ALTER TABLE sync_entries ADD COLUMN name_block TEXT",
                 )
             }
-            // #1070/#1069: the cloud version an unsynced edit in the mount's cache copy started from (see
+            // archive#1070/#1069: the cloud version an unsynced edit in the mount's cache copy started from (see
             // SyncEntry.editBase). Same additive pattern, no schema_version bump: NULL = no unsynced edit is known,
             // which is every older row. Unlike the two columns above it is carried by SyncEntry, so a merge's
             // copy() keeps it and only the upload that lands (or a download that replaces the copy) clears it.
@@ -745,7 +745,7 @@ class StateDatabase(
             )
             // The folder of each alive row (its path up to and including the last '/': rtrim strips the trailing
             // characters that are not '/'), so a listing seeks its children instead of walking every row under the
-            // folder: the root of a 372,000-row drive took 147 ms under the monitor, 0.6 ms with this index (#951,
+            // folder: the root of a 372,000-row drive took 147 ms under the monitor, 0.6 ms with this index (archive#951,
             // about 8% more work per merged row). An existing file gets it at its next open.
             stmt.executeUpdate(
                 """
@@ -846,7 +846,7 @@ class StateDatabase(
      * The batch belongs to the calling thread: a write from any other thread (an IPC hydration verb while
      * the engine is in Pass 1) never joins it. That write first commits the transaction as it stands,
      * runs and commits on its own, and the batch continues in a new transaction on its owner's next
-     * write (#300). A SQLite connection has one transaction, so a rollback therefore discards only what
+     * write (archive#300). A SQLite connection has one transaction, so a rollback therefore discards only what
      * the owner wrote since the last such interruption; with no other writer a batch is atomic as before.
      * Only the owner's calls belong to the batch, so a coroutine that begins it must keep writing on the
      * same thread (`runBlocking` does); on a different thread its writes commit one by one. Opening a
@@ -942,7 +942,7 @@ class StateDatabase(
             // conflicting row by PK only, not by other unique constraints, so
             // we explicitly delete the colliding-path alive row first.
             //
-            // #401: capture what the delete evicts. Removing a pending-upload
+            // archive#401: capture what the delete evicts. Removing a pending-upload
             // synthetic (`local:`) is the normal upload-completion swap; removing
             // a row whose id is a REAL cloud uuid means a tracked remote item is
             // being silently re-keyed (e.g. an incremental delta carrying only the
@@ -1000,11 +1000,11 @@ class StateDatabase(
                 stmt.setString(14, entry.status.name)
                 stmt.setInt(15, if (entry.downloadQuarantined) 1 else 0)
                 stmt.setString(16, entry.lastErrorAt?.toString())
-                // #396: a row without real local bytes (placeholder, freed) has nothing a hash could
+                // archive#396: a row without real local bytes (placeholder, freed) has nothing a hash could
                 // describe. Dropping it here means every dehydrate path clears it and a later
                 // re-hydrate can never inherit a hash of bytes that are gone.
                 stmt.setString(17, if (entry.isHydrated) entry.localHash else null)
-                // #449: like the hash, where the baseline lives only means something while there are local bytes.
+                // archive#449: like the hash, where the baseline lives only means something while there are local bytes.
                 val backed = if (entry.isHydrated) entry.cacheBacked else null
                 if (backed == null) stmt.setNull(18, java.sql.Types.INTEGER) else stmt.setInt(18, if (backed) 1 else 0)
                 stmt.setString(19, entry.editBase)
@@ -1049,7 +1049,7 @@ class StateDatabase(
 
     fun getEntry(path: String): SyncEntry? =
         locked("getEntry") {
-            // #171: rows are stored NFC; normalize the query so an NFD-origin path
+            // archive#171: rows are stored NFC; normalize the query so an NFD-origin path
             // (e.g. from a co-daemon FUSE op) still matches.
             cached(GET_ENTRY_SQL) { stmt ->
                 stmt.setString(1, PathNormalizer.nfc(path))
@@ -1058,7 +1058,7 @@ class StateDatabase(
         }
 
     /**
-     * #728: [getEntry] for many paths in one query — one `alive_entries` statement instead of one per
+     * archive#728: [getEntry] for many paths in one query — one `alive_entries` statement instead of one per
      * path, so a caller that classifies a whole batch holds the instance monitor once, not once per
      * row. Paths are matched NFC like [getEntry]; the returned map is keyed by the caller's spelling,
      * and a path without an alive row is simply absent. The caller keeps the batch bounded (the
@@ -1092,7 +1092,7 @@ class StateDatabase(
         }
 
     /**
-     * #115: lookup by EFFECTIVE remote path (`remote_path` when set, else
+     * archive#115: lookup by EFFECTIVE remote path (`remote_path` when set, else
      * `path`). A locale-aliased row keyed at the real-local `path`
      * (e.g. /Bilder/x.jpg) carries its canonical remote path
      * (/Pictures/x.jpg) in `remote_path`; a delta reported at the canonical
@@ -1108,7 +1108,7 @@ class StateDatabase(
             } ?: spelledApartAt(remotePath)
         }
 
-    // #491: the row at [nfcPath] whose remote path is the provider's own spelling of that very path (see
+    // archive#491: the row at [nfcPath] whose remote path is the provider's own spelling of that very path (see
     // [keptRemotePath]): its effective remote path is that spelling, so the lookup above, by the NFC form, misses it.
     // Only a name with a non-ASCII character can be spelled apart; ASCII-only paths never take the second lookup.
     private fun spelledApartAt(nfcPath: String): SyncEntry? {
@@ -1118,12 +1118,12 @@ class StateDatabase(
         return row.takeIf { remote != nfcPath && PathNormalizer.nfc(remote) == nfcPath }
     }
 
-    // #171: store paths in NFC so the reconciler's NFC keys and direct lookups
+    // archive#171: store paths in NFC so the reconciler's NFC keys and direct lookups
     // (incl. the co-daemon's possibly-NFD getEntry) match the stored rows.
     // remote_path is normalized on write too, so getEntryByRemotePath — which
     // canonicalizes its query — still matches an aliased row whose cloud path
     // arrived in NFD instead of treating the next delta as a new remote item.
-    // #491: except the provider's own spelling on a row of a normalisation collision ([keptRemotePath], [keptSpelling]).
+    // archive#491: except the provider's own spelling on a row of a normalisation collision ([keptRemotePath], [keptSpelling]).
     private fun storedForm(
         rawEntry: SyncEntry,
         keepMarks: Boolean,
@@ -1140,7 +1140,7 @@ class StateDatabase(
     }
 
     /**
-     * #491: the remote path a row is stored with. In NFC (#171) unless [remotePathRaw] is the provider's own spelling
+     * archive#491: the remote path a row is stored with. In NFC (archive#171) unless [remotePathRaw] is the provider's own spelling
      * of a name that differs from its NFC form only, on a row of a collision: the twin under its decorated name (the
      * spelling's NFC form decorates to [nfcPath]) or the item that holds the NFC name ([nfcPath] is the spelling's NFC
      * form). Such a row has a twin at the NFC key, so a drive that addresses its items by path (localfs, S3) reaches
@@ -1158,7 +1158,7 @@ class StateDatabase(
     }
 
     /**
-     * #491: a writer that brings the NFC key of a row's item (a download, an upload, a placeholder: they know the item
+     * archive#491: a writer that brings the NFC key of a row's item (a download, an upload, a placeholder: they know the item
      * by its key) keeps the provider's spelling the row holds in remote_path; only the remote merge, which sees the
      * spelling, sets or clears it. [remotePath] is what the writer brings, null for "the path itself".
      */
@@ -1191,7 +1191,7 @@ class StateDatabase(
     /**
      * The number of alive rows. Kept in memory, in step with every write ([aliveCount]): the engine asks twice per
      * enumeration pass and each ask was a scan of the whole table under the monitor (128 ms on average on 388,000 rows,
-     * 22 s in 88 minutes, #983). Counted again only when the number is unknown (a read-only handle's first ask, after a
+     * 22 s in 88 minutes, archive#983). Counted again only when the number is unknown (a read-only handle's first ask, after a
      * write that cannot say how many rows it changed) or when another connection has committed to the file since the
      * last count (`PRAGMA data_version`, a lookup of one number): a CLI command that writes while the daemon runs, or a
      * second process, cannot leave this number stale.
@@ -1288,7 +1288,7 @@ class StateDatabase(
         }
 
     /**
-     * #1027: [visit] for every alive row, in steps of [chunkRows] rows. [getAllEntries] reads the whole table under the
+     * archive#1027: [visit] for every alive row, in steps of [chunkRows] rows. [getAllEntries] reads the whole table under the
      * monitor and builds one object per row (2 s and 372,794 objects on the `internxt-3` profile, once per full
      * listing). Here each step is one short read in the order of the table, the monitor is free between the steps, and a
      * row becomes a [SyncEntry] only when [AliveRow.entry] is asked for it. A row written while the scan runs may be
@@ -1409,7 +1409,7 @@ class StateDatabase(
      * to '0', the next byte in BINARY collation. `path >= prefix AND path < prefixUpperBound(prefix)` is exactly
      * "path starts with prefix" (every string in the range shares the prefix; anything without it sorts at or
      * above the bound), and unlike `substr(path, 1, length(?)) = ?` it can seek `idx_sync_entries_path_alive`
-     * instead of scanning every alive row (#727, #489).
+     * instead of scanning every alive row (archive#727, archive#489).
      */
     private fun prefixUpperBound(prefix: String): String = prefix.dropLast(1) + "0"
 
@@ -1478,7 +1478,7 @@ class StateDatabase(
      *
      * DELETED is the engine-side tombstone (mount rm, reconciler delete,
      * enumeration reap). It does not mean the bytes are unrecoverable: a
-     * delete the provider routed to its trash is still DELETED here (#151).
+     * delete the provider routed to its trash is still DELETED here (archive#151).
      * TRASHED is reserved for the delta-reported cloud cascade.
      */
     fun markDeleted(path: String, mountDelete: Boolean = false) {
@@ -1505,7 +1505,7 @@ class StateDatabase(
     }
 
     /**
-     * #87: tombstone every alive row BELOW [folderPathRaw] in one statement, and return how many. A
+     * archive#87: tombstone every alive row BELOW [folderPathRaw] in one statement, and return how many. A
      * folder deleted from the mount (hydration.rmdir) or by the reconciler used to tombstone only the
      * folder's own row — a subtree of ~133k rows stayed EXISTS, survived into the next fresh mount and
      * was planned for re-download. The UPDATE touches only rows still EXISTS: rows the delta already
@@ -1653,7 +1653,7 @@ class StateDatabase(
         }
 
     /**
-     * #493: records that the provider refused the upload of this row's current content as a request. [stamp] is
+     * archive#493: records that the provider refused the upload of this row's current content as a request. [stamp] is
      * `<cache mtime ms>|<cache size>|<retry-at epoch ms>|<reason>`; legacy stamps without a deadline are eligible once
      * after upgrade. Replay and same-content submissions skip it only until the retry deadline. A row upsert clears it,
      * except the remote merge's ([upsertEntry] `keepMarks`).
@@ -1689,7 +1689,7 @@ class StateDatabase(
         }
 
     /**
-     * #1070/#1069: notes that the cache copy of the alive cloud-backed file row at [pathRaw] holds an edit the cloud
+     * archive#1070/#1069: notes that the cache copy of the alive cloud-backed file row at [pathRaw] holds an edit the cloud
      * has not seen, started from the cloud version [base] (the row's remote token, "" when it has none; see
      * [SyncEntry.editBase]). Only the first edit sets it: a row that already carries a base keeps it until an upload
      * lands or a download replaces the copy, whatever the row's token became in between. Returns true when this call
@@ -1835,7 +1835,7 @@ class StateDatabase(
 
     /**
      * Every alive row with a remote id and a remote path of its own, as (path, remote path, remote id): the rows a
-     * duplicate remote item (#403) is kept under are among them, and they are few.
+     * duplicate remote item (archive#403) is kept under are among them, and they are few.
      */
     fun rowsWithRemotePath(): List<Triple<String, String, String>> =
         locked("rowsWithRemotePath") {
@@ -1915,7 +1915,7 @@ class StateDatabase(
         }
     }
 
-    /** #493: the refusal recorded by [markUploadRefused] for this alive row, or null. */
+    /** archive#493: the refusal recorded by [markUploadRefused] for this alive row, or null. */
     fun uploadRefusal(pathRaw: String): String? =
         locked("uploadRefusal") {
             val path = PathNormalizer.nfc(pathRaw)
@@ -1997,12 +1997,12 @@ class StateDatabase(
     )
 
     /**
-     * The rows [pendingUploadPaths] names, with the two stamps the daemon's upload health (#658) reads: how
+     * The rows [pendingUploadPaths] names, with the two stamps the daemon's upload health (archive#658) reads: how
      * long a row has been waiting (a `local:` row is written once, so `last_synced` is when its content
      * first existed only on this machine) and whether an attempt failed. Unordered; the caller aggregates.
      */
     /**
-     * One row awaiting upload with what #753's recovery needs: the remote id (a real one is never dropped),
+     * One row awaiting upload with what archive#753's recovery needs: the remote id (a real one is never dropped),
      * the local size (a zero size with no cache content is the stranded shape) and the two stamps.
      */
     data class PendingRowDetail(
@@ -2035,7 +2035,7 @@ class StateDatabase(
 
     /**
      * Deletes the pending row at [path] — only while it is still a `local:` row, whatever the caller asked
-     * for (#753): a row with a real remote id is the cloud's truth and is never touched here. True when a
+     * for (archive#753): a row with a real remote id is the cloud's truth and is never touched here. True when a
      * row went away.
      */
     fun deleteLocalPendingRow(path: String): Boolean =
@@ -2117,7 +2117,7 @@ class StateDatabase(
      * moved a folder locally, the move collided with the path's partial unique index).
      *
      * A folder rename through the mount rewrote every row of the subtree in one locked transaction: 134,877 rows held
-     * the monitor for 15 s on a copy of the 372,588-row `internxt-3` table (10.5 s seen live, #989), and every
+     * the monitor for 15 s on a copy of the 372,588-row `internxt-3` table (10.5 s seen live, archive#989), and every
      * `daemon.status`, listing and enumeration merge waited. The same statements on the index range of the path, in one
      * transaction, took 11-19 s: the time is the rewrite of the row and of the three indexes on the path, not the
      * search. So the work goes in steps of [RENAME_CHUNK_ROWS] rows, one transaction each, with the monitor free between
@@ -2140,7 +2140,7 @@ class StateDatabase(
      *
      * Called inside a [batch], the steps are part of the caller's transaction and the monitor is held throughout: one
      * transaction, as before. Inside a manual batch they are part of the caller's transaction as long as no other thread
-     * writes in the gaps; such a write commits the transaction as it stands, half-moved subtree included (#300, see
+     * writes in the gaps; such a write commits the transaction as it stands, half-moved subtree included (archive#300, see
      * [beginBatch]), as it does between any two calls of the batch. Prefixes inside one another (a folder moved into
      * itself) cannot be walked in steps, the moved rows would match the old range again: they stay one step.
      *
@@ -2228,7 +2228,7 @@ class StateDatabase(
             left -= removed
             rename.destinationCleared = true
         }
-        // #489: SQL's length(), not Kotlin's (UTF-16 units): substr counts characters.
+        // archive#489: SQL's length(), not Kotlin's (UTF-16 units): substr counts characters.
         val moved = rewriteBelow(RENAME_MOVE_BELOW_SQL, listOf(rename.new, rename.old), rename.old, left)
         if (moved >= left) return false
         // A folder rename moves the folder's own row too (path swap /old -> /new); the statement above matches
@@ -2458,7 +2458,7 @@ class StateDatabase(
     }
 
     /**
-     * #604 (mirror adopt): drop every persisted enumeration baseline — the fast-bootstrap
+     * archive#604 (mirror adopt): drop every persisted enumeration baseline — the fast-bootstrap
      * stamp and any scan-in-progress checkpoint. Those describe the OLD coordinated state;
      * after a conversion the first mirror sync must gather fresh, so the absence of a cloud
      * row can never be read as a delete of a file the legacy state had not known about.
@@ -2658,9 +2658,9 @@ class StateDatabase(
         scanStaging.clear(scanId, SCAN_CLEAR_CHUNK_ROWS) { scanClearChunkGap() }
     }
 
-    // #490: a path prefix is matched exactly, by code points. SQLite's LIKE folds ASCII case (so `/docs/%` also
+    // archive#490: a path prefix is matched exactly, by code points. SQLite's LIKE folds ASCII case (so `/docs/%` also
     // matched every row under `/Docs/`: a case-only folder rename deleted the folder's whole subtree), and substr and
-    // length both count characters, so the two sides agree for names outside the BMP too (#489). Binds two parameters.
+    // length both count characters, so the two sides agree for names outside the BMP too (archive#489). Binds two parameters.
     private fun java.sql.PreparedStatement.bindPrefix(
         index: Int,
         prefix: String,
@@ -2775,7 +2775,7 @@ class StateDatabase(
         internal const val SCAN_CLEAR_CHUNK_ROWS = 5_000
 
         /**
-         * Rows one transaction of a [renamePrefix] clears or moves: 1,000 is the size #951 measured as the knee of hold
+         * Rows one transaction of a [renamePrefix] clears or moves: 1,000 is the size archive#951 measured as the knee of hold
          * time against commits for the merge (a commit costs more than the rows of a smaller step).
          */
         internal const val RENAME_CHUNK_ROWS = 1_000
@@ -2803,7 +2803,7 @@ class StateDatabase(
 
         /**
          * The WHERE clause that selects the alive file rows awaiting upload; [pendingUploadPaths] and
-         * [resetKeepingPending] share it. GLOB, not LIKE (#552): it is case-sensitive like the
+         * [resetKeepingPending] share it. GLOB, not LIKE (archive#552): it is case-sensitive like the
          * `startsWith("local:")` the rest of the code uses for the synthetic, and it can walk the remote_id index
          * from 'local:' on instead of every row.
          */
@@ -2885,7 +2885,7 @@ class StateDatabase(
         /**
          * The folder part of `path`, up to and including its last '/' (`/a/b.txt` -> `/a/`, `/x` -> `/`): rtrim strips
          * the trailing characters that occur in the path without its slashes, which is every character after the last
-         * '/' and never the '/' itself. SQLite counts characters, not bytes, so names outside the BMP work too (#489).
+         * '/' and never the '/' itself. SQLite counts characters, not bytes, so names outside the BMP work too (archive#489).
          * The expression of `idx_sync_entries_dir_alive`; SQLite uses the index only for exactly this text.
          */
         private const val PARENT_DIR_OF_PATH = "rtrim(path, replace(path, '/', ''))"
@@ -2896,7 +2896,7 @@ class StateDatabase(
         /**
          * The lookup by effective remote path. Its expression and the `alive_entries` predicate are those of
          * `idx_sync_entries_remote_path_alive`; SQLite uses that index only for exactly this expression. Two rows
-         * match one remote path only for duplicate remote items (#403): the twin's row keeps the canonical path in
+         * match one remote path only for duplicate remote items (archive#403): the twin's row keeps the canonical path in
          * `remote_path` under a longer, decorated local path, so the shortest path is the row that holds the name.
          */
         internal const val BY_REMOTE_PATH =
@@ -2921,7 +2921,7 @@ class StateDatabase(
         ): StateDatabase {
             Files.createDirectories(tempRoot)
             sweepStaleSnapshots(tempRoot, staleAfter)
-            // #1054 S4: the copy lists every path, so the folder is owner-only (on Windows it would inherit the temp folder's ACL).
+            // archive#1054 S4: the copy lists every path, so the folder is owner-only (on Windows it would inherit the temp folder's ACL).
             val dir = org.krost.unidrive.io.createOwnerOnlyTempDirectory(tempRoot, SNAPSHOT_DIR_PREFIX)
             val copy = dir.resolve("state.db")
             try {

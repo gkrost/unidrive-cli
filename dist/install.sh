@@ -121,7 +121,7 @@ echo "  ${INSTALL_LIB}/${CLI_BASENAME}"
 cp "${SCRIPT_DIR}/launcher/jvm-flags.txt" "${INSTALL_LIB}/"
 echo "  ${INSTALL_LIB}/jvm-flags.txt"
 
-# Coroutine-debug probe jar (gkrost/unidrive#613 ask 1): deployed beside the fat jar so the
+# Coroutine-debug probe jar (archive#613 ask 1): deployed beside the fat jar so the
 # launcher's UNIDRIVE_COROUTINE_DEBUG gate can -javaagent it at daemon JVM start. Optional:
 # a tree without the probe jar (an older build, a slim release tarball) installs fine without it.
 DEBUG_AGENT_JAR=""

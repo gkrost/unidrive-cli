@@ -9,7 +9,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * #1039: the version token of a file ("<uuid>|<modificationTime>|<size>") is built from the string the server sent. A
+ * archive#1039: the version token of a file ("<uuid>|<modificationTime>|<size>") is built from the string the server sent. A
  * resumed cursor or offset listing rebuilt the file from the staged row's `Instant` and its `toString()`, which drops
  * a zero fraction (`...09Z` for `...09.000Z`): the stored `remoteHash` of such a file differed from every later fresh
  * token, and the first edit through the mount (which forwards the hash as If-Match) conflicted with no remote change.
@@ -43,7 +43,7 @@ class InternxtResumedVersionTokenTest {
     @Test
     fun `a resumed offset listing gives the files the version token a fresh one gives`() =
         runTest {
-            // The poll rides the sync listings (#312); this test is about the offset listing's resume,
+            // The poll rides the sync listings (archive#312); this test is about the offset listing's resume,
             // so the server does not serve them and the gather keeps the offset path.
             val drive = FakeDrive(fakeAccountFolders(), fakeAccountFiles(), syncStatus = 404)
             val since = "2026-07-01T00:00:00.000Z"

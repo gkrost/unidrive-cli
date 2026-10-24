@@ -135,7 +135,7 @@ class RequestIdPluginTest {
         )
     }
 
-    // #644: the response line carries the profile and the server's own request id in the message itself,
+    // archive#644: the response line carries the profile and the server's own request id in the message itself,
     // because the MDC does not reach every worker thread. A client that names neither logs the old format.
     private suspend fun capturedLines(block: suspend () -> Unit): List<String> {
         val logger = LoggerFactory.getLogger("org.krost.unidrive.http.RequestId") as Logger

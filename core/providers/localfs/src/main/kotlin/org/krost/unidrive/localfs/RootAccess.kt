@@ -9,7 +9,7 @@ import java.nio.file.Path
  * Root usability probes shared by the factory (`profile add` must refuse an unusable
  * `root_path` with a token the wizard can map) and the provider (`authenticate` must not
  * report an unreadable or read-only root as authenticated — the localfs account is a
- * two-way mirror, so both directions have to work) (#910).
+ * two-way mirror, so both directions have to work) (archive#910).
  *
  * The probes are real operations, not attribute checks: `Files.isReadable`/`isWritable`
  * consult the read-only attribute on Windows and cannot see an ACL that denies a

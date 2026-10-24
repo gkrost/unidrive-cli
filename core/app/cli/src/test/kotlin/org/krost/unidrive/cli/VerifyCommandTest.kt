@@ -127,7 +127,7 @@ class VerifyCommandTest {
         assertTrue(output().contains("converged"), "expected converged result line, got:\n${output()}")
     }
 
-    // ── #1083: the profile's sync_path bounds the audit like it bounds the sync ──
+    // ── archive#1083: the profile's sync_path bounds the audit like it bounds the sync ──
 
     private fun scopeProfileTo(vararg paths: String) {
         Files.writeString(

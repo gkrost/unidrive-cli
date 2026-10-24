@@ -8,12 +8,12 @@ import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * #560 U3: everything the mount front-end (`MountEngine`, :app:hydration) runs on, handed over by the
+ * archive#560 U3: everything the mount front-end (`MountEngine`, :app:hydration) runs on, handed over by the
  * engine that builds the shared core ([MountHost], today `SyncEngine`). The instances are the ones the
  * mirror pass uses, so the two front-ends of one process share, as they did when the mount operations
  * lived in `SyncEngine`:
  *  - [guard]: scope, excludes and the daemon-wide transfer budget (UD-263);
- *  - [gather]: the recently-uploaded marks (#301), the collided paths (#401) and the view invalidation
+ *  - [gather]: the recently-uploaded marks (archive#301), the collided paths (archive#401) and the view invalidation
  *    the gather reports to ([RemoteGather.invalidateView]);
  *  - [enumeration]: the single-flight remote enumeration and its tracker.
  *
@@ -35,7 +35,7 @@ class MountWiring(
     val auditLog: AuditSink?,
     // Byte progress of an upload, (path, transferred, total), for the host's progress reporter.
     val onTransferProgress: (path: String, transferred: Long, total: Long) -> Unit,
-    // #301: whether a hydration upload of the path is queued or in flight. Late-bound in the CLI
+    // archive#301: whether a hydration upload of the path is queued or in flight. Late-bound in the CLI
     // (the hydration layer is built after the engine); the same lambda guards the enumeration's reap.
     val uploadInFlight: (path: String) -> Boolean,
     // The host's logger, so the moved log lines keep their logger name.
@@ -66,7 +66,7 @@ class MountWiring(
     }
 }
 
-/** An engine that owns the shared core and can hand the mount front-end its [MountWiring] (#560 U3). */
+/** An engine that owns the shared core and can hand the mount front-end its [MountWiring] (archive#560 U3). */
 interface MountHost {
     val mountWiring: MountWiring
 }

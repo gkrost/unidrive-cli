@@ -9,7 +9,7 @@ import org.slf4j.LoggerFactory
 import java.lang.management.ManagementFactory
 
 /**
- * The daemon's periodic health line (#891): one INFO line every [intervalMs] in the shared unidrive.log with the
+ * The daemon's periodic health line (archive#891): one INFO line every [intervalMs] in the shared unidrive.log with the
  * heap (used/committed/max from `MemoryMXBean`), the GC count and time, the thread count, and — through the
  * suppliers the runtime wires — the enumeration state and items and the upload queue depth, all in `key=value`
  * form so a long scan's memory need is visible while it happens and a shared log splits per field without a

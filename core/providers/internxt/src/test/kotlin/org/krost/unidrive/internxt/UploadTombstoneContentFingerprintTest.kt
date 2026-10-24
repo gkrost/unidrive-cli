@@ -8,7 +8,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * #311: unit coverage for the tombstone content fingerprint — the cheap
+ * archive#311: unit coverage for the tombstone content fingerprint — the cheap
  * head+tail binding that stops an upload resume from reusing the pinned CTR
  * (key, IV) over different plaintext when a writer preserves mtime+size.
  *
@@ -125,7 +125,7 @@ class UploadTombstoneContentFingerprintTest {
         try {
             val store = UploadTombstoneStore(dir)
             val pathHash = UploadTombstoneStore.pathHash("/some/file.bin")
-            // A schema-1 sidecar written by a pre-#311 build: no
+            // A schema-1 sidecar written by a pre-archive#311 build: no
             // contentFingerprintHex, discriminator still 1.
             val legacy = """{"schema":1,"localPath":"/some/file.bin","localMtimeMillis":1700000000000,""" +
                 """"localSize":1024,"bucket":"b","folderUuid":"f","plainName":"file","ext":"bin",""" +

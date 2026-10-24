@@ -126,7 +126,7 @@ class CachePathsTest {
         assertEquals(link, CachePaths.resolveInside(dir, "/alias.txt"))
     }
 
-    // ---- Pass: one containment memo for a pass over many rows (#729) ----
+    // ---- Pass: one containment memo for a pass over many rows (archive#729) ----
 
     @Test
     fun `a pass answers what isInside answers, for paths that exist and paths that do not`() {

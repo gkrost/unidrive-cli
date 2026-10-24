@@ -12,7 +12,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #941: every PermanentDownloadFailureException used to be reported as `not_found`, so a file that exists in the cloud
+ * archive#941: every PermanentDownloadFailureException used to be reported as `not_found`, so a file that exists in the cloud
  * (refused content, an object stored in several parts, a short stored object) showed "Failed: not found". The cause is
  * told apart by the exception's TYPE, never by its message, and each cause has its own wire token. Only the plain class
  * (a stable 404) and a provider 404 are `not_found`. The quarantine is unchanged: every cause is still a

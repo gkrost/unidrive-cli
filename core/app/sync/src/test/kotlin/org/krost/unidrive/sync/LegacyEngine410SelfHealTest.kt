@@ -9,7 +9,7 @@ import java.time.Instant
 import kotlin.test.*
 
 /**
- * #110: legacy SyncEngine self-heals a 410-Gone expired delta cursor.
+ * archive#110: legacy SyncEngine self-heals a 410-Gone expired delta cursor.
  *
  * A persisted OneDrive `@odata.deltaLink` can age out / the drive re-keys —
  * Graph returns 410 Gone on the delta endpoint.  The legacy engine must:

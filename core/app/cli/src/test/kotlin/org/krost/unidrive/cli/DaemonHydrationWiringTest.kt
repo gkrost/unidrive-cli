@@ -31,7 +31,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The daemon's wiring order (#607 c): the hydration layer exists before any request can reach it, and the
+ * The daemon's wiring order (archive#607 c): the hydration layer exists before any request can reach it, and the
  * engine's hooks into that layer have a defined answer while it does not exist (yet, or ever on a mirror).
  */
 class DaemonHydrationWiringTest {

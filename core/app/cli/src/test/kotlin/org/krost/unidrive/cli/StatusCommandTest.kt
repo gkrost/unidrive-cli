@@ -123,7 +123,7 @@ class StatusCommandTest {
         assertEquals(0L, buckets.pendingBytes)
     }
 
-    // #136: the predicate gap row — remoteId=null AND isHydrated=false — matches
+    // archive#136: the predicate gap row — remoteId=null AND isHydrated=false — matches
     // only half of the UD-901 pending-upload predicate. It has no real bytes on
     // disk, so it must land in NEITHER bucket; only the remoteId half would have
     // counted it as pending.
@@ -255,7 +255,7 @@ class StatusCommandTest {
         }
     }
 
-    // ── #248: no fabricated rows when nothing is configured ───────────────────
+    // ── archive#248: no fabricated rows when nothing is configured ───────────────────
 
     @Test
     fun `#248 discoverProfilesFromRaw returns no profiles when nothing is configured`() {
@@ -281,7 +281,7 @@ class StatusCommandTest {
         }
     }
 
-    // ── #361: a config the TOML reader rejects is reported with its full path ──
+    // ── archive#361: a config the TOML reader rejects is reported with its full path ──
 
     @Test
     fun `#361 status names the config file path when a backslash path makes it unreadable`() {
@@ -305,7 +305,7 @@ class StatusCommandTest {
         }
     }
 
-    // ── #117: orphan-profile enumeration invariants ──────────────────────────
+    // ── archive#117: orphan-profile enumeration invariants ──────────────────────────
 
     @Test
     fun `#117 orphan dir (no config_toml entry) appears in discoverProfilesFromRaw flagged isOrphan`() {
@@ -426,7 +426,7 @@ class StatusCommandTest {
         assertFalse(profile.rawProvider != null, "orphan has no rawProvider")
     }
 
-    // ── PR #196 review fix: configured/type profiles take precedence over orphan-dir ──
+    // ── PR archive#196 review fix: configured/type profiles take precedence over orphan-dir ──
 
     @Test
     fun `PR196 configured type=onedrive profile AND stale orphan dir named onedrive resolves via config not orphan`() {
@@ -455,7 +455,7 @@ class StatusCommandTest {
                 resolvesSingleProfileViaConfig("onedrive", raw),
                 "known provider type 'onedrive' must route through the config path, not the orphan fallback",
             )
-            // Also assert the stale dir IS visible as an orphan in --all view (unchanged #117 behaviour)
+            // Also assert the stale dir IS visible as an orphan in --all view (unchanged archive#117 behaviour)
             val allProfiles = discoverProfilesFromRaw(raw, baseDir)
             val orphan = allProfiles.find { it.name == "onedrive" }
             assertNotNull(orphan, "orphan dir must still appear in --all view (#117 behaviour preserved)")
@@ -467,7 +467,7 @@ class StatusCommandTest {
 
     @Test
     fun `PR196 genuinely orphan name (no configured profile no type match) routes to orphan fallback`() {
-        // The #117 addition must still work for names that have NO config section
+        // The archive#117 addition must still work for names that have NO config section
         // AND are not a known provider type (e.g. a custom profile dir the user
         // created by hand before adding the config.toml section).
         val toml =
@@ -488,7 +488,7 @@ class StatusCommandTest {
                 resolvesSingleProfileViaConfig("my-lost-profile", raw),
                 "non-configured non-type name must NOT route through config path",
             )
-            // The orphan dir IS visible in --all view (unchanged #117 behaviour)
+            // The orphan dir IS visible in --all view (unchanged archive#117 behaviour)
             val allProfiles = discoverProfilesFromRaw(raw, baseDir)
             val orphan = allProfiles.find { it.name == "my-lost-profile" }
             assertNotNull(orphan, "orphan dir must appear in --all view")
@@ -681,7 +681,7 @@ class StatusCommandTest {
         }
     }
 
-    // ── PR #198 P2: TS profile credential health is not bypassed ──────────────
+    // ── PR archive#198 P2: TS profile credential health is not bypassed ──────────────
 
     @Test
     fun `tracking-set profile with missing credentials renders auth status not healthy TS`() {
@@ -709,7 +709,7 @@ class StatusCommandTest {
 
     @Test
     fun `tracking-set profile with healthy credentials renders TS status`() {
-        // Regression guard for the happy path introduced by #118: a TS profile
+        // Regression guard for the happy path introduced by archive#118: a TS profile
         // with valid credentials must still render [TS] + status="ts".
         val okHealth = CredentialHealth.Ok
         val (status, statusLabel) = trackingSetRowStatus(okHealth)
@@ -736,12 +736,12 @@ class StatusCommandTest {
         }
     }
 
-    // ── #232: a live daemon must not render STALE; a dead one still does ──────
+    // ── archive#232: a live daemon must not render STALE; a dead one still does ──────
 
     @Test
     fun `legacyRowStatus renders OK for an expiring token with a recent scan`() {
         // A live `sync --watch` daemon refreshes last_full_scan every poll, so an
-        // expiring token whose last scan is recent must NOT show STALE (#232).
+        // expiring token whose last scan is recent must NOT show STALE (archive#232).
         val now = Instant.parse("2026-05-29T12:00:00Z")
         val recent = now.minusSeconds(60).toString()
         val (status, label) = legacyRowStatus(isExpiring = true, lastSyncRaw = recent, now = now)
@@ -751,7 +751,7 @@ class StatusCommandTest {
 
     @Test
     fun `legacyRowStatus renders STALE for an expiring token with an old scan`() {
-        // #157 preserved: no recent scan (dead daemon) + expiring token → STALE.
+        // archive#157 preserved: no recent scan (dead daemon) + expiring token → STALE.
         val now = Instant.parse("2026-05-29T12:00:00Z")
         val old = now.minus(Duration.ofHours(2)).toString()
         val (status, label) = legacyRowStatus(isExpiring = true, lastSyncRaw = old, now = now)
@@ -761,7 +761,7 @@ class StatusCommandTest {
 
     @Test
     fun `legacyRowStatus renders STALE for an expiring token that never synced`() {
-        // #157 preserved: never-synced (null last_full_scan) + expiring → STALE.
+        // archive#157 preserved: never-synced (null last_full_scan) + expiring → STALE.
         val now = Instant.parse("2026-05-29T12:00:00Z")
         val (status, label) = legacyRowStatus(isExpiring = true, lastSyncRaw = null, now = now)
         assertEquals("warn", status, "expiring token + no scan must render warn")
@@ -785,11 +785,11 @@ class StatusCommandTest {
         assertTrue(lastScanIsRecent(now.minusSeconds(30).toString(), now))
     }
 
-    // ── #243 review: STALE grace scales with the configured max_poll_interval ──
+    // ── archive#243 review: STALE grace scales with the configured max_poll_interval ──
 
     @Test
     fun `effectiveStaleGrace floors at the 15-min default but scales with max_poll_interval`() {
-        // PR #243 review: the grace must not be shorter than the daemon's poll heartbeat.
+        // PR archive#243 review: the grace must not be shorter than the daemon's poll heartbeat.
         assertEquals(STALE_GRACE, effectiveStaleGrace(300), "default 300s poll keeps the 15-min grace floor")
         assertEquals(Duration.ofMinutes(30), effectiveStaleGrace(900), "15-min poll -> 30-min grace (two intervals)")
         assertEquals(Duration.ofHours(2), effectiveStaleGrace(3600), "1-hour poll -> 2-hour grace")
@@ -798,7 +798,7 @@ class StatusCommandTest {
     @Test
     fun `legacyRowStatus honours a tuned grace so a slow-polling daemon is not falsely STALE`() {
         // A scan 20 min ago is STALE under the default 15-min grace, but OK once the profile's
-        // max_poll_interval implies a longer heartbeat (PR #243 review).
+        // max_poll_interval implies a longer heartbeat (PR archive#243 review).
         val now = Instant.parse("2026-05-29T12:00:00Z")
         val scan20mAgo = now.minus(Duration.ofMinutes(20)).toString()
         assertTrue(
@@ -837,7 +837,7 @@ class StatusCommandTest {
         assertNull(scopeStatusLine(emptyList(), emptyList(), "work"))
     }
 
-    // #395: the multi-profile view names a scoped profile; whole-drive profiles stay silent.
+    // archive#395: the multi-profile view names a scoped profile; whole-drive profiles stay silent.
     @Test
     fun `multi-profile scope lines list scoped profiles and skip whole-drive ones`() {
         val baseDir = Files.createTempDirectory("status-scope-test-")
@@ -946,7 +946,7 @@ class StatusCommandTest {
         )
     }
 
-    // ── #646: status without a default profile ───────────────────────────────
+    // ── archive#646: status without a default profile ───────────────────────────────
 
     private fun rawOf(
         defaultProfile: String?,

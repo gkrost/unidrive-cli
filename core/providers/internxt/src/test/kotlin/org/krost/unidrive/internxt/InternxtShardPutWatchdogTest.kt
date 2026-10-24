@@ -25,9 +25,9 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * #571: a shard PUT is cut only when it stops making progress, not when it is slow.
+ * archive#571: a shard PUT is cut only when it stops making progress, not when it is slow.
  *
- * The read-idle socket timeout sized for 2 MiB/s (#517 R1) cut a 1.36 GB upload at 650 s on a 1.98 MB/s link, on every
+ * The read-idle socket timeout sized for 2 MiB/s (archive#517 R1) cut a 1.36 GB upload at 650 s on a 1.98 MB/s link, on every
  * attempt. The write-progress watchdog cuts a body that wrote nothing for the idle window and a server that does not
  * answer after the whole body was sent; nothing else.
  *
@@ -35,7 +35,7 @@ import kotlin.test.fail
  * block once the socket buffers are full), with the limits scaled from 120 s / 300 s to a few seconds.
  *
  * The budgets are wall-clock, so they are sized for a loaded CI runner or a machine running several builds at once, not
- * for an idle one: a sub-second window flaked there (#726, #592). Every assertion on time names the step that went over
+ * for an idle one: a sub-second window flaked there (archive#726, archive#592). Every assertion on time names the step that went over
  * its budget and by how much, so a red run says what was slow.
  */
 class InternxtShardPutWatchdogTest {
@@ -57,7 +57,7 @@ class InternxtShardPutWatchdogTest {
     private val responseWaitMs = 3_000L
 
     // Where the watchdog must NOT cut an upload that keeps moving, both windows are wide. A runner that stalls the
-    // server's reader or the client's writer for seconds (three seconds were seen on CI, #904) makes an upload that
+    // server's reader or the client's writer for seconds (three seconds were seen on CI, archive#904) makes an upload that
     // moves look idle to a 3 s window; the property under test is that a moving upload is never cut, whatever its
     // duration. The response wait is wide for a second reason: the client's writes complete when the bytes sit in the
     // channel and socket buffers (ten MiB and more), and the server, which reads at the pace of a slow uplink, still
@@ -282,7 +282,7 @@ class InternxtShardPutWatchdogTest {
                     // still in flight (the client's channel and both socket buffers hold megabytes) with one bounded
                     // blocking read that returns at the first read past the client's close. Draining them in 64 KiB
                     // iterations parked the server thread once per iteration, and a loaded runner stretched those parks
-                    // until the connection-end budget expired while the drain was still going (#982).
+                    // until the connection-end budget expired while the drain was still going (archive#982).
                     while (serverReceived.get() < size) {
                         if (cancelled.get()) {
                             val want = minOf(DRAIN_STEP_BYTES, size - serverReceived.get())

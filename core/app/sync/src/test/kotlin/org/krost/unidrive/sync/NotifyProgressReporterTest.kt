@@ -23,7 +23,7 @@ class NotifyProgressReporterTest {
         reporter.onWarning("Test warning message")
     }
 
-    // #1060: the text of a provider exception can quote a pre-authenticated URL.
+    // archive#1060: the text of a provider exception can quote a pre-authenticated URL.
     @Test
     fun `onWarning notifies without the query of a URL`() {
         val commands = mutableListOf<List<String>>()

@@ -53,7 +53,7 @@ interface CloudProvider {
     suspend fun currentAccountId(): String? = null
 
     /**
-     * #1240: proves the credentials this profile has stored against the provider with ONE authenticated call (the
+     * archive#1240: proves the credentials this profile has stored against the provider with ONE authenticated call (the
      * cheapest the provider has: the drive root, the usage figure, one key listing), and returns what the provider says
      * about the account. It never signs in: no browser, no console, no device code, whatever is (or is not) stored. An
      * instance that holds no credentials yet reads the stored ones in place, as [reloadCredentials] does.
@@ -107,7 +107,7 @@ interface CloudProvider {
     }
 
     /**
-     * #1052: invalidates the stored token at the provider, so a stale copy of the credential files stops working.
+     * archive#1052: invalidates the stored token at the provider, so a stale copy of the credential files stops working.
      * [logout] only forgets it locally; a sign-out calls this first, then [logout]. Returns [TokenRevocation.REVOKED]
      * only after the provider confirmed the revocation. The default says the provider has no revoke call; a provider
      * that has one overrides this. Throws [AuthenticationException] when there is no valid credential to revoke, and
@@ -160,7 +160,7 @@ interface CloudProvider {
      * lambda to `onProgress` (Kotlin trailing-lambda convention — see memory
      * `feedback_kotlin_default_param_ordering`).
      *
-     * #291: [ifMatchETag], when non-null, is the optimistic-concurrency token the engine
+     * archive#291: [ifMatchETag], when non-null, is the optimistic-concurrency token the engine
      * observed at plan time. Providers that support conditional writes (OneDrive's `If-Match`
      * on the content PUT / upload session) use it to detect a concurrent remote edit landing
      * between plan and apply — the write fails (Graph 412 Precondition Failed) instead of
@@ -177,7 +177,7 @@ interface CloudProvider {
     ): CloudItem
 
     /**
-     * WB-3 (#87): discard any staged upload state the provider keeps for [localPath] — Internxt's
+     * WB-3 (archive#87): discard any staged upload state the provider keeps for [localPath] — Internxt's
      * encrypted resume copy and its tombstone sidecar. The delete of a never-uploaded file calls
      * this so the user's deletion removes the only other copy of the content instead of leaving it
      * in the tombstone directory until the resume TTL expires. A provider without staged uploads
@@ -188,7 +188,7 @@ interface CloudProvider {
     /**
      * Delete the remote item at [remotePath].
      *
-     * #291: [ifMatchETag], when non-null, makes the delete conditional on the caller's view of
+     * archive#291: [ifMatchETag], when non-null, makes the delete conditional on the caller's view of
      * the item being current (OneDrive sends it as an `If-Match` header). A concurrent edit
      * between plan and apply flips the server-side eTag and the delete fails (412) instead of
      * destroying a version the engine never saw. Providers without conditional-delete semantics
@@ -197,7 +197,7 @@ interface CloudProvider {
     suspend fun delete(remotePath: String, ifMatchETag: String? = null)
 
     /**
-     * #402: delete the item with [remoteId] instead of resolving [remotePath] by name.
+     * archive#402: delete the item with [remoteId] instead of resolving [remotePath] by name.
      * Path-based resolution picks the first of same-named siblings, so a delete can
      * trash the wrong twin; callers that hold the row's real cloud id (non-`local:`)
      * route here. [remotePath] is carried for error messages and for providers
@@ -210,7 +210,7 @@ interface CloudProvider {
     ) = delete(remotePath)
 
     /**
-     * #1178: delete the item at [remotePath] FOR GOOD, bypassing the provider's trash where it has one (Internxt,
+     * archive#1178: delete the item at [remotePath] FOR GOOD, bypassing the provider's trash where it has one (Internxt,
      * OneDrive, Dropbox). Never the default of any code path: only `rm --permanent` reaches it, behind its own
      * confirmation. Providers that declare [Capability.PermanentDelete] override this; the default throws
      * [UnsupportedCapabilityException] so an unsupported provider is a typed refusal, not a silent trash-delete.
@@ -219,7 +219,7 @@ interface CloudProvider {
         throw UnsupportedCapabilityException(Capability.PermanentDelete, "Provider cannot delete for good")
 
     /**
-     * #1178: [deletePermanently] by the row's cloud id, as [deleteById] is to [delete]: a delete for good must not reach
+     * archive#1178: [deletePermanently] by the row's cloud id, as [deleteById] is to [delete]: a delete for good must not reach
      * the wrong one of two same-named siblings. The default falls back to the path.
      */
     suspend fun deletePermanentlyById(
@@ -247,7 +247,7 @@ interface CloudProvider {
     ): CloudItem
 
     /**
-     * #402: move the item with [remoteId] instead of resolving [fromPath] by name —
+     * archive#402: move the item with [remoteId] instead of resolving [fromPath] by name —
      * same rationale as [deleteById]. The default falls back to [move] so providers
      * without an id-addressed move keep working; the engine routes through here
      * whenever the source row carries a real cloud id.
@@ -368,7 +368,7 @@ interface CloudProvider {
         CapabilityResult.Unsupported(Capability.VerifyItem, "Provider cannot verify item existence by ID")
 
     /**
-     * What the provider says about the folder [remoteId] right now, asked by its id (#580): [FolderState.LIVE],
+     * What the provider says about the folder [remoteId] right now, asked by its id (archive#580): [FolderState.LIVE],
      * [FolderState.TRASHED], or [FolderState.NOT_FOUND] from a call that succeeded and found no such folder. The
      * engine asks after an upload whose path walk proved a tracked folder gone, and tombstones that folder's rows only
      * on [FolderState.TRASHED] or [FolderState.NOT_FOUND]. A provider that cannot tell answers [FolderState.UNKNOWN]
@@ -450,7 +450,7 @@ interface CloudProvider {
      * "this provider cannot tell" (the default, and every case the provider cannot prove: a stored shape it does not know, a
      * malformed record) and is never evidence of a difference; the caller falls back to a download and a byte compare.
      *
-     * Reads [local] and the provider's metadata, writes nothing, and never logs or returns a hash value (gkrost/unidrive#1219).
+     * Reads [local] and the provider's metadata, writes nothing, and never logs or returns a hash value (archive#1219).
      * Throws what a metadata request throws (network, authentication); a caller treats that as "cannot tell" too.
      */
     suspend fun contentMatchesLocal(
@@ -476,14 +476,14 @@ interface CloudProvider {
     fun statusFields(): List<StatusField> = emptyList()
 
     /**
-     * #578: the effective parallelism of this provider's multipart uploads, or null
+     * archive#578: the effective parallelism of this provider's multipart uploads, or null
      * when the provider does not upload in parts. daemon.status reports it
      * (additive, read-only) so a client can show the setting it configured.
      */
     fun multipartUploadConcurrency(): Int? = null
 
     /**
-     * #578: a runtime override of [multipartUploadConcurrency] (the daemon's
+     * archive#578: a runtime override of [multipartUploadConcurrency] (the daemon's
      * --upload-concurrency flag wins over the profile key). A provider that does
      * not upload in parts ignores it. Returns true when the override was applied.
      */

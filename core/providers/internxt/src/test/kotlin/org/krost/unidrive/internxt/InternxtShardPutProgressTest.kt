@@ -11,7 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * #1197: a shard PUT reports the body bytes it has sent while it runs, so a 2 GB upload does not read "0 B" until the
+ * archive#1197: a shard PUT reports the body bytes it has sent while it runs, so a 2 GB upload does not read "0 B" until the
  * request is over.
  */
 class InternxtShardPutProgressTest {

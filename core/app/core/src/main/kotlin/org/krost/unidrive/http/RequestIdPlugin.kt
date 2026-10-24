@@ -138,7 +138,7 @@ val RequestId =
             val elapsed =
                 response.responseTime.timestamp - response.requestTime.timestamp
             val status = response.status.value
-            // #644: the profile travels in the message itself, independent of the thread's MDC (hydration
+            // archive#644: the profile travels in the message itself, independent of the thread's MDC (hydration
             // downloads and other worker threads have none), so a shared log splits per account. The server's
             // own request id (first present header of [RequestIdConfig.serverRequestIdHeaders]) rides along
             // so a slow call can be handed to the provider's support. Both segments are empty when unknown,

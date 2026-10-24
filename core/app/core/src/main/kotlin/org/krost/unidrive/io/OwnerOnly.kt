@@ -205,7 +205,7 @@ public object OwnerOnly {
             if (outcome == Outcome.Changed) changed = true
         }
         // Another process may remove an entry between the listing and the call on it (the IPC folder is
-        // shared by the daemons of all profiles, #630). Such an entry is done; any other error still fails,
+        // shared by the daemons of all profiles, archive#630). Such an entry is done; any other error still fails,
         // and so does a removal of the folder itself.
         fun removedMeanwhile(entry: Path, e: IOException): Boolean =
             e is NoSuchFileException && entry != path && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)

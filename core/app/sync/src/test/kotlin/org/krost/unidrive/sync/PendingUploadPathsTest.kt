@@ -10,7 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 // pendingUploadPaths() is the SQL form of SyncEntry.isPendingUpload: the two must name the same file rows
-// (#552 moved its callers from filtering every row of state.db to this query).
+// (archive#552 moved its callers from filtering every row of state.db to this query).
 class PendingUploadPathsTest {
     private lateinit var db: StateDatabase
 
@@ -62,7 +62,7 @@ class PendingUploadPathsTest {
         assertEquals(expected, db.pendingUploadPaths())
     }
 
-    // #560: the query does not tell the two writers apart. A new file in the sync root gets a hydrated `local:`
+    // archive#560: the query does not tell the two writers apart. A new file in the sync root gets a hydrated `local:`
     // row, which the query returns like a mount-written one; the mount's replay drops it only because it has no
     // hydration cache copy (HydrationImpl.replayable, pinned by ReplayPendingUploadsParityTest).
     @Test

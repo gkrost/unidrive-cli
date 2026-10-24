@@ -8,7 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * gkrost/unidrive#796: a row the daemon lists, whose file the live provider shows at the same path, must not answer
+ * archive#796: a row the daemon lists, whose file the live provider shows at the same path, must not answer
  * `not_found` only because the remote id the row keeps no longer resolves.
  *
  * `ls --live` resolves a path by name, folder by folder; `hydration.open_read` downloads by the row's remote id. When the

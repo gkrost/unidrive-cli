@@ -49,7 +49,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Owner-only credentials and profile folder before the provider reads them (StoragePermissions). A dry run
  * writes nothing and must not lock the operator out either: an elevated dry run once tightened the folder so
- * a later non-elevated invocation failed with an IOException (#626 item 1).
+ * a later non-elevated invocation failed with an IOException (archive#626 item 1).
  */
 internal fun restrictProfileForSync(
     dryRun: Boolean,
@@ -62,7 +62,7 @@ internal fun restrictProfileForSync(
 open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
     /**
      * The exit code of a run that ends without a throw. 0 unless `--watch` stopped on an authentication
-     * error (#1082): a supervisor must see that the watch ended because the sign-in is gone.
+     * error (archive#1082): a supervisor must see that the watch ended because the sign-in is gone.
      */
     private var watchExitCode: Int = 0
 
@@ -264,7 +264,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                 "--full-tree and --sync-path are mutually exclusive: --full-tree clears the persisted scope and reconciles the whole cloud; --sync-path constrains the run to the given subtrees.",
             )
         }
-        // Checked before anything is touched: --reset clears the state, and a mistyped value must not cost a full rescan (#1085).
+        // Checked before anything is touched: --reset clears the state, and a mistyped value must not cost a full rescan (archive#1085).
         parseStreamingOverride()
         // UD-405: normalise --sync-path at the CLI boundary. PowerShell tab-
         // completion routinely produces backslash-prefixed values like
@@ -274,7 +274,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         // Mirrors UD-299's sync_root normalisation philosophy: do-what-I-mean
         // for paths instead of failing loud.
         syncPaths = SyncScope.normalize(syncPaths).toMutableList()
-        // #603 (U4): the hosting contract, before the lock or anything else mutates - `sync` is the
+        // archive#603 (U4): the hosting contract, before the lock or anything else mutates - `sync` is the
         // mirror-mode command; a modeless or mount profile is refused before anything is touched.
         parent.requireProfileMode(parent.resolveCurrentProfile(), ProfileMode.MIRROR, "sync")
         val lock = parent.acquireProfileLock()
@@ -395,7 +395,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         // daemon." Profile lock (UD-272) ensures only one sync per profile
         // runs at a time, so socket creation can't collide.
         val socketPath = IpcServer.defaultSocketPath(profile.name)
-        // #560 U6: a mirror profile keeps no hydration cache, so only the logs are restricted here.
+        // archive#560 U6: a mirror profile keeps no hydration cache, so only the logs are restricted here.
         StoragePermissions.restrictLogDir(StoragePermissions.defaultLogDir())
         // New IPC tokens for this run, before the socket listens (docs/dev/specs/ipc-authentication.md):
         // the sync serves the same verbs as the daemon, so it authenticates its clients the same way and
@@ -538,10 +538,10 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                 ignoreTopLevelGuard = ignoreTopLevelGuard,
                 skippedOpsLogPath = parent.providerConfigDir().resolve("skipped-ops.jsonl"),
                 streamingReconciliation = effectiveStreaming,
-                // #301/#560 U6: a mirror has no hydration uploads to ask about — the cache-eviction
+                // archive#301/#560 U6: a mirror has no hydration uploads to ask about — the cache-eviction
                 // reap guard is permanently clear here.
                 uploadInFlight = { _ -> false },
-                // #660: the profile's ignore rules (rule files in the sync root, honor_gitignore, ignore_rules).
+                // archive#660: the profile's ignore rules (rule files in the sync root, honor_gitignore, ignore_rules).
                 mirrorIgnore = config.ignoreSettings(profile.name),
             )
 
@@ -572,10 +572,10 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                 try {
                     ipcServer.start(this)
 
-                    // #560 U6 (cutover): a mirror profile runs no hydration runtime and serves no
+                    // archive#560 U6 (cutover): a mirror profile runs no hydration runtime and serves no
                     // hydration verbs — its local bytes live in the sync root its reconcile owns, and
                     // there is no cache. A mount profile is served by `daemon run` (the hosting
-                    // contract, #603), which constructs the hydration layer there.
+                    // contract, archive#603), which constructs the hydration layer there.
 
                     // Register sync.subscribe verb (spec docs/dev/specs/sync-progress-subscriber-set-design.md).
                     // Symmetric with hydration.subscribe at the wire level: client issues the
@@ -670,12 +670,12 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                         var idleCycles = 3 // start in NORMAL state
                         var lastState = pollStateName(idleCycles)
 
-                        // #137 / PR #195 P2-2: run the BOOT sync first so engine.syncOnce
+                        // archive#137 / PR archive#195 P2-2: run the BOOT sync first so engine.syncOnce
                         // creates sync_root (Files.createDirectories) before LocalWatcher
                         // walks it. Without this ordering, watcher.start() throws on a
                         // non-existent sync_root — the engine only creates it inside
                         // doSyncOnce, which previously ran after watcher.start(). The
-                        // empty-sync_root guard property from #137 is preserved: if the
+                        // empty-sync_root guard property from archive#137 is preserved: if the
                         // guard fires here it aborts before both dir-creation and watcher-
                         // start, leaving no empty sync_root behind.
                         ipcReporter.emitSyncStarted()
@@ -971,7 +971,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
     private class CompositeReporter(
         private val delegates: List<ProgressReporter>,
     ) : ProgressReporter {
-        // #530: the failed count of the last completed sync pass, as reported by the engine.
+        // archive#530: the failed count of the last completed sync pass, as reported by the engine.
         // Last write wins: syncOnce emits onSyncComplete once per pass, and the run's exit
         // decision reads this after syncOnce returns.
         var lastFailedCount: Int = 0
@@ -1026,7 +1026,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
 
     companion object {
         /**
-         * #1048: the pause after the [cycleFailures]-th failed watch cycle in a row: 10 s, doubling, at most 10 min.
+         * archive#1048: the pause after the [cycleFailures]-th failed watch cycle in a row: 10 s, doubling, at most 10 min.
          * The exponent is capped before the shift: `10_000 * 2^50` overflows a Long, and the wrapped (negative)
          * value made the loop retry without any delay from the 51st failure on.
          */
@@ -1035,7 +1035,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         internal const val WS_SILENCE_THRESHOLD_MS: Long = 90_000L
 
         /**
-         * #530: the process exit code of a one-shot `sync` run. 0 = completed and every action
+         * archive#530: the process exit code of a one-shot `sync` run. 0 = completed and every action
          * transferred; 1 = the run aborted with an exception; 2 = completed, but per-action
          * failures happened (the "Sync complete: … N failed" run) — a script or a scheduled task
          * must be able to tell a partial failure from success. Before this, every run that

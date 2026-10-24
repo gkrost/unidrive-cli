@@ -97,7 +97,7 @@ class InternxtCryptoTest {
         assertEquals(32, fileKey.size, "File key must be 32 bytes (256 bits)")
     }
 
-    // #336: known-answer vectors so a one-byte drift in the seed, bucket key or file key chain fails here
+    // archive#336: known-answer vectors so a one-byte drift in the seed, bucket key or file key chain fails here
     // instead of only as cross-client garbage in live tests. Computed with an independent implementation of
     // the documented chain (Python hashlib): seed = PBKDF2-HMAC-SHA-512(mnemonic, salt "mnemonic", 2048
     // iterations, 64 bytes); bucketKey = SHA-512(seed || hexToBytes(bucketId))[0..31]; fileKey =
@@ -217,7 +217,7 @@ class InternxtCryptoTest {
         assertEquals(32, key1.size)
     }
 
-    // --- #333: hexToBytes must fail loud on non-hex input, not derive garbage keys ---
+    // --- archive#333: hexToBytes must fail loud on non-hex input, not derive garbage keys ---
 
     @Test
     fun `hexToBytes rejects odd-length input`() {
@@ -245,7 +245,7 @@ class InternxtCryptoTest {
         assertTrue(lower.contentEquals(upper), "uppercase hex must decode to the same bytes")
     }
 
-    // #1087: Character.digit also accepts the decimal digits of other scripts and the fullwidth Latin letters.
+    // archive#1087: Character.digit also accepts the decimal digits of other scripts and the fullwidth Latin letters.
     @Test
     fun `hexToBytes rejects digits and letters that are not ASCII`() {
         for (notHex in listOf("٠١", "०१", "ＡＢ", "１２", "aＡ", "١a")) {

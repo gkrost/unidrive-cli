@@ -108,7 +108,7 @@ class InstallShTest {
         assertTrue(start > stop, "start must follow stop: $calls")
     }
 
-    // #745: the NOTE is for JVMs started BY HAND that still run the previous jar. A JVM the install itself
+    // archive#745: the NOTE is for JVMs started BY HAND that still run the previous jar. A JVM the install itself
     // starts afterwards (the unit daemons) must not be named: the scan is captured while the units are
     // stopped, before the fresh units come up.
     @Test

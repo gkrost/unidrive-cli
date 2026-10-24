@@ -12,7 +12,7 @@ sealed interface HydrationError {
 
     /**
      * The remote object is genuinely gone (provider download still
-     * not-found after the re-resolve); since #941 only that: a stored object that
+     * not-found after the re-resolve); since archive#941 only that: a stored object that
      * cannot be served for another reason has its own token ([RemoteIncomplete],
      * [RemoteObjectMissing], [ContentRefused], [UnsupportedObject]). Its [message] is the STABLE wire
      * token `not_found`, matched verbatim by the mount crate's
@@ -97,7 +97,7 @@ sealed interface HydrationError {
     }
 
     /**
-     * The stored object is of a different size than the drive reports (#536): shorter, a multipart
+     * The stored object is of a different size than the drive reports (archive#536): shorter, a multipart
      * upload another client truncated, or longer. The refusal is correct (the cloud copy cannot decrypt to a whole
      * file), but it is not a gone file: its own wire form carries the STABLE token
      * `remote_incomplete` plus the numbers, `remote_incomplete: got <stored> of <declared> bytes`.
@@ -115,7 +115,7 @@ sealed interface HydrationError {
 
     /**
      * The object exists in the cloud and was downloaded, but its content failed the integrity check the network
-     * recorded for it (#940), so the bytes were discarded instead of served as the file. Not a gone file (#941): its
+     * recorded for it (archive#940), so the bytes were discarded instead of served as the file. Not a gone file (archive#941): its
      * own wire form is the STABLE token `content_refused`, then a short reason without any file name:
      * `content_refused: <reason>`. A client matches the prefix up to ": " and says "the cloud copy failed its integrity
      * check"; a retry reads the same bytes. A mount crate falls to the EIO catch-all (correct: the read failed).
@@ -127,7 +127,7 @@ sealed interface HydrationError {
     }
 
     /**
-     * The object exists in the cloud, but this client cannot read it as stored (#941): spread over several shards,
+     * The object exists in the cloud, but this client cannot read it as stored (archive#941): spread over several shards,
      * an encryption index that is not hex, a name the local file system cannot hold. Not a gone file: its own wire
      * form is the STABLE token `unsupported_object`, then a short reason without any file name:
      * `unsupported_object: <reason>`. A client matches the prefix up to ": ". A mount crate falls to the EIO catch-all.
@@ -178,7 +178,7 @@ sealed interface HydrationError {
     }
 
     /**
-     * The upload's folder is gone in the cloud (#580): the provider's path walk listed the folder above it successfully
+     * The upload's folder is gone in the cloud (archive#580): the provider's path walk listed the folder above it successfully
      * and [parent] was not in that listing (trashed or deleted elsewhere, typically before the drive's change feed
      * reports it). Permanent for the current cloud state: the upload is not retried, the same bytes are not sent again
      * at a replay or a resubmission, and the bytes stay in the cache. A listing that failed is never this. [parent] is
@@ -199,7 +199,7 @@ sealed interface HydrationError {
     }
 
     /**
-     * The daemon is paused (#778) and the request would start a cloud download: refused at once, nothing is
+     * The daemon is paused (archive#778) and the request would start a cloud download: refused at once, nothing is
      * started and nothing is left waiting. A front-end asks the user whether to lift the pause (the action
      * unpauses everything), calls `daemon.resume` and sends the request again. A file already in the cache is
      * still served while paused; only a download is refused. Its [message] is the STABLE wire token `paused`.
@@ -222,7 +222,7 @@ sealed interface HydrationError {
         override val message: String = READ_ONLY_TOKEN
     }
 
-    /** #1178: the provider cannot delete for good (no [org.krost.unidrive.Capability.PermanentDelete]); only rm --permanent asks. */
+    /** archive#1178: the provider cannot delete for good (no [org.krost.unidrive.Capability.PermanentDelete]); only rm --permanent asks. */
     data object PermanentUnsupported : HydrationError {
         override val message: String = PERMANENT_UNSUPPORTED_TOKEN
     }
@@ -231,7 +231,7 @@ sealed interface HydrationError {
         /** Wire token for [ReadOnly]; shared verbatim with the clients. */
         const val READ_ONLY_TOKEN = "read_only"
 
-        /** Wire token for [PermanentUnsupported]; #1178. */
+        /** Wire token for [PermanentUnsupported]; archive#1178. */
         const val PERMANENT_UNSUPPORTED_TOKEN = "permanent_unsupported"
 
         /** Wire token prefix for [ParentGone]; the folder's path follows after ": ". */

@@ -49,7 +49,7 @@ internal data class InvalidTomlEscape(
 )
 
 /**
- * #361: first invalid escape in a double-quoted (basic) string of [content], or null. In a TOML basic
+ * archive#361: first invalid escape in a double-quoted (basic) string of [content], or null. In a TOML basic
  * string a backslash starts an escape, so a Windows path like `C:\Users\me` is invalid (`\U` expects
  * eight hex digits) and ktoml fails with an opaque NumberFormatException. Scans line by line and is
  * only a diagnostic: it runs after ktoml has already failed, so a valid config is never affected.
@@ -316,7 +316,7 @@ data class RawGeneral(
     val exclude_patterns: List<String>? = null,
     val desktop_notifications: Boolean? = null,
     val verify_integrity: Boolean? = null,
-    // #655: TTL of the daemon's quota snapshot in daemon.status (quota), in minutes; 0 = off.
+    // archive#655: TTL of the daemon's quota snapshot in daemon.status (quota), in minutes; 0 = off.
     val quota_refresh_minutes: Int? = null,
     val use_trash: Boolean? = null,
     val trash_emulation: Boolean? = null,
@@ -381,7 +381,7 @@ internal object BooleanOrStringSerializer : KSerializer<Boolean> {
 data class RawProvider(
     // Profile metadata
     val type: String? = null,
-    // #603 (U4): the profile's hosting mode, "mirror" | "mount" — chosen at creation, fixed afterwards.
+    // archive#603 (U4): the profile's hosting mode, "mirror" | "mount" — chosen at creation, fixed afterwards.
     // Absent = a modeless profile, which every command refuses (no legacy support; see ProfileMode).
     val mode: String? = null,
     // Free display text for front-ends (stored as typed). Never an identity: the profile name stays the
@@ -400,15 +400,15 @@ data class RawProvider(
     // Absent = the whole drive. The CLI --sync-path overrides it per invocation.
     @Serializable(with = StringOrListSerializer::class)
     val sync_path: List<String>? = null,
-    // #450: budget of this profile's hydration cache in bytes (the copies the mount's reads and
+    // archive#450: budget of this profile's hydration cache in bytes (the copies the mount's reads and
     // writes leave under ~/.cache/unidrive/hydration/<profile>). 0 = unlimited. Absent = the default.
     val hydration_cache_max_bytes: Long? = null,
-    // #463: how often `daemon run` polls the cloud for changes made elsewhere, in seconds. 0 = off.
+    // archive#463: how often `daemon run` polls the cloud for changes made elsewhere, in seconds. 0 = off.
     // Absent = the default (60). `daemon run --poll-interval` overrides it.
     val daemon_poll_seconds: Int? = null,
-    // #660: also read `.gitignore` files as ignore rules (beside `.unidrive.ignore`). Absent = off.
+    // archive#660: also read `.gitignore` files as ignore rules (beside `.unidrive.ignore`). Absent = off.
     val honor_gitignore: Boolean? = null,
-    // #660: the account's own ignore rules, git syntax, applied at the root (below every rule file, above the
+    // archive#660: the account's own ignore rules, git syntax, applied at the root (below every rule file, above the
     // built-in defaults). Not the same as exclude_patterns, which keep their glob syntax and meaning.
     val ignore_rules: List<String>? = null,
     // The name of the virtual folder that shows what the provider keeps in its trash (the trash namespace, read-only,
@@ -453,7 +453,7 @@ data class RawProvider(
     val authority_url: String? = null,
     // OneDrive shared folders
     val include_shared: Boolean? = null,
-    // #111: OneDrive remote-change notifications (Graph's socket.io endpoint) wake the poll. Absent = on; false = poll only.
+    // archive#111: OneDrive remote-change notifications (Graph's socket.io endpoint) wake the poll. Absent = on; false = poll only.
     val remote_notifications: Boolean? = null,
     // OneDrive webhook
     val webhook: Boolean? = null,
@@ -485,7 +485,7 @@ data class RawProvider(
     val trash_emulation: Boolean? = null,
     val trash_retention_days: Int? = null,
 
-    // #578: the multipart upload policy, per profile (applies where multipart
+    // archive#578: the multipart upload policy, per profile (applies where multipart
     // exists — Internxt today; other providers keep their path). The factory
     // validates the ranges: concurrency 1..16 (1 = the single stream),
     // chunk >= 5 MB (the bridge minimum), cutoff >= 100 MB.
@@ -510,7 +510,7 @@ data class ProfileInfo(
     val syncRoot: Path,
     val rawProvider: RawProvider?,
     /**
-     * #603 (U4): the profile's hosting mode, from `[providers.<name>] mode`. Null when the key is
+     * archive#603 (U4): the profile's hosting mode, from `[providers.<name>] mode`. Null when the key is
      * absent: a modeless profile, which every command refuses before anything is touched — it is never
      * defaulted (owner decision: no legacy support, nothing assumes a legacy profile).
      */
@@ -551,7 +551,7 @@ data class SyncConfig(
     val globalExcludePatterns: List<String> = emptyList(),
     val desktopNotifications: Boolean = false,
     val verifyIntegrity: Boolean = false,
-    // #655: TTL of the daemon's quota snapshot in daemon.status (quota), in minutes; 0 = off.
+    // archive#655: TTL of the daemon's quota snapshot in daemon.status (quota), in minutes; 0 = off.
     val quotaRefreshMinutes: Int = 15,
     val useTrash: Boolean = true,
     val trashEmulation: Boolean = false,
@@ -576,23 +576,23 @@ data class SyncConfig(
 
     fun providerExcludePatterns(providerId: String): List<String> = providers[providerId]?.excludePatterns ?: emptyList()
 
-    /** #450: this profile's hydration cache budget in bytes; 0 = unlimited. */
+    /** archive#450: this profile's hydration cache budget in bytes; 0 = unlimited. */
     fun hydrationCacheMaxBytes(profileName: String): Long =
         (providers[profileName]?.hydrationCacheMaxBytes ?: DEFAULT_HYDRATION_CACHE_MAX_BYTES).coerceAtLeast(0L)
 
-    /** #463: seconds between the daemon's polls of the cloud for this profile; 0 = off. */
+    /** archive#463: seconds between the daemon's polls of the cloud for this profile; 0 = off. */
     fun daemonPollSeconds(profileName: String): Int =
         (providers[profileName]?.daemonPollSeconds ?: DEFAULT_DAEMON_POLL_SECONDS).coerceAtLeast(0)
 
     /**
-     * #655: TTL of the daemon's quota snapshot in daemon.status (`quota`), in ms; 0 = refresh
+     * archive#655: TTL of the daemon's quota snapshot in daemon.status (`quota`), in ms; 0 = refresh
      * off. The snapshot itself is served from memory/cache even when stale — the TTL only
      * decides whether a client's status request triggers a provider fetch.
      */
     fun quotaRefreshMs(): Long = quotaRefreshMinutes.toLong() * 60_000L
 
     /**
-     * #660: the ignore rules of a profile (its `honor_gitignore` and `ignore_rules` keys). The rule files themselves
+     * archive#660: the ignore rules of a profile (its `honor_gitignore` and `ignore_rules` keys). The rule files themselves
      * (`.unidrive.ignore`, `.gitignore` when honoured) are found where the profile keeps its local copy.
      */
     fun ignoreSettings(profileName: String): org.krost.unidrive.sync.ignore.IgnoreSettings =
@@ -645,7 +645,7 @@ data class SyncConfig(
     )
 
     companion object {
-        /** #450: default hydration cache budget per profile, 20 GiB. */
+        /** archive#450: default hydration cache budget per profile, 20 GiB. */
         const val DEFAULT_HYDRATION_CACHE_MAX_BYTES: Long = 20L * 1024 * 1024 * 1024
 
         /** The floor of `poll_interval` and `min_poll_interval`, in seconds. */
@@ -670,7 +670,7 @@ data class SyncConfig(
         const val MAX_RECENTS_LIMIT: Int = 1000
 
         /**
-         * #463: default interval of the daemon's poll for remote changes, in seconds. An incremental
+         * archive#463: default interval of the daemon's poll for remote changes, in seconds. An incremental
          * poll is one cheap delta query per provider (Internxt: two updatedAt-filtered listings, about
          * 0.24 s on a large account; OneDrive: one delta request), the same cadence `sync --watch` uses.
          */
@@ -709,7 +709,7 @@ data class SyncConfig(
             "**/*.swp",           // vim swap
             "**/*.swx",           // vim swap
             "**/*.tmp",           // generic temp
-            "**/*.unidrive-tmp",  // a provider's staging file of a download (also .ud-<hex>.unidrive-tmp), #1049 X2
+            "**/*.unidrive-tmp",  // a provider's staging file of a download (also .ud-<hex>.unidrive-tmp), archive#1049 X2
             "**/*~",              // generic backup
         )
 
@@ -847,7 +847,7 @@ data class SyncConfig(
                     type = type,
                     syncRoot = syncRoot,
                     rawProvider = section,
-                    mode = ProfileMode.fromConfig(section.mode), // null = modeless: the caller refuses (#603)
+                    mode = ProfileMode.fromConfig(section.mode), // null = modeless: the caller refuses (archive#603)
                 )
             } else if (name in KNOWN_TYPES) {
                 val syncRoot =
@@ -963,7 +963,7 @@ data class SyncConfig(
             }
 
         /**
-         * #560 U6: the profiles' local roots must not alias each other. Two mirror profiles may
+         * archive#560 U6: the profiles' local roots must not alias each other. Two mirror profiles may
          * not share a sync root, may not nest one inside the other, may not reach the same folder
          * through different paths (a symlink alias), and two profile names may not differ only in
          * case (their profile folders, IPC sockets and cache keys would collide on a

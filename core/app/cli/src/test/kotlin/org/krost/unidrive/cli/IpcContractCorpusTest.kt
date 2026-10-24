@@ -165,7 +165,7 @@ class IpcContractCorpusTest {
             syncRoot = tempDir,
             socketPath = socketPath,
             providerFactory = { StubProvider() },
-            // #655: the corpus pins the no-account-quota shape (localfs-like) — a quota-bearing
+            // archive#655: the corpus pins the no-account-quota shape (localfs-like) — a quota-bearing
             // provider's snapshot values are machine-dependent, so daemon.status here carries
             // no `quota` field; the quota-present shape is pinned in DaemonRuntimeTest.
             providerHasQuota = false,
@@ -227,7 +227,7 @@ class IpcContractCorpusTest {
 
     /**
      * `sessions/pause-cycle.ndjson`: request/reply pairs replayed in order on ONE connection against a live
-     * mount daemon (#778): a pause, the status that shows it, a refused reason, the resume, the status without
+     * mount daemon (archive#778): a pause, the status that shows it, a refused reason, the resume, the status without
      * it. `events/paused.ndjson` and `events/resumed.ndjson` are the lines the same pause and resume push to a
      * subscriber, one line each.
      */
@@ -594,7 +594,7 @@ class IpcContractCorpusTest {
 
     /**
      * `events/failed-parent-gone.ndjson` and `events/completed-parent-gone.ndjson`: the lines a subscriber of the hydration
-     * stream is pushed for an upload whose folder the provider's walk proved gone in the cloud (#580). The shape is the
+     * stream is pushed for an upload whose folder the provider's walk proved gone in the cloud (archive#580). The shape is the
      * one every failed upload has; only the `error` text is the typed `parent_gone: <folder>` token, so a client that does
      * not know the token reads a failed upload that is not retried, as before the token existed.
      */
@@ -834,7 +834,7 @@ class IpcContractCorpusTest {
             syncRoot = tempDir,
             socketPath = socketPath,
             providerFactory = { StubProvider() },
-            // #655: the corpus pins the no-account-quota shape (localfs-like) — a quota-bearing
+            // archive#655: the corpus pins the no-account-quota shape (localfs-like) — a quota-bearing
             // provider's snapshot values are machine-dependent, so daemon.status here carries
             // no `quota` field; the quota-present shape is pinned in DaemonRuntimeTest.
             providerHasQuota = false,
@@ -986,7 +986,7 @@ class IpcContractCorpusTest {
     }
 
     /**
-     * `sessions/uploads-running.ndjson` (#1200): the `daemon.status` of a mount daemon with two uploads under way, one with a
+     * `sessions/uploads-running.ndjson` (archive#1200): the `daemon.status` of a mount daemon with two uploads under way, one with a
      * known size and one whose size the provider has not said (`bytes_total` null). `uploads.running` names them (capped,
      * `more` counts the rest) and the `uploads.running` capability is listed. Pinned against the serialiser, and against the
      * idle corpus it differs from in `uploads`.
@@ -1016,7 +1016,7 @@ class IpcContractCorpusTest {
     }
 
     /**
-     * `sessions/notifications-connected.ndjson` (#111): the `daemon.status` of a daemon whose provider has a connected
+     * `sessions/notifications-connected.ndjson` (archive#111): the `daemon.status` of a daemon whose provider has a connected
      * remote-change channel (OneDrive's socket.io endpoint) that has rotated twice. The corpus stub has no channel (the
      * idle `daemon.status.ndjson` says `unsupported`), so the transcript is pinned against the serialiser of
      * `notifications` and against the idle corpus it differs from in that one object. The endpoint itself never appears.
@@ -1328,7 +1328,7 @@ class IpcContractCorpusTest {
      * `/cache/unidrive/hydration` → invalid_path.
      */
     private class ScriptedHydration : Hydration {
-        // The four causes of a failed cloud download (#941), one token each; the reasons are the daemon's own wording.
+        // The four causes of a failed cloud download (archive#941), one token each; the reasons are the daemon's own wording.
         private fun downloadFailureFor(path: String): HydrationError? = when {
             path.startsWith("/gone") -> HydrationError.NotFound
             path.startsWith("/refused") -> HydrationError.ContentRefused("RIPEMD-160(SHA-256) mismatch")
@@ -1340,7 +1340,7 @@ class IpcContractCorpusTest {
 
         override suspend fun openForRead(connectionId: String, handleId: String, path: String): OpenResult = when {
             path.startsWith("/missing") -> OpenResult.Failed(HydrationError.UnknownPath)
-            // A cloud download while the daemon is paused: refused at once (#778).
+            // A cloud download while the daemon is paused: refused at once (archive#778).
             path.startsWith("/paused") -> OpenResult.Failed(HydrationError.Paused)
             downloadFailureFor(path) != null -> OpenResult.Failed(downloadFailureFor(path)!!)
             else -> OpenResult.Ok(cachePathFor(path))
@@ -1381,7 +1381,7 @@ class IpcContractCorpusTest {
             if (path.startsWith("/missing")) LastSyncedResult.Unknown(HydrationError.UNKNOWN_PATH_TOKEN)
             else LastSyncedResult.Ok(FIXED_MTIME_MS)
 
-        // matches_local (#1219): the proofs the daemon has, one path prefix each; the file name says the local file cannot be read.
+        // matches_local (archive#1219): the proofs the daemon has, one path prefix each; the file name says the local file cannot be read.
         override suspend fun matchesLocal(path: String, localPath: java.nio.file.Path): MatchesLocalResult =
             when {
                 path.startsWith("/missing") -> MatchesLocalResult.Unknown(HydrationError.UNKNOWN_PATH_TOKEN)

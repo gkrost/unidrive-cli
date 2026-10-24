@@ -12,7 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFails
 
 /**
- * #580: [InternxtProvider.folderStateById] asks `GET /folders/{uuid}/meta`. Trashed and not found are answers; a call that
+ * archive#580: [InternxtProvider.folderStateById] asks `GET /folders/{uuid}/meta`. Trashed and not found are answers; a call that
  * failed (a 5xx, a degraded gateway) is not one and propagates. A folder that is gone leaves the folder-uuid cache.
  */
 class InternxtFolderStateTest {
@@ -85,7 +85,7 @@ class InternxtFolderStateTest {
             assertEquals(FOLDER, provider.cache().get("root", "Trashed"))
         }
 
-    // A degraded gateway (#387) answers the meta with a 503: that proves nothing, so it is no answer at all.
+    // A degraded gateway (archive#387) answers the meta with a 503: that proves nothing, so it is no answer at all.
     @Test
     fun `a 503 is not an answer and leaves the cache as it is`() =
         runTest {

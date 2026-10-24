@@ -13,7 +13,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-// #552: the daemon's rescan only uploads, so its scan must not look for deletions: that checks every cloud-only
+// archive#552: the daemon's rescan only uploads, so its scan must not look for deletions: that checks every cloud-only
 // row against the exclude patterns and the file system. The walk still finds new and changed files.
 class LocalScannerDeletionDetectionTest {
     private lateinit var syncRoot: Path

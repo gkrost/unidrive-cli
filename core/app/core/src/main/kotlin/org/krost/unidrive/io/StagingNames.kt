@@ -10,7 +10,7 @@ private val hexRandom = SecureRandom()
  * the UTF-8 byte count is the conservative check for both), otherwise a short
  * `.ud-<8 hex>` + [suffix] name in the same folder. The long form is what every sweeper of
  * [suffix] matches (`*.unidrive-tmp`, `*.hydrating-*`), so the short form keeps the suffix — only
- * the prefix shrinks. A 255-character name (#529) cannot be staged as `name + suffix` at all
+ * the prefix shrinks. A 255-character name (archive#529) cannot be staged as `name + suffix` at all
  * (13-48 extra characters put it over the limit), and failed every download, every time.
  *
  * The fallback carries 8 random hex characters so concurrent downloads of long-named files into

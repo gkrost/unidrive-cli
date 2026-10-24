@@ -56,7 +56,7 @@ internal object RootNames {
     /**
      * Whether [name] can be the name of the folder: one path segment, as it is written on every platform (no
      * separator, none of the characters Windows refuses, no control character, no `.` or `..`, no trailing
-     * dot, not a Windows device name such as `NUL` or `COM1`, #1090), not blank once trimmed, not longer than
+     * dot, not a Windows device name such as `NUL` or `COM1`, archive#1090), not blank once trimmed, not longer than
      * [MAX_NAME_CHARS].
      */
     fun isUsable(name: String): Boolean {

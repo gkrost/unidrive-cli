@@ -79,7 +79,7 @@ class ReapGuardsTest {
 
     @Test
     fun `a cache copy of an edit the mount noted is an unsynced edit whatever its time says`() {
-        // #1070: a poll moves last_synced past the edit's time on every delivery of the item; the note does not move.
+        // archive#1070: a poll moves last_synced past the edit's time on every delivery of the item; the note does not move.
         cacheFile("/noted.txt", watermark.minusSeconds(60))
         assertTrue(guards().holdsUnsyncedEdit("/noted.txt", row("/noted.txt").copy(editBase = "v1")))
         assertFalse(

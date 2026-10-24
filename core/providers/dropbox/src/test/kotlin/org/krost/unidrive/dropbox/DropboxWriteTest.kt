@@ -66,7 +66,7 @@ class DropboxWriteTest {
             assertEquals("id:9", item.id)
         }
 
-    // #1062: the API path of an engine path loses its leading and trailing '/', never white space inside the name.
+    // archive#1062: the API path of an engine path loses its leading and trailing '/', never white space inside the name.
     @Test
     fun `a name with a trailing space keeps it and does not alias the name without`() =
         runTest {
@@ -138,9 +138,9 @@ class DropboxWriteTest {
             assertEquals(listOf(4L, 8L, 10L, 10L), progress)
         }
 
-    // #867: the session survives the process. The first attempt dies after the first append; a
+    // archive#867: the session survives the process. The first attempt dies after the first append; a
     // restarted provider continues at the committed offset instead of starting over.
-    // #1058: the socket timeout is a read-idle timer from the start of the request and Dropbox answers only after the
+    // archive#1058: the socket timeout is a read-idle timer from the start of the request and Dropbox answers only after the
     // body; at its 60 s default it cut every upload a slow uplink needs longer than that for.
     @Test
     fun `every upload request, single and session append, runs under a socket timeout as long as its request timeout`() =
@@ -199,7 +199,7 @@ class DropboxWriteTest {
             assertEquals(10L, fake.callsTo("files/upload_session/finish").last().args!!["cursor"]!!.jsonObject["offset"]!!.jsonPrimitive.long)
         }
 
-    // #867: Dropbox answers incorrect_offset with the offset it actually holds. The upload moves
+    // archive#867: Dropbox answers incorrect_offset with the offset it actually holds. The upload moves
     // there once; a second mismatch ends the session with a typed error instead of guessing again.
     @Test
     fun `an incorrect_offset answer moves the upload and a second one aborts`() =

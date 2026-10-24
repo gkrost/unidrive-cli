@@ -61,7 +61,7 @@ class RefreshRoutingTest {
         assertFalse(engine.syncOnceCalled, "legacy syncOnce must NOT run for a mounted profile")
     }
 
-    // #778: refresh.run enumerates the cloud on either path, so a paused daemon refuses it.
+    // archive#778: refresh.run enumerates the cloud on either path, so a paused daemon refuses it.
     @Test
     fun refresh_is_refused_while_paused_on_both_paths(): Unit = runBlocking {
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
@@ -165,7 +165,7 @@ class RefreshRoutingTest {
         assertTrue(ev.contains("delta 503"), "the enumerate error message must propagate: $ev")
     }
 
-    // #1060: the message of a provider failure can quote a pre-authenticated URL.
+    // archive#1060: the message of a provider failure can quote a pre-authenticated URL.
     @Test
     fun refresh_failure_messages_carry_no_url_query(): Unit = runBlocking {
         val text = "Request timeout has expired [url=https://x/y?tempauth=SECRET, request_timeout=600000 ms]"
@@ -184,7 +184,7 @@ class RefreshRoutingTest {
     }
 
 
-    // #1037: the engine answers ok+skipped when another pass holds the single-flight flag, before it clears the delta
+    // archive#1037: the engine answers ok+skipped when another pass holds the single-flight flag, before it clears the delta
     // cursor of a reset. Told "ok" by `refresh --reset`, an operator recovering from a poisoned cursor keeps it.
     @Test
     fun refresh_reset_that_met_a_running_pass_is_not_reported_as_success(): Unit = runBlocking {
@@ -297,7 +297,7 @@ class RefreshRoutingTest {
         // surfaced as a failed terminal event, never an uncaught crash or a false
         // success. An IllegalStateException is the engine's guard shape (the scope
         // and empty-local guards throw it before any provider call), so the token is
-        // engine_guard — provider_error would misattribute it (#532).
+        // engine_guard — provider_error would misattribute it (archive#532).
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val engine = ThrowingEngine(IllegalStateException("delta \"503\""))
         val emitted = mutableListOf<String>()

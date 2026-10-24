@@ -126,7 +126,7 @@ one, everywhere the mount asks.
   and it is downloaded again only when its cloud copy changes. One larger than 1 MiB in the cloud is not downloaded,
   and one whose download fails is tried again after a minute: both hold the folder back (fail closed, with a WARN)
   until it is opened. The download is a transfer: it takes a permit of the transfer budget (unless the upload that
-  asks already holds one) and asks the daemon's pause (#778). While paused nothing is downloaded and the folder stays
+  asks already holds one) and asks the daemon's pause (archive#778). While paused nothing is downloaded and the folder stays
   held back; when the pause ends the rule files are probed again and the next question downloads it. The download
   blocks that question (at most 60 s, the wait for a permit included): fetched in the background, the first write in
   such a folder would be held back, and a held-back write is uploaded only at the next start. A rule file's cache copy

@@ -9,7 +9,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #142: auto-spawn of the daemon on the first client connection. The spawner probes before it
+ * archive#142: auto-spawn of the daemon on the first client connection. The spawner probes before it
  * believes (a kill -9'd daemon leaves a stale socket file), builds `daemon run <profile>` for the
  * running java and jar, detaches, and waits for the socket; every failure degrades to the client's
  * own operator-facing error, never an exception out of [DaemonAutospawn.ensureDaemonRunning].

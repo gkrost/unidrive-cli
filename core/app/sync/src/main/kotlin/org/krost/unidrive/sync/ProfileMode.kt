@@ -1,8 +1,8 @@
 package org.krost.unidrive.sync
 
 /**
- * #603 (U4 of the engine split, #560): a profile's hosting mode. Chosen when the profile is created
- * and fixed afterwards — there is no switch (#564); someone who wants the other mode creates a second
+ * archive#603 (U4 of the engine split, archive#560): a profile's hosting mode. Chosen when the profile is created
+ * and fixed afterwards — there is no switch (archive#564); someone who wants the other mode creates a second
  * profile.
  *
  * - [MIRROR] — bidirectional folder sync over a `sync_root` (`unidrive sync`): reconcile plans, the

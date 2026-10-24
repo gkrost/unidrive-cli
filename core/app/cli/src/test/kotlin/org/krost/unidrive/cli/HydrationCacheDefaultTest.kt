@@ -6,8 +6,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * #560 U3: :app:hydration no longer depends on :app:sync, so HydrationImpl states the default cache budget
- * itself. The daemon and `unidrive sync` must still agree with the config default (#450).
+ * archive#560 U3: :app:hydration no longer depends on :app:sync, so HydrationImpl states the default cache budget
+ * itself. The daemon and `unidrive sync` must still agree with the config default (archive#450).
  */
 class HydrationCacheDefaultTest {
     @Test

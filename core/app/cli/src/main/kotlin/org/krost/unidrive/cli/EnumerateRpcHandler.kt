@@ -25,13 +25,13 @@ import java.util.concurrent.atomic.AtomicReference
  * serialised via [inFlight] with a compareAndSet-before-launch guard so a second
  * concurrent request can never slip through the gap between launch and registration.
  *
- * [engine] is the daemon's MountEngine (#560 U3); either front-end runs the same enumeration.
+ * [engine] is the daemon's MountEngine (archive#560 U3); either front-end runs the same enumeration.
  */
 class EnumerateRpcHandler(
     private val engine: EnumerationEntryPoint,
     private val scope: CoroutineScope,
     private val emit: (String) -> Unit,
-    // #778: true while the daemon is paused. No cloud enumeration starts then: the verb is refused as `paused`
+    // archive#778: true while the daemon is paused. No cloud enumeration starts then: the verb is refused as `paused`
     // and the poll's guarded run is skipped.
     private val paused: () -> Boolean = { false },
 ) {
@@ -59,7 +59,7 @@ class EnumerateRpcHandler(
                 try {
                     val result = engine.enumerateRemoteIntoState(reset)
                     if (result.ok && result.skipped && reset) {
-                        // #1037: another pass held the single-flight flag, so the cursor reset never ran (see RefreshRpcHandler).
+                        // archive#1037: another pass held the single-flight flag, so the cursor reset never ran (see RefreshRpcHandler).
                         buildJsonObject {
                             put("event", "enumerate.done")
                             put("job_id", jobId)

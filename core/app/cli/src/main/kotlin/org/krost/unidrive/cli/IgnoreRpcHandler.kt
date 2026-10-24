@@ -11,7 +11,7 @@ import org.krost.unidrive.sync.ignore.IgnoreLayer
 import org.krost.unidrive.sync.ignore.UploadIgnore
 
 /**
- * `ignore.explain` (#660; docs/dev/specs/ignore-layering-design.md): why the daemon does or does not upload a path.
+ * `ignore.explain` (archive#660; docs/dev/specs/ignore-layering-design.md): why the daemon does or does not upload a path.
  * A read verb (`IpcAuth.VERB_CLASSES`), answered from the daemon's own rules, so it says what the upload path
  * decides: the same rule files, read at the same moment.
  *

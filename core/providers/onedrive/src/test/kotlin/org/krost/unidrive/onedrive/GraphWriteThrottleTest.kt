@@ -30,7 +30,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * #293: every mutating Graph call (simple PUT, DELETE, folder POST, move PATCH, fileSystemInfo PATCH,
+ * archive#293: every mutating Graph call (simple PUT, DELETE, folder POST, move PATCH, fileSystemInfo PATCH,
  * upload-session POST, chunk PUT) bypassed the throttle budget and the 429/503/401 handling that
  * `authenticatedRequest` gives the reads: a throttled write failed on the spot, and writes kept firing
  * through a throttle storm the budget exists to brake.

@@ -16,7 +16,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #604 U5b: the legacy-profile conversion. The gate the tests pin: every unique local byte
+ * archive#604 U5b: the legacy-profile conversion. The gate the tests pin: every unique local byte
  * survives (retire moves them, quarantine names them), the mode is published only after the
  * byte work, an interrupted run resumes, and nothing runs without the preconditions.
  */
@@ -73,7 +73,7 @@ class MigrateConvertTest {
 
     @Test
     fun `conflict leaf names match the engine shape`() {
-        // The extension stays on the outside, like the conflict copies observed in the cloud (#594):
+        // The extension stays on the outside, like the conflict copies observed in the cloud (archive#594):
         // "go1.27.1.windows-amd64 (conflict 2026-10-06).msi".
         assertEquals("a (conflict 2026-10-08).txt", LegacyConversion.conflictLeaf("a", ".txt", "2026-10-08", 1))
         assertEquals("a (conflict 2026-10-08) (2)", LegacyConversion.conflictLeaf("a", "", "2026-10-08", 2))
@@ -155,7 +155,7 @@ class MigrateConvertTest {
         assertTrue("CONVERTED" in journal.phases)
     }
 
-    // ── legacy hybrid profiles (#680) ────────────────────────────────────────
+    // ── legacy hybrid profiles (archive#680) ────────────────────────────────────────
 
     private fun hydratedRow(
         path: String,
@@ -241,7 +241,7 @@ class MigrateConvertTest {
         assertTrue(config.readText().contains("mode = \"mount\""), "the mode is published")
     }
 
-    // ── #706: NULL cache_backed is what the mirror engine writes ─────────────
+    // ── archive#706: NULL cache_backed is what the mirror engine writes ─────────────
 
     private fun putFile(
         dir: Path,
@@ -345,7 +345,7 @@ class MigrateConvertTest {
         val (config, profileDir, syncRoot) = fixture()
         val cache = Files.createTempDirectory("u5-cache")
         // Neither a sync_root file nor a cache copy: the row's bytes are absent from the sync root, so
-        // the first mirror sync would read it as a local delete and plan DeleteRemote (#706).
+        // the first mirror sync would read it as a local delete and plan DeleteRemote (archive#706).
         seed(profileDir, mirrorRow("/gone.txt"))
         val configBefore = config.readText()
 

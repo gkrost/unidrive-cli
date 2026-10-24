@@ -221,7 +221,7 @@ object GlyphRenderer {
 
     /**
      * `[? ORPHAN]` status label for a profile directory that has no matching
-     * `[providers.*]` section in config.toml (#117). A question-mark is used
+     * `[providers.*]` section in config.toml (archive#117). A question-mark is used
      * because the provider type is unknown (no config.toml declaration to read
      * it from), making ticked-OK, crossed-AUTH, and other typed glyphs wrong.
      */

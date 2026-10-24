@@ -28,7 +28,7 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
     // InternxtSmokeLiveTest drives a real SyncEngine against the provider;
-    // main sources depend only on :app:core (#560).
+    // main sources depend only on :app:core (archive#560).
     testImplementation(project(":app:sync"))
     testImplementation(project(":app:engine-core"))
     // UD-203: MockEngine for request-id propagation tests.

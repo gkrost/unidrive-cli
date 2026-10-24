@@ -21,9 +21,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * #486: a new file kept its content and name but not its modification time: the create sent none and the server stamped
+ * archive#486: a new file kept its content and name but not its modification time: the create sent none and the server stamped
  * the upload time. CreateFileDto takes an optional `modificationTime`, as ReplaceFileDto does (which the replace path
- * already sends). Every create now carries the local file's time: a normal upload and an empty one (#485).
+ * already sends). Every create now carries the local file's time: a normal upload and an empty one (archive#485).
  */
 class InternxtCreateMtimeTest {
     private val bucket = "6928426c1a2316b856c9ab81"

@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
- * Wakes the per-connection reader of [IpcServer] when its socket has data (#687), so a request is
+ * Wakes the per-connection reader of [IpcServer] when its socket has data (archive#687), so a request is
  * read at once and an idle connection costs nothing between its timeout checks.
  *
  * One daemon thread owns one [Selector] for all connections. A reader that found its non-blocking

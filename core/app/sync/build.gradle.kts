@@ -13,7 +13,7 @@ kotlin {
 dependencies {
     implementation(project(":app:core"))
     // The state repository, path and scope rules, and the remote-operation guards
-    // shared with the mount operations (#560 U2).
+    // shared with the mount operations (archive#560 U2).
     implementation(project(":app:engine-core"))
 
     implementation(libs.kotlinx.coroutines.core)

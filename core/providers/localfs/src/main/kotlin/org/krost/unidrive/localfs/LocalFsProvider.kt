@@ -65,7 +65,7 @@ class LocalFsProvider(
         withContext(Dispatchers.IO) {
             refuseVanishedRoot()
             Files.createDirectories(rootNorm)
-            // #910: the account is a two-way mirror, so "authenticated" has to mean the root is
+            // archive#910: the account is a two-way mirror, so "authenticated" has to mean the root is
             // actually usable, not merely present — a profile pointed at an unreadable or
             // read-only directory must fail here with its token instead of surfacing later as
             // a mysterious `io` error on the first transfer.
@@ -203,7 +203,7 @@ class LocalFsProvider(
         localPath: Path,
         remotePath: String,
         existingRemoteId: String?,
-        // #291: a filesystem copy has no optimistic-concurrency token; the param is ignored.
+        // archive#291: a filesystem copy has no optimistic-concurrency token; the param is ignored.
         ifMatchETag: String?,
         onProgress: ((Long, Long) -> Unit)?,
     ): CloudItem =
@@ -219,7 +219,7 @@ class LocalFsProvider(
 
     /**
      * Copies keeping the source mtime (the JDK stamps "now" on Linux otherwise) and flushes the copy to disk, through
-     * a staging sibling that is moved over [to] only when it is complete (#1057): a copy that fails (the source is
+     * a staging sibling that is moved over [to] only when it is complete (archive#1057): a copy that fails (the source is
      * held open by another process, unreadable, the disk is full) leaves an existing [to] as it was, where
      * `Files.copy(REPLACE_EXISTING)` deletes it first. The copy is made writable: `COPY_ATTRIBUTES` carries the
      * read-only attribute of the source along, and a read-only copy can be neither flushed here nor replaced by the
@@ -246,7 +246,7 @@ class LocalFsProvider(
         withContext(Dispatchers.IO) { deleteRecursivelyNoFollow(toLocal(remotePath)) }
     }
 
-    // #1178: localfs has no trash; delete already deletes for good.
+    // archive#1178: localfs has no trash; delete already deletes for good.
     override suspend fun deletePermanently(remotePath: String) {
         delete(remotePath, null)
     }
@@ -284,7 +284,7 @@ class LocalFsProvider(
             to.parent?.let { Files.createDirectories(it) }
             // A move never overwrites (OneDrive and Dropbox answer 409): the item that is there is somebody's data. A rename
             // that only changes the case names that same item on a case-insensitive file system, where a plain move does
-            // nothing; moveFile renames it through a name in between (#309).
+            // nothing; moveFile renames it through a name in between (archive#309).
             try {
                 withLocalIoRetry { moveFile(from, to) }
             } catch (e: FileAlreadyExistsException) {
@@ -297,7 +297,7 @@ class LocalFsProvider(
 
     /**
      * Full-walk enumeration. localfs has no native change feed, so every call
-     * returns the current inventory under [root]. The walk is tolerant (#910): a
+     * returns the current inventory under [root]. The walk is tolerant (archive#910): a
      * directory that cannot be read (an NTFS `$RECYCLE.BIN` per-SID folder, a
      * `System Volume Information`) is skipped, logged (once per path), and the
      * page comes back `complete = false` — the engine must not infer deletions
@@ -404,7 +404,7 @@ class LocalFsProvider(
      * unreadable entry means part of the tree is unknown and the page must not read as
      * complete. Paths are recorded once each, capped so a hostile tree cannot grow the
      * list without bound. The unreadable ones are kept apart: they are the only skips the
-     * page names, and the status passes them on so the blocked folder can be told (#1234).
+     * page names, and the status passes them on so the blocked folder can be told (archive#1234).
      */
     private inner class DeltaSkips {
         private val seen = linkedSetOf<String>()

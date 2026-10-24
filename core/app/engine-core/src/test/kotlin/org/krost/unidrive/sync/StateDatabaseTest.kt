@@ -66,7 +66,7 @@ class StateDatabaseTest {
         assertEquals("id-/b.txt", db.getEntry("/b.txt")?.remoteId)
     }
 
-    // #171: rows are stored NFC and looked up NFC, so the same logical name
+    // archive#171: rows are stored NFC and looked up NFC, so the same logical name
     // matches regardless of the Unicode form it arrives in (composed vs decomposed).
     @Test
     fun `getEntry matches across NFC and NFD path forms`() {
@@ -84,7 +84,7 @@ class StateDatabaseTest {
         assertNotNull(db.getEntry("/sch\u00F6n.txt"), "NFD-written row retrievable by NFC")
     }
 
-    // #171 follow-up: EVERY path-keyed method normalizes its argument to NFC, not
+    // archive#171 follow-up: EVERY path-keyed method normalizes its argument to NFC, not
     // just getEntry/upsertEntry \u2014 otherwise a co-daemon op arriving in NFD would
     // silently no-op against the NFC-stored row instead of resolving it.
     @Test
@@ -143,7 +143,7 @@ class StateDatabaseTest {
         assertNull(db.getEntry("/nope"))
     }
 
-    // #728: the eviction pass classifies a whole batch of cache files from one query. The map is keyed
+    // archive#728: the eviction pass classifies a whole batch of cache files from one query. The map is keyed
     // by the spelling the caller asked with (NFD in, NFD key out) and a path with no alive row is absent.
     @Test
     fun `getEntriesByPaths resolves a batch across NFC and NFD and omits unknown paths`() {
@@ -654,7 +654,7 @@ class StateDatabaseTest {
 
     @Test
     fun `EXPLAIN QUERY PLAN for direct children of a path is an index seek`() {
-        // #727: the listing filtered on substr(path, 1, length(?))=?, which is not sargable, so every folder
+        // archive#727: the listing filtered on substr(path, 1, length(?))=?, which is not sargable, so every folder
         // listing read every alive row while holding the instance monitor — a scan of the 145k-row live
         // table for a handful of children, with hydration list replies queued behind it for seconds. A path
         // range then walked every row under the folder (the root of a large drive: all of them, 147 ms). The
@@ -809,7 +809,7 @@ class StateDatabaseTest {
         assertNull(db.getSyncState("migration:dedupe_remote_id"))
     }
 
-    // #411: `--reset` wiped the schema stamp together with the rest of sync_state, so the
+    // archive#411: `--reset` wiped the schema stamp together with the rest of sync_state, so the
     // NEXT open saw "sync_state without schema_version", took the pre-redesign path and
     // dropped every row the reset run had just written.
     @Test
@@ -1151,7 +1151,7 @@ class StateDatabaseTest {
 
     @Test
     fun `migration — remote_path column is added in-place to an existing v2 DB and existing rows read as non-aliased`() {
-        // #115: simulate a DEPLOYED v2 DB whose sync_entries predates the
+        // archive#115: simulate a DEPLOYED v2 DB whose sync_entries predates the
         // remote_path column (the universal shipped shape: includes the
         // download_quarantined / last_error_at additive columns but NOT
         // remote_path). The next initialize() must ADD the column without
@@ -1250,7 +1250,7 @@ class StateDatabaseTest {
 
     @Test
     fun `migration — local_hash column is added in-place to an existing DB and existing rows read it as null`() {
-        // #396: the shipped shape BEFORE local_hash — includes remote_path and the quarantine
+        // archive#396: the shipped shape BEFORE local_hash — includes remote_path and the quarantine
         // columns but not local_hash. The next initialize() must ADD the column without
         // dropping rows or bumping schema_version; existing rows read localHash = null
         // ("unknown"), which keeps today's mtime+size behaviour for them.
@@ -1354,7 +1354,7 @@ class StateDatabaseTest {
 
     @Test
     fun `migration — cache_backed column is added in-place to an existing DB and existing rows read it as null`() {
-        // #449: the shipped shape BEFORE cache_backed (includes local_hash). The next initialize() must ADD
+        // archive#449: the shipped shape BEFORE cache_backed (includes local_hash). The next initialize() must ADD
         // the column without dropping rows or bumping schema_version; an existing row reads
         // cacheBacked = null ("unknown"), which keeps the cache-presence guard for it.
         val tmpDir = Files.createTempDirectory("unidrive-cachebacked-migration")
@@ -1443,7 +1443,7 @@ class StateDatabaseTest {
 
     @Test
     fun `migration — edit_base column is added in-place to an existing DB and existing rows read it as null`() {
-        // #1070/#1069: the shipped shape BEFORE edit_base. The next initialize() must ADD the column without
+        // archive#1070/#1069: the shipped shape BEFORE edit_base. The next initialize() must ADD the column without
         // dropping rows or bumping schema_version; an existing row reads editBase = null (no unsynced edit known).
         val tmpDir = Files.createTempDirectory("unidrive-editbase-migration")
         val dbFile = tmpDir.resolve("state.db")
@@ -1758,7 +1758,7 @@ class StateDatabaseTest {
         db.markDeleted("/never_existed")
     }
 
-    // #323: an older jar opening a newer state.db must refuse to open and must
+    // archive#323: an older jar opening a newer state.db must refuse to open and must
     // never stamp the recorded version downward.
 
     private fun schemaVersionOf(dbPath: java.nio.file.Path): Int? {

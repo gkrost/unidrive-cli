@@ -218,7 +218,7 @@ class IpcAuth(
                     "hydration.open_write_begin", "hydration.close_handle", "hydration.mkdir", "hydration.unlink",
                     "hydration.rmdir", "hydration.rename", "hydration.cancel", "sync.enumerate",
                     // Changes nothing, but reads a local file the CALLER names and answers whether it is the cloud's: not for a read-scope
-                    // client (a status UI), which would have an oracle over any file of the user (gkrost/unidrive#1219).
+                    // client (a status UI), which would have an oracle over any file of the user (archive#1219).
                     "hydration.matches_local",
                 ).forEach { put(it, VerbClass.WRITE) }
                 listOf("daemon.shutdown", "daemon.pause", "daemon.resume", "refresh.run", "auth.logout").forEach { put(it, VerbClass.ADMIN) }

@@ -9,7 +9,7 @@ import java.lang.foreign.ValueLayout
 import java.nio.charset.Charset
 
 /**
- * #487: on Windows the JVM's launcher hands `main` its arguments converted to the ANSI code page, so every character
+ * archive#487: on Windows the JVM's launcher hands `main` its arguments converted to the ANSI code page, so every character
  * outside it arrives as `?` (or a best-fit look-alike): `ls --live /_INBOX/Русский` asked for `/_INBOX/???????`. The
  * loss happens before `main`; the arguments themselves cannot be repaired. The process's own command line still holds
  * them in UTF-16, so they are read back from there: `GetCommandLineW`, split by `CommandLineToArgvW`, and the trailing
@@ -20,7 +20,7 @@ import java.nio.charset.Charset
  * differ). Anything else — another launcher's quoting, a code page with multi-byte characters, a failing native call —
  * keeps the arguments as they arrived, which is today's behaviour.
  *
- * #528: there is deliberately NO cheap early return on "all characters are ASCII" — the degraded form of a character
+ * archive#528: there is deliberately NO cheap early return on "all characters are ASCII" — the degraded form of a character
  * outside the code page IS ASCII (`?`), so an argument made only of emoji or CJK characters arrives all-ASCII and is
  * exactly the case the recovery exists for. The `pickTrailing` verification is what proves a match; the native read is
  * bounded (one GetCommandLineW round-trip per invocation).

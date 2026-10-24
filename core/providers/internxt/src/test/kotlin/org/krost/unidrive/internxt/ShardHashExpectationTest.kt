@@ -7,7 +7,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
-/** #940: the recorded shard hash is parsed by its shape, and checked with the algorithm that shape names. */
+/** archive#940: the recorded shard hash is parsed by its shape, and checked with the algorithm that shape names. */
 class ShardHashExpectationTest {
     private val body = "0123456789A".toByteArray()
     private val bodySha256 = MessageDigest.getInstance("SHA-256").digest(body)

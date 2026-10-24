@@ -13,7 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-// #417: after a replace-in-place upload (PUT /files/{uuid}) and after a rename/move
+// archive#417: after a replace-in-place upload (PUT /files/{uuid}) and after a rename/move
 // (PUT .../meta, PATCH ...) Internxt answers with the entity as it was BEFORE the server
 // stamped its new modificationTime (the size/fileId in the same body are already updated,
 // the timestamp is not). The engine stores that value in state.db; the next delta lists the
@@ -340,7 +340,7 @@ class InternxtStaleModifiedAfterWriteTest {
                         }
                 }
             // The bytes are already replaced on the drive: failing here would strand the
-            // tombstone and re-upload for nothing. Degrade to the old (pre-#417) value.
+            // tombstone and re-upload for nothing. Degrade to the old (pre-archive#417) value.
             val result = replaceOnce(engine)
 
             assertEquals(2, metaReads.get(), "the check of the file's place before the replace, then the follow-up read")

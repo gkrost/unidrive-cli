@@ -10,7 +10,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * #891: the daemon's health line fires exactly once per interval on the serve scope's virtual time, logs
+ * archive#891: the daemon's health line fires exactly once per interval on the serve scope's virtual time, logs
  * nothing at start, and stops with the scope; the rendered line carries the daemon's numbers in key=value
  * form, grep-able by scripts/dev/log-watch.sh.
  */

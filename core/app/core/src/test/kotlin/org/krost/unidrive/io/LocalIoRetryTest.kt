@@ -19,7 +19,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * #802: a file another process holds open retried a whole poll cycle before. The helper retries a
+ * archive#802: a file another process holds open retried a whole poll cycle before. The helper retries a
  * sharing violation / access denial a few times with short delays, rethrows anything else at once,
  * and names the lock when it gives up. The delays are injected: no test sleeps unless it means to.
  */

@@ -16,7 +16,7 @@ import org.krost.unidrive.ProviderException
 // `Makefile.am` (plainName=Makefile, type=am) used to resolve `/x/Makefile` to
 // whichever sibling the listing happened to return first — and the path-based
 // consumers (SyncEngine.deleteRemote, download, move) then trashed, overwrote,
-// or renamed the wrong file. #1038: there is no baseName fallback at all any more;
+// or renamed the wrong file. archive#1038: there is no baseName fallback at all any more;
 // a name resolves to the file that has exactly that name.
 class InternxtGetMetadataExactMatchTest {
     private val makefileUuid = "makefile-uuid"
@@ -151,7 +151,7 @@ class InternxtGetMetadataExactMatchTest {
             assertEquals(makefileAmUuid, second.id)
         }
 
-    // #1038: the extension-stripped baseName used to answer a request for a name the folder does not hold, so a
+    // archive#1038: the extension-stripped baseName used to answer a request for a name the folder does not hold, so a
     // path-based delete, move or ghost probe of `/x/report` hit `report.txt`. A name resolves only to itself.
     private val reportJson =
         """{"uuid":"report-uuid","plainName":"report","type":"txt","size":"42",

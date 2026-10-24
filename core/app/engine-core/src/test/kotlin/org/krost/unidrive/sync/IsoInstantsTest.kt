@@ -6,7 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
-// #552: IsoInstants.parse must give what Instant.parse gives, for the text Instant.toString writes and for
+// archive#552: IsoInstants.parse must give what Instant.parse gives, for the text Instant.toString writes and for
 // everything else (the shapes it hands on), including the exception of a bad value.
 class IsoInstantsTest {
     private fun same(text: String) {

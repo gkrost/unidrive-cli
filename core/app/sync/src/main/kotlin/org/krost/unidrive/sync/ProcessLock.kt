@@ -170,7 +170,7 @@ class ProcessLock(
 
     /**
      * [readHolderInfo], but only while that PID is alive. The PID file is stamped by `sync`/`daemon` and removed on a
-     * clean unlock; after a crash it stays, and a holder that writes no PID (the read-only hold of #560 U5a) leaves the
+     * clean unlock; after a crash it stays, and a holder that writes no PID (the read-only hold of archive#560 U5a) leaves the
      * previous run's file in place. A contention message built on a dead PID names the wrong holder, and its
      * `taskkill`/`kill` hint can hit an unrelated process that reused the PID. Null here means "someone holds the lock,
      * identity unknown".
@@ -186,7 +186,7 @@ class ProcessLock(
      */
     fun unlock() {
         // UD-272: clean up the PID sibling so a future contender that races
-        // between unlock + reacquire doesn't see a stale PID. #1054 S3: only the holder, and while it still holds the
+        // between unlock + reacquire doesn't see a stale PID. archive#1054 S3: only the holder, and while it still holds the
         // lock: a lock that was never taken (a contender that lost, a repeated unlock from the shutdown hook) must not
         // delete the pid file of the process that holds it, and after the release a new holder may already have
         // written its own.
@@ -198,7 +198,7 @@ class ProcessLock(
     }
 
     /**
-     * #560 U5a: hold the profile for a report that must read it stopped, without writing anything. Takes a SHARED
+     * archive#560 U5a: hold the profile for a report that must read it stopped, without writing anything. Takes a SHARED
      * lock on the existing lock file through a read-only channel: no file is created, no PID is stamped, and an
      * existing holder's exclusive lock makes it fail. While the hold is open, a `sync` or `daemon` start for the
      * profile fails its [tryLock]. Returns null when another process (or another [ProcessLock] in this JVM) holds

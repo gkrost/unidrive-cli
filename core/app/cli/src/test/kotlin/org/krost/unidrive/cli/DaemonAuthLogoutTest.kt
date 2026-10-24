@@ -27,7 +27,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #1186: `auth.logout` on a running daemon signs the daemon's own provider instance out, not only the stored
+ * archive#1186: `auth.logout` on a running daemon signs the daemon's own provider instance out, not only the stored
  * credentials. It used to set `isAuthenticated = false` on that instance, which does nothing on OneDrive, Internxt and
  * Dropbox (their in-memory token is the state), so `daemon.status` kept reporting the account signed in and transfers
  * kept using the old token.

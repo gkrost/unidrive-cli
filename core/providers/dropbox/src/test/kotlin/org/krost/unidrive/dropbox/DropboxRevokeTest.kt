@@ -12,7 +12,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #1052: a sign-out revokes the grant at Dropbox (`auth/token/revoke`) before the local files go; the answer is
+ * archive#1052: a sign-out revokes the grant at Dropbox (`auth/token/revoke`) before the local files go; the answer is
  * [TokenRevocation.REVOKED] only when Dropbox accepted the call.
  */
 class DropboxRevokeTest {

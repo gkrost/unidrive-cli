@@ -24,7 +24,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * #1065: the shared client caps every call at HttpDefaults.REQUEST_TIMEOUT_MS (600 s) and Ktor counts that cap up to
+ * archive#1065: the shared client caps every call at HttpDefaults.REQUEST_TIMEOUT_MS (600 s) and Ktor counts that cap up to
  * the end of the `execute` block, so a shard download that needs longer was cut however steadily it moved, and
  * retryShardCommit then started it again at byte 0, three times. The shard GET now sets its own request timeout
  * (scaled with the declared size, unbounded when the size is unknown); the read-idle socket timeout of the client

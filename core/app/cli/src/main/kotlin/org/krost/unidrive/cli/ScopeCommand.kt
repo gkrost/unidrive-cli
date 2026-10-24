@@ -24,7 +24,7 @@ import java.nio.file.Path
 import java.util.concurrent.Callable
 
 /**
- * Show or change the standing sync scope of a profile (`sync_path`, #395). `set` and `clear` edit config.toml, apply the
+ * Show or change the standing sync scope of a profile (`sync_path`, archive#395). `set` and `clear` edit config.toml, apply the
  * scope transition to state.db the way the next run would (rows outside the new scope are untracked, a wider scope
  * clears the delta cursor) and replace the scoped-history guard's `effective_scope` with the new scope, so no old root
  * lingers and `clear` needs no `--full-tree`. No local or remote file is touched. They refuse while another unidrive

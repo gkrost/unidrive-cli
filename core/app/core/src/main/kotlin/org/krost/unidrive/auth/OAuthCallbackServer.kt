@@ -74,7 +74,7 @@ public suspend fun awaitOAuthCallback(
             }
         val deadline = System.nanoTime() + timeout.inWholeNanoseconds
         try {
-            // #1054 S1: the timeout is for the whole wait, and a connection that is not the provider's redirect (a port
+            // archive#1054 S1: the timeout is for the whole wait, and a connection that is not the provider's redirect (a port
             // probe, a speculative browser connect, a favicon request) gets a 404 and does not end it.
             val (client, requestLine) = acceptCallback(server, deadline)
 

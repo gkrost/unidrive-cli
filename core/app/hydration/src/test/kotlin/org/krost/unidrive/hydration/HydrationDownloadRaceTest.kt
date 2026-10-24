@@ -10,7 +10,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 
 /**
- * M2 of #1040: a cold read holds the path's hydrate lock for its whole download, but `unlink` and `rename` do not
+ * M2 of archive#1040: a cold read holds the path's hydrate lock for its whole download, but `unlink` and `rename` do not
  * take it. The read then wrote its row back from the snapshot it started with (an upsert keyed by remote id), which
  * brought a deleted file back and put a renamed one back under its old path.
  */

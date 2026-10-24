@@ -61,7 +61,7 @@ code. Request/reply byte shapes are pinned by the golden corpus under
   the connection that opened them: when the connection drops, the daemon
   releases that connection's handles automatically (no close storm after a
   crash).
-- #438: `hydration.close_handle` may arrive on another connection than the
+- archive#438: `hydration.close_handle` may arrive on another connection than the
   open (a pooled client hands out any idle connection). The daemon looks on
   the caller's connection first, then on the others — a handle id is the
   client's own name, so a match on another connection is taken only when it
@@ -216,14 +216,14 @@ hydration.rmdir   {path[,recursive]} -> {"ok":true} | {"ok":false,"error":"path_
   trash); otherwise the delete goes through the provider's trash.
 - If the user deleted a file whose upload is still in flight, the client
   first issues `hydration.cancel {path}` (§5), then `unlink`.
-- `rmdir` is strict (#1035): a folder with alive rows below answers `not_empty`, before
+- `rmdir` is strict (archive#1035): a folder with alive rows below answers `not_empty`, before
   anything is deleted (no provider refuses a folder with children; they delete the
   tree). A client that means the whole tree sends `"recursive":true`; the folder and
   everything below go in one call, except while a file below holds bytes only this
   computer has (a never-uploaded file, an edit that failed to upload, or a cache copy
   that was changed while the daemon was stopped and differs from what was last synced):
   that is `not_empty` too, and the user deletes such a file on its own (`unlink`). An engine
-  before #1035 ignores the flag and deletes the tree either way, so a client may
+  before archive#1035 ignores the flag and deletes the tree either way, so a client may
   always send it.
 
 ### 3.8 Mkdir / rmdir
@@ -244,7 +244,7 @@ hydration.rmdir   {path[,recursive]} -> {"ok":true} | {"ok":false,"error":"path_
 | `dehydrated` | `{"event":"dehydrated","path":…}` | cache copy freed |
 | `failed` | `{"event":"failed","path":…,"error":"…"[,"retry_scheduled":true\|false]}` | attempt failed; uploads say whether the daemon will retry |
 | `completed` | `{"event":"completed","path":…,"handle_id":…,"direction":"upload\|download","ok":true\|false[,"error":"…"]}` | handle-scoped outcome — the in-sync signal |
-| `view.invalidated` | `{"event":"view.invalidated","paths":[…],"full":…}` | enumeration changed the view, or `hydration.unlink` / `hydration.rmdir` removed `paths` (a delete through the daemon, e.g. `unidrive rm`, #1199); drop readdir/getattr caches |
+| `view.invalidated` | `{"event":"view.invalidated","paths":[…],"full":…}` | enumeration changed the view, or `hydration.unlink` / `hydration.rmdir` removed `paths` (a delete through the daemon, e.g. `unidrive rm`, archive#1199); drop readdir/getattr caches |
 | `lost` | `{"event":"lost","since_last":N}` | your queue overflowed; resync from `hydration.list` |
 
 Blocked names: a drive that refuses an entry by its name (OneDrive's uniqueness check ignores some characters, so a
@@ -475,7 +475,7 @@ still leave a remote item; the caller follows with the row-level verb
 | `new_path_exists` | rename | destination exists and replace was not asked |
 | `old_path_not_found` / `new_parent_not_found` | rename | row/parent missing |
 | `path_is_folder` / `path_is_file` | unlink/rmdir/open_write_begin | wrong kind |
-| `not_empty` | rmdir | folder still has children (plain), or a file below holds bytes only this computer has (recursive, #1035) |
+| `not_empty` | rmdir | folder still has children (plain), or a file below holds bytes only this computer has (recursive, archive#1035) |
 | `conflict` | open_write | base_etag no longer matches the row |
 | `invalid_path` | open_write (`cache_path`) | the cache path lies outside the profile's hydration cache folder, or is not a valid local path; refused before anything is queued |
 | `outside_scope` | create, mkdir, rename (both ends), open_write_begin | path outside the profile's sync_path set |
@@ -502,7 +502,7 @@ still leave a remote item; the caller follows with the row-level verb
 
 ## 8. Who may write the mounted folder
 
-> **In force since the #560 cutover (2026-10-08), see [`docs/adr/independent-profiles.md`](../../adr/independent-profiles.md).** The single-writer rule below holds for a mount profile: the mount's co-client is the only local writer — the daemon writes the mount's files only into the hydration cache and uploads from there (#478's `sync_root` mirroring and #510's rescan are retired). A mirror of the same account is a separate profile, an independent cloud-side writer whose changes reach the view only through enumeration. The verbs and events in this document are unchanged.
+> **In force since the archive#560 cutover (2026-10-08), see [`docs/adr/independent-profiles.md`](../../adr/independent-profiles.md).** The single-writer rule below holds for a mount profile: the mount's co-client is the only local writer — the daemon writes the mount's files only into the hydration cache and uploads from there (archive#478's `sync_root` mirroring and archive#510's rescan are retired). A mirror of the same account is a separate profile, an independent cloud-side writer whose changes reach the view only through enumeration. The verbs and events in this document are unchanged.
 
 While a mount runs, the mount's co-daemon is the single writer of the
 profile's view: the daemon serves reads from the hydration cache and writes

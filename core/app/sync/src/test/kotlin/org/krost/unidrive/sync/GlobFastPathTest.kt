@@ -5,7 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-// #552: the string tests that stand in for the regex of the common exclude globs must answer exactly what the
+// archive#552: the string tests that stand in for the regex of the common exclude globs must answer exactly what the
 // regex answers, for every default pattern and the shapes users write, on awkward paths too.
 class GlobFastPathTest {
     private val patterns: List<String> =

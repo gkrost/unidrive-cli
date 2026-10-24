@@ -11,7 +11,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #401: where two live remote items share one path, the path-keyed tracking set
+ * archive#401: where two live remote items share one path, the path-keyed tracking set
  * cannot represent both. The standing detector in walkDelta must mark the pass
  * incomplete (which suppresses delete actions) instead of letting the tracking
  * store keep whichever twin the provider emitted last. Detector-only by design —

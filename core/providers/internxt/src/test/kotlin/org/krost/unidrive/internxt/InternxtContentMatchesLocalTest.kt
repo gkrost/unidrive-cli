@@ -20,7 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * gkrost/unidrive#1219 through the provider: [InternxtProvider.contentMatchesLocal] with the real key derivation (the account's mnemonic,
+ * archive#1219 through the provider: [InternxtProvider.contentMatchesLocal] with the real key derivation (the account's mnemonic,
  * the bucket of the FILE, the file's own index) over a mocked drive and bridge. The stored object is a real AES-CTR ciphertext whose shard
  * hash is recorded in the official clients' shape, and the same object is also served for a download: the proof and the download must agree
  * on the key, and the proof must never fetch the object.

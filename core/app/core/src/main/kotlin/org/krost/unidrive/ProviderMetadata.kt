@@ -25,7 +25,7 @@ data class ProviderMetadata(
      */
     val maxConcurrentTransfers: Int = 4,
     /**
-     * #655: whether the provider's `quota()` reports the ACCOUNT's storage plan
+     * archive#655: whether the provider's `quota()` reports the ACCOUNT's storage plan
      * (used/total of the user's subscription). `daemon.status` carries the `quota` snapshot
      * only for such providers; a provider whose quota() answers something else (localfs
      * probes the machine's FileStore) declares false so the field is absent rather than
@@ -38,7 +38,7 @@ data class ProviderMetadata(
      * pacing requirement; > 0 for endpoints whose throttle policy is
      * rate-bucket rather than concurrency-bucket (Graph 200 ms, ratelimited
      * S3 prefixes, etc.). Stateless across SyncEngine invocations —
-     * acceptable simplicity tradeoff per UD-263 acceptance #4.
+     * acceptable simplicity tradeoff per UD-263 acceptance archive#4.
      */
     val minRequestSpacingMs: Long = 0L,
     /**
@@ -95,7 +95,7 @@ object ProviderRegistry {
      * `ProviderMetadataTest.allByTier applies the canonical tier ordering`
      * uses to exercise the sort against synthesized fixtures in
      * `:app:core`'s test classpath (which doesn't load real providers).
-     * Codex review on PR #18 surfaced that the previous test sorted with a
+     * Codex review on PR archive#18 surfaced that the previous test sorted with a
      * local recipe and never invoked this method — refactoring the
      * signature to accept fixtures restores end-to-end coverage of the
      * production API.

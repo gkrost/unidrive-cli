@@ -5,8 +5,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * The OS file-name rules both front-ends refuse a name with (#230, #526). Moved here from
- * :app:sync's PlaceholderManagerTest by #560 U6 (the mount resolves them through engine-core now).
+ * The OS file-name rules both front-ends refuse a name with (archive#230, archive#526). Moved here from
+ * :app:sync's PlaceholderManagerTest by archive#560 U6 (the mount resolves them through engine-core now).
  */
 class LocalNamesTest {
     private val w = listOf(true, false)
@@ -50,7 +50,7 @@ class LocalNamesTest {
         assertNotNull(localNameIssue(withNul, windows = false))
     }
 
-    // #1090: one table for the device names (WindowsDeviceNames); the same names are checked in WindowsDeviceNamesTest,
+    // archive#1090: one table for the device names (WindowsDeviceNames); the same names are checked in WindowsDeviceNamesTest,
     // RootNamesTest, ProfileNameDeviceTest and OneDriveNameRulesTest, and the client's WindowsNames mirrors it.
     private val deviceNames =
         listOf(
@@ -80,7 +80,7 @@ class LocalNamesTest {
         }
     }
 
-    // #1088: the limit is 255 UTF-16 units on Windows and 255 UTF-8 bytes on POSIX. 128 x e-acute is 128 units and 256 bytes.
+    // archive#1088: the limit is 255 UTF-16 units on Windows and 255 UTF-8 bytes on POSIX. 128 x e-acute is 128 units and 256 bytes.
     @Test
     fun `localNameIssue counts 255 UTF-16 units on Windows and 255 UTF-8 bytes on POSIX`() {
         val units255 = "x".repeat(255)

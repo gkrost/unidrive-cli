@@ -11,7 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/** `checkCredentials()` (#1240): one `users/get_space_usage` with the stored grant, never the browser sign-in. */
+/** `checkCredentials()` (archive#1240): one `users/get_space_usage` with the stored grant, never the browser sign-in. */
 class DropboxCheckCredentialsTest {
     private val dir = Files.createTempDirectory("dropbox-check")
     private val fake = FakeDropbox()

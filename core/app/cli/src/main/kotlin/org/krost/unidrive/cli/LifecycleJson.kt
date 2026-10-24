@@ -145,7 +145,7 @@ internal fun <T> withProfileLock(
 
 /**
  * [withProfileLock], except that a profile held by a running daemon is not refused when [viaDaemon] is given: the
- * step is handed to that daemon over its IPC socket (the sign-in steps, #813), and its answer is the result. A
+ * step is handed to that daemon over its IPC socket (the sign-in steps, archive#813), and its answer is the result. A
  * daemon that does not answer is `profile_in_use`, unless it let go of the profile meanwhile: then [local] runs here,
  * under the lock. A sync, or a holder that is not known, is `profile_in_use` as before.
  */

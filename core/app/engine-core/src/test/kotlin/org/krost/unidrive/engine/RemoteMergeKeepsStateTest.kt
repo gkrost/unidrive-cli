@@ -227,7 +227,7 @@ class RemoteMergeKeepsStateTest {
         assertNull(db.nameBlock("/a.txt"))
     }
 
-    // #1040 S2 (the owner's decision of 2026-10-20): two devices create the same path while this one's upload is
+    // archive#1040 S2 (the owner's decision of 2026-10-20): two devices create the same path while this one's upload is
     // still pending. The cloud item must not turn the pending row into a synced one: that dropped the unsent bytes
     // from the replay (pendingUploadPaths) and from the reap guard, with no conflict raised. The row stays pending,
     // and the upload meets the provider's create collision (keep-both) when it is sent.

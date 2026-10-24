@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * #493: an upload the drive server refuses as a request (400, 413, 415, 422) is refused again with the same bytes; it is
+ * archive#493: an upload the drive server refuses as a request (400, 413, 415, 422) is refused again with the same bytes; it is
  * reported as a [PermanentUploadFailureException], so the hydration queue does not run its retry ladder on it. A server
  * error keeps its own (retryable) type.
  */
@@ -53,7 +53,7 @@ class InternxtUploadRefusalTest {
     /**
      * The folder-listing route answers with an EMPTY children list: the walk
      * succeeds and proves the target segment absent — positive proof (a trashed
-     * parent, #580), not a degraded gateway (that fails the listing itself).
+     * parent, archive#580), not a degraded gateway (that fails the listing itself).
      */
     private fun newProviderParentGone(): InternxtProvider =
         newProviderWith(HttpStatusCode.OK, scenario = UploadScenario(emptyListing = true))
@@ -165,7 +165,7 @@ class InternxtUploadRefusalTest {
             }
         }
 
-    // #1203: the provider's sidecar store with a rename the test controls (a Windows rename that is refused while a scanner holds the target).
+    // archive#1203: the provider's sidecar store with a rename the test controls (a Windows rename that is refused while a scanner holds the target).
     private fun InternxtProvider.withSidecarRename(move: (Path, Path) -> Unit) {
         tombstoneStore = UploadTombstoneStore(tmp.resolve("upload-tombstones"), move = move, pause = {})
     }
@@ -313,7 +313,7 @@ class InternxtUploadRefusalTest {
             }
         }
 
-    // #580: the parent folder was trashed in the cloud; the walk's listing succeeds and
+    // archive#580: the parent folder was trashed in the cloud; the walk's listing succeeds and
     // the target segment is not in it. That is permanent for the current state — the same
     // call with the same bytes fails again forever — so it is a PermanentUploadFailureException
     // (no retry ladder, replay and same-bytes resubmission skip it, the cache bytes stay),
@@ -383,7 +383,7 @@ class InternxtUploadRefusalTest {
             }
         }
 
-    // A listing that FAILED is not a proof of absence (a degraded gateway, #387): it keeps its retryable type and is
+    // A listing that FAILED is not a proof of absence (a degraded gateway, archive#387): it keeps its retryable type and is
     // never reported as parent-gone.
     @Test
     fun `a failing listing during the parent walk is not a parent-gone refusal`() =

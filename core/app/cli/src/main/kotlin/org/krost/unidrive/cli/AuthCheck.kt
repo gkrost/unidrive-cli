@@ -25,12 +25,12 @@ import java.nio.channels.UnresolvedAddressException
 import java.util.concurrent.Callable
 
 /*
- * `auth check` (#1240): proves the stored sign-in of a profile against the provider with ONE authenticated call
+ * `auth check` (archive#1240): proves the stored sign-in of a profile against the provider with ONE authenticated call
  * (CloudProvider.checkCredentials), without a daemon start, a scan, a sync or a write to state.db. It never signs in:
  * no browser, no console, no device code, whatever the profile holds. JSON on stdout, no secret in the output.
  *
  * Who makes the call decides the refresh race. A profile held by a running daemon is asked through that daemon
- * (`auth.check`, the way `auth login` is handed over since #813): the call goes through the daemon's own provider
+ * (`auth.check`, the way `auth login` is handed over since archive#813): the call goes through the daemon's own provider
  * instance, so an expired token is refreshed by the one refresher there is and the token file keeps one writer. A
  * stopped profile is checked here under the profile lock, so no daemon or sync can start meanwhile. A profile held by
  * a sync is `profile_in_use`.

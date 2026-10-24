@@ -36,8 +36,8 @@ object HashVerifier {
      * Strict content equality — the counterpart [verify] needs for conflict resolution:
      * false whenever either side cannot be compared (no remote hash, no provider algorithm),
      * where [verify]'s "true when unverifiable" contract would silently adopt. The engine
-     * wires this into the reconciler's identical-edits branch (#532); the legacy-profile inventory
-     * (#560) uses it to tell a clean copy from an unknown one.
+     * wires this into the reconciler's identical-edits branch (archive#532); the legacy-profile inventory
+     * (archive#560) uses it to tell a clean copy from an unknown one.
      */
     fun matches(
         localPath: java.nio.file.Path,

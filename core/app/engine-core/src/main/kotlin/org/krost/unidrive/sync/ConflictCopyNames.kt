@@ -5,7 +5,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
- * #737: the name of a local conflict copy, the scheme keep-both uses for the user's side copy
+ * archive#737: the name of a local conflict copy, the scheme keep-both uses for the user's side copy
  * (`SyncEngine.applyKeepBoth`): `<stem>.conflict-local-<yyyyMMdd'T'HHmm>.<ext>`, or without the
  * extension when the name has none. [n] > 1 adds a free-name counter, `<stem>.conflict-local-<stamp> (n).<ext>`,
  * so a second copy in the same minute never lands on the first. The remote merge names a pending upload it moves

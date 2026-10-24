@@ -57,7 +57,7 @@ class TokenManager(
     }
 
     /**
-     * Drops the token from memory after a sign-out removed the stored one (#1186): [getValidToken] fails as not
+     * Drops the token from memory after a sign-out removed the stored one (archive#1186): [getValidToken] fails as not
      * authenticated from now on, and a refresh still under way stores nothing. The token file is not touched.
      */
     suspend fun forget() {

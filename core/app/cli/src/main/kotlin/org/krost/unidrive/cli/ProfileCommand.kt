@@ -177,13 +177,13 @@ class ProfileAddCommand : Callable<Int> {
             System.exit(1)
         }
 
-        // Step 3: Mode (#603, #646) — chosen before the sync-root question, because the mode
+        // Step 3: Mode (archive#603, archive#646) — chosen before the sync-root question, because the mode
         // decides whether that question exists at all. Fixed after creation; there is no
         // default: nothing may assume a legacy profile, and a profile without a mode is
         // refused by every command.
         val mode = promptProfileMode(console)
 
-        // Step 4: Sync root (#646). A mount profile works on the client-chosen mount root, so
+        // Step 4: Sync root (archive#646). A mount profile works on the client-chosen mount root, so
         // it is not asked and gets a private folder under its own profile directory instead.
         // A mirror profile keeps the question, but the suggestion never lands on the official
         // Internxt Desktop client's folders (~\Internxt, ~\InternxtDrive*) — the owner
@@ -345,7 +345,7 @@ class ProfileAddCommand : Callable<Int> {
     }
 
     /**
-     * The mode prompt of profile creation (#603): a required choice between the two modes, with what
+     * The mode prompt of profile creation (archive#603): a required choice between the two modes, with what
      * each means. A blank answer is refused — there is no default to assume.
      */
     private fun promptProfileMode(console: java.io.Console): org.krost.unidrive.sync.ProfileMode {
@@ -374,7 +374,7 @@ class ProfileAddCommand : Callable<Int> {
     }
 
     /**
-     * #646: the sync-root question for a mirror profile. The suggestion is the canonical
+     * archive#646: the sync-root question for a mirror profile. The suggestion is the canonical
      * default for the provider — except when that is one of the official Internxt Desktop
      * client's folders (~\Internxt, ~\InternxtDrive*): the owner reserves those for that
      * client, so the suggestion moves aside (~\InternxtSync). A root the user types anyway
@@ -397,7 +397,7 @@ class ProfileAddCommand : Callable<Int> {
 }
 
 /**
- * #646: the folder names the official Internxt Desktop client uses for its sync root — the
+ * archive#646: the folder names the official Internxt Desktop client uses for its sync root — the
  * sync root itself and the Drive-named variants. File-scope so the prompt and the tests share
  * one predicate.
  */

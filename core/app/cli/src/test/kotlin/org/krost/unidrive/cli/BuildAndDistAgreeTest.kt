@@ -8,7 +8,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #1076: places that name the same thing in three languages (Kotlin, Gradle Kotlin DSL, shell) drifted apart once; this pins
+ * archive#1076: places that name the same thing in three languages (Kotlin, Gradle Kotlin DSL, shell) drifted apart once; this pins
  * what they have to agree on. Static text checks of files in the repository, the way InstallShTest finds `dist/`.
  */
 class BuildAndDistAgreeTest {

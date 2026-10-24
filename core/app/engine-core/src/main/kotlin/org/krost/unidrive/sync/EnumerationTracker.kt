@@ -58,7 +58,7 @@ class EnumerationTracker(
     private var pathsTotal: Int? = null
     private var lastSuccessAtMs: Long? = null
     private var lastError: String? = null
-    // #878: the machine-readable cause of the last failure; cleared by a success and by a new attempt.
+    // archive#878: the machine-readable cause of the last failure; cleared by a success and by a new attempt.
     private var lastErrorCode: String? = null
     private var nextAttemptAtMs: Long? = null
 
@@ -82,7 +82,7 @@ class EnumerationTracker(
             phase = EnumerationStatus.Phase.LISTING
             attempt++
             startedAtMs = now
-            // The reason survives a retry (#478-era contract); the code goes, so a run that fails a
+            // The reason survives a retry (archive#478-era contract); the code goes, so a run that fails a
             // different way does not answer the previous cause.
             lastErrorCode = null
             nextAttemptAtMs = null
@@ -362,7 +362,7 @@ class EnumerationTracker(
          */
         fun sanitizeError(raw: String?): String? {
             val firstLine = raw?.lineSequence()?.firstOrNull { it.isNotBlank() } ?: return null
-            // #878: a provider error message carries the response body after " - "; the body would only
+            // archive#878: a provider error message carries the response body after " - "; the body would only
             // be sanitized into punctuation, so it is dropped before the rules run.
             val cut = listOf(" - {", " - [", " - <").firstNotNullOfOrNull { firstLine.indexOf(it).takeIf { i -> i >= 0 } }
             val line = if (cut != null) firstLine.take(cut) else firstLine

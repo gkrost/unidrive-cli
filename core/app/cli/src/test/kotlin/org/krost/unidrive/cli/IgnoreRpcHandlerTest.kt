@@ -16,7 +16,7 @@ import org.krost.unidrive.sync.ignore.UploadIgnore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/** #660: `ignore.explain` and the `ignore` object of `daemon.status`, over rule files held in memory. */
+/** archive#660: `ignore.explain` and the `ignore` object of `daemon.status`, over rule files held in memory. */
 class IgnoreRpcHandlerTest {
     private class Files(
         val text: Map<String, String>,

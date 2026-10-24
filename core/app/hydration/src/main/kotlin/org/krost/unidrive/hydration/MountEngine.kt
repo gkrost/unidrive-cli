@@ -47,20 +47,20 @@ import java.nio.file.StandardCopyOption
 import java.time.Instant
 
 /**
- * #560 U3: the mount front-end. The operations the hydration layer ([HydrationImpl]) and the daemon
+ * archive#560 U3: the mount front-end. The operations the hydration layer ([HydrationImpl]) and the daemon
  * run against the cloud and state.db for a mount: hydrate a path into the cache, upload a cache copy,
  * create, delete and rename remote items, and the remote enumeration. They used to live in the mirror
  * engine (`SyncEngine`, :app:sync) and moved here unchanged; this module no longer depends on :app:sync
  * (`checkModuleEdges`).
  *
- * #560 U6 (cutover): a mount profile touches no sync root. The bytes a mount write puts in the cache
+ * archive#560 U6 (cutover): a mount profile touches no sync root. The bytes a mount write puts in the cache
  * are the bytes that upload ([uploadFromCache]); a read is served from the cache or downloaded, never
  * seeded from a local folder; a delete or rename leaves no local copy behind. A pending write keeps its
  * own source — the cache — so nothing outside the profile (the client's root move) can strand
- * it, and the 0-byte-placeholder shape of #524 cannot arise from the engine.
+ * it, and the 0-byte-placeholder shape of archive#524 cannot arise from the engine.
  *
  * Built over a [MountWiring] ([over]): the shared core of the engine that owns it, today `SyncEngine`
- * (the compatibility adapter until mount profiles get their own host, #560 U4/U6). One front-end per
+ * (the compatibility adapter until mount profiles get their own host, archive#560 U4/U6). One front-end per
  * wiring.
  *
  * Who owns what:
@@ -79,17 +79,17 @@ import java.time.Instant
  *    file, a cancelled upload is audited as failed and leaves the row pending. Background work runs
  *    elsewhere: the upload queue in [HydrationImpl]'s `recoveryUploadScope`, the poller in the
  *    daemon's serve scope.
- *  - **Pause (#778).** [pause] holds the daemon's pause. A cold [ensureHydrated] is refused while it is set
+ *  - **Pause (archive#778).** [pause] holds the daemon's pause. A cold [ensureHydrated] is refused while it is set
  *    ([TransferPausedException], answered `paused`), one already downloading is judged by the in-flight rule of
  *    [PauseGate.abortSlowTransfers]; a warm-cache serve needs no cloud and is unaffected. The uploads wait in
  *    [HydrationImpl]'s queue; the enumeration is gated by the daemon's handlers and poller. The downloads of
- *    cloud-only rule files ask the same gate (attached to the guard, #660).
+ *    cloud-only rule files ask the same gate (attached to the guard, archive#660).
  *  - **Shutdown order.** This class holds no thread, file or connection to close. The daemon cancels
  *    its serve scope (the poller, the IPC handlers, the hydration event fan-out), then closes the IPC
  *    server, the state database and the process lock, in that order (`DaemonRuntime.cleanup`). The
  *    upload queue's scope is not part of that: the daemon builds [HydrationImpl] with its default
  *    scope, so an upload still running then is not cancelled first; a row it could not settle stays
- *    pending for the replay at the next start (unchanged by #560 U3).
+ *    pending for the replay at the next start (unchanged by archive#560 U3).
  */
 class MountEngine private constructor(
     private val wiring: MountWiring,
@@ -111,7 +111,7 @@ class MountEngine private constructor(
     private val log: Logger = wiring.log
 
     /**
-     * #658: epoch ms of the last provider round trip this engine actually made — a completed download
+     * archive#658: epoch ms of the last provider round trip this engine actually made — a completed download
      * or upload, never a warm-cache serve or a local-only write. `daemon.status` reports it as
      * `provider_health.last_contact_ms`, so an outage keeps the last real contact.
      */
@@ -127,7 +127,7 @@ class MountEngine private constructor(
     private var transferAuthRejectedAtMs: Long? = null
 
     /**
-     * #586: epoch ms of the latest time the provider refused this profile's credentials, or null: a transfer or an
+     * archive#586: epoch ms of the latest time the provider refused this profile's credentials, or null: a transfer or an
      * enumeration that failed with an [AuthenticationException], which a provider raises only after its own token
      * refresh has failed. A reader compares it with the last provider contact: a rejection older than a success is
      * history. `daemon.status` turns a newer one into `credential_health.state = "expired"` without waiting for the
@@ -150,13 +150,13 @@ class MountEngine private constructor(
     }
 
     /**
-     * #778: the daemon's pause. A download ([ensureHydrated]) starts only while it is clear, and the upload queue
+     * archive#778: the daemon's pause. A download ([ensureHydrated]) starts only while it is clear, and the upload queue
      * ([HydrationImpl]) consults the same gate; `daemon.pause` and `daemon.resume` set it. One per front-end.
      */
     val pause: PauseGate = PauseGate()
 
     init {
-        // #660: the downloads of cloud-only rule files ask the same pause, and a folder held back for it is probed
+        // archive#660: the downloads of cloud-only rule files ask the same pause, and a folder held back for it is probed
         // again once it ends.
         guard.attachPause(
             object : TransferPause {
@@ -211,7 +211,7 @@ class MountEngine private constructor(
     /** See [RemoteOperationGuard.matchingExcludePattern]. */
     fun matchingExcludePattern(path: String): String? = guard.matchingExcludePattern(path)
 
-    /** #660: a rule file of the ignore rules was handed over at [path]; see [RemoteOperationGuard.ignoreRuleFileWritten]. */
+    /** archive#660: a rule file of the ignore rules was handed over at [path]; see [RemoteOperationGuard.ignoreRuleFileWritten]. */
     fun ignoreRuleFileWritten(path: String) {
         if (guard.isIgnoreRuleFile(path)) guard.ignoreRuleFileWritten(path)
     }
@@ -233,7 +233,7 @@ class MountEngine private constructor(
      * gather + state.db upsert, but NEVER scans sync_root, NEVER plans/executes a local→remote
      * delete, and NEVER evaluates the empty-sync_root / max_delete_* guards. Remote-observed
      * deletions flip state.db rows only on a COMPLETE enumeration. Single-flight across both
-     * front-ends: an overlapping call returns `skipped = true`. See `RemoteEnumeration` (#560 U2b)
+     * front-ends: an overlapping call returns `skipped = true`. See `RemoteEnumeration` (archive#560 U2b)
      * and docs/dev/specs/mount-view-refresh-design.md.
      */
     override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult = wiring.enumeration.enumerate(reset)
@@ -246,12 +246,12 @@ class MountEngine private constructor(
     fun enumerationStatus(): EnumerationStatus = wiring.enumeration.status()
 
     /**
-     * #580: an upload was refused because the provider's path walk found the folder [folderPath] (a remote path) gone.
+     * archive#580: an upload was refused because the provider's path walk found the folder [folderPath] (a remote path) gone.
      * When state.db tracks that folder with a remote id, the provider is asked about it by that id
      * ([CloudProvider.folderStateById]); only a confirmed [FolderState.TRASHED] or [FolderState.NOT_FOUND] tombstones its
      * subtree ([org.krost.unidrive.engine.GoneFolderTombstone]), keeping the rows of [keep] and every
-     * row that may hold an unsent edit. A live folder (a trash undone in the lag window, #132), a provider that cannot
-     * tell, and a lookup that fails (a 5xx, a degraded gateway #387, a timeout) change nothing. Returns how many rows it
+     * row that may hold an unsent edit. A live folder (a trash undone in the lag window, archive#132), a provider that cannot
+     * tell, and a lookup that fails (a 5xx, a degraded gateway archive#387, a timeout) change nothing. Returns how many rows it
      * marked deleted.
      */
     suspend fun tombstoneFolderIfGone(
@@ -279,7 +279,7 @@ class MountEngine private constructor(
     /** The enumeration's tracker; the daemon's poller records its next attempt on it. */
     val enumerationTracker: EnumerationTracker get() = wiring.enumeration.tracker
 
-    // #318: per-path serialization for ensureHydrated's warm-cache check + download.
+    // archive#318: per-path serialization for ensureHydrated's warm-cache check + download.
     // Without it, a second open whose warm-cache size check fails re-downloads with
     // TRUNCATE_EXISTING into the cache file while a first handle is still reading it
     // (silent short/garbage reads on POSIX), and two concurrent cold opens
@@ -348,11 +348,11 @@ class MountEngine private constructor(
      * be immediately visible to the user, unlike the mirror's `applyDownload`
      * local-placeholder path where a warning is recoverable on the next sync.
      *
-     * #318: the whole check+download runs under a per-path mutex. Concurrent
+     * archive#318: the whole check+download runs under a per-path mutex. Concurrent
      * opens of the same path must not double-download, and a re-download must
      * never truncate a cache file another handle is reading.
      *
-     * #652: [history] is the transfer being recorded. It is started only when a cold download really begins (a warm
+     * archive#652: [history] is the transfer being recorded. It is started only when a cold download really begins (a warm
      * serve, and a refusal for a pause, never start it); the caller finishes it with the outcome.
      */
     suspend fun ensureHydrated(
@@ -376,7 +376,7 @@ class MountEngine private constructor(
     /**
      * True when a read of [entry] needs no download: the row has no remote (the cache is the only copy), or it is
      * hydrated and the cache file is present with the size the remote reports, or the cache file holds an edit the
-     * cloud has not seen ([SyncEntry.editBase]; #1070, M1 of #1040): that copy is the one of record, whatever its
+     * cloud has not seen ([SyncEntry.editBase]; archive#1070, M1 of archive#1040): that copy is the one of record, whatever its
      * size and whether the row says hydrated, and a download would replace the only copy of the edit.
      * [ensureHydrated] returns the cache in exactly this case.
      */
@@ -409,7 +409,7 @@ class MountEngine private constructor(
         // Local-only rows (remoteId == null: created/edited through the mount, not
         // yet uploaded — remoteSize is 0 while the cache holds the just-written
         // bytes) have NO remote to compare against or re-download from; the cache is
-        // the only copy, so always trust them on the warm path. #136: this
+        // the only copy, so always trust them on the warm path. archive#136: this
         // remoteId == null is NOT the UD-901 pending-upload predicate — it means "no
         // remote to compare against", and isHydrated here carries the warm-trust
         // meaning, so the split check is intentional.
@@ -431,25 +431,25 @@ class MountEngine private constructor(
             mimeType = null,
         )
         Files.createDirectories(cachePath.parent)
-        // #318: download to a temp sibling and atomically swap it in, so a handle
+        // archive#318: download to a temp sibling and atomically swap it in, so a handle
         // already reading the old cache keeps its inode instead of having the file
         // truncated under it by TRUNCATE_EXISTING (silent short/garbage reads).
         val staged =
             cachePath.resolveSibling(
-                // #529: a long cache name cannot take the full suffix — stage short when over the limit.
+                // archive#529: a long cache name cannot take the full suffix — stage short when over the limit.
                 org.krost.unidrive.io.stagingSiblingName(
                     cachePath.fileName.toString(),
                     ".hydrating-" + java.util.UUID.randomUUID(),
                 ),
             )
         try {
-            // #778: a download starts only while the daemon is not paused; one running when a pause begins is
+            // archive#778: a download starts only while the daemon is not paused; one running when a pause begins is
             // judged on the bytes the staging file holds so far.
             val fetched =
                 rememberingRemoteIncomplete(path, entry) {
                     pause.track(path) { transfer ->
                         transfer.begin()
-                        // #652: a cold download is a transfer from here on (a warm serve and a refusal for a pause never get here).
+                        // archive#652: a cold download is a transfer from here on (a warm serve and a refusal for a pause never get here).
                         history?.started()
                         transfer.measuredBy(entry.remoteSize) { runCatching { Files.size(staged) }.getOrDefault(0L) }
                         watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged) }
@@ -458,7 +458,7 @@ class MountEngine private constructor(
             val downloadedSize = fetched.bytes
             remoteIncomplete.forget(entry)
             if (options.verifyIntegrity) {
-                // The bytes of an item read by its live id (#796) are checked against that item's hash, not the row's.
+                // The bytes of an item read by its live id (archive#796) are checked against that item's hash, not the row's.
                 val expectedHash = if (fetched.liveItem != null) fetched.liveItem.hash else entry.remoteHash
                 val verified = HashVerifier.verify(staged, expectedHash, algorithm = provider.hashAlgorithm())
                 if (!verified) {
@@ -480,7 +480,7 @@ class MountEngine private constructor(
             // this is the current truth. Without it a remote that changed size since the last
             // enumeration leaves remoteSize stale, and the openForRead size guard would EIO a
             // perfectly valid re-download.
-            // #560 U6: the cache copy is the row's only local file (no sync root). Its stats
+            // archive#560 U6: the cache copy is the row's only local file (no sync root). Its stats
             // become the baseline: HydrationImpl.lastSynced() and the co-daemon's crash-recovery
             // scanner use this localMtime as their watermark, so an external cache write after
             // this point is a dirty overwrite the replay picks up.
@@ -502,7 +502,7 @@ class MountEngine private constructor(
                 withLocalHash(rebaselined, cachePath, rebaselined.localMtime!!, rebaselined.localSize!!),
             )
             recordProviderContact()
-            // #660: a downloaded rule file is readable now; its folder is no longer held back.
+            // archive#660: a downloaded rule file is readable now; its folder is no longer held back.
             ignoreRuleFileWritten(path)
             return HydratedCache(cachePath, fetched = true)
         } finally {
@@ -510,7 +510,7 @@ class MountEngine private constructor(
         }
     }
 
-    // M2 of #1040: unlink and rename do not take the path's hydrate lock, so the row may be gone or have moved while a
+    // M2 of archive#1040: unlink and rename do not take the path's hydrate lock, so the row may be gone or have moved while a
     // download ran. The bytes then belong to a path that is not this item's any more: moved into the cache and written
     // back, they would bring a deleted file back and put a renamed row back under its old path (the row write is an
     // upsert keyed by remote id). The read fails as a gone file instead.
@@ -528,7 +528,7 @@ class MountEngine private constructor(
     private data class Fetched(val bytes: Long, val liveItem: CloudItem?)
 
     /**
-     * gkrost/unidrive#796: the row's download by its remote id, and when that fails as a gone item, once the file the
+     * archive#796: the row's download by its remote id, and when that fails as a gone item, once the file the
      * provider shows at the row's path. A listing that resolves by path (`ls --live`) and a read that resolves by the id the
      * row keeps can disagree: the row lists, the provider has a file of that name there, and the read used to answer
      * `not_found`. The file found at the path is read only when it is another id that no other row holds (see
@@ -559,7 +559,7 @@ class MountEngine private constructor(
     // The file at [remotePath] when it can stand in for a row whose id [staleId] is gone: a file (not a folder, not
     // deleted) under another id that no row of this profile holds; null otherwise, and when the provider cannot say. The
     // trash namespace is no drive path and is never asked for by path. The provider fails closed on two items of one name
-    // (#402), so a twin is never picked.
+    // (archive#402), so a twin is never picked.
     private suspend fun liveFileReplacing(
         path: String,
         remotePath: String,
@@ -590,12 +590,12 @@ class MountEngine private constructor(
 
     /**
      * The directory that holds this profile's hydration cache (every cache file lives below it, laid
-     * out like the remote tree). #450: what the cache budget measures and evicts.
+     * out like the remote tree). archive#450: what the cache budget measures and evicts.
      */
     fun hydrationCacheDir(): Path = resolveCachePath("/")
 
     /**
-     * #450: may the cache copy of [path] be deleted without losing anything? Answered from the bytes,
+     * archive#450: may the cache copy of [path] be deleted without losing anything? Answered from the bytes,
      * not from timestamps (enumeration refreshes a row's `last_synced`, so it cannot tell an edit
      * from a download). Never evictable ([CacheDisposition.PROTECTED]): no row, a folder, a row without a
      * remote (never uploaded: the cache is the only copy), a row marked failed, a copy the row's
@@ -606,7 +606,7 @@ class MountEngine private constructor(
     fun cacheDisposition(path: String): CacheDisposition = dispositionOf(path, db.getEntry(path))
 
     /**
-     * #728: [cacheDisposition] for a row the caller already loaded in a batch (`StateDatabase.getEntriesByPaths`).
+     * archive#728: [cacheDisposition] for a row the caller already loaded in a batch (`StateDatabase.getEntriesByPaths`).
      * The eviction pass asks about a whole LRU slice with ONE query instead of one per cache file; the
      * per-file checks (existence, size, mtime and, only for a copy no baseline vouches for, the content
      * hash) stay here and run with no database monitor held.
@@ -628,7 +628,7 @@ class MountEngine private constructor(
         if (entry.isFolder || entry.remoteId == null || entry.lastErrorAt != null) {
             return CacheDisposition.PROTECTED
         }
-        // #660: the ignore rules are read from the cache copies of their rule files first; an evicted rule file would
+        // archive#660: the ignore rules are read from the cache copies of their rule files first; an evicted rule file would
         // have to be downloaded again to read its rules.
         if (guard.isIgnoreRuleFile(path)) return CacheDisposition.PROTECTED
         val cache = rowCachePath(path) ?: return CacheDisposition.PROTECTED
@@ -648,7 +648,7 @@ class MountEngine private constructor(
     }
 
     /**
-     * gkrost/unidrive#1219: whether the plain file [local] holds exactly the bytes of the cloud copy of [path], proven WITHOUT downloading
+     * archive#1219: whether the plain file [local] holds exactly the bytes of the cloud copy of [path], proven WITHOUT downloading
      * the cloud copy. The proofs, cheapest first, each answering only when it really compared:
      *  1. the sizes: a row with a known size (> 0) that is not the file's size is a difference;
      *  2. the row's content hash, for a provider that has one (OneDrive's quickXor; [RowHashProof]);
@@ -698,7 +698,7 @@ class MountEngine private constructor(
         }
     }
 
-    // The row of a provider with no content hash records the SHA-256 of the bytes it last wrote or sent (#396). A hydrated, unedited row
+    // The row of a provider with no content hash records the SHA-256 of the bytes it last wrote or sent (archive#396). A hydrated, unedited row
     // whose baseline has the cloud's size and whose recorded hash is the file's is the cloud copy; a different hash decides nothing.
     private suspend fun recordedBytesProof(
         entry: SyncEntry,
@@ -714,7 +714,7 @@ class MountEngine private constructor(
     private fun ContentProof.asResult(): MatchesLocalResult = if (same) MatchesLocalResult.Same(method) else MatchesLocalResult.Differs(method)
 
     // The bytes of [cache] are a version the row knows: the remote version (content-hash providers) or
-    // the baseline bytes the row hashed when it recorded them (#396, hashless providers).
+    // the baseline bytes the row hashed when it recorded them (archive#396, hashless providers).
     private fun cacheMatchesRecordedVersion(
         entry: SyncEntry,
         cache: Path,
@@ -729,7 +729,7 @@ class MountEngine private constructor(
     }
 
     /**
-     * #450: delete the cache copy of [path] if [cacheDisposition] still allows it, under the same
+     * archive#450: delete the cache copy of [path] if [cacheDisposition] still allows it, under the same
      * per-path lock as [ensureHydrated] (no eviction in the middle of a hydration of the same path).
      * Returns the freed bytes, or null when the copy was protected or could not be removed. A row whose
      * local file WAS the cache copy is marked not hydrated (the local bytes are gone; the next open
@@ -741,7 +741,7 @@ class MountEngine private constructor(
         onUnhydrated: (String) -> Unit = {},
     ): Long? =
         hydrateMutexes.computeIfAbsent(path) { Mutex() }.withLock {
-            // #728: one row read decides both the classification and the baseline question below: this
+            // archive#728: one row read decides both the classification and the baseline question below: this
             // is the re-check that counts, so it must not ask the database twice per evicted file.
             val entry = db.getEntry(path) ?: return@withLock null
             if (dispositionOf(path, entry) == CacheDisposition.PROTECTED) return@withLock null
@@ -799,7 +799,7 @@ class MountEngine private constructor(
         log.info("Skipping upload of excluded path (keep-local): {}", path)
         val inCloud = db.getEntry(path)
         if (inCloud?.remoteId != null) {
-            // #660: the cloud holds an earlier version. The row keeps that version as its baseline, so the
+            // archive#660: the cloud holds an earlier version. The row keeps that version as its baseline, so the
             // edit stays owed to the cloud: it is uploaded (the start-up replay's dirty overwrites) once the path
             // is no longer excluded or ignored, and its cache copy, which is not the baseline, is never evicted.
             // Recording these bytes as the baseline would make them look like the cloud's and evictable.
@@ -817,7 +817,7 @@ class MountEngine private constructor(
                 localMtime = mtime,
                 localSize = size,
                 isHydrated = true,
-                // #396: new bytes behind this mtime/size; a recorded hash of the old ones is stale.
+                // archive#396: new bytes behind this mtime/size; a recorded hash of the old ones is stale.
                 localHash = null,
                 cacheBacked = true,
             ) ?: SyncEntry(
@@ -854,7 +854,7 @@ class MountEngine private constructor(
         // The trash namespace is read-only: whatever changed in a cache copy there is kept, and is never sent.
         if (isExcludedPath(path) || isReadOnlyPath(path)) return keepLocal(path, cachePath)
         val existingEntry = db.getEntry(path)
-            // #319/#301: no row means the file was renamed away, unlinked, or reaped
+            // archive#319/#301: no row means the file was renamed away, unlinked, or reaped
             // (the remote vanished) while this upload sat queued. The old fallback
             // created a fresh row and uploaded anyway, which resurrected the old
             // remote path after a rename and let the reap race a queued edit.
@@ -869,15 +869,15 @@ class MountEngine private constructor(
         requireNotBlockedByParent(path)
         val prevHash = existingEntry.remoteHash
         val existingRemoteId = existingEntry.remoteId
-        // #115: if the existing row is a locale-aliased one, its content lives
+        // archive#115: if the existing row is a locale-aliased one, its content lives
         // at the canonical remote path; the FUSE write-back must upload there,
         // not at the alias `path`. Non-aliased rows have remotePath == null →
-        // upload at `path`, byte-identical to pre-#115. The same holds for a row the
+        // upload at `path`, byte-identical to pre-archive#115. The same holds for a row the
         // drive holds under a server name, or beneath a folder that is (remotePathOf).
         val remotePath = remotePathOf(path, existingEntry)
         val sizeForLog = Files.size(cachePath)
         val sent = statBeforeUpload(cachePath)
-        // #583: bytes identical to the version the row records, and the cloud still holds that version: there is
+        // archive#583: bytes identical to the version the row records, and the cloud still holds that version: there is
         // nothing to send. The copy is adopted below exactly as an upload would rebaseline the row.
         val unchanged = unchangedCloudVersionOrNull(existingEntry, remotePath, cachePath, sizeForLog)
         if (unchanged != null) {
@@ -909,13 +909,13 @@ class MountEngine private constructor(
         // the row remembers that name from here on. Any other answer leaves the place it was asked for.
         val landedRemote = if (result.nameOverridden) result.path else remotePath
         val auditResult = if (unchanged != null) "skipped:unchanged" else "success"
-        // #658: only a real transfer is a provider round trip; the skipped-unchanged path made no upload.
+        // archive#658: only a real transfer is a provider round trip; the skipped-unchanged path made no upload.
         if (unchanged == null) recordProviderContact()
         // Defer the absence sweep's deletion verdict while the delta feed catches up
         // to this just-written remote item (see markRecentlyUploaded). Keyed by the
         // REMOTE path so the absence sweep (remote namespace) matches. Nothing was written when the upload was skipped.
         if (unchanged == null) markRecentlyUploaded(landedRemote)
-        // #337/#148: the row records the cache copy's stats as they were BEFORE
+        // archive#337/#148: the row records the cache copy's stats as they were BEFORE
         // the transfer (same rule as applyUpload). A write landing mid-upload
         // keeps a newer mtime than the recorded watermark, so a later re-upload
         // of those bytes is never absorbed into this baseline.
@@ -931,7 +931,7 @@ class MountEngine private constructor(
         val size = sent?.second ?: afterUpload?.second ?: Files.size(cachePath)
         val existing = db.getEntry(path)
         if (existing == null) {
-            // #319: the row vanished while the bytes were in flight (a delete or
+            // archive#319: the row vanished while the bytes were in flight (a delete or
             // reap raced the upload). The remote copy is current; writing a fresh
             // row here resurrected a deleted path in state.db. Skip the row write —
             // the next enumeration decides between adopting the remote item and
@@ -956,9 +956,9 @@ class MountEngine private constructor(
                 landedWithoutRow = LandedWithoutRow(result, landedRemote, sent),
             )
         }
-        // #319: `existing` is non-null here (the vanished-row case returns above),
+        // archive#319: `existing` is non-null here (the vanished-row case returns above),
         // so the upload rebaselines the row that owns the bytes instead of
-        // minting an ownerless one. #560 U6: the row's local file is the cache
+        // minting an ownerless one. archive#560 U6: the row's local file is the cache
         // copy, always — the bytes that were just sent are the bytes the cache
         // holds, and no local folder copy exists to converge with.
         val uploaded = existing.copy(
@@ -976,7 +976,7 @@ class MountEngine private constructor(
             lastSynced = Instant.now(),
             lastErrorAt = existing.lastErrorAtAfterUpload(),
             cacheBacked = true,
-            // #1070/#1069: what was sent is the cloud's now. A write that landed mid-upload is a new edit, which
+            // archive#1070/#1069: what was sent is the cloud's now. A write that landed mid-upload is a new edit, which
             // started from the version just stored.
             editBase = if (changedMidUpload) (result.version ?: result.hash).orEmpty() else null,
         )
@@ -996,7 +996,7 @@ class MountEngine private constructor(
     }
 
     /**
-     * #583: the cloud item the cache copy is already identical to, or null when the copy has to be uploaded.
+     * archive#583: the cloud item the cache copy is already identical to, or null when the copy has to be uploaded.
      * Skipping needs both: the bytes equal the version the row records ([cacheMatchesRecordedVersion]: the provider's
      * content hash, or the SHA-256 the engine recorded for hashless providers), AND the cloud still holds that version
      * (same item, size and modified time as the row; the provider's version token when both sides have one). Anything
@@ -1299,8 +1299,8 @@ class MountEngine private constructor(
         val neverOnDrive = entryBefore != null && entryBefore.remoteId == null && entryBefore.isFolder && isNameBlocked(path)
         if (!neverOnDrive) {
             try {
-                // #402/#403: a row with a cloud id is deleted by that id: the twin of a duplicate remote name shares its
-                // remote path with the item that holds the name, and a lookup by path could reach either. #1178: the same
+                // archive#402/#403: a row with a cloud id is deleted by that id: the twin of a duplicate remote name shares its
+                // remote path with the item that holds the name, and a lookup by path could reach either. archive#1178: the same
                 // holds for a delete for good, where the wrong twin would be unrecoverable.
                 val remoteId = entryBefore?.remoteId?.takeUnless { it.startsWith("local:") }
                 val remotePath = remotePathOf(path, entryBefore)
@@ -1319,13 +1319,13 @@ class MountEngine private constructor(
             }
         }
         db.markDeleted(path, mountDelete = true)
-        // #87: a folder's rows below it are part of the same user delete — leave none of
+        // archive#87: a folder's rows below it are part of the same user delete — leave none of
         // them EXISTS, or the next fresh mount plans their re-download (the live 133k case).
         if (entryBefore?.isFolder == true) db.markDescendantsDeleted(path, mountDelete = true)
     }
 
     /**
-     * WB-3 (#87): the delete of a never-uploaded file discards the provider's staged upload copy —
+     * WB-3 (archive#87): the delete of a never-uploaded file discards the provider's staged upload copy —
      * the encrypted ciphertext (and its resume sidecar) is the only other copy of the content, the
      * user deleted the file, so it goes with the row and the cache copy instead of sitting in the
      * tombstone directory until the resume TTL passes. The path is the logical one; the engine
@@ -1336,7 +1336,7 @@ class MountEngine private constructor(
         provider.discardStagedUpload(resolveCachePath(logicalPath).toAbsolutePath().toString())
     }
 
-    // #560 U2: the classification lives in :app:engine-core (RemoteErrors), shared with the mount.
+    // archive#560 U2: the classification lives in :app:engine-core (RemoteErrors), shared with the mount.
     // See [org.krost.unidrive.engine.RemoteErrors.isAlreadyGone] for the two shapes it accepts.
     private fun isAlreadyGone(e: Throwable): Boolean = org.krost.unidrive.engine.RemoteErrors.isAlreadyGone(e)
 
@@ -1360,7 +1360,7 @@ class MountEngine private constructor(
         val oldEntry = db.getEntry(oldPath)
         val oldRemote = remotePathOf(oldPath, oldEntry)
         val newRemote = remotePathOf(newPath, entry = null)
-        // #402/#403: moved by its cloud id where the row has one (see deleteRemote).
+        // archive#402/#403: moved by its cloud id where the row has one (see deleteRemote).
         val remoteId = oldEntry?.remoteId?.takeUnless { it.startsWith("local:") }
         val moved = if (remoteId != null) provider.moveById(remoteId, oldRemote, newRemote) else provider.move(oldRemote, newRemote)
         db.renamePrefix(oldPath, newPath)
@@ -1373,7 +1373,7 @@ class MountEngine private constructor(
     }
 
     /**
-     * #1217: the upload of a never-uploaded file landed [landed] while a rename moved its row to [newPath] (the rename's
+     * archive#1217: the upload of a never-uploaded file landed [landed] while a rename moved its row to [newPath] (the rename's
      * ghost probe ran before the item existed, so the rename was local only, and the attempt created the item at the
      * old path). The item is moved to the new path by its id and the row there adopts it, exactly as a finished upload
      * rebaselines its row: no second upload, no item left at the old path. The row records the stats of the bytes
@@ -1444,7 +1444,7 @@ class MountEngine private constructor(
 
     // Reflectively read a `getStatusCode(): Int` off a provider exception without a
     // provider-module classpath dependency (mirrors the hydration SPI helper). SyncEngine keeps its
-    // own copy for the mirror pass (#560 U2 kept the probe beside its callers).
+    // own copy for the mirror pass (archive#560 U2 kept the probe beside its callers).
     private fun statusCodeOf(e: Throwable): Int? =
         runCatching {
             val getter = e.javaClass.methods.firstOrNull { it.name == "getStatusCode" && it.parameterCount == 0 }
@@ -1453,7 +1453,7 @@ class MountEngine private constructor(
 
     private fun statBeforeUpload(local: Path): Pair<Long, Long>? = Transfers.statBeforeUpload(local)
 
-    // #337/#148: hash only the bytes that were sent, see Transfers.withSentHash.
+    // archive#337/#148: hash only the bytes that were sent, see Transfers.withSentHash.
     private fun withSentHash(
         entry: SyncEntry,
         local: Path,
@@ -1468,7 +1468,7 @@ class MountEngine private constructor(
     // Defer the absence sweep's deletion verdict for a path this process just wrote (the gather's state).
     private fun markRecentlyUploaded(path: String) = gather.markRecentlyUploaded(path)
 
-    // The bytes are hashed as the host's transfers do (#396), see Transfers.withLocalHash.
+    // The bytes are hashed as the host's transfers do (archive#396), see Transfers.withLocalHash.
     private fun withLocalHash(
         entry: SyncEntry,
         local: Path,
@@ -1480,7 +1480,7 @@ class MountEngine private constructor(
         /** The mount front-end of [host]: one per host, built on the first call. */
         fun over(host: MountHost): MountEngine = host.mountWiring.frontEnd { MountEngine(it) }
 
-        // The wire tokens of `hydration.matches_local` (gkrost/unidrive#1219). [METHOD_SIZE] and the provider's own methods are shared
+        // The wire tokens of `hydration.matches_local` (archive#1219). [METHOD_SIZE] and the provider's own methods are shared
         // with the client; the unreadable token is the `error` of a request that cannot be answered.
         const val INVALID_LOCAL_PATH = "invalid_local_path"
         const val LOCAL_FILE_UNREADABLE = "local_file_unreadable"
@@ -1490,9 +1490,9 @@ class MountEngine private constructor(
 }
 
 /**
- * #450: what [MountEngine.cacheDisposition] says about a hydration-cache copy.
+ * archive#450: what [MountEngine.cacheDisposition] says about a hydration-cache copy.
  * [PROTECTED] must never be deleted; [DISPOSABLE] holds only bytes the row already knows (the remote
- * version or the recorded baseline). (#560 U6 retired REDUNDANT — the sync-root copy it compared
+ * version or the recorded baseline). (archive#560 U6 retired REDUNDANT — the sync-root copy it compared
  * against is gone.)
  */
 enum class CacheDisposition { PROTECTED, DISPOSABLE }
@@ -1513,14 +1513,14 @@ data class UploadOutcome(
     val keptBothAs: String? = null,
     // With [keptBothAs]: the cache copy moved there, with a row of its own (else the next delivery brings the copy).
     val copyAdopted: Boolean = false,
-    // #1217: the row vanished while the bytes were in flight (a rename, a delete or a reap raced the upload), so no row
+    // archive#1217: the row vanished while the bytes were in flight (a rename, a delete or a reap raced the upload), so no row
     // records the item that landed. Only the caller knows whether a rename moved the row, see
     // [MountEngine.adoptLandedAfterRename].
     val landedWithoutRow: LandedWithoutRow? = null,
 )
 
 /**
- * #1217: an item an upload created after its row was gone: the [item] as the provider answered, the [remotePath] it
+ * archive#1217: an item an upload created after its row was gone: the [item] as the provider answered, the [remotePath] it
  * landed at, and the cache copy's (mtime, size) as they were sent ([sent], null when they could not be read).
  */
 data class LandedWithoutRow(

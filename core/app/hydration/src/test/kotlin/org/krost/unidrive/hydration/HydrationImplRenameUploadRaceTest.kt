@@ -220,7 +220,7 @@ class HydrationImplRenameUploadRaceTest {
         advanceUntilIdle()
         collector.cancel()
 
-        // #319: the queued upload must NOT resurrect the old remote path. The row
+        // archive#319: the queued upload must NOT resurrect the old remote path. The row
         // moved to /dst.txt, so the upload is refused (its Completed event reports
         // the failure) and the moved cache holds the bytes for the recovery replay.
         assertEquals(
@@ -240,7 +240,7 @@ class HydrationImplRenameUploadRaceTest {
         assertFalse(completed.ok, "the queued upload must report failure instead of resurrecting the old path")
     }
 
-    // #319: the rename re-keys the live upload slot under the destination, so
+    // archive#319: the rename re-keys the live upload slot under the destination, so
     // dehydrate's busy check keeps protecting the moved (un-uploaded) cache copy
     // during the window before the doomed old-path upload drains.
     @Test
@@ -264,7 +264,7 @@ class HydrationImplRenameUploadRaceTest {
         advanceUntilIdle()
     }
 
-    // #319: a queued upload whose row vanished (renamed away, unlinked, or reaped)
+    // archive#319: a queued upload whose row vanished (renamed away, unlinked, or reaped)
     // must be refused, not fall back to minting a fresh row and uploading — that
     // fallback resurrected the old remote path after a rename.
     @Test

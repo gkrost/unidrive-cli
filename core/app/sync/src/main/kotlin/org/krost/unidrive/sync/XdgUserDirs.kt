@@ -6,7 +6,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 
 /**
- * XDG user-dir locale aliasing (#115).
+ * XDG user-dir locale aliasing (archive#115).
  *
  * Standard XDG user folders (`Pictures`, `Documents`, …) are locale-aware on
  * the OS side: a German install calls the local folder `Bilder`, a Spanish
@@ -142,7 +142,7 @@ class XdgLocaleDirAliases private constructor(
     fun canonicalFor(localName: String): String? = localToCanonical[localName]
 
     /**
-     * #115: the full `localAliasName → cloudCanonicalName` mapping. Used by
+     * archive#115: the full `localAliasName → cloudCanonicalName` mapping. Used by
      * the reconciler to build the reverse (canonical → local alias) lookup so
      * a remote delta reported at the canonical path (`/Pictures/...`) can be
      * mapped back to the real local folder (`/Bilder/...`) for the local

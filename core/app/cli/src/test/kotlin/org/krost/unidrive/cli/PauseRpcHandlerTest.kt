@@ -23,7 +23,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #778: the `daemon.pause` and `daemon.resume` verbs. A refused request answers the engine's structured
+ * archive#778: the `daemon.pause` and `daemon.resume` verbs. A refused request answers the engine's structured
  * `{"ok":false,"error":"<token>"}` and changes nothing.
  */
 class PauseRpcHandlerTest {

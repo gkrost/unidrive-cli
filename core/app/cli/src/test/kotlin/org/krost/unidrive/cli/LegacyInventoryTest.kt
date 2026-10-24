@@ -25,7 +25,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * #560 U5a: the read-only inventory of a legacy profile. Fixture profiles in temp dirs (profile dir with state.db,
+ * archive#560 U5a: the read-only inventory of a legacy profile. Fixture profiles in temp dirs (profile dir with state.db,
  * sync_root, hydration cache, client recovery dir); every test that runs the inventory also checks that no byte of
  * the fixture changed.
  */

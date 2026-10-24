@@ -322,7 +322,7 @@ class InternxtApiServiceTest {
         // Post-fix behaviour: same 10 MiB shard with the OVH-specific
         // 10 KiB/s override returns 1024 s ≈ 17 min — easily covers the
         // 1000 s legitimate-progress upper bound. The read-idle socket
-        // watchdog gets a size-adaptive limit of its own (#517 R1): the
+        // watchdog gets a size-adaptive limit of its own (archive#517 R1): the
         // flat 60 s one fired mid-upload no matter how fast bytes flowed,
         // and a stalled connection trips the raised watchdog just the same.
         val sizeBytes = 10L * 1024 * 1024
@@ -337,7 +337,7 @@ class InternxtApiServiceTest {
 
     @Test
     fun `the live 1_36 GB shard at 1_98 MB-s fits under the outer net of a watched PUT`() {
-        // #571: 1,361,366,128 bytes at 1.98 MB/s need ~688 s; the #517 R1 socket
+        // archive#571: 1,361,366,128 bytes at 1.98 MB/s need ~688 s; the archive#517 R1 socket
         // timeout (size at 2 MiB/s) cut them at 650 s on every attempt. A watched
         // PUT's engine timers are only the outer net: the body at the 10 KiB/s
         // OVH floor plus the idle window and the response wait, ~37 h.
@@ -358,7 +358,7 @@ class InternxtApiServiceTest {
 
     @Test
     fun `a cut within 5 percent of the watchdog limit is classified as ours`() {
-        // Observed watchdog cuts: 59.84-61.48 s against a 60 s watchdog, n=64 (#517 F1).
+        // Observed watchdog cuts: 59.84-61.48 s against a 60 s watchdog, n=64 (archive#517 F1).
         val isCut = org.krost.unidrive.http.UploadTimeoutPolicy
         assertTrue(isCut.isSocketWatchdogCut(59_840L, 60_000L), "the fastest observed cut is still ours")
         assertTrue(isCut.isSocketWatchdogCut(61_480L, 60_000L), "the slowest observed cut is ours")
@@ -396,7 +396,7 @@ class InternxtApiServiceTest {
         // drive-desktop pattern: the offset listing of a delta passes
         // sort=updatedAt (so the per-page max() advances the effective cursor)
         // and status=ALL (tombstones are the signal for "deleted since cursor").
-        // Since #312 the incremental poll itself rides the sync listings; these
+        // Since archive#312 the incremental poll itself rides the sync listings; these
         // params belong to the offset listing that outlives it as the fallback
         // for servers without those endpoints, and to the full gather's offset
         // fallback (which passes status=EXISTS to skip the ~20–40 % tombstone
@@ -1291,7 +1291,7 @@ class InternxtApiServiceTest {
     // tests or pollute the developer's real ~/.config/unidrive/.
     // -----------------------------------------------------------------
 
-    // The bucket of the credentials newProviderRooted signs in with: a tombstone is resumed only under its own account (#1054).
+    // The bucket of the credentials newProviderRooted signs in with: a tombstone is resumed only under its own account (archive#1054).
     private val tombstoneBucket = "6928426c1a2316b856c9ab81"
 
     /**
@@ -1453,7 +1453,7 @@ class InternxtApiServiceTest {
         }
     }
 
-    // WB-3 (#87): the delete of a never-uploaded file discards the staged encrypted copy and its
+    // WB-3 (archive#87): the delete of a never-uploaded file discards the staged encrypted copy and its
     // sidecar through the provider — the user deleted the content, so the resume state (which the
     // GC would otherwise keep for the 7-day TTL) must not outlive the file.
     @Test
@@ -1651,7 +1651,7 @@ class InternxtApiServiceTest {
             }
         }
 
-    // #946: a tombstone an older build pinned holds the plain SHA-256 of the ciphertext (64 hex). The resumed finish sends the
+    // archive#946: a tombstone an older build pinned holds the plain SHA-256 of the ciphertext (64 hex). The resumed finish sends the
     // official clients' RIPEMD-160(SHA-256) (40 hex) derived from it: no re-encryption, and the same value a fresh upload sends.
     @Test
     fun `a resume that pinned a plain SHA-256 finishes with RIPEMD-160 of it (#946)`() =
@@ -1997,7 +1997,7 @@ class InternxtApiServiceTest {
         }
 
     /**
-     * #311 regression (the headline two-time-pad case). Content is rewritten
+     * archive#311 regression (the headline two-time-pad case). Content is rewritten
      * in place between attempts — same length, mtime restored — so the
      * mtime+size resume checks pass. The tombstone's content fingerprint is
      * the only thing standing between the pinned CTR keystream and the new
@@ -2068,7 +2068,7 @@ class InternxtApiServiceTest {
         }
 
     /**
-     * #311 regression (stale-upload variant). PUT_PENDING with an intact,
+     * archive#311 regression (stale-upload variant). PUT_PENDING with an intact,
      * size-matching .enc and a still-fresh presigned URL: without the
      * fingerprint binding this resume would PUT the PRIOR attempt's
      * ciphertext — stale content under current metadata — without ever
@@ -2132,12 +2132,12 @@ class InternxtApiServiceTest {
         }
 
     /**
-     * #311 backstop regression. Content is UNCHANGED (fingerprint matches)
+     * archive#311 backstop regression. Content is UNCHANGED (fingerprint matches)
      * and the tombstone is fully pinned at PUT_DONE — but the .enc ciphertext
      * is gone from disk (external cleanup of the tombstone dir). The prior
      * ciphertext may already sit on the backend, so the resume must NOT
      * re-encrypt current bytes under the pinned keystream; it cold-restarts
-     * with fresh indexBytes. (Before #311 this path re-encrypted in place.)
+     * with fresh indexBytes. (Before archive#311 this path re-encrypted in place.)
      */
     @Test
     fun `unverifiable ciphertext beyond ENCRYPTING cold-restarts instead of re-encrypting under the pinned keystream (#311 backstop)`() =
@@ -2305,7 +2305,7 @@ class InternxtApiServiceTest {
             }
         }
 
-    // #1054: the sidecar is keyed by the local path only. After a sign-in with another account the same local file
+    // archive#1054: the sidecar is keyed by the local path only. After a sign-in with another account the same local file
     // would otherwise finish with the shard session and the ciphertext of the previous account (encrypted under its
     // key, registered in the other one's bucket).
     @Test

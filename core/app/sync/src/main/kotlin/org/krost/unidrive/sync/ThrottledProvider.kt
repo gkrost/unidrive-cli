@@ -46,7 +46,7 @@ class ThrottledProvider(
         return bytes
     }
 
-    // #1059: the engine downloads through the *WithHash variants. `CloudProvider by inner` would hand them to the
+    // archive#1059: the engine downloads through the *WithHash variants. `CloudProvider by inner` would hand them to the
     // inner provider, whose own download is then called, never this wrapper's: no throttling at all. They go to the
     // inner *WithHash too, so a provider that hashes while it writes (Internxt) keeps doing so.
     override suspend fun downloadWithHash(
@@ -80,7 +80,7 @@ class ThrottledProvider(
         onProgress: ((Long, Long) -> Unit)?,
     ): CloudItem {
         val startMs = System.currentTimeMillis()
-        // #291: forward the optimistic-concurrency token to the real provider; dropping it here
+        // archive#291: forward the optimistic-concurrency token to the real provider; dropping it here
         // would silently disable the If-Match guard whenever a rate limit is configured.
         val result = inner.upload(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress)
         // Use the result size as bytes transferred; fall back to 0 if unavailable.

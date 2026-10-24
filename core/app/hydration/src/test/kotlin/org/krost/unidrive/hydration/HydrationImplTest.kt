@@ -58,7 +58,7 @@ internal class MinimalFakeProvider(
     override val displayName = "Fake (hydration test)"
     override var isAuthenticated = true
 
-    // gkrost/unidrive#1219: the content hash the provider's rows carry (OneDrive: quickXor; null = none, as Internxt) and the stored-object
+    // archive#1219: the content hash the provider's rows carry (OneDrive: quickXor; null = none, as Internxt) and the stored-object
     // proof it offers; [proofAsks] records which remote ids the engine asked it about.
     @Volatile var hashAlgorithmValue: org.krost.unidrive.HashAlgorithm? = null
     @Volatile var contentProof: ((remoteId: String, local: Path) -> org.krost.unidrive.ContentProof?)? = null
@@ -77,7 +77,7 @@ internal class MinimalFakeProvider(
     // Throw-injection for testing error paths
     private var nextThrowable: Throwable? = null
 
-    // WB-3 (#87): the local paths whose staged upload copies unlink asked to discard.
+    // WB-3 (archive#87): the local paths whose staged upload copies unlink asked to discard.
     val discardedStagedUploads = mutableListOf<String>()
 
     // When set, discardStagedUpload throws this after recording the call.
@@ -92,7 +92,7 @@ internal class MinimalFakeProvider(
     // Used by the promptness test to prove openForWrite returns before the upload finishes.
     var uploadGate: CompletableDeferred<Unit>? = null
 
-    // #613: paths whose upload reaches the provider and then suspends (stall-watchdog
+    // archive#613: paths whose upload reaches the provider and then suspends (stall-watchdog
     // tests). A silent gate suspends with no progress at all; a ticking gate reports
     // bytes while suspended, so an idle watchdog keyed on progress must keep re-arming.
     private class StallGate(val tickProgress: Boolean) {
@@ -134,17 +134,17 @@ internal class MinimalFakeProvider(
     // provider's "remote changed under the edit" refusal).
     val uploadConflictRemaining = AtomicInteger(0)
 
-    // #493: like [uploadFailuresRemaining] but the failure is a PermanentUploadFailureException (the provider refused
+    // archive#493: like [uploadFailuresRemaining] but the failure is a PermanentUploadFailureException (the provider refused
     // the request itself).
     val uploadRefusedRemaining = AtomicInteger(0)
 
-    // #580: like [uploadRefusedRemaining] but the refusal is the typed parent-gone one: the provider's walk proved the
+    // archive#580: like [uploadRefusedRemaining] but the refusal is the typed parent-gone one: the provider's walk proved the
     // folder [uploadParentGoneFolder] absent in the cloud.
     val uploadParentGoneRemaining = AtomicInteger(0)
 
     @Volatile var uploadParentGoneFolder: String = "/"
 
-    // #580: what folderStateById answers per remote id (UNKNOWN when unset); a set failure is thrown instead.
+    // archive#580: what folderStateById answers per remote id (UNKNOWN when unset); a set failure is thrown instead.
     val folderStates = ConcurrentHashMap<String, org.krost.unidrive.FolderState>()
 
     @Volatile var folderStateFailure: Exception? = null
@@ -163,7 +163,7 @@ internal class MinimalFakeProvider(
     var progressSteps: Int = 0
     var progressPaceMs: Long = 0
 
-    // #778: when set, upload() reports this (done, total) once on entry, before it suspends at [uploadGate].
+    // archive#778: when set, upload() reports this (done, total) once on entry, before it suspends at [uploadGate].
     @Volatile var progressBeforeGate: Pair<Long, Long>? = null
 
     // Total upload() invocations (attempt counting for the retry tests) and
@@ -205,7 +205,7 @@ internal class MinimalFakeProvider(
 
     override suspend fun listChildren(path: String): List<CloudItem> = emptyList()
 
-    // WB-3 (#87): the unlink ghost check probes the cloud for a local: row's content. A path with
+    // WB-3 (archive#87): the unlink ghost check probes the cloud for a local: row's content. A path with
     // no seeded remote content answers "not found" the way the provider would (a 404-shaped
     // exception that remoteItemOrNull maps to null).
     override suspend fun getMetadata(path: String): CloudItem {
@@ -224,7 +224,7 @@ internal class MinimalFakeProvider(
         )
     }
 
-    // #778: a download that has written [partialBytes] and then suspends at [gate] (a transfer in flight
+    // archive#778: a download that has written [partialBytes] and then suspends at [gate] (a transfer in flight
     // when the daemon is paused). [reached] completes once the partial bytes are on disk.
     class DownloadStall(val partialBytes: Int) {
         val gate = CompletableDeferred<Unit>()
@@ -329,7 +329,7 @@ internal class MinimalFakeProvider(
         maxConcurrentUploadsTotal.getAndUpdate { prev -> maxOf(prev, totalNow) }
 
         try {
-            // #778: the bytes a transfer in flight has moved when the daemon is paused (done, total).
+            // archive#778: the bytes a transfer in flight has moved when the daemon is paused (done, total).
             progressBeforeGate?.let { (done, total) -> onProgress?.invoke(done, total) }
             stallGates[remotePath]?.let { holdForStallWatchdog(it, onProgress) }
             uploadGate?.await()
@@ -385,7 +385,7 @@ internal class MinimalFakeProvider(
     val deletedPaths = mutableListOf<String>()
     val movedPairs = mutableListOf<Pair<String, String>>()
 
-    // #1178: rm --permanent. A provider that declares PermanentDelete is asked to delete for good (by the row's id);
+    // archive#1178: rm --permanent. A provider that declares PermanentDelete is asked to delete for good (by the row's id);
     // one that does not is a typed refusal with the row left alone; the default unlink never deletes for good.
     var supportsPermanent = false
     val permanentlyDeleted = mutableListOf<String>()
@@ -510,16 +510,16 @@ internal class HydrationTestEnv(
     val uploadStallTimeoutMs: Long = 0L,
     /** Coalescing gap for `uploading` progress events (0 = emit every callback). */
     val uploadProgressMinIntervalMs: Long = 400,
-    /** #493: delay of the replay of rows whose last upload failed; 0 = at once. */
+    /** archive#493: delay of the replay of rows whose last upload failed; 0 = at once. */
     val failedReplayDelayMs: Long = HydrationImpl.DEFAULT_FAILED_REPLAY_DELAY_MS,
-    /** #658: the cache budget in bytes; 0 = unlimited. */
+    /** archive#658: the cache budget in bytes; 0 = unlimited. */
     val cacheMaxBytes: Long = HydrationImpl.DEFAULT_CACHE_MAX_BYTES,
     providerId: String = "fake-hydration",
     /** The provider has write tokens of its own ([CloudProvider.reportsItemVersions]; OneDrive). */
     reportsItemVersions: Boolean = false,
-    /** #652: the transfer history the hydration layer records into; null = none. */
+    /** archive#652: the transfer history the hydration layer records into; null = none. */
     history: org.krost.unidrive.telemetry.TransferHistory? = null,
-    /** #660: the mount's ignore rules (read from this env's cache); null = off. */
+    /** archive#660: the mount's ignore rules (read from this env's cache); null = off. */
     ignore: org.krost.unidrive.sync.ignore.IgnoreSettings? = null,
     /** The trash namespace of the profile: the read-only folder that shows what the provider keeps in its trash. */
     val trash: org.krost.unidrive.engine.TrashNamespace = org.krost.unidrive.engine.TrashNamespace(ignoreCase = false),
@@ -543,7 +543,7 @@ internal class HydrationTestEnv(
     /** The engine under the hydration layer (the mount's guard, its ignore rules). */
     val engine: SyncEngine
 
-    /** #778: the mount's pause gate (the daemon's `daemon.pause` state). */
+    /** archive#778: the mount's pause gate (the daemon's `daemon.pause` state). */
     val pause: PauseGate
 
     /** Direct access to the fake provider (upload gate, failure/counters). */
@@ -554,7 +554,7 @@ internal class HydrationTestEnv(
     val viewClockMs = java.util.concurrent.atomic.AtomicLong(0L)
     val viewChanges = java.util.concurrent.CopyOnWriteArrayList<ViewKind>()
 
-    /** The paths of every view invalidation the engine reported (the enumeration's, #580's tombstone). */
+    /** The paths of every view invalidation the engine reported (the enumeration's, archive#580's tombstone). */
     val viewInvalidations = java.util.concurrent.CopyOnWriteArrayList<Set<String>>()
 
     init {
@@ -614,7 +614,7 @@ internal class HydrationTestEnv(
     /**
      * A clean, synced cache copy as a hydrate leaves it: [content] written, then the row's baseline and last sync taken
      * from it. [SyncEngineFacade.seedCacheContent] after [StateDatabaseFacade.insertHydratedEntry] leaves a copy that is
-     * not the row's baseline (a fixed 2026-03-28 mtime), which Free up space keeps as an unsynced edit (#1040 M5).
+     * not the row's baseline (a fixed 2026-03-28 mtime), which Free up space keeps as an unsynced edit (archive#1040 M5).
      */
     fun seedSyncedCacheContent(
         path: String,
@@ -625,7 +625,7 @@ internal class HydrationTestEnv(
     }
 
     internal inner class StateDatabaseFacade(private val db: StateDatabase) {
-        /** A row exactly as the test spells it (gkrost/unidrive#1219 tests spell the hash, the baseline and the status themselves). */
+        /** A row exactly as the test spells it (archive#1219 tests spell the hash, the baseline and the status themselves). */
         fun upsert(entry: SyncEntry) = db.upsertEntry(entry)
 
         fun insertUnhydratedEntry(
@@ -679,7 +679,7 @@ internal class HydrationTestEnv(
             )
         }
 
-        /** The row's status regardless of alive/dead (#87 tombstone checks); null when no row exists. */
+        /** The row's status regardless of alive/dead (archive#87 tombstone checks); null when no row exists. */
         fun statusOf(path: String): org.krost.unidrive.sync.model.EntryStatus? = db.statusOf(path)
 
         fun insertHydratedEntry(
@@ -793,7 +793,7 @@ internal class HydrationTestEnv(
 
         /**
          * Insert an uploaded row (a real remote id) whose baseline names [mtime]/[size] —
-         * the watermark a cache copy is compared against by the #605 dirty-overwrite replay.
+         * the watermark a cache copy is compared against by the archive#605 dirty-overwrite replay.
          */
         fun insertUploadedRow(
             path: String,
@@ -823,12 +823,12 @@ internal class HydrationTestEnv(
 
         fun lastErrorAt(path: String): Instant? = db.getEntry(path)?.lastErrorAt
 
-        /** #1070: notes an unsynced cache edit of [path] that started from the cloud version [base]. */
+        /** archive#1070: notes an unsynced cache edit of [path] that started from the cloud version [base]. */
         fun noteEditBase(path: String, base: String) {
             db.getEntry(path)?.let { db.upsertEntry(it.copy(editBase = base)) } ?: error("no row for $path")
         }
 
-        /** The cloud version the row's unsynced cache edit started from, or null when no edit is noted (#1070). */
+        /** The cloud version the row's unsynced cache edit started from, or null when no edit is noted (archive#1070). */
         fun editBaseOf(path: String): String? = db.getEntry(path)?.editBase
 
         /** The provider's write token the row records (OneDrive: the Graph eTag), or null when it has none. */
@@ -895,7 +895,7 @@ internal class HydrationTestEnv(
         /** Resolves a path to its cache location. */
         fun resolveCachePath(path: String): Path = syncEngine.resolveCachePath(path)
 
-        /** #658: the mount's last real provider round trip (a warm-cache serve does not move it). */
+        /** archive#658: the mount's last real provider round trip (a warm-cache serve does not move it). */
         fun lastProviderContactAtMs(): Long? = syncEngine.mount.lastProviderContactAtMs
 
         /** Folders the provider was asked to create (scope-guard assertions). */
@@ -906,28 +906,28 @@ internal class HydrationTestEnv(
             fakeProvider.uploadConflictRemaining.set(count)
         }
 
-        /** #493: injects [count] PermanentUploadFailureException refusals from upload() before the next success. */
+        /** archive#493: injects [count] PermanentUploadFailureException refusals from upload() before the next success. */
         fun refuseUploads(count: Int) {
             fakeProvider.uploadRefusedRemaining.set(count)
         }
 
-        /** #580: injects [count] parent-gone refusals (the walk proved [folder] absent) from upload() before the next success. */
+        /** archive#580: injects [count] parent-gone refusals (the walk proved [folder] absent) from upload() before the next success. */
         fun refuseUploadsParentGone(count: Int, folder: String) {
             fakeProvider.uploadParentGoneFolder = folder
             fakeProvider.uploadParentGoneRemaining.set(count)
         }
 
-        /** #580: what the provider answers when asked for the folder [remoteId] by its id. */
+        /** archive#580: what the provider answers when asked for the folder [remoteId] by its id. */
         fun answerFolderState(remoteId: String, state: org.krost.unidrive.FolderState) {
             fakeProvider.folderStates[remoteId] = state
         }
 
-        /** #580: every lookup of a folder by its id fails with [failure] (null: they answer again). */
+        /** archive#580: every lookup of a folder by its id fails with [failure] (null: they answer again). */
         fun failFolderStateLookups(failure: Exception?) {
             fakeProvider.folderStateFailure = failure
         }
 
-        /** #580: how often the provider was asked for a folder by its id. */
+        /** archive#580: how often the provider was asked for a folder by its id. */
         fun folderStateLookups(): Int = fakeProvider.folderStateLookups.get()
 
         /** Injects [count] upload() failures before the next success. */
@@ -1037,7 +1037,7 @@ class HydrationImplTest {
         assertEquals("unknown_path", error.message)
     }
 
-    // #207: a hydrated row over a truncated/0-byte cache (crash mid-download,
+    // archive#207: a hydrated row over a truncated/0-byte cache (crash mid-download,
     // external clear, reset/poll window) must NOT be served as-is — ensureHydrated
     // re-downloads when the cached size doesn't match the remote size.
     @Test
@@ -1055,7 +1055,7 @@ class HydrationImplTest {
         assertEquals(1, env.syncEngine.downloadCount(), "the size-mismatched cache must trigger a re-download")
     }
 
-    // #207 + C7: completeness is enforced at the provider — a download that comes up
+    // archive#207 + C7: completeness is enforced at the provider — a download that comes up
     // short of the declared remote size throws there (see the per-provider tests). The
     // hydration layer must surface that as a typed failure (→ EIO, retryable), never
     // serve truncated content as success.
@@ -1090,7 +1090,7 @@ class HydrationImplTest {
         assertEquals(11L, env.stateDb.remoteSizeOf("/big.txt"), "remoteSize must be refreshed to the downloaded size")
     }
 
-    // #207 regression: a local-only hydrated file (created via the mount, not yet
+    // archive#207 regression: a local-only hydrated file (created via the mount, not yet
     // uploaded — remoteId null, remoteSize 0) must be served from its cache on the
     // warm path, NEVER re-downloaded (there is no remote object yet, and the cache
     // is the only copy of the user's just-written bytes).
@@ -1110,7 +1110,7 @@ class HydrationImplTest {
         assertEquals(0, env.syncEngine.downloadCount(), "must NOT re-download a local-only file")
     }
 
-    // #122: a path that is not in state.db is a genuinely-unknown path. Every verb
+    // archive#122: a path that is not in state.db is a genuinely-unknown path. Every verb
     // whose precondition is a state.db row lookup must surface the SAME stable wire
     // token (`unknown_path`) so the mount maps the identical condition to the
     // identical errno (ENOENT) regardless of which verb the kernel happened to call.
@@ -1143,7 +1143,7 @@ class HydrationImplTest {
         }
     }
 
-    // #87 (WB-3): a folder deleted from the mount forgets its whole subtree — every row below it is
+    // archive#87 (WB-3): a folder deleted from the mount forgets its whole subtree — every row below it is
     // tombstoned (the live case left ~133k of them EXISTS, and the next fresh mount re-listed the
     // folder and planned the subtree for re-download) and the hydration-cache tree goes with it.
     // The 20k-row scale of the tombstone statement is pinned at the engine layer (SyncEngineTest);
@@ -1157,7 +1157,7 @@ class HydrationImplTest {
         env.stateDb.insertUnhydratedEntry("/sub/nested/b.txt", remoteSize = 6)
         env.syncEngine.seedCacheContent("/sub/a.txt", "cached bytes")
 
-        // #1035: a folder with rows below goes as a whole only with the recursive opt-in.
+        // archive#1035: a folder with rows below goes as a whole only with the recursive opt-in.
         val result = env.hydration.rmdir("/sub", recursive = true)
 
         assertTrue(result is RmdirResult.Ok, "rmdir succeeded: $result")
@@ -1175,7 +1175,7 @@ class HydrationImplTest {
         assertFalse(Files.exists(cacheFile), "the hydration-cache copy went with the folder")
     }
 
-    // #529: a 255-character name cannot stage as <name>.hydrating-<uuid> (48 extra characters put
+    // archive#529: a 255-character name cannot stage as <name>.hydrating-<uuid> (48 extra characters put
     // the component at 303 bytes, over the 255-byte limit of NTFS characters and ext4 bytes alike) —
     // the download failed every time. The staging sibling falls back to a short prefix that keeps
     // the suffix the daemon-start sweeper matches.
@@ -1192,7 +1192,7 @@ class HydrationImplTest {
         assertTrue(result is OpenResult.Ok, "a maximal-length name must hydrate: $result")
     }
 
-    // #87 (WB-3): the delete of a never-uploaded file must remove the staged encrypted copy of its
+    // archive#87 (WB-3): the delete of a never-uploaded file must remove the staged encrypted copy of its
     // failed upload — it is the only other copy of the content, and the resume path would otherwise
     // keep it until the resume TTL (7 days) expires.
     @Test
@@ -1215,9 +1215,9 @@ class HydrationImplTest {
         assertNull(env.stateDb.statusOf("/pending.txt"), "the row is hard-deleted")
     }
 
-    // #87 (WB-3): deleting a file whose own upload is queued or in flight must not drop the row and
+    // archive#87 (WB-3): deleting a file whose own upload is queued or in flight must not drop the row and
     // the cache copy under the upload — the upload would land its cloud copy into a deleted row.
-    // The delete answers busy (the token dehydrate has used since #301); the client cancels the
+    // The delete answers busy (the token dehydrate has used since archive#301); the client cancels the
     // upload and retries, or retries after the completed event.
     @Test
     fun `#87 unlink answers busy while the file's own upload is in flight`() = runTest {
@@ -1238,7 +1238,7 @@ class HydrationImplTest {
         gate.complete(Unit)
     }
 
-    // #87 review: rmdir tombstones the rows below the folder and evicts its cache tree, so an
+    // archive#87 review: rmdir tombstones the rows below the folder and evicts its cache tree, so an
     // upload in flight for a file below it must hold the folder delete off, exactly as unlink.
     @Test
     fun `#87 rmdir answers busy while an upload below the folder is in flight`() = runTest {
@@ -1269,7 +1269,7 @@ class HydrationImplTest {
         gate.complete(Unit)
     }
 
-    // #87 review: a sibling whose name merely starts with the folder's name is not below it.
+    // archive#87 review: a sibling whose name merely starts with the folder's name is not below it.
     @Test
     fun `#87 an upload of a same-prefix sibling does not hold the folder delete`() = runTest {
         val env = HydrationTestEnv()
@@ -1284,7 +1284,7 @@ class HydrationImplTest {
         gate.complete(Unit)
     }
 
-    // #87 review: the staged copy is discarded best-effort — a failing discard must not turn a
+    // archive#87 review: the staged copy is discarded best-effort — a failing discard must not turn a
     // delete that already happened into an error (the resume store's TTL GC is the backstop).
     @Test
     fun `#87 a failing discard of the staged copy does not fail the unlink`() = runTest {
@@ -1298,7 +1298,7 @@ class HydrationImplTest {
         assertNull(env.stateDb.statusOf("/pending.txt"), "the row is hard-deleted")
     }
 
-    // #87 review: a tracked file whose last edit's upload failed has a staged copy as well; its
+    // archive#87 review: a tracked file whose last edit's upload failed has a staged copy as well; its
     // delete discards it too.
     @Test
     fun `#87 unlink of a tracked file discards its staged upload copy`() = runTest {
@@ -1522,7 +1522,7 @@ class HydrationImplTest {
     @Test
     fun `open_write with the current base_etag uploads normally`() = runTest {
         // A row from before the write token (no version yet): its base is the content hash, which passes the guard
-        // but is never a provider If-Match token for a provider with versions of its own (#511).
+        // but is never a provider If-Match token for a provider with versions of its own (archive#511).
         val env = HydrationTestEnv(recoveryUploadScope = this, providerId = "onedrive", reportsItemVersions = true)
         env.stateDb.insertHydratedEntry("/doc.txt", localSize = 5)
         val cacheFile = env.tempDir.resolve("doc.txt").also { java.nio.file.Files.writeString(it, "mine") }
@@ -1535,7 +1535,7 @@ class HydrationImplTest {
         assertNull(env.syncEngine.lastUploadIfMatch(), "the content-hash base token is not a provider If-Match token (#511)")
     }
 
-    // #511: the row's write token is the provider's own version (OneDrive: the Graph eTag), handed out as `etag`.
+    // archive#511: the row's write token is the provider's own version (OneDrive: the Graph eTag), handed out as `etag`.
     @Test
     fun `list hands out the row's version as etag, and the content hash without one`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this, providerId = "onedrive", reportsItemVersions = true)
@@ -1674,7 +1674,7 @@ class HydrationImplTest {
 
     @Test
     fun `normal_handle_dirty_close_returns_promptly_without_awaiting_upload`() = runTest {
-        // Invariant (#188): a normal dirty close (FUSE release) must return Ok immediately,
+        // Invariant (archive#188): a normal dirty close (FUSE release) must return Ok immediately,
         // without blocking on the cloud upload.  A slow/hung upload must not freeze the file
         // manager (Dolphin) for the duration of the upload.
         //
@@ -1792,7 +1792,7 @@ class HydrationImplTest {
         assertEquals("unknown_path", r.error.message)
     }
 
-    // #301: an upload queued by open_write holds the path's only unsynced copy in
+    // archive#301: an upload queued by open_write holds the path's only unsynced copy in
     // the cache. Dehydrate must refuse (busy) until that upload has landed — the
     // open-set check alone misses this window, because the FUSE handle that wrote
     // the bytes is already closed by the time the background upload runs.
@@ -1823,7 +1823,7 @@ class HydrationImplTest {
         assertEquals(DehydrateResult.Ok, env.hydration.dehydrate("/foo.txt"))
     }
 
-    // #301/#136: a pending-upload row (remoteId == null && isHydrated) has no remote
+    // archive#301/#136: a pending-upload row (remoteId == null && isHydrated) has no remote
     // copy at all — its cache file IS the file. Dehydrate must refuse rather than
     // destroy the only copy.
     @Test
@@ -2022,7 +2022,7 @@ class HydrationImplTest {
         assertEquals(0L, e.size, "a negative remote size must clamp to 0, never reach the wire")
     }
 
-    // #524: a row whose upload is still pending records 0 for both remote and local
+    // archive#524: a row whose upload is still pending records 0 for both remote and local
     // size (the row is written when the copy begins and nothing writes the size back
     // until the upload lands). The cache file is the only copy and the upload will
     // send ITS size — list() must report that number, not a misleading 0 (a 0-byte

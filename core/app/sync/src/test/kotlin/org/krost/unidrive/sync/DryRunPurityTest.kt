@@ -191,7 +191,7 @@ class DryRunPurityTest {
     }
 
     /**
-     * The near-miss seen on a real account (issue #298): a dry-run used to persist the remote folders as
+     * The near-miss seen on a real account (issue archive#298): a dry-run used to persist the remote folders as
      * unhydrated rows and advance the cursor, so the following real run saw folders that "vanished locally",
      * planned DeleteRemote for them (only the unhydrated-folder guard stopped the deletes) and never ran the
      * announced mkdir. A dry-run now runs on a throwaway snapshot, so the real run must behave exactly as if

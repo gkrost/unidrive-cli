@@ -12,7 +12,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
- * #1060: a provider exception can quote a pre-authenticated URL (Ktor's timeout exceptions print the whole
+ * archive#1060: a provider exception can quote a pre-authenticated URL (Ktor's timeout exceptions print the whole
  * request URL with its query), and a log call anywhere may print its message or its stack trace. This runs the
  * shipped `logback.xml` itself, with the log directory moved into a temp directory, and reads what reaches the file.
  */

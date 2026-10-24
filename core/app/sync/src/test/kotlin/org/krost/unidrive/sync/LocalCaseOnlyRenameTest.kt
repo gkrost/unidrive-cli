@@ -20,7 +20,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #309: the user renames a synced `case1.txt` to `CASE1.txt`. Where case folds (OneDrive, NTFS) that is one name, so the
+ * archive#309: the user renames a synced `case1.txt` to `CASE1.txt`. Where case folds (OneDrive, NTFS) that is one name, so the
  * rename is one remote move of the tracked item, by its remote id, and nothing else: no delete of the old name, no
  * upload of the new one, no conflict. On NTFS the scan sees the new name only and the old name still resolves to the
  * same file; on a case-sensitive disk the scan reports the old name deleted. The provider declares that it folds case,

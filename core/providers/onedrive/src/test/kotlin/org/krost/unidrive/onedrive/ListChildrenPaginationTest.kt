@@ -690,7 +690,7 @@ class ListChildrenPaginationTest {
         }
 
     @Test
-    // Changed with #1175 (decision 3 of #1207): a probe that keeps breaking off used to discard the stored session and
+    // Changed with archive#1175 (decision 3 of archive#1207): a probe that keeps breaking off used to discard the stored session and
     // start a fresh one, which over a dropping uplink lost the progress once per attempt. Now the probe is retried on
     // the chunk back-off, then the attempt fails transiently and the session stays stored for the next one.
     fun `resolveUploadSession keeps the stored session on a probe network failure and fails the attempt`() =

@@ -53,7 +53,7 @@ private fun moveIntoPlace(
  */
 internal class UploadTombstoneStore(
     private val tombstoneDir: Path,
-    // The two seams of [write]'s local retry (#1203): the rename into place, and the pause between two tries. Tests pass their own.
+    // The two seams of [write]'s local retry (archive#1203): the rename into place, and the pause between two tries. Tests pass their own.
     private val move: (Path, Path) -> Unit = ::moveIntoPlace,
     private val pause: (Long) -> Unit = { Thread.sleep(it) },
 ) {
@@ -94,7 +94,7 @@ internal class UploadTombstoneStore(
         val finalPath = tombstoneDir.resolve("$pathHash.json")
         val tmpPath = tombstoneDir.resolve("$pathHash.json.tmp")
         val body = json.encodeToString(UploadTombstone.serializer(), tombstone)
-        // #1203: on Windows the rename over an existing sidecar fails with AccessDeniedException while another handle holds the target
+        // archive#1203: on Windows the rename over an existing sidecar fails with AccessDeniedException while another handle holds the target
         // without delete sharing (a scanner that just looked at the file, a reader of the same path). That is brief, so try a few times
         // before the caller sees it; the half-written temp file is removed when the write finally fails.
         var attempt = 0
@@ -224,7 +224,7 @@ internal class UploadTombstoneStore(
     companion object {
         private val json: Json = UnidriveJson
 
-        /** #1203: how often a write tries the rename into place, and the first pause (the n-th pause is n times this: 20, 40, 80, 160 ms). */
+        /** archive#1203: how often a write tries the rename into place, and the first pause (the n-th pause is n times this: 20, 40, 80, 160 ms). */
         private const val WRITE_ATTEMPTS = 5
         private const val WRITE_PAUSE_MS = 20L
 
@@ -249,7 +249,7 @@ internal class UploadTombstoneStore(
         }
 
         /**
-         * Cheap content-identity fingerprint (#311): SHA-256 over the first
+         * Cheap content-identity fingerprint (archive#311): SHA-256 over the first
          * and last [FINGERPRINT_WINDOW_BYTES] of the file (the whole file
          * when it is no larger than one window). mtime+size alone do not
          * prove content identity — in-place writers that restore mtime
@@ -325,7 +325,7 @@ internal data class UploadTombstone(
     val hashHex: String? = null,
     val existingRemoteId: String? = null,
     /**
-     * #311: `UploadTombstoneStore.contentFingerprint()` of the local file at
+     * archive#311: `UploadTombstoneStore.contentFingerprint()` of the local file at
      * cold start. The resume path re-derives it and treats a mismatch — or
      * a null (only possible in hand-written tombstones; schema-1 sidecars
      * are rejected at parse time) — as staleness, forcing a cold restart
@@ -337,7 +337,7 @@ internal data class UploadTombstone(
     val startedAtMillis: Long,
     val tombstoneWrittenAtMillis: Long,
     /**
-     * #578: multipart session state, present only when this upload went out in parts.
+     * archive#578: multipart session state, present only when this upload went out in parts.
      * The staged `.enc` is the source of truth for the ciphertext, so a resume re-PUTs
      * only the parts missing from [MultipartResume.parts] — within the presigned-URL
      * TTL. Past it the session's URLs are dead and the part records are dropped (the
@@ -346,7 +346,7 @@ internal data class UploadTombstone(
      */
     val multipart: MultipartResume? = null,
     /**
-     * #1203: the Bridge's file id once `finishUpload` answered, written with [Stage.FINISH_DONE]. A retry or a resume at that stage
+     * archive#1203: the Bridge's file id once `finishUpload` answered, written with [Stage.FINISH_DONE]. A retry or a resume at that stage
      * goes on to the Drive's createFile with it instead of finishing the exhausted session again (which answers 409 and, with no
      * listed entry yet, ends as a refusal). Null in a sidecar from before, which keeps the old finish-again path.
      */
@@ -360,14 +360,14 @@ internal data class UploadTombstone(
     }
 
     companion object {
-        // v2 (#311): adds content_fingerprint_hex. Schema-1 tombstones have no
+        // v2 (archive#311): adds content_fingerprint_hex. Schema-1 tombstones have no
         // content binding, so they are routed to discard (read() returns null
         // → gc sweeps them) rather than trusted for a resume.
         const val CURRENT_SCHEMA: Int = 2
     }
 }
 
-/** One completed part of a #578 multipart session: its 0-based index and the server's ETag. */
+/** One completed part of a archive#578 multipart session: its 0-based index and the server's ETag. */
 @Serializable
 internal data class MultipartPartRecord(
     val index: Int,
@@ -375,7 +375,7 @@ internal data class MultipartPartRecord(
 )
 
 /**
- * #578: what a multipart upload persists between attempts — the part plan (chunk size,
+ * archive#578: what a multipart upload persists between attempts — the part plan (chunk size,
  * part count) and the session identity (upload id, session uuid, presigned part URLs),
  * plus the parts that already landed. [bucketEntryId] is pinned the moment the finish
  * call answers, so a crash between finish-OK and the Drive registration resumes without

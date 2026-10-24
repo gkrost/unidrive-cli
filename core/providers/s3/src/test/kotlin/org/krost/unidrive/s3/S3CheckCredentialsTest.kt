@@ -10,7 +10,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** `checkCredentials()` (#1240): the keys are proved by one listing of a single key; there is no account name. */
+/** `checkCredentials()` (archive#1240): the keys are proved by one listing of a single key; there is no account name. */
 class S3CheckCredentialsTest {
     private val dir = Files.createTempDirectory("s3-check")
 

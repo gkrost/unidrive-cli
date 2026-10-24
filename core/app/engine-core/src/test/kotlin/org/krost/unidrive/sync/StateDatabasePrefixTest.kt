@@ -10,8 +10,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * Prefix and child queries of [StateDatabase] match paths exactly, by code points: #489 (UTF-16 length against
- * SQLite's character-counting substr let grandchildren through below names outside the BMP) and #490 (SQLite's
+ * Prefix and child queries of [StateDatabase] match paths exactly, by code points: archive#489 (UTF-16 length against
+ * SQLite's character-counting substr let grandchildren through below names outside the BMP) and archive#490 (SQLite's
  * LIKE folds ASCII case, so a case-only folder rename deleted the folder's whole subtree). Non-BMP characters are
  * built from code points, so the source stays ASCII.
  */
@@ -102,7 +102,7 @@ class StateDatabasePrefixTest {
 
     @Test
     fun `listDirectChildren does not leak siblings that share the parent's path prefix`() {
-        // The path range that makes the listing an index seek (#727) must stay exactly "starts with the
+        // The path range that makes the listing an index seek (archive#727) must stay exactly "starts with the
         // parent path plus a slash": '/a.txt' and '/a0' share the '/a' characters but are siblings of
         // '/a', and '/a0/deep.txt' and '/ab/other.txt' are other subtrees. Only one-level rows under
         // '/a/' belong to the listing.

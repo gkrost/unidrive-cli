@@ -11,7 +11,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * `reloadCredentials()` (#813): a running daemon's provider instance picks up the token a sign-in through the daemon
+ * `reloadCredentials()` (archive#813): a running daemon's provider instance picks up the token a sign-in through the daemon
  * stored, without a restart and without the browser fallback of `authenticate()`. The token is made up.
  */
 class OneDriveReloadCredentialsTest {

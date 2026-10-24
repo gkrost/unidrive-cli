@@ -18,7 +18,7 @@ internal object StoragePermissions {
     private val log = LoggerFactory.getLogger(StoragePermissions::class.java)
 
     /**
-     * The credential files a profile folder can hold (the ones `logout` removes). #1054 S5: `pending_dropbox_flow.json`
+     * The credential files a profile folder can hold (the ones `logout` removes). archive#1054 S5: `pending_dropbox_flow.json`
      * holds the PKCE verifier of a sign-in that has begun, so a sign-out removes it and the start tightens it, like the
      * OneDrive `device-flow.json` (the name is `DropboxProviderFactory.PENDING_FLOW_FILE`, pinned by a test in the Dropbox module).
      */
@@ -59,7 +59,7 @@ internal object StoragePermissions {
 
     /** The folder logback writes unidrive.log to (see logback.xml: LOCALAPPDATA, else ~/.local/share). */
     /**
-     * Restrict the log directory only (#560 U6): a mirror profile keeps no hydration cache, so
+     * Restrict the log directory only (archive#560 U6): a mirror profile keeps no hydration cache, so
      * there is no cache folder to tighten at a sync start.
      */
     fun restrictLogDir(logDir: Path?) {

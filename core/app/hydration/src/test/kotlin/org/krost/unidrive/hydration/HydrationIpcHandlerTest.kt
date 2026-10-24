@@ -57,7 +57,7 @@ class HydrationIpcHandlerTest {
         assertEquals("""{"ok":true}""", reply.trim())
     }
 
-    // #438: a pooled client closes on another connection than the open; the handler answers ok and the
+    // archive#438: a pooled client closes on another connection than the open; the handler answers ok and the
     // handle is really gone (a later dehydrate of the path is not busy).
     @Test
     fun `close_handle works across connections`() = runTest {

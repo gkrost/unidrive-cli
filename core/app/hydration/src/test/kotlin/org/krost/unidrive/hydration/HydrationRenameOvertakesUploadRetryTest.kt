@@ -26,7 +26,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * A bulk move through the mount while some of the moved files' uploads still wait in their retry backoff (#610):
+ * A bulk move through the mount while some of the moved files' uploads still wait in their retry backoff (archive#610):
  * files written into a folder, the first upload attempt of some of them fails, and all of them are renamed into a
  * subfolder before the retry runs. The retry must end with exactly one cloud item per name, at the new path, and no
  * conflict copy: it may neither give the file up (the row at the new path would wait for the next start with nothing
@@ -40,7 +40,7 @@ class HydrationRenameOvertakesUploadRetryTest {
 
     /**
      * A drive that keeps its items by path, like Internxt: a create (no existing id) at a path that already holds an
-     * item is a collision, and the provider keeps both (the pre-#1008 UD-366 behaviour, which is what put the conflict
+     * item is a collision, and the provider keeps both (the pre-archive#1008 UD-366 behaviour, which is what put the conflict
      * copy into the mount). [failFirst] fails the first upload of a path before anything lands; [ghostFirst] fails it
      * after the item landed (the answer was lost), which leaves a ghost for the rename's probe to find.
      */
@@ -54,7 +54,7 @@ class HydrationRenameOvertakesUploadRetryTest {
         val failFirst = mutableSetOf<String>()
         val ghostFirst = mutableSetOf<String>()
 
-        // #1217 case 2: an upload of a path held here suspends after it read the bytes and before anything lands,
+        // archive#1217 case 2: an upload of a path held here suspends after it read the bytes and before anything lands,
         // until the test completes the gate (the attempt is RUNNING while the rename lands).
         val holdUpload = mutableMapOf<String, CompletableDeferred<Unit>>()
 
@@ -318,7 +318,7 @@ class HydrationRenameOvertakesUploadRetryTest {
         assertEquals(names.size, completed.count { it.ok }, "every upload completes: $completed")
     }
 
-    // The folder-rename flavour of #610's shape (#1217 case 1): children written into a folder, every one of them
+    // The folder-rename flavour of archive#610's shape (archive#1217 case 1): children written into a folder, every one of them
     // waiting in its retry backoff, and the FOLDER renamed while they wait. The children's retries must end with
     // exactly one cloud item per child at its new path — not given up because their slots still ran at the old ones.
     private suspend fun TestScope.renameFolderWhileUploadsWait(
@@ -395,7 +395,7 @@ class HydrationRenameOvertakesUploadRetryTest {
         assertEquals(names.size, completed.count { it.ok }, "every child's upload completes: $completed")
     }
 
-    // #1217 case 2: the rename lands while an upload attempt is RUNNING (the provider holds it after reading the bytes,
+    // archive#1217 case 2: the rename lands while an upload attempt is RUNNING (the provider holds it after reading the bytes,
     // before anything lands). The rename's ghost probe finds nothing, so the rename is local only; the attempt then
     // creates the item at the OLD path. The engine must move that item to the new path by its id: exactly one cloud
     // item, at the new path, the row there carrying its id, and no second upload.

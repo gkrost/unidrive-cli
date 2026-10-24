@@ -20,7 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * #687: the connection reader sleeps until its socket has data instead of polling every 20 ms. The
+ * archive#687: the connection reader sleeps until its socket has data instead of polling every 20 ms. The
  * bounds are loose on purpose (CI machines are slow): the old poll put a ~20 ms floor under every
  * request, so a median far under it can only come from waking on data.
  */

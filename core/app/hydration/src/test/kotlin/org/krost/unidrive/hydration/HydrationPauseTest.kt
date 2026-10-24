@@ -21,7 +21,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #778: what a paused daemon does with the transfers of the mount. No upload starts and no cloud download
+ * archive#778: what a paused daemon does with the transfers of the mount. No upload starts and no cloud download
  * starts; a write made meanwhile is queued and reads as waiting, never failed; a transfer already running
  * finishes when it needs under ten seconds and is otherwise aborted and re-queued without counting a failure.
  */

@@ -25,8 +25,8 @@ class QuotaCommand : Runnable {
     @ParentCommand
     lateinit var parent: Main
 
-    // #655: --json is the script/face-end read: it NEVER creates a provider, never touches the
-    // network and NEVER auto-spawns a daemon (#642's ensureDaemonRunning is MountCommand's and
+    // archive#655: --json is the script/face-end read: it NEVER creates a provider, never touches the
+    // network and NEVER auto-spawns a daemon (archive#642's ensureDaemonRunning is MountCommand's and
     // RefreshCommand's behavior, not this command's). It reads the running daemon's
     // daemon.status (the live snapshot, same shape) or, when no daemon runs, the cached
     // tuple from state.db (flagged stale).
@@ -132,7 +132,7 @@ class QuotaCommand : Runnable {
         }
     }
 
-    // ── #655: the JSON read ──────────────────────────────────────────────────
+    // ── archive#655: the JSON read ──────────────────────────────────────────────────
 
     /**
      * Read-only snapshot for scripts and front-ends: the running daemon's `quota` object

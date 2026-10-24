@@ -29,11 +29,11 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * #560 U1: characterization tests for the mount operations (`ensureHydrated`, `uploadFromCache`,
+ * archive#560 U1: characterization tests for the mount operations (`ensureHydrated`, `uploadFromCache`,
  * `deleteRemote`, `renameRemote`, `createRemoteFolder`, `remoteItemOrNull`), which moved from
  * `SyncEngine` to [MountEngine] in U3. They run on the mount front-end of a `SyncEngine` host (the
  * production wiring, `MountEngine.over`) and pin what the code does today, so each extraction PR of
- * #560 proves parity. Only behaviour no other test pins is covered here; a test whose name starts
+ * archive#560 proves parity. Only behaviour no other test pins is covered here; a test whose name starts
  * with "current behaviour" pins something a later unit may change on purpose. The enumeration and
  * scope-transition parity of the mirror engine stays in :app:sync (`EnumerationParityTest`).
  */
@@ -249,7 +249,7 @@ class MountOperationsParityTest {
 
     // ── deleteRemote / renameRemote / createRemoteFolder ─────────────────────────────────────
 
-    // #560 U6: a remote delete no longer touches a file left at the legacy sync-root path —
+    // archive#560 U6: a remote delete no longer touches a file left at the legacy sync-root path —
     // the mount owns no local folder, so a leftover from the coordinated model stays untouched.
     @Test
     fun `deleteRemote leaves a file at the legacy sync-root path alone`() =

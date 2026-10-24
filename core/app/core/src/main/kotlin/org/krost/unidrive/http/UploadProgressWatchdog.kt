@@ -21,11 +21,11 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * #571: a write-progress watchdog for data-plane PUTs.
+ * archive#571: a write-progress watchdog for data-plane PUTs.
  *
  * **Why.** The engine's socket timeout is read-idle: it fires when nothing was RECEIVED for the interval. During a PUT
  * the server says nothing until the whole body has arrived, so that timer measures the whole upload and cannot tell
- * "slow but moving" from "stuck". Sized for an assumed floor throughput (#517 R1), it cut every upload on a link below
+ * "slow but moving" from "stuck". Sized for an assumed floor throughput (archive#517 R1), it cut every upload on a link below
  * that floor at the same point, and every retry restarted at byte 0 (a 1.36 GB file at 1.98 MB/s, cut at 650 s on each
  * attempt).
  *
@@ -106,7 +106,7 @@ public class UploadProgress(
     /**
      * The watchdog calls this on every tick, before [check]. The verdicts are wall-clock time, so a process that was not
      * running (a stop-the-world GC, a starved CI runner, a suspended VM) used to look like an upload that stopped moving
-     * (#592). When this tick comes much later than the tick interval, the lateness is a pause of the whole process, not of
+     * (archive#592). When this tick comes much later than the tick interval, the lateness is a pause of the whole process, not of
      * the upload, and it is credited back: [check] does not count it as idle or as waiting for the server. Ordinary
      * jitter (up to [PAUSE_TICKS] intervals between two ticks) is not credited, so a loaded machine can still lose an
      * upload that really stopped.
@@ -170,7 +170,7 @@ public class UploadProgress(
 }
 
 /**
- * The write-progress watchdog cut an upload (#571). An [IOException], so retry ladders that retry a broken connection
+ * The write-progress watchdog cut an upload (archive#571). An [IOException], so retry ladders that retry a broken connection
  * retry this too; the message is plain text for the user and says which of the two limits was hit.
  */
 public class UploadWatchdogException(
@@ -220,7 +220,7 @@ public suspend fun <T> withUploadWatchdog(
     coroutineScope {
         val verdict = AtomicReference<UploadWatchdogException?>(null)
         // The request's own failure is caught inside the child: a child that FAILS cancels this scope, and
-        // coroutineScope then rethrows that failure instead of the verdict below (#572 review: an engine that turns
+        // coroutineScope then rethrows that failure instead of the verdict below (archive#572 review: an engine that turns
         // the cut into its own IOException would report "Socket closed" instead of "stalled").
         val work = async { runCatching { block() } }
         // On Dispatchers.Default: the ticks are wall-clock time even when the caller runs on a test dispatcher.

@@ -121,7 +121,7 @@ internal object ProfileCreator {
         val resolved = credentialsFromOptions(factory.credentialPrompts(), factory.envVarMappings(), req)
         val creds = resolved.written
         warnings += resolved.notes
-        // #917: an unusable value (a localfs root_path that is a file, a drive root, unreadable...) is
+        // archive#917: an unusable value (a localfs root_path that is a file, a drive root, unreadable...) is
         // refused here with the provider's token, not when the account first starts. Nothing is created.
         factory.preflightAdd(resolved.effective)?.let { throw LifecycleError(it.token, it.message) }
 

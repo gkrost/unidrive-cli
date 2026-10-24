@@ -15,7 +15,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * The watermark rule (#337, #148): an upload row records the file's stats as
+ * The watermark rule (archive#337, archive#148): an upload row records the file's stats as
  * they were BEFORE the transfer started. A write that lands while the upload
  * is in flight must never be absorbed into the recorded baseline — the next
  * scan must see the difference and send the new content again. An unchanged

@@ -10,11 +10,11 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-// #323 (tracking.db half): tracking_meta exists but carried no schema version, so the
+// archive#323 (tracking.db half): tracking_meta exists but carried no schema version, so the
 // format could not evolve without ad-hoc probes. The version is stamped at open; a db
 // stamped by a NEWER build refuses to open (an older jar must never stamp downward —
 // the next upgrade would believe nothing changed and skip migrations). The state.db
-// half of #323 is covered by StateDatabaseTest.
+// half of archive#323 is covered by StateDatabaseTest.
 class SqliteTrackingSetSchemaTest {
     private fun schemaVersionOf(dbPath: Path): Int? {
         DriverManager.getConnection("jdbc:sqlite:${dbPath.toAbsolutePath().toUri()}").use { c ->

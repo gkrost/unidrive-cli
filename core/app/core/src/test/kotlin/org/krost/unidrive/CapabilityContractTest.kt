@@ -136,7 +136,7 @@ class CapabilityContractTest {
 
     @Test
     fun `a provider that declares no case policy folds case, the safe side`() {
-        // #309: a folding drive taken for a case-sensitive one would let a case twin overwrite a file; the reverse only
+        // archive#309: a folding drive taken for a case-sensitive one would let a case twin overwrite a file; the reverse only
         // refuses the twin. Every provider of the repository declares its own (each provider module tests it).
         assertEquals(CaseSensitivity.INSENSITIVE_PRESERVING, CapableProvider().caseSensitivity)
         assertTrue(CapableProvider().caseSensitivity.foldsCase)

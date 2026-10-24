@@ -29,7 +29,7 @@ open class ProviderException(
     message: String,
     cause: Throwable? = null,
     val requestId: String? = null,
-    // #878: the HTTP status of an API error, so the status report can answer a machine-readable
+    // archive#878: the HTTP status of an API error, so the status report can answer a machine-readable
     // `last_error_code` (http_408) without parsing the sanitized message. Null for a non-HTTP failure.
     val httpStatus: Int? = null,
 ) : Exception(message, cause)
@@ -87,7 +87,7 @@ open class TransientNetworkException(
  * waiting for a fresh delta event on the same remote_id to clear the
  * flag.
  *
- * #941: the plain class means exactly that, GONE, and the hydration layer reports it as `not_found`.
+ * archive#941: the plain class means exactly that, GONE, and the hydration layer reports it as `not_found`.
  * A permanent failure with another cause is a subtype that says so ([RemoteIncompleteDownloadException],
  * [RemoteObjectMissingDownloadException], [RemoteContentRefusedDownloadException],
  * [UnsupportedRemoteObjectDownloadException]); each has its own wire token in HydrationImpl.downloadFailureOf,
@@ -107,7 +107,7 @@ open class PermanentDownloadFailureException(
 ) : ProviderException(message, cause, requestId)
 
 /**
- * #536: the stored object is of a different size than the drive reports: shorter, a multipart upload another
+ * archive#536: the stored object is of a different size than the drive reports: shorter, a multipart upload another
  * client truncated (live evidence: a 23-part declared object whose 19 parts landed, 62 MiB short), or longer.
  * Every download of such an object must fail the completeness guard, so the provider raises this
  * typed failure — before streaming, off the shard's Content-Length, or after it, off the bytes
@@ -125,7 +125,7 @@ open class RemoteIncompleteDownloadException(
 ) : PermanentDownloadFailureException(message, cause, requestId)
 
 /**
- * #940: the object exists and was fetched, but its content failed the integrity check recorded for it (the
+ * archive#940: the object exists and was fetched, but its content failed the integrity check recorded for it (the
  * downloaded ciphertext does not hash to the value the network stored), so the bytes were discarded instead of
  * handed over as the file. Another attempt reads the same bytes, so it is permanent and quarantined like the other
  * [PermanentDownloadFailureException] sites; it is not a gone file, and the hydration layer reports it as its own
@@ -140,7 +140,7 @@ open class RemoteContentRefusedDownloadException(
 ) : PermanentDownloadFailureException(message, cause, requestId)
 
 /**
- * #941: the object exists, but this client cannot read it as stored: an object spread over several shards, an
+ * archive#941: the object exists, but this client cannot read it as stored: an object spread over several shards, an
  * encryption index that is not hex, a name the local file system cannot hold. Not a gone file and not a refused
  * content: the hydration layer reports it as its own `unsupported_object` token. [reason] is the short part a
  * client may show; it never carries a file name.
@@ -165,8 +165,8 @@ open class RemoteObjectMissingDownloadException(
 ) : PermanentDownloadFailureException(message, cause, requestId)
 
 /**
- * #493: a permanent upload failure — the provider rejected the request itself (a malformed or refused payload, e.g.
- * Internxt's 400 "fileId must not be provided when size is 0", #485), so another attempt with the same bytes and the same
+ * archive#493: a permanent upload failure — the provider rejected the request itself (a malformed or refused payload, e.g.
+ * Internxt's 400 "fileId must not be provided when size is 0", archive#485), so another attempt with the same bytes and the same
  * call would be rejected the same way. The hydration upload queue does not run its retry ladder for it: it marks the row
  * failed once and frees the transfer slot. Transient failures (5xx, 408, 429, network) must never be mapped to this.
  */
@@ -281,7 +281,7 @@ fun requestIdSuffix(t: Throwable?): String {
 }
 
 /**
- * #1240: no credentials are stored for the profile, so there is nothing to prove ([CloudProvider.checkCredentials]).
+ * archive#1240: no credentials are stored for the profile, so there is nothing to prove ([CloudProvider.checkCredentials]).
  * An [AuthenticationException], so a handler that does not tell the cases apart treats it as one.
  */
 open class NotSignedInException(

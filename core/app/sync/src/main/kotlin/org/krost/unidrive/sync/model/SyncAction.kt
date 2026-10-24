@@ -30,7 +30,7 @@ sealed class SyncAction {
     data class Upload(
         override val path: String,
         val remoteId: String? = null,
-        // #115: canonical REMOTE path to upload to when [path] is a local
+        // archive#115: canonical REMOTE path to upload to when [path] is a local
         // locale alias (e.g. path=/Bilder/x.jpg, remoteTarget=/Pictures/x.jpg).
         // null = remote path equals [path] (the non-aliased default). The
         // executor reads the local file at [path] but uploads to
@@ -48,7 +48,7 @@ sealed class SyncAction {
 
     data class CreateRemoteFolder(
         override val path: String,
-        // #115: canonical REMOTE path to create when [path] is under a local
+        // archive#115: canonical REMOTE path to create when [path] is under a local
         // locale alias. null = remote path equals [path] (non-aliased default).
         val remoteTarget: String? = null,
     ) : SyncAction()
@@ -68,7 +68,7 @@ sealed class SyncAction {
         // renamePrefix) and resolveLocal land on the right row / on-disk dir.
         val fromPath: String,
         val remoteId: String,
-        // #115: canonical REMOTE destination path when [path] is under a local
+        // archive#115: canonical REMOTE destination path when [path] is under a local
         // locale alias. null = remote destination equals [path] (non-aliased
         // default). The canonical remote SOURCE is derived in the executor from
         // the looked-up source row's `remotePath ?: fromPath`, so no separate

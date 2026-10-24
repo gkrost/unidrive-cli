@@ -18,7 +18,7 @@ import kotlin.test.assertNull
 
 /**
  * The start-up recording (`CloudProvider.currentAccountId`) reads the same field as the sign-in check, the owner of
- * `GET /me/drive`, because the app's file-only scopes get 403 from `GET /me` (#1247).
+ * `GET /me/drive`, because the app's file-only scopes get 403 from `GET /me` (archive#1247).
  */
 class OneDriveCurrentAccountIdTest {
     private lateinit var dir: Path

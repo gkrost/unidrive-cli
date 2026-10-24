@@ -50,7 +50,7 @@ class EnumerateRpcHandlerTest {
         assertTrue(ev.contains("""boom \"quoted\""""), ev)
     }
 
-    // #1060: the message of a provider failure can quote a pre-authenticated URL.
+    // archive#1060: the message of a provider failure can quote a pre-authenticated URL.
     @Test
     fun enumerate_failure_messages_carry_no_url_query(): Unit = runBlocking {
         val text = "Request timeout has expired [url=https://x/y?tempauth=SECRET, request_timeout=600000 ms]"
@@ -72,7 +72,7 @@ class EnumerateRpcHandlerTest {
     }
 
 
-    // #1037: see RefreshRoutingTest.refresh_reset_that_met_a_running_pass_is_not_reported_as_success.
+    // archive#1037: see RefreshRoutingTest.refresh_reset_that_met_a_running_pass_is_not_reported_as_success.
     @Test
     fun enumerate_reset_that_met_a_running_pass_is_not_reported_as_success(): Unit = runBlocking {
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
@@ -178,7 +178,7 @@ class EnumerateRpcHandlerTest {
         assertEquals(null, handler.inFlightJobId(), "the in-flight slot must be released on shutdown")
     }
 
-    // #778: no cloud enumeration while the daemon is paused: the verb is refused, the poll's guarded run skips.
+    // archive#778: no cloud enumeration while the daemon is paused: the verb is refused, the poll's guarded run skips.
     @Test
     fun enumerate_is_refused_while_paused_and_runs_again_after_resume(): Unit = runBlocking {
         val scope = CoroutineScope(coroutineContext + SupervisorJob())

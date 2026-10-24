@@ -36,7 +36,7 @@ data class EnumerationStatus(
     val lastSuccessAtMs: Long? = null,
 
     /**
-     * #523: whether the last completed gather was complete — null when nothing has gathered yet
+     * archive#523: whether the last completed gather was complete — null when nothing has gathered yet
      * or the field is unknown. A false here is the honest after-state the status UI and
      * daemon.status lacked: the walk skipped a folder it could not list, and items under it are
      * not in state.db until something mutates them. Set by the engine from
@@ -62,18 +62,18 @@ data class EnumerationStatus(
     val droppedItems: Int? = null,
     /**
      * The remote items kept locally under a decorated name because another item of the drive has the same path (a
-     * duplicate, #403); null when there are none. Read from state.db when an attempt ends, never by the tracker.
+     * duplicate, archive#403); null when there are none. Read from state.db when an attempt ends, never by the tracker.
      */
     val duplicateNames: Int? = null,
     /**
      * The entries of the drive the last gather could not read — an unreadable directory of a local folder, whose
-     * contents are not in the view (#1234). Empty once a gather ends complete; read from sync_state when an attempt
+     * contents are not in the view (archive#1234). Empty once a gather ends complete; read from sync_state when an attempt
      * ends, never by the tracker. The paths are in the provider's own spelling, at most twenty of them.
      */
     val skippedPaths: List<String>? = null,
     /** One sanitised line: no paths, at most [EnumerationTracker.ERROR_MAX_CHARS] characters. */
     val lastError: String? = null,
-    // #878: a machine-readable cause for the failure (`http_408`, `timeout`, `auth_rejected`); absent when unknown.
+    // archive#878: a machine-readable cause for the failure (`http_408`, `timeout`, `auth_rejected`); absent when unknown.
     val lastErrorCode: String? = null,
     /** When the poller tries again after a failure. */
     val nextAttemptAtMs: Long? = null,

@@ -21,7 +21,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * #402: where a folder holds two remote items with the same name, path-based
+ * archive#402: where a folder holds two remote items with the same name, path-based
  * resolution picks one arbitrarily and a delete/move can hit the wrong twin.
  * The engine must aim delete/move at the row's real cloud id (SPI deleteById /
  * moveById) and must NEVER fall back to a path-addressed mutation on a path the
@@ -81,7 +81,7 @@ class WrongTwinGuardTest {
             assertNotNull(row)
             assertEquals("a-dup", row.remoteId, "smallest id wins on a never-tracked pair")
             assertTrue("a-dup" in provider.downloadedIds, "the winner is what got downloaded")
-            // #403: the other twin is kept too, under its decorated name.
+            // archive#403: the other twin is kept too, under its decorated name.
             assertEquals("b-dup", db.getEntry(DuplicateNames.decorate("/dup.txt", "b-dup"))?.remoteId)
             assertTrue("b-dup" in provider.downloadedIds)
         }

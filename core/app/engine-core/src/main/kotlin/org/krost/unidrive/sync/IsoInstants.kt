@@ -3,7 +3,7 @@ package org.krost.unidrive.sync
 import java.time.Instant
 
 /**
- * #552: state.db stores its timestamps as `Instant.toString()` text, and every row read parsed three of
+ * archive#552: state.db stores its timestamps as `Instant.toString()` text, and every row read parsed three of
  * them with `Instant.parse`, which runs the whole `DateTimeFormatter` machinery (a parse context, boxed
  * fields) for a fixed shape. Loading the rows of a drive with hundreds of thousands of entries made that
  * a visible share of the allocations.

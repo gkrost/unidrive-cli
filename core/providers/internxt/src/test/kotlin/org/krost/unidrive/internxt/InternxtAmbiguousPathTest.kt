@@ -21,7 +21,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * #402: Internxt path-to-id resolution must fail closed on ambiguity. Where two
+ * archive#402: Internxt path-to-id resolution must fail closed on ambiguity. Where two
  * live items share a name, `getMetadata` / `resolveFolder` used to take the first
  * listing match — a delete or move resolved through them could hit the wrong twin.
  * They must throw instead, and the SPI by-id entry points (deleteById / moveById)
@@ -183,7 +183,7 @@ class InternxtAmbiguousPathTest {
             assertEquals("solo-uuid", item.id)
         }
 
-    // ---- #1178: delete for good ----
+    // ---- archive#1178: delete for good ----
 
     @Test
     fun `deletePermanentlyById purges the file uuid, never trashes, never touches the twin`() =

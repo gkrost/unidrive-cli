@@ -22,7 +22,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * #403: two live remote items with one path are both kept locally. The winner rule (#401) keeps the path for one;
+ * archive#403: two live remote items with one path are both kept locally. The winner rule (archive#401) keeps the path for one;
  * every other twin lives under `name (dup-xxxxxxxx).ext`, 8 hex digits of its remote id, with the canonical path in
  * `remote_path`. What the user does to the decorated copy reaches that twin by its id, never the one at the name.
  */

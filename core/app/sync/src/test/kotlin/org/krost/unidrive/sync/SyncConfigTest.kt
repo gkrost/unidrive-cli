@@ -794,7 +794,7 @@ class SyncConfigTest {
 
     @Test
     fun `resolveDefaultProfile never falls back to localfs when the only profile is another type`() {
-        // #920: the old fallback was the registry default "localfs", which resolved to a profile
+        // archive#920: the old fallback was the registry default "localfs", which resolved to a profile
         // with no section and failed with a localfs-only message.
         writeConfig("[providers.onedrive]\ntype = \"onedrive\"\n")
         assertEquals("onedrive", SyncConfig.resolveDefaultProfile(tmpDir))

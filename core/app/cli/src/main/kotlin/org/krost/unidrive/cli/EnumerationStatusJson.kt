@@ -38,14 +38,14 @@ internal fun EnumerationStatus.toJson(): JsonObject =
         droppedItems?.let { put("dropped_items", it) }
         // Absent when none: the remote items kept under a decorated local name, because another item has their path.
         duplicateNames?.let { put("duplicate_names", it) }
-        // Absent when none (#1234): the entries the last gather could not read, so a client can name the blocked folder.
+        // Absent when none (archive#1234): the entries the last gather could not read, so a client can name the blocked folder.
         skippedPaths?.takeIf { it.isNotEmpty() }?.let { paths ->
             put("skipped_paths", buildJsonArray { paths.forEach { add(it) } })
         }
         // Present (true) only while a running attempt lists the drive again because the last scan was incomplete.
         if (recovery) put("recovery", true)
         lastError?.let { put("last_error", it) }
-        // #878: a machine-readable cause (http_408, timeout, auth_rejected); absent when unknown.
+        // archive#878: a machine-readable cause (http_408, timeout, auth_rejected); absent when unknown.
         lastErrorCode?.let { put("last_error_code", it) }
         nextAttemptAtMs?.let { put("next_attempt_at_ms", it) }
     }

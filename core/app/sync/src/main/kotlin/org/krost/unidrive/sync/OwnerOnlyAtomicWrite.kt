@@ -13,7 +13,7 @@ import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermissions
 
 /**
- * Replaces a secret file without a window in which it is torn or readable by others (#1053). The new bytes go to a
+ * Replaces a secret file without a window in which it is torn or readable by others (archive#1053). The new bytes go to a
  * temp file in the same folder that is owner-only before the first byte is written ([OwnerOnly], as `CredentialStore`
  * does), reach the disk (`force`), are checked by the caller, and only then replace [target] in one atomic move. Whatever
  * fails before the move leaves [target] as it was and the temp file removed.

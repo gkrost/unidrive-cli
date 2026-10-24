@@ -6,7 +6,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
- * #529: a download stages `<name>.unidrive-tmp` (13 characters) or `<name>.hydrating-<uuid>`
+ * archive#529: a download stages `<name>.unidrive-tmp` (13 characters) or `<name>.hydrating-<uuid>`
  * (48) beside its destination — a name near the 255-byte component limit cannot take the suffix
  * and failed every download. The helper keeps the suffix (sweepers match `*.unidrive-tmp` /
  * `*.hydrating-*`) and shortens the prefix instead.

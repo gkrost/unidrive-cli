@@ -4,11 +4,11 @@ import org.krost.unidrive.sync.PathNormalizer
 import java.security.MessageDigest
 
 /**
- * The local names of duplicate remote items (#403). Two live remote items can share one path (Internxt allows exact
+ * The local names of duplicate remote items (archive#403). Two live remote items can share one path (Internxt allows exact
  * duplicates); the local file system cannot hold both under it. The gather's winner rule keeps the path for one of
  * them, every other twin is given `name (dup-xxxxxxxx).ext`: the canonical name with a tag of 8 hex digits taken from
  * its remote id, so the name depends on the id alone and is the same on every run and on every machine. The row keeps
- * the canonical path in `remote_path` (the split #115 introduced); the decorated name never reaches the cloud.
+ * the canonical path in `remote_path` (the split archive#115 introduced); the decorated name never reaches the cloud.
  *
  * Every name is NFC and fits one path component: at most 255 UTF-8 bytes and at most 255 UTF-16 units, the stem is
  * shortened (never the tag or the extension) when the decorated name would be longer.
@@ -74,7 +74,7 @@ object DuplicateNames {
      * The gather key of a row whose local [path] differs from its [remotePath] by twin decorations: the canonical path
      * with the decorated components put back (a locale alias or a server name on another component stays canonical,
      * the key space of the gather is the remote one). The key is NFC like every key of the gather, also when
-     * [remotePath] keeps the provider's own spelling of a name that differs from its NFC form only (#491). Null when no
+     * [remotePath] keeps the provider's own spelling of a name that differs from its NFC form only (archive#491). Null when no
      * component is a twin's.
      */
     fun keyOf(

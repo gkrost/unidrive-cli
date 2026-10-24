@@ -180,7 +180,7 @@ class ReconcilerTest {
         assertIs<SyncAction.Upload>(actions[0])
     }
 
-    // #200(b): an INCOMPLETE enumeration must not let local-present/remote-absent
+    // archive#200(b): an INCOMPLETE enumeration must not let local-present/remote-absent
     // paths drive remote creates — they may be un-enumerated subtrees, not new files.
     @Test
     fun `incomplete enumeration defers new-local creates`() {
@@ -215,7 +215,7 @@ class ReconcilerTest {
         assertTrue(actions.any { it is SyncAction.Upload }, "MODIFIED upload must NOT be deferred")
     }
 
-    // #200(b) streaming finalize: the same gate runs in finalizeStreaming, where
+    // archive#200(b) streaming finalize: the same gate runs in finalizeStreaming, where
     // streamed (held) NEW-local uploads are emitted on a complete enumeration and
     // dropped on an incomplete one.
     @Test
@@ -451,7 +451,7 @@ class ReconcilerTest {
     @Test
     fun `a row recorded without a hash is not remote-modified when the provider starts reporting one`() {
         // Internxt rows were written with remote_hash = null (the provider had no hash). The version token that
-        // #464 puts on the listing must not make every existing row look remotely modified on the first sync after
+        // archive#464 puts on the listing must not make every existing row look remotely modified on the first sync after
         // the upgrade: that would re-download the whole drive. A recorded hash that differs is still a change.
         // Hydrated rows, so the UD-225 recovery of unhydrated rows does not add a download of its own.
         db.upsertEntry(dbEntry("/old.txt", isHydrated = true).copy(remoteHash = null))
@@ -469,7 +469,7 @@ class ReconcilerTest {
         assertTrue(actions.any { it.path == "/changed.txt" }, "a different recorded hash is still a remote change: $actions")
     }
 
-    // #160 — download-only rehydrate: hydrated-but-locally-missing rows must re-download
+    // archive#160 — download-only rehydrate: hydrated-but-locally-missing rows must re-download
 
     @Test
     fun `#160 download-only hydrated-row local-missing with remoteItem in delta emits DownloadContent`() {
@@ -544,7 +544,7 @@ class ReconcilerTest {
 
     @Test
     fun `both modified with identical local content adopts the remote instead of conflicting`() {
-        // #532: both devices wrote the same bytes between two syncs; the report showed
+        // archive#532: both devices wrote the same bytes between two syncs; the report showed
         // the second sync renaming one copy to *.conflict-local-* and uploading it as a
         // new remote file. When the local file hashes to the remote item's hash (the
         // engine wires HashVerifier with the provider's algorithm into `sameContent`),
@@ -1144,7 +1144,7 @@ class ReconcilerTest {
         assertEquals("/internal/file-a.bin", uploads[0].path)
     }
 
-    // #136: the gap row — remoteId=null AND isHydrated=false (a sparse
+    // archive#136: the gap row — remoteId=null AND isHydrated=false (a sparse
     // partial-download row) — satisfies half of the UD-901 predicate. The
     // upload-recovery loop must check BOTH halves and NOT plan an Upload for it
     // (there are no local bytes to upload); the download-recovery lane is where
@@ -1552,7 +1552,7 @@ class ReconcilerTest {
         assertTrue(actions.any { it is SyncAction.Upload && it.path == "/new.bin" })
     }
 
-    // ── #296: detectMoves file-move needs a structural anchor, not size alone ──
+    // ── archive#296: detectMoves file-move needs a structural anchor, not size alone ──
     // Deleting /a/report.pdf and creating an unrelated same-size /b/photo.jpg in
     // the same pass used to be collapsed into a remote rename: the cloud kept
     // report.pdf's bytes under the new name and photo.jpg's real content was
@@ -1735,7 +1735,7 @@ class ReconcilerTest {
         assertEquals("/old-name.txt", moveActions[0].fromPath)
     }
 
-    // #1044: a rename that comes with a change of the content must still fetch the content.
+    // archive#1044: a rename that comes with a change of the content must still fetch the content.
 
     private fun renamedTo(
         newPath: String,
@@ -2011,7 +2011,7 @@ class ReconcilerTest {
         )
     }
 
-    // #526 review: a folder whose name the local filesystem cannot represent (trailing space; the
+    // archive#526 review: a folder whose name the local filesystem cannot represent (trailing space; the
     // resolve throws on Windows) must stay a metadata-only flip — no DownloadContent for a folder.
     @Test
     fun `restore from trash — unresolvable folder name is a metadata flip, no DownloadContent`() {
@@ -2084,7 +2084,7 @@ class ReconcilerTest {
         assertIs<SyncAction.DeleteLocal>(actions[0])
     }
 
-    // ── #419: a re-delivered delete for an already-trashed, already-gone row ─
+    // ── archive#419: a re-delivered delete for an already-trashed, already-gone row ─
     //
     // The Internxt delta cursor rewinds by two minutes, so a run that only sees old
     // deletions re-reads the same deleted items. A TRASHED tombstone that is also absent
@@ -2406,7 +2406,7 @@ class ReconcilerTest {
         val pageActions = reconciler.resolveSlice(coalesced, emptyMap(), emptyList())
         val finalized = reconciler.finalizeStreaming(pageActions, coalesced, emptyMap(), emptyList())
         // After finalize there should be a single MoveLocal, NOT a DeleteLocal of /old.txt. The hash differs
-        // (h -> h2): the new content is fetched after the move (#1044).
+        // (h -> h2): the new content is fetched after the move (archive#1044).
         val moves = finalized.filterIsInstance<SyncAction.MoveLocal>()
         assertEquals(1, moves.size)
         assertEquals("/new.txt", moves[0].path)

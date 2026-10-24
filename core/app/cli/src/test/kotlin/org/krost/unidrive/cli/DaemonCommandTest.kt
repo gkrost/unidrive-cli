@@ -284,7 +284,7 @@ class DaemonCommandTest {
         assertEquals(false, StaleMountDetector.cmdlineServesSocket(emptyList(), socket))
     }
 
-    // ── daemon start: no interactive sign-in (#865) ───────────────────────────
+    // ── daemon start: no interactive sign-in (archive#865) ───────────────────────────
 
     // Invariant: a daemon start proceeds exactly when the credentials can authenticate without
     // an interactive sign-in. Expired/missing/unreadable credentials must produce the typed

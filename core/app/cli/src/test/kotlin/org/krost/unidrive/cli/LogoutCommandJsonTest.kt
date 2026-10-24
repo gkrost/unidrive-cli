@@ -174,7 +174,7 @@ class LogoutCommandJsonTest {
         assertTrue(r.getValue("ok").jsonPrimitive.boolean)
         assertEquals("work", r.getValue("profile").jsonPrimitive.content)
         assertTrue(r.getValue("credentials_removed").jsonPrimitive.boolean)
-        // #1052: the localfs account has no token at a provider; "revoked" was true here because logout() returned.
+        // archive#1052: the localfs account has no token at a provider; "revoked" was true here because logout() returned.
         assertTrue(r.getValue("revoked") is JsonNull, "got: ${stdout()}")
         assertEquals("unsupported", r.getValue("revocation").jsonPrimitive.content)
         assertTrue(r.getValue("state_kept").jsonPrimitive.boolean)

@@ -20,9 +20,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * #491, download direction: two cloud items whose names differ only in Unicode normalisation (an NFC/NFD pair, the
- * ANGSTROM SIGN U+212B next to U+00C5) are two items. state.db keys paths in NFC (#171), so the pair meets at one key;
- * the gather keeps the member spelled in NFC at the name and the other one under its decorated twin name (#403). What
+ * archive#491, download direction: two cloud items whose names differ only in Unicode normalisation (an NFC/NFD pair, the
+ * ANGSTROM SIGN U+212B next to U+00C5) are two items. state.db keys paths in NFC (archive#171), so the pair meets at one key;
+ * the gather keeps the member spelled in NFC at the name and the other one under its decorated twin name (archive#403). What
  * the engine then does to either one reaches that one and never the other, also on a drive that addresses its items by
  * path only (localfs, S3: no by-id delete, the id is the path). A name NFKC folds and NFC does not (the ligature) is no
  * twin at all.

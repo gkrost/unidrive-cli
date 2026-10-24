@@ -21,7 +21,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * `forgetCredentials()` (#1186): after a sign-out through the running daemon, the daemon's own instance drops the
+ * `forgetCredentials()` (archive#1186): after a sign-out through the running daemon, the daemon's own instance drops the
  * token it holds in memory. It stops reporting itself authenticated, no later request gets the old token, and a
  * refresh that was under way stores nothing. Every token here is made up.
  */

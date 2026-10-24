@@ -19,7 +19,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-// Ghost-guard for the mount's rename/unlink (#203 layer-2). A state.db row with a
+// Ghost-guard for the mount's rename/unlink (archive#203 layer-2). A state.db row with a
 // local: synthetic id is normally a genuinely-never-uploaded file. But a "ghost" —
 // an upload that committed cloud-side but lost its response — also presents as
 // local:. Without the guard, renaming/deleting a ghost takes the local-only branch

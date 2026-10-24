@@ -368,7 +368,7 @@ class DaemonRuntimeTest {
                 // handler, whether the outcome is ok or a typed error.
                 val requests = listOf(
                     """{"verb":"daemon.status"}""",
-                    // #778: a pause is followed by its resume at once, so the verbs after them meet a running daemon.
+                    // archive#778: a pause is followed by its resume at once, so the verbs after them meet a running daemon.
                     """{"verb":"daemon.pause","reason":"user","auto":false}""",
                     """{"verb":"daemon.resume"}""",
                     """{"verb":"hydration.open_read","handle_id":"h1","path":"/startup/read.txt"}""",
@@ -380,7 +380,7 @@ class DaemonRuntimeTest {
                     """{"verb":"hydration.dehydrate","path":"/startup/dehydrate.txt"}""",
                     """{"verb":"hydration.subscribe"}""",
                     """{"verb":"hydration.last_synced","path":"/startup/ls.txt"}""",
-                    """{"verb":"hydration.matches_local","path":"/startup/ml.txt","local_path":${kotlinx.serialization.json.JsonPrimitive(tempDir.resolve("ml.bin").toString())}}""", // #1219: no such row is an answer ("unknown"), not silence
+                    """{"verb":"hydration.matches_local","path":"/startup/ml.txt","local_path":${kotlinx.serialization.json.JsonPrimitive(tempDir.resolve("ml.bin").toString())}}""", // archive#1219: no such row is an answer ("unknown"), not silence
                     """{"verb":"hydration.list","prefix":"/"}""",
                     """{"verb":"hydration.mkdir","path":"/startup"}""",
                     """{"verb":"hydration.unlink","path":"/startup/unlink.txt"}""",
@@ -405,7 +405,7 @@ class DaemonRuntimeTest {
                     """{"verb":"auth.begin"}""",
                     """{"verb":"auth.complete","handle":"h"}""",
                     """{"verb":"auth.login","email":"user@example.test","password":"x"}""",
-                    // #1240: the stub provider has no credential check, so this answers unsupported (still a reply).
+                    // archive#1240: the stub provider has no credential check, so this answers unsupported (still a reply).
                     """{"verb":"auth.check"}""",
                     """{"verb":"daemon.shutdown"}""",
                 )
@@ -643,7 +643,7 @@ class DaemonRuntimeTest {
         }
     }
 
-    // #463: a status client shows how often the daemon polls the cloud (0 = off).
+    // archive#463: a status client shows how often the daemon polls the cloud (0 = off).
     @Test
     fun `daemon_status reports the effective poll interval`() = runBlocking {
         val runtime = DaemonRuntime(
@@ -1051,10 +1051,10 @@ class DaemonRuntimeTest {
         startupIoDispatcher = startupIoDispatcher,
         )
 
-    // Startup is fixture setup: delegates to the shared #625 helper (30 s ceiling, died-start check).
+    // Startup is fixture setup: delegates to the shared archive#625 helper (30 s ceiling, died-start check).
     private suspend fun awaitSocket(daemonJob: Job? = null) = awaitDaemonSocket(socketPath, daemonJob)
 
-    // ── #678: startup work must not delay a stop ─────────────────────────────────────────────
+    // ── archive#678: startup work must not delay a stop ─────────────────────────────────────────────
 
     /** A dispatcher that queues tasks until [release], then runs them on the caller's thread. */
     private class HoldingDispatcher : CoroutineDispatcher() {
@@ -1093,7 +1093,7 @@ class DaemonRuntimeTest {
      * own. They run off the event loop (the injected dispatcher stands in for Dispatchers.IO): the
      * socket binds while both are still queued, and once the stop was issued the queued work runs,
      * observes the cancellation, and the daemon exits. On the event loop they starved
-     * closeSignal.await() and a stop waited for the whole replay (#678's 38-65 s stalls).
+     * closeSignal.await() and a stop waited for the whole replay (archive#678's 38-65 s stalls).
      */
     @Test
     fun `a stop is honoured while the startup replay and sweep are still queued on their dispatcher`() =
@@ -1139,7 +1139,7 @@ class DaemonRuntimeTest {
             }
         }
 
-    // ── #655: the quota snapshot in daemon.status ───────────────────────────
+    // ── archive#655: the quota snapshot in daemon.status ───────────────────────────
 
     // Seeds the sync_state cache the same way `quota` (UD-214) persists it, with an
     // old fetched_at so the daemon's first status sees an expired TTL.
@@ -1402,7 +1402,7 @@ class DaemonRuntimeTest {
         override val displayName: String = "Stub"
         override var isAuthenticated: Boolean = true
 
-        // #655: quota snapshot fixtures. A failure injected here exercises the stale path.
+        // archive#655: quota snapshot fixtures. A failure injected here exercises the stale path.
         var quotaCalls: Int = 0
         var quotaResult: QuotaInfo = QuotaInfo(total = 10L, used = 1L, remaining = 9L)
         var quotaFailure: Exception? = null

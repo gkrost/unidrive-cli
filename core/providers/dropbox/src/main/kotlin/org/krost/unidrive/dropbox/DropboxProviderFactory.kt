@@ -49,7 +49,7 @@ open class DropboxProviderFactory : ProviderFactory {
         profileDir: Path,
     ): Boolean = Files.exists(profileDir.resolve(DropboxAuth.TOKEN_FILE))
 
-    // #866: the no-redirect code flow. `auth begin` hands out the authorize url and keeps the PKCE
+    // archive#866: the no-redirect code flow. `auth begin` hands out the authorize url and keeps the PKCE
     // verifier as a pending flow in the profile folder; `auth complete --code-stdin` exchanges the
     // code the user pasted. Dropbox has no device-code flow, so there is nothing to poll: one call.
 

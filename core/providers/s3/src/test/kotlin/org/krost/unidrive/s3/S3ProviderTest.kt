@@ -62,7 +62,7 @@ class S3ProviderTest {
 
     @Test
     fun `S3 declares case-sensitive keys`() {
-        // #309: object keys are case-sensitive, so `a.txt` and `A.txt` are two objects.
+        // archive#309: object keys are case-sensitive, so `a.txt` and `A.txt` are two objects.
         assertEquals(CaseSensitivity.SENSITIVE, provider(FakeS3()).caseSensitivity)
     }
 
@@ -153,7 +153,7 @@ class S3ProviderTest {
             assertTrue(Files.list(dir.resolve("s3-uploads")).use { it.count() } == 0L)
         }
 
-    // #1062: the key of a path loses its leading and trailing '/', never white space inside the name.
+    // archive#1062: the key of a path loses its leading and trailing '/', never white space inside the name.
     @Test
     fun `a name with a trailing space is its own key, listed, downloaded and deleted as such`() =
         runTest {
@@ -179,7 +179,7 @@ class S3ProviderTest {
         }
 
 
-    // #1058: the socket timeout is a read-idle timer from the start of the request and S3 answers only after the
+    // archive#1058: the socket timeout is a read-idle timer from the start of the request and S3 answers only after the
     // body; at its 60 s default it cut every upload a slow uplink needs longer than that for.
     @Test
     fun `every upload PUT, single and part, runs under a socket timeout as long as its request timeout`() =
@@ -321,7 +321,7 @@ class S3ProviderTest {
             assertEquals("/dir/c.txt", moved.path)
         }
 
-    // #1063: the source of a folder move goes the way a folder delete goes.
+    // archive#1063: the source of a folder move goes the way a folder delete goes.
     @Test
     fun `a folder move that cannot delete a source key fails and leaves nothing to guess about`() =
         runTest {
@@ -444,7 +444,7 @@ class S3ProviderTest {
             assertFalse(provider.isAuthenticated)
         }
 
-    // #1063: a 403 for one object is that object's refusal, not a reason to stop the whole sync.
+    // archive#1063: a 403 for one object is that object's refusal, not a reason to stop the whole sync.
     @Test
     fun `a 403 AccessDenied on one object is an S3 refusal, not an authentication failure`() =
         runTest {

@@ -581,7 +581,7 @@ class AuthLifecycleTest {
         assertTrue(spec.commandSpec.findOption("--device-code") != null, "-d/--device-code is unchanged")
     }
 
-    // -- #866: the stdin code of a no-redirect flow -------------------------------
+    // -- archive#866: the stdin code of a no-redirect flow -------------------------------
 
     @Test
     fun `complete pipes the stdin code to the factory and never prints it`() {

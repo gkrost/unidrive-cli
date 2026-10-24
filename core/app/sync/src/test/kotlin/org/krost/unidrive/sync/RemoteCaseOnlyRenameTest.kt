@@ -15,7 +15,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #1086: the cloud renames `report.txt` to `Report.txt`. On a case-insensitive file system (NTFS) the JDK's move
+ * archive#1086: the cloud renames `report.txt` to `Report.txt`. On a case-insensitive file system (NTFS) the JDK's move
  * treats that as already done, so the name on disk never changed while the row took the new case, and every later
  * scan read the old-case file as a new path that collides with the row. Passes everywhere; it only fails on a
  * case-insensitive file system without the fix, so there is no Linux-only variant to keep green.

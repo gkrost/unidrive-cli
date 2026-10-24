@@ -16,7 +16,7 @@ import java.nio.file.Path
  *    backslash or quote cannot break the TOML grammar.
  */
 
-/** Windows device names cannot be profile folders, even when followed by an extension (the shared table, #1090). */
+/** Windows device names cannot be profile folders, even when followed by an extension (the shared table, archive#1090). */
 fun isReservedProfileName(name: String): Boolean = WindowsDeviceNames.isReserved(name)
 
 /** Validate profile name: TOML bare key (letters, digits, hyphens, underscores), not a Windows device name. */
@@ -44,7 +44,7 @@ fun escapeTomlValue(value: String): String =
     }
 
 /**
- * #646: set `[general] default_profile` in config text, or remove it with a null [profileName].
+ * archive#646: set `[general] default_profile` in config text, or remove it with a null [profileName].
  * The value is inserted directly under the `[general]` header (an existing `default_profile` line
  * is replaced in place) and every other line is preserved byte for byte, comments, ordering and
  * the file's line-ending style included — the same line-oriented contract as the rest of this
@@ -80,7 +80,7 @@ fun setDefaultProfile(
 
 /**
  * Generate a TOML section string for a new profile.
- * Returns the full `[providers.<name>]` block ready to append. The mode is mandatory (#603): a
+ * Returns the full `[providers.<name>]` block ready to append. The mode is mandatory (archive#603): a
  * profile without one is refused by every command, so creation always writes it.
  */
 fun generateProfileToml(
@@ -103,7 +103,7 @@ fun generateProfileToml(
     }
 
 /**
- * #604: set `mode` in the `[providers.<name>]` section — the publication step of the legacy
+ * archive#604: set `mode` in the `[providers.<name>]` section — the publication step of the legacy
  * conversion. Replaces an existing `mode` line in place; otherwise inserts directly after the
  * section's `type` line (every section declares its type first). Line-oriented like the rest
  * of this file: comments, ordering and unrelated sections are preserved byte for byte.

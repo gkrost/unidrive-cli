@@ -110,7 +110,7 @@ class EnumerateRemoteIntoStateTest {
     fun `reaping a remotely-deleted hydrated path evicts its cache file`() =
         runTest {
             provider.putRemote("/big.bin", "X".repeat(10))
-            // #301: the cache file must predate the row the enumeration writes
+            // archive#301: the cache file must predate the row the enumeration writes
             // (whose lastSynced lands at gather time). A cache written AFTER the
             // enumeration reads as an un-uploaded edit and defers the reap.
             val cache =
@@ -127,7 +127,7 @@ class EnumerateRemoteIntoStateTest {
             assertFalse(Files.exists(cache), "cache file must be evicted when the remote path is reaped")
         }
 
-    // #149: the filesystem delete is a side effect and must not run inside the
+    // archive#149: the filesystem delete is a side effect and must not run inside the
     // reap's database transaction — the batch commits first, the cache files
     // are evicted afterwards.
     @Test
@@ -135,7 +135,7 @@ class EnumerateRemoteIntoStateTest {
         runTest {
             provider.putRemote("/evict.bin", "E")
             // The cache file must predate the row (see the test above) or the
-            // #301 guard defers the reap entirely.
+            // archive#301 guard defers the reap entirely.
             val cache =
                 engine.resolveCachePath("/evict.bin").also {
                     Files.createDirectories(it.parent)
@@ -161,7 +161,7 @@ class EnumerateRemoteIntoStateTest {
             assertFalse(Files.exists(cache), "the cache file is evicted once the batch has committed")
         }
 
-    // #149 follow-up: with the delete outside the lock, a cache file rewritten between
+    // archive#149 follow-up: with the delete outside the lock, a cache file rewritten between
     // the commit and the eviction (an edit through the mount) must survive.
     @Test
     fun `a cache file rewritten after the reap commit is not evicted`() =
@@ -188,7 +188,7 @@ class EnumerateRemoteIntoStateTest {
             assertTrue(Files.exists(cache), "bytes written after the reap decision must not be deleted")
         }
 
-    // #301: the enumerate-reap must not evict (or tombstone) a path whose
+    // archive#301: the enumerate-reap must not evict (or tombstone) a path whose
     // hydration upload is queued or in flight — the cache copy may be the only
     // copy of the user's edit, and destroying it lost the bytes everywhere.
     @Test
@@ -220,7 +220,7 @@ class EnumerateRemoteIntoStateTest {
             assertTrue(Files.exists(cache), "the queued upload's cache copy must survive")
         }
 
-    // #301: same protection without the hook — a cache file whose mtime exceeds the
+    // archive#301: same protection without the hook — a cache file whose mtime exceeds the
     // row's last-synced watermark is exactly what the co-daemon's recovery scanner
     // replays as an un-uploaded edit, so the reap must defer to it. Once the
     // watermark moves past the cache (the upload landed and rebaselined the row),
@@ -236,7 +236,7 @@ class EnumerateRemoteIntoStateTest {
                     Files.writeString(it, "UNSYNCED EDIT")
                 }
             // "Newer than the watermark" must not depend on how the wall clock and the file system's timestamp
-            // granularity happen to line up when the two writes are close (#718): set it, clearly newer.
+            // granularity happen to line up when the two writes are close (archive#718): set it, clearly newer.
             Files.setLastModifiedTime(cache, FileTime.from(db.getEntry("/edited.bin")!!.lastSynced.plusSeconds(5)))
             assertTrue(
                 Files.getLastModifiedTime(cache).toMillis() > db.getEntry("/edited.bin")!!.lastSynced.toEpochMilli(),
@@ -276,7 +276,7 @@ class EnumerateRemoteIntoStateTest {
             assertEquals(null, provider.deltaCursorsSeen[2])
         }
 
-    // Invariant (Codex #91 P1): enumerateRemoteIntoState is single-flight across ALL
+    // Invariant (Codex archive#91 P1): enumerateRemoteIntoState is single-flight across ALL
     // callers (poller, sync.enumerate verb, mount-routed refresh.run). A pass that
     // starts while another is in flight is a no-op (skipped=true) — it must NOT run a
     // concurrent pass that could race delta_cursor promotion / corroboration state.
@@ -307,7 +307,7 @@ class EnumerateRemoteIntoStateTest {
             assertEquals(1, provider.deltaCursorsSeen.size, "only the winning pass called the provider")
         }
 
-    // Invariant (Codex #91 P2): an INCOMPLETE enumeration resets the bulk-disappearance
+    // Invariant (Codex archive#91 P2): an INCOMPLETE enumeration resets the bulk-disappearance
     // deferred set, so a later COMPLETE pass must re-defer rather than reap against stale
     // corroboration state. Bulk reaping requires confirmation by CONSECUTIVE complete
     // enumerations; an incomplete pass breaks the chain.

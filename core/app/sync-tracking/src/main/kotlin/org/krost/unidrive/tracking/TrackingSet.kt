@@ -106,7 +106,7 @@ class SqliteTrackingSet(
     companion object {
         private const val DELTA_CURSOR_KEY = "delta_cursor"
 
-        // #323 (tracking.db half): the format is frozen as of this stamp. A db written
+        // archive#323 (tracking.db half): the format is frozen as of this stamp. A db written
         // by a NEWER build refuses to open — an older jar must never stamp the version
         // downward, or the next upgrade would believe nothing changed and skip
         // migrations. Mirrors the state.db guard in StateDatabase.
@@ -128,7 +128,7 @@ class SqliteTrackingSet(
         try {
             bootstrapSchema()
         } catch (e: Throwable) {
-            // A refused open (#323) must not leak the connection it opened.
+            // A refused open (archive#323) must not leak the connection it opened.
             runCatching { conn?.takeIf { !it.isClosed }?.close() }
             conn = null
             throw e

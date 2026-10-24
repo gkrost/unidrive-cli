@@ -11,7 +11,7 @@ import kotlin.test.assertTrue
  * (the `Test` task config in the root build), so a config built with defaults —
  * `OneDriveConfig()`'s `defaultTokenPath("onedrive")` — reads and writes
  * `build/test-home/.config/unidrive/onedrive`, never the developer's real
- * profile directory: a test run must not reset a real delta cursor (#453).
+ * profile directory: a test run must not reset a real delta cursor (archive#453).
  */
 class OneDriveTestHomeRedirectTest {
     @Test

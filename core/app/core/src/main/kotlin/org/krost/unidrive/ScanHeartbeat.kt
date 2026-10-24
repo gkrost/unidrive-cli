@@ -17,7 +17,7 @@ package org.krost.unidrive
  * stay in sync. Tests can inject [clock] for deterministic time-threshold
  * assertions.
  *
- * Lives in `:app:core` next to the [CloudProvider] SPI (#560, moved from
+ * Lives in `:app:core` next to the [CloudProvider] SPI (archive#560, moved from
  * `org.krost.unidrive.sync`) so a provider can use it without depending on
  * the sync engine.
  *

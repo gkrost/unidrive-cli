@@ -12,7 +12,7 @@ import kotlin.test.fail
 class SyncCommandTest {
     private val cmd = CommandLine(Main())
 
-    // #1048: 10_000 * 2^50 does not fit a Long; the wrapped value came out negative and delay() returned at once.
+    // archive#1048: 10_000 * 2^50 does not fit a Long; the wrapped value came out negative and delay() returned at once.
     @Test
     fun `the watch failure backoff stays between 10 and 600 seconds however many cycles failed`() {
         for (failures in 1..200) {
@@ -178,7 +178,7 @@ class SyncCommandTest {
         assertTrue("-w" in allNames)
     }
 
-    // ── #530: exit codes — a script must tell a partial failure from success ──
+    // ── archive#530: exit codes — a script must tell a partial failure from success ──
     // 0 = completed, everything transferred; 1 = aborted by an exception; 2 = completed but
     // per-action failures happened (the "Sync complete: … N failed" run). Before this, a run
     // with 5 failed uploads exited 0, indistinguishable from a clean one.

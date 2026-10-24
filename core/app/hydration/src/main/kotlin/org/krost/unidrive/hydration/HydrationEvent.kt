@@ -36,7 +36,7 @@ sealed class HydrationEvent {
      * upload queue but has not started transferring yet (the daemon-wide
      * per-provider transfer budget is busy). A client shows the file as
      * waiting until hydrating/failed arrives. Always followed by one of those. Sent again when a pause
-     * aborts a transfer that was running (#778): the upload is back in the queue, not failed.
+     * aborts a transfer that was running (archive#778): the upload is back in the queue, not failed.
      *
      * Wire shape (NDJSON line on `hydration.subscribe` stream):
      *   `{"event":"queued","path":"/a/save.doc"}`
@@ -104,7 +104,7 @@ sealed class HydrationEvent {
      *
      * Wire shape (NDJSON line on `hydration.subscribe` stream):
      *   - Up to [VIEW_INVALIDATED_PATH_CAP] paths: `{"event":"view.invalidated","paths":["/a","/b",…]}`
-     *   - With renames (#595): `…"paths":["/a","/b"],"moved":[{"from":"/a","to":"/b"}]` —
+     *   - With renames (archive#595): `…"paths":["/a","/b"],"moved":[{"from":"/a","to":"/b"}]` —
      *     additive and optional for consumers; `paths` always holds both ends of a move.
      *   - More than [VIEW_INVALIDATED_PATH_CAP] paths:  `{"event":"view.invalidated","full":true}`
      *
@@ -116,7 +116,7 @@ sealed class HydrationEvent {
         /** True when the changed-path count exceeded [VIEW_INVALIDATED_PATH_CAP]; co-daemon should invalidate all cache entries. */
         val full: Boolean = false,
         /**
-         * #595: the remote renames behind some of [paths] (old path → new path). A
+         * archive#595: the remote renames behind some of [paths] (old path → new path). A
          * co-daemon may move its placeholder instead of deleting and recreating it,
          * keeping hydration state and pins; ignoring this and reconciling from
          * [paths] is always correct.
@@ -132,7 +132,7 @@ sealed class HydrationEvent {
     }
 
     /**
-     * The daemon was paused, or its pause changed reason, `auto` or end instant while paused (#778): `daemon.status`
+     * The daemon was paused, or its pause changed reason, `auto` or end instant while paused (archive#778): `daemon.status`
      * carries the same object as `paused`. [path] is always the empty string — this event is not tied to a path.
      *
      * Wire shape (NDJSON line on `hydration.subscribe` and `sync.subscribe`; `until_ms` only for a timed pause):
@@ -151,7 +151,7 @@ sealed class HydrationEvent {
     }
 
     /**
-     * The pause ended (#778). Not sent for a `daemon.resume` that found the daemon running. [reason] is
+     * The pause ended (archive#778). Not sent for a `daemon.resume` that found the daemon running. [reason] is
      * [TIMEOUT] when the end instant of a timed pause came, null when `daemon.resume` ended it.
      *
      * Wire shape (NDJSON line on `hydration.subscribe` and `sync.subscribe`): `{"event":"resumed"}`, or

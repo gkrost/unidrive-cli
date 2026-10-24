@@ -19,7 +19,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #586: the mount records when the provider refused its credentials (an authentication failure, raised after the
+ * archive#586: the mount records when the provider refused its credentials (an authentication failure, raised after the
  * provider's own token refresh failed), so `daemon.status` can report `credential_health` as `expired` without
  * waiting for its next check. Any other failure is not a rejection.
  */

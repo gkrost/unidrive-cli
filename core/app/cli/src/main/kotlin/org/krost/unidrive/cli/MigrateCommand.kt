@@ -20,7 +20,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 
 /**
- * #560: the one-time conversion of a legacy profile (one created before the cutover, in the coordinated
+ * archive#560: the one-time conversion of a legacy profile (one created before the cutover, in the coordinated
  * mirror + mount state) to its fixed mode. See docs/adr/independent-profiles.md, "Migration". Only the first,
  * read-only step exists so far: [MigrateInventoryCommand].
  */
@@ -40,7 +40,7 @@ class MigrateCommand : Runnable {
 }
 
 /**
- * #560 U5a: `unidrive -p <profile> migrate inventory`. Reads a stopped profile and reports what a conversion would
+ * archive#560 U5a: `unidrive -p <profile> migrate inventory`. Reads a stopped profile and reports what a conversion would
  * have to preserve; changes nothing (see [LegacyInventory]). Exit code 0 with a report, 1 when refused (the profile
  * is in use, or its state.db cannot be read consistently).
  */

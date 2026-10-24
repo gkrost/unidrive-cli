@@ -1,6 +1,6 @@
 # Independent mirror and mount profiles
 
-> **Status: Accepted 2026-10-05, implementation in progress ([#560](https://github.com/gkrost/unidrive/issues/560)).** The Decision section describes the target. The engine and Windows client now require an explicit profile mode and refuse unsupported modeless profiles before mutable work. The mirror-only #459 cache-presence delete guard is retired: mirror profiles no longer share mount cache bytes, and `migrate convert --mode mirror` refuses a legacy hybrid profile that still has cache-backed hydrated rows. `cache_backed` stays: the mount uses it to tell whether a cache copy is the row's baseline (MountEngine's cache sweep). Other coordinated behavior is retired only by its corresponding units.
+> **Status: Accepted 2026-10-05, implementation in progress ([archive#560](archive#560)).** The Decision section describes the target. The engine and Windows client now require an explicit profile mode and refuse unsupported modeless profiles before mutable work. The mirror-only archive#459 cache-presence delete guard is retired: mirror profiles no longer share mount cache bytes, and `migrate convert --mode mirror` refuses a legacy hybrid profile that still has cache-backed hydrated rows. `cache_backed` stays: the mount uses it to tell whether a cache copy is the row's baseline (MountEngine's cache sweep). Other coordinated behavior is retired only by its corresponding units.
 
 ## Context
 
@@ -9,20 +9,20 @@ A profile today can be served two ways at once, and the two are partly coordinat
 - **Mirror:** `unidrive sync` reconciles a local `sync_root` with the cloud.
 - **Mount:** `unidrive daemon run` serves the hydration IPC verbs to a platform client (FUSE on Linux, CfAPI on Windows), which shows the cloud as on-demand files and writes back through `hydration.*`.
 
-On 2026-10-01 the owner decided that both folders stay and are coordinated: #141 would make `sync` a client of the daemon, and the bytes would be kept in step. Parts of that landed:
+On 2026-10-01 the owner decided that both folders stay and are coordinated: archive#141 would make `sync` a client of the daemon, and the bytes would be kept in step. Parts of that landed:
 
-- #478 (for #449, #450): the mount serves reads from the `sync_root` copy and mirrors what it writes into the `sync_root`; a delete or rename through the mount drops or moves the `sync_root` copy.
-- #459: the Reconciler suppressed a remote delete while a hydration cache copy existed (retired after U6 mode isolation and the pre-mutation mode gate).
-- #510 (for #504): the daemon rescans the `sync_root` at start and on a timer and uploads what appears there.
+- archive#478 (for archive#449, archive#450): the mount serves reads from the `sync_root` copy and mirrors what it writes into the `sync_root`; a delete or rename through the mount drops or moves the `sync_root` copy.
+- archive#459: the Reconciler suppressed a remote delete while a hydration cache copy existed (retired after U6 mode isolation and the pre-mutation mode gate).
+- archive#510 (for archive#504): the daemon rescans the `sync_root` at start and on a timer and uploads what appears there.
 
-The result, verified on main in #560 section 1:
+The result, verified on main in archive#560 section 1:
 
 - **Code.** Mount-only operations live inside `SyncEngine`; `unidrive sync` also constructs a hydration server and registers every `hydration.*` verb; `refresh.run` without a connected mount client falls back to a reset and a mirror reconcile; late-bound lambdas couple the two directions.
-- **State.** `sync_entries.is_hydrated` means "real bytes in the `sync_root`" for the mirror and "a cache copy exists" for the mount. One pending-upload predicate serves both writers. `cache_backed` (#449) exists only so the mirror can tell mount rows apart.
+- **State.** `sync_entries.is_hydrated` means "real bytes in the `sync_root`" for the mirror and "a cache copy exists" for the mount. One pending-upload predicate serves both writers. `cache_backed` (archive#449) exists only so the mirror can tell mount rows apart.
 - **Bytes.** A file can live in three places (the platform view, the hydration cache, the `sync_root`). The `sync_root` is never downloaded into and never propagates a delete; it has become a half-coordinated second working folder.
-- **Docs.** The mode-mutex spec closes coexistence (NG2), the daemon spec makes `sync` and `daemon` mutually exclusive (I2), and `ipc-write-protocol.md` §8 names the mount as the single writer, while #84 and #141 call for coexistence and the code already writes into and uploads from the `sync_root`.
+- **Docs.** The mode-mutex spec closes coexistence (NG2), the daemon spec makes `sync` and `daemon` mutually exclusive (I2), and `ipc-write-protocol.md` §8 names the mount as the single writer, while archive#84 and archive#141 call for coexistence and the code already writes into and uploads from the `sync_root`.
 
-Two options were weighed in #560 section 3: keep the coordinated folders and finish #141 (Option 1), or give each profile one mode (Option 2).
+Two options were weighed in archive#560 section 3: keep the coordinated folders and finish archive#141 (Option 1), or give each profile one mode (Option 2).
 
 ## Decision
 
@@ -38,13 +38,13 @@ Two options were weighed in #560 section 3: keep the coordinated folders and fin
 
 ## Consequences
 
-Costs, and the conditions under which the cutover may ship (#560 sections 3 and 4):
+Costs, and the conditions under which the cutover may ship (archive#560 sections 3 and 4):
 
-- **Duplicate work.** Two profiles on one account download and store their bytes separately, and changes propagate eventually, not at once. No latency is promised until discovery is defined: tested poll/notification defaults and reconnect catch-up (#463) ship with the cutover, not after it.
+- **Duplicate work.** Two profiles on one account download and store their bytes separately, and changes propagate eventually, not at once. No latency is promised until discovery is defined: tested poll/notification defaults and reconnect catch-up (archive#463) ship with the cutover, not after it.
 - **Independent writers can conflict.** Provider capability limits, base-token handling, conflict recovery and delete-versus-edit behaviour must be specified and tested. Internxt checks metadata tokens but has no atomic If-Match-style replace, so two profiles keep a check-to-write window; lossless simultaneous edits are not promised.
 - **Shared account limits.** Throttling, retries and token refresh across two profiles on one account must be validated. The per-process transfer cap is not account-wide protection; either an account-wide budget is chosen or a tested independent-client limit is documented.
-- **Legacy boundary before cutover.** The owner decision is no legacy support or migration until first LTS. Modeless profiles are refused before mutable work. A hybrid profile with hydrated file rows whose bytes live only in the hydration cache (`cache_backed` true, or NULL with the cache copy present and the `sync_root` file missing) is refused by `migrate convert --mode mirror`, which is why the retired #459 guard is not needed: no mirror profile starts with rows whose bytes live only in the cache. Each obsolete bridge can therefore be removed separately once its owning mode and live safety invariant are proven; `cache_backed` and the remaining cross-mode hooks still require their own gates and changes.
-- **Clients and packaging.** The write verbs stay as they are, but client startup, recovery, status, banner text and test expectations change. The shipped autostarts (`dist/unidrive.service`, #325; the Windows logon autostart, #506) start `sync --watch`; they are replaced per profile mode, without leaving both launchers active.
+- **Legacy boundary before cutover.** The owner decision is no legacy support or migration until first LTS. Modeless profiles are refused before mutable work. A hybrid profile with hydrated file rows whose bytes live only in the hydration cache (`cache_backed` true, or NULL with the cache copy present and the `sync_root` file missing) is refused by `migrate convert --mode mirror`, which is why the retired archive#459 guard is not needed: no mirror profile starts with rows whose bytes live only in the cache. Each obsolete bridge can therefore be removed separately once its owning mode and live safety invariant are proven; `cache_backed` and the remaining cross-mode hooks still require their own gates and changes.
+- **Clients and packaging.** The write verbs stay as they are, but client startup, recovery, status, banner text and test expectations change. The shipped autostarts (`dist/unidrive.service`, archive#325; the Windows logon autostart, archive#506) start `sync --watch`; they are replaced per profile mode, without leaving both launchers active.
 
 ### Migration
 
@@ -62,7 +62,7 @@ Existing rows cannot prove which front-end wrote them, so there is no automatic 
 
 #### The old `sync_root` after a conversion to mount
 
-Under the coordinated model the `sync_root` of a mount profile was never a full copy: it holds what earlier `sync` runs left plus what the mount mirrored into it (#478). Left in place after the conversion it would look like a synced folder while nothing syncs it, so an edit there would never reach the cloud. Its only value is the files that exist nowhere else. The conversion therefore ends with an explicit choice, made by the owner per profile, after every file in it has been compared with the cloud by content hash (an unavailable or metadata-only comparison counts as *differs*):
+Under the coordinated model the `sync_root` of a mount profile was never a full copy: it holds what earlier `sync` runs left plus what the mount mirrored into it (archive#478). Left in place after the conversion it would look like a synced folder while nothing syncs it, so an edit there would never reach the cloud. Its only value is the files that exist nowhere else. The conversion therefore ends with an explicit choice, made by the owner per profile, after every file in it has been compared with the cloud by content hash (an unavailable or metadata-only comparison counts as *differs*):
 
 - **Retire (default).** Files identical to the cloud go to the operating system's trash or recycle bin, so they stay recoverable. Files that differ or exist only locally move to a quarantine folder next to the profile's state, with a manifest. One explicit command uploads them as conflict copies; nothing uploads them automatically. Afterwards the folder is gone.
 - **Adopt as a new mirror profile.** The folder becomes the `sync_root` of a new mirror profile on the same account. This is ordinary profile creation over an existing folder, with a baseline check so that files missing from the folder are not read as deletes. It is not a mode switch of the converted profile.
@@ -72,13 +72,13 @@ Until the owner chooses, the folder stays untouched, a marker in it and the prof
 ## What this supersedes
 
 - **The decision of 2026-10-01** ("both folders stay, coordinated"). Superseded by this decision; its coordination stays in place until the cutover.
-- **#141** (`sync` as a client of the daemon). Replaced by the Option 2 hosting contract (#560 unit 4); it stays open until that lands and is then closed as superseded, not as delivered.
+- **archive#141** (`sync` as a client of the daemon). Replaced by the Option 2 hosting contract (archive#560 unit 4); it stays open until that lands and is then closed as superseded, not as delivered.
 - **[`mount-sync-mode-mutex-design.md`](../dev/specs/mount-sync-mode-mutex-design.md), in part.** One mode per profile stays (G1, NG2 per profile). First-writer-wins (G3) and "no profile-level mode flag" (NG3) are replaced by the explicit `mode`; coexistence of a mirror and a mount on one account is supported, as two profiles.
-- **[`unidrive-daemon-design.md`](../dev/specs/unidrive-daemon-design.md), in part.** I2 (`sync` ⇄ `daemon` exclusion per profile) becomes a consequence of the profile's mode rather than of which process starts first; discovery defaults follow #463.
-- **[`ipc-write-protocol.md`](../dev/specs/ipc-write-protocol.md) §8, in part.** The mount's co-client is the single local writer of a mount profile only after the cutover; today the daemon also writes into and uploads from the `sync_root` (#478, #510). Other profiles on the same account are independent cloud-side writers.
+- **[`unidrive-daemon-design.md`](../dev/specs/unidrive-daemon-design.md), in part.** I2 (`sync` ⇄ `daemon` exclusion per profile) becomes a consequence of the profile's mode rather than of which process starts first; discovery defaults follow archive#463.
+- **[`ipc-write-protocol.md`](../dev/specs/ipc-write-protocol.md) §8, in part.** The mount's co-client is the single local writer of a mount profile only after the cutover; today the daemon also writes into and uploads from the `sync_root` (archive#478, archive#510). Other profiles on the same account are independent cloud-side writers.
 
 ## Re-opening criteria
 
-If two profiles on one account cannot be made safe enough for the providers in use (conflict rate, throttling, or the cost of duplicate storage), the coordinated model of #84 (Option 1 in #560) is the fallback. Re-opening needs a recorded owner decision on #560 or its successor; until then, units already merged keep their behaviour-preserving guarantees.
+If two profiles on one account cannot be made safe enough for the providers in use (conflict rate, throttling, or the cost of duplicate storage), the coordinated model of archive#84 (Option 1 in archive#560) is the fallback. Re-opening needs a recorded owner decision on archive#560 or its successor; until then, units already merged keep their behaviour-preserving guarantees.
 
-A command that switches an existing profile's mode (for advanced users) is deferred as P3 ([#564](https://github.com/gkrost/unidrive/issues/564)); if it is ever built, it reuses the legacy conversion's machinery and rules.
+A command that switches an existing profile's mode (for advanced users) is deferred as P3 ([archive#564](archive#564)); if it is ever built, it reuses the legacy conversion's machinery and rules.

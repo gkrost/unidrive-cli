@@ -14,9 +14,9 @@ data class OneDriveConfig(
     val includeShared: Boolean = false,
     val webhookEnabled: Boolean = false,
     val webhookPort: Int = 8081,
-    // #111: open the socket.io change channel when the engine asks for remote-change hints (profile key remote_notifications).
+    // archive#111: open the socket.io change channel when the engine asks for remote-change hints (profile key remote_notifications).
     val remoteNotifications: Boolean = true,
-    // #1261: protects token.json at rest, as InternxtConfig.credentialProtector does. Null keeps the owner-only
+    // archive#1261: protects token.json at rest, as InternxtConfig.credentialProtector does. Null keeps the owner-only
     // plaintext file the desktop writes today; the Android app passes its Keystore-backed protector.
     val credentialProtector: CredentialProtector? = null,
 ) {

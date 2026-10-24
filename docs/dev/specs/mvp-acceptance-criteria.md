@@ -1,14 +1,14 @@
 # MVP acceptance criteria — the release gate, per surface
 
-**Purpose.** Replace "green by user's review and decision" with a mechanical checklist that is identical for every MVP surface. A surface ships when — and only when — its checklist is walked clean. Adoption tracked in #342; the audit instrument is `unidrive verify` (#341).
+**Purpose.** Replace "green by user's review and decision" with a mechanical checklist that is identical for every MVP surface. A surface ships when — and only when — its checklist is walked clean. Adoption tracked in archive#342; the audit instrument is `unidrive verify` (archive#341).
 
-**Surfaces under this gate (per #290 decision):**
+**Surfaces under this gate (per archive#290 decision):**
 
 | Surface | Scope | Gate instance |
 |---|---|---|
-| Core / CLI | `unidrive` daemon + CLI sync, legacy `SyncEngine` (engine decision #343) | this repo, Phase I of `mvp-release-sequence.md` |
+| Core / CLI | `unidrive` daemon + CLI sync, legacy `SyncEngine` (engine decision archive#343) | this repo, Phase I of `mvp-release-sequence.md` |
 | Linux | core + `unidrive-mount-linux` FUSE mount | this repo + mount-linux smoke set |
-| Windows | core + the Windows client's CfAPI mount (gated: the read tier per #290; writeback of new and changed files ships since 2026-10-02, rename and delete in progress) + CLI sync | the client's gate |
+| Windows | core + the Windows client's CfAPI mount (gated: the read tier per archive#290; writeback of new and changed files ships since 2026-10-02, rename and delete in progress) + CLI sync | the client's gate |
 
 ## The six criteria
 
@@ -29,4 +29,4 @@
 ## Notes
 
 - Criteria 1–2 are continuously checkable; 3–5 are per-gate campaigns. Soaks for an earlier surface keep running in the background while the next surface is worked interactively — overlap is intended.
-- Efficiency findings gate via criterion 5, not via taste (#316, #317 are the current known blockers for the envelope above).
+- Efficiency findings gate via criterion 5, not via taste (archive#316, archive#317 are the current known blockers for the envelope above).

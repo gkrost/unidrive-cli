@@ -122,7 +122,7 @@ class DropboxApi(
             send("${config.contentBase}/$endpoint") {
                 header(API_ARG, headerSafeJson(args))
                 // The socket timeout is a read-idle timer that runs from the start of the request, and Dropbox is silent
-                // until the body is in: left at 60 s it cuts every upload a slow uplink needs longer than that for (#1058).
+                // until the body is in: left at 60 s it cuts every upload a slow uplink needs longer than that for (archive#1058).
                 if (requestTimeoutMs != null) {
                     timeout {
                         requestTimeoutMillis = requestTimeoutMs
@@ -401,7 +401,7 @@ internal fun dropboxHttpClient(
             requestTimeoutMillis = HttpDefaults.REQUEST_TIMEOUT_MS
         }
         install(UserAgent) { agent = userAgent }
-        // #644: the token path's leaf is the profile name; Dropbox maps no server request id header.
+        // archive#644: the token path's leaf is the profile name; Dropbox maps no server request id header.
         install(RequestId) {
             metrics = tap
             provider = "dropbox"

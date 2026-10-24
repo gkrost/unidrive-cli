@@ -80,7 +80,7 @@ open class OneDriveProviderFactory : ProviderFactory {
     ): CloudProvider {
         val authEndpoint = properties["authority_url"] ?: OneDriveConfig.DEFAULT_AUTH_ENDPOINT
         val includeShared = properties["include_shared"]?.toBoolean() ?: false
-        // #111: the socket.io change channel; absent = on, "false" keeps polling only.
+        // archive#111: the socket.io change channel; absent = on, "false" keeps polling only.
         val remoteNotifications = properties["remote_notifications"]?.toBooleanStrictOrNull() ?: true
         val config =
             OneDriveConfig(
@@ -232,7 +232,7 @@ open class OneDriveProviderFactory : ProviderFactory {
                 CompleteAuthResult.Pending(outcome.retryAfterSeconds)
             is OAuthService.DevicePollOutcome.Success -> {
                 // Who signed in is read once, now, with the token just issued and BEFORE it is saved: another user than
-                // the one the profile's state belongs to (AccountOwner) is refused and the stored token stays (#1241).
+                // the one the profile's state belongs to (AccountOwner) is refused and the stored token stays (archive#1241).
                 val drive = fetchIdentity(profileDir, outcome.token)
                 val refusal = ownerRefusal(AccountOwner.verdict(profileDir, drive?.accountId()))
                 if (refusal != null) {

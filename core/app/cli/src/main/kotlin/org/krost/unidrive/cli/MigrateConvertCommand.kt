@@ -19,7 +19,7 @@ import java.time.Instant
 import kotlin.io.path.name
 
 /**
- * #604 U5b: the one-time conversion of a legacy profile to its explicit mode. The command is
+ * archive#604 U5b: the one-time conversion of a legacy profile to its explicit mode. The command is
  * the only writer of the `mode` key on an existing profile; no ordinary startup assigns one.
  *
  * Contract (the issue's gate): writers must be quiesced (a live lock holder refuses it); an
@@ -75,7 +75,7 @@ class MigrateConvertCommand : Runnable {
 }
 
 /**
- * `unidrive -p <profile> migrate upload-quarantined` (#604): the one explicit command that
+ * `unidrive -p <profile> migrate upload-quarantined` (archive#604): the one explicit command that
  * uploads the files a retire conversion quarantined, as conflict copies at their original
  * remote paths. Requires the conversion to be complete and the profile authenticated.
  */
@@ -435,11 +435,11 @@ internal object LegacyConversion {
         // Refusal 3: a legacy hybrid profile cannot become a mirror. Its hydrated rows whose bytes
         // live only in the hydration cache are absent from the sync root, so the first mirror sync
         // would read them as local deletes and plan DeleteRemote. Mirror and mount profiles are
-        // independent and no migration of hybrid state is supported (#459, #680).
+        // independent and no migration of hybrid state is supported (archive#459, archive#680).
         // Which rows count: cache_backed = true always (the mount wrote the bytes to the cache). A
         // NULL row counts unless its sync_root file is present: only the mount engine writes
         // cache_backed, so every row a plain mirror profile ever hydrated is NULL, and with its
-        // sync_root file present it is a mirror row (#706). A NULL row with no copy in the sync
+        // sync_root file present it is a mirror row (archive#706). A NULL row with no copy in the sync
         // root - whether its bytes sit in the cache or are gone entirely - is absent from the sync
         // root, so the first mirror sync would read it as a local delete and plan DeleteRemote.
         // cache_backed = false (a sync-root baseline the mount adopted) passes, as before.

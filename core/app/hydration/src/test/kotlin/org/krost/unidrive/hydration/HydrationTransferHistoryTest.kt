@@ -24,7 +24,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #652: the mount's transfers are recorded as logical transfers in the profile's history. One row per upload
+ * archive#652: the mount's transfers are recorded as logical transfers in the profile's history. One row per upload
  * or download, written where the transfer ends (the places `completed` goes out): `queued_at` when the
  * operation is queued, `started_at` when it holds a transfer permit, `finished_at` at the end. A retry is
  * not a second row; the start-up replay and an identical-bytes skip are recorded like any other upload.
@@ -229,7 +229,7 @@ class HydrationTransferHistoryTest {
         assertNotNull(row.finishedAt)
     }
 
-    // ── the attempt limit and the next try of an upload that waits to be retried (#1095) ────────
+    // ── the attempt limit and the next try of an upload that waits to be retried (archive#1095) ────────
 
     @Test
     fun `an upload waiting in a retry backoff is one running row with the limit and the next try`() = runTest {

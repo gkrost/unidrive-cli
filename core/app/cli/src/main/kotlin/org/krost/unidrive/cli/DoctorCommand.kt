@@ -80,7 +80,7 @@ class DoctorCommand : Runnable {
         val profileDir = parent.providerConfigDir()
         val syncRoot = profile.syncRoot
 
-        // PR #47 Codex P2: thread exclude_patterns through to the orphans check.
+        // PR archive#47 Codex P2: thread exclude_patterns through to the orphans check.
         // Mirrors SyncCommand.run wiring. Doctor is read-only and must still
         // run on a wedged config, so any error falls back to no excludes.
         val excludePatterns: List<String> =
@@ -90,7 +90,7 @@ class DoctorCommand : Runnable {
                 emptyList()
             }
 
-        // #450: where this profile's hydration cache lives and what it may grow to. Like the exclude
+        // archive#450: where this profile's hydration cache lives and what it may grow to. Like the exclude
         // patterns above, a wedged config must not stop doctor: fall back to the default budget.
         val cacheDir = SyncEngine.hydrationCacheRoot(SyncEngine.defaultHydrationCacheRoot(), profile.name)
         val cacheBudget: Long =
@@ -157,14 +157,14 @@ class DoctorCommand : Runnable {
                     runCatching {
                         db.initialize()
                         results += checkCursorFreshness(db, now)
-                        // A mount profile keeps the bytes of a hydrated row in its hydration cache, not under a sync root (#1083).
+                        // A mount profile keeps the bytes of a hydrated row in its hydration cache, not under a sync root (archive#1083).
                         results +=
                             if (mode == ProfileMode.MOUNT && cacheDir != null) {
                                 checkHydrationDrift(db, cacheDir, full, "missing from the hydration cache")
                             } else {
                                 checkHydrationDrift(db, syncRoot, full)
                             }
-                        // A mount profile has no sync root: there is nothing local to orphan (#1190).
+                        // A mount profile has no sync root: there is nothing local to orphan (archive#1190).
                         results +=
                             if (mode == ProfileMode.MOUNT) {
                                 CheckResult("local-orphans", Severity.OK, "skipped: no sync root (a mount profile)", emptyList())
@@ -259,7 +259,7 @@ class DoctorCommand : Runnable {
         val deltaCursor = db.getSyncState("delta_cursor")
         val pendingCursor = db.getSyncState("pending_cursor")
         val pendingComplete = db.getSyncState("pending_cursor_complete")
-        // Written beside pending_cursor_complete (RemoteGather.PENDING_SKIPPED_PATHS_KEY): what the gather could not read (#1234).
+        // Written beside pending_cursor_complete (RemoteGather.PENDING_SKIPPED_PATHS_KEY): what the gather could not read (archive#1234).
         val skippedPaths = db.getSyncState("pending_cursor_skipped_paths")
             ?.split('\n')?.filter { it.isNotEmpty() }.orEmpty()
         val detail = mutableListOf<String>()
@@ -284,9 +284,9 @@ class DoctorCommand : Runnable {
         }
         if (pendingComplete == "false") {
             severity = Severity.WARN
-            // #523: the promotion is unconditional, so this flag survives the run — a skipped
+            // archive#523: the promotion is unconditional, so this flag survives the run — a skipped
             // folder (the walk could not list it) reads the same as a mid-pass interruption.
-            // #1234: when the gather named what it could not read, the summary names it too.
+            // archive#1234: when the gather named what it could not read, the summary names it too.
             summary =
                 if (skippedPaths.isEmpty()) {
                     "pending_cursor_complete=false (the last gather was incomplete: a folder could not be listed, or the pass was interrupted — re-run sync; consider --reset if the skipped subtree matters)"
@@ -378,7 +378,7 @@ class DoctorCommand : Runnable {
                 if (rel.isEmpty()) continue
                 // Skip sidecar dirs
                 if (sidecarDirs.any { rel == it || rel.startsWith("$it/") }) continue
-                // PR #47 Codex P2: skip configured excludes (same path-key
+                // PR archive#47 Codex P2: skip configured excludes (same path-key
                 // shape LocalScanner.isExcluded uses: leading slash, forward
                 // slashes). Without this filter a profile with
                 // exclude_patterns = ["/Videos/**"] reports every excluded
@@ -443,7 +443,7 @@ class DoctorCommand : Runnable {
         val name = "quota-freshness"
         val fetchedAt = db.getSyncState("quota_fetched_at")
         if (fetchedAt == null) {
-            // #532: a fresh state has never cached a quota — expected, not a warning.
+            // archive#532: a fresh state has never cached a quota — expected, not a warning.
             // It used to be the single WARN that made `doctor` exit non-zero on a
             // profile that had done nothing wrong.
             return CheckResult(name, Severity.OK, "no cached quota yet (run `unidrive quota` to enable the freshness check)", emptyList())
@@ -486,7 +486,7 @@ class DoctorCommand : Runnable {
     }
 
     /**
-     * **Check — Hydration cache size (#450).** Total bytes of the profile's hydration cache directory
+     * **Check — Hydration cache size (archive#450).** Total bytes of the profile's hydration cache directory
      * against its budget (`hydration_cache_max_bytes`, 0 = unlimited). WARN when over budget: the
      * eviction pass skips files with an open handle, a queued or failed upload, an unfinished create
      * or an unsynced edit, so a cache that stays over budget is holding bytes that exist nowhere else

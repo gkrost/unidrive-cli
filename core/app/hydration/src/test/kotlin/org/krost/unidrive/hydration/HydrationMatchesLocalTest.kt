@@ -16,7 +16,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
- * gkrost/unidrive#1219, `hydration.matches_local`: whether a plain local file holds the bytes of the cloud copy, proven without downloading it.
+ * archive#1219, `hydration.matches_local`: whether a plain local file holds the bytes of the cloud copy, proven without downloading it.
  * The order of the proofs (size, the row's content hash, the recorded SHA-256 of bytes the engine wrote itself, the provider's stored-object
  * proof) and the one rule that matters: "no proof possible" is [MatchesLocalResult.Unknown], never a difference.
  */

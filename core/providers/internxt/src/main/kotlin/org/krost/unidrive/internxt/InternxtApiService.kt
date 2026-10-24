@@ -51,7 +51,7 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
 
 /**
- * Marks the coroutines of a drive enumeration (#693). A GET inside one that fails to connect at all
+ * Marks the coroutines of a drive enumeration (archive#693). A GET inside one that fails to connect at all
  * (status 0: no route, refused, unknown host, a timeout before any response) keeps retrying on a backoff
  * of up to [InternxtApiService.CONNECT_OUTAGE_BUDGET_MS] instead of ending after the 2 s / 4 s ladder,
  * because that one failure otherwise discards the whole listing and the next attempt starts again at
@@ -63,7 +63,7 @@ internal class EnumerationOutageRetry : AbstractCoroutineContextElement(Key) {
 }
 
 /**
- * A shard download ran into its whole-request time budget while it was still moving (#1065). The budget is sized
+ * A shard download ran into its whole-request time budget while it was still moving (archive#1065). The budget is sized
  * from the declared size (see [InternxtApiService.downloadRequestTimeoutMs]), so another attempt from byte 0 would
  * use it up again: the shard retry ladder passes this on instead of repeating it. Still an [java.io.IOException], so
  * the caller's next pass retries the file as it does any transient failure.
@@ -96,9 +96,9 @@ class InternxtApiService(
     // The seam the daemon attaches its request-attempt recorder to; no sink, no metrics (see attachRequestMetrics).
     private val requestMetrics: RequestMetricsTap = RequestMetricsTap(),
     // Tests hand in a client on a MockEngine; production builds the default one. The token path's leaf is the
-    // profile name, so the request log lines carry the account independent of the thread's MDC (#644).
+    // profile name, so the request log lines carry the account independent of the thread's MDC (archive#644).
     private val httpClient: HttpClient = defaultHttpClient(requestMetrics, profile = config.tokenPath.fileName.toString()),
-    // The limits of the shard PUT's write-progress watchdog (#571). A parameter so that loopback tests can run on a
+    // The limits of the shard PUT's write-progress watchdog (archive#571). A parameter so that loopback tests can run on a
     // scale of milliseconds.
     private val shardPutWatchdog: UploadWatchdogLimits = UploadWatchdogLimits.DEFAULT,
     // How long a GET inside an enumeration (see [EnumerationOutageRetry]) keeps retrying a connect failure
@@ -147,7 +147,7 @@ class InternxtApiService(
                     requestTimeoutMillis = HttpDefaults.REQUEST_TIMEOUT_MS
                 }
                 // UD-255: per-request correlation id + DEBUG req/response logging; the attempt metrics ride on it.
-                // #644: the profile and the server's x-request-id join the response line.
+                // archive#644: the profile and the server's x-request-id join the response line.
                 install(org.krost.unidrive.http.RequestId) {
                     metrics = tap
                     provider = "internxt"
@@ -159,7 +159,7 @@ class InternxtApiService(
             return if (engine != null) HttpClient(engine, configure) else HttpClient(configure)
         }
 
-        // #1065: the request timeout of one shard GET. Ktor counts it up to the end of the `execute` block, so the client's
+        // archive#1065: the request timeout of one shard GET. Ktor counts it up to the end of the `execute` block, so the client's
         // flat 600 s cut every download that needed longer, steady transfer or not. Sized like a data-plane PUT (UD-337) from
         // the declared size: the larger of the 600 s floor and the time at 50 KiB/s. Without a size nothing sensible can
         // be computed, so the call is unbounded and the client's read-idle socket timeout is the only watchdog.
@@ -231,7 +231,7 @@ class InternxtApiService(
             return params
         }
 
-        // #517 R2/F3: a whole-drive offset page can need 25-56 s and up to the
+        // archive#517 R2/F3: a whole-drive offset page can need 25-56 s and up to the
         // server's statement_timeout of 300 s (public source) before the first
         // byte; the flat 60 s watchdog cut every one of them. 330 s = statement
         // timeout + 10 percent — past it the server errors on its own, which is
@@ -241,17 +241,17 @@ class InternxtApiService(
         internal const val LISTING_SOCKET_TIMEOUT_MS: Long = 330_000
 
         // The floor of the shard PUT's outer safety net (UD-337/UD-353): an upload slower than this on average is
-        // the only one the net cuts while it still moves (#571).
+        // the only one the net cuts while it still moves (archive#571).
         private const val OVH_PUT_MIN_THROUGHPUT_BPS: Long = 10L * 1024
 
-        // #517 F1/F2 sized the read-idle socket watchdog of a shard PUT for the body at an assumed 2 MiB/s
+        // archive#517 F1/F2 sized the read-idle socket watchdog of a shard PUT for the body at an assumed 2 MiB/s
         // (SHARD_PUT_MIN_THROUGHPUT_BPS); every large upload on a slower link was cut at the same point and each
-        // retry restarted from byte 0. #571 removed that floor: a shard PUT runs under the write-progress watchdog
+        // retry restarted from byte 0. archive#571 removed that floor: a shard PUT runs under the write-progress watchdog
         // (UploadProgressWatchdog.kt), which cuts only a body that stopped moving or a server that does not answer.
 
         private const val SHARD_PUT = "Shard upload"
 
-        // #1197: how often a running shard PUT reports the bytes it has sent.
+        // archive#1197: how often a running shard PUT reports the bytes it has sent.
         const val SHARD_PROGRESS_INTERVAL_MS = 250L
     }
 
@@ -279,7 +279,7 @@ class InternxtApiService(
     internal val folderContentsPagedDedup = InFlightDedup<String, FolderContentResponse>()
 
     /**
-     * #523/#647: the paged per-folder listing, the fallback for a folder whose combined content
+     * archive#523/#647: the paged per-folder listing, the fallback for a folder whose combined content
      * call fails server-side or cannot fit the gateway (a 29k-file folder needs ~105 s in one
      * 30 MB body; the gateway cuts at ~125 s, so folders beyond ~35k files never fit).
      *
@@ -802,7 +802,7 @@ class InternxtApiService(
         size: Long,
         type: String?,
         fileId: String? = null,
-        // #486: CreateFileDto takes an optional modificationTime; without it the server stamps the upload time.
+        // archive#486: CreateFileDto takes an optional modificationTime; without it the server stamps the upload time.
         modificationTime: java.time.Instant? = null,
     ): InternxtFile =
         retryOnTransient {
@@ -846,7 +846,7 @@ class InternxtApiService(
      * (required), and optional `modificationTime`. The endpoint preserves the existing
      * file's bucket, encrypted name, parent folder, and encryptVersion — there is nothing
      * to re-derive on the client side. Returns the updated `FileDto` (same `uuid`,
-     * swapped `fileId`). #485: `fileId` is required when `size > 0` and must be absent when
+     * swapped `fileId`). archive#485: `fileId` is required when `size > 0` and must be absent when
      * `size == 0` (an empty file has no bucket entry); pass null for an empty replacement.
      */
     suspend fun replaceFile(
@@ -1256,7 +1256,7 @@ class InternxtApiService(
         try {
             val downloaded =
                 httpClient.prepareGet(downloadUrl) {
-                    // #1065: the client's flat 600 s cap would cut a big file however steadily it moves.
+                    // archive#1065: the client's flat 600 s cap would cut a big file however steadily it moves.
                     timeout { requestTimeoutMillis = downloadRequestTimeoutMs(expectedSize) }
                 }.execute { response ->
                     if (!response.status.isSuccess()) {
@@ -1264,10 +1264,10 @@ class InternxtApiService(
                     }
 
                     assertNotHtml(response, contextMsg = "Download (encrypted) -> ${destination.fileName}")
-                    // #536: the shard's Content-Length already says when the stored object is shorter
+                    // archive#536: the shard's Content-Length already says when the stored object is shorter
                     // than the size the drive reports (a multipart upload another client truncated) —
                     // refuse before reading a single byte instead of pulling 285 MiB that cannot
-                    // succeed. #940: the same for a longer one; the stream cipher keeps the length, so
+                    // succeed. archive#940: the same for a longer one; the stream cipher keeps the length, so
                     // the post-download guard would refuse it after the whole transfer too. An absent
                     // header (chunked) or an unknown declared size (0) stays with that post-download
                     // completeness guard, as before.
@@ -1289,7 +1289,7 @@ class InternxtApiService(
                     val plaintextDigest = java.security.MessageDigest.getInstance("SHA-256")
                     val result = withContext(Dispatchers.IO) {
                         Files.createDirectories(destination.parent)
-                        // #529: a name near the 255-byte component limit cannot take the suffix — stage short.
+                        // archive#529: a name near the 255-byte component limit cannot take the suffix — stage short.
                         val tmpPath = destination.parent.resolve(
                             org.krost.unidrive.io.stagingSiblingName(destination.fileName.toString(), ".unidrive-tmp"),
                         )
@@ -1320,9 +1320,9 @@ class InternxtApiService(
                                         declaredBytes = expectedSize,
                                     )
                                 }
-                                // #295: the stream cipher is malleable, so the ciphertext is checked against
+                                // archive#295: the stream cipher is malleable, so the ciphertext is checked against
                                 // the hash the network recorded before a single plaintext byte is published.
-                                // #940: the algorithm follows the recorded shape (the caller parsed it), and a
+                                // archive#940: the algorithm follows the recorded shape (the caller parsed it), and a
                                 // refusal names it: the old SHA-256-only comparison reported every official
                                 // client's RIPEMD-160(SHA-256) hash as a "SHA-256 mismatch".
                                 expectedShardHash?.let { expected ->
@@ -1457,7 +1457,7 @@ class InternxtApiService(
 
     /**
      * Registers the uploaded shard. [shardHash] is sent as it is: the upload passes RIPEMD-160(SHA-256(ciphertext)) as 40 hex like the
-     * official clients (#946, [ShardHashWire.forFinish]).
+     * official clients (archive#946, [ShardHashWire.forFinish]).
      */
     suspend fun finishUpload(
         bucket: String,
@@ -1507,7 +1507,7 @@ class InternxtApiService(
         watchedShardPut(url, size, onBytesSent, progressIntervalMs) { progress -> progressTrackingFileBody(file, size, progress) }
     }
 
-    // #578: start a multipart session — the same files/start endpoint with multiparts=N
+    // archive#578: start a multipart session — the same files/start endpoint with multiparts=N
     // and ONE part spec carrying the total size. The bridge answers a single descriptor
     // whose `urls` array holds one presigned PUT URL per part and the session UploadId.
     suspend fun startMultipartUpload(
@@ -1531,9 +1531,9 @@ class InternxtApiService(
         return descriptor
     }
 
-    // #578: PUT one part of the staged ciphertext — [size] bytes at [offset] — to the
+    // archive#578: PUT one part of the staged ciphertext — [size] bytes at [offset] — to the
     // part's presigned URL, under the same write-progress watchdog as the whole-file
-    // shard PUT (#571 covers a part the same way it covers a shard). Returns the
+    // shard PUT (archive#571 covers a part the same way it covers a shard). Returns the
     // server's ETag, which the finish call must echo per part. The parts ride their
     // own admission lane, sized to the session's parallelism: the shared bridge budget
     // admits four requests in total, so parts through it would silently cap
@@ -1561,11 +1561,11 @@ class InternxtApiService(
         }
     }
 
-    // #578: complete the multipart session — the single finish endpoint, with the
+    // archive#578: complete the multipart session — the single finish endpoint, with the
     // shard list carrying the session's upload id and the ordered part list. Guarded
     // upstream: it is never called until every part has landed (the provider asserts
     // the part list is complete first). [hash] is sent as it is: like the single-shard
-    // finish (#946) the caller passes RIPEMD-160(SHA-256(ciphertext)) as 40 hex.
+    // finish (archive#946) the caller passes RIPEMD-160(SHA-256(ciphertext)) as 40 hex.
     suspend fun finishMultipartUpload(
         bucket: String,
         indexHex: String,
@@ -1595,10 +1595,10 @@ class InternxtApiService(
         return json.decodeFromString<BucketEntry>(body)
     }
 
-    // #571: one shard PUT under the write-progress watchdog. The body records every chunk the transport accepted; the
+    // archive#571: one shard PUT under the write-progress watchdog. The body records every chunk the transport accepted; the
     // watchdog cuts the request only when no body byte was written for the idle window, or when the server did not
     // answer within the response wait after the last byte. A slow upload that keeps moving is never cut, however
-    // long it takes (the #517 R1 socket timeout sized for 2 MiB/s cut a 1.36 GB file at 650 s on a 1.98 MB/s link,
+    // long it takes (the archive#517 R1 socket timeout sized for 2 MiB/s cut a 1.36 GB file at 650 s on a 1.98 MB/s link,
     // on every attempt). The engine's socket and request timeouts are raised to the outer net for this request: its
     // read-idle socket timer runs from the start (the server is silent while the body flows), so it must not fire
     // before the watchdog can.
@@ -1642,7 +1642,7 @@ class InternxtApiService(
                 throw InternxtApiException("Shard upload failed: ${response.status}", response.status.value, responseReceived = true)
             }
             bridgeBudget.recordSuccess()
-            // #578: the part's ETag, echoed back per part by the multipart finish. Null
+            // archive#578: the part's ETag, echoed back per part by the multipart finish. Null
             // when the storage layer sends none (the single-part path ignores it). The
             // S3-convention surrounding quotes are normalized away so the finish body
             // and the tombstone carry the bare token.
@@ -1658,7 +1658,7 @@ class InternxtApiService(
         }
     }
 
-    // #1197: while [block] (the PUT) runs, tell [onBytesSent] how many body bytes the transport accepted, at most once per
+    // archive#1197: while [block] (the PUT) runs, tell [onBytesSent] how many body bytes the transport accepted, at most once per
     // [intervalMs] and only when the number moved. The count is the one the watchdog keeps (bytes in the bounded
     // buffers on their way to the socket, so it runs ahead of the server by the buffer size, ten MiB at most), which is
     // the right figure for "is it alive" and for a rate. A request the engine repeats starts again at 0 (a redirect).
@@ -1689,7 +1689,7 @@ class InternxtApiService(
         }
     }
 
-    // #517 F1, #571: say which side ended a shard PUT that broke with an IOException the watchdog did not raise. The
+    // archive#517 F1, archive#571: say which side ended a shard PUT that broke with an IOException the watchdog did not raise. The
     // engine's own timers report as "the server prematurely closed the connection" over TLS — indistinguishable from a
     // real close — so an end at about the outer limit is named as ours; anything else is the server or the network.
     // Both carry the bytes sent and the average rate. Stays an IOException so retryShardCommit keeps retrying it and
@@ -1711,7 +1711,7 @@ class InternxtApiService(
         return java.io.IOException(text, e)
     }
 
-    /** #1240: the one cheap authenticated GET that proves the stored session (the usage figure; the body is not read). */
+    /** archive#1240: the one cheap authenticated GET that proves the stored session (the usage figure; the body is not read). */
     suspend fun checkSession() {
         authenticatedGet("$baseUrl/users/usage")
     }
@@ -1839,7 +1839,7 @@ class InternxtApiService(
                     e.closedBeforeResponse() &&
                     UploadTimeoutPolicy.isSocketWatchdogCut(elapsedMs, socketTimeoutMs)
                 ) {
-                    // #517 R3/F1: a cut whose elapsed matches the request's own read-idle watchdog is not a
+                    // archive#517 R3/F1: a cut whose elapsed matches the request's own read-idle watchdog is not a
                     // server event, and the ladder proved it: retrying with identical parameters won 2 of 26
                     // folder pairs and 0 of 22 file pairs, at ~62 s each. Surface 503 at once so the caller's
                     // fallback (the tree walk) starts now.

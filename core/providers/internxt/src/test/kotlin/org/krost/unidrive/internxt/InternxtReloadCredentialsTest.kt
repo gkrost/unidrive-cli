@@ -12,7 +12,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * `reloadCredentials()` (#813): a running daemon's provider instance picks up the credentials a sign-in through the
+ * `reloadCredentials()` (archive#813): a running daemon's provider instance picks up the credentials a sign-in through the
  * daemon stored, without a restart and without the console prompt of `authenticate()`. Every value is made up.
  */
 class InternxtReloadCredentialsTest {

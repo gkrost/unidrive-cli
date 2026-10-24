@@ -28,7 +28,7 @@ data class AuditReport(
     val pendingCursor: String?,
     val lastFullScan: String?,
     val extraFields: List<org.krost.unidrive.StatusField> = emptyList(),
-    // #403: the items kept under a decorated local name, as (local path, canonical remote path).
+    // archive#403: the items kept under a decorated local name, as (local path, canonical remote path).
     val duplicateNames: List<Pair<String, String>> = emptyList(),
 )
 
@@ -45,7 +45,7 @@ object StatusAudit {
     const val DUPLICATE_NAMES_LISTED = 50
 
     /**
-     * #403: the unresolved duplicates of a profile, as `status` prints them: none when the drive has none. Each line is
+     * archive#403: the unresolved duplicates of a profile, as `status` prints them: none when the drive has none. Each line is
      * the decorated local path and the cloud path it shares with another item.
      */
     fun duplicateNameLines(twins: List<Pair<String, String>>): List<String> {
@@ -56,7 +56,7 @@ object StatusAudit {
         return lines
     }
 
-    /** #403: the same for `status --json`: the count and every pair. */
+    /** archive#403: the same for `status --json`: the count and every pair. */
     fun duplicateNamesJson(twins: List<Pair<String, String>>): JsonObject =
         buildJsonObject {
             put("count", JsonPrimitive(twins.size))

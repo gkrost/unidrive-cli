@@ -17,7 +17,7 @@ import kotlin.test.*
 /**
  * The mount operations (`ensureHydrated`, `uploadFromCache`, `deleteRemote`) on the mount front-end
  * of a `SyncEngine` host, the production wiring (`MountEngine.over`). Moved here from
- * `SyncEngineTest` with the operations (#560 U3), unchanged.
+ * `SyncEngineTest` with the operations (archive#560 U3), unchanged.
  */
 class MountEngineOperationsTest {
     private lateinit var syncRoot: Path
@@ -84,7 +84,7 @@ class MountEngineOperationsTest {
         deleted = deleted,
     )
 
-    // ── #87 (WB-3): a folder delete forgets its subtree ─────────────────────────────────────────
+    // ── archive#87 (WB-3): a folder delete forgets its subtree ─────────────────────────────────────────
     // The live case: a ~133k-item folder deleted in the mount left every row below it EXISTS in
     // state.db (only the folder's own row was tombstoned), so the next fresh mount listed the folder
     // again and planned the whole subtree for re-download.
@@ -787,7 +787,7 @@ class MountEngineOperationsTest {
             assertNotNull(db.getEntry("/server-error.txt"), "row must remain alive after real error")
         }
 
-    // ── #403: a twin of a duplicate remote name shares its remote path with the item at the name ─────────────
+    // ── archive#403: a twin of a duplicate remote name shares its remote path with the item at the name ─────────────
 
     @Test
     fun `#403 the mount deletes and renames a row with a cloud id by that id`() =
@@ -825,7 +825,7 @@ class MountEngineOperationsTest {
             assertEquals(org.krost.unidrive.sync.model.EntryStatus.EXISTS, db.statusOf("/dup.txt"), "the item at the name is untouched")
         }
 
-    // ── #511: the write token of a provider with versions of its own (OneDrive: the Graph eTag) ─────────────────────
+    // ── archive#511: the write token of a provider with versions of its own (OneDrive: the Graph eTag) ─────────────────────
 
     /**
      * OneDrive as the mount sees it: versions of its own, a guarded replace that answers with the next version, and a

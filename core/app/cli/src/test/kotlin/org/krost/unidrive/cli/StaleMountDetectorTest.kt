@@ -37,7 +37,7 @@ class StaleMountDetectorTest {
         assertNull(StaleMountDetector.parseUnidriveFuseMountpoint("two fields"))
     }
 
-    // Invariant (issue #105 half B): a unidrive FUSE mount whose backing Rust
+    // Invariant (issue archive#105 half B): a unidrive FUSE mount whose backing Rust
     // co-daemon process is still alive is NOT stale — the previous daemon's
     // client is still serving it (or will reconnect). Flagging it as stale is
     // the misleading WARNING the issue calls out. The liveness probe is
@@ -60,7 +60,7 @@ class StaleMountDetectorTest {
         )
     }
 
-    // Invariant (issue #105 half B): a unidrive FUSE mount with NO live backing
+    // Invariant (issue archive#105 half B): a unidrive FUSE mount with NO live backing
     // co-daemon process IS stale — its co-daemon was kill -9'd or otherwise died
     // and the mountpoint no longer serves data. This is the only case that
     // should fire the WARNING.

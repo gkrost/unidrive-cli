@@ -481,7 +481,7 @@ class IpcServerTest {
             assertFalse(Files.exists(socketPath), "Socket file should be deleted after close")
         }
 
-    // ── #419: `daemon stop` left the socket file (and its .meta sibling) behind ──
+    // ── archive#419: `daemon stop` left the socket file (and its .meta sibling) behind ──
 
     @Test
     fun `#419 close deletes the meta sibling as well as the socket file`() =

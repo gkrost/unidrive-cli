@@ -63,7 +63,7 @@ class SyncConfigScopeTest {
     @Test
     fun `schema property names mirror the raw config model`() {
         // This test reads a docs file: .github/workflows/build.yml (job `changes`, docs_read_by_tests) must list it, or a
-        // PR that edits only that file skips `check` and main goes red after the merge (#1075).
+        // PR that edits only that file skips `check` and main goes red after the merge (archive#1075).
         val schemaPath = generateSequence(Path.of("").toAbsolutePath()) { it.parent }
             .map { it.resolve("docs/config-schema/config.schema.json") }
             .first { Files.exists(it) }

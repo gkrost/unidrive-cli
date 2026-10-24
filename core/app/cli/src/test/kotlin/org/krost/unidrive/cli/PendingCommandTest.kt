@@ -23,7 +23,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * `pending list` / `pending drop` (#753): the safe recovery of stranded pending upload rows. Every test
+ * `pending list` / `pending drop` (archive#753): the safe recovery of stranded pending upload rows. Every test
  * drives the real command line against a temp config directory with a real state.db and a temp cache
  * root (`user.home` is pointed into the temp dir for the run); the daemon is a fake: a process lock
  * held by the test. No test starts a daemon or touches the user's real folders.

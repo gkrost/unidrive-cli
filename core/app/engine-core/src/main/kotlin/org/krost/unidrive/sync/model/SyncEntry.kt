@@ -4,10 +4,10 @@ import java.time.Instant
 
 data class SyncEntry(
     val path: String,
-    // #115: canonical REMOTE path for a row whose local [path] is an XDG
+    // archive#115: canonical REMOTE path for a row whose local [path] is an XDG
     // locale alias (e.g. path=/Bilder/x.jpg, remotePath=/Pictures/x.jpg).
     // When null the remote path EQUALS [path] — the universal, non-aliased
-    // case, so a null here is byte-identical to pre-#115 behaviour. The
+    // case, so a null here is byte-identical to pre-archive#115 behaviour. The
     // effective remote path of any row is therefore `remotePath ?: path`.
     // [path] always stays the REAL local sync_root-relative path so
     // LocalScanner (which keys/scans by the on-disk name) keeps finding the
@@ -43,13 +43,13 @@ data class SyncEntry(
     // Recorded for operator audit; not currently used as input to any
     // policy decision.
     val lastErrorAt: Instant? = null,
-    // #396: SHA-256 (lowercase hex) of the local file's bytes as the engine last wrote
+    // archive#396: SHA-256 (lowercase hex) of the local file's bytes as the engine last wrote
     // (download) or sent (upload) them. Recorded only for providers with no remote content
     // hash (hashAlgorithm() == null), where it is the only way LocalScanner can tell a
     // touched-but-unchanged file (mtime bumped by a shell handler, indexer, antivirus...)
     // from a real edit. Null = unknown, which keeps the plain mtime+size behaviour.
     val localHash: String? = null,
-    // #449: which file the local baseline (localMtime, localSize, localHash) describes. Written by the
+    // archive#449: which file the local baseline (localMtime, localSize, localHash) describes. Written by the
     // mount (MountEngine); the mirror engine never sets it.
     // true  = the hydration cache copy: the bytes were written or downloaded into the cache.
     // false = not the cache copy: the mount's cache sweep found a cache copy that is not the baseline
@@ -58,10 +58,10 @@ data class SyncEntry(
     //         mount's cache sweep treats the cache copy as the baseline only while its mtime and size
     //         match the row (MountEngine.cacheDisposition).
     // Only meaningful while [isHydrated]; the database stores null for a row without local bytes.
-    // The mirror's Reconciler does not read it (#680): in a mirror profile a missing sync-root file is
+    // The mirror's Reconciler does not read it (archive#680): in a mirror profile a missing sync-root file is
     // a local delete whatever this column holds.
     val cacheBacked: Boolean? = null,
-    // #1070/#1069: set while the mount's cache copy of this cloud-backed file holds an edit the cloud has not seen:
+    // archive#1070/#1069: set while the mount's cache copy of this cloud-backed file holds an edit the cloud has not seen:
     // the cloud version token the edit started from (the row's [writeToken] then; "" when it had none). The row's
     // own token moves with every poll, so only this says which version the bytes derive from. Written when the
     // copy is first made dirty (open_write_begin, open_write); the start-up replay sends the edit with this token,
@@ -108,13 +108,13 @@ data class SyncEntry(
             else -> base
         }
 
-    // UD-901 / #136: the pending-upload predicate, assembled in ONE place. A pending
+    // UD-901 / archive#136: the pending-upload predicate, assembled in ONE place. A pending
     // upload is a file whose only copy is the local bytes and which has never
     // reached the cloud. Consumers used to re-assemble the predicate from halves
     // (`remoteId == null` here, `isHydrated` there), and rows in the gap — a sparse
     // partial-download row (remoteId == null, isHydrated == false) has no real bytes
     // to upload — were counted or re-uploaded by whichever half the consumer checked.
-    // Where the local bytes are follows from the profile's mode (#560): a mirror
+    // Where the local bytes are follows from the profile's mode (archive#560): a mirror
     // profile's pending rows are LocalScanner's (bytes in the sync root, uploaded by
     // the next sync), a mount profile's are the mount's (bytes in the hydration cache,
     // replayed by the daemon). A legacy profile converted to a mount can still hold

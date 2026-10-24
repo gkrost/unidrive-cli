@@ -41,7 +41,7 @@ internal fun graphHttpClient(
             requestTimeoutMillis = HttpDefaults.REQUEST_TIMEOUT_MS
         }
         install(UserAgent) { agent = userAgent }
-        // #644: the token path's leaf is the profile name; Graph answers request-id / client-request-id.
+        // archive#644: the token path's leaf is the profile name; Graph answers request-id / client-request-id.
         install(RequestId) {
             metrics = tap
             provider = "onedrive"

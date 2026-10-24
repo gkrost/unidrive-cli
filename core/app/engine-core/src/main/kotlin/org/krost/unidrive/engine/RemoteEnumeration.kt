@@ -19,7 +19,7 @@ import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * The one-way remote -> state.db refresh a mount serves its view from (#560 U2b), moved
+ * The one-way remote -> state.db refresh a mount serves its view from (archive#560 U2b), moved
  * from `SyncEngine.enumerateRemoteIntoState` unchanged: one attempt at a time, its
  * progress and status on [tracker], the failure streak the daemon's poller backs off
  * from, and the reap rules — a remote deletion flips a row only on a complete
@@ -38,7 +38,7 @@ class RemoteEnumeration(
     private val reapGuards: ReapGuards,
     // The engine's logger, so the moved log lines keep their logger name.
     private val log: Logger,
-    // #147: how many remote rows one merge transaction upserts. Tests drive chunk
+    // archive#147: how many remote rows one merge transaction upserts. Tests drive chunk
     // boundaries with a handful of items; production uses the companion default.
     private val mergeChunkRows: Int = MERGE_CHUNK_ROWS,
 ) {
@@ -47,7 +47,7 @@ class RemoteEnumeration(
      * late-bound in the CLI wiring (the hydration layer is built after the engine).
      */
     class ReapGuards(
-        // #301: whether a background hydration upload of the path is queued or in
+        // archive#301: whether a background hydration upload of the path is queued or in
         // flight (an open_write returned Ok but its upload has not landed yet). A
         // queued edit's only copy is never deleted out from under its upload.
         val uploadInFlight: (path: String) -> Boolean = { false },
@@ -56,14 +56,14 @@ class RemoteEnumeration(
     ) {
         /**
          * Whether the row at [path] ([row] is its alive row, if any) may hold the only copy of an edit that has
-         * not reached the cloud, so that nothing may drop the row or its cache copy (#301):
+         * not reached the cloud, so that nothing may drop the row or its cache copy (archive#301):
          * - an upload of the path is queued or in flight ([uploadInFlight]);
          * - the row never reached the cloud (`SyncEntry.isPendingUpload`);
          * - the hydration cache holds a copy of an edit the mount noted as not seen by the cloud
-         *   (`SyncEntry.editBase`, #1070), or a copy newer than the row's last-synced watermark (an edit whose
+         *   (`SyncEntry.editBase`, archive#1070), or a copy newer than the row's last-synced watermark (an edit whose
          *   upload crashed or failed; the co-daemon's recovery scanner replays exactly this watermark).
          * A cache path that cannot be resolved or read counts as no copy. The enumeration's reap and
-         * `refresh.run`'s reset and a recursive `hydration.rmdir` (#1035) ask the same question here.
+         * `refresh.run`'s reset and a recursive `hydration.rmdir` (archive#1035) ask the same question here.
          */
         fun holdsUnsyncedEdit(
             path: String,
@@ -99,11 +99,11 @@ class RemoteEnumeration(
     // missing. Resets on restart (conservative: re-defers).
     private var deferredMissing: Set<String> = emptySet()
 
-    // #301: paths whose reap was deferred and already warned about (see the reap).
+    // archive#301: paths whose reap was deferred and already warned about (see the reap).
     private val deferredReapWarned: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /**
-     * #580: the tombstone of a tracked folder the provider confirmed gone by its id, under this enumeration's
+     * archive#580: the tombstone of a tracked folder the provider confirmed gone by its id, under this enumeration's
      * single-flight guard (see [GoneFolderTombstone]).
      */
     val goneFolders: GoneFolderTombstone = GoneFolderTombstone(gather, db, reapGuards, enumerateInFlight, log)
@@ -133,13 +133,13 @@ class RemoteEnumeration(
     // Records the attempt for enumerationStatus: its start, its end, and a failure that escapes. The
     // provider failures that end as an EnumerateResult are recorded where they are caught.
     //
-    // #517 R3: the failure side of FAILURE_STREAK_KEY — one write per
+    // archive#517 R3: the failure side of FAILURE_STREAK_KEY — one write per
     // failed gather, read by the daemon's enumerate poller at start.
-    // #586: the provider refused the credentials (raised only after its own token refresh failed).
+    // archive#586: the provider refused the credentials (raised only after its own token refresh failed).
     private fun isCredentialRejection(e: Throwable): Boolean = e is AuthenticationException
 
     /**
-     * #878/#900: the machine-readable cause of a failed attempt for `last_error_code`. An API error carries its
+     * archive#878/#900: the machine-readable cause of a failed attempt for `last_error_code`. An API error carries its
      * HTTP status (`http_408`), a rejected authentication is `auth_rejected`, a transport failure names its
      * class (`timeout`, `dns`, `tls`, `connect`, `reset`, `io`) through the attempt classifier, an answer that
      * arrived but cannot be read is `decode`, and anything else is `internal`. So `io` only means transport I/O.
@@ -334,11 +334,11 @@ class RemoteEnumeration(
         var nextDeferred = emptySet<String>()
         // Whether the corroboration guard held back a reap this pass (see the recovery latch below).
         var reapsDeferred = false
-        // #149: cache files are evicted AFTER the batch commits — a filesystem
+        // archive#149: cache files are evicted AFTER the batch commits — a filesystem
         // delete is a non-transactional side effect and must not lengthen the
         // SQLite lock window.
         val cacheEvictions = mutableListOf<Triple<String, Path, Long?>>()
-        // #595: only the rows the merge actually changed (new, or a different remote id,
+        // archive#595: only the rows the merge actually changed (new, or a different remote id,
         // hash, size or modified time) invalidate the view — the Internxt delta rewinds
         // its cursor on purpose and re-delivers the same items every poll, which used to
         // re-invalidate unchanged paths forever. The merge also reports renames (an item
@@ -347,14 +347,14 @@ class RemoteEnumeration(
         // map them through the alias reverse map like the reap paths.
         var upsertedViewPaths: Set<String> = emptySet()
         var movedView: List<RemoteMerge.Move> = emptyList()
-        // #147: the merge runs in chunks of separate transactions. One batch over a full
+        // archive#147: the merge runs in chunks of separate transactions. One batch over a full
         // enumeration held StateDatabase's monitor for the whole merge — a reset over
         // hundreds of thousands of rows stalled every concurrent mount read for the
         // run's length. Each chunk's commit releases the monitor, so a reader waits at
         // most one chunk. The merge is row-at-a-time and the gather has already
         // persisted the cursor before this point, so a chunk boundary adds no new crash
         // exposure: untouched rows keep their previous truth and the next enumeration
-        // re-derives them. Entries sort ancestors-first so the #601 parent guard's DB
+        // re-derives them. Entries sort ancestors-first so the archive#601 parent guard's DB
         // fallback reads a parent row this pass already updated, and the alias map
         // derives once from the full change set (see the RemoteGather overload) — a
         // chunk on its own may not contain the top-level folder an aliased path needs.
@@ -398,11 +398,11 @@ class RemoteEnumeration(
                 val missingNow = remoteChanges.filterValues { it.deleted }.keys
                 val bulk = missingNow.size > bulkThreshold
                 val corroborated = if (bulk) missingNow.intersect(deferredMissing) else missingNow
-                // #1033: the key of a tombstone is the item's REMOTE path and its row can live under another local path.
+                // archive#1033: the key of a tombstone is the item's REMOTE path and its row can live under another local path.
                 // A tombstone no row belongs to reaps nothing and is not counted.
                 val toReap = corroborated.asSequence().mapNotNull { path -> rowOfTombstone(db, path)?.let { path to it } }
                 for ((path, row) in toReap) {
-                    // #301: refuse to reap a path whose hydration cache may hold the
+                    // archive#301: refuse to reap a path whose hydration cache may hold the
                     // only copy of user bytes. A queued or in-flight upload means an
                     // edit written through the mount has not landed yet; a cache file
                     // newer than the row's last-synced watermark means the same for an
@@ -467,7 +467,7 @@ class RemoteEnumeration(
         if (complete && db.getSyncState("last_gather_full") == "true") recordFullEnumeration(remoteChanges, listingMs)
         // Notify the view-invalidation sink once, with all paths that changed in state.db
         // during this pass. Only fires when something actually changed so quiescent polls
-        // do not produce spurious cache-invalidation traffic (#595: a re-delivering delta
+        // do not produce spurious cache-invalidation traffic (archive#595: a re-delivering delta
         // no longer counts as "something"). The sink is a plain lambda so
         // app:hydration can wire HydrationEvent.ViewInvalidated without creating a circular
         // import (app:hydration depends on app:sync, not vice versa).
@@ -510,7 +510,7 @@ class RemoteEnumeration(
             )
         }
         gather.settleRecoveryLatch(scoped = false, shrinkWarning = shrinkWarning, reapsDeferred = reapsDeferred)
-        // #1032: a bulk disappearance that an INCREMENTAL pass held back is corroborated only by a full listing. Its
+        // archive#1032: a bulk disappearance that an INCREMENTAL pass held back is corroborated only by a full listing. Its
         // tombstones came out of a delta that is consumed with the cursor, so no later delta repeats them, and the held
         // rows would stay alive until some full listing found them missing. Ask for that listing: the next pass lists the
         // drive again, finds the same paths missing, and reaps what both passes saw.
@@ -543,7 +543,7 @@ class RemoteEnumeration(
 
     companion object {
         private const val CAUSE_DEPTH = 8
-        // #517 R3: sync_state key counting consecutive enumerations that ended in a
+        // archive#517 R3: sync_state key counting consecutive enumerations that ended in a
         // provider failure. The daemon's enumerate poller seeds its backoff from it
         // at start, so a restart into a known-bad remote doesn't re-run the doomed
         // cycle at full cadence. Reset to "0" by any gather that comes back.
@@ -555,7 +555,7 @@ class RemoteEnumeration(
         const val BULK_REAP_ABSOLUTE: Int = 50
         const val BULK_REAP_FRACTION: Double = 0.20
 
-        // #147: rows per merge transaction. Bounded so a concurrent mount read waits at
+        // archive#147: rows per merge transaction. Bounded so a concurrent mount read waits at
         // most one chunk's commit rather than a whole-enumeration batch. A recording of the
         // first scan of a 372,000-item drive put a chunk of 5,000 rows at about 3.7 s under the
         // monitor (readers waited 3 to 6 s, 149 s in all); 1,000 rows hold it for about 0.75 s
@@ -571,9 +571,9 @@ class RemoteEnumeration(
     }
 }
 
-// #149: the cache copies of reaped rows go after the batch commits — a filesystem delete is a non-transactional side effect
+// archive#149: the cache copies of reaped rows go after the batch commits — a filesystem delete is a non-transactional side effect
 // and must not lengthen the SQLite lock window (errors swallowed: the row flip is the truth and the cache copy is a
-// disk-space concern). The lock window is gone, so a hydration write may have recreated the path in between (#301 class):
+// disk-space concern). The lock window is gone, so a hydration write may have recreated the path in between (archive#301 class):
 // a copy is kept when an upload is queued for it or the file is no longer the one the reap decided on. Each entry: the
 // row's path, its cache copy, and the copy's mtime at the reap.
 internal fun evictCacheCopies(
@@ -588,7 +588,7 @@ internal fun evictCacheCopies(
     }
 }
 
-// An item of the other kind took the path of [old] (#1030). The cache copy of a file is of the old file and stands in the
+// An item of the other kind took the path of [old] (archive#1030). The cache copy of a file is of the old file and stands in the
 // way of the folder's children, so it goes, unless it holds an edit that never reached the cloud. A folder's cache
 // directory goes when it is empty; copies below it stay.
 private fun dropReplacedCacheCopy(
@@ -604,8 +604,8 @@ private fun dropReplacedCacheCopy(
     runCatching { Files.deleteIfExists(cache) }
 }
 
-// The alive row a tombstone keyed at [path] is about (#1033). The key of a synthesized tombstone is the row's effective
-// remote path, or the decorated local path of a duplicate's row (#403): the local path finds the one, the remote path
+// The alive row a tombstone keyed at [path] is about (archive#1033). The key of a synthesized tombstone is the row's effective
+// remote path, or the decorated local path of a duplicate's row (archive#403): the local path finds the one, the remote path
 // the row of an aliased item or of one the drive holds under a server name.
 internal fun rowOfTombstone(
     db: StateDatabase,

@@ -24,7 +24,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * #730: the BIP39 seed used to be re-derived (PBKDF2-HMAC-SHA512, 2048 iterations) on every
+ * archive#730: the BIP39 seed used to be re-derived (PBKDF2-HMAC-SHA512, 2048 iterations) on every
  * download and upload — 8.2 % of the Java execution samples in the live JFR. The provider now
  * derives it at most once per mnemonic for the life of the provider: repeated transfers reuse
  * the cached seed, a credentials change re-derives (the replaced bytes are zeroed, never
@@ -247,7 +247,7 @@ class InternxtSeedCacheTest {
             }
         }
 
-    // #730 review: handing out the held array let a concurrent replacement/close zero the bytes
+    // archive#730 review: handing out the held array let a concurrent replacement/close zero the bytes
     // a transfer was about to derive from — a download failure, or on upload a file encrypted
     // under a key the mnemonic can never reproduce. Every caller now gets a copy.
     @Test

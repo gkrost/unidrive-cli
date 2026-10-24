@@ -17,7 +17,7 @@ class HydrationErrorTest {
         assertEquals("unknown_path", HydrationError.UNKNOWN_PATH_TOKEN)
     }
 
-    // #778: a download refused while the daemon is paused; the front-end asks the user, then resumes and retries.
+    // archive#778: a download refused while the daemon is paused; the front-end asks the user, then resumes and retries.
     @Test
     fun `paused carries the stable paused wire token`() {
         assertEquals("paused", HydrationError.Paused.message)
@@ -30,7 +30,7 @@ class HydrationErrorTest {
         assertEquals("conflict", HydrationError.CONFLICT_TOKEN)
     }
 
-    // #536: the token plus the numbers, one string — a client parses the prefix, the mount crate
+    // archive#536: the token plus the numbers, one string — a client parses the prefix, the mount crate
     // falls to its EIO catch-all.
     @Test
     fun `remote incomplete carries the stable token with the numbers`() {
@@ -50,7 +50,7 @@ class HydrationErrorTest {
         assertEquals("remote_object_missing", HydrationError.REMOTE_OBJECT_MISSING_TOKEN)
     }
 
-    // #941: a refused content and an object this client cannot read each have their own token, then a short reason
+    // archive#941: a refused content and an object this client cannot read each have their own token, then a short reason
     // without a file name; a client matches the prefix up to ": ".
     @Test
     fun `content refused and unsupported object carry their stable tokens with the reason`() {
@@ -129,7 +129,7 @@ class HydrationErrorTest {
         assertEquals("blocked_by_parent", HydrationError.BLOCKED_BY_PARENT_TOKEN)
     }
 
-    // #580: the upload's folder is gone in the cloud: the stable token, then the folder's path. A client matches the
+    // archive#580: the upload's folder is gone in the cloud: the stable token, then the folder's path. A client matches the
     // prefix up to ": "; the stored refusal reason parses back to the same error.
     @Test
     fun `parent gone carries the stable parent_gone token and the folder`() {

@@ -52,7 +52,7 @@ import java.util.concurrent.atomic.AtomicLong
  *   While the daemon is paused (daemon.pause) open_read and hydrate answer {"ok":false,"error":"paused"} for a
  *   file that is not in the cache: nothing is started and nothing waits (a file in the cache is served as usual).
  *   matches_local request: {"verb":"hydration.matches_local","path":"/foo.txt","local_path":"C:\\Users\\me\\foo.txt"}
- *               (gkrost/unidrive#1219) Whether the PLAIN file at local_path (an absolute path of this computer; a cloud
+ *               (archive#1219) Whether the PLAIN file at local_path (an absolute path of this computer; a cloud
  *               placeholder would be recalled by the read) holds exactly the bytes of the cloud copy of path, proven
  *               WITHOUT downloading that copy: the size, the row's content hash (OneDrive quickXor), the SHA-256 the engine
  *               recorded for bytes it wrote or sent itself, or the provider's stored-object proof (Internxt: the hash of the
@@ -76,7 +76,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  *   unlink      request:  {"verb":"hydration.unlink","path":"/foo.txt"}
  *               reply:    {"ok":true}
- *                         {"ok":false,"error":"busy"}               the upload is in flight (#87)
+ *                         {"ok":false,"error":"busy"}               the upload is in flight (archive#87)
  *                         {"ok":false,"error":"path_is_folder"}     EISDIR
  *                         {"ok":false,"error":"<msg>"}              EIO
  *
@@ -84,8 +84,8 @@ import java.util.concurrent.atomic.AtomicLong
  *               reply:    {"ok":true}
  *                         {"ok":false,"error":"path_is_file"}       ENOTDIR
  *                         {"ok":false,"error":"not_empty"}          ENOTEMPTY: alive rows below (plain), or a file
- *                                                                   below holds bytes only this computer has (recursive, #1035)
- *                         {"ok":false,"error":"busy"}               an upload below is in flight (#87)
+ *                                                                   below holds bytes only this computer has (recursive, archive#1035)
+ *                         {"ok":false,"error":"busy"}               an upload below is in flight (archive#87)
  *                         {"ok":false,"error":"<msg>"}              EIO
  *
  *   create      request:  {"verb":"hydration.create",["handle_id":"...",]"path":"/foo.txt"}
@@ -271,7 +271,7 @@ class HydrationIpcHandler(
                     if (!ok) break
                 }
             } finally {
-                // #1036: only this subscription's own entry. A repeat-subscribe cancels this writer and registers the
+                // archive#1036: only this subscription's own entry. A repeat-subscribe cancels this writer and registers the
                 // new one before the cancellation lands here; removing by connection id would drop the new entry.
                 subscribers.computeIfPresent(connectionId) { _, current -> if (current.queue === queue) null else current }
                 queue.close()
@@ -473,7 +473,7 @@ class HydrationIpcHandler(
             }
             "hydration.unlink" -> {
                 val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
-                // #1178: "permanent":true deletes for good (rm --permanent); the provider must be able to.
+                // archive#1178: "permanent":true deletes for good (rm --permanent); the provider must be able to.
                 val permanent = pluckBool(jsonRequest, "permanent") == true
                 when (val r = hydration.unlink(path, permanent)) {
                     is UnlinkResult.Ok -> reply(ok = true)
@@ -484,7 +484,7 @@ class HydrationIpcHandler(
             }
             "hydration.rmdir" -> {
                 val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
-                // #1035: plain rmdir is strict; "recursive":true is the client meaning the whole tree.
+                // archive#1035: plain rmdir is strict; "recursive":true is the client meaning the whole tree.
                 val recursive = pluckBool(jsonRequest, "recursive") == true
                 val permanent = pluckBool(jsonRequest, "permanent") == true
                 when (val r = hydration.rmdir(path, recursive, permanent)) {
@@ -713,7 +713,7 @@ class HydrationIpcHandler(
     // consecutive escapes; appending each UTF-16 unit in turn reassembles it). .NET's
     // System.Text.Json writes every non-ASCII char in that unicode form by default. A malformed
     // escape returns null rather than a guess: silently keeping the digits is what made
-    // "K" + o-umlaut + "ln" arrive as "Ku00f6ln" (#416).
+    // "K" + o-umlaut + "ln" arrive as "Ku00f6ln" (archive#416).
     private fun readString(s: String, start: Int): Pair<String, Int>? {
         val sb = StringBuilder()
         var i = start + 1
@@ -849,7 +849,7 @@ fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
             """{"event":"view.invalidated","full":true}"""
         } else {
             val paths = e.paths.joinToString(",") { jsonEsc(it) }
-            // #595: the rename hint is additive — omitted when empty, so consumers
+            // archive#595: the rename hint is additive — omitted when empty, so consumers
             // written before it parse the line unchanged.
             val base = """{"event":"view.invalidated","paths":[$paths]"""
             if (e.moved.isEmpty()) {

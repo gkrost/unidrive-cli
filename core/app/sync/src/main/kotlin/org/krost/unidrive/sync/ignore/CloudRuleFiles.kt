@@ -31,19 +31,19 @@ data class CloudRuleFile(
 
 /**
  * Rule files only the cloud holds, downloaded on purpose so a folder's rules apply before anything below it is
- * uploaded (owner decision on #660). Each one is kept in [dir], outside the sync root and the hydration cache (nothing
+ * uploaded (owner decision on archive#660). Each one is kept in [dir], outside the sync root and the hydration cache (nothing
  * there is a user file), and downloaded again only when the cloud's copy changes ([CloudRuleFile.stamp]).
  *
  * Fail closed: a rule file larger than [maxBytes], or whose [CloudRuleFile.size] is negative, is not kept.
  * [download] writes the whole object and cannot be stopped at the cap, so a negative size (a size the provider does
- * not know) is not fetched. A size of zero IS fetched (#1064): an empty rule file reads as no rules, and a provider
+ * not know) is not fetched. A size of zero IS fetched (archive#1064): an empty rule file reads as no rules, and a provider
  * that reports 0 for a size it does not know costs one capped download whose bytes are then kept — never a silent
  * no-rules answer. A finished file over [maxBytes], or (when the cloud's size is positive) a different length from
  * it, or (when [contentMatches] is set) not the cloud's
  * hash is deleted and not kept. A failed download is tried again after [retryAfterMs]. Each of these answers
  * [RuleFileProbe.Unreadable], so the folder stays held back, with a WARN.
  *
- * A download is a transfer ([transfers]): none starts while the daemon is paused (#778), and one a pause aborts is not
+ * A download is a transfer ([transfers]): none starts while the daemon is paused (archive#778), and one a pause aborts is not
  * a failure. The folder stays held back until the pause ends; the next probe after it downloads the file.
  *
  * The download blocks the probe (at most [timeoutMs], the wait for a transfer permit included). Fetching it in the
@@ -132,7 +132,7 @@ class CloudRuleFiles(
                 failures[path] = Failure(cloud.stamp, clock(), probe.reason)
                 return probe
             }
-            // #1064: a zero size has no length to compare against (the provider may report it for a size it does
+            // archive#1064: a zero size has no length to compare against (the provider may report it for a size it does
             // not know): what the download wrote is the cloud's copy as far as the cap and the hash can tell.
             if (cloud.size > 0L && written != cloud.size) {
                 return discard(

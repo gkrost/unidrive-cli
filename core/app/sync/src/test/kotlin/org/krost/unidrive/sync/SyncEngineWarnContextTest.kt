@@ -16,7 +16,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * UD-253 regression, reshaped by #530: SyncEngine failure WARN lines emitted
+ * UD-253 regression, reshaped by archive#530: SyncEngine failure WARN lines emitted
  * from catch blocks must include the exception class name in the message, but
  * NOT the Throwable — the console appender's threshold is WARN, so a throwable
  * there printed the full JVM stack trace to stdout for every expected per-file

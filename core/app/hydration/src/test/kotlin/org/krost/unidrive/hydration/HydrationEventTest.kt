@@ -109,7 +109,7 @@ class HydrationEventTest {
 
     @Test
     fun `view_invalidated omits moved when there are no renames`() {
-        // #595: the hint is additive — consumers written before it must parse the line.
+        // archive#595: the hint is additive — consumers written before it must parse the line.
         val e = HydrationEvent.ViewInvalidated(paths = listOf("/a"))
         assertEquals("""{"event":"view.invalidated","paths":["/a"]}""", serialiseHydrationEvent(e))
     }
@@ -186,7 +186,7 @@ class HydrationEventTest {
         }
     }
 
-    // #778: the daemon-level events are not tied to a path; their wire shape is the corpus's events/*.ndjson.
+    // archive#778: the daemon-level events are not tied to a path; their wire shape is the corpus's events/*.ndjson.
     @Test
     fun `paused and resumed serialise to the corpus lines`() {
         assertEquals(

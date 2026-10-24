@@ -1,7 +1,7 @@
 package org.krost.unidrive.internxt
 
 /**
- * The shard hash an upload records in `POST /v2/buckets/{bucket}/files/finish` (#946).
+ * The shard hash an upload records in `POST /v2/buckets/{bucket}/files/finish` (archive#946).
  *
  * Every official Internxt client records RIPEMD-160(SHA-256(ciphertext)), 40 hex characters, and its download compares the
  * downloaded bytes against that value. unidrive used to record the plain SHA-256 (64 hex): a file uploaded here carried a
@@ -27,6 +27,6 @@ internal object ShardHashWire {
         return Ripemd160.digest(InternxtCrypto.hexToBytes(ciphertextSha256Hex)).joinToString("") { "%02x".format(it) }
     }
 
-    // Character.digit also accepts digits of other scripts: only ASCII counts as hex here (#1087).
+    // Character.digit also accepts digits of other scripts: only ASCII counts as hex here (archive#1087).
     private fun Char.isAsciiHex(): Boolean = code < ASCII_LIMIT && Character.digit(this, 16) >= 0
 }

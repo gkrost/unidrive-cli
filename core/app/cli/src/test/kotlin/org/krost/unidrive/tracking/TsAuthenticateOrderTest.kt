@@ -17,8 +17,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * #168: `ts sync` and `ts claim` must authenticate the provider BEFORE the first remote operation.
- * The fix (5e8f9bb, since moved by #780) had no test because the live tests authenticate in setup, so
+ * archive#168: `ts sync` and `ts claim` must authenticate the provider BEFORE the first remote operation.
+ * The fix (5e8f9bb, since moved by archive#780) had no test because the live tests authenticate in setup, so
  * a regression — running the engine against an unauthenticated provider — would surface only there.
  * The recording provider answers nothing: the first engine operation throws, after writing its name
  * into the event list, so the test pins exactly the order create → authenticate → first operation.

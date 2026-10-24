@@ -162,7 +162,7 @@ class AuthLogoutRpcHandlerTest {
         assertEquals(listOf("revoke", "logout"), provider.calls, "the token is revoked while it is still there")
     }
 
-    // #1052: a provider without a revoke call used to answer revoked:true because logout() returned.
+    // archive#1052: a provider without a revoke call used to answer revoked:true because logout() returned.
     @Test
     fun `a provider without a revoke call is not reported as revoked`() {
         Files.writeString(dir.resolve("credentials.json"), """{"secret":"x"}""")

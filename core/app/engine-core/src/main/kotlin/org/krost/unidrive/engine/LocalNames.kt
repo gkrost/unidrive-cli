@@ -2,20 +2,20 @@ package org.krost.unidrive.engine
 
 import org.krost.unidrive.io.WindowsDeviceNames
 
-// #230: a cloud entry whose name cannot be represented on the local filesystem
+// archive#230: a cloud entry whose name cannot be represented on the local filesystem
 // (Windows forbids all-dots names like `....`, trailing dot/space, reserved
-// device names (WindowsDeviceNames, #1090), and the characters
+// device names (WindowsDeviceNames, archive#1090), and the characters
 // <>:"/\|?*) can never be materialised here. The engines detect this up front:
 // the mirror quarantines the row instead of re-attempting the doomed download
 // every poll cycle (see SyncEngine.applyDownload / the reconciler recovery
-// loop), and the mount refuses the write/mkdir/rename (#526).
+// loop), and the mount refuses the write/mkdir/rename (archive#526).
 private const val WINDOWS_RESERVED_CHARS = "<>:\"/\\|?*"
 
 /**
  * Returns a human-readable reason if any component of [remotePath] cannot be
  * represented as a file/directory name on the local filesystem, else null.
  *
- * Shared by both front-ends (#560 U6 moved it here from :app:sync): the mirror
+ * Shared by both front-ends (archive#560 U6 moved it here from :app:sync): the mirror
  * writes local files under its sync root, the mount writes cache files under
  * the hydration cache — both are bound by the same OS name rules.
  *

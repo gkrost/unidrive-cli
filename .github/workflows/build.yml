@@ -45,7 +45,7 @@ jobs:
   # Docs-only changes (Markdown and docs/) must not start a Gradle build. `check` is a REQUIRED status check (repository
   # ruleset), so the workflow itself cannot be path-filtered: a workflow that never starts leaves the required check
   # pending forever. Instead the heavy jobs are skipped; a skipped job satisfies a required check.
-  # A docs file that a test reads is code (#1075): a PR that edits only it must run that test, or main goes red after
+  # A docs file that a test reads is code (archive#1075): a PR that edits only it must run that test, or main goes red after
   # the merge. `docs_read_by_tests` below names them (today SyncConfigScopeTest reads docs/config-schema/config.schema.json;
   # the whole folder is listed); a test that starts reading another file under docs/ adds its path there.
   changes:

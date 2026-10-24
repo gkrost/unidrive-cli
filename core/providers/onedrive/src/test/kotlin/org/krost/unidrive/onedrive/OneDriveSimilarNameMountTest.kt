@@ -137,7 +137,7 @@ class OneDriveSimilarNameMountTest {
         assertEquals(UnlinkResult.Ok, runBlocking { hydration.unlink("/african/$vai") })
         assertNull(graph.find("/african/$serverFile"), "the server item went")
         assertNotNull(graph.find("/african/$tifinagh"), "DATA LOSS: the delete reached the similar sibling")
-        // #1035: the folder goes with its children only with the recursive opt-in.
+        // archive#1035: the folder goes with its children only with the recursive opt-in.
         assertEquals(RmdirResult.Ok, runBlocking { hydration.rmdir("/african/$nko", recursive = true) })
         assertNull(graph.find("/african/$serverFolder"), "the server folder went with its children")
         assertNotNull(graph.find("/african/$ethiopic"), "DATA LOSS: the delete reached the similar sibling folder")

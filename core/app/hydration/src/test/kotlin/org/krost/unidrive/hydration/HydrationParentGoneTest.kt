@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
 
 /** An upload into a cloud folder the provider proved gone: the typed `parent_gone` token, once, and the bytes kept. */
 class HydrationParentGoneTest {
-    // #580: the provider's walk proved the folder of the upload gone in the cloud (trashed elsewhere, reported late by
+    // archive#580: the provider's walk proved the folder of the upload gone in the cloud (trashed elsewhere, reported late by
     // the drive's feed). The client gets the typed `parent_gone: <folder>` token on the failed and the completed event,
     // after one attempt and with no retry scheduled; the row keeps the reason and the bytes stay in the cache.
     @Test
@@ -47,7 +47,7 @@ class HydrationParentGoneTest {
         collector.cancel()
     }
 
-    // #580: a resubmission of the same bytes is answered from the row's refusal without asking the provider, and with
+    // archive#580: a resubmission of the same bytes is answered from the row's refusal without asking the provider, and with
     // the same typed token as the first refusal, not a generic "refused earlier" text.
     @Test
     fun `a resubmission into a folder gone in the cloud repeats the parent_gone token without an attempt`() = runTest {

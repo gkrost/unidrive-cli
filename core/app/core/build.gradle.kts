@@ -31,7 +31,7 @@ dependencies {
 
     testImplementation(project(":providers:onedrive"))
 
-    // #644: the plugin's log lines are asserted through a logback ListAppender.
+    // archive#644: the plugin's log lines are asserted through a logback ListAppender.
     testImplementation(libs.logback.classic)
 }
 

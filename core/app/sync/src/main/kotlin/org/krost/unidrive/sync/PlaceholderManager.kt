@@ -40,7 +40,7 @@ fun safeResolveLocal(
     if (normalizedRoot.relativize(resolved).joinToString("/") != remotePath.trim('/')) {
         throw SecurityException("Refusing aliasing path: remotePath='$remotePath' resolves to '$resolved'")
     }
-    // #171: the logical path is NFC, but a pre-existing on-disk file may be a
+    // archive#171: the logical path is NFC, but a pre-existing on-disk file may be a
     // different Unicode form (NFD, e.g. a macOS-origin name) on a byte-preserving
     // filesystem. If the exact NFC path is absent, find the parent's child whose NFC
     // form matches so FS ops (upload read, isDirectory checks) reach the real bytes
@@ -72,7 +72,7 @@ fun safeResolveLocal(
 }
 
 /**
- * #526: [safeResolveLocal] for row-driven passes (the pending-upload recovery, the delta's
+ * archive#526: [safeResolveLocal] for row-driven passes (the pending-upload recovery, the delta's
  * resurrection arm). A name the filesystem cannot represent — a trailing space, creatable
  * through an extended-length path or a Linux tool — makes [Path.resolve] throw
  * [java.nio.file.InvalidPathException] on Windows, which aborted the whole sync from the
@@ -98,7 +98,7 @@ internal fun safeResolveLocalOrNull(
 //    main's UD-225 loop already does, and uploading the prefix would truncate the remote;
 //  - a freed placeholder: a sparse remoteSize of zeros stamped with the remote modified
 //    time (dehydrate). A tool that touches the mtime afterwards (the touch-happy
-//    property handlers from #396) must not turn it back into an upload of the stub, so
+//    property handlers from archive#396) must not turn it back into an upload of the stub, so
 //    the zeros themselves are checked.
 // [shorterIsPartialDownload] says whether a file shorter than the remote size counts as that
 // partial download. LocalScanner passes false: every provider downloads to a temp name and renames
@@ -148,13 +148,13 @@ open class PlaceholderManager(
     protected val syncRoot: Path,
 ) {
     /**
-     * #737: whether a file in the way of a parent folder may go without a copy. The default never
+     * archive#737: whether a file in the way of a parent folder may go without a copy. The default never
      * lets one go; the sync engine installs a guard that checks the file's state row.
      */
     @Volatile
     var fileInTheWayGuard: FileInTheWayGuard = FileInTheWayGuard { _, _ -> false }
 
-    /** #737: told about every file kept as a conflict copy: (its path, the copy's path), both sync-root-relative. */
+    /** archive#737: told about every file kept as a conflict copy: (its path, the copy's path), both sync-root-relative. */
     @Volatile
     var onFileKeptAside: ((relativePath: String, copyRelativePath: String) -> Unit)? = null
 
@@ -176,7 +176,7 @@ open class PlaceholderManager(
     ) {
         val local = prepareParent(remotePath)
 
-        // #802: a file another process still holds open used to fail the whole staging; a short lock is retried.
+        // archive#802: a file another process still holds open used to fail the whole staging; a short lock is retried.
         withLocalIoRetryBlocking { Files.deleteIfExists(local) }
         withLocalIoRetryBlocking { Files.createFile(local) }
 
@@ -186,13 +186,13 @@ open class PlaceholderManager(
     }
 
     // The folder a file at [remotePath] goes into, ready, and the file's local path. Split from createPlaceholder for a
-    // download that places the file itself (#1045) and needs no stub first.
+    // download that places the file itself (archive#1045) and needs no stub first.
     fun prepareParent(remotePath: String): Path {
         val local = resolveLocal(remotePath)
         // A parent component may exist as a file when a folder and a same-named file share a path
         // (Internxt allows this since files and folders have separate API namespaces), or when the
         // remote turned a file into a folder. That component must become a directory so
-        // createDirectories succeeds. #737: never by deleting the file: see [FileInTheWay.clear].
+        // createDirectories succeeds. archive#737: never by deleting the file: see [FileInTheWay.clear].
         val root = syncRoot.toAbsolutePath().normalize()
         var check: Path? = local.parent
         while (check != null && check != root) {
@@ -207,7 +207,7 @@ open class PlaceholderManager(
     }
 
     /**
-     * #737: renames [source] to [target], in the same directory. Never replaces an existing [target]
+     * archive#737: renames [source] to [target], in the same directory. Never replaces an existing [target]
      * (a [java.nio.file.FileAlreadyExistsException] instead). Open for tests that need the rename to fail.
      */
     protected open fun moveAside(

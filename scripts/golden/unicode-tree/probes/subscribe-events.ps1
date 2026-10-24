@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Ad-hoc probe, read-only: connects to the daemon's IPC socket, sends hydration.subscribe and prints what arrives for -Seconds.
-    It is how the malformed `uploading` event (gkrost/unidrive#484) was found: the Windows client resets its stream on such a
+    It is how the malformed `uploading` event (archive#484) was found: the Windows client resets its stream on such a
     line, so a probe that parses the same lines shows what the client sees. Authenticates with the profile's read token
     (ipc-auth.ps1; -ConfigDir overrides where the profile's config folder is). Needs PowerShell 7.
 #>

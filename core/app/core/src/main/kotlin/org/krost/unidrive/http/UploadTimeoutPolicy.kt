@@ -18,16 +18,16 @@ package org.krost.unidrive.http
  * For a 2 GiB file at 512 KiB/s that's exactly 4096 seconds; for a
  * 5 GiB file at 50 KiB/s (the conservative default) it's ~28 hours.
  *
- * **The socket watchdog is read-idle (#517 F1).** `SOCKET_TIMEOUT_MS` fires
+ * **The socket watchdog is read-idle (archive#517 F1).** `SOCKET_TIMEOUT_MS` fires
  * when no bytes have been RECEIVED for the interval — during a PUT to a peer
  * that stays silent until the response, that is the whole upload, body
  * flowing at line rate or not. Over TLS, Ktor reports the fired watchdog as
  * "the server prematurely closed the connection", indistinguishable from a
  * real close; every observed cut landed within ~1.5 s of the limit. The flat
  * 60 s watchdog therefore capped uploads at what 60 s carries (~362 MB on the
- * measured 48 Mbit/s line) and discarded every byte on the way. #517 R1 then
+ * measured 48 Mbit/s line) and discarded every byte on the way. archive#517 R1 then
  * sized the watchdog for the body at an assumed 2 MiB/s floor, which still cut
- * every large upload on a slower link at the same point (#571: 1.36 GB at
+ * every large upload on a slower link at the same point (archive#571: 1.36 GB at
  * 1.98 MB/s, cut at 650 s on every attempt). A read-idle timer cannot tell
  * "slow but moving" from "stuck" during a PUT at any size, so a PUT whose
  * body can be watched runs under [withUploadWatchdog] instead: cut only when
@@ -108,7 +108,7 @@ public object UploadTimeoutPolicy {
     }
 
     /**
-     * #571: how long a watched upload may go without writing a single body
+     * archive#571: how long a watched upload may go without writing a single body
      * byte before [withUploadWatchdog] cuts it as stalled. Twice the 60 s
      * socket timeout that is the stall detector of every other call: long
      * enough for a Wi-Fi roam or a TCP retransmission backoff to recover, short
@@ -121,7 +121,7 @@ public object UploadTimeoutPolicy {
     public const val UPLOAD_IDLE_WINDOW_MS: Long = 120_000L
 
     /**
-     * #571: the least time a watched upload's server gets to answer after the
+     * archive#571: the least time a watched upload's server gets to answer after the
      * last body byte was written. In that time what still sits in the socket
      * buffers (a few MB at most, under a minute down to ~100 KB/s) reaches the
      * server and the server stores the object. Not measured for the shard
@@ -131,14 +131,14 @@ public object UploadTimeoutPolicy {
     public const val RESPONSE_WAIT_FLOOR_MS: Long = 300_000L
 
     /**
-     * #571: the rate at which the server is assumed to at least store what it
+     * archive#571: the rate at which the server is assumed to at least store what it
      * received, for the size-dependent part of [computeResponseWaitMs]. 10 MiB/s
      * gives a 5 GiB body 512 s; below ~3 GB the floor wins.
      */
     public const val RESPONSE_WAIT_MIN_THROUGHPUT_BYTES_PER_SECOND: Long = 10L * 1024 * 1024
 
     /**
-     * #571: how long [withUploadWatchdog] waits for the server's answer after
+     * archive#571: how long [withUploadWatchdog] waits for the server's answer after
      * the last body byte of a [fileSize]-byte upload was written: the larger
      * of [floorMs] and the size at
      * [RESPONSE_WAIT_MIN_THROUGHPUT_BYTES_PER_SECOND].
@@ -149,7 +149,7 @@ public object UploadTimeoutPolicy {
     ): Long = computeRequestTimeoutMs(fileSize, floorMs, RESPONSE_WAIT_MIN_THROUGHPUT_BYTES_PER_SECOND)
 
     /**
-     * #571: the engine's own socket AND request timeout for a watched upload
+     * archive#571: the engine's own socket AND request timeout for a watched upload
      * of [fileSize] bytes — the outer safety net behind [withUploadWatchdog].
      * The read-idle socket timer runs from the start of the request (the
      * server is silent while the body flows), so it must not fire before the
@@ -176,12 +176,12 @@ public object UploadTimeoutPolicy {
      * True when an IOException surfaced after roughly the connection's own
      * socket-watchdog limit: then the cut was almost certainly OUR read-idle
      * watchdog, not a server event. Over TLS the two are indistinguishable in
-     * the log (#517 F1, loopback probe C), but every observed watchdog cut
+     * the log (archive#517 F1, loopback probe C), but every observed watchdog cut
      * landed within ~1.5 s of the limit (59.84–61.48 s for a 60 s watchdog,
      * n=64), so elapsed ≈ limit identifies it. The 5 % slack absorbs the
      * teardown between timer fire and catch; a real close at 58 s is
      * misclassified, which only costs the difference in log wording. Watched
-     * uploads (#571) use it against [computeWatchedOuterLimitMs].
+     * uploads (archive#571) use it against [computeWatchedOuterLimitMs].
      */
     public fun isSocketWatchdogCut(elapsedMs: Long, socketTimeoutMs: Long): Boolean =
         elapsedMs >= socketTimeoutMs * 95L / 100L

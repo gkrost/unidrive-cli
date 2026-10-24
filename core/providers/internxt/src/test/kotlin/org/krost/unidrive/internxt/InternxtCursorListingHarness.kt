@@ -40,7 +40,7 @@ internal fun file(
     """"modificationTime":"2026-09-01T10:00:00.123Z","updatedAt":"2026-10-01T10:00:00.456Z"}"""
 
 // A ROOT-level file row that names its own updatedAt and status, for the tests that lay the change
-// feed out themselves (#312). [withStatus] = false leaves the status out, the way a page asked
+// feed out themselves (archive#312). [withStatus] = false leaves the status out, the way a page asked
 // without a status filter must never.
 internal fun fileRow(
     uuid: String,
@@ -166,9 +166,9 @@ internal class DriveMock(
     val contentStatus: Int? = null,
     val failure: (stream: String, page: Int) -> Failure? = { _, _ -> null },
     val body: (stream: String, cursor: String?) -> String? = { _, _ -> null },
-    // #523/#647: raw item bodies for the paged per-folder listing, keyed by folder uuid; a uuid with no
+    // archive#523/#647: raw item bodies for the paged per-folder listing, keyed by folder uuid; a uuid with no
     // entry serves an empty listing. Two endpoint families serve them, each enforcing the validation of the
-    // public server source (the unit tests used to honour any limit, which hid #647):
+    // public server source (the unit tests used to honour any limit, which hid archive#647):
     //  - the cursor endpoints GET /folders/v2/content/{uuid}/folders and /files: order ASC|DESC, limit 50..1000
     //    (default 100), an opaque cursor, the reply carries nextCursor (null on the last page);
     //  - the deprecated offset endpoints GET /folders/content/{uuid}/folders and /files: limit REQUIRED 1..50,
@@ -189,7 +189,7 @@ internal class DriveMock(
     val v2StuckCursor: Boolean = false,
     // Serves the offset listing by window instead of in one piece: the rows of `(stream, offset)`,
     // an empty list for the end. The closure is asked on every fetch, so a test can change what a
-    // window holds between the gather and the re-fetch (#312).
+    // window holds between the gather and the re-fetch (archive#312).
     val offsetPages: ((stream: String, offset: Int) -> List<String>?)? = null,
 ) {
     val seen = CopyOnWriteArrayList<Seen>()

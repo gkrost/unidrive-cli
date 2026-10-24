@@ -4,7 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * #1088: known answers from outside this code base for the three places where the shard, login and name tests round-trip
+ * archive#1088: known answers from outside this code base for the three places where the shard, login and name tests round-trip
  * through our own code (encrypt with the code under test, decrypt with the code under test), which a wrong cipher mode, a
  * wrong key derivation or a wrong format survives. Every vector below was reproduced with a tool other than this code:
  * the NIST vector with `openssl enc -aes-256-ctr`, the CryptoJS string with `openssl enc -aes-256-cbc -md md5` (the

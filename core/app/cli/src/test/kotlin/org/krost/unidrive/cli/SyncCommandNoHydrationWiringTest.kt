@@ -5,7 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertFalse
 
 /**
- * #560 U6 (cutover): a mirror `sync` constructs no hydration runtime — no `HydrationImpl`, no
+ * archive#560 U6 (cutover): a mirror `sync` constructs no hydration runtime — no `HydrationImpl`, no
  * hydration verbs on its IPC server, no hydration event fan-out, no hydration upload slots. The
  * predecessor of this test pinned the coordinated wiring it took to build; this one pins its
  * absence, the lightest check that fails if the coordination ever creeps back.

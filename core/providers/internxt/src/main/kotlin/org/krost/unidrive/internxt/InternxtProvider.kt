@@ -35,14 +35,14 @@ class InternxtProvider(
     override val id = "internxt"
     override val displayName = "Internxt Drive"
 
-    // Internxt keeps exact duplicates: two files of one name in one folder (#403).
+    // Internxt keeps exact duplicates: two files of one name in one folder (archive#403).
     override val allowsDuplicateNames: Boolean get() = true
 
     // Internxt tells names apart by case: the drive server keys a folder's names by a unique index on the plain name
     // (default, deterministic collation), so `a.txt` and `A.txt` are two files.
     override val caseSensitivity: CaseSensitivity get() = CaseSensitivity.SENSITIVE
 
-    // #578: the --upload-concurrency flag's runtime override of the profile's upload_concurrency
+    // archive#578: the --upload-concurrency flag's runtime override of the profile's upload_concurrency
     // key; null leaves the key in force. [effectiveUploadConcurrency] is what the part loop reads.
     private var concurrencyOverride: Int? = null
     val effectiveUploadConcurrency: Int get() = concurrencyOverride ?: config.uploadConcurrency
@@ -51,7 +51,7 @@ class InternxtProvider(
     private val crypto = InternxtCrypto()
     private val authService = AuthService(config)
 
-    // #730: mnemonicToSeed is PBKDF2-HMAC-SHA512 (2048 iterations) and used to run once per
+    // archive#730: mnemonicToSeed is PBKDF2-HMAC-SHA512 (2048 iterations) and used to run once per
     // download and upload — 8.2 % of the Java execution samples in the live JFR. The seed is
     // a pure function of the mnemonic, so the last derived value is held for the life of this
     // provider: a JWT refresh keeps the mnemonic and hits the cache, a re-auth that changes it
@@ -74,7 +74,7 @@ class InternxtProvider(
             getBridgeMirrors = api::getBridgeMirrors,
         )
 
-    // gkrost/unidrive#1219: the proof that a local file is the stored file, by the ciphertext hash the network recorded, no download.
+    // archive#1219: the proof that a local file is the stored file, by the ciphertext hash the network recorded, no download.
     private val localContentProof =
         InternxtLocalContentProof(
             getFileMeta = api::getFileMeta,
@@ -99,7 +99,7 @@ class InternxtProvider(
     // an old profile can't be misread by a new one). See UploadTombstoneStore
     // for the full lifecycle and the spec compensating for Internxt's lack
     // of a resumable-upload protocol.
-    // internal and var only so a test can hand in a store whose rename misbehaves (#1203); nothing else assigns it.
+    // internal and var only so a test can hand in a store whose rename misbehaves (archive#1203); nothing else assigns it.
     internal var tombstoneStore = UploadTombstoneStore(config.tokenPath.resolve("upload-tombstones"))
 
     // Internxt notifications (socket.io). Only a process that consumes remote-change
@@ -282,7 +282,7 @@ class InternxtProvider(
         if (remoteHintsWanted) ensureNotificationsClient()
     }
 
-    // #1240: one GET of the usage figure with the stored session; never the console prompt of authenticate().
+    // archive#1240: one GET of the usage figure with the stored session; never the console prompt of authenticate().
     override suspend fun checkCredentials(): CredentialProof {
         if (!authService.isAuthenticated) authService.initialize()
         if (!authService.isAuthenticated) throw NotSignedInException("no Internxt credentials are stored for this profile")
@@ -305,7 +305,7 @@ class InternxtProvider(
         if (authService.isAuthenticated && remoteHintsWanted) ensureNotificationsClient()
     }
 
-    // #1186: the daemon's own instance after a sign-out; the stored credentials and staged uploads are already gone.
+    // archive#1186: the daemon's own instance after a sign-out; the stored credentials and staged uploads are already gone.
     override suspend fun forgetCredentials() {
         authService.forget()
         clearCachedSeed()
@@ -319,7 +319,7 @@ class InternxtProvider(
         notificationsClient?.disconnect()
         notificationsClient = null
         clearCachedSeed()
-        // #1054: the staged ciphertext of the account's files and their resume state do not outlive the sign-in.
+        // archive#1054: the staged ciphertext of the account's files and their resume state do not outlive the sign-in.
         withContext(Dispatchers.IO) { tombstoneStore.discardAll() }
         authService.logout()
     }
@@ -340,7 +340,7 @@ class InternxtProvider(
     )
 
     /**
-     * #730: the BIP39 seed for [mnemonic], derived at most once per mnemonic for the life of
+     * archive#730: the BIP39 seed for [mnemonic], derived at most once per mnemonic for the life of
      * this provider. Every caller gets a fresh copy of the held bytes, and every read or write
      * of those bytes happens under [seedLock] — a transfer that received a seed before a
      * credentials change or a close can therefore neither read zeroed key material nor corrupt
@@ -424,7 +424,7 @@ class InternxtProvider(
         val content = api.getFolderContents(parentUuid)
 
         // UD-317: sanitise child name so entries with stray `\n` still match a clean `name` arg.
-        // #402: fail closed on ambiguity — with two live same-named matches, `find` picks
+        // archive#402: fail closed on ambiguity — with two live same-named matches, `find` picks
         // whichever the listing emitted first, and a delete/move resolved through here can
         // hit the wrong twin. Throw instead; only a single exact match resolves.
         val folders = content.children.filter { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == name }
@@ -434,7 +434,7 @@ class InternxtProvider(
 
         // A file is found by its full name (base + type) only. An extension-stripped base-name
         // fallback let `Makefile` resolve to the sibling `Makefile.am` depending on listing order
-        // (#294), and with no exact hit at all it still let `README` resolve to `README.md` (#1038):
+        // (archive#294), and with no exact hit at all it still let `README` resolve to `README.md` (archive#1038):
         // the path-based consumers (delete, move, the mount's ghost probe) then trashed or renamed
         // the wrong file. A name the folder does not hold is not found.
         val namedFiles = liveFilesForName(content.files, name)
@@ -452,7 +452,7 @@ class InternxtProvider(
         name: String,
     ): List<InternxtFile> = files.filter { file -> file.isLive() && fileMatchesFullName(file, name) }
 
-    // #294 name logic shared by getMetadata, the 409 handlers and findFileByName:
+    // archive#294 name logic shared by getMetadata, the 409 handlers and findFileByName:
     // exact full-name (base + type recomposition) match.
     private fun fileMatchesFullName(
         file: InternxtFile,
@@ -473,7 +473,7 @@ class InternxtProvider(
             "refusing to pick one (delete/move by remote id instead — see the wrong-twin issue #402)",
     )
 
-    // WB-3 (#87): the delete of a never-uploaded file removes the staged encrypted copy and its
+    // WB-3 (archive#87): the delete of a never-uploaded file removes the staged encrypted copy and its
     // tombstone sidecar — the user deleted the content, so the resume state must not outlive it.
     override suspend fun discardStagedUpload(localPath: String) {
         withContext(Dispatchers.IO) {
@@ -531,7 +531,7 @@ class InternxtProvider(
                 if (isBucketEntryNotFound(e)) throw permanentDownloadFailure(remotePath, e)
                 throw e
             }
-        // #485: an empty file is a drive entry with size 0 and no fileId (no bucket entry exists for it): there is nothing
+        // archive#485: an empty file is a drive entry with size 0 and no fileId (no bucket entry exists for it): there is nothing
         // to fetch or decrypt. A size of 0 WITH a fileId is the older "size unknown" shape and still goes to the bridge.
         // A null size is unknown, not empty: with no fileId either there is nothing to read, so it fails below.
         if (fileMeta.fileId == null && fileMeta.size?.toLongOrNull() == 0L) {
@@ -585,7 +585,7 @@ class InternxtProvider(
         // TRUNCATE_EXISTING on the destination open mode (inside
         // downloadFileStreaming) discards any partial prior attempt's bytes.
         // The declared plaintext size rides along so the streaming call can
-        // refuse a short stored object before reading a byte (#536); a null/0
+        // refuse a short stored object before reading a byte (archive#536); a null/0
         // size stays "unknown" and only the post-download guard applies.
         val expected = fileMeta.size?.toLongOrNull()
         val downloaded =
@@ -602,7 +602,7 @@ class InternxtProvider(
                             if (isBucketEntryNotFound(e)) throw remoteObjectMissingFailure(e)
                             throw e
                         }
-                    // #333 review: hexToBytes now fails loud on a malformed index. A bridge entry
+                    // archive#333 review: hexToBytes now fails loud on a malformed index. A bridge entry
                     // whose index is not hex can never decrypt, so quarantine it with a clear
                     // reason instead of letting the engine retry the same failure on every poll.
                     val indexBytes =
@@ -622,7 +622,7 @@ class InternxtProvider(
                     val bucketKey = crypto.deriveBucketKey(seed, bucket)
                     val fileKey = crypto.deriveFileKey(bucketKey, indexBytes)
 
-                    // #335: taking the first usable shard of a multi-shard object decrypted a
+                    // archive#335: taking the first usable shard of a multi-shard object decrypted a
                     // truncated file whose length mismatch then surfaced as a RETRIABLE error —
                     // the engine retried forever instead of quarantining. Fail permanently (a
                     // clear quarantine reason) before any download request is made. One shard
@@ -638,7 +638,7 @@ class InternxtProvider(
                         usableShards.firstOrNull()?.url
                             ?: throw ProviderException("No download URL in bridge info for $remotePath")
 
-                    // #940: the recorded hash is checked in the shape the network stored it; a shape this
+                    // archive#940: the recorded hash is checked in the shape the network stored it; a shape this
                     // client cannot check is read without the ciphertext check and says so (see below).
                     val checkable = shardHashCheck(fileId, remotePath, usableShards.first().hash)
                     val cipher = crypto.createContentDecryptCipher(fileKey, iv)
@@ -655,7 +655,7 @@ class InternxtProvider(
                 }
             } catch (e: RemoteIncompleteDownloadException) {
                 // The stored object cannot produce a whole file; say so with the
-                // path before the typed failure quarantines the row (#536). DEBUG here: the
+                // path before the typed failure quarantines the row (archive#536). DEBUG here: the
                 // caller owns the WARN, once per object (the mount's MountEngine; the sync
                 // engine's quarantine line), because this provider does not know whether it
                 // is the first refusal of the object.
@@ -692,7 +692,7 @@ class InternxtProvider(
         )
     }
 
-    // #940: WARN once per object and run; a pin retries, so later reports of the same object go to DEBUG.
+    // archive#940: WARN once per object and run; a pin retries, so later reports of the same object go to DEBUG.
     // Bounded: an account full of such objects must not grow this set without limit. Reaching the bound is said once,
     // so the objects after it are not silently missing from the WARNs. Size check and add run under one lock.
     private val shardHashReported = HashSet<String>()
@@ -818,7 +818,7 @@ class InternxtProvider(
                 )
                 kotlinx.coroutines.delay(backoffMs.coerceIn(500L, 60_000L))
             } catch (e: InternxtDownloadBudgetExhaustedException) {
-                // #1065: a download that used up its whole time budget would use it up again from byte 0.
+                // archive#1065: a download that used up its whole time budget would use it up again from byte 0.
                 log.warn("shard-commit attempt {}/{} not repeated: {}", attempt + 1, maxAttempts, e.message)
                 throw e
             } catch (e: java.io.IOException) {
@@ -936,7 +936,7 @@ class InternxtProvider(
     }
 
     // UD-304: multipart constants available in InternxtConfig.MULTIPART_*; not yet consumed (pending UD-307 multipart endpoint impl).
-    // #464: compares the caller's write token with the item's current metadata. No token (a new file, or a caller that has none)
+    // archive#464: compares the caller's write token with the item's current metadata. No token (a new file, or a caller that has none)
     // means no check. A different token means the cloud copy changed after the caller listed it.
     private suspend fun checkWriteToken(
         existingRemoteId: String?,
@@ -981,7 +981,7 @@ class InternxtProvider(
     private fun outsideDriveRefusal(remotePath: String) =
         org.krost.unidrive.PermanentUploadFailureException("Not part of the drive (a tree of its own, such as a device backup); not written to: $remotePath")
 
-    // #578: the multipart policy surface — the effective parallelism for status, and the
+    // archive#578: the multipart policy surface — the effective parallelism for status, and the
     // daemon flag's override of it (validated at the flag's parse site; re-bounded here so
     // a programmatic caller cannot set nonsense either).
     override fun multipartUploadConcurrency(): Int? = effectiveUploadConcurrency
@@ -996,7 +996,7 @@ class InternxtProvider(
         return true
     }
 
-    // #493: a request the server refuses as such (400 Bad Request, 413, 415, 422) is refused again with the same bytes; it
+    // archive#493: a request the server refuses as such (400 Bad Request, 413, 415, 422) is refused again with the same bytes; it
     // becomes a PermanentUploadFailureException, so the hydration queue does not run its retry ladder on it. Everything else
     // (5xx, 408, unrelated 409, 429, auth, network) keeps its type and stays retryable.
     // MissingUploadsError with no landed entry after a successful reconcile is refused at commit time below.
@@ -1022,8 +1022,8 @@ class InternxtProvider(
         localPath: Path,
         remotePath: String,
         existingRemoteId: String?,
-        // #291: Internxt replace-in-place keys on the file UUID (existingRemoteId), not an eTag. It has no If-Match-style
-        // conditional PUT; #464: the token is "<uuid>|<modificationTime>|<size>" ([internxtVersionToken]), compared with fresh
+        // archive#291: Internxt replace-in-place keys on the file UUID (existingRemoteId), not an eTag. It has no If-Match-style
+        // conditional PUT; archive#464: the token is "<uuid>|<modificationTime>|<size>" ([internxtVersionToken]), compared with fresh
         // metadata before anything is sent and again right before the replace.
         ifMatchETag: String?,
         onProgress: ((Long, Long) -> Unit)?,
@@ -1031,7 +1031,7 @@ class InternxtProvider(
         val segments = pathSegments(remotePath)
         if (segments.isEmpty()) throw ProviderException("Cannot upload to root")
 
-        // #464: a stale write token is refused before the file is encrypted and sent, not after: the late check below only
+        // archive#464: a stale write token is refused before the file is encrypted and sent, not after: the late check below only
         // narrows the window, but discovering a conflict after a gigabyte went to the storage backend wastes it all.
         checkReplaceTarget(existingRemoteId, ifMatchETag, remotePath)
 
@@ -1052,7 +1052,7 @@ class InternxtProvider(
         // 1. Get file size + mtime without loading into memory. NoSuchFileException
         // here means the local file vanished between scan and upload; surface
         // after clearing any prior tombstone for the missing path. The content
-        // fingerprint (#311) pins the head+tail windows of the same file so a
+        // fingerprint (archive#311) pins the head+tail windows of the same file so a
         // same-mtime-same-size rewrite can't ride a resume.
         val fileSize: Long
         val localMtime: java.time.Instant
@@ -1067,7 +1067,7 @@ class InternxtProvider(
         }
         onProgress?.invoke(0L, fileSize)
 
-        // #485: an empty file has no bucket entry. The drive API refuses a fileId for size 0 (and requires one above), on
+        // archive#485: an empty file has no bucket entry. The drive API refuses a fileId for size 0 (and requires one above), on
         // create and on replace alike (drive-server's ValidateFileIdWithSize), so the bridge flow below must not run for it:
         // its createFile answered 400 and every retry's second finish a 409 MissingUploadsError.
         if (fileSize == 0L) {
@@ -1084,7 +1084,7 @@ class InternxtProvider(
         // RESUME_TTL_MS) discards the sidecar + the .enc and forces a cold
         // restart with fresh indexBytes.
         //
-        // #1054: the sidecar is keyed by the local path alone, and its ciphertext is encrypted under the key
+        // archive#1054: the sidecar is keyed by the local path alone, and its ciphertext is encrypted under the key
         // of the account that wrote it; the account the call runs under must be the same one (the bucket is
         // the account's), or the file would finish into another account's bucket as ciphertext it cannot read.
         // The tombstone's folder and name are not compared: nothing resumed depends on them (the commit
@@ -1098,7 +1098,7 @@ class InternxtProvider(
             withContext(Dispatchers.IO) { tombstoneStore.read(pathHashStr) }
         val localMtimeMillis = localMtime.toEpochMilli()
         val nowMillis = System.currentTimeMillis()
-        // #311: mtime+size do not prove content identity — in-place writers
+        // archive#311: mtime+size do not prove content identity — in-place writers
         // that restore mtime can swap bytes underneath a resume. The tombstone
         // pins a head+tail fingerprint at cold start; a mismatch (or a null,
         // i.e. hand-written tombstone) forces fresh indexBytes so the pinned
@@ -1130,7 +1130,7 @@ class InternxtProvider(
             tomb = existingTomb
         }
 
-        // #311 backstop: beyond ENCRYPTING the prior ciphertext may already
+        // archive#311 backstop: beyond ENCRYPTING the prior ciphertext may already
         // sit on the storage backend (partial or complete PUT). If the pinned
         // ciphertext state can't be byte-validated on disk (.enc missing or
         // size-mismatched), the fall-through would re-encrypt *current* bytes
@@ -1156,7 +1156,7 @@ class InternxtProvider(
             }
         }
 
-        // #333 review: a tombstone whose index is not valid hex cannot be resumed (hexToBytes
+        // archive#333 review: a tombstone whose index is not valid hex cannot be resumed (hexToBytes
         // now throws). Treat it like the other unusable tombstones: discard and cold-restart
         // with fresh indexBytes, instead of failing this upload on every retry.
         if (tomb != null && runCatching { InternxtCrypto.hexToBytes(tomb.indexBytesHex) }.isFailure) {
@@ -1215,7 +1215,7 @@ class InternxtProvider(
         // PUT_PENDING or later (the ciphertext + hash + size are already pinned
         // in the tombstone, and the .enc on disk must round-trip the recorded
         // encryptedSize — a tombstone that can't honour that was already
-        // discarded by the #311 backstop above).
+        // discarded by the archive#311 backstop above).
         val needsEncrypt =
             currentTomb.stage == UploadTombstone.Stage.ENCRYPTING ||
                 currentTomb.encryptedSize == null ||
@@ -1274,7 +1274,7 @@ class InternxtProvider(
         // exception that wasn't already handled by the tombstone discard path
         // — in that case we leave the .enc alone so the next upload() call
         // can resume cleanly.
-        // #578: a file above the upload cutoff goes out in parts, up to
+        // archive#578: a file above the upload cutoff goes out in parts, up to
         // uploadConcurrency at a time, each part its own presigned URL from the
         // one multipart session. A single-part session already in flight (the
         // tombstone carries its shardUuid) finishes as the single PUT it started
@@ -1342,7 +1342,7 @@ class InternxtProvider(
                 if (currentTomb.stage == UploadTombstone.Stage.ENCRYPTING ||
                     currentTomb.stage == UploadTombstone.Stage.PUT_PENDING
                 ) {
-                    // #1197: byte progress while the body streams, in plaintext bytes (the ciphertext can be a few
+                    // archive#1197: byte progress while the body streams, in plaintext bytes (the ciphertext can be a few
                     // bytes longer). Held below the size until the PUT has returned; the final report follows it.
                     api.putEncryptedShardFromFile(putUrl, tempFile, encryptedSize, onBytesSent = { sent ->
                         val scaled = if (encryptedSize > 0) (sent.toDouble() / encryptedSize * fileSize).toLong() else 0L
@@ -1361,7 +1361,7 @@ class InternxtProvider(
                 // tombstone-carried bucket entry id is already in hand).
                 val entry =
                     if (currentTomb.stage == UploadTombstone.Stage.FINISH_DONE && currentTomb.bridgeFileId != null) {
-                        // #1203: finishUpload already answered; its file id is on the tombstone (in memory even when writing it failed).
+                        // archive#1203: finishUpload already answered; its file id is on the tombstone (in memory even when writing it failed).
                         // Finishing the exhausted session again answers 409, and with no Drive entry yet there is nothing to reconcile.
                         org.krost.unidrive.internxt.model.BucketEntry(
                             id = currentTomb.bridgeFileId!!,
@@ -1370,7 +1370,7 @@ class InternxtProvider(
                         )
                     } else if (currentTomb.stage == UploadTombstone.Stage.FINISH_DONE) {
                         // We landed here from a crash between finishUpload-OK
-                        // and the createFile/replaceFile call, in a sidecar that carries no file id (written before #1203). Call finishUpload
+                        // and the createFile/replaceFile call, in a sidecar that carries no file id (written before archive#1203). Call finishUpload
                         // again — it'll either succeed (idempotent
                         // at the server's reconcile path) or surface a 409 that
                         // commitWithRetry resolves via the listing reconcile.
@@ -1407,7 +1407,7 @@ class InternxtProvider(
                             bridgeFileId = e.id,
                             tombstoneWrittenAtMillis = System.currentTimeMillis(),
                         )
-                        // #1203: the commit is done and its file id is in hand; the sidecar only serves a crash resume. A write that
+                        // archive#1203: the commit is done and its file id is in hand; the sidecar only serves a crash resume. A write that
                         // fails here (on Windows: access denied on the rename) must not throw: retryShardCommit would take it for a failed
                         // commit and run the whole Bridge session again, and the second finish ends the file as refused.
                         try {
@@ -1424,7 +1424,7 @@ class InternxtProvider(
                 entry
             }
 
-        // #578: part plan math — the configured chunk size grows if it would exceed
+        // archive#578: part plan math — the configured chunk size grows if it would exceed
         // the bridge's 10,000-part ceiling; parts never drop below the configured floor.
         fun ceilDivLong(
             a: Long,
@@ -1573,7 +1573,7 @@ class InternxtProvider(
                                                     size,
                                                     partBudget,
                                                     onBytesSent = { sent ->
-                                                        // The single-PUT convention (#1197), scaled from this
+                                                        // The single-PUT convention (archive#1197), scaled from this
                                                         // part's window of the ciphertext to plaintext bytes:
                                                         // live values while the body streams, always held below
                                                         // the total; the one final report follows the last part.
@@ -1668,7 +1668,7 @@ class InternxtProvider(
                     api.finishMultipartUpload(
                         bucket = bucket,
                         indexHex = indexHex,
-                        // #946, like the single-shard finish: the wire hash is RIPEMD-160(SHA-256(ciphertext)),
+                        // archive#946, like the single-shard finish: the wire hash is RIPEMD-160(SHA-256(ciphertext)),
                         // derived from the pinned SHA-256 at the moment it is sent.
                         hash = ShardHashWire.forFinish(hashHex),
                         uploadId = session.uploadId,
@@ -1938,19 +1938,19 @@ class InternxtProvider(
         return finalItem
     }
 
-    // #485: an empty file is a drive entry with size 0 and no fileId; nothing goes to the bridge. The same decisions as the
+    // archive#485: an empty file is a drive entry with size 0 and no fileId; nothing goes to the bridge. The same decisions as the
     // non-empty path: a replace keeps the prior content when keepOverwritten is on, and a create that collides adopts the
     // remote only when it is provably the same content (here: also empty) and otherwise keeps both under a conflict name.
     /**
      * The parent resolution for an upload (both the normal and the empty-file flow).
      *
-     * #580: a folder trashed in the cloud while rows below it still exist (#132 trash
+     * archive#580: a folder trashed in the cloud while rows below it still exist (archive#132 trash
      * lag) makes the walk fail with "Folder not found" — but that is a POSITIVE proof
      * of absence: the listing succeeded and the segment is not in it. The same call
      * with the same bytes would fail again forever, so surface it as a permanent
      * refusal, typed as [ParentGoneException] with the folder the walk did not find
      * (the `parent_gone` token on the hydration events): the hydration queue skips its retry ladder, the replay and a
-     * resubmission of the same bytes skip the provider (#493's upload_refused stamp),
+     * resubmission of the same bytes skip the provider (archive#493's upload_refused stamp),
      * and the user's bytes stay in the cache until their next edit or the lagging
      * tombstone cleans the subtree. A listing that FAILED (5xx, timeout) is not
      * absence — that keeps its retryable type.
@@ -2104,7 +2104,7 @@ class InternxtProvider(
     }
 
     override suspend fun delete(remotePath: String, ifMatchETag: String?) {
-        // #291: Internxt has no conditional-delete primitive, so the optimistic-concurrency
+        // archive#291: Internxt has no conditional-delete primitive, so the optimistic-concurrency
         // token is accepted-and-ignored; routine deletes already route to the recycle bin below.
         // UD-367: route routine sync-driven deletes through Internxt's recycle bin
         // (POST /storage/trash/add) so any spurious del-local from a partial delta()
@@ -2116,7 +2116,7 @@ class InternxtProvider(
         api.trashItems(listOf(metadata.id to type))
     }
 
-    // #402: resolve an item's CloudItem by uuid instead of by path — same-name siblings
+    // archive#402: resolve an item's CloudItem by uuid instead of by path — same-name siblings
     // make path-based lookup an arbitrary pick. Files are probed first; a 404 falls
     // through to the folder probe. Any other status propagates unchanged: a transient
     // 5xx must not surface as "Item not found" (the engine treats that as already-gone
@@ -2139,7 +2139,7 @@ class InternxtProvider(
         }
 
     /**
-     * #580: the folder [remoteId] as its meta answers: trashed (status `TRASHED`, or the `removed` flag), not found (HTTP
+     * archive#580: the folder [remoteId] as its meta answers: trashed (status `TRASHED`, or the `removed` flag), not found (HTTP
      * 404/410, or a folder deleted for good), or live. Any other failure (a 5xx, a degraded gateway, a timeout, a body
      * that cannot be read) propagates: it proves nothing. A folder that is gone also leaves the folder-uuid cache, so the
      * next walk asks the listing instead of reaching a dead uuid (the stale-entry case at [resolveFolder]).
@@ -2212,7 +2212,7 @@ class InternxtProvider(
         api.trashItems(listOf(metadata.id to type))
     }
 
-    // #1178: the permanent primitives behind rm --permanent (DELETE /files/{uuid} / DELETE /folders/{uuid}), the
+    // archive#1178: the permanent primitives behind rm --permanent (DELETE /files/{uuid} / DELETE /folders/{uuid}), the
     // explicit purge the trash flow of delete/deleteById deliberately leaves to the operator.
     override suspend fun deletePermanently(remotePath: String) = purge(getMetadata(remotePath), remotePath)
 
@@ -2234,7 +2234,7 @@ class InternxtProvider(
         }
     }
 
-    // #402: all but the leaf segment of [path] — the parent the by-id probes build
+    // archive#402: all but the leaf segment of [path] — the parent the by-id probes build
     // item paths against (error-message/path cosmetics only; the uuid is what selects).
     private fun parentPathOf(path: String): String = "/" + pathSegments(path).dropLast(1).joinToString("/")
 
@@ -2341,7 +2341,7 @@ class InternxtProvider(
         toPath: String,
     ): CloudItem = moveResolved(getMetadata(fromPath), fromPath, toPath)
 
-    // #402: the engine routes here whenever the source row carries a real cloud uuid,
+    // archive#402: the engine routes here whenever the source row carries a real cloud uuid,
     // so a same-named sibling cannot redirect the move to the wrong twin via
     // getMetadata's path lookup. The destination parent still resolves by path; if IT
     // is ambiguous, resolveFolder fails closed.
@@ -2355,7 +2355,7 @@ class InternxtProvider(
         return moveResolved(metadata, fromPath, toPath)
     }
 
-    // UD-369 / #417 move legs, shared by the path and by-id entry points. [metadata]
+    // UD-369 / archive#417 move legs, shared by the path and by-id entry points. [metadata]
     // is the already-resolved source item.
     private suspend fun moveResolved(
         metadata: CloudItem,
@@ -2382,7 +2382,7 @@ class InternxtProvider(
         // avoiding the engine's worst-case download → re-encrypt → re-upload → delete-old
         // cycle for what is metadata-only on the wire. Cross-parent moves keep PATCH; mixed
         // (different parent AND different name) does both in sequence.
-        // #417: every leg below stamps a new modificationTime server-side but answers with the
+        // archive#417: every leg below stamps a new modificationTime server-side but answers with the
         // pre-update one; the result is re-read once at the end (afterMove), against the modified
         // time the item had when we started.
         val startedFrom = metadata.modified
@@ -2398,7 +2398,7 @@ class InternxtProvider(
         }
 
         val destFolderUuid = resolveFolder(toParentPath)
-        // #1001: a retry by id starts from where the item is now. A move leg that landed before
+        // archive#1001: a retry by id starts from where the item is now. A move leg that landed before
         // its rename leg failed left the item in the destination under another name; only the
         // rename is left to do (or nothing, when that leg landed too).
         val needsRename = !sameName && metadata.name != toName
@@ -2437,7 +2437,7 @@ class InternxtProvider(
         }
     }
 
-    // #1001: the order of the two legs of a move into another folder under a new name. Internxt
+    // archive#1001: the order of the two legs of a move into another folder under a new name. Internxt
     // has no call that does both, and each leg is refused with 409 when its own folder already
     // holds the name the item has at that moment. Moving first fails when the destination holds
     // an item of the OLD name although the final name is free there, so the order is chosen from
@@ -2525,7 +2525,7 @@ class InternxtProvider(
             is MoveOrder.ViaTemp -> rename(order.name).let { move() }.let { rename(toName) }
         }
 
-    // #417: PUT /files/{uuid} answers with the entity as it was BEFORE the server stamped its new
+    // archive#417: PUT /files/{uuid} answers with the entity as it was BEFORE the server stamped its new
     // modificationTime (observed live: size/fileId in the same body already updated, timestamp
     // not); a rename/move changes the server's modified time too, and its PUT .../meta / PATCH
     // responses are treated the same way. The engine stores that value in state.db; the next
@@ -2537,7 +2537,7 @@ class InternxtProvider(
     // we sent has to be replicated here, and a rename/move sends no time at all (the server
     // stamps its own clock), so it could not be computed anyway. One extra call per
     // replace/move. Best effort: the write has already landed and a move cannot be retried
-    // (its source path is gone), so a failed read degrades to the write response (the pre-#417
+    // (its source path is gone), so a failed read degrades to the write response (the pre-archive#417
     // behaviour, one redundant download) instead of failing the operation.
     //
     // The meta read itself can lag the write (seen live: an intermittent echo right after a
@@ -2664,7 +2664,7 @@ class InternxtProvider(
         onPageProgress: ((itemsSoFar: Int) -> Unit)?,
         scanContext: org.krost.unidrive.ScanContext?,
     ): DeltaPage =
-        // Only a full enumeration waits out a connect outage (#693): it has a long listing to lose. An incremental
+        // Only a full enumeration waits out a connect outage (archive#693): it has a long listing to lose. An incremental
         // poll is one cheap query that the poller repeats on its cadence, and it must fail fast so that an offline
         // account is reported as such instead of hanging for minutes.
         if (cursor == null) {
@@ -2686,7 +2686,7 @@ class InternxtProvider(
         val scopeRoots = scanContext?.scopeRoots.orEmpty()
         val onProgress = scanContext?.onProgress
         if (cursor == null && scopeRoots.isNotEmpty()) return scopedFullDelta(scopeRoots, onPageProgress, onProgress, scanContext = scanContext)
-        // #517 R3: once a full gather ended in an unavailable account-wide listing, later
+        // archive#517 R3: once a full gather ended in an unavailable account-wide listing, later
         // full gathers skip the doomed attempt for a while — with the listing watchdog at
         // 330 s even one doomed attempt is minutes of heavy load the walk was going
         // to replace anyway (the live account re-bought it every ~7 min for 4 h).
@@ -2715,7 +2715,7 @@ class InternxtProvider(
         // for tombstones on first walk because there's no local state to
         // diff them against). The offset listing of an incremental poll
         // (cursor!=null — and only the fallback for a server without the sync
-        // listings, #312) uses sort=updatedAt so the per-page max() is
+        // listings, archive#312) uses sort=updatedAt so the per-page max() is
         // monotonically advancing (next page advances the effective cursor)
         // and status=ALL because tombstones ARE the signal for deletes since
         // the last sync.
@@ -2758,8 +2758,8 @@ class InternxtProvider(
         // this: awaitSlot gates on breaker, priority lane and spacing only —
         // maxConcurrency seeds a storm-halving counter nothing enforces — so four
         // heavy listing calls can be in flight at once, as observed on the live
-        // account, #517 F4. R7 tracks turning that into a real permit.) The API
-        // itself tolerates more (measured on a live account 2026-09-29, #392:
+        // account, archive#517 F4. R7 tracks turning that into a real permit.) The API
+        // itself tolerates more (measured on a live account 2026-09-29, archive#392:
         // throughput still scaled at concurrency 8, 8.7 calls/s, zero throttling;
         // /folders/content p50 ~0.3s, p99 ~2-4s, max ~8s) — the overlap exists to
         // absorb the p99 tail instead of stalling the stream behind one slow page.
@@ -2799,9 +2799,9 @@ class InternxtProvider(
         // The two account-wide listings page through the whole account with an offset.
         // On a large account those calls are slow server-side (25-56 s per folder page,
         // more per file page, latency growing with the account's row count, not the
-        // offset, #517 F3) and the flat 60 s socket watchdog cut every one of them —
+        // offset, archive#517 F3) and the flat 60 s socket watchdog cut every one of them —
         // reported by Ktor-over-TLS as "the server prematurely closed the connection",
-        // which looked like a gateway cap and was our own timer (#517 F1, loopback
+        // which looked like a gateway cap and was our own timer (archive#517 F1, loopback
         // probe). R2 raised their watchdog to 330 s, so what remains here are real
         // closes and pages past the server's own 300 s statement timeout. Either
         // listing failing as 500/503 still means: list the folder tree instead
@@ -2810,18 +2810,18 @@ class InternxtProvider(
         // /files fell back to a sequential walk that would take an hour.
         //
         // The last page each stream served is kept, as (offset, rows): the gather
-        // re-reads it afterwards to detect a listing that moved under it (#312).
+        // re-reads it afterwards to detect a listing that moved under it (archive#312).
         val lastFolderPage = java.util.concurrent.atomic.AtomicReference<Pair<Int, List<InternxtFolder>>?>(null)
         val lastFilePage = java.util.concurrent.atomic.AtomicReference<Pair<Int, List<InternxtFile>>?>(null)
         try {
             if (cursor != null) {
-                // #312: the poll reads its changes through the sync listings — the keyset the full
+                // archive#312: the poll reads its changes through the sync listings — the keyset the full
                 // enumeration pages through, without the status filter, so that a row that changes
                 // mid-gather cannot push another row past a page boundary, and tombstones arrive in
                 // the stream. Null here means the server does not serve those endpoints: the offset
                 // listing below is the poll then, as it was before.
                 cursorIncrementalDelta(cursor, onPageProgress, scanContext, onProgress)?.let { page ->
-                    // The sync listings answered: an earlier run of failures is over (#463).
+                    // The sync listings answered: an earlier run of failures is over (archive#463).
                     incrementalUnavailableSince.set(null)
                     return page
                 }
@@ -2866,7 +2866,7 @@ class InternxtProvider(
             if (e.statusCode !in SERVER_UNAVAILABLE_STATUSES) throw e
             return unavailableListingFallback(e, cursor, scopeRoots, onPageProgress, onProgress, combinedTotal())
         }
-        // The cheap listing answered: an earlier run of failures is over (#463).
+        // The cheap listing answered: an earlier run of failures is over (archive#463).
         if (cursor != null) incrementalUnavailableSince.set(null)
 
         // Cursor = max(updatedAt) seen across successfully-fetched pages.
@@ -2877,7 +2877,7 @@ class InternxtProvider(
                 .maxOrNull()
         // Only an incremental delta believes the engine's rows: a full listing is what runs when it cannot.
         val tracked = scanContext?.trackedRow.takeIf { cursor != null }
-        // #312: the offset listing is only as good as its stability. A row that changes while the
+        // archive#312: the offset listing is only as good as its stability. A row that changes while the
         // gather runs moves inside the updatedAt order, every later row shifts up one, and the row
         // at a page boundary is fetched by no page — its change (a TRASHED tombstone included) never
         // syncs, because the promoted cursor steps over it. The last page of each stream is re-read
@@ -2907,13 +2907,13 @@ class InternxtProvider(
         itemsSoFar: Int,
     ): DeltaPage {
         if (cursor != null) {
-            // #463: an incremental delta is the daemon's poll, and the daemon polls by default. Its
-            // updatedAt-filtered listing is one cheap query (0.24 s live, #517); the walk in its place
+            // archive#463: an incremental delta is the daemon's poll, and the daemon polls by default. Its
+            // updatedAt-filtered listing is one cheap query (0.24 s live, archive#517); the walk in its place
             // costs a whole enumeration (about half an hour on a large drive) for what is usually a
             // blip. So a blip fails the poll: the poller backs off and the next poll asks the cheap
             // listing again from the same cursor, and nothing changed in between is lost.
             // But the walk is also the only way out when the cheap listing STAYS unavailable (an old
-            // cursor whose query the gateway keeps cutting, #517): failing forever would freeze the
+            // cursor whose query the gateway keeps cutting, archive#517): failing forever would freeze the
             // mount's view. Once the listing has failed for INCREMENTAL_WALK_AFTER, the poll walks
             // once, as it always did, and the walk's fresh cursor starts the cheap polls over.
             val now = clock()
@@ -2927,7 +2927,7 @@ class InternxtProvider(
                 e.message,
                 if (scopeRoots.isEmpty()) "" else " of $scopeRoots",
             )
-            // An incremental walk does not open the full-gather window (#517 R3).
+            // An incremental walk does not open the full-gather window (archive#517 R3).
             return scopedFullDelta(scopeRoots.ifEmpty { listOf("/") }, onPageProgress, onProgress, itemsSoFar)
         }
         // Only a full gather opens the window.
@@ -2944,7 +2944,7 @@ class InternxtProvider(
     }
 
     // The offset gather's DeltaPage: paths for every item, the cursor promoted to the newest
-    // updatedAt seen. When the listing moved under the gather (#312), a poll keeps its cursor where
+    // updatedAt seen. When the listing moved under the gather (archive#312), a poll keeps its cursor where
     // it was, so the next poll re-reads the window instead of stepping over what it may have
     // missed. The poll stays complete: an incomplete page sets the engine's recovery latch, and
     // every later gather would list the whole drive from zero for a change the next poll re-reads
@@ -2998,7 +2998,7 @@ class InternxtProvider(
         return again.take(rows.size).map(uuid).sorted() == rows.map(uuid).sorted()
     }
 
-    // The incremental poll's gather through the sync listings (#312): both streams read their
+    // The incremental poll's gather through the sync listings (archive#312): both streams read their
     // changes by keyset from the cursor rewound by the window, without the status filter, so a row
     // that changes mid-gather cannot push another row past a page boundary — the keyset key of an
     // unchanged row never moves. Trashed and deleted rows arrive in the stream with their status and
@@ -3009,7 +3009,7 @@ class InternxtProvider(
     //
     // Null when the server does not serve the listings (404/405/501 on the first page of a stream):
     // the caller keeps the offset listing. Any other failure propagates — an unavailable poll fails
-    // fast (#463), and a transient one is retried on the next tick from the same cursor.
+    // fast (archive#463), and a transient one is retried on the next tick from the same cursor.
     private suspend fun cursorIncrementalDelta(
         cursor: String,
         onPageProgress: ((itemsSoFar: Int) -> Unit)?,
@@ -3073,7 +3073,7 @@ class InternxtProvider(
         }
 
         // A poll re-delivers the items of the rewound window; the unchanged folders above them are
-        // answered by the engine's rows (#936), as on the offset path.
+        // answered by the engine's rows (archive#936), as on the offset path.
         val page =
             assembleFullDelta(
                 files.values.toList(),
@@ -3493,7 +3493,7 @@ class InternxtProvider(
         val heartbeat = onPageProgress?.let { cb -> ScanHeartbeat(cb) }
 
         // Read under the lock, after every page and at the start: the count rises with every page and the
-        // reports arrive in the order of the counts. Since the fallback (#879) it can also drop, by the rare
+        // reports arrive in the order of the counts. Since the fallback (archive#879) it can also drop, by the rare
         // row an unfiltered page delivers as no longer live against what the filtered pages stored — a few
         // rows against hundreds of thousands, and the heartbeat's wall-clock half keeps reporting through it.
         fun report() {
@@ -3604,12 +3604,12 @@ class InternxtProvider(
     //
     // [onProgress] is not seeded: it names the listing it reports on, and the items it
     // reports are the walk's own, the ones the gather keeps.
-    // #523: the combined folder-content call dies server-side for a folder whose single body
+    // archive#523: the combined folder-content call dies server-side for a folder whose single body
     // the gateway cannot deliver (a 29k-file folder needs ~105 s in one 30 MB body; the gateway
     // cuts its origin at ~125 s, so beyond ~35k files the call never returns). On a server-side
     // failure (any 5xx; a gateway 524 arrives here as a synthetic 503) the folder is re-listed
     // through the paged per-folder endpoints (the cursor ones; the offset ones when those answer
-    // 404/405, #647) instead of being skipped: every file the paged
+    // 404/405, archive#647) instead of being skipped: every file the paged
     // listing returns is one the walk would otherwise have dropped, and an incremental poll
     // cannot pick them up later because their updatedAt is old. A fallback page that itself
     // fails propagates, so the callers' existing skip-on-500/503 still counts the folder and
@@ -3736,7 +3736,7 @@ class InternxtProvider(
     // Two-wide speculative page fetcher used by [delta]. Keeps up to 2 in-flight
     // [fetchPage] calls; the listing ends on an empty page, and any speculative
     // siblings still in flight are cancelled rather than waited on — a wasted
-    // fetch costs a few hundred ms (measured p50 ~0.3s, #392 2026-09-29), far
+    // fetch costs a few hundred ms (measured p50 ~0.3s, archive#392 2026-09-29), far
     // cheaper than one extra round-trip's wall-clock at p99 (~2-4s). Pages are
     // appended in offset order so the resulting list matches the sequential walk.
     //
@@ -3747,7 +3747,7 @@ class InternxtProvider(
     // The second seed and every top-up beyond a full page are speculative (they
     // assume the page before them was full); when a batch comes back short, the
     // boundary moves and the speculative page aimed past it is cancelled and
-    // re-seeded from the real boundary (#312).
+    // re-seeded from the real boundary (archive#312).
     //
     // [startOffset] supports the resumable-scan handshake: a resumed scan
     // begins paginating from the persisted boundary rather than offset 0.
@@ -3846,14 +3846,14 @@ class InternxtProvider(
         java.util.concurrent.atomic
             .AtomicInteger(0)
 
-    // #517 R3: until when a full gather should skip the account-wide listings and walk
+    // archive#517 R3: until when a full gather should skip the account-wide listings and walk
     // the folder tree straight away. Set for LISTING_UNAVAILABLE_TTL when a full gather
     // ends in an unavailable account-wide listing; only full gathers read it.
     private val heavyListingsUnavailableUntil =
         java.util.concurrent.atomic
             .AtomicReference(java.time.Instant.MIN)
 
-    // #463: since when the incremental (cursor) listing keeps answering unavailable; null while it
+    // archive#463: since when the incremental (cursor) listing keeps answering unavailable; null while it
     // answers. Read by delta() to decide when a failing poll must walk once instead of failing again.
     private val incrementalUnavailableSince =
         java.util.concurrent.atomic
@@ -3887,7 +3887,7 @@ class InternxtProvider(
                 continue
             }
             val content = api.getFolderContents(currentUuid)
-            // #402: fail closed on two live same-named child folders — a first-match
+            // archive#402: fail closed on two live same-named child folders — a first-match
             // pick would be cached in folderCache and stick for the process lifetime,
             // pinning every operation under this path to an arbitrary twin. Non-live
             // folders do not count: a trashed twin must neither be picked nor make a
@@ -3915,7 +3915,7 @@ class InternxtProvider(
     private suspend fun InternxtFolder.toCloudItem(parentPath: String): CloudItem = folderToCloudItem(this, parentPath, mnemonicOrNull())
 
     /**
-     * #314: the mnemonic for the legacy-name decryption fallback (`decryptName` needs
+     * archive#314: the mnemonic for the legacy-name decryption fallback (`decryptName` needs
      * `<mnemonic>-<parentUuid>` as its password), resolved once per pass. Null when no
      * credentials are loaded — the converters then keep today's fallback.
      */
@@ -3958,14 +3958,14 @@ class InternxtProvider(
     }
 
     companion object {
-        // Upper bound of objects remembered by shardHashReported (#940).
+        // Upper bound of objects remembered by shardHashReported (archive#940).
         private const val MAX_SHARD_HASH_REPORTS = 4096
 
         // Largest file a create collision downloads to compare with the local one. Above it the compare is skipped and
         // both are kept, so a big collision never costs a big download.
         internal const val COLLISION_COMPARE_MAX_BYTES: Long = 256L * 1024 * 1024
 
-        /** #493: statuses by which the server refuses an upload request as such; another attempt is refused again. */
+        /** archive#493: statuses by which the server refuses an upload request as such; another attempt is refused again. */
         internal val PERMANENT_UPLOAD_STATUS = setOf(400, 413, 415, 422)
 
         // How many per-folder requests are in flight at once when the paths are resolved: the same four as the folders
@@ -3989,7 +3989,7 @@ class InternxtProvider(
         // the gateway answers Cloudflare 524 at its own cap (about 125 s) at the same deep page of the
         // folder stream on every run — a deterministic wall, not a blip the next gather dodges, which is
         // why this is wider than SERVER_UNAVAILABLE_STATUSES. A cut before the answer surfaces as 503.
-        // Status 0 is a connection that never formed (#693): the enumeration has already waited out its
+        // Status 0 is a connection that never formed (archive#693): the enumeration has already waited out its
         // outage window, and a walk would meet the same dead network. It would also open the 30-minute window
         // and replace the cursor marker with a tree marker, so the next gather would start from item 0
         // instead of continuing the cursors. It ends the attempt with the marker intact, like a client error.
@@ -3998,13 +3998,13 @@ class InternxtProvider(
         // ends the attempt with the marker intact.
         private fun isServerSideListingFailure(statusCode: Int): Boolean = statusCode >= 500
 
-        // #517 R3: how long a full gather remembers an unavailable account-wide listing
+        // archive#517 R3: how long a full gather remembers an unavailable account-wide listing
         // before it pays one attempt to re-learn. The live account cycled the doomed
         // attempt every ~7 min for over 4 h; 30 min cuts that to ~8 attempts a day
         // while still re-trying often enough to notice a recovery.
         private val LISTING_UNAVAILABLE_TTL: java.time.Duration = java.time.Duration.ofMinutes(30)
 
-        // #463: how long the incremental listing may keep failing before a poll walks the tree once.
+        // archive#463: how long the incremental listing may keep failing before a poll walks the tree once.
         // Long enough that blips and short outages (the poller backs off up to 10 min) cost no walk;
         // short enough that a cursor the gateway keeps cutting does not freeze the view for good.
         internal val INCREMENTAL_WALK_AFTER: java.time.Duration = java.time.Duration.ofMinutes(30)
@@ -4030,7 +4030,7 @@ class InternxtProvider(
         // Each child folder stamped into [folderAccumulator] has its
         // `parentUuid` set from the recursion context (the `folderUuid`
         // arg) when the listing omitted it. Measured on a live account
-        // 2026-09-29 (#392): the /folders/:uuid/content listing DID carry
+        // 2026-09-29 (archive#392): the /folders/:uuid/content listing DID carry
         // `parentUuid` on every child folder (and `folderUuid` on every
         // file), so the stamp is defensive and idempotent — it costs one
         // comparison and keeps the path resolution correct against an
@@ -4122,7 +4122,7 @@ class InternxtProvider(
         // [skipped] like the /files fallback does; a failure while resolving a root
         // propagates. Folders are listed with at most [concurrency] requests in flight.
         // Both folders and files are stamped from the walk (parentUuid/folderUuid).
-        // Measured on a live account 2026-09-29 (#392): the listing carries both
+        // Measured on a live account 2026-09-29 (archive#392): the listing carries both
         // fields on every child, so the stamp is defensive and idempotent, kept
         // because the endpoint has been observed without them.
         //
@@ -4293,7 +4293,7 @@ class InternxtProvider(
         // Returns `${plainName}.unidrive-prev-${yyyy-MM-dd'T'HH-mm-ss}` in UTC
         // (`-` instead of `:` for NTFS portability). [counter] > 1 appends a
         // `-N` suffix to break collisions when two replaces of the same file
-        // fall inside the same wall-clock second. #1091: the plainName is cut (on a
+        // fall inside the same wall-clock second. archive#1091: the plainName is cut (on a
         // code-point boundary) so that plainName + suffix + `.` + [type] stays within
         // 255 UTF-16 units; [type] is the file's extension, which is appended after.
         internal fun keepOverwrittenArchiveName(
@@ -4317,7 +4317,7 @@ class InternxtProvider(
         // UD-366: build the conflict-copy plainName for the keep-both collision
         // handler.  Format: `$plainName (conflict $date)` for counter=1, then
         // `$plainName (conflict $date) (N)` for N ≥ 2.  [date] is a yyyy-MM-dd
-        // string passed by the caller so it can be pinned in tests. #1091: the
+        // string passed by the caller so it can be pinned in tests. archive#1091: the
         // plainName is cut (on a code-point boundary) so that plainName + suffix + `.` + [type]
         // stays within 255 UTF-16 units; [type] is the file's extension, appended after.
         internal fun conflictName(
@@ -4416,7 +4416,7 @@ class InternxtProvider(
             status == "TRASHED" || status == "DELETED" || removed || deleted
 
         // UD-317: pure converter for `listChildren` / `getMetadata` file entries.
-        // #314: a legacy row (older clients predating plainName) carries only the encrypted
+        // archive#314: a legacy row (older clients predating plainName) carries only the encrypted
         // name; attempt the client-side decryption against the item's parent scope before
         // falling back to the ciphertext blob. Never throws: an undecryptable name keeps
         // today's fallback.
@@ -4946,7 +4946,7 @@ class InternxtProvider(
         // needs. `updatedAt` is unknown post-staging (the engine strips it),
         // which is fine: the cursor-advance computation in delta() looks at
         // the freshly-fetched pages, which set the high-water mark.
-        // The modification time is the string the server sent when the row carries it (#1039): the version
+        // The modification time is the string the server sent when the row carries it (archive#1039): the version
         // token of the file is built from it, and the Instant's toString() drops a zero fraction.
         internal fun CloudItem.toResumedFile(): InternxtFile {
             val raw = stagedModificationTime(hash)
@@ -5069,10 +5069,10 @@ internal suspend fun commitWithRetry(
     shardUuid: String,
     startedAt: java.time.Instant,
     clock: () -> java.time.Instant = { java.time.Instant.now() },
-    // #578: the finish call itself, parameterized so the multipart session reuses the
+    // archive#578: the finish call itself, parameterized so the multipart session reuses the
     // same lost-response / 409 reconcile. Defaults to the single-shard finish.
     finishBlock: suspend () -> org.krost.unidrive.internxt.model.BucketEntry = {
-        // #946: the shard hash on the wire is RIPEMD-160(SHA-256(ciphertext)) like the official clients' (40 hex); [hashHex], the SHA-256
+        // archive#946: the shard hash on the wire is RIPEMD-160(SHA-256(ciphertext)) like the official clients' (40 hex); [hashHex], the SHA-256
         // digest pinned in the tombstone, stays what the encrypt pass produced.
         api.finishUpload(bucket, indexHex, ShardHashWire.forFinish(hashHex), shardUuid)
     },

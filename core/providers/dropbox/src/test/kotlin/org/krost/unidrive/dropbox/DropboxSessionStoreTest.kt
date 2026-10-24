@@ -12,7 +12,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * #867: the session store's own rules — the identity binding (size, mtime), the 7-day life, and that
+ * archive#867: the session store's own rules — the identity binding (size, mtime), the 7-day life, and that
  * the file sits inside the (owner-only) profile folder and carries no token.
  */
 class DropboxSessionStoreTest {

@@ -15,7 +15,7 @@
               LEAK, LISTFAIL
       path    the path below the golden root as the tools print it (non-ASCII as {U+XXXX}); * matches any run of characters,
               everything else literally (names contain [ ] and other wildcard characters of other glob dialects)
-      issue   where the deviation is tracked, e.g. gkrost/unidrive#486; required: an accepted deviation without an issue is not one
+      issue   where the deviation is tracked, e.g. archive#486; required: an accepted deviation without an issue is not one
       note    free text
 
     Lines starting with # and empty lines are ignored. Each finding line is matched against the rules of its tool, ordinally.

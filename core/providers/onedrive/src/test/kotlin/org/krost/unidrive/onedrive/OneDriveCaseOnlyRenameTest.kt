@@ -18,7 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 
 /**
- * #309: a local rename that changes only the case (`case1.txt` to `CASE1.txt`) is one remote move. OneDrive renames an
+ * archive#309: a local rename that changes only the case (`case1.txt` to `CASE1.txt`) is one remote move. OneDrive renames an
  * item in place by a PATCH of its name; the folder is the same, so no parent reference (and no parent lookup) is sent.
  */
 class OneDriveCaseOnlyRenameTest {

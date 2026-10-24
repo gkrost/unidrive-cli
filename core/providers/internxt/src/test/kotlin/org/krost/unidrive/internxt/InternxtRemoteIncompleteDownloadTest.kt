@@ -24,7 +24,7 @@ import kotlin.test.assertTrue
 import org.slf4j.LoggerFactory
 
 /**
- * #536: a stored object shorter than the size the drive reports (a multipart upload another client
+ * archive#536: a stored object shorter than the size the drive reports (a multipart upload another client
  * truncated; live evidence: a 344 MiB object whose last four 15 MiB parts never landed) fails every
  * download. The failure must be the typed permanent one the engine quarantines on — raised BEFORE any
  * byte is streamed when the shard's Content-Length already says the object is short (the live shape),
@@ -35,7 +35,7 @@ class InternxtRemoteIncompleteDownloadTest {
     private val fileUuid = "file-uuid-1"
     private val fileId = "bridge-file-id-1"
     private val bucket = "6928426c1a2316b856c9ab81"
-    // BridgeFileInfo.index is a 64-char hex encryption index (#333 now validates it).
+    // BridgeFileInfo.index is a 64-char hex encryption index (archive#333 now validates it).
     private val index64 = "11".repeat(32)
     private val shardUrl1 = "https://shard-host.invalid/get/shard-0"
 
@@ -152,7 +152,7 @@ class InternxtRemoteIncompleteDownloadTest {
             assertTrue(Files.readAllBytes(destination).contentEquals(plaintext))
         }
 
-    // The live #536 shape: the shard response's Content-Length (298,844,160) is smaller than the
+    // The live archive#536 shape: the shard response's Content-Length (298,844,160) is smaller than the
     // declared drive size (360,951,317) — the refusal must come before a single byte is read.
     @Test
     fun `a stored object shorter than the declared size fails before streaming`() {

@@ -11,7 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertNull
 
 /**
- * #1054 S4: the dry-run copy of state.db lists every path of the profile. On Windows a temp folder inherits the ACL of its
+ * archive#1054 S4: the dry-run copy of state.db lists every path of the profile. On Windows a temp folder inherits the ACL of its
  * parent, so a temp folder with an extra grant exposed the copy; the snapshot folder is owner-only whatever the parent grants.
  */
 class StateDatabaseSnapshotPermissionsTest {

@@ -16,7 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * #1045: a conflict that fetches the cloud's version (keep-both, last-writer-wins when the cloud wins, a local
+ * archive#1045: a conflict that fetches the cloud's version (keep-both, last-writer-wins when the cloud wins, a local
  * delete against a cloud change) used to put a 0-byte stub at the path before the download. A download that failed
  * left it there; the next pass read the empty file as an edit and uploaded it over the cloud's content.
  */

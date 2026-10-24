@@ -72,7 +72,7 @@ interface Hydration {
 
     /**
      * Whether the plain file [localPath] holds exactly the bytes of the cloud copy of [path], proven WITHOUT downloading that copy
-     * (`hydration.matches_local`, gkrost/unidrive#1219). The caller reads the answer as: [MatchesLocalResult.Same] (a real comparison
+     * (`hydration.matches_local`, archive#1219). The caller reads the answer as: [MatchesLocalResult.Same] (a real comparison
      * found them equal: adopt the file, upload nothing), [MatchesLocalResult.Differs] (a real comparison found them different), or
      * [MatchesLocalResult.Unknown] (no proof is possible here: the caller falls back to a download and a byte compare).
      * [MatchesLocalResult.Failed] is for a request that cannot be answered at all (the local file cannot be read).
@@ -96,13 +96,13 @@ interface Hydration {
 
     suspend fun mkdir(path: String): MkdirResult
 
-    /** [permanent] (#1178): delete for good, bypassing the provider's trash (`rm --permanent`); the provider must declare [org.krost.unidrive.Capability.PermanentDelete]. */
+    /** [permanent] (archive#1178): delete for good, bypassing the provider's trash (`rm --permanent`); the provider must declare [org.krost.unidrive.Capability.PermanentDelete]. */
     suspend fun unlink(
         path: String,
         permanent: Boolean = false,
     ): UnlinkResult
 
-    /** [permanent] (#1178): delete the tree for good, bypassing the provider's trash (`rm --permanent -r`). */
+    /** [permanent] (archive#1178): delete the tree for good, bypassing the provider's trash (`rm --permanent -r`). */
     suspend fun rmdir(
         path: String,
         recursive: Boolean = false,
@@ -260,11 +260,11 @@ sealed class UnlinkResult {
     data object PathIsFolder : UnlinkResult()
 
     /**
-     * WB-3 (#87): the file's own upload is queued or in flight, so the delete cannot be answered
+     * WB-3 (archive#87): the file's own upload is queued or in flight, so the delete cannot be answered
      * yet — deleting the row and the cache copy under a running upload would orphan its cloud copy
      * (the upload lands after the row is gone). The client cancels the upload
      * ([Hydration.cancelUpload]) and retries, or retries after the upload's completed event. Wire
-     * token `busy` — the same one dehydrate has answered since #301.
+     * token `busy` — the same one dehydrate has answered since archive#301.
      */
     data object Busy : UnlinkResult()
 }
@@ -276,7 +276,7 @@ sealed class RmdirResult {
     data object NotEmpty : RmdirResult()
 
     /**
-     * WB-3 (#87): an upload is queued or in flight for a file below the folder. The delete would
+     * WB-3 (archive#87): an upload is queued or in flight for a file below the folder. The delete would
      * tombstone that file's row and evict its cache copy under the upload. Wire token `busy`, as
      * for [UnlinkResult.Busy]; the client retries after the upload's completed event.
      */

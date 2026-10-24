@@ -192,7 +192,7 @@ class SyncEngineTest {
         }
 
     /**
-     * #417 (engine half): the Reconciler compares a delta item's modified time to the row for
+     * archive#417 (engine half): the Reconciler compares a delta item's modified time to the row for
      * equality, so the engine must store exactly what the provider returned for the write and a
      * delta that echoes it must plan nothing. If a provider returns a stale timestamp here the
      * next sync downloads the file it just uploaded (fixed provider-side in InternxtProvider).
@@ -330,7 +330,7 @@ class SyncEngineTest {
             assertTrue(provider.deletedPaths.contains("/to-remove.txt"))
         }
 
-    // #526: a local name ending in a space (only creatable through an extended-length path or a
+    // archive#526: a local name ending in a space (only creatable through an extended-length path or a
     // Linux/WSL tool) used to abort the whole sync from the planner and poison doctor, the replay
     // and the rescan. The scanner skips such names, the replay/rescan/mirror paths guard their
     // resolves, and the transfer stage catches per item — a stale pre-guard row must not abort
@@ -362,9 +362,9 @@ class SyncEngineTest {
             assertEquals("c526", db.getSyncState("delta_cursor"), "the run completed and promoted the cursor")
         }
 
-    // ── #523: a whole-drive gather that skipped a folder must not look complete afterwards —
+    // ── archive#523: a whole-drive gather that skipped a folder must not look complete afterwards —
     // the idle enumeration status carries the last gather's completeness for the status UI and
-    // daemon.status (the per-folder timer itself is already the #518 330 s listing timer).
+    // daemon.status (the per-folder timer itself is already the archive#518 330 s listing timer).
 
     @Test
     fun `#523 an incomplete gather surfaces lastScanComplete=false in the idle status`() =
@@ -384,7 +384,7 @@ class SyncEngineTest {
             assertEquals(true, engine.enumerationStatus().lastScanComplete)
         }
 
-    // ── #531: after --fast-bootstrap, folders that exist remotely but were never enumerated stay
+    // ── archive#531: after --fast-bootstrap, folders that exist remotely but were never enumerated stay
     // unknown to state.db — the planner emitted mkdir-remote for them every run and each one 409'd
     // (nameAlreadyExists), counting a failure on every sync. The apply now resolves the conflict:
     // a create that fails with the folder already present adopts the existing folder's remote id.
@@ -402,7 +402,7 @@ class SyncEngineTest {
 
             // The mirror pass's mkdir-remote: a folder that is NEW locally and unknown to
             // state.db is created remotely through applyCreateRemoteFolder, which adopts the
-            // existing remote id instead of failing (#531: a fast-bootstrap adopted cursor
+            // existing remote id instead of failing (archive#531: a fast-bootstrap adopted cursor
             // never enumerated the folder).
             engine.syncOnce()
 
@@ -868,7 +868,7 @@ class SyncEngineTest {
             assertEquals(500, entry.remoteSize)
         }
 
-    // #503 review: a name refused as an NFC clash (#491) is out of sync in both directions. The scan reports no change for
+    // archive#503 review: a name refused as an NFC clash (archive#491) is out of sync in both directions. The scan reports no change for
     // it, so a remote edit of the cloud copy must not be downloaded over the local member that carries the name.
     @Test
     fun `a remote edit of a name in an NFC clash is not downloaded over the local file`() =
@@ -1056,7 +1056,7 @@ class SyncEngineTest {
     @Test
     fun `UD-901d folder MoveRemote preserves destination folder row with canonical remoteId`() =
         runTest {
-            // Codex review (PR #13) caught that applyMoveRemote's call order — deleteEntry
+            // Codex review (PR archive#13) caught that applyMoveRemote's call order — deleteEntry
             // → upsertEntry(destination) → renamePrefix — let renamePrefix's UD-901c
             // cleanup-DELETE wipe the just-upserted destination root row. The moved
             // folder ended up with no remoteId/metadata in the DB on every folder
@@ -1108,7 +1108,7 @@ class SyncEngineTest {
         }
 
     /**
-     * #424: a remote folder rename (ids kept) used to plan a MoveLocal for the folder AND one per
+     * archive#424: a remote folder rename (ids kept) used to plan a MoveLocal for the folder AND one per
      * descendant. The folder move carried the files; each descendant move then found its source gone and
      * recreated an empty placeholder over the moved file: hydrated bytes became 0 bytes (re-downloaded on
      * the next pass) and a local edit not yet uploaded was destroyed for good.
@@ -1206,7 +1206,7 @@ class SyncEngineTest {
             assertEquals(emptyList(), settled.actions, "a settled tree plans nothing")
         }
 
-    /** #424: a file renamed inside a folder the remote renamed in the same delta keeps its bytes too. */
+    /** archive#424: a file renamed inside a folder the remote renamed in the same delta keeps its bytes too. */
     @Test
     fun `remote folder rename with a file renamed inside it keeps the file's bytes`() =
         runTest {
@@ -1434,7 +1434,7 @@ class SyncEngineTest {
             // The deletes themselves are still subject to the percentage safeguard,
             // but force-delete bypasses that too.
             engineWithReporter(ProgressReporter.Silent).syncOnce(dryRun = false, forceDelete = true)
-            // #1088: no exception only says the guard did not fire; the test also has to say what the forced run did.
+            // archive#1088: no exception only says the guard did not fire; the test also has to say what the forced run did.
             // The 50 hydrated rows have no local file, so --force-delete removes all 50 from the cloud side.
             assertEquals(50, provider.deletedPaths.size, "deleted: ${provider.deletedPaths}")
         }
@@ -1509,13 +1509,13 @@ class SyncEngineTest {
             // Must not throw — engine proceeds, UD-225 recovery loop will
             // emit DownloadContent for each unhydrated row.
             engineWithReporter(ProgressReporter.Silent).syncOnce(dryRun = false)
-            // #1088: "must not throw" would also pass for a plan that deletes the cloud side (the comment above names
+            // archive#1088: "must not throw" would also pass for a plan that deletes the cloud side (the comment above names
             // that as the catastrophe the guard exists for): nothing is deleted, and the rows come down.
             assertTrue(provider.deletedPaths.isEmpty(), "wiped the cloud side: ${provider.deletedPaths}")
             assertTrue(Files.exists(syncRoot.resolve("unhydrated-0.txt")), "the recovery loop re-hydrates the cloud inventory")
         }
 
-    // #137 — download-only rehydrate must not be blocked by the empty-sync_root guard
+    // archive#137 — download-only rehydrate must not be blocked by the empty-sync_root guard
 
     private fun engineWithDirection(direction: SyncDirection) =
         SyncEngine(
@@ -1537,7 +1537,7 @@ class SyncEngineTest {
             provider.deltaItems = emptyList()
             // Must not throw — download-only rehydrate proceeds without guard intervention.
             engineWithDirection(SyncDirection.DOWNLOAD).syncOnce(dryRun = false)
-            // #1088: and it must not delete the cloud side, but bring the files back.
+            // archive#1088: and it must not delete the cloud side, but bring the files back.
             assertTrue(provider.deletedPaths.isEmpty(), "download-only deleted remotely: ${provider.deletedPaths}")
             assertTrue(Files.exists(syncRoot.resolve("seeded-0.txt")), "the wiped local file is downloaded again")
         }
@@ -1545,7 +1545,7 @@ class SyncEngineTest {
     @Test
     fun `#160 download-only with hydrated rows locally missing re-downloads files`() =
         runTest {
-            // #160 invariant: a download-only run where state.db has a hydrated row
+            // archive#160 invariant: a download-only run where state.db has a hydrated row
             // whose local file is absent and the cloud delta is unchanged must
             // re-download the file. Before the fix: DeleteRemote was dropped by the
             // direction filter and the file stayed unreachable forever.
@@ -1721,7 +1721,7 @@ class SyncEngineTest {
             )
         }
 
-    // -- #419: reaper vs. a folder the same run already deleted --
+    // -- archive#419: reaper vs. a folder the same run already deleted --
 
     /** A `provider.listChildren`/`delete` failure that carries an HTTP status, like InternxtApiException. */
     private class StatusProviderException(
@@ -1937,7 +1937,7 @@ class SyncEngineTest {
             )
         }
 
-    // PR #195 P2-2 — watcher/guard/dir-create ordering: syncOnce creates sync_root
+    // PR archive#195 P2-2 — watcher/guard/dir-create ordering: syncOnce creates sync_root
     // before returning so LocalWatcher.start() can walk it without throwing.
 
     @Test
@@ -2073,7 +2073,7 @@ class SyncEngineTest {
             )
         }
 
-    // #517 R3: the daemon's enumerate poller seeds its backoff at start from the
+    // archive#517 R3: the daemon's enumerate poller seeds its backoff at start from the
     // consecutive-failure streak in sync_state. Pin both halves of the contract.
 
     @Test
@@ -2212,7 +2212,7 @@ class SyncEngineTest {
 
     @Test
     fun `UD-264 PR46-Codex formatSkippedOpJson is parseable for paths with JSON-special chars`() {
-        // PR #46 Codex P2: paths can contain `"`, `\`, and newline. failures.jsonl
+        // PR archive#46 Codex P2: paths can contain `"`, `\`, and newline. failures.jsonl
         // already had ~119 PARSE_ERR entries from the same bug class in logFailure
         // (the audit observed `/\ninternxt-cli.desktop` in the wild). The prior
         // hand-built triple-quoted template produced invalid JSON for these.
@@ -2408,7 +2408,7 @@ class SyncEngineTest {
     @Test
     fun `#108 a deferred daemon-mode delete holds the delta cursor so tombstones replay`() =
         runTest {
-            // PR #241 review (P1): remote tombstones for locally-present, unchanged rows
+            // PR archive#241 review (P1): remote tombstones for locally-present, unchanged rows
             // reconcile to DeleteLocal. Under WATCH_POLL that plan is deferred when it trips
             // the cap — but the delta cursor MUST NOT advance, or the consumed tombstones
             // would never replay and the local copies would be stranded. seedDbEntries pins
@@ -2526,7 +2526,7 @@ class SyncEngineTest {
             // 59-delete plan.
             engineWithGuards(maxDeleteAbsolute = 50, maxDeletePercentage = 0)
                 .syncOnce(dryRun = false, forceDelete = true)
-            // #1088: the run did the 59 deletes (60 rows, one file kept on disk), and only those.
+            // archive#1088: the run did the 59 deletes (60 rows, one file kept on disk), and only those.
             assertEquals(59, provider.deletedPaths.size, "deleted: ${provider.deletedPaths.size}")
             assertFalse("/seeded-0.txt" in provider.deletedPaths, "the file that is still on disk is not deleted")
         }
@@ -2822,7 +2822,7 @@ class SyncEngineTest {
             assertEquals(1, provider.deltaCalls)
         }
 
-    // #116 — fast-bootstrap adopt-on-name-match for top-level folders.
+    // archive#116 — fast-bootstrap adopt-on-name-match for top-level folders.
     //
     // Invariant: under fast-bootstrap the pre-existing cloud tree is invisible to
     // the planner, so the LOCAL scanner emits a CreateRemoteFolder for every
@@ -2863,7 +2863,7 @@ class SyncEngineTest {
             assertEquals("remote-uuid-dev", db.getEntry("/dev")?.remoteId)
         }
 
-    // #116 — orthogonal invariant: adopt-on-match must NOT swallow genuinely-new
+    // archive#116 — orthogonal invariant: adopt-on-match must NOT swallow genuinely-new
     // top-level folders. A local folder with no name match on the cloud still gets
     // its CreateRemoteFolder, so first-time uploads under fast-bootstrap still work.
     @Test
@@ -3644,10 +3644,10 @@ class SyncEngineTest {
             )
         }
 
-    // ── #115: transparent XDG locale-alias adoption — executor + round-trip ──
+    // ── archive#115: transparent XDG locale-alias adoption — executor + round-trip ──
 
     /**
-     * Executor path-split (#115 mandatory): an aliased Upload reads the REAL
+     * Executor path-split (archive#115 mandatory): an aliased Upload reads the REAL
      * local file (`/Bilder/x.jpg`) and writes to the CANONICAL remote
      * (`/Pictures/x.jpg`). Asserted at the executor/provider seam:
      *   - provider.upload received the canonical remote path,
@@ -3701,7 +3701,7 @@ class SyncEngineTest {
         }
 
     /**
-     * Round-trip (#115 mandatory) — defeats BOTH single-path failure modes.
+     * Round-trip (archive#115 mandatory) — defeats BOTH single-path failure modes.
      *
      * After an aliased upload persists a row (path=/Bilder/x.jpg,
      * remotePath=/Pictures/x.jpg, real remote_id), a SUBSEQUENT reconcile where
@@ -3782,7 +3782,7 @@ class SyncEngineTest {
             )
         }
 
-    // #123 — bulk create-folder: bounded concurrency + partial-failure tolerance.
+    // archive#123 — bulk create-folder: bounded concurrency + partial-failure tolerance.
 
     /** Captures onSyncComplete.failed and every onWarning message. */
     private class FailureCapturingReporter : ProgressReporter by ProgressReporter.Silent {
@@ -3925,7 +3925,7 @@ class SyncEngineTest {
     }
 
     /**
-     * #738: two keep-both conflicts on one file within the same second. Each conflict copy holds the
+     * archive#738: two keep-both conflicts on one file within the same second. Each conflict copy holds the
      * user's own edit at that moment, so both copies must survive with their own bytes; the second must
      * never overwrite the first. The clock is pinned so both conflicts get the same timestamp.
      */
@@ -4052,7 +4052,7 @@ class SyncEngineTest {
     @Test
     fun `keep_both_conflict_copy_under_a_locale_alias_is_uploaded_next_to_the_canonical_remote_file`() =
         runTest {
-            // Local /Bilder is the locale alias of the remote /Pictures (#115): rows are keyed at the
+            // Local /Bilder is the locale alias of the remote /Pictures (archive#115): rows are keyed at the
             // real-local path and carry the canonical remote path.
             val now = Instant.parse("2026-03-28T12:00:00Z")
             fun row(
@@ -4153,7 +4153,7 @@ class SyncEngineTest {
 
     // -- Fake provider for testing --
 
-    // #116: a pre-existing remote folder with an explicit remoteId, so an adopt
+    // archive#116: a pre-existing remote folder with an explicit remoteId, so an adopt
     // test can assert the captured id is the cloud's, not a freshly-minted one.
     private fun remoteFolder(
         path: String,
@@ -4516,7 +4516,7 @@ class SyncEngineTest {
     @Test
     fun `UD-256 a refresh of a profile with persisted scope continues within it instead of refusing`() =
         runTest {
-            // #532: refresh has no --sync-path; a profile scoped by earlier runs was permanently
+            // archive#532: refresh has no --sync-path; a profile scoped by earlier runs was permanently
             // unusable — every refresh died on the guard with error provider_error. A refresh
             // (skipTransfers) plans the persisted boundary: out-of-scope paths stay invisible to
             // the reconciler exactly as under --sync-path, so the run proceeds. The persisted
@@ -4593,7 +4593,7 @@ class SyncEngineTest {
             engineForScope(syncDirection = SyncDirection.DOWNLOAD).syncOnce(dryRun = false)
         }
 
-    // PR #45 Codex P1 regressions: dry-run must NEVER mutate effective_scope.
+    // PR archive#45 Codex P1 regressions: dry-run must NEVER mutate effective_scope.
     // Previously --full-tree --dry-run permanently cleared the guard; --sync-path
     // X --dry-run silently committed a new scope. Both are now read-only in
     // dry-run.
@@ -4726,7 +4726,7 @@ class SyncEngineTest {
     @Test
     fun `#230 an invalid-named remote folder is quarantined, not a mkdir-every-pass failure`() =
         runTest {
-            // PR #242 review: applyDownload guards file downloads; folders + adopt placeholders
+            // PR archive#242 review: applyDownload guards file downloads; folders + adopt placeholders
             // reach createFolder/createPlaceholder via applyCreatePlaceholder. A Windows-invalid
             // folder name must be quarantined here too, not fail the mkdir every poll cycle.
             // localNameIssue's cross-platform rules are unit-tested in PlaceholderManagerTest;
@@ -4758,9 +4758,9 @@ class SyncEngineTest {
             // A cloud name longer than any filesystem's component limit used to keep the row
             // alive in state while the client hid the entry on every mount (windows#196) —
             // no quarantine, no refusal, no state to explain it. The length rule in
-            // localNameIssue (#600) makes it unrepresentable on every platform (280 ASCII
+            // localNameIssue (archive#600) makes it unrepresentable on every platform (280 ASCII
             // characters are 280 UTF-16 units and 280 UTF-8 bytes), so the download's
-            // unresolvable-name path (#230/#526) quarantines the row. A normal neighbour
+            // unresolvable-name path (archive#230/#526) quarantines the row. A normal neighbour
             // must be created beside it, and no pass may abort.
             val longPath = "/" + "l".repeat(280) + ".txt"
             provider.deltaItems = listOf(cloudItem("/normal.txt", size = 5), cloudItem(longPath, size = 100))
@@ -4902,7 +4902,7 @@ class SyncEngineTest {
             pathB,
             "two same-type accounts must NOT share a cache file for the same remote path",
         )
-        // #239: normalize separators so the layout assertion holds on Windows (backslash paths).
+        // archive#239: normalize separators so the layout assertion holds on Windows (backslash paths).
         assertTrue(pathA.toString().replace('\\', '/').contains("/hydration/personal_onedrive/"))
         assertTrue(pathB.toString().replace('\\', '/').contains("/hydration/work_onedrive/"))
     }
@@ -4923,7 +4923,7 @@ class SyncEngineTest {
             )
         val path = engineTypeOnly.resolveCachePath("/foo.txt")
         assertTrue(
-            // #239: normalize separators so the assertion holds on Windows.
+            // archive#239: normalize separators so the assertion holds on Windows.
             path.toString().replace('\\', '/').contains("/hydration/internxt/"),
             "with no explicit cacheKey, layout must fall back to providerId; got $path",
         )
@@ -5013,7 +5013,7 @@ class SyncEngineTest {
             assertNull(db.getEntry("/transient.txt"), "row tombstoned once the delete finally succeeds")
         }
 
-    // ---- #395: the narrowed-scope transition stays silent when nothing was untracked --------
+    // ---- archive#395: the narrowed-scope transition stays silent when nothing was untracked --------
 
     private inline fun captureEngineLogs(block: () -> Unit): List<String> {
         val logger = LoggerFactory.getLogger(SyncEngine::class.java) as Logger
@@ -5074,7 +5074,7 @@ class SyncEngineTest {
             )
         }
 
-    // ---- #395: a per-run --sync-path outside the standing scope is announced ----------------
+    // ---- archive#395: a per-run --sync-path outside the standing scope is announced ----------------
 
     @Test
     fun `a per-run sync path outside the standing scope is logged with both`() =
