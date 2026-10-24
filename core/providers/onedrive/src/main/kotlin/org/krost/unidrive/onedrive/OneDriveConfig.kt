@@ -1,5 +1,6 @@
 package org.krost.unidrive.onedrive
 
+import org.krost.unidrive.auth.CredentialProtector
 import org.krost.unidrive.io.defaultTokenPath
 import java.nio.file.Path
 
@@ -15,6 +16,9 @@ data class OneDriveConfig(
     val webhookPort: Int = 8081,
     // #111: open the socket.io change channel when the engine asks for remote-change hints (profile key remote_notifications).
     val remoteNotifications: Boolean = true,
+    // #1261: protects token.json at rest, as InternxtConfig.credentialProtector does. Null keeps the owner-only
+    // plaintext file the desktop writes today; the Android app passes its Keystore-backed protector.
+    val credentialProtector: CredentialProtector? = null,
 ) {
     companion object {
         const val DEFAULT_APP_ID = "aa961a73-f4ac-41d9-8150-0a18f330ff6c"

@@ -57,12 +57,18 @@ class OAuthService(
             fileName = TOKEN_FILE,
             serializer = Token.serializer(),
             validate = { it.hasPlausibleAccessTokenShape() },
+            protector = config.credentialProtector,
         )
 
     suspend fun loadToken(): Token? = credentialStore.load()
 
     suspend fun saveToken(token: Token) {
         credentialStore.save(token)
+    }
+
+    /** Removes the stored token, and its protected copy when [OneDriveConfig.credentialProtector] is set. */
+    fun deleteToken() {
+        credentialStore.delete()
     }
 
     /** Returns (authorizationUrl, pkceVerifier). Caller must pass verifier to exchangeCodeForToken(). */

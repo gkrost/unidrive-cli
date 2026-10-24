@@ -9,7 +9,6 @@ import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.io.openBrowser
 import org.krost.unidrive.onedrive.model.Token
 import java.nio.channels.UnresolvedAddressException
-import java.nio.file.Files
 import kotlin.time.Duration.Companion.minutes
 
 class TokenManager(
@@ -205,8 +204,7 @@ class TokenManager(
 
     suspend fun logout() {
         forget()
-        val tokenFile = config.tokenPath.resolve("token.json")
-        Files.deleteIfExists(tokenFile)
+        oauthService.deleteToken()
     }
 
     // Classify a refresh-time throwable as a transient network failure (retryable)
