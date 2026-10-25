@@ -81,6 +81,17 @@ internal object PendingGate {
         )
     }
 
+    /**
+     * The keep-local rule of a mirror profile's config: the exclude [patterns] and the standing sync scope (`sync_path`; empty is the
+     * whole drive). The one rule behind a mirror profile's pending rows, for the stopped profile's gate ([rulesOf]) and for a running
+     * mirror daemon's `auth.logout` refusal (`DaemonRuntime`), so a row cannot refuse in one and pass in the other (review of #89, P2).
+     */
+    internal fun keepsLocalRule(
+        patterns: List<String>,
+        standingScope: List<String>,
+    ): (String) -> Boolean =
+        exclusionGuard(patterns = patterns, ignoreSettings = null, cacheDir = Path.of(""), inCloud = { false }, standingScope = standingScope)::keepsLocal
+
     private class Rules(
         val keepsLocal: (String) -> Boolean,
         val hasLocalCopy: ((String) -> Boolean)?,
@@ -98,14 +109,20 @@ internal object PendingGate {
             val config = SyncConfig.load(configPath, name)
             val cacheDir = SyncEngine.hydrationCacheRoot(ProfileRemoveHooks.cacheRoot(), name)
             // A rule file only the cloud has is not known here: its folder is not held back, so its rows still count.
-            val guard =
-                exclusionGuard(
-                    patterns = config.effectiveExcludePatterns(name),
-                    ignoreSettings = config.ignoreSettings(name).takeIf { mode == ProfileMode.MOUNT },
-                    cacheDir = cacheDir,
-                    inCloud = { false },
-                )
-            Rules(keepsLocal = guard::keepsLocal, hasLocalCopy = if (mode == ProfileMode.MOUNT) PendingUploads.localCopyCheck(cacheDir, config.syncRoot) else null)
+            // The standing scope is the daemon's too: a row outside `sync_path` is kept local there, so it does not block here either.
+            val keepsLocal =
+                if (mode == ProfileMode.MOUNT) {
+                    exclusionGuard(
+                        patterns = config.effectiveExcludePatterns(name),
+                        ignoreSettings = config.ignoreSettings(name),
+                        cacheDir = cacheDir,
+                        inCloud = { false },
+                        standingScope = config.syncPaths,
+                    )::keepsLocal
+                } else {
+                    keepsLocalRule(config.effectiveExcludePatterns(name), config.syncPaths)
+                }
+            Rules(keepsLocal = keepsLocal, hasLocalCopy = if (mode == ProfileMode.MOUNT) PendingUploads.localCopyCheck(cacheDir, config.syncRoot) else null)
         } catch (_: Exception) {
             // The config could not be read or parsed (its message can quote a credential, so nothing of it is kept).
             none

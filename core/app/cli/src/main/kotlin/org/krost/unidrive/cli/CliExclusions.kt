@@ -33,10 +33,12 @@ internal fun exclusionGuard(
     ignoreSettings: IgnoreSettings?,
     cacheDir: Path,
     inCloud: (path: String) -> Boolean,
+    // The profile's standing sync scope (`sync_path`); empty is the whole drive. A one-shot `get` or `ls` leaves it out, as before.
+    standingScope: List<String> = emptyList(),
 ): RemoteOperationGuard {
     val ignore = ignoreSettings?.let { UploadIgnore(CacheIgnoreSource(cacheDir, inCloud = inCloud), it) }
     return RemoteOperationGuard(
-        standingScope = emptyList(),
+        standingScope = standingScope,
         syncPaths = emptyList(),
         // With the ignore rules on, the built-in defaults are theirs (overridable); same split as the engine's.
         excludePatterns = if (ignore == null) patterns else patterns.filterNot { it in SyncConfig.DEFAULT_EXCLUDE_PATTERNS },

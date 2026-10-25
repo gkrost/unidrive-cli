@@ -73,6 +73,7 @@ class ProfileRemoveTest {
         ProfileRemoveHooks.requestShutdown = { requestDaemonShutdown(it) }
         ProfileRemoveHooks.stopWaitMs = 15_000
         ProfileRemoveHooks.cacheRoot = { org.krost.unidrive.sync.SyncEngine.defaultHydrationCacheRoot() }
+        ProfileRemoveHooks.afterPendingCheck = {}
         dir.toFile().deleteRecursively()
     }
 
@@ -718,8 +719,57 @@ class ProfileRemoveTest {
         assertEquals(1, run("profile", "remove", "gone", "--yes", "--json"))
 
         assertEquals("uploads_pending", errorToken())
-        assertEquals(1, json().getValue("pending").jsonPrimitive.int)
-        assertEquals(listOf("/keep.txt"), pendingPathsLeft(), "the dead row left state.db, the live one stays")
+        assertEquals(1, json().getValue("pending").jsonPrimitive.int, "the dead row is not counted")
+        // The refusal happens before the profile lock is taken, so it deletes nothing (review of #89, P1).
+        assertEquals(listOf("/keep.txt", "/vanished.txt"), pendingPathsLeft())
+    }
+
+    @Test
+    fun `a row whose file is gone is dropped once the removal holds the profile lock`() {
+        makeMount()
+        populate()
+        writeState("/vanished.txt" to false)
+        cacheFile("/other.txt") // the cache folder exists, so /vanished.txt is judged gone
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--keep-data", "--json"), stderr())
+
+        assertEquals(emptyList(), pendingPathsLeft(), "the dead row left state.db, which --keep-data keeps")
+    }
+
+    @Test
+    fun `a daemon that starts after the check keeps the row of the file it just wrote`() {
+        makeMount()
+        populate()
+        writeState("/vanished.txt" to false)
+        cacheFile("/other.txt") // the cache folder exists, so /vanished.txt is judged gone
+        // Between the pending check and the profile lock a daemon starts and writes the file of the row (review of #89, P1): the row is
+        // a new pending upload now, and the removal must neither drop it nor go on.
+        ProfileRemoveHooks.afterPendingCheck = {
+            cacheFile("/vanished.txt")
+            fakeDaemonLock()
+        }
+
+        assertEquals(1, run("profile", "remove", "gone", "--yes", "--json"))
+
+        assertEquals(listOf("/vanished.txt"), pendingPathsLeft(), "the row of a file that came back is not dropped")
+        assertNothingRemoved()
+    }
+
+    @Test
+    fun `a pending row outside the standing sync scope does not refuse a mount profile`() {
+        makeMount()
+        Files.writeString(configFile, Files.readString(configFile).replaceFirst("mode = \"mount\"", "mode = \"mount\"\nsync_path = [\"/docs\"]"))
+        populate()
+        writeState("/docs/in.txt" to false, "/other/out.txt" to false)
+        cacheFile("/docs/in.txt")
+        cacheFile("/other/out.txt") // the daemon keeps it local: outside the scope it never uploads
+
+        assertEquals(1, run("profile", "remove", "gone", "--yes", "--json"))
+
+        assertEquals("uploads_pending", errorToken())
+        val r = json()
+        assertEquals(1, r.getValue("pending").jsonPrimitive.int, "only the row inside the scope waits")
+        assertEquals(listOf("/docs/in.txt"), r.getValue("paths").jsonArray.map { it.jsonPrimitive.content })
     }
 
     @Test

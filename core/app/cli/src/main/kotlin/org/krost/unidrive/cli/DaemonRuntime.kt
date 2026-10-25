@@ -743,7 +743,10 @@ class DaemonRuntime(
                         // #86: the refusal counts the rows `uploads.pending` counts, not the ones the keep-local rules hold back.
                         pendingRows =
                             hydration?.let { h -> { h.pendingUploadSplit() } }
-                                ?: { PendingUploads.split(db!!.pendingUploadRows(), { false }, null) },
+                                // A mirror daemon: the exclude patterns and the standing scope keep rows local, as in the gate of a stopped profile.
+                                ?: PendingGate.keepsLocalRule(excludePatterns, syncPaths).let { keepsLocal ->
+                                    { PendingUploads.split(db!!.pendingUploadRows(), keepsLocal, null) }
+                                },
                     )
                 server.registerHandler(AuthLogoutRpcHandler.VERB) { _, json -> logoutHandler.handle(json) }
 
