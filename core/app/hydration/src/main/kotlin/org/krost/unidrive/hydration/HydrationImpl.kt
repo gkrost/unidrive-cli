@@ -650,13 +650,22 @@ class HydrationImpl(
             maxAttempts = maxUploadAttempts,
         )
         _events.emit(HydrationEvent.Queued(path))
-        queueSlots.acquire()
         // Atomically create-or-get the slot and bump its pending count. The bin lock
         // held by compute() ensures that no concurrent finally-block can remove the
         // slot between the moment we decide to reuse it and the moment we increment.
+        // The slot exists BEFORE the wait for a waiting place: a rename (of the file or of a folder above it)
+        // that lands while this submitter waits then re-keys the slot like any other, and the upload follows it.
         val slot = uploadSlots.compute(path) { _, s ->
             (s ?: UploadSlot(Mutex(), AtomicInteger(0))).also { it.pending.incrementAndGet() }
         }!!
+        var acquired = false
+        try {
+            queueSlots.acquire()
+            acquired = true
+        } finally {
+            // The wait was cancelled: no worker will release this submission's count.
+            if (!acquired) releaseSlot(slot)
+        }
         // ATOMIC start: a plain launch cancelled before its first dispatch never runs its
         // body, so the slot/permit bookkeeping in the finally blocks below would be skipped
         // (slot stuck busy, queue permit lost, no Completed for the handle). ATOMIC
@@ -734,16 +743,20 @@ class HydrationImpl(
                 // moved it; if a concurrent submitter re-raised the count (its
                 // compute() found this slot before our decrement), the entry stays
                 // and that submitter's own finally removes it at zero.
-                val remaining = slot.pending.decrementAndGet()
-                if (remaining == 0) {
-                    uploadSlots.entries.removeIf { it.value === slot }
-                }
+                releaseSlot(slot)
             }
             // The path is no longer pinned by its upload: the budget may have been waiting for that.
             requestEviction()
             completed?.let { _events.emit(it) }
         }
         slot.jobs.add(worker)
+    }
+
+    // Gives back one submission's count on [slot]; the last one removes every map entry still pointing at the slot.
+    private fun releaseSlot(slot: UploadSlot) {
+        if (slot.pending.decrementAndGet() == 0) {
+            uploadSlots.entries.removeIf { it.value === slot }
+        }
     }
 
     /**
