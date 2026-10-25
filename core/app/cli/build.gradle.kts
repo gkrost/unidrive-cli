@@ -161,7 +161,7 @@ val generateBuildInfo =
                     commandLine("git", "ls-files", "--others", "--exclude-standard")
                 }.standardOutput.asText
                 .map { it.trim().isNotEmpty() }
-        // BUILD_INSTANT (the shadowJar is not yet byte-reproducible, but this value no longer adds to that): first that is
+        // BUILD_INSTANT (a clean-tree build of one commit is byte-reproducible, see the shadowJar below): first that is
         // there of -PbuildInstant=<ISO-8601 UTC>, the SOURCE_DATE_EPOCH environment variable, the commit time of HEAD (a clean
         // tree only: a dirty build is not that commit, so it says when it was built), else the clock. Seconds, UTC.
         val explicitBuildInstant = providers.gradleProperty("buildInstant")
@@ -254,6 +254,9 @@ tasks.named("compileKotlin") {
 
 tasks.shadowJar {
     archiveBaseName.set("unidrive")
+    // The same inputs give the same bytes: no file times from the build machine, entries in a fixed order.
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
     archiveClassifier.set("")
     mergeServiceFiles()
     // Shadow prints one warning per resource a transformer handles (about 70 per build): with the default
