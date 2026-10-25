@@ -24,6 +24,7 @@ plugins {
     kotlin("plugin.serialization")
     application
     id("com.gradleup.shadow") version libs.versions.shadow.get()
+    id("org.cyclonedx.bom") version libs.versions.cyclonedx.get()
 }
 
 kotlin {
@@ -161,7 +162,7 @@ val generateBuildInfo =
                     commandLine("git", "ls-files", "--others", "--exclude-standard")
                 }.standardOutput.asText
                 .map { it.trim().isNotEmpty() }
-        // BUILD_INSTANT (the shadowJar is not yet byte-reproducible, but this value no longer adds to that): first that is
+        // BUILD_INSTANT (a clean-tree build of one commit is byte-reproducible, see the shadowJar below): first that is
         // there of -PbuildInstant=<ISO-8601 UTC>, the SOURCE_DATE_EPOCH environment variable, the commit time of HEAD (a clean
         // tree only: a dirty build is not that commit, so it says when it was built), else the clock. Seconds, UTC.
         val explicitBuildInstant = providers.gradleProperty("buildInstant")
@@ -254,6 +255,9 @@ tasks.named("compileKotlin") {
 
 tasks.shadowJar {
     archiveBaseName.set("unidrive")
+    // The same inputs give the same bytes: no file times from the build machine, entries in a fixed order.
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
     archiveClassifier.set("")
     mergeServiceFiles()
     // Shadow prints one warning per resource a transformer handles (about 70 per build): with the default
@@ -725,4 +729,38 @@ tasks.test {
     // test run rather than only when someone remembers to build the image.
     dependsOn(tasks.shadowJar)
     systemProperty("unidrive.runtime.test.jar", tasks.shadowJar.flatMap { it.archiveFile }.get().asFile.absolutePath)
+}
+
+// The software bill of materials of the shaded CLI: the components on :app:cli's runtimeClasspath, the same set the shadow
+// jar bundles and THIRD-PARTY-NOTICES.txt lists. CycloneDX 1.6 JSON, written to build/reports/cyclonedx/ as
+// unidrive-<version>.bom.json; not part of `check`, the release attaches it to the artifacts it publishes. The plugin stamps
+// the BOM with the clock and with the URL of the checkout's git remote, and a clone could differ in either, so after it ran
+// the timestamp is set to BUILD_INSTANT (the commit time of a clean tree, see generateBuildInfo) and the remote is dropped:
+// a rebuild of the same commit gives the same bytes. The BOM has no serial number for the same reason.
+val sbomFile = layout.buildDirectory.file("reports/cyclonedx/unidrive-${project.version}.bom.json")
+val buildInfoSource = layout.buildDirectory.file("generated/src/main/kotlin/org/krost/unidrive/cli/BuildInfo.kt")
+
+tasks.cyclonedxDirectBom {
+    dependsOn(generateBuildInfo)
+    includeConfigs.set(listOf("runtimeClasspath"))
+    projectType.set(org.cyclonedx.model.Component.Type.APPLICATION)
+    schemaVersion.set(org.cyclonedx.Version.VERSION_16)
+    jsonOutput.set(sbomFile)
+    includeBomSerialNumber.set(false)
+    includeLicenseText.set(false)
+    val bom = sbomFile
+    val info = buildInfoSource
+    doLast {
+        val instant =
+            Regex("BUILD_INSTANT = \"([^\"]+)\"").find(info.get().asFile.readText())?.groupValues?.get(1)
+                ?: error("BuildInfo.kt has no BUILD_INSTANT")
+        @Suppress("UNCHECKED_CAST")
+        val root = groovy.json.JsonSlurper().parse(bom.get().asFile) as MutableMap<String, Any?>
+        @Suppress("UNCHECKED_CAST")
+        val metadata = root["metadata"] as MutableMap<String, Any?>
+        metadata["timestamp"] = instant
+        @Suppress("UNCHECKED_CAST")
+        (metadata["component"] as? MutableMap<String, Any?>)?.remove("externalReferences")
+        bom.get().asFile.writeText(groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(root)) + "\n")
+    }
 }
