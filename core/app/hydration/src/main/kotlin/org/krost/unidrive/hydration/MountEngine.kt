@@ -181,6 +181,12 @@ class MountEngine private constructor(
     /** See [RemoteOperationGuard.isReadOnlyPath]. */
     fun isReadOnlyPath(path: String): Boolean = guard.isReadOnlyPath(path)
 
+    /** The profile's local root, or null; see [MountWiring.localRoot]. */
+    fun localRoot(): Path? = options.localRoot
+
+    /** See [RemoteOperationGuard.keepsLocal]. */
+    fun keepsLocal(path: String): Boolean = guard.keepsLocal(path)
+
     /** The views of the profile: which virtual folders exist and where (see [RemoteOperationGuard.views]). */
     val viewNamespaces: ViewNamespaces get() = guard.views
 

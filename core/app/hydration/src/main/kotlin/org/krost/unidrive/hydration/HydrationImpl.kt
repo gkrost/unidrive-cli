@@ -32,6 +32,7 @@ import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.RemoteEnumeration
 import org.krost.unidrive.io.moveFile
 import org.krost.unidrive.sync.PathNormalizer
+import org.krost.unidrive.sync.PendingUploads
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.telemetry.TransferDirection
 import org.krost.unidrive.telemetry.TransferHandle
@@ -1157,6 +1158,8 @@ class HydrationImpl(
         } catch (e: Exception) {
             log.warn("retry of the blocked folders failed: {}", e.message)
         }
+        // Before the replay walks the rows: the ones whose file is gone leave state.db (#86).
+        dropGonePendingRows()
         for (path in stateDb.pendingUploadPaths()) {
             // archive#678: the walk between records is blocking file-system work with no suspension
             // point, so a stop is only honoured if the loop itself checks for it.
@@ -1303,7 +1306,35 @@ class HydrationImpl(
 
     // A row the replay and the rescan leave alone: keep-local names, the trash namespace (read-only, never sent) and
     // paths outside the profile's scope.
-    private fun skipsReplay(path: String): Boolean = mount.isExcludedPath(path) || mount.isReadOnlyPath(path) || mount.isOutOfScope(path)
+    private fun skipsReplay(path: String): Boolean = mount.keepsLocal(path)
+
+    /**
+     * #86: the rows awaiting upload sorted by [PendingUploads.split] — the one definition behind `uploads.pending`,
+     * the `auth.logout` gate and the drop of dead rows. A row is gone when neither the cache nor the profile's local root
+     * holds its file; that is only judged while the cache folder itself exists, so a cache that moved or was wiped never
+     * reads as "every file is gone" ([PendingUploads.localCopyCheck]).
+     */
+    fun pendingUploadSplit(): PendingUploads.Split =
+        PendingUploads.split(
+            stateDb.pendingUploadRows(),
+            ::skipsReplay,
+            PendingUploads.localCopyCheck(mount.hydrationCacheDir(), mount.localRoot()),
+        )
+
+    // #86: a `local:` row whose file is gone from the cache can never upload (nothing is left to send), so it is
+    // dropped — never a row with a real remote id ([StateDatabase.deleteLocalPendingRow] re-checks that). A path with an
+    // upload under way is left to that upload. Once per start, at one line.
+    private fun dropGonePendingRows() {
+        val gone = pendingUploadSplit().gone.filter { !uploadSlots.containsKey(it.path) }
+        if (gone.isEmpty()) return
+        val dropped = gone.filter { stateDb.deleteLocalPendingRow(it.path) }
+        if (dropped.isEmpty()) return
+        log.info(
+            "dropped {} pending upload row(s) whose file is gone, e.g. {}",
+            dropped.size,
+            dropped.take(PendingUploads.DETAIL_PATHS_CAP).joinToString { CachePaths.forLog(it.path) },
+        )
+    }
 
     /**
      * archive#526/#729: the cache copy of [path] through this replay's containment [pass], or null. Null covers every
@@ -1814,8 +1845,7 @@ class HydrationImpl(
         fun since(atMs: Long) {
             oldestSinceMs = oldestSinceMs?.let { minOf(it, atMs) } ?: atMs
         }
-        for (row in stateDb.pendingUploadRows()) {
-            if (skipsReplay(row.path)) continue
+        for (row in pendingUploadSplit().waiting) {
             pendingPaths += PathNormalizer.nfc(row.path)
             if (row.lastErrorAt != null) failed++
             since(row.lastSynced.toEpochMilli())

@@ -491,7 +491,7 @@ open class SyncEngine(
             gather = remoteGather,
             enumeration = enumeration,
             cachePathOf = { resolveCachePath(it) },
-            options = MountWiring.Options(syncPaths = syncPaths, verifyIntegrity = verifyIntegrity),
+            options = MountWiring.Options(syncPaths = syncPaths, verifyIntegrity = verifyIntegrity, localRoot = syncRoot),
             auditLog =
                 auditLog?.let { audit ->
                     object : AuditSink {

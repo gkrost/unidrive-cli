@@ -47,6 +47,9 @@ class MountWiring(
         val syncPaths: List<String> = emptyList(),
         // Verify a hydration download against the remote hash.
         val verifyIntegrity: Boolean = false,
+        // The profile's local root, where a profile converted from a mirror keeps the bytes of rows its scanner wrote; null
+        // where the host has none. A pending row whose file is there is not gone (PendingUploads.localCopyCheck).
+        val localRoot: Path? = null,
     )
 
     private val frontEndRef = AtomicReference<Any?>(null)

@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.krost.unidrive.AuthenticationException
@@ -15,6 +16,7 @@ import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.TokenRevocation
 import org.krost.unidrive.auth.CredentialProtectionException
+import org.krost.unidrive.sync.PendingUploads
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
 import java.nio.file.Files
@@ -109,12 +111,16 @@ class AuthLogoutRpcHandlerTest {
 
     private var provider = ScriptedProvider()
 
+    // The daemon's own rule for which rows can still upload; the default counts every row.
+    private var keepsLocal: (String) -> Boolean = { false }
+
     private fun handler(): AuthLogoutRpcHandler =
         AuthLogoutRpcHandler(
             profileDir = dir,
             db = db,
             providerFactory = { provider },
             forgetCredentials = { forgetCredentialsCalls += Files.exists(dir.resolve("credentials.json")) },
+            pendingRows = { PendingUploads.split(db.pendingUploadRows(), keepsLocal, null) },
         )
 
     private fun reply(json: String): JsonObject = Json.parseToJsonElement(json).jsonObject
@@ -190,6 +196,31 @@ class AuthLogoutRpcHandlerTest {
         assertEquals(0, provider.logoutCalls, "the account is not signed out")
         assertEquals(0, provider.revokeCalls, "the token is not revoked")
         assertTrue(forgetCredentialsCalls.isEmpty())
+    }
+
+    // #86: rows the keep-local rules hold back never upload; the refusal counts what `uploads.pending` counts.
+    @Test
+    fun `rows the keep-local rules hold back do not refuse`() {
+        keepsLocal = { it.endsWith(".part") || it.endsWith("Thumbs.db") }
+        seedPending("/docs/movie.part" to false, "/docs/Thumbs.db" to false)
+
+        val r = call("""{"verb":"auth.logout"}""")
+
+        assertTrue(r.getValue("ok").jsonPrimitive.booleanOrNull == true)
+        assertEquals(1, provider.logoutCalls)
+    }
+
+    @Test
+    fun `the refusal counts only the rows that can upload and names their first paths`() {
+        keepsLocal = { it.endsWith(".part") }
+        seedPending("/docs/z.txt" to false, "/docs/movie.part" to false, "/docs/a.txt" to false)
+
+        val r = call("""{"verb":"auth.logout"}""")
+
+        assertEquals("uploads_pending", r.getValue("error").jsonPrimitive.content)
+        assertEquals(2, r.getValue("pending").jsonPrimitive.int)
+        assertEquals(0, r.getValue("failed").jsonPrimitive.int)
+        assertEquals(listOf("/docs/a.txt", "/docs/z.txt"), r.getValue("paths").jsonArray.map { it.jsonPrimitive.content })
     }
 
     @Test

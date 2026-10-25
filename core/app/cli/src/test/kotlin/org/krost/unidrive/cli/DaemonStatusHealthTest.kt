@@ -189,7 +189,16 @@ class DaemonStatusHealthTest {
         }
     }
 
-    private fun localRow(path: String, lastSynced: Instant) =
+    // The file of a pending row lives in the profile's local root (the test's syncRoot): a `local:` row without one is
+    // gone, and the daemon drops it (#86).
+    private fun localRow(path: String, lastSynced: Instant): SyncEntry {
+        val file = tempDir.resolve(path.trimStart('/'))
+        Files.createDirectories(file.parent)
+        Files.writeString(file, "bytes")
+        return localEntry(path, lastSynced)
+    }
+
+    private fun localEntry(path: String, lastSynced: Instant) =
         SyncEntry(
             path = path,
             remoteId = null,

@@ -81,6 +81,13 @@ class RemoteOperationGuard(
         isDir: Boolean = false,
     ): Boolean = excludePatterns.any { matchesGlob(path, it) } || ignore?.isIgnored(path, isDir) == true
 
+    /**
+     * True when no upload of [path] will ever be sent: the keep-local rules name it ([isExcludedPath]), it lies in the
+     * read-only namespaces ([isReadOnlyPath]) or outside the standing scope ([isOutOfScope]). The one rule behind
+     * what counts as a pending upload ([org.krost.unidrive.sync.PendingUploads]).
+     */
+    fun keepsLocal(path: String): Boolean = isExcludedPath(path) || isReadOnlyPath(path) || isOutOfScope(path)
+
     /** archive#660: the first of the profile's exclude patterns [path] matches, or null (the ignore rules not asked). */
     fun matchingExcludePattern(path: String): String? = excludePatterns.firstOrNull { matchesGlob(path, it) }
 

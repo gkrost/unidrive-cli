@@ -9,8 +9,8 @@ import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcEndpoint
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessLock
-import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
+import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.isValidProfileName
 import org.krost.unidrive.sync.removeProfileSection
 import java.io.IOException
@@ -30,6 +30,9 @@ internal object ProfileRemoveHooks {
 
     /** How long `--stop` waits for the daemon to let go of the profile. */
     var stopWaitMs: Long = 15_000
+
+    /** Where the hydration caches live; the pending-upload gate looks for the files of a mount profile's rows there. */
+    var cacheRoot: () -> Path = { SyncEngine.defaultHydrationCacheRoot() }
 }
 
 /**
@@ -94,9 +97,11 @@ internal object ProfileRemover {
 
     /**
      * Refuses a profile whose state.db still holds uploads that are on their way. The state.db is opened read-only and
-     * the rows are those the daemon reports as `uploads.pending` (same query); `failed` is the subset with a failed
-     * attempt on record. Failed uploads alone do not block: the user decides about those. A missing state.db has
-     * nothing pending; one that exists but cannot be read is refused, since nothing can be said about it.
+     * the rows are those the daemon reports as `uploads.pending` (the same rule, [PendingGate]): rows the keep-local
+     * rules hold back are not on their way, and a row whose file is gone is dropped first (#86). `failed` is the subset
+     * with a failed attempt on record. Failed uploads alone do not block: the user decides about those. The refusal
+     * carries the first few paths as `paths`. A missing state.db has nothing pending; one that exists but cannot be read
+     * is refused, since nothing can be said about it.
      * Shared with `logout`, which refuses for the same reason (without credentials the pending uploads cannot finish).
      */
     internal fun refuseIfUploadsPending(
@@ -105,10 +110,12 @@ internal object ProfileRemover {
     ) {
         val stateDb = profileDir.resolve("state.db")
         if (!Files.exists(stateDb)) return
-        val rows = readPendingRows(stateDb) 
-            ?: throw LifecycleError("state_unreadable", "the state of profile '$name' could not be read; nothing was removed")
-        val pending = rows.size
-        val failed = rows.count { it.lastErrorAt != null }
+        val split =
+            PendingGate.split(stateDb, profileDir.parent, name)
+                ?: throw LifecycleError("state_unreadable", "the state of profile '$name' could not be read; nothing was removed")
+        PendingGate.dropGone(stateDb, split.gone, name)
+        val pending = split.waiting.size
+        val failed = split.waiting.count { it.lastErrorAt != null }
         if (pending - failed > 0) {
             throw LifecycleError(
                 "uploads_pending",
@@ -118,25 +125,9 @@ internal object ProfileRemover {
                     buildJsonObject {
                         put("pending", pending)
                         put("failed", failed)
+                        put("paths", JsonArray(split.detailPaths().map { JsonPrimitive(it) }))
                     },
             )
-        }
-    }
-
-    /** The rows awaiting upload, or null when the state.db cannot be read (locked, corrupt, unexpected schema). */
-    private fun readPendingRows(stateDb: Path): List<StateDatabase.PendingUploadRow>? {
-        val db = StateDatabase(stateDb, readOnly = true)
-        return try {
-            db.initialize()
-            db.pendingUploadRows()
-        } catch (_: java.sql.SQLException) {
-            null
-        } catch (_: IllegalStateException) {
-            null
-        } catch (_: IllegalArgumentException) {
-            null
-        } finally {
-            db.close()
         }
     }
 
