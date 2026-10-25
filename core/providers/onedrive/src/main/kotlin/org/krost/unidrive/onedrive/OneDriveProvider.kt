@@ -12,6 +12,9 @@ import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 import org.krost.unidrive.io.withLocalIoRetry
 
+// A file above this size is uploaded through a session in chunks; at or below it, in one request.
+private const val CHUNKED_UPLOAD_THRESHOLD = 4L * 1024 * 1024
+
 class OneDriveProvider(
     private val config: OneDriveConfig = OneDriveConfig(),
     // Tests hand in a MockEngine for the Graph calls; production lets Ktor pick the engine.
@@ -292,7 +295,7 @@ class OneDriveProvider(
         // A shared-with-me item is updated in place by its id, in the drive that holds it; there is no path to put it at.
         val sharedId = existingRemoteId?.takeIf { SharedItemId.isShared(it) }
         suspend fun put(conflictBehavior: String, etag: String? = null, target: String = remotePath, itemId: String? = null) =
-            if (fileSize <= 4 * 1024 * 1024) {
+            if (fileSize <= CHUNKED_UPLOAD_THRESHOLD) {
                 // archive#802: the read races whatever holds the file open (indexer, backup); a short lock is retried.
                 val content = withLocalIoRetry { Files.readAllBytes(localPath) }
                 graphApi.uploadSimple(target, content, fsInfo, conflictBehavior, etag, itemId)
@@ -391,6 +394,7 @@ class OneDriveProvider(
                 landUnderServerName(e)
             } else if (e.isNameAlreadyExists()) {
                 identicalRemoteAt(remotePath, localPath, fileSize)?.let { return it }
+                completeIntoEmptyItem(remotePath, fileSize) { behavior, etag -> put(behavior, etag) }?.let { return it }
                 log.warn(
                     "UD-366: create-collision on '{}' — a different remote already exists at this path; " +
                         "preserving it untouched and landing the local copy as a keep-both copy " +
@@ -442,6 +446,44 @@ class OneDriveProvider(
             remotePath,
         )
         return existing.toCloudItem()
+    }
+
+    // A chunked create collided with an empty file at its name. An upload that was cut short can leave exactly that
+    // (the item an earlier session of the same upload reserved), and a chunked upload only exists for files that are
+    // not empty, so the empty item holds no bytes a replace could destroy. The upload completes into it under its
+    // eTag: a change since the lookup is a 412 and falls back to keeping both. Null when the colliding item is not
+    // such an empty file, or when completing into it was refused.
+    private suspend fun completeIntoEmptyItem(
+        remotePath: String,
+        fileSize: Long,
+        put: suspend (String, String?) -> DriveItem,
+    ): CloudItem? {
+        if (fileSize <= CHUNKED_UPLOAD_THRESHOLD) return null
+        val existing =
+            try {
+                itemAt(remotePath)
+            } catch (_: GraphApiException) {
+                return null
+            } catch (_: java.io.IOException) {
+                return null
+            } catch (_: kotlinx.serialization.SerializationException) {
+                return null
+            }
+        val eTag = existing.eTag
+        val emptyFile = !existing.isFolder && existing.file != null && existing.size == 0L
+        if (!emptyFile || eTag == null) return null
+        log.info(
+            "Create-collision on '{}': the item at this path is empty, the shape an earlier session of this upload leaves; " +
+                "completing the upload into it instead of keeping a second copy.",
+            remotePath,
+        )
+        return try {
+            put("replace", eTag).toCloudItem()
+        } catch (e: GraphApiException) {
+            if (e.statusCode != 412) throw e
+            log.warn("The empty item at '{}' changed before the upload could complete into it; keeping both.", remotePath)
+            null
+        }
     }
 
     override suspend fun delete(remotePath: String, ifMatchETag: String?) {
