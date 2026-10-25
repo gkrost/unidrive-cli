@@ -21,8 +21,8 @@ concurrency:
 # overnight: pair it with re-deriving the oracle's drift leg and re-measuring
 # the workers cap.
 jobs:
-  # Advisory full-history secret scan. The build keeps `check` as the only
-  # merge gate; this job reports findings without becoming a required check.
+  # Advisory full-history secret scan. The required gates are `check` and
+  # `windows-security` (repository ruleset); this job reports findings without becoming a required check.
   gitleaks:
     name: gitleaks (advisory)
     runs-on: ubuntu-24.04
@@ -197,8 +197,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # The Windows security regression tests, as a job of its own: this job (check name `windows-security`) is meant
-  # to be a required check in the repository ruleset; the full Windows suite, `check-windows` below, stays advisory
+  # The Windows security regression tests, as a job of its own: this job (check name `windows-security`) is a required
+  # check, with `check`, in the repository ruleset; the full Windows suite, `check-windows` below, stays advisory
   # (`continue-on-error`). It runs only the classes that guard the owner-only ACLs, the credential stores, the IPC
   # token, the reserved-name quarantine and the Windows file-lock retries; a filter that matches no test fails the job,
   # so a renamed class shows up here instead of silently dropping out. Docs-only PRs skip it, which a required check
