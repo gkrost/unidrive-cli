@@ -158,7 +158,7 @@ class HydrationRenameOvertakesUploadRetryTest {
         override suspend fun quota(): QuotaInfo = QuotaInfo(total = 0L, used = 0L, remaining = 0L)
     }
 
-    private class Rig(scope: TestScope) {
+    private class Rig(scope: TestScope, uploadQueueDepth: Int = 256) {
         val drive = PathKeyedDrive()
         val db = StateDatabase(dbPath = Files.createTempDirectory("unidrive-610-db").resolve("state.db"), inMemory = true)
             .also { it.initialize() }
@@ -168,7 +168,7 @@ class HydrationRenameOvertakesUploadRetryTest {
             syncRoot = Files.createTempDirectory("unidrive-610-sync"),
             cacheRoot = Files.createTempDirectory("unidrive-610-cache"),
         )
-        val impl = HydrationImpl(engine, db, recoveryUploadScope = scope, uploadStallTimeoutMs = 0L)
+        val impl = HydrationImpl(engine, db, recoveryUploadScope = scope, uploadStallTimeoutMs = 0L, uploadQueueDepth = uploadQueueDepth)
 
         fun seedFolder(path: String) = db.upsertEntry(
             SyncEntry(
@@ -507,5 +507,96 @@ class HydrationRenameOvertakesUploadRetryTest {
         assertOneItemPerRenameAtItsNewPath(rig, renames)
         assertEquals(2, rig.drive.log.count { it.startsWith("moveById:id-0:") }, "the move is asked again: ${rig.drive.log}")
         assertTrue(completed.single { it.handleId == "h0" }.ok, "the upload completes after the retried move: $completed")
+    }
+
+    // The folder flavour of the running-attempt case: the FOLDER is renamed while its children's attempts run. Each
+    // attempt then lands its item at the old path, and the engine must move it to the new one by its id.
+    private suspend fun TestScope.renameFolderWhileAttemptsRun(
+        rig: Rig,
+        names: List<String>,
+    ): List<HydrationEvent.Completed> {
+        val completed = mutableListOf<HydrationEvent.Completed>()
+        val collector = launch { rig.impl.events.collect { if (it is HydrationEvent.Completed) completed += it } }
+        runCurrent()
+        val gates = names.map { name -> CompletableDeferred<Unit>().also { rig.drive.holdUpload["/move/$name"] = it } }
+        names.forEachIndexed { i, name ->
+            val path = "/move/$name"
+            val cache = rig.seedWritten(path, "content-$name")
+            launch { assertTrue(rig.impl.openForWrite("c", "h$i", path, cache, null) is OpenResult.Ok) }
+        }
+        runCurrent()
+        assertEquals(names.size, rig.drive.log.count { it.startsWith("upload:") }, "every attempt is running: ${rig.drive.log}")
+        assertEquals(RenameResult.Ok, rig.impl.rename("/move", "/moved"), "rename of the folder")
+        gates.forEach { it.complete(Unit) }
+        advanceUntilIdle()
+        collector.cancel()
+        return completed
+    }
+
+    @Test
+    fun `a folder renamed while its children's attempts run ends as one cloud item per child at the new path`() = runTest {
+        val rig = Rig(this)
+        rig.seedFolder("/move")
+        rig.drive.cloudFolder("/move")
+        val names = listOf("f1.txt", "f2.txt")
+
+        val completed = renameFolderWhileAttemptsRun(rig, names)
+
+        assertEquals(names.size, rig.drive.log.count { it.startsWith("upload:") }, "each child is uploaded once: ${rig.drive.log}")
+        assertOneItemPerChildAtTheNewPath(rig, names, folderInDrive = true)
+        assertEquals(names.size, completed.count { it.ok }, "every child's upload completes: $completed")
+    }
+
+    @Test
+    fun `a never-uploaded folder renamed while its children's attempts run ends as one cloud item per child at the new path`() = runTest {
+        val rig = Rig(this)
+        rig.seedLocalFolder("/move")
+        val names = listOf("f1.txt", "f2.txt")
+
+        val completed = renameFolderWhileAttemptsRun(rig, names)
+
+        assertEquals(names.size, rig.drive.log.count { it.startsWith("upload:") }, "each child is uploaded once: ${rig.drive.log}")
+        assertOneItemPerChildAtTheNewPath(rig, names, folderInDrive = false)
+        assertEquals(names.size, completed.count { it.ok }, "every child's upload completes: $completed")
+    }
+
+    // A child whose submitter still waits for a place in the upload queue (every place is taken) has no running
+    // coroutine yet. The folder is renamed meanwhile: when the child gets its place it must upload at the new path
+    // instead of finding its row gone and being given up until the next start.
+    @Test
+    fun `a child still waiting for a queue place when its folder is renamed uploads at the new path`() = runTest {
+        val rig = Rig(this, uploadQueueDepth = 1)
+        rig.seedFolder("/move")
+        rig.drive.cloudFolder("/move")
+        rig.seedFolder("/other")
+        val completed = mutableListOf<HydrationEvent.Completed>()
+        val collector = launch { rig.impl.events.collect { if (it is HydrationEvent.Completed) completed += it } }
+        runCurrent()
+        // /other/x.txt is uploading (held in the provider); a second upload of it waits for the path's turn and
+        // takes the only waiting place.
+        val gate = CompletableDeferred<Unit>().also { rig.drive.holdUpload["/other/x.txt"] = it }
+        val xCache = rig.seedWritten("/other/x.txt", "content-x")
+        launch { assertTrue(rig.impl.openForWrite("c", "hx1", "/other/x.txt", xCache, null) is OpenResult.Ok) }
+        runCurrent()
+        launch { assertTrue(rig.impl.openForWrite("c", "hx2", "/other/x.txt", xCache, null) is OpenResult.Ok) }
+        runCurrent()
+        // The child's submitter finds no place left and waits for one.
+        val bCache = rig.seedWritten("/move/b.txt", "content-b")
+        launch { assertTrue(rig.impl.openForWrite("c", "hb", "/move/b.txt", bCache, null) is OpenResult.Ok) }
+        runCurrent()
+        assertTrue(rig.drive.log.none { it.startsWith("upload:/move/b.txt") }, "the child has not started: ${rig.drive.log}")
+
+        assertEquals(RenameResult.Ok, rig.impl.rename("/move", "/moved"), "rename of the folder")
+        gate.complete(Unit)
+        advanceUntilIdle()
+        collector.cancel()
+
+        val done = completed.single { it.handleId == "hb" }
+        assertTrue(done.ok, "the waiting child's upload completes at the new path: $completed")
+        assertEquals("/moved/b.txt", done.path)
+        assertEquals(listOf("/moved/b.txt"), rig.drive.items.keys.filter { it.endsWith("b.txt") }, "one cloud item: ${rig.drive.log}")
+        assertNull(rig.db.getEntry("/move/b.txt"), "no row at the old path")
+        val row = assertNotNull(rig.db.getEntry("/moved/b.txt"))
+        assertEquals(rig.drive.items["/moved/b.txt"]?.id, row.remoteId, "the row at the new path is the uploaded item: ${rig.drive.log}")
     }
 }

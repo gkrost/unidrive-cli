@@ -8,13 +8,16 @@ import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.sync.Mutex
@@ -651,13 +654,40 @@ class HydrationImpl(
             maxAttempts = maxUploadAttempts,
         )
         _events.emit(HydrationEvent.Queued(path))
-        queueSlots.acquire()
         // Atomically create-or-get the slot and bump its pending count. The bin lock
         // held by compute() ensures that no concurrent finally-block can remove the
         // slot between the moment we decide to reuse it and the moment we increment.
+        // The slot exists BEFORE the wait for a waiting place: a rename (of the file or of a folder above it)
+        // that lands while this submitter waits then re-keys the slot like any other, and the upload follows it.
         val slot = uploadSlots.compute(path) { _, s ->
             (s ?: UploadSlot(Mutex(), AtomicInteger(0))).also { it.pending.incrementAndGet() }
         }!!
+        // The wait is its own child job, registered with the slot like a worker: cancelUpload finds it (the slot has no
+        // other job yet) and a cancel ends the wait, not the caller's request. A cancel of the CALLER itself cancels
+        // the child too (it is the caller's child) and goes on up.
+        val waiting = CoroutineScope(currentCoroutineContext()).async { queueSlots.acquire() }
+        slot.jobs.add(waiting)
+        try {
+            waiting.await()
+        } catch (e: CancellationException) {
+            // Either way no worker will release this submission's count, and a place won in the same instant goes back.
+            if (waiting.isCompleted && !waiting.isCancelled) queueSlots.release()
+            releaseSlot(slot)
+            if (!currentCoroutineContext().isActive) throw e
+            // cancelUpload ended the wait: the submission is cancelled like a queued worker would be (same end of the
+            // handle's correlation), and the caller's request goes on.
+            tx?.finish(TransferResult.INTERRUPTED, errorClass = "cancelled", attempted = tx.hasStarted)
+            _events.emit(
+                HydrationEvent.Completed(
+                    path = path,
+                    handleId = handleId,
+                    direction = HydrationEvent.Completed.Direction.UPLOAD,
+                    ok = false,
+                    error = HydrationError.Cancelled,
+                ),
+            )
+            return
+        }
         // ATOMIC start: a plain launch cancelled before its first dispatch never runs its
         // body, so the slot/permit bookkeeping in the finally blocks below would be skipped
         // (slot stuck busy, queue permit lost, no Completed for the handle). ATOMIC
@@ -735,16 +765,20 @@ class HydrationImpl(
                 // moved it; if a concurrent submitter re-raised the count (its
                 // compute() found this slot before our decrement), the entry stays
                 // and that submitter's own finally removes it at zero.
-                val remaining = slot.pending.decrementAndGet()
-                if (remaining == 0) {
-                    uploadSlots.entries.removeIf { it.value === slot }
-                }
+                releaseSlot(slot)
             }
             // The path is no longer pinned by its upload: the budget may have been waiting for that.
             requestEviction()
             completed?.let { _events.emit(it) }
         }
         slot.jobs.add(worker)
+    }
+
+    // Gives back one submission's count on [slot]; the last one removes every map entry still pointing at the slot.
+    private fun releaseSlot(slot: UploadSlot) {
+        if (slot.pending.decrementAndGet() == 0) {
+            uploadSlots.entries.removeIf { it.value === slot }
+        }
     }
 
     /**

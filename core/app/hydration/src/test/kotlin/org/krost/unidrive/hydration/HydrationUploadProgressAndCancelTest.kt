@@ -234,6 +234,88 @@ class HydrationUploadProgressAndCancelTest {
     }
 
     @Test
+    fun `cancel of a submission that still waits for a queue place ends the wait and keeps the place count`() = runTest {
+        // PR 90 review: the slot of a submitter that waits in queueSlots.acquire() had no job yet, so cancelUpload found the
+        // slot and answered false while unlink saw it busy. The wait is a job of the slot now.
+        val env = HydrationTestEnv(recoveryUploadScope = this, uploadQueueDepth = 1, maxUploadAttempts = 1)
+        val gate = CompletableDeferred<Unit>()
+        env.providerForTest.uploadGate = gate
+        for (name in listOf("a", "b", "c")) {
+            env.stateDb.insertCreatedRow("/docs/$name.txt")
+            writeCache(env, "/docs/$name.txt", "$name bytes")
+        }
+        val events = mutableListOf<HydrationEvent>()
+        val collector = launch { env.hydration.events.collect { events.add(it) } }
+        yield()
+
+        // a.txt starts its transfer (and hands its place back), parked in the provider; a second submission of it takes the
+        // one place and waits for the path's turn. b.txt finds the queue full and waits for a place.
+        env.hydration.openForWrite("conn1", "h1", "/docs/a.txt", env.syncEngine.resolveCachePath("/docs/a.txt"))
+        advanceUntilIdle()
+        env.hydration.openForWrite("conn1", "h2", "/docs/a.txt", env.syncEngine.resolveCachePath("/docs/a.txt"))
+        advanceUntilIdle()
+        val waitingReturned = CompletableDeferred<Unit>()
+        launch {
+            env.hydration.openForWrite("conn1", "h3", "/docs/b.txt", env.syncEngine.resolveCachePath("/docs/b.txt"))
+            waitingReturned.complete(Unit)
+        }
+        advanceUntilIdle()
+        assertFalse(waitingReturned.isCompleted, "b.txt waits for a queue place")
+        assertTrue(env.hydration.hasUploadSlot("/docs/b.txt"), "and its slot exists while it waits")
+
+        assertTrue(env.hydration.cancelUpload("/docs/b.txt"), "a submission waiting for a queue place must be cancellable")
+        advanceUntilIdle()
+
+        assertTrue(waitingReturned.isCompleted, "the cancelled wait lets the caller's request go on")
+        assertFalse(env.hydration.hasUploadSlot("/docs/b.txt"), "the cancelled wait leaves no slot behind")
+        val cancelled = events.filterIsInstance<HydrationEvent.Completed>().single { it.handleId == "h3" }
+        assertEquals(HydrationError.CANCELLED_TOKEN, cancelled.error?.message)
+        assertNull(env.syncEngine.remoteContentSeen("/docs/b.txt"), "nothing of b.txt was uploaded")
+
+        // The place count is intact: ending a.txt's two submissions frees the one place for a later write of c.txt.
+        assertTrue(env.hydration.cancelUpload("/docs/a.txt"))
+        advanceUntilIdle()
+        val laterReturned = CompletableDeferred<Unit>()
+        val later = launch {
+            env.hydration.openForWrite("conn1", "h4", "/docs/c.txt", env.syncEngine.resolveCachePath("/docs/c.txt"))
+            laterReturned.complete(Unit)
+        }
+        advanceUntilIdle()
+        val returned = laterReturned.isCompleted
+        later.cancel()
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertTrue(returned, "the cancelled wait lost a queue place: a later open_write never returned")
+        collector.cancel()
+    }
+
+    @Test
+    fun `a cancel of the caller while it waits for a queue place releases the slot and goes on up`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this, uploadQueueDepth = 1, maxUploadAttempts = 1)
+        val gate = CompletableDeferred<Unit>()
+        env.providerForTest.uploadGate = gate
+        for (name in listOf("a", "b")) {
+            env.stateDb.insertCreatedRow("/docs/$name.txt")
+            writeCache(env, "/docs/$name.txt", "$name bytes")
+        }
+        env.hydration.openForWrite("conn1", "h1", "/docs/a.txt", env.syncEngine.resolveCachePath("/docs/a.txt"))
+        advanceUntilIdle()
+        env.hydration.openForWrite("conn1", "h2", "/docs/a.txt", env.syncEngine.resolveCachePath("/docs/a.txt"))
+        advanceUntilIdle()
+        val caller = launch { env.hydration.openForWrite("conn1", "h3", "/docs/b.txt", env.syncEngine.resolveCachePath("/docs/b.txt")) }
+        advanceUntilIdle()
+        assertTrue(env.hydration.hasUploadSlot("/docs/b.txt"))
+
+        caller.cancel()
+        advanceUntilIdle()
+
+        assertTrue(caller.isCancelled, "the caller's own cancel is not swallowed")
+        assertFalse(env.hydration.hasUploadSlot("/docs/b.txt"), "the abandoned wait leaves no slot behind")
+        gate.complete(Unit)
+        advanceUntilIdle()
+    }
+
+    @Test
     fun `cancel with nothing in flight answers cancelled false`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this)
         env.stateDb.insertCreatedRow("/docs/f.txt")
