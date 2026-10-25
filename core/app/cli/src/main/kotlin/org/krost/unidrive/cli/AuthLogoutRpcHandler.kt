@@ -1,10 +1,14 @@
 package org.krost.unidrive.cli
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.auth.CredentialProtectionException
+import org.krost.unidrive.sync.PendingUploads
 import org.krost.unidrive.sync.StateDatabase
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -17,7 +21,7 @@ import java.nio.file.Path
  * without credentials; the sync state is never touched (a front-end's sign-out must not lose it, and the
  * daemon holds state.db open). The reply says what happened; the CLI's `logout --json` wraps it.
  *
- * - Refused with `uploads_pending` (with `pending` / `failed` counts) while the state.db still holds
+ * - Refused with `uploads_pending` (with `pending` / `failed` counts and the first few `paths`) while the state.db still holds
  *   uploads on their way — without credentials they cannot finish; `profile remove` counts them by the
  *   same rule. `"force":true` signs out anyway.
  * - Refused with `credential_protection_unavailable` when a credential marker's OS secret-store item
@@ -36,6 +40,9 @@ internal class AuthLogoutRpcHandler(
     // The daemon's own provider instance forgets the credentials it holds in memory (CloudProvider.forgetCredentials):
     // it stops reporting itself authenticated and no later request uses the old token.
     private val forgetCredentials: suspend () -> Unit,
+    // The uploads that can still happen: the daemon counts `uploads.pending` by the same rows, so the two agree (#86).
+    // Without a hydration layer (a mirror daemon) every pending row counts.
+    private val pendingRows: () -> PendingUploads.Split = { PendingUploads.split(db.pendingUploadRows(), { false }, null) },
 ) {
     private val log = LoggerFactory.getLogger(AuthLogoutRpcHandler::class.java)
 
@@ -47,11 +54,17 @@ internal class AuthLogoutRpcHandler(
                 else -> (element as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toBooleanStrictOrNull() ?: return INVALID_FORCE
             }
         if (!force) {
-            val rows = db.pendingUploadRows()
-            val pending = rows.size
-            val failed = rows.count { it.lastErrorAt != null }
+            val split = pendingRows()
+            val pending = split.waiting.size
+            val failed = split.waiting.count { it.lastErrorAt != null }
             if (pending - failed > 0) {
-                return """{"ok":false,"error":"uploads_pending","pending":$pending,"failed":$failed}"""
+                return buildJsonObject {
+                    put("ok", false)
+                    put("error", "uploads_pending")
+                    put("pending", pending)
+                    put("failed", failed)
+                    put("paths", JsonArray(split.detailPaths().map { JsonPrimitive(it) }))
+                }.toString()
             }
         }
         // Any failure of the revocation attempt (the provider unreachable, the revocation refused) means

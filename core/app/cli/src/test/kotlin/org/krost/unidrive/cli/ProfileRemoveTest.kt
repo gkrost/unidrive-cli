@@ -4,6 +4,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assume.assumeTrue
@@ -56,6 +57,7 @@ class ProfileRemoveTest {
         ProfileRemoveHooks.socketPath = { socketDir.resolve("$it.sock") }
         ProfileRemoveHooks.requestShutdown = { error("a test must set requestShutdown before it can be called") }
         ProfileRemoveHooks.stopWaitMs = 2_000
+        ProfileRemoveHooks.cacheRoot = { dir.resolve("cache") }
         System.setOut(PrintStream(out, true, Charsets.UTF_8))
         System.setErr(PrintStream(err, true, Charsets.UTF_8))
         writeConfig()
@@ -70,6 +72,8 @@ class ProfileRemoveTest {
         ProfileRemoveHooks.socketPath = { org.krost.unidrive.sync.IpcServer.defaultSocketPath(it) }
         ProfileRemoveHooks.requestShutdown = { requestDaemonShutdown(it) }
         ProfileRemoveHooks.stopWaitMs = 15_000
+        ProfileRemoveHooks.cacheRoot = { org.krost.unidrive.sync.SyncEngine.defaultHydrationCacheRoot() }
+        ProfileRemoveHooks.afterPendingCheck = {}
         dir.toFile().deleteRecursively()
     }
 
@@ -665,5 +669,180 @@ class ProfileRemoveTest {
         assertEquals(1, run("profile", "remove", "gone", "--yes", "--json"))
 
         assertEquals("daemon_running", errorToken())
+    }
+
+    // ── what counts as pending (#86) ────────────────────────────────────────
+
+    private fun makeMount() {
+        Files.writeString(configFile, Files.readString(configFile).replaceFirst("mode = \"mirror\"", "mode = \"mount\""))
+    }
+
+    /** The hydration cache folder of the profile, where a mount profile's rows keep their bytes. */
+    private fun cacheDir(): Path = org.krost.unidrive.sync.SyncEngine.hydrationCacheRoot(dir.resolve("cache"), "gone")
+
+    private fun cacheFile(path: String) {
+        val file = cacheDir().resolve(path.trimStart('/'))
+        Files.createDirectories(file.parent)
+        Files.writeString(file, "bytes")
+    }
+
+    private fun pendingPathsLeft(): List<String> {
+        val db = StateDatabase(goneDir.resolve("state.db"), readOnly = true)
+        db.initialize()
+        try {
+            return db.pendingUploadRows().map { it.path }.sorted()
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `rows the ignore rules keep local do not refuse a mount profile`() {
+        makeMount()
+        populate()
+        writeState("/Thumbs.db" to false, "/movie.mkv.part" to false)
+        cacheFile("/Thumbs.db")
+        cacheFile("/movie.mkv.part")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertFalse("gone" in profiles())
+    }
+
+    @Test
+    fun `a row whose file is gone does not refuse and is dropped`() {
+        makeMount()
+        populate()
+        writeState("/vanished.txt" to false, "/keep.txt" to false)
+        cacheFile("/keep.txt")
+
+        assertEquals(1, run("profile", "remove", "gone", "--yes", "--json"))
+
+        assertEquals("uploads_pending", errorToken())
+        assertEquals(1, json().getValue("pending").jsonPrimitive.int, "the dead row is not counted")
+        // The refusal happens before the profile lock is taken, so it deletes nothing (review of #89, P1).
+        assertEquals(listOf("/keep.txt", "/vanished.txt"), pendingPathsLeft())
+    }
+
+    @Test
+    fun `a row whose file is gone is dropped once the removal holds the profile lock`() {
+        makeMount()
+        populate()
+        writeState("/vanished.txt" to false)
+        cacheFile("/other.txt") // the cache folder exists, so /vanished.txt is judged gone
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--keep-data", "--json"), stderr())
+
+        assertEquals(emptyList(), pendingPathsLeft(), "the dead row left state.db, which --keep-data keeps")
+    }
+
+    @Test
+    fun `a daemon that starts after the check keeps the row of the file it just wrote`() {
+        makeMount()
+        populate()
+        writeState("/vanished.txt" to false)
+        cacheFile("/other.txt") // the cache folder exists, so /vanished.txt is judged gone
+        // Between the pending check and the profile lock a daemon starts and writes the file of the row (review of #89, P1): the row is
+        // a new pending upload now, and the removal must neither drop it nor go on.
+        ProfileRemoveHooks.afterPendingCheck = {
+            cacheFile("/vanished.txt")
+            fakeDaemonLock()
+        }
+
+        assertEquals(1, run("profile", "remove", "gone", "--yes", "--json"))
+
+        assertEquals(listOf("/vanished.txt"), pendingPathsLeft(), "the row of a file that came back is not dropped")
+        assertNothingRemoved()
+    }
+
+    @Test
+    fun `a pending row outside the standing sync scope does not refuse a mount profile`() {
+        makeMount()
+        Files.writeString(configFile, Files.readString(configFile).replaceFirst("mode = \"mount\"", "mode = \"mount\"\nsync_path = [\"/docs\"]"))
+        populate()
+        writeState("/docs/in.txt" to false, "/other/out.txt" to false)
+        cacheFile("/docs/in.txt")
+        cacheFile("/other/out.txt") // the daemon keeps it local: outside the scope it never uploads
+
+        assertEquals(1, run("profile", "remove", "gone", "--yes", "--json"))
+
+        assertEquals("uploads_pending", errorToken())
+        val r = json()
+        assertEquals(1, r.getValue("pending").jsonPrimitive.int, "only the row inside the scope waits")
+        assertEquals(listOf("/docs/in.txt"), r.getValue("paths").jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `the refusal names the first paths of the waiting rows`() {
+        makeMount()
+        populate()
+        writeState("/b.txt" to false, "/a.txt" to false, "/Thumbs.db" to false)
+        for (p in listOf("/a.txt", "/b.txt", "/Thumbs.db")) cacheFile(p)
+
+        assertEquals(1, run("profile", "remove", "gone", "--yes", "--json"))
+
+        assertEquals("uploads_pending", errorToken())
+        val r = json()
+        assertEquals(2, r.getValue("pending").jsonPrimitive.int, "the ignored row is not counted")
+        assertEquals(listOf("/a.txt", "/b.txt"), r.getValue("paths").jsonArray.map { it.jsonPrimitive.content })
+        assertTrue(r.containsKey("failed"), "the keys clients parse stay")
+    }
+
+    @Test
+    fun `no row is judged gone while the cache folder is absent`() {
+        makeMount()
+        populate()
+        writeState("/a.txt" to false)
+        // No cache folder at all (moved, wiped, another cache root): that says nothing about the files.
+
+        assertEquals(1, run("profile", "remove", "gone", "--yes", "--json"))
+
+        assertEquals("uploads_pending", errorToken())
+        assertEquals(listOf("/a.txt"), pendingPathsLeft())
+    }
+
+    @Test
+    fun `a mirror profile counts every row as before`() {
+        populate()
+        // A mirror profile's bytes live in the sync root, which the next sync settles: no cache copy is looked for.
+        writeState("/a.txt" to false, "/vanished.txt" to false)
+        Files.createDirectories(cacheDir())
+
+        assertEquals(1, run("profile", "remove", "gone", "--yes", "--json"))
+
+        assertEquals("uploads_pending", errorToken())
+        assertEquals(2, json().getValue("pending").jsonPrimitive.int)
+        assertEquals(listOf("/a.txt", "/vanished.txt"), pendingPathsLeft())
+    }
+
+    @Test
+    fun `a row with a real remote id is never dropped`() {
+        makeMount()
+        populate()
+        writeState("/a.txt" to false)
+        cacheFile("/a.txt")
+        val db = StateDatabase(goneDir.resolve("state.db"))
+        db.initialize()
+        try {
+            db.upsertEntry(
+                SyncEntry(
+                    path = "/uploaded.txt", remoteId = "real-id", remoteHash = null, remoteSize = 1, remoteModified = null,
+                    localMtime = 1L, localSize = 1L, isFolder = false, isPinned = false, isHydrated = true,
+                    lastSynced = Instant.parse("2000-01-01T00:00:00Z"),
+                ),
+            )
+        } finally {
+            db.close()
+        }
+
+        assertEquals(1, run("profile", "remove", "gone", "--yes", "--json"))
+
+        val check = StateDatabase(goneDir.resolve("state.db"), readOnly = true)
+        check.initialize()
+        try {
+            assertTrue(check.getEntry("/uploaded.txt") != null, "a row the cloud knows is not ours to drop")
+        } finally {
+            check.close()
+        }
     }
 }

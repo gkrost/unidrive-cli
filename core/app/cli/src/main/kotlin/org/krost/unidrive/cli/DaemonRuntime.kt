@@ -28,6 +28,7 @@ import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessLock
 import org.krost.unidrive.sync.ProfileMode
+import org.krost.unidrive.sync.PendingUploads
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.telemetry.TransferHistory
@@ -739,6 +740,13 @@ class DaemonRuntime(
                         providerFactory = providerFactory,
                         // archive#1186: not the isAuthenticated setter, which does nothing on OneDrive, Internxt and Dropbox.
                         forgetCredentials = { provider.forgetCredentials() },
+                        // #86: the refusal counts the rows `uploads.pending` counts, not the ones the keep-local rules hold back.
+                        pendingRows =
+                            hydration?.let { h -> { h.pendingUploadSplit() } }
+                                // A mirror daemon: the exclude patterns and the standing scope keep rows local, as in the gate of a stopped profile.
+                                ?: PendingGate.keepsLocalRule(excludePatterns, syncPaths).let { keepsLocal ->
+                                    { PendingUploads.split(db!!.pendingUploadRows(), keepsLocal, null) }
+                                },
                     )
                 server.registerHandler(AuthLogoutRpcHandler.VERB) { _, json -> logoutHandler.handle(json) }
 

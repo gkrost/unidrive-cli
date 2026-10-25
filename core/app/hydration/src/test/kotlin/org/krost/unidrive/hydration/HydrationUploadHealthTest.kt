@@ -217,6 +217,8 @@ class HydrationUploadHealthTest {
         // desktop.ini-style rows: a `local:` row that no upload will ever take.
         env.stateDb.insertCreatedRow("/q/scratch.tmp", lastSynced = since)
         env.stateDb.insertCreatedRow("/q/real.txt", lastSynced = since.plusSeconds(60))
+        writeCache(env, "/q/scratch.tmp", "bytes")
+        writeCache(env, "/q/real.txt", "bytes")
 
         val health = env.hydration.uploadHealth(nowMs = since.toEpochMilli() + 120_000)
 
@@ -238,6 +240,8 @@ class HydrationUploadHealthTest {
         val env = HydrationTestEnv(recoveryUploadScope = this, failedReplayDelayMs = 3_600_000L)
         env.stateDb.insertCreatedRow("/q/failed.txt", lastSynced = since)
         env.stateDb.insertCreatedRow("/q/fresh.txt", lastSynced = since)
+        writeCache(env, "/q/failed.txt", "bytes")
+        writeCache(env, "/q/fresh.txt", "bytes")
         env.stateDb.markUploadFailed("/q/failed.txt", since.plusSeconds(1))
 
         val health = env.hydration.uploadHealth(nowMs = since.toEpochMilli() + 1_000)
@@ -251,6 +255,7 @@ class HydrationUploadHealthTest {
     fun `the status reading reports what the rows say, and null until there is a reading`() = runBlocking {
         val env = HydrationTestEnv()
         env.stateDb.insertCreatedRow("/q/a.txt", lastSynced = since)
+        writeCache(env, "/q/a.txt", "bytes")
 
         val health = assertNotNull(env.hydration.uploadHealthSnapshot(nowMs = since.toEpochMilli() + 4_000))
 
@@ -261,6 +266,7 @@ class HydrationUploadHealthTest {
     fun `a state database held by a long save does not stall the status reading`() = runBlocking {
         val env = HydrationTestEnv()
         env.stateDb.insertCreatedRow("/q/a.txt", lastSynced = since)
+        writeCache(env, "/q/a.txt", "bytes")
         val held = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)
         val holder = Thread {
