@@ -56,9 +56,9 @@ jobs:
         working-directory: core
         run: ./gradlew check --no-daemon --dependency-verification strict
 
-      - name: Build shadowJar
+      - name: Build shadowJar and SBOM
         working-directory: core
-        run: ./gradlew :app:cli:shadowJar --no-daemon -q --dependency-verification strict
+        run: ./gradlew :app:cli:shadowJar :app:cli:cyclonedxDirectBom --no-daemon -q --dependency-verification strict
 
       - name: Verify expected JAR filename
         run: |
@@ -77,8 +77,10 @@ jobs:
           mkdir -p release-staging
           ver="${GITHUB_REF_NAME#v}"
           cp "core/app/cli/build/libs/unidrive-${ver}.jar" release-staging/
+          # CycloneDX SBOM of the jar's components (written by :app:cli:cyclonedxDirectBom, named after the project version).
+          cp "core/app/cli/build/reports/cyclonedx/unidrive-${ver}.bom.json" release-staging/
           cd release-staging
-          sha256sum "unidrive-${ver}.jar" > "unidrive-${ver}.jar.sha256"
+          sha256sum "unidrive-${ver}.jar" "unidrive-${ver}.bom.json" > "unidrive-${ver}.jar.sha256"
           cat "unidrive-${ver}.jar.sha256"
 
       - name: Import signing key
@@ -148,6 +150,7 @@ jobs:
               sha256sum -c unidrive-*.jar.sha256
           files: |
             release-staging/unidrive-*.jar
+            release-staging/unidrive-*.bom.json
             release-staging/unidrive-*.jar.sha256
             release-staging/unidrive-*.jar.asc
             release-staging/unidrive-*.jar.sha256.asc

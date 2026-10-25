@@ -24,6 +24,7 @@ plugins {
     kotlin("plugin.serialization")
     application
     id("com.gradleup.shadow") version libs.versions.shadow.get()
+    id("org.cyclonedx.bom") version libs.versions.cyclonedx.get()
 }
 
 kotlin {
@@ -728,4 +729,38 @@ tasks.test {
     // test run rather than only when someone remembers to build the image.
     dependsOn(tasks.shadowJar)
     systemProperty("unidrive.runtime.test.jar", tasks.shadowJar.flatMap { it.archiveFile }.get().asFile.absolutePath)
+}
+
+// The software bill of materials of the shaded CLI: the components on :app:cli's runtimeClasspath, the same set the shadow
+// jar bundles and THIRD-PARTY-NOTICES.txt lists. CycloneDX 1.6 JSON, written to build/reports/cyclonedx/ as
+// unidrive-<version>.bom.json; not part of `check`, the release attaches it to the artifacts it publishes. The plugin stamps
+// the BOM with the clock and with the URL of the checkout's git remote, and a clone could differ in either, so after it ran
+// the timestamp is set to BUILD_INSTANT (the commit time of a clean tree, see generateBuildInfo) and the remote is dropped:
+// a rebuild of the same commit gives the same bytes. The BOM has no serial number for the same reason.
+val sbomFile = layout.buildDirectory.file("reports/cyclonedx/unidrive-${project.version}.bom.json")
+val buildInfoSource = layout.buildDirectory.file("generated/src/main/kotlin/org/krost/unidrive/cli/BuildInfo.kt")
+
+tasks.cyclonedxDirectBom {
+    dependsOn(generateBuildInfo)
+    includeConfigs.set(listOf("runtimeClasspath"))
+    projectType.set(org.cyclonedx.model.Component.Type.APPLICATION)
+    schemaVersion.set(org.cyclonedx.Version.VERSION_16)
+    jsonOutput.set(sbomFile)
+    includeBomSerialNumber.set(false)
+    includeLicenseText.set(false)
+    val bom = sbomFile
+    val info = buildInfoSource
+    doLast {
+        val instant =
+            Regex("BUILD_INSTANT = \"([^\"]+)\"").find(info.get().asFile.readText())?.groupValues?.get(1)
+                ?: error("BuildInfo.kt has no BUILD_INSTANT")
+        @Suppress("UNCHECKED_CAST")
+        val root = groovy.json.JsonSlurper().parse(bom.get().asFile) as MutableMap<String, Any?>
+        @Suppress("UNCHECKED_CAST")
+        val metadata = root["metadata"] as MutableMap<String, Any?>
+        metadata["timestamp"] = instant
+        @Suppress("UNCHECKED_CAST")
+        (metadata["component"] as? MutableMap<String, Any?>)?.remove("externalReferences")
+        bom.get().asFile.writeText(groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(root)) + "\n")
+    }
 }
