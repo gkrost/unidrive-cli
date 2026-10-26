@@ -1,9 +1,12 @@
 package org.krost.unidrive.http
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
@@ -30,14 +33,13 @@ import java.util.concurrent.atomic.AtomicReference
  *    caching.
  *  - **Lazy start.** The deferred is created with `CoroutineStart.LAZY` and
  *    only started when the caller that actually wins `putIfAbsent` awaits it.
- *    Losers discard their unstarted deferred without leaking a coroutine.
- *  - **Cancellation semantics.** Inherited from the surrounding
- *    `coroutineScope`: if any caller's scope is cancelled while awaiting, only
- *    that caller's `await()` raises `CancellationException`. The shared
- *    deferred itself is **not** cancelled by one caller cancelling, because the
- *    deferred is parented to the *current* `coroutineScope` of whichever caller
- *    happened to win `putIfAbsent`. Treat dedup'd loads as best-effort: don't
- *    rely on aggressive cancellation propagation across siblings.
+ *    Losers cancel their unstarted deferred (it is a child of their own
+ *    `coroutineScope`, which would otherwise never return).
+ *  - **Cancellation semantics.** The shared deferred is a child of the
+ *    `coroutineScope` of whichever caller won `putIfAbsent`, so cancelling that
+ *    caller cancels the load. A caller that joined it and is itself still
+ *    active does not fail with that cancellation: it takes the key again and
+ *    runs (or joins) a fresh load. Cancelling a joiner never touches the load.
  *  - **Key design.** Callers must construct stable, collision-free keys.
  *    Recommended pattern: `"<provider>:<operation>:<argument>"`, e.g.
  *    `"internxt:listChildren:/Documents"` or
@@ -64,6 +66,8 @@ import java.util.concurrent.atomic.AtomicReference
  * ```
  */
 class InFlightDedup<K : Any, V> {
+    private object SharedLoadCancelled
+
     private data class Entry<V>(
         val deferred: Deferred<V>,
         val priority: AtomicReference<Priority>,
@@ -101,13 +105,30 @@ class InFlightDedup<K : Any, V> {
         key: K,
         priority: Priority,
         loader: suspend () -> V,
-    ): V =
+    ): V {
+        while (true) {
+            val result = loadOnce(key, priority, loader)
+            if (result !== SharedLoadCancelled) {
+                @Suppress("UNCHECKED_CAST")
+                return result as V
+            }
+        }
+    }
+
+    // One attempt. Returns [SharedLoadCancelled] when this caller joined another caller's load and that caller was
+    // cancelled while the load ran: the joiner's own job is still active then, so it takes the key again instead of
+    // failing with somebody else's cancellation.
+    private suspend fun loadOnce(
+        key: K,
+        priority: Priority,
+        loader: suspend () -> V,
+    ): Any? =
         coroutineScope {
             // Fast path: an outstanding deferred already exists for this key.
             // Promote its priority monotonically and join the wait.
             inFlight[key]?.let { entry ->
                 promote(entry.priority, priority)
-                return@coroutineScope entry.deferred.await()
+                return@coroutineScope join(key, entry)
             }
 
             // Slow path: race to install our own deferred. Use LAZY so the
@@ -126,10 +147,11 @@ class InFlightDedup<K : Any, V> {
             val entry = Entry(deferred, sharedPriority)
             val winner = inFlight.putIfAbsent(key, entry) ?: entry
             if (winner !== entry) {
-                // Lost the race; promote the existing entry and discard our
-                // LAZY deferred unstarted (CoroutineStart.LAZY means it never
-                // started, no coroutine to clean up).
+                // Lost the race. The deferred is a child of this coroutineScope, and the scope does not return
+                // while a child is unfinished: an unstarted LAZY child never finishes, so it is cancelled.
+                deferred.cancel()
                 promote(winner.priority, priority)
+                return@coroutineScope join(key, winner)
             }
             try {
                 winner.deferred.await()
@@ -140,6 +162,21 @@ class InFlightDedup<K : Any, V> {
                 // the same key has already installed a new entry.
                 inFlight.remove(key, winner)
             }
+        }
+
+    // Awaits the load another caller started. That load is a child of the starter's scope, so it is cancelled when the
+    // starter is, with a CancellationException that is not ours.
+    private suspend fun join(
+        key: K,
+        entry: Entry<V>,
+    ): Any? =
+        try {
+            entry.deferred.await()
+        } catch (_: CancellationException) {
+            // Our own cancellation propagates; the starter's does not.
+            currentCoroutineContext().ensureActive()
+            inFlight.remove(key, entry)
+            SharedLoadCancelled
         }
 
     /** Number of outstanding (in-flight) keys. Exposed for tests / diagnostics. */
