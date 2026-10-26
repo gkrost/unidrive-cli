@@ -7,6 +7,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
+import org.krost.unidrive.onedrive.model.percentDecode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -60,6 +61,17 @@ class OneDriveParentPathEncodingTest {
             assertEquals("/My Folder/Schön/report 1.txt", item.path)
             provider.close()
         }
+
+    @Test
+    fun `only valid percent sequences are decoded`() {
+        assertEquals("/a b/c+d", percentDecode("/a%20b/c+d"))
+        assertEquals("/100%/x", percentDecode("/100%/x"))
+        assertEquals("/50%2/x", percentDecode("/50%2/x"))
+        assertEquals("/%zz", percentDecode("/%zz"))
+        assertEquals("/%FF/x", percentDecode("/%FF/x"), "bytes that are not UTF-8 stay as they came")
+        assertEquals("/😀", percentDecode("/%F0%9F%98%80"))
+        assertEquals("/ü", percentDecode("/%C3%BC"))
+    }
 
     @Test
     fun `a lookup of a file below a folder with a space is not read as another item`() =
