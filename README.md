@@ -119,7 +119,7 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 - `share` — generate a shareable link for a file or folder
 - `trash` — trash emulation (`list`, `restore`, `purge`)
 - `versions` — versioned files (`list`, `restore`, `purge`)
-- `relocate` — migrate data between cloud providers
+- `relocate` — migrate data between cloud providers (switched off until its data-loss issues #56, #61, #62, #63 are fixed; it refuses to run)
 - `vault` — credential vault (`init`, `encrypt`, `decrypt`, `change-passphrase`)
 - `sweep` — detect and rehydrate zero-byte stub files (`--null-bytes` scan; `--dry-run` and `--rehydrate` modify it)
 

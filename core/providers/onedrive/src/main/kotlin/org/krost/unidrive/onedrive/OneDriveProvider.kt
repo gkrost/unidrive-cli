@@ -263,7 +263,7 @@ class OneDriveProvider(
         val got = item.name
         if (wanted.isEmpty() || got == null) return item
         // The parent the drive reports, when it reports one, must be the parent asked for as well.
-        val actualParent = item.parentReference?.path?.removePrefix("/drive/root:")?.trimEnd('/')
+        val actualParent = item.parentReference?.decodedPath?.removePrefix("/drive/root:")?.trimEnd('/')
         val parentMatches = actualParent == null || OneDriveServerNames.sameName(actualParent, clean.substringBeforeLast('/'))
         if (OneDriveServerNames.sameName(got, wanted) && parentMatches) return item
         throw GraphApiException(
@@ -853,7 +853,7 @@ class OneDriveProvider(
     private fun DriveItem.isRootItem(): Boolean {
         if (isTombstone()) return false
         if (root != null) return true
-        val parentPath = parentReference?.path
+        val parentPath = parentReference?.decodedPath
         // A live item with a parent id but no path is not the root: Graph may leave the path off (see [placed]).
         return parentPath == null && parentReference?.id == null || parentPath == "/drive/root"
     }
@@ -862,7 +862,7 @@ class OneDriveProvider(
 
     // Where the drive has the item now, from its own parentReference.path; null when the answer carries none.
     private fun DriveItem.pathInDrive(): String? {
-        val parentPath = parentReference?.path?.removePrefix("/drive/root:") ?: return null
+        val parentPath = parentReference?.decodedPath?.removePrefix("/drive/root:") ?: return null
         val leaf = name ?: return null
         return if (parentPath.isEmpty() || parentPath == "/") "/$leaf" else "$parentPath/$leaf"
     }
@@ -885,7 +885,7 @@ class OneDriveProvider(
         val placedItems = ArrayList<CloudItem>(items.size)
         for (item in items) {
             val parentId = item.parentReference?.id
-            if (item.parentReference?.path != null || item.isTombstone() || parentId == null) {
+            if (item.parentReference?.decodedPath != null || item.isTombstone() || parentId == null) {
                 placedItems += item.toCloudItem()
                 continue
             }
@@ -933,7 +933,7 @@ class OneDriveProvider(
         val reference = folder.parentReference
         val parentPath =
             when {
-                reference?.path != null -> reference.path.removePrefix("/drive/root:").ifEmpty { "/" }
+                reference?.decodedPath != null -> reference.decodedPath!!.removePrefix("/drive/root:").ifEmpty { "/" }
                 reference?.id != null -> folderPath(reference.id, folders, resolved, depth + 1) ?: return null
                 else -> return "/" // no parent at all: the root, as isRootItem reads it
             }
@@ -957,7 +957,7 @@ class OneDriveProvider(
         val parentPath =
             resolvedParentPath
                 ?: parentReference
-                    ?.path
+                    ?.decodedPath
                     ?.removePrefix("/drive/root:")
                     ?.ifEmpty { "/" }
         val fullPath =

@@ -459,6 +459,7 @@ class SyncCornerCaseTest {
     @Test
     fun `zero-byte remote file always marked hydrated`() =
         runTest {
+            provider.files["/empty.log"] = ByteArray(0)
             provider.deltaItems = listOf(cloudItem("/empty.log", size = 0))
             engine().syncOnce()
 
@@ -587,6 +588,8 @@ class SyncCornerCaseTest {
     fun `reset and full resync rebuilds correct state`() =
         runTest {
             // Initial sync
+            provider.files["/keep.txt"] = ByteArray(50)
+            provider.files["/folder/child.txt"] = ByteArray(75)
             provider.deltaItems =
                 listOf(
                     cloudItem("/keep.txt", size = 50),
@@ -620,6 +623,8 @@ class SyncCornerCaseTest {
     fun `single delete failure does not stop sync`() =
         runTest {
             // Set up tracked files
+            provider.files["/a.txt"] = ByteArray(10)
+            provider.files["/b.txt"] = ByteArray(20)
             provider.deltaItems =
                 listOf(
                     cloudItem("/a.txt", size = 10),

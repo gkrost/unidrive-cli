@@ -391,10 +391,29 @@ class MountEngine private constructor(
         cachePath: Path = resolveCachePath(entry.path),
     ): Boolean {
         if (entry.editBase != null) return Files.exists(cachePath)
+        if (editedBehindTheRow(entry, cachePath)) return true
         val warmCacheUsable =
             entry.remoteId == null ||
                 runCatching { Files.size(cachePath) }.getOrDefault(-1L) == entry.remoteSize
         return entry.isHydrated && Files.exists(cachePath) && warmCacheUsable
+    }
+
+    /**
+     * M1 of archive#1040: a cache copy of a hydrated cloud-backed file that is no longer the row's baseline (its mtime and size
+     * are not the ones the row took from it) was written after the last sync, and no running daemon noted it: the edit of a
+     * daemon that was stopped (or killed) leaves no [SyncEntry.editBase]. The startup replay finds it by this same
+     * difference, so a read in front of the replay must not download over it. The size alone told nothing: the edit's size
+     * differs from the row's remote size, which read as a cache copy to replace.
+     */
+    private fun editedBehindTheRow(
+        entry: SyncEntry,
+        cachePath: Path,
+    ): Boolean {
+        if (entry.isFolder || entry.remoteId == null || !entry.isHydrated) return false
+        val baselineMtime = entry.localMtime ?: return false
+        val baselineSize = entry.localSize ?: return false
+        return runCatching { Files.getLastModifiedTime(cachePath).toMillis() != baselineMtime || Files.size(cachePath) != baselineSize }
+            .getOrDefault(false)
     }
 
     private suspend fun ensureHydratedLocked(
@@ -404,6 +423,13 @@ class MountEngine private constructor(
         val entry = db.getEntry(path)
             ?: throw IllegalArgumentException("Unknown remote path: $path")
         val cachePath = resolveCachePath(path)
+        // The edit nothing noted (see [editedBehindTheRow]): noted now, from the version the row records, so that every
+        // later read, dehydrate and replay treats it as the edit it is.
+        if (entry.editBase == null && editedBehindTheRow(entry, cachePath)) {
+            log.warn("{} was changed while the daemon was not watching it; its cache copy is kept as an unsynced edit", path)
+            db.markEdited(path, entry.writeToken.orEmpty())
+            return HydratedCache(cachePath, fetched = false)
+        }
         // Trust the warm cache only if it is actually COMPLETE. The isHydrated flag
         // plus mere file-existence is not enough for a REMOTE-backed file: a stale
         // isHydrated over a 0-byte/truncated cache (crash mid-download, an

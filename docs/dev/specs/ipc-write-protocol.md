@@ -27,7 +27,11 @@ code. Request/reply byte shapes are pinned by the golden corpus under
   window in which an accepted request is silently dropped. A verb the daemon
   does not know is answered with `{"ok":false,"error":"unknown_verb"}`; a
   request without a `verb` field gets `{"ok":false,"error":"missing_verb"}` —
-  never silence. A client should still bound its wait for a reply line.
+  never silence — with one exception: a request longer than 64 KiB (`MAX_REQUEST_BYTES`, counted before the
+  newline) is not answered; the daemon logs a warning and closes the connection, so the client sees end of stream.
+  A mirror profile's daemon has no hydration layer: it answers every hydration verb and `sync.enumerate` with
+  `{"ok":false,"error":"wrong_mode"}`, and so `ignore.explain` when the engine has no upload-ignore layer. A
+  client should still bound its wait for a reply line.
 - Every connection authenticates first (`hello`, `hello.proof`) and is limited
   to the verbs of its scope: see [ipc-authentication.md](ipc-authentication.md).
 - The verb is the top-level string member `verb` of the request object. A line
@@ -244,7 +248,7 @@ hydration.rmdir   {path[,recursive]} -> {"ok":true} | {"ok":false,"error":"path_
 | `dehydrated` | `{"event":"dehydrated","path":…}` | cache copy freed |
 | `failed` | `{"event":"failed","path":…,"error":"…"[,"retry_scheduled":true\|false]}` | attempt failed; uploads say whether the daemon will retry |
 | `completed` | `{"event":"completed","path":…,"handle_id":…,"direction":"upload\|download","ok":true\|false[,"error":"…"]}` | handle-scoped outcome — the in-sync signal |
-| `view.invalidated` | `{"event":"view.invalidated","paths":[…],"full":…}` | enumeration changed the view, or `hydration.unlink` / `hydration.rmdir` removed `paths` (a delete through the daemon, e.g. `unidrive rm`, archive#1199); drop readdir/getattr caches |
+| `view.invalidated` | `{"event":"view.invalidated","paths":[…][,"moved":[{"from":…,"to":…}]]}` or `{"event":"view.invalidated","full":true}` | `full:true` stands alone, without `paths` (more than 256 changed paths, or the tracked scope was reshaped: drop every cache); otherwise `paths` is present. Enumeration changed the view, or `hydration.unlink` / `hydration.rmdir` removed `paths` (a delete through the daemon, e.g. `unidrive rm`, archive#1199); drop readdir/getattr caches |
 | `lost` | `{"event":"lost","since_last":N}` | your queue overflowed; resync from `hydration.list` |
 
 Blocked names: a drive that refuses an entry by its name (OneDrive's uniqueness check ignores some characters, so a
@@ -421,7 +425,8 @@ still leave a remote item; the caller follows with the row-level verb
 - **Per-path FIFO:** same-path uploads run strictly in submission order; a
   burst of saves cannot land an older save after a newer one.
 - **Daemon-wide transfer budget:** all uploads — mount submissions and sync
-  passes — share one per-provider cap (Internxt 2, default 4). A burst larger
+  passes — share one per-provider cap (`ProviderMetadata.maxConcurrentTransfers`: Internxt 2, Dropbox 4, OneDrive,
+  S3 and localfs 8; 4 for a provider that declares none). A burst larger
   than the cap waits, not races the provider's rate limits.
 - **Bounded waiting queue with back-pressure:** at most
   `uploadQueueDepth` (default 256) uploads wait at a time. A burst beyond
@@ -472,7 +477,7 @@ still leave a remote item; the caller follows with the row-level verb
 | `unknown_path` | row-lookup verbs | no such row (ENOENT) |
 | `parent_not_found` | create, mkdir | parent row missing or not a folder |
 | `path_exists` | create | row already exists (EEXIST) |
-| `new_path_exists` | rename | destination exists and replace was not asked |
+| `new_path_exists` | rename | destination exists and replace was not asked, or it was asked and the destination or the source is a folder (replace overwrites a file with a file only) |
 | `old_path_not_found` / `new_parent_not_found` | rename | row/parent missing |
 | `path_is_folder` / `path_is_file` | unlink/rmdir/open_write_begin | wrong kind |
 | `not_empty` | rmdir | folder still has children (plain), or a file below holds bytes only this computer has (recursive, archive#1035) |
@@ -480,8 +485,8 @@ still leave a remote item; the caller follows with the row-level verb
 | `invalid_path` | open_write (`cache_path`) | the cache path lies outside the profile's hydration cache folder, or is not a valid local path; refused before anything is queued |
 | `outside_scope` | create, mkdir, rename (both ends), open_write_begin | path outside the profile's sync_path set |
 | `read_only` | create, mkdir, unlink, rmdir, rename (either end), open_write_begin, open_write | the path is the trash root or lies below it (section 4.1), or is the root of a view or lies below it (section 4.2); nothing was touched or queued |
-| `busy` | dehydrate, replace-rename | an upload is in flight on that path |
-| `excluded` | completed event | keep-local name, never uploaded |
+| `busy` | dehydrate, replace-rename, unlink, rmdir | an upload is in flight on that path (unlink, dehydrate), below it (rmdir), or on the source or destination of a replace-rename; nothing was touched, retry once the upload's `completed` event has arrived |
+| `excluded` | completed event, rename | keep-local name, never uploaded; a rename of a row that has a cloud copy onto such a name is refused with it (the row and the remote are untouched, `HydrationImpl.rename`) |
 | `cancelled` | completed event | upload aborted by hydration.cancel |
 | `similar_name[: <sibling>]` | failed and completed events, `hydration.list` (`blocked`) | the drive compares the entry's name as equal to a sibling's and refused it under its own name and under a server name; the local file is kept, nothing is retried. `: <sibling>` names the conflicting sibling when known |
 | `blocked_by_parent: <path>` | failed and completed events, `hydration.list` (`blocked`) | a folder above the entry was refused by name and exists only in this mount; no request was made for the entry |
@@ -497,6 +502,8 @@ still leave a remote item; the caller follows with the row-level verb
 | `unknown_view` | view.page | the profile shows no view of that kind (section 4.2) |
 | `missing_kind` / `invalid_offset` / `invalid_limit` | view.page | no `kind`, or an `offset` or `limit` that is not a whole number in its range (section 4.2); the provider was not asked |
 | `unknown_verb` / `missing_verb` | any | request-level refusal (startup-safe) |
+| `missing_handle_id` / `missing_path` / `missing_cache_path` / `missing_old_path` / `missing_new_path` / `missing_local_path` / `missing_prefix` | the hydration verbs that take the member | the member is absent (or, for `cache_path` and `local_path`, empty); nothing was touched. A path that is present but unusable answers `invalid_path` |
+| `wrong_mode` | every hydration verb, `sync.enumerate`, `ignore.explain` | the daemon serves a mirror profile and has no hydration layer (section 1) |
 | `auth_required` / `auth_failed` / `forbidden` | any | not authenticated yet, a refused handshake step, a verb outside the connection's scope ([ipc-authentication.md](ipc-authentication.md)) |
 | `too_many_clients` | connection (no request) | the daemon's connection cap is reached; the line is written once and the connection closed (§1) |
 

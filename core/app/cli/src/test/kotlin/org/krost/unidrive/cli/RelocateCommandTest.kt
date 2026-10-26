@@ -284,4 +284,42 @@ class RelocateCommandTest {
             root.toFile().deleteRecursively()
         }
     }
+
+    // -- relocate is switched off (gkrost/unidrive-cli#56, #61, #62, #63) -----------------------------------------
+
+    @Test
+    fun `relocate refuses to run with a clear message, a non-zero exit and nothing touched`() {
+        val dir = java.nio.file.Files.createTempDirectory("ud-relocate-refuse")
+        try {
+            val src = java.nio.file.Files.createDirectories(dir.resolve("src"))
+            val keep = java.nio.file.Files.writeString(src.resolve("keep.txt"), "must survive")
+            val before = java.nio.file.Files.walk(dir).use { it.map { p -> dir.relativize(p).toString() }.sorted().toList() }
+            val out = java.io.ByteArrayOutputStream()
+            val err = java.io.ByteArrayOutputStream()
+            val origOut = System.out
+            val origErr = System.err
+            val exit =
+                try {
+                    System.setOut(java.io.PrintStream(out, true, Charsets.UTF_8))
+                    System.setErr(java.io.PrintStream(err, true, Charsets.UTF_8))
+                    val c = CommandLine(Main())
+                    c.executionExceptionHandler = cliExecutionExceptionHandler
+                    c.execute("-c", dir.toString(), "relocate", "--from", "a", "--to", "b", "--delete-source", "--force")
+                } finally {
+                    System.setOut(origOut)
+                    System.setErr(origErr)
+                }
+
+            assertTrue(exit != 0, "relocate must exit non-zero while it is disabled")
+            val message = err.toString(Charsets.UTF_8)
+            assertTrue("relocate is disabled" in message, "the refusal must say so; got: $message")
+            assertTrue("#56" in message && "#61" in message && "#62" in message && "#63" in message, "names the issues; got: $message")
+            assertEquals("", out.toString(Charsets.UTF_8), "no pre-flight output: nothing was started")
+            assertEquals("must survive", java.nio.file.Files.readString(keep))
+            val after = java.nio.file.Files.walk(dir).use { it.map { p -> dir.relativize(p).toString() }.sorted().toList() }
+            assertEquals(before, after, "no file was created or removed")
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
 }
