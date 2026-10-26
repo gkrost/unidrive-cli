@@ -120,8 +120,10 @@ class VerifyCommand : Callable<Int> {
             println("verify: audit limited to ${scope.joinToString(", ")} ($origin)")
         }
 
-        // Read-only snapshot of the rows; closed before any other source is walked.
-        val db = StateDatabase(dbPath)
+        // Read-only snapshot of the rows; closed before any other source is walked. The open itself is
+        // read-only (#100): the existence check above keeps a missing state.db from being created, and
+        // a schema stamp or migration of an existing one is not an audit's business.
+        val db = StateDatabase(dbPath, readOnly = true)
         db.initialize()
         val dbEntries =
             try {

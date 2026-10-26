@@ -1183,10 +1183,21 @@ class Reconciler(
     }
 
     private fun policyForPath(path: String): ConflictPolicy {
-        for ((prefix, policy) in conflictOverrides) {
-            if (path.startsWith("/$prefix") || path.startsWith(prefix)) return policy
-        }
-        return defaultPolicy
+        // #100: an override names a folder, not a string. It covers the folder itself and what is
+        // inside it (a segment boundary), never a sibling that only shares the prefix (`Docs` is not
+        // `Docs-old`), and the most specific override wins, whatever the map order.
+        return conflictOverrides
+            .filterKeys { prefix -> overrideCovers(path, prefix) }
+            .maxByOrNull { (prefix, _) -> prefix.trim('/').length }
+            ?.value
+            ?: defaultPolicy
+    }
+
+    private fun overrideCovers(path: String, prefixRaw: String): Boolean {
+        val prefix = prefixRaw.trim('/').removePrefix("/").trimEnd('/')
+        if (prefix.isEmpty()) return true   // an override for the root covers everything
+        val p = path.removePrefix("/")
+        return p == prefix || p.startsWith("$prefix/")
     }
 
     // archive#403: a new local item below a twin folder (kept under its decorated name) has no remote place of its own name:

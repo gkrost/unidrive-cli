@@ -710,6 +710,7 @@ data class SyncConfig(
             "**/*.swx",           // vim swap
             "**/*.tmp",           // generic temp
             "**/*.unidrive-tmp",  // a provider's staging file of a download (also .ud-<hex>.unidrive-tmp), archive#1049 X2
+            "**/*.unidrive-download-*", // the tracking engine's staging file of a download (.<name>.unidrive-download-<uuid>), #100
             "**/*~",              // generic backup
         )
 

@@ -12,7 +12,9 @@ class LogCommand : Runnable {
 
     override fun run() {
         val dbPath = parent.providerConfigDir().resolve("state.db")
-        val db = StateDatabase(dbPath)
+        // A read-only report: no mkdir, no schema stamp, no migration — like `status` and `pending`.
+        // A missing state.db is refused instead of created (#100).
+        val db = StateDatabase(dbPath, readOnly = true)
         db.initialize()
 
         val entries = db.getAllEntries().sortedByDescending { it.lastSynced }
