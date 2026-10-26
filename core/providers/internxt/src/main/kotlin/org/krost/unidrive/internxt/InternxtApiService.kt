@@ -79,6 +79,9 @@ class InternxtApiService(
     // Two budgets matching drive-desktop's audited `bottleneck` config:
     //   - Drive REST: maxConcurrency=2, minSpacing=500ms (storm widens to 1000ms).
     //   - Bridge upload: maxConcurrency=4, minSpacing=0 (concurrency-only).
+    // The spacing paces every call (awaitSlot). maxConcurrency is a real permit only where a caller takes it
+    // (withPermit): the heavy Drive listings in authenticatedGetReply do, so at most two of them are in flight and a
+    // throttle storm halves that; every other call, and the whole bridge budget, is paced but not counted.
     // Composition order on the Drive REST surface is
     // `retryOnTransient { withAuthRetry { budget.awaitSlot(); ... } }` — the
     // budget MUST stay the innermost wrapper so retries re-acquire a
@@ -1799,32 +1802,40 @@ class InternxtApiService(
             var attemptStartNanos = 0L
             try {
                 return withAuthRetry { creds ->
-                    driveBudget.awaitSlot()
-                    attemptStartNanos = System.nanoTime()
-                    try {
-                        val response =
-                            httpClient.get(url) {
-                                applyAuth(creds)
-                                params.forEach { (k, v) -> parameter(k, v) }
-                                // Only an elevated limit gets a per-request block; at the
-                                // installed default the request stays byte-identical.
-                                if (socketTimeoutMs != HttpDefaults.SOCKET_TIMEOUT_MS) {
-                                    timeout {
-                                        socketTimeoutMillis = socketTimeoutMs
-                                        // The whole-request cap rides above the watchdog so
-                                        // the read-idle timer, not the flat cap, is what a
-                                        // stalled call trips.
-                                        requestTimeoutMillis = socketTimeoutMs + 60_000
+                    // The listings whose cost grows with what they list (the elevated socket timeout marks them) hold
+                    // one of the drive budget's permits for the request: at most [driveBudget]'s concurrency of them
+                    // are in flight, whichever stream asks, and a throttle storm lowers that. The cheap calls only
+                    // take their slot, as before. The permit is taken before the slot, so the pacing is claimed by a
+                    // request that can start.
+                    val attempt: suspend () -> GetReply = {
+                        driveBudget.awaitSlot()
+                        attemptStartNanos = System.nanoTime()
+                        try {
+                            val response =
+                                httpClient.get(url) {
+                                    applyAuth(creds)
+                                    params.forEach { (k, v) -> parameter(k, v) }
+                                    // Only an elevated limit gets a per-request block; at the
+                                    // installed default the request stays byte-identical.
+                                    if (socketTimeoutMs != HttpDefaults.SOCKET_TIMEOUT_MS) {
+                                        timeout {
+                                            socketTimeoutMillis = socketTimeoutMs
+                                            // The whole-request cap rides above the watchdog so
+                                            // the read-idle timer, not the flat cap, is what a
+                                            // stalled call trips.
+                                            requestTimeoutMillis = socketTimeoutMs + 60_000
+                                        }
                                     }
                                 }
-                            }
-                        checkResponse(response)
-                        driveBudget.recordSuccess()
-                        return@withAuthRetry GetReply(response.bodyAsText(), extractRequestId(response))
-                    } catch (e: InternxtApiException) {
-                        if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                        throw e
+                            checkResponse(response)
+                            driveBudget.recordSuccess()
+                            GetReply(response.bodyAsText(), extractRequestId(response))
+                        } catch (e: InternxtApiException) {
+                            if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
+                            throw e
+                        }
                     }
+                    heavyListingPermit(socketTimeoutMs, attempt)
                 }
             } catch (e: InternxtApiException) {
                 if (e.statusCode in GATEWAY_ORIGIN_ERRORS) {
@@ -1902,6 +1913,13 @@ class InternxtApiService(
         }
         throw lastException!!
     }
+
+    // A GET on the elevated (listing) socket timeout is a heavy listing and holds a drive permit for its request; any other
+    // GET only takes its slot.
+    private suspend fun heavyListingPermit(
+        socketTimeoutMs: Long,
+        attempt: suspend () -> GetReply,
+    ): GetReply = if (socketTimeoutMs != HttpDefaults.SOCKET_TIMEOUT_MS) driveBudget.withPermit(attempt) else attempt()
 
     // The server closed the connection before it answered: the EOFException, or what Ktor wraps around it.
     private fun Throwable.closedBeforeResponse(): Boolean = generateSequence(this) { it.cause }.take(8).any { it is java.io.EOFException }
