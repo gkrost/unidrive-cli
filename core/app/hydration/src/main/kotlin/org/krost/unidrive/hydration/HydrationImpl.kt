@@ -476,6 +476,10 @@ class HydrationImpl(
                 ),
             )
             p
+        } catch (e: CancellationException) {
+            // The request or the daemon was stopped: a cancellation, not a failed download (gkrost/unidrive-cli#80).
+            tx.endDownloadFailed(e)
+            throw e
         } catch (e: Exception) {
             // A genuinely-gone read (provider download still not-found after the
             // archive#176 re-resolve) must surface a typed not_found token so the mount
@@ -2037,6 +2041,9 @@ class HydrationImpl(
             accountCacheFile(path, bytes)
             _events.emit(HydrationEvent.Hydrated(path, bytes, fetched = hydrated.fetched))
             HydrateResult.Ok
+        } catch (e: CancellationException) {
+            tx.endDownloadFailed(e) // gkrost/unidrive-cli#80: a cancellation, not a failed hydrate
+            throw e
         } catch (e: Exception) {
             val err = downloadFailureOf(e, fallback = "hydrate failed")
             tx.endDownloadFailed(e)

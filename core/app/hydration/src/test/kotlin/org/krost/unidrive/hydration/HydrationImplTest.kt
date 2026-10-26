@@ -215,7 +215,7 @@ internal class MinimalFakeProvider(
             id = "id-$path",
             name = path.substringAfterLast('/'),
             path = path,
-            size = 1,
+            size = metadataSizes[path] ?: 1,
             isFolder = false,
             modified = Instant.parse("2026-03-28T12:00:00Z"),
             created = Instant.parse("2026-03-28T12:00:00Z"),
@@ -223,6 +223,13 @@ internal class MinimalFakeProvider(
             mimeType = null,
         )
     }
+
+    // The size getMetadata reports for a path (default 1, what the ghost probes expect).
+    val metadataSizes = ConcurrentHashMap<String, Long>()
+
+    // Downloads deliver only this many bytes and answer with that count, without throwing: a chunked response that
+    // closes early, for a provider whose truncation guard depends on Content-Length (gkrost/unidrive-cli#80).
+    @Volatile var shortDownloadBytes: Int? = null
 
     // archive#778: a download that has written [partialBytes] and then suspends at [gate] (a transfer in flight
     // when the daemon is paused). [reached] completes once the partial bytes are on disk.
@@ -240,6 +247,10 @@ internal class MinimalFakeProvider(
             Files.write(destination, content.copyOf(stall.partialBytes))
             stall.reached.complete(Unit)
             stall.gate.await()
+        }
+        shortDownloadBytes?.let { short ->
+            Files.write(destination, content.copyOf(short))
+            return short.toLong()
         }
         Files.write(destination, content)
         return content.size.toLong()
@@ -1185,7 +1196,7 @@ class HydrationImplTest {
         val name = "/" + "d2-" + "y".repeat(248) + ".txt"
         assertEquals(255, name.length - 1)
         env.providerForTest.seedContent(name, "the bytes")
-        env.stateDb.insertUnhydratedEntry(name, remoteSize = 10)
+        env.stateDb.insertUnhydratedEntry(name, remoteSize = 9)
 
         val result = env.hydration.openForRead("conn1", "h1", name)
 
