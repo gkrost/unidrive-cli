@@ -432,7 +432,10 @@ class S3Provider(
             // The listing's time: a listing carries no user metadata, and the engine compares the time it recorded.
             modified = obj.lastModified,
             created = null,
-            hash = obj.etag,
+            // The ETag is the content's MD5 only for a plain single-part object: a multipart upload appends
+            // `-<parts>`, and SSE-KMS or SSE-C storage replaces it (#82 C). Reported as a hash, such an ETag made
+            // the engine re-run whole multipart uploads and refuse verified hydration of encrypted files.
+            hash = obj.etag?.takeUnless { it.contains('-') || obj.sseKmsOrCustomer },
             mimeType = null,
         )
 

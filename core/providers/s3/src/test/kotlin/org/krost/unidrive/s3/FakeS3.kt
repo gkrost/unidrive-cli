@@ -30,6 +30,8 @@ class FakeS3(
         val etag: String,
         val meta: Map<String, String>,
         val lastModified: Instant,
+        /** `x-amz-server-side-encryption` a HEAD answers with (a listing does not carry it). */
+        val sse: String? = null,
     )
 
     class Request(
@@ -131,7 +133,8 @@ class FakeS3(
                         "ETag" to listOf("\"${obj.etag}\""),
                         "Content-Length" to listOf(obj.size.toString()),
                         "Last-Modified" to listOf(DateTimeFormatter.RFC_1123_DATE_TIME.format(obj.lastModified.atZone(ZoneOffset.UTC))),
-                    ) + obj.meta.map { "x-amz-meta-${it.key}" to listOf(it.value) }
+                    ) + obj.meta.map { "x-amz-meta-${it.key}" to listOf(it.value) } +
+                    listOfNotNull(obj.sse?.let { "x-amz-server-side-encryption" to listOf(it) })
                 respond("", HttpStatusCode.OK, headersOf(*headers.toTypedArray()))
             }
             r.method == HttpMethod.Get -> {
