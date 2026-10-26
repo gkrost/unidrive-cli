@@ -1,6 +1,6 @@
 # Closed
 
-Things that were done before this branch started. Append new entries when items move out of `BACKLOG.md`.
+Things that were done before this branch started. Append new entries when an item is done; the open work is in the issue tracker.
 
 ## Slim-branch consolidation
 
@@ -142,3 +142,27 @@ Things that were done before this branch started. Append new entries when items 
 - Local-dev redeploy and co-daemon observability gaps, `scripts/dev/redeploy-local.sh` (archive#150, drained from BACKLOG: Low)
 - Regression test for ts-CLI provider authentication (archive#168, drained from BACKLOG: Low)
 - Retry budget per operation: closed as not planned (archive#172, drained from BACKLOG: Cross-cutting)
+
+## Closed in this repository (issue closed as completed)
+
+Issue and pull request numbers are of gkrost/unidrive-cli.
+
+- Release build: a reproducible shadow jar (fixed flags) and a CycloneDX SBOM attached to the release (#19, PR #93)
+- `profile remove` / `logout` count only uploads that can still happen as `uploads_pending`, not `local:` rows the ignore rules keep local (#86, PR #89)
+- localfs: a `root_path` is checked against every sync root (#104); S3: a listing asks for url-encoded keys, so one key with an XML-invalid character no longer fails the whole listing (#105; both PR #106)
+- `InFlightDedup`: a caller that loses the `putIfAbsent` race returns (its lazy child is cancelled), and a joiner that sees the starter's cancellation while its own job is active takes the key again (#77, PR #102)
+- Hydration: a short download is accepted as the new remote size only when the provider's metadata confirms that size; a cancelled read stays a cancellation (history row `interrupted`) (#80, PR #109)
+- Mount: an upload that used all its attempts is offered again in the same process, five rounds 5, 15, 30, 60 and 60 minutes after the previous one (#70, PR #112)
+
+## Merged without closing their issue
+
+Part of a larger issue; what is left is in `BACKLOG.md`.
+
+- `relocate` refuses to run until its data-loss defects are fixed (`RELOCATE_ENABLED = false`; #56, #61, #62, #63, PR #94)
+- OneDrive delta: items without `parentReference.path` get their folder's path, and `deleteById` / `moveById` use the id (#82, PR #103); the percent-encoded path of an item is decoded (#58 V3, PR #96); a download is timed from its declared size (#58 V6, PR #113); a chunked create that meets its own empty leftover completes into it (#69, PR #88)
+- Security hardening: an Internxt download whose shard hash cannot be checked, or whose shard is served over http, is refused (#83, PR #110); the OneDrive bearer token goes only to the Graph origin (#83, PR #116)
+- Mount: a read keeps a cache copy edited while the daemon was stopped (PR #101); a finished download does not replace the copy of an edit that began while it ran (PR #107); a same-size content change ends the hydration of the row (PR #114); an upload waiting for a queue place follows a rename of its folder (#76, PR #90); a daemon stop during an upload loses no data, and the upload limits are logged at start (#72, PR #117)
+- Hydration verbs refuse a second Unicode spelling of a name a client already used: `name_clash` (#24, PR #119)
+- Internxt: a file is listed and found under the name it was uploaded with (#54 P1, PR #120); an upload whose source changed length while it was read is retried, not created (P2, PR #121); the folder cache drops what a poll says changed, and a batch create is paired by name (P4, PR #122); the create after a `keep_overwritten` archive rename answers a 409 like any create (P5, PR #123); a mid-stream download failure restarts at byte 0, documented (#41, PR #118)
+- Internxt: a completed multipart part is persisted to the resume tombstone even when a sibling part fails, which was the root cause of the flaky `InternxtMultipartUploadTest` restart-resume test (PR #131)
+- Docs: the IPC and daemon specs name the tokens, limits and budgets the engine really has (PR #108); the retry table no longer says every client retries a network error (#78, PR #130); the workflow comments name `check` and `windows-security` as the required gates (PR #87); the plan for starting the public history at the release commit (PR #92)

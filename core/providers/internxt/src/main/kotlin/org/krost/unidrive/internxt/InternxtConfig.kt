@@ -14,6 +14,10 @@ data class InternxtConfig(
     val desktopHeader: String? = System.getenv("INTERNXT_DESKTOP_HEADER")?.takeIf { it.isNotBlank() },
     val notificationsUrl: String = System.getenv("INTERNXT_NOTIFICATIONS_URL") ?: NOTIFICATIONS_URL,
     val keepOverwritten: Boolean = false,
+    // The content is AES-CTR with no MAC: the shard hash the bridge recorded is the only integrity check. A download
+    // whose recorded hash is in no shape this client can check (blank, another length, not hex) is refused unless this
+    // is set, per profile (`allow_unverified_shard_hash = true`); it is then read without the check and a WARN says so.
+    val allowUnverifiedShardHash: Boolean = false,
     // archive#578: the multipart upload policy, per profile. Files whose ciphertext is at or
     // below [uploadCutoffMb] keep the single PUT; above it they go out in
     // [uploadChunkMb] parts, [uploadConcurrency] at a time. Validated by the factory.

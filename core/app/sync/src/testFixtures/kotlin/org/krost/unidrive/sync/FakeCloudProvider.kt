@@ -160,7 +160,7 @@ class FakeCloudProvider : CloudProvider {
             throw ProviderException("Network timeout on download")
         }
         downloadByPathCalls.add(remotePath)
-        val content = files[remotePath] ?: ByteArray(0)
+        val content = files[remotePath] ?: throw ProviderException("Not found: $remotePath")
         Files.createDirectories(destination.parent)
         Files.write(destination, content)
         return content.size.toLong()
@@ -214,7 +214,7 @@ class FakeCloudProvider : CloudProvider {
         }
         downloadByIdCalls.add(remoteId to remotePath)
         trackDownloadConcurrency(remotePath)
-        val content = files[remotePath] ?: ByteArray(0)
+        val content = files[remotePath] ?: throw ProviderException("Not found: $remotePath")
         Files.createDirectories(destination.parent)
         Files.write(destination, content)
         targetMtimeMillis?.let { Files.setLastModifiedTime(destination, java.nio.file.attribute.FileTime.fromMillis(it)) }

@@ -104,6 +104,9 @@ class MountEngine private constructor(
 
     private val gather: RemoteGather = wiring.gather
     private val transferBudget: Semaphore get() = guard.transferBudget
+
+    /** The number of transfers this profile runs at once (the provider's `maxConcurrentTransfers`). */
+    val transferBudgetSize: Int get() = guard.maxConcurrentTransfers
     private val uploadInFlight: (path: String) -> Boolean = wiring.uploadInFlight
     private val syncPaths: List<String> = options.syncPaths
 
@@ -391,10 +394,29 @@ class MountEngine private constructor(
         cachePath: Path = resolveCachePath(entry.path),
     ): Boolean {
         if (entry.editBase != null) return Files.exists(cachePath)
+        if (editedBehindTheRow(entry, cachePath)) return true
         val warmCacheUsable =
             entry.remoteId == null ||
                 runCatching { Files.size(cachePath) }.getOrDefault(-1L) == entry.remoteSize
         return entry.isHydrated && Files.exists(cachePath) && warmCacheUsable
+    }
+
+    /**
+     * M1 of archive#1040: a cache copy of a hydrated cloud-backed file that is no longer the row's baseline (its mtime and size
+     * are not the ones the row took from it) was written after the last sync, and no running daemon noted it: the edit of a
+     * daemon that was stopped (or killed) leaves no [SyncEntry.editBase]. The startup replay finds it by this same
+     * difference, so a read in front of the replay must not download over it. The size alone told nothing: the edit's size
+     * differs from the row's remote size, which read as a cache copy to replace.
+     */
+    private fun editedBehindTheRow(
+        entry: SyncEntry,
+        cachePath: Path,
+    ): Boolean {
+        if (entry.isFolder || entry.remoteId == null || !entry.isHydrated) return false
+        val baselineMtime = entry.localMtime ?: return false
+        val baselineSize = entry.localSize ?: return false
+        return runCatching { Files.getLastModifiedTime(cachePath).toMillis() != baselineMtime || Files.size(cachePath) != baselineSize }
+            .getOrDefault(false)
     }
 
     private suspend fun ensureHydratedLocked(
@@ -404,6 +426,13 @@ class MountEngine private constructor(
         val entry = db.getEntry(path)
             ?: throw IllegalArgumentException("Unknown remote path: $path")
         val cachePath = resolveCachePath(path)
+        // The edit nothing noted (see [editedBehindTheRow]): noted now, from the version the row records, so that every
+        // later read, dehydrate and replay treats it as the edit it is.
+        if (entry.editBase == null && editedBehindTheRow(entry, cachePath)) {
+            log.warn("{} was changed while the daemon was not watching it; its cache copy is kept as an unsynced edit", path)
+            db.markEdited(path, entry.writeToken.orEmpty())
+            return HydratedCache(cachePath, fetched = false)
+        }
         // Trust the warm cache only if it is actually COMPLETE. The isHydrated flag
         // plus mere file-existence is not enough for a REMOTE-backed file: a stale
         // isHydrated over a 0-byte/truncated cache (crash mid-download, an
@@ -461,7 +490,7 @@ class MountEngine private constructor(
                         watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged) }
                     }
                 }
-            val downloadedSize = fetched.bytes
+            val downloadedSize = confirmedDownloadSize(path, entry, fetched)
             remoteIncomplete.forget(entry)
             if (options.verifyIntegrity) {
                 // The bytes of an item read by its live id (archive#796) are checked against that item's hash, not the row's.
@@ -475,7 +504,14 @@ class MountEngine private constructor(
                     throw IllegalStateException("Integrity check failed for hydration cache: $path")
                 }
             }
-            requireRowUnchanged(path, entry)
+            val rowNow = requireRowUnchanged(path, entry)
+            // M1 of archive#1040: open_write_begin does not take this path's lock, so an edit may have begun while the
+            // bytes came down. Its truncated copy is the start of that edit, the only copy of it: the finished download
+            // is dropped (the staging file goes in the finally below), the mark stays, and the copy is what is read.
+            if (rowNow.editBase != null && entry.editBase == null) {
+                log.info("download of {} dropped: an edit began while it ran; the cache copy is kept", path)
+                return HydratedCache(cachePath, fetched = true)
+            }
             try {
                 Files.move(staged, cachePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             } catch (_: AtomicMoveNotSupportedException) {
@@ -523,11 +559,42 @@ class MountEngine private constructor(
     private fun requireRowUnchanged(
         path: String,
         entry: SyncEntry,
-    ) {
+    ): SyncEntry {
         val rowNow = db.getEntry(path)
         if (rowNow == null || rowNow.remoteId != entry.remoteId) {
             throw PermanentDownloadFailureException("$path was deleted or moved while it was being downloaded")
         }
+        return rowNow
+    }
+
+    /**
+     * gkrost/unidrive-cli#80: the byte count of a finished download, or a failure when it is short. A provider whose
+     * truncation guard needs a `Content-Length` can return fewer bytes than the item has without throwing (a chunked
+     * response that closes early); taking that count as the row's new `remote_size` would switch off the size check
+     * of the read and serve the truncated file as complete. A count below the size the row (or the live item
+     * it was read from) holds is therefore accepted only when the provider confirms that size for the file now (a file
+     * that shrank since the enumeration); a longer body is a file that grew and is taken as before.
+     * A short body is a transient failure (EIO, read again), not a statement about the cloud object.
+     */
+    private suspend fun confirmedDownloadSize(
+        path: String,
+        entry: SyncEntry,
+        fetched: Fetched,
+    ): Long {
+        val expected = fetched.liveItem?.size ?: entry.remoteSize
+        if (expected <= 0 || fetched.bytes >= expected) return fetched.bytes
+        val live =
+            try {
+                provider.getMetadata(remotePathOf(path, entry))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.debug("#80: cannot confirm the size of {} after a download of {} bytes: {}", path, fetched.bytes, e.javaClass.simpleName)
+                null
+            }
+        val confirmed = live != null && live.size == fetched.bytes && !(live.isFolder || live.deleted)
+        if (confirmed) return fetched.bytes
+        throw java.io.IOException("download of $path ended after ${fetched.bytes} of $expected bytes")
     }
 
     /** What a cold download brought: the bytes, and the live item it was read from when the row's own id did not resolve. */
