@@ -13,7 +13,26 @@ import picocli.CommandLine.ParentCommand
 import java.util.Locale
 import kotlin.math.max
 
-@Command(name = "relocate", description = ["Migrate data between cloud providers"], mixinStandardHelpOptions = true)
+/**
+ * `relocate` is switched off while four data-loss defects are open: a remote item name used as a path below the temp
+ * dir (gkrost/unidrive-cli#56), `--delete-source` deleting by string prefix and ignoring failed transfers (#61), two
+ * files of equal size and different hash treated as the same file (#62), and a temp file named by the leaf only (#63).
+ *
+ * To switch it on again, fix those four issues and set this to `true`; `RelocateCommandTest` then has to be changed
+ * from "refuses" to the tests of the fixed behaviour. The code below is kept as it is for that.
+ */
+internal const val RELOCATE_ENABLED: Boolean = false
+
+internal const val RELOCATE_DISABLED_MESSAGE =
+    "relocate is disabled: it can overwrite or delete files that were never migrated " +
+        "(gkrost/unidrive-cli#56, #61, #62, #63). Nothing was read or changed. " +
+        "Copy the data with the provider's own tools until these are fixed."
+
+@Command(
+    name = "relocate",
+    description = ["Migrate data between cloud providers (disabled: refuses to run, see #56, #61, #62, #63)"],
+    mixinStandardHelpOptions = true,
+)
 class RelocateCommand : Runnable {
     @ParentCommand
     lateinit var parent: Main
@@ -53,6 +72,8 @@ class RelocateCommand : Runnable {
     var confirmTransport: Boolean = false
 
     override fun run() {
+        @Suppress("KotlinConstantConditions")
+        if (!RELOCATE_ENABLED) throw IllegalStateException(RELOCATE_DISABLED_MESSAGE)
         if (fromProvider == toProvider) {
             System.err.println("Error: source and target providers must be different")
             throw IllegalArgumentException("Same provider for source and target")
