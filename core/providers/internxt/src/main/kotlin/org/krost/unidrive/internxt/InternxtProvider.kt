@@ -1775,43 +1775,35 @@ class InternxtProvider(
         // NEW uploads POST /files (create). Defensive fallback below catches the 409 that
         // appears when the reconciler thought a path was new but the remote already has it.
         val finalItem: CloudItem
-        if (existingRemoteId != null) {
-            checkWriteToken(existingRemoteId, ifMatchETag, remotePath) // the narrow window between the early check and the replace
-            // Destructive-overwrite guard: when `keepOverwritten` is on,
-            // rename the prior cloud content to `${plainName}.unidrive-prev-${utcStamp}`
-            // and create the new content as a fresh file instead of letting
-            // `replaceFile` drop the prior bytes (Internxt has no server-side
-            // versioning). Falls through to the destructive replace if the
-            // rename can't be made unique after `MAX_KEEP_OVERWRITTEN_RETRIES`
-            // collision attempts or the rename itself errors — better to land
-            // the new content than to strand the local edit.
-            val archived = if (config.keepOverwritten) tryKeepOverwrittenRename(existingRemoteId, plainName) else false
-            if (archived) {
-                val encryptedName = crypto.encryptName(plainName, "${creds.mnemonic}-$parentUuid")
-                val created =
-                    api.createFile(
-                        bucket = bucket,
-                        folderUuid = parentUuid,
-                        plainName = plainName,
-                        encryptedName = encryptedName,
+        // Destructive-overwrite guard: when `keepOverwritten` is on,
+        // rename the prior cloud content to `${plainName}.unidrive-prev-${utcStamp}`
+        // and create the new content as a fresh file instead of letting
+        // `replaceFile` drop the prior bytes (Internxt has no server-side
+        // versioning). Falls through to the destructive replace if the
+        // rename can't be made unique after `MAX_KEEP_OVERWRITTEN_RETRIES`
+        // collision attempts or the rename itself errors — better to land
+        // the new content than to strand the local edit.
+        val archivedPrior =
+            if (existingRemoteId != null) {
+                checkWriteToken(existingRemoteId, ifMatchETag, remotePath) // the narrow window between the early check and the replace
+                config.keepOverwritten && tryKeepOverwrittenRename(existingRemoteId, plainName)
+            } else {
+                false
+            }
+        if (existingRemoteId != null && !archivedPrior) {
+            val replaced =
+                api
+                    .replaceFile(
+                        uuid = existingRemoteId,
                         size = fileSize,
-                        type = ext,
                         fileId = bucketEntry.id,
                         modificationTime = localMtime,
-                    )
-                finalItem = created.toCloudItem(parentPath)
-            } else {
-                val replaced =
-                    api
-                        .replaceFile(
-                            uuid = existingRemoteId,
-                            size = fileSize,
-                            fileId = bucketEntry.id,
-                            modificationTime = localMtime,
-                        ).afterReplace(localMtime)
-                finalItem = replaced.toCloudItem(parentPath)
-            }
+                    ).afterReplace(localMtime)
+            finalItem = replaced.toCloudItem(parentPath)
         } else {
+            // A create, or the create that follows the archive rename of a replace: the same answers to a 409 and to a
+            // lost response. A replace whose create had landed would otherwise fail with the prior content already
+            // archived, and its retry would archive the archive.
             val encryptedName = crypto.encryptName(plainName, "${creds.mnemonic}-$parentUuid")
             val created =
                 try {
@@ -1831,9 +1823,10 @@ class InternxtProvider(
                     // content identity; anything else keeps both copies.
                     if (e.statusCode != 409) throw e
                     log.warn(
-                        "UD-366: 409 on POST /files for {} despite existingRemoteId=null — " +
-                            "reconciler/DB drift; inspecting remote for content-identity check",
+                        "UD-366: 409 on POST /files for {} (prior file {}) — " +
+                            "reconciler/DB drift or a create that had landed; inspecting remote for content-identity check",
                         remotePath,
+                        if (archivedPrior) "archived" else "none",
                     )
                     // Get the raw InternxtFile (not CloudItem) so we keep fileId, the
                     // bucket-entry content-address.  parentUuid is already resolved above.
