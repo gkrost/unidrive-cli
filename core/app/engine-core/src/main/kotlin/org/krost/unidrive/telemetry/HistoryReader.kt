@@ -93,15 +93,31 @@ class HistoryReader internal constructor(
 
     @Synchronized
     fun query(query: HistoryQuery): HistoryPage {
+        // One more than asked was read: whether it exists is what `hasMore` says.
+        val rows = if (query.results.size > 1) mergedPerResult(query) else read(query)
+        return HistoryPage(rows.take(query.limit), rows.size > query.limit)
+    }
+
+    private fun read(query: HistoryQuery): List<TransferRow> {
         val (sql, binds) = select(query)
         val rows = ArrayList<TransferRow>()
         connection().prepareStatement(sql).use { ps ->
             bindAll(ps, binds)
             ps.executeQuery().use { rs -> while (rs.next()) rows.add(TransferRowCodec.read(rs)) }
         }
-        // One more than asked was read: whether it exists is what `hasMore` says.
-        return HistoryPage(rows.take(query.limit), rows.size > query.limit)
+        return rows
     }
+
+    // gkrost/unidrive-cli#134: `result IN (a, b)` cannot be seeked in time order, so the planner reads every row newer than the matches
+    // on the time index. One query per result seeks its own range of `idx_transfers_result_time`; each is newest first and holds up to
+    // limit + 1 rows, so the newest limit + 1 of their union are the newest limit + 1 of the whole.
+    private fun mergedPerResult(query: HistoryQuery): List<TransferRow> =
+        perResult(query)
+            .flatMap { read(it) }
+            .sortedWith(compareByDescending<TransferRow> { it.finishedAt ?: it.queuedAt }.thenByDescending { it.operationId })
+            .take(query.limit + 1)
+
+    private fun perResult(query: HistoryQuery): List<HistoryQuery> = query.results.map { query.copy(results = setOf(it)) }
 
     /** The instant since which rows are known to be missing (a full queue or a failed write dropped them), or null. */
     @Synchronized
@@ -119,6 +135,11 @@ class HistoryReader internal constructor(
             ps.executeQuery().use { rs -> return buildList { while (rs.next()) add(rs.getString("detail")) } }
         }
     }
+
+    /** The query plans of the queries [query] is answered with, one per result when it names several; for the test that pins them. */
+    @Synchronized
+    internal fun explainEach(query: HistoryQuery): List<String> =
+        (if (query.results.size > 1) perResult(query) else listOf(query)).map { explain(it).joinToString(" | ") }
 
     @Synchronized
     override fun close() {
