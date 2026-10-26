@@ -1246,6 +1246,18 @@ class InternxtProvider(
                 }
                 encryptedSize = withContext(Dispatchers.IO) { Files.size(tempFile) }
                 hashHex = digest.digest().joinToString("") { "%02x".format(it) }
+                // The cipher is a stream cipher: the ciphertext is as long as the bytes it read. The file was sized before this
+                // pass; a source that changed length in between would be created with the old size and stored with another
+                // length, and every download of it refused as incomplete. Nothing is sent: the next attempt reads it afresh.
+                if (encryptedSize != fileSize) {
+                    withContext(Dispatchers.IO) {
+                        runCatching { Files.deleteIfExists(tempFile) }
+                        tombstoneStore.discard(pathHashStr)
+                    }
+                    throw ProviderException(
+                        "$remotePath changed while it was being read for upload ($fileSize bytes when sized, $encryptedSize read); will be retried",
+                    )
+                }
             } catch (e: java.nio.file.NoSuchFileException) {
                 // Mid-upload delete — local file vanished after we sized it.
                 withContext(Dispatchers.IO) { tombstoneStore.discard(pathHashStr) }
