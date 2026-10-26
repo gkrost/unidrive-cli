@@ -1,5 +1,7 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
@@ -69,4 +71,24 @@ class HydrationRefusalClearedTest {
         assertEquals(2, env.syncEngine.uploadAttempts(), "one attempt per client offer, none for the replay after the refusal came again")
         assertNotNull(env.stateDb.uploadRefusal("/trashed/new.txt"))
     }
+    @Test
+    fun `a retry queued before the first refusal still asks the provider`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this)
+        val cache = env.refusedFile()
+        val gate = CompletableDeferred<Unit>()
+        env.syncEngine.setUploadBeforeRefusalGate(gate)
+        env.hydration.openForWrite("conn1", "h1", "/trashed/new.txt", cache)
+        runCurrent()
+        assertEquals(1, env.syncEngine.uploadAttempts())
+
+        env.hydration.openForWrite("conn1", "h2", "/trashed/new.txt", cache)
+        runCurrent()
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(2, env.syncEngine.uploadAttempts())
+        assertEquals("the user's bytes", env.syncEngine.remoteContentSeen("/trashed/new.txt"))
+        assertNull(env.stateDb.uploadRefusal("/trashed/new.txt"))
+    }
+
 }

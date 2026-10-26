@@ -615,11 +615,6 @@ class HydrationImpl(
         // An edit begun by open_write_begin has been noted since then.
         if (entry.remoteId != null) stateDb.markEdited(path, baseEtag ?: writeToken.orEmpty())
 
-        // gkrost/unidrive-cli#134: a client that offers the file itself is retrying it, and the provider's earlier refusal of these
-        // bytes (kept for hours, completeRefused) must not answer the retry. The engine's own resubmission, the crash-recovery
-        // replay (`recovery-` handles), keeps being answered from it.
-        if (!handleId.startsWith("recovery-")) runCatching { stateDb.clearUploadRefusal(path) }
-
         // Crash-recovery replay: the co-daemon's cache_scanner fires open_write with
         // handle_id = "recovery-<n>" for each cache file whose mtime exceeds the
         // last_synced watermark. These calls happen BEFORE the FUSE mount goes live,
@@ -869,9 +864,11 @@ class HydrationImpl(
         slot.retryAtMs = null
         // archive#610: a never-uploaded file renamed while its upload waits (queued, or in a retry backoff) is uploaded at the
         // path the rename moved it to; see [followRename]. The path and the cache copy are the slot's current ones.
-        var path = submittedPath
-        var cachePath = submittedCachePath
-        val followsRenames = followsRenames(slot, path, baseEtag)
+        val followsRenames = followsRenames(slot, submittedPath, baseEtag)
+        var (path, cachePath) = followed(slot, submittedPath, submittedCachePath, followsRenames)
+        // A client retry clears the refusal only once it holds the path's upload slot: an earlier in-flight
+        // upload may otherwise record its refusal after open_write cleared it. Recovery replays keep the refusal.
+        if (!handleId.startsWith("recovery-")) runCatching { stateDb.clearUploadRefusal(path) }
         // archive#493: the provider refused exactly these bytes before; asking again would be refused again.
         refusedEarlier(path, cachePath)?.let { reason ->
             val err = HydrationError.ParentGone.parse(reason) ?: HydrationError.Generic("refused earlier: $reason")
