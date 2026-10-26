@@ -236,6 +236,23 @@ hydration.rmdir   {path[,recursive]} -> {"ok":true} | {"ok":false,"error":"path_
 `hydrating`/`hydrated` for it; `hydration.rmdir` refuses non-empty folders
 (`not_empty`, unless `"recursive":true`, section 3.7). Both refuse out-of-scope paths.
 
+### 3.9 Two spellings of one name (`name_clash`)
+
+The engine keys every path in NFC, so `caf` + U+00E9 and `cafe` + U+0301 are one row and one cloud path. A client
+that holds both as two files would have the second one's bytes replace the first one's content in the cloud
+(gkrost/unidrive-cli#24; owner decision 2026-10-03: refuse such pairs).
+
+- The daemon remembers, per name below the root, the spelling the first mutating verb used for it (the `path` as the
+  client sent it, before the NFC step). A later `create`, `mkdir`, `open_write`, `open_write_begin`, `rename` (either
+  end), `unlink` or `rmdir` that names that name, or a folder above it, by another spelling answers
+  `{"ok":false,"error":"name_clash"}` before anything is touched or queued. The client renames one of the two files.
+- Only names with a non-ASCII character are tracked (a plain ASCII name cannot have a twin). A successful `unlink`,
+  `rmdir` or the old end of a `rename` frees the spellings of the name and of everything below it.
+- Reads are not guarded: a read verb resolves an NFD request to the NFC row (archive#171).
+- **Limit:** the record is in memory, per daemon run. After a restart the first spelling a client names wins again; a
+  persisted spelling needs a state.db column and is not built (#24 stays open for it). `HydrationIpcHandler` and
+  `NameSpellings` hold the rule.
+
 ## 4. Events (subscription stream)
 
 | Event | Shape | Meaning |
@@ -443,6 +460,26 @@ still leave a remote item; the caller follows with the row-level verb
   ([unidrive-daemon-design.md](unidrive-daemon-design.md) sections 4.3 and 4.8). All of it ends when the backoff
   ends: the retry is due, `next_try_at_ms` is `null` again, and the path counts as `in_flight` once the attempt
   holds a transfer permit; after the last attempt the row is `failed` with `next_try_at_ms` `null`.
+- **Rounds after the ladder** (gkrost/unidrive-cli#70): the three attempts are one ladder. When it is used up the
+  upload is offered again in the same daemon process, up to five times, 5, 15, 30, 60 and 60 minutes after the
+  previous round gave up (`HydrationImpl.DEFAULT_EXHAUSTED_RETRY_DELAYS_MS`; the list's length is the cap, an empty list
+  switches the rounds off). A round is a new submission with its own queue place, transfer permit and history row; the
+  row of the ladder before it stays `failed`. A round starts only if the row still waits for an upload (never uploaded,
+  or a dirty overwrite that passes the same cloud-version check as the start-up replay), nothing else is uploading the
+  path, the cache copy still exists and the provider has not refused these exact bytes. Terminal outcomes (`conflict`,
+  a refused name, a permanent refusal such as `parent_gone`) get no rounds. A client's own `open_write` of the path
+  resets the count, a landed upload ends it. The timer lives in the daemon's memory: a restart drops it and replays the
+  row through the start-up replay below, as before. While a path waits for a round the daemon keeps no `retrying` or
+  `next_try_at_ms` record (those describe the 2 s and 10 s backoff only): it is `pending` and, when never uploaded,
+  `failed`. Each round runs the ladder of attempts again.
+- **A daemon stop loses no data:** stopping the daemon cancels the upload scope, and the cancellation is rethrown
+  before the failure handler, so a stopped upload stamps no failure on its row. A never-uploaded row stays in the
+  pending set and is replayed at the next start; an overwrite is found by the dirty replay (the cache copy differs
+  from the row's baseline, or an edit base is noted). An upload that was cut restarts from byte 0 (multipart per-part
+  resume across a restart is open, #72).
+- **Limits are constructor parameters, not profile settings:** the transfer budget (`ProviderMetadata.maxConcurrentTransfers`),
+  the queue depth (256), the attempts (3) and the cache access grace (60 s) are logged once at start
+  (`hydration limits: transfer budget …, upload queue depth …`). Profile keys for them are open (#72).
   Failures that are never retried emit `retry_scheduled:false` at once: a `conflict` (the cloud copy
   changed under the edit), an upload whose row or cache copy has vanished while it was queued (renamed away,
   unlinked, reaped), a name the drive refuses (`similar_name`, `blocked_by_parent`, below), and an upload whose folder
@@ -486,6 +523,7 @@ still leave a remote item; the caller follows with the row-level verb
 | `outside_scope` | create, mkdir, rename (both ends), open_write_begin | path outside the profile's sync_path set |
 | `read_only` | create, mkdir, unlink, rmdir, rename (either end), open_write_begin, open_write | the path is the trash root or lies below it (section 4.1), or is the root of a view or lies below it (section 4.2); nothing was touched or queued |
 | `busy` | dehydrate, replace-rename, unlink, rmdir | an upload is in flight on that path (unlink, dehydrate), below it (rmdir), or on the source or destination of a replace-rename; nothing was touched, retry once the upload's `completed` event has arrived |
+| `name_clash` | create, mkdir, open_write, open_write_begin, rename, unlink, rmdir | the path names a name, or a folder above it, by another Unicode spelling (composed / decomposed) than the one a client used for it first in this daemon run; both are one row and one cloud path, so the second would overwrite or delete the first. Nothing was touched or queued. Section 3.9 |
 | `excluded` | completed event, rename | keep-local name, never uploaded; a rename of a row that has a cloud copy onto such a name is refused with it (the row and the remote are untouched, `HydrationImpl.rename`) |
 | `cancelled` | completed event | upload aborted by hydration.cancel |
 | `similar_name[: <sibling>]` | failed and completed events, `hydration.list` (`blocked`) | the drive compares the entry's name as equal to a sibling's and refused it under its own name and under a server name; the local file is kept, nothing is retried. `: <sibling>` names the conflicting sibling when known |
@@ -506,6 +544,22 @@ still leave a remote item; the caller follows with the row-level verb
 | `wrong_mode` | every hydration verb, `sync.enumerate`, `ignore.explain` | the daemon serves a mirror profile and has no hydration layer (section 1) |
 | `auth_required` / `auth_failed` / `forbidden` | any | not authenticated yet, a refused handshake step, a verb outside the connection's scope ([ipc-authentication.md](ipc-authentication.md)) |
 | `too_many_clients` | connection (no request) | the daemon's connection cap is reached; the line is written once and the connection closed (§1) |
+
+**A short download is not a size change** (gkrost/unidrive-cli#80). A download that returns fewer bytes than the row
+(or, when the row's remote id no longer resolves, the live item it was re-read from) holds is accepted as the file's
+new size only when the provider's metadata for the path reports exactly that size now (the file really shrank). In
+every other case the read fails like a transient error (a generic failure, EIO: read again): no `remote_incomplete`
+refusal is remembered, and the row and the cache copy stay as they were. A longer body is taken as before (the file
+grew). `CloudProvider.download` must throw when it ends short; the check above is the engine's guard for a provider
+whose truncation test needs a `Content-Length` it did not get (a chunked response that closes early). The
+integrity check of the content (`verifyIntegrity`) is off by default and is not what catches this. A read or hydrate
+that is cancelled (a client's cancel, a daemon stop) is a cancellation, not a failed download: its history row ends
+`interrupted`.
+
+**The two times of a listed row.** `mtime_ms` of a `hydration.list` entry is the local watermark (the local file's time when there is one,
+else the row's last-synced time): for a cloud-only row the time of the enumeration that wrote it, for a hydrated row
+the time of its download (`ListResult.Entry`). The provider's own modified time is `remote_modified_ms` (`null` for a
+never-uploaded row). Many rows with the same `mtime_ms` are one enumeration batch, not an adoption.
 
 ## 8. Who may write the mounted folder
 

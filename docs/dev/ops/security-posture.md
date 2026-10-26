@@ -10,6 +10,24 @@ providers over OAuth/HTTP and therefore handles credentials and tokens — integ
 tests can run against real provider tokens, gated by `UNIDRIVE_INTEGRATION_TESTS`.
 That credential-handling property is what shapes the priorities below.
 
+## Status 2026-10-26 (what changed since the audit below)
+
+The audit below is a dated record and is kept as written. Checked against `origin/main`, the repository ruleset and the
+workflows on 2026-10-26; items not listed here are unchanged.
+
+| Audit statement | Now |
+|---|---|
+| `main` has no `pull_request` rule and no required status check (headline, gap 1) | The `standard protection` ruleset has four rules: `deletion`, `non_fast_forward`, `pull_request` and `required_status_checks` with the contexts `check` and `windows-security`. `gitleaks` stays advisory (`build.yml`) |
+| `SECURITY.md` is absent (gap 3) | [`SECURITY.md`](../../../SECURITY.md) exists and names the private reporting form and the open-source contact address |
+| The third-party actions use tag refs (gap 4) | Every `uses:` in the workflows and in `.github/actions/pinned-git` is a commit SHA with the version in a comment. `sha_pinning_required` is still `false` in the repository's Actions settings |
+| CodeQL is off and nothing runs (gap 2) | `codeql.yml` (advanced setup, push, pull request and weekly) runs for `actions` only. The `java-kotlin` leg is commented out because the CodeQL extractor aborts on the Kotlin version the build uses (see the comment in `codeql.yml`). The default setup is still `not-configured`. So the gap of gap 2 stands: no analysis reads the Kotlin. CodeQL is advisory, not a required check |
+| Dependabot `github-actions` covers the action pins | The entry lists `/` only. The composite action `.github/actions/pinned-git` pins its own `actions/cache` and, by Dependabot's documented rule that composite actions need their own `directories` entry, is not bumped automatically (not tested here) |
+| Dependency verification: the release builds strict, every other build lenient | Unchanged and confirmed: `org.gradle.dependency.verification=lenient` in `core/gradle.properties`, `--dependency-verification strict` in `release.yml` for `check`, `shadowJar` and the SBOM. Metadata is trust on first use: `core/gradle/verification-metadata.xml` records the checksum the mirror served when it was written |
+
+References to `AGENTS.md` and `BACKLOG.md` in the audit below, and the doc-location note at its end, describe the
+engine's archived tracker tree: neither file is in this repository. The open work lives in the issue tracker; the state is
+summed up in [`BACKLOG.md`](../../../BACKLOG.md).
+
 ## Headline: is `main` actually protected?
 
 **Partially — and the gap is the load-bearing finding.** There is one repository
