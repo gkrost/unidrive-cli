@@ -55,7 +55,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 // One class for the mount hydration front-end: the upload queue, the open set, the cache budget and
 // the archive#658 health view. Accepted as a LargeClass in-source rather than split.
-@Suppress("LargeClass")
+@Suppress("LargeClass", "LongParameterList") // one parameter per tuning knob; see the baseline entries this replaces
 class HydrationImpl(
     // archive#560 U3: the mount operations (hydrate, upload, remote create/delete/rename) run on the mount
     // front-end; this class owns the upload queue, the open set and the cache budget on top of it.
@@ -100,6 +100,10 @@ class HydrationImpl(
     // archive#493: a row whose last upload attempt failed is replayed this much after the start instead of at once, so work
     // that can succeed (and the client's fresh writes) goes first. 0 = replay at once, as before.
     private val failedReplayDelayMs: Long = DEFAULT_FAILED_REPLAY_DELAY_MS,
+    // gkrost/unidrive-cli#70: an upload that used all its attempts is offered again in this process: round i (1-based) starts
+    // exhaustedRetryDelaysMs[i-1] after the previous round gave up, and the list's length is the cap. Empty = never (only
+    // the next daemon start replays the row, as before).
+    val exhaustedRetryDelaysMs: List<Long> = DEFAULT_EXHAUSTED_RETRY_DELAYS_MS,
     // archive#652: where finished transfers are recorded (the daemon opens it per mount profile); null = no history.
     // The history never fails or slows a transfer: every call on it only hands a snapshot to its writer queue.
     private val history: TransferHistory? = null,
@@ -131,6 +135,7 @@ class HydrationImpl(
      * the one instance per engine the daemon wiring uses too). It keeps the call sites that build hydration on
      * a `SyncEngine` (`unidrive sync`, the tests) as they were until mount profiles get their own host (U4, U6).
      */
+    @Suppress("LongParameterList")
     constructor(
         syncEngine: MountHost,
         stateDb: StateDatabase,
@@ -145,6 +150,7 @@ class HydrationImpl(
         evictionDelayMs: Long = EVICTION_DELAY_MS,
         evictionMinIntervalMs: Long = EVICTION_MIN_INTERVAL_MS,
         failedReplayDelayMs: Long = DEFAULT_FAILED_REPLAY_DELAY_MS,
+        exhaustedRetryDelaysMs: List<Long> = DEFAULT_EXHAUSTED_RETRY_DELAYS_MS,
         history: TransferHistory? = null,
     ) : this(
         MountEngine.over(syncEngine),
@@ -160,6 +166,7 @@ class HydrationImpl(
         evictionDelayMs,
         evictionMinIntervalMs,
         failedReplayDelayMs,
+        exhaustedRetryDelaysMs,
         history,
     )
 
@@ -374,6 +381,12 @@ class HydrationImpl(
         /** archive#658: how long a status request waits for a re-reading when it has a previous reading to serve. */
         const val UPLOAD_SNAPSHOT_REFRESH_WAIT_MS: Long = 100
 
+        /**
+         * gkrost/unidrive-cli#70: default rounds of the in-process retry of an upload that used all its attempts (see
+         * [exhaustedRetryDelaysMs]): 5, 15, 30, 60 and 60 minutes, then only a daemon start replays the row.
+         */
+        val DEFAULT_EXHAUSTED_RETRY_DELAYS_MS = listOf(5L, 15L, 30L, 60L, 60L).map { it * 60_000 }
+
         /** archive#493: default delay of the replay of rows whose last upload attempt failed (see [failedReplayDelayMs]). */
         const val DEFAULT_FAILED_REPLAY_DELAY_MS: Long = 10L * 60 * 1000
 
@@ -527,6 +540,7 @@ class HydrationImpl(
             return OpenResult.Failed(HydrationError.InvalidPath)
         }
         touch(path)
+        exhaustedRounds.remove(path) // gkrost/unidrive-cli#70: new bytes from the client get the full rounds again
         // archive#660: a rule file of the ignore rules takes effect for the next decision, this file's own included.
         mount.ignoreRuleFileWritten(path)
 
@@ -868,6 +882,7 @@ class HydrationImpl(
                     cachePath = mount.resolveCachePath(it)
                 }
                 val bytes = Files.size(cachePath)
+                exhaustedRounds.remove(path)
                 // archive#652: identical bytes the cloud already holds are a skipped transfer; nothing moved, so no byte count.
                 tx?.finish(
                     if (outcome.sent) TransferResult.SUCCESS else TransferResult.SKIPPED,
@@ -952,9 +967,10 @@ class HydrationImpl(
                     break
                 } else {
                     log.warn(
-                        "upload failed for {} after {} attempts, leaving the row failed (a daemon restart replays it): {}",
+                        "upload failed for {} after {} attempts, leaving the row failed (offered again in this process, or by a daemon restart): {}",
                         path, maxUploadAttempts, e.message ?: "upload failed",
                     )
+                    offerExhaustedUploadAgain(path)
                 }
             }
         }
@@ -1394,6 +1410,45 @@ class HydrationImpl(
     // archive#526: the same check for the deferred rows, which run after the replay pass and resolve on their own.
     private fun replayable(path: String): Boolean =
         cacheCopy(CachePaths.Pass(mount.hydrationCacheDir()), path) != null
+
+    // gkrost/unidrive-cli#70: the rounds an upload of a path has had since its last success or its last client submission.
+    private val exhaustedRounds = ConcurrentHashMap<String, Int>()
+
+    /**
+     * gkrost/unidrive-cli#70: an upload that used all [maxUploadAttempts] is offered again after the next delay of
+     * [exhaustedRetryDelaysMs], so a provider outage longer than the ladder does not cost a daemon restart per file. The
+     * number of rounds is the length of that list; after it only a daemon start replays the row ([replayPendingUploads]).
+     * A round is a new submission (its own queue place, slot and history row; the failed ladder before it stays on record
+     * as failed), and it is made only if the row is still waiting for an upload, nothing else is uploading the path, the
+     * cache copy is still there and the provider has not refused these exact bytes. A dirty overwrite of a file that is
+     * in the cloud goes through the same check of its cloud version as the start-up replay does.
+     */
+    private fun offerExhaustedUploadAgain(failedPath: String) {
+        val round = exhaustedRounds.merge(failedPath, 1, Int::plus) ?: return
+        val waitMs = exhaustedRetryDelaysMs.getOrNull(round - 1)
+        if (waitMs == null) {
+            if (exhaustedRetryDelaysMs.isNotEmpty()) {
+                log.warn("upload of {} failed in {} rounds; only a daemon restart offers it again", failedPath, round - 1)
+            }
+            return
+        }
+        log.info("upload of {} is offered again in {} s (round {} of {})", failedPath, waitMs / 1000, round, exhaustedRetryDelaysMs.size)
+        recoveryUploadScope.launch {
+            delay(waitMs)
+            val path = failedPath
+            val entry = stateDb.getEntry(path) ?: return@launch // deleted or renamed away: nothing left to upload at this path
+            val waitingForUpload = if (entry.remoteId == null) entry.isHydrated else isDirtyReplayCandidate(entry)
+            if (!waitingForUpload || uploadSlots.containsKey(path) || !replayable(path)) return@launch
+            val cachePath = mount.resolveCachePath(path)
+            if (refusedEarlier(path, cachePath) != null) return@launch
+            val handleId = "engine-retry-$round"
+            if (entry.remoteId == null) {
+                launchSerializedUpload(path, cachePath, handleId, baseEtag = null)
+            } else {
+                launchDirtyReplay(entry, cachePath, handleId)
+            }
+        }
+    }
 
     // archive#493: <cache mtime ms>|<cache size> of the bytes an upload sends; null when the cache copy is gone.
     // The token of a provider's permanent upload refusal: `parent_gone` for a folder its walk proved gone (archive#580), else the
