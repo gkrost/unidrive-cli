@@ -273,6 +273,9 @@ sealed interface HydrationError {
         /** Wire token for [InvalidPath]. */
         const val INVALID_PATH_TOKEN = "invalid_path"
 
+        /** Wire token for a name given in another Unicode spelling than the one a client used for it first (gkrost/unidrive-cli#24). */
+        const val NAME_CLASH_TOKEN = "name_clash"
+
         /** Wire token for [Paused]. */
         const val PAUSED_TOKEN = "paused"
     }

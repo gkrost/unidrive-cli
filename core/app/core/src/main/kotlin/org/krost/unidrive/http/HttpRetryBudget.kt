@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicLong
  * | Permanent client error    | 4xx except 429         | No     | Fail fast (a provider may single out one more) |
  * | Throttle                  | 429, 503 (Graph, Dropbox, S3, Internxt) | Yes | The server's `Retry-After` ([parseRetryAfterHeader]) or the body hint, else exponential; each provider caps the single wait |
  * | Server error              | 5xx                    | Provider-specific: Internxt retries 500/502/503/504, S3 retries 500/503, Graph and Dropbox retry only 503 | Exponential |
- * | Network error             | (no status)            | Yes    | Exponential, see [isRetriableIoException]      |
+ * | Network error             | (no status)            | Provider-specific: Internxt's read loop retries it; the Graph, Dropbox and S3 send loops do not (a write whose answer was lost may have taken effect) and the error reaches the caller | Exponential where it retries, see [isRetriableIoException]; the token-refresh classifiers share that test |
  *
  * No client retries a 408 as a throttle.
  * Retry counts and caps are per provider (`MAX_THROTTLE_ATTEMPTS`, `MAX_TOTAL_THROTTLE_WAIT_MS`

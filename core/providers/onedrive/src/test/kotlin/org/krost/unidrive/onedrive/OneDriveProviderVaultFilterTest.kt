@@ -237,7 +237,7 @@ class OneDriveProviderVaultFilterTest {
 
             try {
                 val provider = mockedProvider(body)
-                val page = provider.delta(cursor = "old-cursor")
+                val page = provider.delta(cursor = "https://graph.microsoft.com/v1.0/me/drive/root/delta?token=old")
 
                 assertEquals(5, page.items.size, "All five items surface; deleted ones still appear (engine consumes the flag)")
                 assertEquals(

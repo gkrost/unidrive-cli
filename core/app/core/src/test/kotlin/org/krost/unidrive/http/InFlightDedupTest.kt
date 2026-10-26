@@ -1,10 +1,17 @@
 package org.krost.unidrive.http
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.CyclicBarrier
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -169,6 +176,99 @@ class InFlightDedupTest {
             val dedup = InFlightDedup<String, Int>()
             val v = dedup.load("solo") { 99 }
             assertEquals(99, v)
+            assertEquals(0, dedup.inFlightCount())
+        }
+
+    /**
+     * A key that makes two threads meet inside the map's second operation, so both have finished the fast-path
+     * lookup (a miss) before either reaches `putIfAbsent`. `ConcurrentHashMap` hashes the key once per operation:
+     * the first hash on a thread is the `get`, the second the `putIfAbsent`, which waits for the other thread.
+     */
+    private class MeetingKey(
+        private val name: String,
+        private val barrier: CyclicBarrier,
+    ) {
+        private val hashesOnThread = ThreadLocal.withInitial { 0 }
+
+        override fun hashCode(): Int {
+            val seen = hashesOnThread.get() + 1
+            hashesOnThread.set(seen)
+            if (seen == 2) barrier.await(5, TimeUnit.SECONDS)
+            return name.hashCode()
+        }
+
+        override fun equals(other: Any?): Boolean = other is MeetingKey && other.name == name
+    }
+
+    // archive#1255 / #77: the caller that loses the putIfAbsent race left its unstarted LAZY child in its own
+    // coroutineScope, which then never returned. The race needs two real threads.
+    @Test
+    fun `a caller that loses the putIfAbsent race still returns`() =
+        runBlocking {
+            val dedup = InFlightDedup<MeetingKey, Int>()
+            val barrier = CyclicBarrier(2)
+            val key = MeetingKey("k", barrier)
+            val loaderInvocations = AtomicInteger(0)
+            val gate = CompletableDeferred<Unit>()
+
+            val callers =
+                (1..2).map {
+                    async(Dispatchers.IO) {
+                        dedup.load(key) {
+                            loaderInvocations.incrementAndGet()
+                            gate.await()
+                            7
+                        }
+                    }
+                }
+            // Both callers are past the fast path once the barrier has released them; give the loser time to
+            // lose the race, then let the winner's loader finish.
+            delay(300)
+            gate.complete(Unit)
+
+            val results = withTimeout(5_000) { callers.awaitAll() }
+
+            assertEquals(listOf(7, 7), results)
+            assertEquals(1, loaderInvocations.get(), "the loser must share the winner's load")
+            assertEquals(0, dedup.inFlightCount())
+        }
+
+    // archive#1255 / #54 P7: the shared load is a child of the winner's scope, so cancelling the winner used
+    // to fail every joiner with the winner's CancellationException.
+    @Test
+    fun `cancelling the caller whose loader runs does not fail a caller that joined it`() =
+        runBlocking {
+            val dedup = InFlightDedup<String, Int>()
+            val loaderInvocations = AtomicInteger(0)
+            val winnerStarted = CompletableDeferred<Unit>()
+            val gate = CompletableDeferred<Unit>()
+
+            val winner =
+                async(Dispatchers.IO) {
+                    dedup.load("k") {
+                        loaderInvocations.incrementAndGet()
+                        winnerStarted.complete(Unit)
+                        gate.await()
+                        1
+                    }
+                }
+            winnerStarted.await()
+            val joiner =
+                async(Dispatchers.IO, start = CoroutineStart.DEFAULT) {
+                    dedup.load("k") {
+                        loaderInvocations.incrementAndGet()
+                        2
+                    }
+                }
+            // The joiner has found the winner's entry once the map still holds exactly that one key and the
+            // joiner is parked on it.
+            delay(300)
+            winner.cancelAndJoin()
+
+            val result = withTimeout(5_000) { joiner.await() }
+
+            assertEquals(2, result, "the joiner runs its own load once the shared one was cancelled")
+            assertEquals(2, loaderInvocations.get())
             assertEquals(0, dedup.inFlightCount())
         }
 }

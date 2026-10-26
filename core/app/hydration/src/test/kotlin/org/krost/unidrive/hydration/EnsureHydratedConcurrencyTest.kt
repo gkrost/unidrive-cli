@@ -126,6 +126,20 @@ class EnsureHydratedConcurrencyTest {
 
             db.upsertEntry(db.getEntry("/f.txt")!!.copy(remoteSize = content.size + 5L))
             provider.files["/f.txt"] = "bigger content now".toByteArray()
+            provider.deltaItems = // the drive confirms the size the file has now
+                listOf(
+                    org.krost.unidrive.CloudItem(
+                        id = "id-/f.txt",
+                        name = "f.txt",
+                        path = "/f.txt",
+                        size = provider.files.getValue("/f.txt").size.toLong(),
+                        isFolder = false,
+                        modified = Instant.parse("2026-03-28T12:00:00Z"),
+                        created = null,
+                        hash = null,
+                        mimeType = null,
+                    ),
+                )
             engine.ensureHydrated("/f.txt")
 
             assertContentEquals("bigger content now".toByteArray(), Files.readAllBytes(cachePath))

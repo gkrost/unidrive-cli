@@ -14,6 +14,7 @@ import org.krost.unidrive.io.withLocalIoRetry
 
 // A file above this size is uploaded through a session in chunks; at or below it, in one request.
 private const val CHUNKED_UPLOAD_THRESHOLD = 4L * 1024 * 1024
+private const val MAX_FOLDER_CHAIN = 256
 
 class OneDriveProvider(
     private val config: OneDriveConfig = OneDriveConfig(),
@@ -262,7 +263,7 @@ class OneDriveProvider(
         val got = item.name
         if (wanted.isEmpty() || got == null) return item
         // The parent the drive reports, when it reports one, must be the parent asked for as well.
-        val actualParent = item.parentReference?.path?.removePrefix("/drive/root:")?.trimEnd('/')
+        val actualParent = item.parentReference?.decodedPath?.removePrefix("/drive/root:")?.trimEnd('/')
         val parentMatches = actualParent == null || OneDriveServerNames.sameName(actualParent, clean.substringBeforeLast('/'))
         if (OneDriveServerNames.sameName(got, wanted) && parentMatches) return item
         throw GraphApiException(
@@ -501,11 +502,14 @@ class OneDriveProvider(
         graphApi.deleteItem(item.id, ifMatchETag)
     }
 
+    // The id decides, for the caller's own items as for shared ones: between the gather and this call the item can have
+    // been renamed away and another item created at [remotePath], which a path lookup would delete instead. A 404 means
+    // the item is gone (deleteItem treats it as done), and nothing may be looked up by the path then, for the same reason.
     override suspend fun deleteById(
         remoteId: String,
         remotePath: String,
     ) {
-        if (SharedItemId.isShared(remoteId)) graphApi.deleteItem(remoteId) else delete(remotePath)
+        graphApi.deleteItem(remoteId)
     }
 
     // archive#1178: rm --permanent. The item id resolves exactly as delete() does (a shared item by its
@@ -526,7 +530,8 @@ class OneDriveProvider(
         remoteId: String,
         remotePath: String,
     ) {
-        if (SharedItemId.isShared(remoteId)) graphApi.permanentDeleteItem(remoteId) else deletePermanently(remotePath)
+        // The id decides (see deleteById): a delete for good must not reach the item that took the path.
+        graphApi.permanentDeleteItem(remoteId)
     }
 
     override suspend fun createFolder(path: String): CloudItem {
@@ -647,10 +652,15 @@ class OneDriveProvider(
         fromPath: String,
         toPath: String,
     ): CloudItem {
-        if (!SharedItemId.isShared(remoteId)) return move(fromPath, toPath)
         rejectUnsupportedName(toPath)
-        val eTag = graphApi.getItemById(remoteId).eTag
-        return graphApi.moveItem(remoteId, toPath, fromPath, ifMatchETag = eTag).toCloudItem().copy(id = remoteId, path = toPath)
+        // The id decides (see deleteById). The item is read once for its eTag and for where it is now: if it was moved
+        // since the gather, [fromPath] is no longer its place, and whether the write changes its folder is judged from
+        // the real one. A 404 here fails the move, as the path based move fails for an item it cannot find.
+        val current = graphApi.getItemById(remoteId)
+        if (SharedItemId.isShared(remoteId)) {
+            return graphApi.moveItem(remoteId, toPath, fromPath, ifMatchETag = current.eTag).toCloudItem().copy(id = remoteId, path = toPath)
+        }
+        return graphApi.moveItem(remoteId, toPath, current.pathInDrive() ?: fromPath, ifMatchETag = current.eTag).toCloudItem()
     }
 
     private fun rejectUnsupportedName(path: String) {
@@ -702,7 +712,7 @@ class OneDriveProvider(
                 .filterNot { it.isRootItem() }
                 .filterNot { noteAndSkipVault(it) }
         logDeletionStateSummary(visibleItems)
-        val items = visibleItems.map { it.toCloudItem() }
+        val items = placed(visibleItems, known = result.items)
 
         return DeltaPage(
             items = items,
@@ -741,7 +751,7 @@ class OneDriveProvider(
     override suspend fun deltaFromLatest(scanContext: org.krost.unidrive.ScanContext?): CapabilityResult<DeltaPage> {
         // A preview's bootstrap must not stamp delta_last_seen — same readOnly contract as delta().
         val result = graphApi.getDelta(fromLatest = true, readOnly = scanContext?.readOnly == true)
-        val items = result.items.filterNot { it.isRootItem() }.map { it.toCloudItem() }
+        val items = placed(result.items.filterNot { it.isRootItem() }, known = result.items)
         return CapabilityResult.Success(
             DeltaPage(
                 items = items,
@@ -764,10 +774,12 @@ class OneDriveProvider(
         val result = getDeltaConverting410(cursor)
 
         val mainItems =
-            result.items
-                .filterNot { it.isRootItem() }
-                .filterNot { noteAndSkipVault(it) }
-                .map { it.toCloudItem() }
+            placed(
+                result.items
+                    .filterNot { it.isRootItem() }
+                    .filterNot { noteAndSkipVault(it) },
+                known = result.items,
+            )
 
         val sharedItems = graphApi.listSharedWithMe().mapNotNull { it.toSharedCloudItem() }
         log.debug("Delta: {} shared items", sharedItems.size)
@@ -839,9 +851,94 @@ class OneDriveProvider(
     // delete would never propagate. Check the deletion facets first; the engine
     // resolves a pathless tombstone via its remote id.
     private fun DriveItem.isRootItem(): Boolean {
-        if (removed != null || deleted != null) return false
-        val parentPath = parentReference?.path
-        return parentPath == null || parentPath == "/drive/root"
+        if (isTombstone()) return false
+        if (root != null) return true
+        val parentPath = parentReference?.decodedPath
+        // A live item with a parent id but no path is not the root: Graph may leave the path off (see [placed]).
+        return parentPath == null && parentReference?.id == null || parentPath == "/drive/root"
+    }
+
+    private fun DriveItem.isTombstone(): Boolean = removed != null || deleted != null
+
+    // Where the drive has the item now, from its own parentReference.path; null when the answer carries none.
+    private fun DriveItem.pathInDrive(): String? {
+        val parentPath = parentReference?.decodedPath?.removePrefix("/drive/root:") ?: return null
+        val leaf = name ?: return null
+        return if (parentPath.isEmpty() || parentPath == "/") "/$leaf" else "$parentPath/$leaf"
+    }
+
+    /**
+     * The delta items as [CloudItem]s, each with the path the engine keys it by. Graph documents that a delta item may
+     * come without `parentReference.path`, and OneDrive Business and SharePoint drives leave it off every item: such a
+     * live item is placed below its parent folder, found among [known] (the page's own items) or by id, and one whose
+     * folder is gone is left out (a deletion below it comes as its own tombstone). A tombstone without a path gets
+     * the unknown-path marker "/" the engine resolves by remote id; it never gets `/<name>`, which would name a file
+     * at the root. A failing lookup fails the page: guessing a path would delete or overwrite the wrong item.
+     */
+    private suspend fun placed(
+        items: List<DriveItem>,
+        known: List<DriveItem>,
+    ): List<CloudItem> {
+        val folders = HashMap<String, DriveItem>()
+        for (item in known) if (!item.isTombstone() && (item.isFolder || item.root != null)) folders[item.id] = item
+        val resolved = HashMap<String, String?>()
+        val placedItems = ArrayList<CloudItem>(items.size)
+        for (item in items) {
+            val parentId = item.parentReference?.id
+            if (item.parentReference?.decodedPath != null || item.isTombstone() || parentId == null) {
+                placedItems += item.toCloudItem()
+                continue
+            }
+            val parentPath = folderPath(parentId, folders, resolved, 0)
+            if (parentPath == null) {
+                log.warn("Delta item '{}' ({}) is below a folder that is gone; it is left out", item.name ?: "(unnamed)", item.id)
+                continue
+            }
+            placedItems += item.toCloudItem(parentPath)
+        }
+        return placedItems
+    }
+
+    // The path of the folder [id], or null when it is gone (404). [resolved] remembers every answer for the page.
+    private suspend fun folderPath(
+        id: String,
+        folders: Map<String, DriveItem>,
+        resolved: MutableMap<String, String?>,
+        depth: Int,
+    ): String? {
+        if (resolved.containsKey(id)) return resolved[id]
+        if (depth > MAX_FOLDER_CHAIN) throw ProviderException("The OneDrive folder chain above '$id' is longer than $MAX_FOLDER_CHAIN levels or loops")
+        val folder =
+            folders[id] ?: try {
+                graphApi.getItemById(id)
+            } catch (e: GraphApiException) {
+                if (e.statusCode == 404) {
+                    resolved[id] = null
+                    return null
+                }
+                throw e
+            }
+        val path = pathOfFolder(folder, folders, resolved, depth)
+        resolved[id] = path
+        return path
+    }
+
+    private suspend fun pathOfFolder(
+        folder: DriveItem,
+        folders: Map<String, DriveItem>,
+        resolved: MutableMap<String, String?>,
+        depth: Int,
+    ): String? {
+        if (folder.root != null) return "/"
+        val reference = folder.parentReference
+        val parentPath =
+            when {
+                reference?.decodedPath != null -> reference.decodedPath!!.removePrefix("/drive/root:").ifEmpty { "/" }
+                reference?.id != null -> folderPath(reference.id, folders, resolved, depth + 1) ?: return null
+                else -> return "/" // no parent at all: the root, as isRootItem reads it
+            }
+        val leaf = folder.name ?: throw ProviderException("The OneDrive folder '${folder.id}' has no name")
+        return if (parentPath == "/") "/$leaf" else "$parentPath/$leaf"
     }
 
     private fun noteAndSkipVault(item: DriveItem): Boolean {
@@ -855,14 +952,22 @@ class OneDriveProvider(
         return true
     }
 
-    private fun DriveItem.toCloudItem(): CloudItem {
+    // [resolvedParentPath]: the parent folder's path, for an item that came without parentReference.path (see [placed]).
+    private fun DriveItem.toCloudItem(resolvedParentPath: String? = null): CloudItem {
         val parentPath =
-            parentReference
-                ?.path
-                ?.removePrefix("/drive/root:")
-                ?.ifEmpty { "/" }
-                ?: "/"
-        val fullPath = if (parentPath == "/") "/${name ?: ""}" else "$parentPath/${name ?: ""}"
+            resolvedParentPath
+                ?: parentReference
+                    ?.decodedPath
+                    ?.removePrefix("/drive/root:")
+                    ?.ifEmpty { "/" }
+        val fullPath =
+            when {
+                // A tombstone that does not say where it was: not "/<name>", which the engine would take for the file of
+                // that name at the root. The engine resolves a "/" tombstone by its remote id.
+                parentPath == null && isTombstone() -> "/"
+                parentPath == null || parentPath == "/" -> "/${name ?: ""}"
+                else -> "$parentPath/${name ?: ""}"
+            }
 
         // Graph's top-level lastModifiedDateTime/createdDateTime are server-stamped on
         // commit; fileSystemInfo carries the client-supplied local mtime/ctime that

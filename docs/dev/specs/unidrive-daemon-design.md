@@ -249,8 +249,11 @@ Or on failure:
 
 - `"busy"` — another `refresh.run` is in flight (synchronous reply path). Also the terminal event of a `refresh.run` with `"reset": true` on a mounted profile when another enumeration (the daemon's own poll, a `sync.enumerate`) held the single-flight guard: that pass was not joined and the delta cursor was **not** cleared, so a reset is never reported as done when it did not run (archive#1037). A plain `refresh.run` that met a running pass still ends `ok: true`: that pass refreshes the view.
 - `"shutdown"` — daemon received SIGTERM and cancelled the refresh (terminal event path).
-- `"auth_failed"` — provider auth lapsed mid-job (rare; provider HTTP client normally refreshes tokens transparently).
-- `"provider_error"` — generic provider failure (network, 5xx, etc.); the human-readable detail is in `message`.
+- `"engine_guard"` — the engine's scope or empty-local guard refused the pass before any provider call (an `IllegalStateException` of the reconcile path); `message` says which. A client scripting on the token does not read it as a provider failure.
+- `"provider_error"` — generic provider failure (network, 5xx, authentication that did not recover, etc.); the human-readable detail is in `message`. There is no separate `auth_failed` terminal token for `refresh.run`: an authentication failure ends the job as `provider_error`.
+- `"paused"` — only in the synchronous reply, never in a `refresh.done` event: the daemon is paused (§4.7) and the request was not started.
+
+A successful terminal event of a `refresh.run` on a mount profile that carried `"force_delete": true` has `"ok": true,"force_delete_ignored": true`: the mount-routed refresh is an enumeration only and cannot delete remote content, so the flag has no effect, and the reply says so instead of dropping it silently.
 
 The `unidrive refresh` CLI client treats any non-`ok=true` terminal as exit 1 with the `message` field printed to stderr.
 
@@ -394,7 +397,7 @@ The enumeration is answered from memory, never from state.db: a running attempt 
 | field | meaning |
 |---|---|
 | `uploads` | mount profiles only; absent on a mirror profile (no hydration layer) and until the upload queue has been read once after the start |
-| `uploads.as_of_ms` | archive#747: when the counts were read (epoch ms). A busy state.db serves the last good reading, so a front-end tells fresh from frozen by the stamp not advancing; absent until the first reading |
+| `uploads.as_of_ms` | archive#747: when the counts were read (epoch ms). A busy state.db serves the last good reading, so a front-end tells fresh from frozen by the stamp not advancing; `null` (the member is present) until the first reading |
 | `uploads.pending` | paths whose bytes are not in the cloud yet and that an upload will take: every never-uploaded (`local:`) row, plus every path holding an upload slot (a dirty overwrite of an uploaded row has no such row). Queued, in flight and failed-awaiting-replay all count, **including the start-up replay's own uploads**. **Keep-local rows (`exclude_patterns`, ignore rules) and rows outside `sync_path` are not counted**: no upload will ever take them. `0` means nothing is waiting; a client that wants "everything is uploaded" also checks that `uploads` is present |
 | `uploads.in_flight` | transfer attempts that hold a transfer permit right now (a subset of `pending`); a path waiting for its turn, for the transfer budget or in a retry backoff is pending but not in flight |
 | `uploads.failed` | never-uploaded rows with a failed attempt on record (a subset of `pending`); a daemon restart replays them. The failed mark stays until an upload succeeds, so a row that waits in a retry backoff, or whose retry is in flight, is `failed` too |
@@ -641,6 +644,8 @@ The request is `{"verb": "auth.logout"}`, or `{"verb": "auth.logout", "force": t
 {"verb": "auth.logout", "force": true}
 {"ok":true,"revoked":true,"revocation":"revoked","credentials_removed":true}
 ```
+
+A `force` member that is not a JSON boolean (a string such as `"yes"`, a number) is refused with `{"ok":false,"error":"invalid_force"}` and nothing is touched; an absent `force` means `false`.
 
 On acceptance the daemon asks a freshly built provider (the way the quota refresh builds one) to revoke the token at the provider, then lets it forget the token locally, then deletes the credential files (`token.json`, `credentials.json`, `device-flow.json`) from the profile folder. Only a provider that has a revoke call can revoke: Dropbox does (`auth/token/revoke`, which also disables the refresh token behind the access token); OneDrive (the Microsoft identity platform v2 endpoint has no token revocation), Internxt (no revoke call is used) and the providers without an account do not, and for them the sign-out removes the local credentials only. A copy of the credential files made earlier (a backup, a synced config) keeps working at such a provider until the user ends the session in the provider's own account settings. The reply says which of the four cases happened:
 

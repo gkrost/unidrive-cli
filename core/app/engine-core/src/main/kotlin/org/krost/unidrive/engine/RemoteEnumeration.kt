@@ -82,6 +82,21 @@ class RemoteEnumeration(
                     (row.editBase != null || Files.getLastModifiedTime(cachePath).toMillis() > row.lastSynced.toEpochMilli())
             }.getOrDefault(false)
         }
+
+        /**
+         * archive#1040 M6: whether the cache copy of [row] is the bytes the row recorded and nothing else: no unsent edit by
+         * any of [holdsUnsyncedEdit]'s rules, and mtime and size still the row's baseline. Only such a copy may be given up
+         * for a newer version of the cloud item.
+         */
+        fun cacheIsPlainCopy(row: SyncEntry): Boolean {
+            if (holdsUnsyncedEdit(row.path, row)) return false
+            val baselineMtime = row.localMtime ?: return false
+            val baselineSize = row.localSize ?: return false
+            return runCatching {
+                val cachePath = cachePathOf(row.path)
+                Files.getLastModifiedTime(cachePath).toMillis() == baselineMtime && Files.size(cachePath) == baselineSize
+            }.getOrDefault(false)
+        }
     }
 
     // Single-flight guard across ALL callers: the --poll-interval poller, the
@@ -367,7 +382,7 @@ class RemoteEnumeration(
                 .chunked(mergeChunkRows)
                 .map { chunk ->
                     val chunkMap = buildMap<String, CloudItem>(chunk.size) { chunk.forEach { put(it.key, it.value) } }
-                    db.batch { gather.updateRemoteEntries(chunkMap, canonicalToLocalTop, remoteChanges, keepPendingUploads = true) }
+                    db.batch { gather.updateRemoteEntries(chunkMap, canonicalToLocalTop, remoteChanges, keepPendingUploads = true, cacheIsPlainCopy = reapGuards::cacheIsPlainCopy) }
                 }
         upsertedViewPaths =
             buildSet {

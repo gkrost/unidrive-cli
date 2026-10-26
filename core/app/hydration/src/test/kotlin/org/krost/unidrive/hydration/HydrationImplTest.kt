@@ -215,7 +215,7 @@ internal class MinimalFakeProvider(
             id = "id-$path",
             name = path.substringAfterLast('/'),
             path = path,
-            size = 1,
+            size = metadataSizes[path] ?: 1,
             isFolder = false,
             modified = Instant.parse("2026-03-28T12:00:00Z"),
             created = Instant.parse("2026-03-28T12:00:00Z"),
@@ -223,6 +223,13 @@ internal class MinimalFakeProvider(
             mimeType = null,
         )
     }
+
+    // The size getMetadata reports for a path (default 1, what the ghost probes expect).
+    val metadataSizes = ConcurrentHashMap<String, Long>()
+
+    // Downloads deliver only this many bytes and answer with that count, without throwing: a chunked response that
+    // closes early, for a provider whose truncation guard depends on Content-Length (gkrost/unidrive-cli#80).
+    @Volatile var shortDownloadBytes: Int? = null
 
     // archive#778: a download that has written [partialBytes] and then suspends at [gate] (a transfer in flight
     // when the daemon is paused). [reached] completes once the partial bytes are on disk.
@@ -240,6 +247,10 @@ internal class MinimalFakeProvider(
             Files.write(destination, content.copyOf(stall.partialBytes))
             stall.reached.complete(Unit)
             stall.gate.await()
+        }
+        shortDownloadBytes?.let { short ->
+            Files.write(destination, content.copyOf(short))
+            return short.toLong()
         }
         Files.write(destination, content)
         return content.size.toLong()
@@ -514,6 +525,8 @@ internal class HydrationTestEnv(
     val failedReplayDelayMs: Long = HydrationImpl.DEFAULT_FAILED_REPLAY_DELAY_MS,
     /** archive#658: the cache budget in bytes; 0 = unlimited. */
     val cacheMaxBytes: Long = HydrationImpl.DEFAULT_CACHE_MAX_BYTES,
+    /** gkrost/unidrive-cli#70: rounds of the in-process retry of an upload that used all its attempts; off in this harness. */
+    val exhaustedRetryDelaysMs: List<Long> = emptyList(),
     providerId: String = "fake-hydration",
     /** The provider has write tokens of its own ([CloudProvider.reportsItemVersions]; OneDrive). */
     reportsItemVersions: Boolean = false,
@@ -607,6 +620,7 @@ internal class HydrationTestEnv(
             uploadProgressMinIntervalMs = uploadProgressMinIntervalMs,
             failedReplayDelayMs = failedReplayDelayMs,
             cacheMaxBytes = cacheMaxBytes,
+            exhaustedRetryDelaysMs = exhaustedRetryDelaysMs,
             history = history,
         )
     }
@@ -1045,7 +1059,9 @@ class HydrationImplTest {
         val env = HydrationTestEnv()
         env.stateDb.insertHydratedEntry("/foo.txt", localSize = 11) // remoteSize = 11
         env.syncEngine.seedRemoteContent("/foo.txt", "hello world") // the real 11 bytes
-        env.syncEngine.seedCacheContent("/foo.txt", "")             // stale 0-byte cache
+        // A stale 0-byte cache that is the row's own baseline: nobody edited it (a copy that differs from the baseline
+        // is an unsynced edit, not served by a download over it).
+        env.seedSyncedCacheContent("/foo.txt", "")
 
         val result = env.hydration.openForRead("conn1", "h1", "/foo.txt")
 
@@ -1185,7 +1201,7 @@ class HydrationImplTest {
         val name = "/" + "d2-" + "y".repeat(248) + ".txt"
         assertEquals(255, name.length - 1)
         env.providerForTest.seedContent(name, "the bytes")
-        env.stateDb.insertUnhydratedEntry(name, remoteSize = 10)
+        env.stateDb.insertUnhydratedEntry(name, remoteSize = 9)
 
         val result = env.hydration.openForRead("conn1", "h1", name)
 

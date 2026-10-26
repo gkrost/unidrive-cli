@@ -85,7 +85,11 @@ class InternxtApiServiceTest {
         assertEquals("report", InternxtProvider.stripExtension("report.docx"))
         assertEquals("archive.tar", InternxtProvider.stripExtension("archive.tar.gz"))
         assertEquals("noext", InternxtProvider.stripExtension("noext"))
-        assertEquals("", InternxtProvider.stripExtension(".dotfile"))
+        // A dotfile keeps its whole name: the drive refuses an empty plainName.
+        assertEquals(".dotfile", InternxtProvider.stripExtension(".dotfile"))
+        // Names the listing would join into another name stay whole as well (see InternxtNameRoundTripTest).
+        assertEquals("a.txt.txt", InternxtProvider.stripExtension("a.txt.txt"))
+        assertEquals("a.", InternxtProvider.stripExtension("a."))
     }
 
     @Test
@@ -93,7 +97,9 @@ class InternxtApiServiceTest {
         assertEquals("docx", InternxtProvider.newFileType("report.docx"))
         assertEquals("gz", InternxtProvider.newFileType("archive.tar.gz"))
         assertEquals(null, InternxtProvider.newFileType("noext"))
-        assertEquals("dotfile", InternxtProvider.newFileType(".dotfile"))
+        assertEquals(null, InternxtProvider.newFileType(".dotfile"))
+        assertEquals(null, InternxtProvider.newFileType("a.txt.txt"))
+        assertEquals(null, InternxtProvider.newFileType("a."))
     }
 
     @Test
