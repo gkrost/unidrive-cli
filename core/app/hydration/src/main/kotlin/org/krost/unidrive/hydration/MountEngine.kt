@@ -475,7 +475,14 @@ class MountEngine private constructor(
                     throw IllegalStateException("Integrity check failed for hydration cache: $path")
                 }
             }
-            requireRowUnchanged(path, entry)
+            val rowNow = requireRowUnchanged(path, entry)
+            // M1 of archive#1040: open_write_begin does not take this path's lock, so an edit may have begun while the
+            // bytes came down. Its truncated copy is the start of that edit, the only copy of it: the finished download
+            // is dropped (the staging file goes in the finally below), the mark stays, and the copy is what is read.
+            if (rowNow.editBase != null && entry.editBase == null) {
+                log.info("download of {} dropped: an edit began while it ran; the cache copy is kept", path)
+                return HydratedCache(cachePath, fetched = true)
+            }
             try {
                 Files.move(staged, cachePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             } catch (_: AtomicMoveNotSupportedException) {
@@ -523,11 +530,12 @@ class MountEngine private constructor(
     private fun requireRowUnchanged(
         path: String,
         entry: SyncEntry,
-    ) {
+    ): SyncEntry {
         val rowNow = db.getEntry(path)
         if (rowNow == null || rowNow.remoteId != entry.remoteId) {
             throw PermanentDownloadFailureException("$path was deleted or moved while it was being downloaded")
         }
+        return rowNow
     }
 
     /** What a cold download brought: the bytes, and the live item it was read from when the row's own id did not resolve. */
