@@ -115,7 +115,7 @@ Personal-vs-Business concurrency: the 8-permit default holds for both empiricall
 
 ## Known gaps
 
-The forward work — the `$batch` API for reconciliation reads, `Range` requests against the download URL, conditional GET (`If-None-Match` + cTag) and a slim `$select` delta payload — is in `BACKLOG.md` and `BOOSTERS.md`. `If-Match` on PATCH, the `fileSystemInfo` round-trip, hash-based local change detection and soft-vs-hard delete semantics have shipped (`CLOSED.md`).
+The forward work — the `$batch` API for reconciliation reads, `Range` requests against the download URL, conditional GET (`If-None-Match` + cTag) and a slim `$select` delta payload — is in the tracker ([#8](https://github.com/gkrost/unidrive-cli/issues/8), [#9](https://github.com/gkrost/unidrive-cli/issues/9), [#10](https://github.com/gkrost/unidrive-cli/issues/10), [#11](https://github.com/gkrost/unidrive-cli/issues/11)) and in `BOOSTERS.md`. `If-Match` on PATCH, the `fileSystemInfo` round-trip, hash-based local change detection and soft-vs-hard delete semantics have shipped (`CLOSED.md`).
 
 ## Request-id correlation
 

@@ -25,8 +25,8 @@ workflows on 2026-10-26; items not listed here are unchanged.
 | Dependency verification: the release builds strict, every other build lenient | Unchanged and confirmed: `org.gradle.dependency.verification=lenient` in `core/gradle.properties`, `--dependency-verification strict` in `release.yml` for `check`, `shadowJar` and the SBOM. Metadata is trust on first use: `core/gradle/verification-metadata.xml` records the checksum the mirror served when it was written |
 
 References to `AGENTS.md` and `BACKLOG.md` in the audit below, and the doc-location note at its end, describe the
-engine's archived tracker tree: neither file is in this repository. The open work lives in the issue tracker; the state is
-summed up in [`BACKLOG.md`](../../../BACKLOG.md).
+engine's archived tracker tree: neither file is in this repository (they are working files kept off the public tree). The
+open work lives in the issue tracker.
 
 ## Headline: is `main` actually protected?
 
