@@ -872,7 +872,8 @@ class HydrationImpl(
             val err = HydrationError.ParentGone.parse(reason) ?: HydrationError.Generic("refused earlier: $reason")
             _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
             log.info("upload of {} not attempted: the provider refused this content before ({})", path, reason)
-            tx?.finish(TransferResult.FAILED, errorClass = "refused_earlier", message = reason, attempted = false)
+            // gkrost/unidrive-cli#134: the same refusal offered again is the row it already has, not a new one.
+            tx?.finishRefused(reason, errorClass = "refused_earlier", message = reason, attempted = false)
             return HydrationEvent.Completed(path = path, handleId = handleId, direction = HydrationEvent.Completed.Direction.UPLOAD, ok = false, error = err)
         }
         var lastError: HydrationError = HydrationError.Generic("upload failed")
@@ -1026,7 +1027,7 @@ class HydrationImpl(
         _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
         log.warn("upload of {} refused by the provider, not retrying: {}", path, e.message ?: "upload refused")
         tombstoneIfGone(err, path)
-        tx?.finish(TransferResult.FAILED, errorClass = e.javaClass.simpleName, message = e.message)
+        tx?.finishRefused(reason, errorClass = e.javaClass.simpleName, message = e.message)
         return HydrationEvent.Completed(
             path = path,
             handleId = handleId,

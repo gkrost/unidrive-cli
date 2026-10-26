@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong
  * [TelemetryStore] behind. The producer side ([offer]) never blocks and never throws; everything that
  * touches the disk happens on the writer thread.
  */
+@Suppress("TooManyFunctions") // the queue's producer calls and the writer thread's steps, one each
 internal class HistoryWriter(
     private val profile: String,
     private val config: HistoryConfig,
@@ -23,6 +24,10 @@ internal class HistoryWriter(
     private sealed interface Op {
         class Write(
             val row: TransferRow,
+        ) : Op
+
+        class Discard(
+            val operationId: String,
         ) : Op
 
         class Barrier(
@@ -63,6 +68,11 @@ internal class HistoryWriter(
             dropped.incrementAndGet()
             droppedUnrecorded.set(true)
         }
+    }
+
+    /** Hands the removal of one row to the queue; a full queue drops it (the row stays, a duplicate at worst) and counts nothing. */
+    fun discard(operationId: String) {
+        if (accepting.get()) queue.offer(Op.Discard(operationId))
     }
 
     fun flush(timeoutMs: Long): Boolean = control(timeoutMs) { Op.Barrier(it) }
@@ -135,6 +145,10 @@ internal class HistoryWriter(
         for (op in batch) {
             when (op) {
                 is Op.Write -> pending[op.row.operationId] = op.row
+                is Op.Discard -> {
+                    writePending(pending)
+                    discardRow(op.operationId)
+                }
                 is Op.Barrier -> {
                     writePending(pending)
                     op.done.complete(Unit)
@@ -149,6 +163,17 @@ internal class HistoryWriter(
         }
         writePending(pending)
         return keepRunning
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun discardRow(operationId: String) {
+        try {
+            store.delete(operationId)
+        } catch (e: SQLException) {
+            log.debug("History for {}: a replaced row was not removed: {}", profile, e.message)
+        } catch (e: RuntimeException) {
+            log.debug("History for {}: a replaced row was not removed: {}", profile, e.javaClass.simpleName)
+        }
     }
 
     @Suppress("TooGenericExceptionCaught") // history is never a correctness dependency: nothing here may kill the writer

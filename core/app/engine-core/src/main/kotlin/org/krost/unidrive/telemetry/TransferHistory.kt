@@ -82,6 +82,52 @@ class TransferHandle internal constructor(
     ) {
         require(result != TransferResult.RUNNING) { "a finished transfer is not running" }
         if (finished) return
+        history.refusals.forget(base.direction, base.path)
+        complete(result, bytesDone, errorClass, message, oldHash, newHash, attempted)
+    }
+
+    /**
+     * The transfer ended because the provider refused it for a [reason] that held before (gkrost/unidrive-cli#134): the
+     * same refusal of the same path, offered again and answered again without a request. When the last transfer of this
+     * path that ended so had the same [reason], the path keeps one row for it: when this transfer never started, no row is added and that
+     * row's finish instant moves to now (when the refusal was last seen, and where it sorts in `history.list`); when it was started,
+     * its own row ends as the failure and the earlier one is removed.
+     * A first refusal, a different reason, or one after any other end of the path is written like [finish] writes a
+     * failed transfer. The memory of the last refusal per path is the history's own and is gone with the process; the
+     * first refusal after a start is written again, and its repeats fold into that row.
+     */
+    @Synchronized
+    fun finishRefused(
+        reason: String,
+        errorClass: String,
+        message: String? = null,
+        attempted: Boolean = true,
+    ) {
+        if (finished) return
+        val previous = history.refusals.last(base.direction, base.path, reason)
+        if (previous != null && startedNanos == null) {
+            // Never held a permit: no row of its own. The earlier row is the refusal, seen again now.
+            finished = true
+            val seen = previous.copy(finishedAt = history.wallNow)
+            history.refusals.note(seen, reason)
+            history.enqueue(seen)
+            return
+        }
+        complete(TransferResult.FAILED, null, errorClass, message, null, null, attempted)
+        // A transfer that was started has its row (it was running): that row is the refusal now and the earlier one goes.
+        if (previous != null) history.refusals.discard(previous)
+        history.refusals.note(row, reason)
+    }
+
+    private fun complete(
+        result: TransferResult,
+        bytesDone: Long?,
+        errorClass: String?,
+        message: String?,
+        oldHash: String?,
+        newHash: String?,
+        attempted: Boolean,
+    ) {
         finished = true
         val nowNanos = history.nanoNow
         val started = startedNanos
@@ -203,6 +249,9 @@ class TransferHistory private constructor(
     }
 
     internal fun enqueue(row: TransferRow) = writer.offer(row)
+
+    // gkrost/unidrive-cli#134: the last refusal of each path, so that the same refusal offered again is one row.
+    internal val refusals = RefusalMemory { operationId -> writer.discard(operationId) }
 
     private var metrics: RequestMetricsRecorder? = null
 
