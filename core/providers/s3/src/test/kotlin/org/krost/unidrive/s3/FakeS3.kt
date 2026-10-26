@@ -59,6 +59,12 @@ class FakeS3(
     /** The `Retry-After` value every scripted failure carries, when set. */
     var failureRetryAfter: String? = null
 
+    /**
+     * The next N list answers claim `IsTruncated` and repeat the continuation token they were asked with (or `tok`),
+     * like a server or proxy that loops its pages (#82 F). After them the listing ends normally.
+     */
+    var repeatTokenResponses: Int = 0
+
     fun put(
         key: String,
         content: String,
@@ -186,7 +192,7 @@ class FakeS3(
             }
         }
         val page = entries.take(max)
-        val truncated = entries.size > max
+        val truncated = entries.size > max || repeatTokenResponses > 0
         // Like S3: with encoding-type=url the Key and Prefix elements are URL-encoded (spaces as '+') and the answer says so;
         // without it they are raw, which XML 1.0 cannot carry for a control character.
         val urlEncoded = q["encoding-type"] == "url"
@@ -195,7 +201,16 @@ class FakeS3(
             buildString {
                 append("<ListBucketResult><IsTruncated>$truncated</IsTruncated>")
                 if (urlEncoded) append("<EncodingType>url</EncodingType>")
-                if (truncated) append("<NextContinuationToken>${esc(page.last().first)}</NextContinuationToken>")
+                if (truncated) {
+                    val token =
+                        if (repeatTokenResponses > 0) {
+                            repeatTokenResponses--
+                            q["continuation-token"] ?: "tok"
+                        } else {
+                            page.last().first
+                        }
+                    append("<NextContinuationToken>${esc(token)}</NextContinuationToken>")
+                }
                 page.forEach { (key, obj) ->
                     if (obj == null) {
                         append("<CommonPrefixes><Prefix>${name(key)}</Prefix></CommonPrefixes>")

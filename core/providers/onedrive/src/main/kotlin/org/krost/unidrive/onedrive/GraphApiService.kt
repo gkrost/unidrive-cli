@@ -159,9 +159,14 @@ class GraphApiService(
             }
 
         val accumulated = mutableListOf<DriveItem>()
+        val visited = HashSet<String>()
         var nextUrl: String? = firstUrl
         var pageIndex = 0
         while (nextUrl != null) {
+            // A link already fetched would page for ever (#82 F): the listing fails as an incomplete one, which the
+            // engine retries, and a page cap keeps even fresh links from going on for ever.
+            if (!visited.add(nextUrl)) throw ProviderException("Graph repeated a listing link it was already asked for; the listing stopped incomplete")
+            if (visited.size > MAX_PAGES) throw ProviderException("Graph was still listing after $MAX_PAGES pages; the listing stopped incomplete")
             val response = authenticatedRequest(nextUrl)
             val body = response.bodyAsText()
             val collection = json.decodeFromString<DriveItemCollectionResponse>(body)
@@ -1344,6 +1349,9 @@ class GraphApiService(
         private const val MAX_TOTAL_THROTTLE_WAIT_MS = 900_000L // 15 min budget per request
         private const val DEFAULT_BACKOFF_START_MS = 2_000L
         private const val MAX_FLAKE_ATTEMPTS = 3
+
+        // A thousand-page listing is a million children: far above any folder this holds a link into (#82 F).
+        private const val MAX_PAGES = 10_000
 
         // The waits before the retries of one chunk (archive#1175: a dropped connection is retried as a chunk, not as an attempt).
         private val CHUNK_RETRY_DELAYS_MS = listOf(2_000L, 4_000L, 8_000L)

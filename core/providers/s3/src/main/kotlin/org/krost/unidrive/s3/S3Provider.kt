@@ -94,11 +94,13 @@ class S3Provider(
     override suspend fun listChildren(path: String): List<CloudItem> {
         val prefix = prefixOf(path)
         val out = mutableListOf<CloudItem>()
+        val pages = PageTokenGuard("The S3 listing of '$path'")
         var token: String? = null
         do {
             val page = api.list(prefix, delimiter = "/", token = token)
             page.objects.filter { it.key != prefix }.forEach { out += fileItem(it) }
             page.prefixes.forEach { out += folderItem(pathOf(it)) }
+            pages.follow(page.nextToken)
             token = page.nextToken
         } while (token != null)
         return out
@@ -153,6 +155,7 @@ class S3Provider(
         // A staged item's path is a placeholder; its id is the key, which is the path.
         scanContext?.resumedItems?.forEach { admit(if (it.isFolder) folderItem(pathOf(it.id)) else it.copy(path = pathOf(it.id), name = nameOf(it.id))) }
         var token: String? = null
+        val pages = PageTokenGuard("The S3 listing of the bucket")
         do {
             val page = api.list("", startAfter = resumeAfter, token = token)
             val pageItems = page.objects.map { if (it.key.endsWith("/")) folderItem(pathOf(it.key)) else fileItem(it) }
@@ -162,6 +165,7 @@ class S3Provider(
             val seen = files.size + folders.size
             onPageProgress?.invoke(seen)
             scanContext?.onProgress?.invoke(ScanProgress(seen, listing = ScanProgress.LISTING_ACCOUNT))
+            pages.follow(page.nextToken)
             token = page.nextToken
         } while (token != null)
         val items = folders.map(::folderItem) + files.values
@@ -335,10 +339,12 @@ class S3Provider(
 
     private suspend fun allKeys(prefix: String): List<String> {
         val keys = mutableListOf<String>()
+        val pages = PageTokenGuard("The S3 listing under '$prefix'")
         var token: String? = null
         do {
             val page = api.list(prefix, token = token)
             page.objects.forEach { keys += it.key }
+            pages.follow(page.nextToken)
             token = page.nextToken
         } while (token != null)
         return keys
@@ -490,5 +496,29 @@ class S3Provider(
         fun pathOf(key: String): String = "/" + key.trimEnd('/')
 
         private fun nameOf(key: String): String = key.trimEnd('/').substringAfterLast('/')
+    }
+}
+
+/**
+ * The paging loops of the listing, the delta and the folder deletes (#82 F). A server or proxy that answers a page
+ * with a continuation token it was already asked for would otherwise be paged for ever, holding the memory and a
+ * budget slot. A repeated token fails the listing as an incomplete one, which the engine retries; a page cap keeps
+ * even fresh tokens from going on for ever.
+ */
+private class PageTokenGuard(
+    private val what: String,
+) {
+    private val seen = HashSet<String>()
+
+    /** Admits the token the next page is to be asked with, or fails the listing when it is a repeat. */
+    fun follow(token: String?) {
+        if (token == null) return
+        if (!seen.add(token)) throw ProviderException("$what answered a page token it was already asked for; the listing stopped incomplete")
+        if (seen.size > MAX_PAGES) throw ProviderException("$what was still paging after $MAX_PAGES pages; the listing stopped incomplete")
+    }
+
+    companion object {
+        // A thousand-page listing is ten million keys: far above any bucket this holds a cursor into.
+        private const val MAX_PAGES = 10_000
     }
 }

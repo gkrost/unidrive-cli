@@ -190,11 +190,18 @@ class DropboxProvider(
     override suspend fun listChildren(path: String): List<CloudItem> {
         ready()
         val out = mutableListOf<CloudItem>()
+        val asked = HashSet<String>()
         var page = api.rpc("files/list_folder", listArgs(apiPath(path), recursive = false, includeDeleted = false))
+        var pages = 0
         while (true) {
             page["entries"]?.jsonArray?.forEach { out += items.toCloudItem(it.jsonObject) }
             if (page["has_more"]?.jsonPrimitive?.booleanOrNull != true) return out
-            page = api.rpc("files/list_folder/continue", obj("cursor" to page.cursor()))
+            val next = page.cursor()
+            // A cursor already asked for would page for ever (#82 F): the listing fails as an incomplete one, which
+            // the engine retries, and a page cap keeps even fresh cursors from going on for ever.
+            if (!asked.add(next)) throw ProviderException("Dropbox repeated a listing cursor for '$path' it was already asked for; the listing stopped incomplete")
+            if (++pages > MAX_PAGES) throw ProviderException("Dropbox was still listing '$path' after $MAX_PAGES pages; the listing stopped incomplete")
+            page = api.rpc("files/list_folder/continue", obj("cursor" to next))
         }
     }
 
@@ -730,6 +737,9 @@ class DropboxProvider(
     companion object {
         private const val HTTP_NOT_FOUND = 404
         private const val LIST_LIMIT = 2000
+
+        // A thousand-page listing is two million entries: far above any folder this holds a cursor into.
+        private const val MAX_PAGES = 10_000
         private const val LONGPOLL_TIMEOUT_S = 480
         private const val IDLE_POLL_MS = 5_000L
         private const val HINT_REPEAT_MS = 60_000L
