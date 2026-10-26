@@ -318,6 +318,7 @@ class SyncEngineTest {
     @Test
     fun `sync deletes remote file when local deleted`() =
         runTest {
+            provider.files["/to-remove.txt"] = ByteArray(100)
             provider.deltaItems = listOf(cloudItem("/to-remove.txt", size = 100))
             engine.syncOnce()
 
@@ -414,6 +415,7 @@ class SyncEngineTest {
     @Test
     fun `zero-byte remote files are auto-hydrated`() =
         runTest {
+            provider.files["/empty.txt"] = ByteArray(0)
             provider.deltaItems = listOf(cloudItem("/empty.txt", size = 0))
             engine.syncOnce()
 
@@ -1065,6 +1067,7 @@ class SyncEngineTest {
             // Invariant under test: after a folder move-remote, the destination folder
             // row carries the canonical remoteId from provider.move() AND the descendant
             // rows survive at the new prefix.
+            provider.files["/a/docs/file.txt"] = ByteArray(42)
             provider.deltaItems =
                 listOf(
                     cloudItem("/a", isFolder = true),
@@ -4654,6 +4657,7 @@ class SyncEngineTest {
             // Seed an alive row that the engine will propagate-delete to the
             // cloud (local file vanished while cloud was unchanged → engine
             // emits DeleteRemote → provider.delete + status flip).
+            provider.files["/will-trash.txt"] = ByteArray(100)
             provider.deltaItems = listOf(cloudItem("/will-trash.txt", size = 100))
             engine.syncOnce()
             assertNotNull(db.getEntry("/will-trash.txt"))
@@ -4941,6 +4945,7 @@ class SyncEngineTest {
     fun `delete_of_already_gone_remote_tombstones_row_without_throwing`() =
         runTest {
             // Seed an alive, hydrated row (initial sync hydrates the file).
+            provider.files["/already-gone.txt"] = ByteArray(100)
             provider.deltaItems = listOf(cloudItem("/already-gone.txt", size = 100))
             engine.syncOnce()
             assertNotNull(db.getEntry("/already-gone.txt"))
@@ -4971,6 +4976,7 @@ class SyncEngineTest {
     fun `delete_with_transient_provider_error_rethrows_and_preserves_row`() =
         runTest {
             // Seed an alive, hydrated row.
+            provider.files["/transient.txt"] = ByteArray(100)
             provider.deltaItems = listOf(cloudItem("/transient.txt", size = 100))
             engine.syncOnce()
             assertNotNull(db.getEntry("/transient.txt"))
