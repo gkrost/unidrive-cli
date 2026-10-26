@@ -2350,7 +2350,13 @@ class InternxtProvider(
                     require(created.size == chunk.size) {
                         "createFoldersBatch returned ${created.size} folders for ${chunk.size} requested"
                     }
-                    chunk.zip(created).forEach { (idx, folder) ->
+                    chunk.forEachIndexed { position, idx ->
+                        // The answer is paired by name: its order is not documented, and a folder cached under another
+                        // folder's name sends everything below that name to the wrong place. An answer that does not name
+                        // its folders is taken in the order of the request.
+                        val folder =
+                            created.firstOrNull { it.plainName != null && sanitizeName(it.plainName) == sanitizeName(idx.name) }
+                                ?: created[position]
                         // UD-357: populate cache so later resolveFolder calls don't race.
                         folderCache.put(parentUuid, sanitizeName(idx.name), folder.uuid)
                         results[idx.originalIndex] = folder.toCloudItem(parentPath)
@@ -3168,6 +3174,9 @@ class InternxtProvider(
         fullGather: Boolean = false,
     ): DeltaPage {
         val creds = authService.getValidCredentials()
+        // The folders this pass names were renamed, moved or trashed (or are new): what the folder cache holds for them is
+        // from before. Another device's `mv docs old-docs; mkdir docs` must not keep sending uploads to the old folder.
+        folderCache.invalidateFolders(allFolders.map { it.uuid })
         // Mutable so the self-healing ancestor re-fetch can splice missing
         // ancestors in as it resolves; `associateBy` keeps the last entry per
         // uuid. Fetched ancestors live only in this map (they are unchanged
@@ -3715,6 +3724,7 @@ class InternxtProvider(
                 skipped,
             )
         }
+        folderCache.invalidateFolders(inventory.folders.map { it.uuid }) // see assembleFullDelta
         return scopedDeltaPage(inventory, rootUuid, startedAt.toString(), skipped)
     }
 
@@ -3913,15 +3923,8 @@ class InternxtProvider(
             // cache (populated by createFolder) does.
             val cached = folderCache.get(currentUuid, segment)
             if (cached != null) {
-                // TODO: if a subsequent op using `cached` as a parent UUID returns
-                // 404 (stale entry — folder deleted out-of-band), call
-                // `folderCache.invalidate(currentUuid, segment)` so the next
-                // resolveFolder re-fetches via the listing. To wire this cleanly,
-                // track `parentUuid` here and wrap the downstream getFolderContents
-                // call in a catch that invalidates on 404 before re-throwing.
-                // The SyncEngine.deleteRemote idempotency fix (fix/unlink-idempotent-gone)
-                // masks the resulting ProviderException for not-found paths, so this
-                // TODO is low-urgency — the stale entry self-heals after a process restart.
+                // A folder renamed, moved or trashed elsewhere leaves the cache when a change feed names it
+                // (assembleFullDelta); folderStateById drops a folder it finds gone.
                 currentUuid = cached
                 continue
             }
