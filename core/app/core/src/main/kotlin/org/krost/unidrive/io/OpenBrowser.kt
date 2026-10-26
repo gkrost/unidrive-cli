@@ -33,7 +33,9 @@ public fun openBrowser(url: String) {
         else -> arrayOf("xdg-open", url)
     }
     try {
-        Runtime.getRuntime().exec(cmd)
+        // ProcessBuilder, not Runtime.exec: the opener is a third-party program that must not inherit
+        // UNIDRIVE_VAULT_PASS (issue#83 E).
+        childProcessBuilder(cmd.toList()).start()
     } catch (e: IOException) {
         System.err.println("Could not open a browser (${e.message}); paste the printed URL manually.")
     }
