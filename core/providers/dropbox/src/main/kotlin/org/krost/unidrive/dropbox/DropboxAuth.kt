@@ -31,7 +31,13 @@ class DropboxAuth(
     private val log = org.slf4j.LoggerFactory.getLogger(DropboxAuth::class.java)
     private val json = org.krost.unidrive.UnidriveJson
     private val store =
-        CredentialStore(config.tokenPath, TOKEN_FILE, DropboxToken.serializer(), validate = { it.hasPlausibleShape() })
+        CredentialStore(
+            config.tokenPath,
+            TOKEN_FILE,
+            DropboxToken.serializer(),
+            validate = { it.hasPlausibleShape() },
+            protector = config.credentialProtector,
+        )
     private val refreshLatch = RefreshableTokenLatch()
 
     @Volatile
@@ -204,7 +210,16 @@ class DropboxAuth(
         val response = httpClient.submitForm(config.tokenUrl, form)
         val body = response.bodyAsText()
         if (!response.status.isSuccess()) tokenRefused(response.status.value, body, refreshing = previousRefreshToken != null)
-        val parsed = json.decodeFromString(DropboxTokenResponse.serializer(), body)
+        // A decode error's message quotes the JSON it choked on — for a token answer that is the grant itself;
+        // rethrow in the same exception family with only the shape named (issue#83 E).
+        val parsed =
+            try {
+                json.decodeFromString(DropboxTokenResponse.serializer(), body)
+            } catch (e: kotlinx.serialization.SerializationException) {
+                throw kotlinx.serialization.SerializationException(
+                    "Dropbox's token endpoint returned a payload this client cannot read (${org.krost.unidrive.auth.describeDecodeError(e)})",
+                )
+            }
         val fresh =
             DropboxToken(
                 accessToken = parsed.accessToken,

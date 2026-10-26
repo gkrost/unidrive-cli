@@ -11,7 +11,16 @@ import org.krost.unidrive.ProviderMetadata
 import java.nio.file.Files
 import java.nio.file.Path
 
-open class DropboxProviderFactory : ProviderFactory {
+/**
+ * [credentialProtector] keeps token.json (and the pending sign-in) protected at rest, as OneDriveProviderFactory does
+ * for OneDrive: the host's native store where every host has one (Windows DPAPI, the macOS Keychain); on Linux it is
+ * none, the owner-only file (see [org.krost.unidrive.auth.CredentialProtectors.atRestDefaultOrNull]). A token file
+ * written before is read as it is and rewritten protected the first time it is loaded.
+ */
+open class DropboxProviderFactory(
+    private val credentialProtector: org.krost.unidrive.auth.CredentialProtector? =
+        org.krost.unidrive.auth.CredentialProtectors.atRestDefaultOrNull(),
+) : ProviderFactory {
     override val id = "dropbox"
 
     override val metadata =
@@ -32,7 +41,7 @@ open class DropboxProviderFactory : ProviderFactory {
     override fun create(
         properties: Map<String, String?>,
         tokenPath: Path,
-    ): CloudProvider = DropboxProvider(DropboxConfig(appKey = appKey(properties), tokenPath = tokenPath))
+    ): CloudProvider = DropboxProvider(DropboxConfig(appKey = appKey(properties), tokenPath = tokenPath, credentialProtector = credentialProtector))
 
     private fun appKey(properties: Map<String, String?>): String =
         properties["client_id"]?.trim()?.takeIf { it.isNotEmpty() }
@@ -64,7 +73,11 @@ open class DropboxProviderFactory : ProviderFactory {
         profileDir: Path,
         properties: Map<String, String?>,
     ): BeginAuthResult {
-        val auth = DropboxAuth(DropboxConfig(appKey = appKey(properties), tokenPath = profileDir), newHttpClientForBegin())
+        val auth =
+            DropboxAuth(
+                DropboxConfig(appKey = appKey(properties), tokenPath = profileDir, credentialProtector = credentialProtector),
+                newHttpClientForBegin(),
+            )
         val verifier = org.krost.unidrive.auth.Pkce.generateVerifier()
         val state = java.util.UUID.randomUUID().toString()
         val handle = "dropbox-" + java.util.UUID.randomUUID()
@@ -121,7 +134,11 @@ open class DropboxProviderFactory : ProviderFactory {
             ?: return CompleteAuthResult.Failure(
                 "The code Dropbox showed is required: pipe it with --code-stdin.",
             )
-        val auth = DropboxAuth(DropboxConfig(appKey = appKey(properties), tokenPath = profileDir), newHttpClientForBegin())
+        val auth =
+            DropboxAuth(
+                DropboxConfig(appKey = appKey(properties), tokenPath = profileDir, credentialProtector = credentialProtector),
+                newHttpClientForBegin(),
+            )
         return try {
             val token = auth.exchangeCodeNoRedirect(code, flow.verifier)
             auth.saveToken(token)
@@ -152,7 +169,7 @@ open class DropboxProviderFactory : ProviderFactory {
     )
 
     private fun pendingFlowStore(profileDir: Path) =
-        org.krost.unidrive.auth.CredentialStore(profileDir, PENDING_FLOW_FILE, PendingDropboxFlow.serializer())
+        org.krost.unidrive.auth.CredentialStore(profileDir, PENDING_FLOW_FILE, PendingDropboxFlow.serializer(), protector = credentialProtector)
 
     internal companion object {
         const val PENDING_FLOW_FILE = "pending_dropbox_flow.json"
@@ -168,7 +185,14 @@ open class DropboxProviderFactory : ProviderFactory {
         val tokenFile = profileDir.resolve(DropboxAuth.TOKEN_FILE)
         if (!Files.exists(tokenFile)) return CredentialHealth.Missing("No token.json")
         return try {
-            val token = org.krost.unidrive.UnidriveJson.decodeFromString(DropboxToken.serializer(), Files.readString(tokenFile))
+            // Through the store, so a protected token decodes and a plaintext one is rewritten protected on the way.
+            val token =
+                org.krost.unidrive.auth.CredentialStore(
+                    profileDir,
+                    DropboxAuth.TOKEN_FILE,
+                    DropboxToken.serializer(),
+                    protector = credentialProtector,
+                ).load() ?: return CredentialHealth.Warning("token.json exists but could not be parsed")
             when {
                 // A refresh token renews the short-lived access token on its own.
                 token.refreshToken != null -> CredentialHealth.Ok
