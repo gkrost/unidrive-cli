@@ -584,9 +584,11 @@ class InternxtAuthServiceTest {
         return object : AuthService(
             config = config,
             crypto = object : InternxtCrypto() {
-                override fun decryptMnemonic(encryptedMnemonicHex: String, password: String): String =
+                // The sign-in runs on the char-based crypto overloads (issue#83 E): even a String password is
+                // copied to a CharArray, used by the KDF and the mnemonic decryption, and wiped after.
+                override fun decryptMnemonic(encryptedMnemonicHex: String, password: CharArray): String =
                     decryptedMnemonic
-                override fun hashPassword(password: String, sKey: String, cryptoKey: String): String =
+                override fun hashPassword(password: CharArray, sKey: String, cryptoKey: String): String =
                     "stub-hashed-password"
             },
         ) {
@@ -648,8 +650,8 @@ class InternxtAuthServiceTest {
         val service = object : AuthService(
             config = InternxtConfig(credentialProtector = null, tokenPath = tempDir),
             crypto = object : InternxtCrypto() {
-                override fun decryptMnemonic(encryptedMnemonicHex: String, password: String): String = "m"
-                override fun hashPassword(password: String, sKey: String, cryptoKey: String): String = "h"
+                override fun decryptMnemonic(encryptedMnemonicHex: String, password: CharArray): String = "m"
+                override fun hashPassword(password: CharArray, sKey: String, cryptoKey: String): String = "h"
             },
         ) {
             override suspend fun postLoginChallenge(email: String): String =
@@ -676,8 +678,8 @@ class InternxtAuthServiceTest {
         val service = object : AuthService(
             config = InternxtConfig(credentialProtector = null, tokenPath = tempDir),
             crypto = object : InternxtCrypto() {
-                override fun decryptMnemonic(encryptedMnemonicHex: String, password: String): String = "m"
-                override fun hashPassword(password: String, sKey: String, cryptoKey: String): String = "h"
+                override fun decryptMnemonic(encryptedMnemonicHex: String, password: CharArray): String = "m"
+                override fun hashPassword(password: CharArray, sKey: String, cryptoKey: String): String = "h"
             },
         ) {
             override suspend fun postLoginChallenge(email: String): String =

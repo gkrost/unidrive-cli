@@ -159,6 +159,10 @@ open class AuthService(
      * Compatibility overload for callers that already hold a String. The caller-owned String is
      * immutable and cannot be wiped; interactive authentication uses the CharArray overload.
      * The raw password is only used by local crypto and is never included in the HTTP request.
+     *
+     * The KDF and the mnemonic decryption run on the CharArray copy, so the wipe below covers every
+     * buffer this method itself created; the caller's String stays (issue#83 E — the copy was wiped
+     * before, but the crypto read the String, so the wipe touched nothing the crypto had read).
      */
     suspend fun authenticate(
         email: String,
@@ -167,13 +171,7 @@ open class AuthService(
     ): InternxtCredentials {
         val passwordChars = password.toCharArray()
         try {
-            return authenticateWithPassword(
-                email,
-                passwordChars,
-                tfaCode,
-                hashPassword = { _, sKey, cryptoKey -> crypto.hashPassword(password, sKey, cryptoKey) },
-                decryptMnemonic = { encrypted, _ -> crypto.decryptMnemonic(encrypted, password) },
-            )
+            return authenticate(email, passwordChars, tfaCode)
         } finally {
             passwordChars.fill('\u0000')
         }
@@ -210,7 +208,16 @@ open class AuthService(
             if (tfaCode != null) put("tfa", JsonPrimitive(tfaCode))
         }
         val accessText = postLoginAccess(accessBody)
-        val loginResult = json.decodeFromString<LoginAccessResponse>(accessText)
+        // A decode error's message quotes the JSON it choked on — for the sign-in answer that is the JWT and the
+        // encrypted mnemonic; rethrow in the same exception family with only the shape named (issue#83 E).
+        val loginResult =
+            try {
+                json.decodeFromString<LoginAccessResponse>(accessText)
+            } catch (e: kotlinx.serialization.SerializationException) {
+                throw kotlinx.serialization.SerializationException(
+                    "the sign-in answer is a payload this client cannot read (${org.krost.unidrive.auth.describeDecodeError(e)})",
+                )
+            }
 
         val rootFolderId = loginResult.rootFolderId()
         // Before anything is stored: another user than the one the profile's state belongs to is refused (archive#1241).
