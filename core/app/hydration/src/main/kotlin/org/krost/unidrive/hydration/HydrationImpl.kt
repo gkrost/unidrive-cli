@@ -172,6 +172,17 @@ class HydrationImpl(
 
     private val log = LoggerFactory.getLogger(HydrationImpl::class.java)
 
+    init {
+        // gkrost/unidrive-cli#72: the limits that shape the upload queue are fixed values, not profile settings; the log says which ones run.
+        log.info(
+            "hydration limits: transfer budget {}, upload queue depth {}, upload attempts {}, cache access grace {} s",
+            mount.transferBudgetSize,
+            uploadQueueDepth,
+            maxUploadAttempts,
+            cacheAccessGraceMs / 1000,
+        )
+    }
+
     // The read-only views (Recents, ...): their listing, and the real item a read verb on a view path is run on.
     private val views = HydrationViews(mount)
 

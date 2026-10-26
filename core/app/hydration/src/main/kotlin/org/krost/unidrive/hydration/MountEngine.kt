@@ -104,6 +104,9 @@ class MountEngine private constructor(
 
     private val gather: RemoteGather = wiring.gather
     private val transferBudget: Semaphore get() = guard.transferBudget
+
+    /** The number of transfers this profile runs at once (the provider's `maxConcurrentTransfers`). */
+    val transferBudgetSize: Int get() = guard.maxConcurrentTransfers
     private val uploadInFlight: (path: String) -> Boolean = wiring.uploadInFlight
     private val syncPaths: List<String> = options.syncPaths
 
