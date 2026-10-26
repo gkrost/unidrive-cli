@@ -104,4 +104,49 @@ class TokenManagerRefreshClassificationTest {
                 "a real invalid_grant must surface the expired / re-authenticate message; got: ${ex.message}",
             )
         }
+
+    // archive#1256 B: a throttle or a server error from the token endpoint says nothing about the refresh token. Only the
+    // network errors were classified transient; a 503 from the endpoint became "Authentication expired. Please
+    // re-authenticate." and the daemon stopped.
+    @Test
+    fun `a throttle or server error from the token endpoint is not latched as expired`() {
+        for (status in listOf(408, 429, 500, 502, 503, 504)) {
+            runTest {
+                val engine =
+                    MockEngine {
+                        respond(
+                            content = """{"error":"temporarily_unavailable"}""",
+                            status = HttpStatusCode.fromValue(status),
+                            headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                        )
+                    }
+                val manager = tokenManagerWith(engine)
+
+                assertFailsWith<TransientNetworkException>("HTTP $status") { manager.getValidToken() }
+                assertTrue(
+                    manager.lastRefreshFailure?.errorClass != "AuthenticationException",
+                    "HTTP $status must not be recorded as an AuthenticationException latch",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a rejected refresh token (401 or 403) is still latched as expired`() {
+        for (status in listOf(401, 403)) {
+            runTest {
+                val engine =
+                    MockEngine {
+                        respond(
+                            content = """{"error":"invalid_client"}""",
+                            status = HttpStatusCode.fromValue(status),
+                            headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                        )
+                    }
+                val manager = tokenManagerWith(engine)
+
+                assertFailsWith<AuthenticationException>("HTTP $status") { manager.getValidToken() }
+            }
+        }
+    }
 }

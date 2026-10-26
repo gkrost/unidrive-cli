@@ -216,6 +216,8 @@ class TokenManager(
         // A non-2xx refresh response (e.g. 400 invalid_grant) is a real auth
         // failure, not transient — refreshToken raises AuthenticationException.
         if (e is AuthenticationException) return false
+        // The token endpoint answered 408 / 429 / 5xx (OAuthService.refreshToken): it said nothing about the token.
+        if (e is TransientNetworkException) return true
         if (e is UnresolvedAddressException) return true // DNS blip — transient.
         if (e is io.ktor.client.plugins.HttpRequestTimeoutException) return true
         if (e is java.io.IOException && HttpRetryBudget.isRetriableIoException(e)) return true

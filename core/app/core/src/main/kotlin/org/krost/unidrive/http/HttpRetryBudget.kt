@@ -270,6 +270,14 @@ class HttpRetryBudget(
 
     companion object {
         /**
+         * archive#1256 B: true when an HTTP [status] from a token endpoint says nothing about the credential: a request
+         * timeout (408), a throttle (429) or any server error (5xx), such as a Cloudflare 502 in front of the endpoint. The
+         * answer is "try again later", never "the refresh token is rejected". A 400 (`invalid_grant`), 401 and 403 are
+         * the rejections. Shared by the token-refresh classifiers next to [isRetriableIoException].
+         */
+        fun isTransientHttpStatus(status: Int): Boolean = status == 408 || status == 429 || status in 500..599
+
+        /**
          * UD-278: classify an [IOException] as "another attempt is worth trying"
          * versus terminal. Conservatively narrow to known transient TCP failures —
          * `UnknownHostException` (DNS misconfig) and SSL handshake errors
