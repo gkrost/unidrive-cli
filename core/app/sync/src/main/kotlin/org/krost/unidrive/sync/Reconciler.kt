@@ -410,6 +410,7 @@ class Reconciler(
         detectMoves(actions, entryByPath, alias)
         detectRemoteRenames(actions, remoteChanges, entryByRemoteId, localChanges, alias)
         lastUnhydratedFolderDeletes = dropUnhydratedFolderDeletes(actions, entryByPath)
+        dropScopedAncestorRemoteDeletes(actions, syncPaths)
         deferIncompleteRemoteCreates(actions, localChanges, enumerationComplete)
         keepFoldersHoldingUnsyncedLocalContent(actions, localChanges, allDbEntries, alias)
         retargetBelowTwinFolders(actions, allDbEntries)
@@ -639,6 +640,7 @@ class Reconciler(
         detectMoves(actions, entryByPath, alias)
         detectRemoteRenames(actions, fullRemote, entryByRemoteId, fullLocal, alias)
         lastUnhydratedFolderDeletes = dropUnhydratedFolderDeletes(actions, entryByPath)
+        dropScopedAncestorRemoteDeletes(actions, syncPaths)
         deferIncompleteRemoteCreates(actions, fullLocal, enumerationComplete)
         keepFoldersHoldingUnsyncedLocalContent(actions, fullLocal, allDbEntries, alias)
         retargetBelowTwinFolders(actions, allDbEntries)
@@ -974,7 +976,11 @@ class Reconciler(
                     // Both created a folder — merge, no conflict
                     remoteItem != null && remoteItem.isFolder && Files.isDirectory(localPath) ->
                         SyncAction.CreatePlaceholder(path, remoteItem, shouldHydrate = false)
-                    // File exists locally with matching size — adopt (pin rules may still hydrate)
+                    // File exists locally with matching size — adopt (pin rules may still hydrate).
+                    // #97: size alone is not content; whether a differing same-size pair is a conflict
+                    // (keep both) or an adoption is the owner's call there — a first probe showed the
+                    // equal-size adopt is load-bearing beyond first sync (the freed-stub fill, the
+                    // remote rename onto an unsynced same-size local file, the narrow/widen re-adoption).
                     remoteItem != null &&
                         !remoteItem.isFolder &&
                         Files.isRegularFile(localPath) &&
@@ -1176,12 +1182,8 @@ class Reconciler(
         return false
     }
 
-    private fun policyForPath(path: String): ConflictPolicy {
-        for ((prefix, policy) in conflictOverrides) {
-            if (path.startsWith("/$prefix") || path.startsWith(prefix)) return policy
-        }
-        return defaultPolicy
-    }
+    private fun policyForPath(path: String): ConflictPolicy =
+        conflictPolicyFor(conflictOverrides, path, defaultPolicy)
 
     // archive#403: a new local item below a twin folder (kept under its decorated name) has no remote place of its own name:
     // the folder is the canonical one in the cloud. Aim the create at the canonical path; a provider that holds two
@@ -1271,6 +1273,18 @@ class Reconciler(
             )
         }
         return dropped
+    }
+
+    private fun dropScopedAncestorRemoteDeletes(actions: MutableList<SyncAction>, syncPaths: List<String>) {
+        val dropped = dropScopedAncestorRemoteDeletesOf(actions, syncPaths)
+        if (dropped.isNotEmpty()) {
+            log.warn(
+                "Dropped {} DeleteRemote action(s) for ancestors of the sync scope ({}): {}",
+                dropped.size,
+                syncPaths.joinToString(","),
+                dropped.take(5).joinToString(",") + if (dropped.size > 5) ",… (${dropped.size - 5} more)" else "",
+            )
+        }
     }
 
     private fun detectMoves(
@@ -1956,4 +1970,50 @@ class Reconciler(
             return sb.toString()
         }
     }
+}
+
+// #99: a scoped run never deletes in the cloud above its scope. A scope ancestor that is gone
+// locally — a profile narrowed after an unscoped sync leaves hydrated ancestor rows — is the
+// scope's bookkeeping, not a user delete: propagating it would delete the remote subtree the run
+// never looked at. The scope root's own actions stay, and the ancestors' row bookkeeping is
+// unchanged; the recovery loops that synthesize remote creates for ancestors are untouched —
+// creating a missing ancestor is how in-scope content lands.
+private fun dropScopedAncestorRemoteDeletesOf(actions: MutableList<SyncAction>, syncPaths: List<String>): List<String> {
+    if (syncPaths.isEmpty()) return emptyList()
+    val ancestors = mutableSetOf<String>()
+    for (scope in syncPaths) {
+        val parts = scope.trimEnd('/').removePrefix("/").split('/')
+        for (i in 1 until parts.size) {
+            ancestors.add("/" + parts.take(i).joinToString("/"))
+        }
+    }
+    if (ancestors.isEmpty()) return emptyList()
+    val dropped = mutableListOf<String>()
+    actions.removeAll { action ->
+        val match = action is SyncAction.DeleteRemote && action.path in ancestors
+        if (match) dropped.add(action.path)
+        match
+    }
+    return dropped
+}
+
+// #100: an override names a folder, not a string. It covers the folder itself and what is inside it
+// (a segment boundary), never a sibling that only shares the prefix (`Docs` is not `Docs-old`), and
+// the most specific override wins, whatever the map order. An override for the root covers everything.
+private fun conflictPolicyFor(
+    overrides: Map<String, ConflictPolicy>,
+    path: String,
+    default: ConflictPolicy,
+): ConflictPolicy =
+    overrides
+        .filterKeys { prefix -> overrideCovers(path, prefix) }
+        .maxByOrNull { (prefix, _) -> prefix.trim('/').length }
+        ?.value
+        ?: default
+
+private fun overrideCovers(path: String, prefixRaw: String): Boolean {
+    val prefix = prefixRaw.trim('/').removePrefix("/").trimEnd('/')
+    if (prefix.isEmpty()) return true
+    val p = path.removePrefix("/")
+    return p == prefix || p.startsWith("$prefix/")
 }

@@ -54,6 +54,19 @@ class StagingFilesNotUploadedTest {
         assertNull(changes["/Videos/clip.mp4.unidrive-tmp"], "staging file in a folder must not be uploaded: $changes")
     }
 
+    // The tracking engine stages a download as `.<name>.unidrive-download-<uuid>` beside the destination (TrackingEngine).
+    @Test
+    fun `a tracking engine staging file left by an interrupted download is not reported as a new file`() {
+        val staging = ".x.txt.unidrive-download-0b9c1c5e-7f0e-4a58-9d57-3f1f2f9a6c11"
+        Files.writeString(syncRoot.resolve(staging), "partial")
+        Files.writeString(syncRoot.resolve("real.txt"), "keep me")
+
+        val changes = LocalScanner(syncRoot, db, SyncConfig.DEFAULT_EXCLUDE_PATTERNS).scan()
+
+        assertEquals(ChangeState.NEW, changes["/real.txt"])
+        assertNull(changes["/$staging"], "staging file must not be uploaded: $changes")
+    }
+
     @Test
     fun `the ignore rules hold staging files back by default, without touching the names around them`() {
         val tree = IgnoreTree(MemoryIgnoreSource(emptyMap()), IgnoreSettings()) { }

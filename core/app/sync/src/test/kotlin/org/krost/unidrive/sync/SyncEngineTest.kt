@@ -4178,6 +4178,7 @@ class SyncEngineTest {
         size: Long = 100,
         isFolder: Boolean = false,
         deleted: Boolean = false,
+        hash: String? = "hash-$path",
     ) = CloudItem(
         id = "id-$path",
         name = path.substringAfterLast("/"),
@@ -4186,7 +4187,7 @@ class SyncEngineTest {
         isFolder = isFolder,
         modified = Instant.parse("2026-03-28T12:00:00Z"),
         created = Instant.parse("2026-03-28T10:00:00Z"),
-        hash = "hash-$path",
+        hash = hash,
         mimeType = "application/octet-stream",
         deleted = deleted,
     )
@@ -4274,15 +4275,27 @@ class SyncEngineTest {
     private fun stageTwoTrees(
         aFiles: Int,
         bFiles: Int,
+        realHashes: Boolean = false,
     ) {
+        // realHashes: the cloud rows carry the bytes' real hash, so a content check can verify them
+        // (#97). With the fake hash strings a same-size file can never be proven identical, and a
+        // re-widened subtree whose files stayed on disk would plan a conflict instead of an adoption.
+        provider.hashAlgorithmOverride = if (realHashes) org.krost.unidrive.HashAlgorithm.Sha256Hex else null
+        fun hashed(path: String, content: ByteArray): String? =
+            if (realHashes) {
+                val digest = java.security.MessageDigest.getInstance("SHA-256").digest(content)
+                digest.joinToString("") { "%02x".format(it) }
+            } else {
+                "hash-$path"
+            }
         val items = mutableListOf(cloudItem("/a", isFolder = true), cloudItem("/b", isFolder = true))
         for (i in 0 until aFiles) {
             provider.files["/a/f$i.txt"] = "a$i".toByteArray()
-            items += cloudItem("/a/f$i.txt", size = "a$i".length.toLong())
+            items += cloudItem("/a/f$i.txt", size = "a$i".length.toLong(), hash = hashed("/a/f$i.txt", "a$i".toByteArray()))
         }
         for (i in 0 until bFiles) {
             provider.files["/b/f$i.txt"] = "b$i".toByteArray()
-            items += cloudItem("/b/f$i.txt", size = "b$i".length.toLong())
+            items += cloudItem("/b/f$i.txt", size = "b$i".length.toLong(), hash = hashed("/b/f$i.txt", "b$i".toByteArray()))
         }
         provider.deltaItems = items
     }
@@ -4327,7 +4340,7 @@ class SyncEngineTest {
     @Test
     fun `re-widening after narrowing keeps the files that stayed on disk`() =
         runTest {
-            stageTwoTrees(aFiles = 2, bFiles = 4)
+            stageTwoTrees(aFiles = 2, bFiles = 4, realHashes = true)
             engineForScope().syncOnce()
             engineForScope(syncPaths = listOf("/a"), standingScope = listOf("/a")).syncOnce()
 
