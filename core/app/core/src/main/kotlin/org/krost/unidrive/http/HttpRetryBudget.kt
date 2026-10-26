@@ -42,8 +42,9 @@ import java.util.concurrent.atomic.AtomicLong
  *  1. **Circuit breaker.** When ≥ [stormThreshold] throttles land inside [stormWindowMs],
  *     [awaitSlot] blocks all new request starts until `max(retryAfter) × 1.2` has elapsed.
  *     Coroutines already past [awaitSlot] run to completion — we don't cancel in-flight work.
- *  2. **Concurrency halving.** Each storm halves [currentConcurrency] (floor = 1). Callers
- *     observe the reduced value to shrink their own semaphore permits on the next pass.
+ *  2. **Concurrency halving.** Each storm halves [currentConcurrency] (floor = 1). It is the number of
+ *     permits [withPermit] hands out, so a caller that bounds its requests through it shrinks with the storm.
+ *     [awaitSlot] alone takes no permit.
  *  3. **Adaptive token bucket.** [awaitSlot] enforces a minimum gap between successive
  *     request starts so concurrent wake-ups don't re-burst immediately. UD-200: the gap is
  *     read from recent-throttle state at each call so the fast path has no artificial cap:
@@ -97,9 +98,34 @@ class HttpRetryBudget(
     private val lastForegroundAdmissionMs = AtomicLong(Long.MIN_VALUE)
     private val yieldWindowMs: Long = minSpacingMs
 
-    /** Current target concurrency. Callers can read this each time they acquire a permit
-     *  and shrink their own semaphore to match. */
+    // The permits [withPermit] has handed out and not yet taken back.
+    private val permitsHeld = AtomicInteger(0)
+
+    /** Current target concurrency: the number of permits [withPermit] hands out. */
     fun currentConcurrency(): Int = concurrency.get()
+
+    /**
+     * Runs [block] holding one of the [currentConcurrency] permits, and gives it back when [block] ends, however it ends.
+     * A caller that finds every permit taken waits (suspended, polling every [PERMIT_POLL_MS]) and holds nothing while
+     * it waits, so cancelling it releases nothing it does not own. A throttle storm that halves the concurrency
+     * lowers the bound at once: permits already held run to completion and new callers wait until fewer than the new
+     * bound are held, so shrinking never deadlocks or starves anyone. Only callers that go through here are counted;
+     * [awaitSlot] alone (pacing and the circuit breaker) takes no permit, so cheap calls on the same budget stay
+     * unbounded. Take the permit first and then [awaitSlot], and never wait for a second permit of the same budget
+     * while holding one.
+     */
+    suspend fun <T> withPermit(block: suspend () -> T): T {
+        while (true) {
+            val held = permitsHeld.get()
+            if (held < concurrency.get() && permitsHeld.compareAndSet(held, held + 1)) break
+            delay(PERMIT_POLL_MS)
+        }
+        try {
+            return block()
+        } finally {
+            permitsHeld.decrementAndGet()
+        }
+    }
 
     /** Timestamp (epoch ms) until which all new request starts should pause.
      *  Zero when the circuit is closed. Exposed for diagnostics / tests. */
@@ -269,6 +295,9 @@ class HttpRetryBudget(
     }
 
     companion object {
+        /** How often a caller that waits for a [withPermit] permit looks again. */
+        const val PERMIT_POLL_MS = 25L
+
         /**
          * UD-278: classify an [IOException] as "another attempt is worth trying"
          * versus terminal. Conservatively narrow to known transient TCP failures —

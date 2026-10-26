@@ -1540,10 +1540,10 @@ class InternxtProvider(
             // per-request treatment the single PUT got. Completed parts are persisted
             // as they land, so a restart or reconnect re-PUTs only the missing ones.
             // The parts ride their own admission lane sized to the cap: the shared
-            // bridge budget admits four requests in all, so parts through it would
-            // silently cap the configured parallelism there (and starve every other
-            // bridge call while a large upload runs). A lane per parts pass also
-            // resets its throttle memory with the session, which is where the parts live.
+            // bridge budget paces every bridge call and keeps one throttle memory, so
+            // parts through it would share that with every other bridge call while a large
+            // upload runs. A lane per parts pass also resets its throttle memory with the
+            // session, which is where the parts live.
             suspend fun putParts(current: MultipartResume): Map<Int, String> {
                 val partBudget =
                     org.krost.unidrive.http.HttpRetryBudget(
@@ -2753,12 +2753,11 @@ class InternxtProvider(
         val heartbeat = onPageProgress?.let { cb -> ScanHeartbeat(cb) }
 
         // Parallel listing pagination. Files and folders streams run concurrently;
-        // inside each stream up to 2 page fetches stay in flight at a time. (The
-        // Drive HttpRetryBudget every listing call passes through does NOT bound
-        // this: awaitSlot gates on breaker, priority lane and spacing only —
-        // maxConcurrency seeds a storm-halving counter nothing enforces — so four
-        // heavy listing calls can be in flight at once, as observed on the live
-        // account, archive#517 F4. R7 tracks turning that into a real permit.) The API
+        // inside each stream up to 2 page fetches are asked for at a time. The heavy
+        // listing calls pass the Drive HttpRetryBudget's permits (withPermit, two of
+        // them, halved by a throttle storm), so no more than that many of them are on
+        // the wire at once, whichever stream asks (archive#517 R7; before that four could
+        // be in flight at once, as observed on the live account, F4). The API
         // itself tolerates more (measured on a live account 2026-09-29, archive#392:
         // throughput still scaled at concurrency 8, 8.7 calls/s, zero throttling;
         // /folders/content p50 ~0.3s, p99 ~2-4s, max ~8s) — the overlap exists to
