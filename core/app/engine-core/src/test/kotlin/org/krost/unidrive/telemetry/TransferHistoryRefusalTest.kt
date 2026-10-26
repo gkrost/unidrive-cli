@@ -2,6 +2,7 @@ package org.krost.unidrive.telemetry
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.sql.DriverManager
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.path.deleteIfExists
 import kotlin.test.AfterTest
@@ -95,5 +96,55 @@ class TransferHistoryRefusalTest {
         assertEquals(1, rows.size, "one failed row for the path, not two")
         assertNotEquals(firstId, rows.single().operationId, "the attempt that just ended is the row")
         assertEquals("failed", rows.single().result.wire)
+    }
+
+    @Test
+    fun `a failed replacement keeps the earlier refusal`() {
+        val first = history.begin(TransferDirection.UPLOAD, "/a/f.txt")
+        first.started()
+        first.finishRefused("gone", "ParentGoneException")
+        val firstId = rowsOf("/a/f.txt").single().operationId
+        val second = history.begin(TransferDirection.UPLOAD, "/a/f.txt")
+        second.started()
+        assertTrue(history.flush())
+        DriverManager.getConnection("jdbc:sqlite:${dir.resolve("telemetry.db")}").use { connection ->
+            connection.createStatement().use {
+                it.execute("CREATE TRIGGER fail_replacement BEFORE UPDATE ON transfers WHEN NEW.result = 'failed' BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+            }
+        }
+        second.finishRefused("gone", "ParentGoneException")
+        assertTrue(rowsOf("/a/f.txt").any { it.operationId == firstId }, "the previous refusal survives a failed replacement")
+    }
+
+    @Test
+    fun `a replacement signals a gap to live history subscribers`() {
+        val events = java.util.concurrent.CopyOnWriteArrayList<Long>()
+        history.addTailListener { seq, _ -> events.add(seq) }
+        val first = history.begin(TransferDirection.UPLOAD, "/a/f.txt")
+        first.started()
+        first.finishRefused("gone", "ParentGoneException")
+        assertTrue(history.flush())
+        val second = history.begin(TransferDirection.UPLOAD, "/a/f.txt")
+        second.started()
+        assertTrue(history.flush())
+        val before = events.last()
+        second.finishRefused("gone", "ParentGoneException")
+        assertTrue(history.flush())
+        assertEquals(before + 2, events.last(), "the missing sequence makes subscribers reload after the deletion")
+    }
+
+    @Test
+    fun `concurrent repeated refusals keep one row`() {
+        history.begin(TransferDirection.UPLOAD, "/a/f.txt").finishRefused("gone", "ParentGoneException")
+        assertTrue(history.flush())
+        val handles = List(16) { history.begin(TransferDirection.UPLOAD, "/a/f.txt").also { it.started() } }
+        assertTrue(history.flush())
+        val start = java.util.concurrent.CountDownLatch(1)
+        val threads = handles.map { handle ->
+            Thread { start.await(); handle.finishRefused("gone", "ParentGoneException") }.also { it.start() }
+        }
+        start.countDown()
+        threads.forEach { it.join() }
+        assertEquals(1, rowsOf("/a/f.txt").size)
     }
 }

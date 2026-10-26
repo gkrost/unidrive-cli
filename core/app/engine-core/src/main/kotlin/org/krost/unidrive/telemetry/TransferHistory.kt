@@ -82,8 +82,10 @@ class TransferHandle internal constructor(
     ) {
         require(result != TransferResult.RUNNING) { "a finished transfer is not running" }
         if (finished) return
-        history.refusals.forget(base.direction, base.path)
-        complete(result, bytesDone, errorClass, message, oldHash, newHash, attempted)
+        synchronized(history.refusals) {
+            history.refusals.forget(base.direction, base.path)
+            complete(result, bytesDone, errorClass, message, oldHash, newHash, attempted)
+        }
     }
 
     /**
@@ -104,21 +106,24 @@ class TransferHandle internal constructor(
         attempted: Boolean = true,
     ) {
         if (finished) return
-        val previous = history.refusals.last(base.direction, base.path, reason)
-        if (previous != null && startedNanos == null) {
-            // Never held a permit: no row of its own. The earlier row is the refusal, seen again now.
-            finished = true
-            val seen = previous.copy(finishedAt = history.wallNow)
-            history.refusals.note(seen, reason)
-            history.enqueue(seen)
-            return
+        synchronized(history.refusals) {
+            val previous = history.refusals.last(base.direction, base.path, reason)
+            if (previous != null && startedNanos == null) {
+                // Never held a permit: no row of its own. The earlier row is the refusal, seen again now.
+                finished = true
+                val seen = previous.copy(finishedAt = history.wallNow)
+                history.refusals.note(seen, reason)
+                history.enqueue(seen)
+                return
+            }
+            complete(TransferResult.FAILED, null, errorClass, message, null, null, attempted, enqueue = previous == null)
+            // A transfer that was started has its row (it was running): that row is the refusal now and the earlier one goes.
+            if (previous != null) history.replace(row, previous.operationId)
+            history.refusals.note(row, reason)
         }
-        complete(TransferResult.FAILED, null, errorClass, message, null, null, attempted)
-        // A transfer that was started has its row (it was running): that row is the refusal now and the earlier one goes.
-        if (previous != null) history.refusals.discard(previous)
-        history.refusals.note(row, reason)
     }
 
+    @Suppress("LongParameterList") // the final snapshot's optional fields and whether it replaces an earlier row
     private fun complete(
         result: TransferResult,
         bytesDone: Long?,
@@ -127,6 +132,7 @@ class TransferHandle internal constructor(
         oldHash: String?,
         newHash: String?,
         attempted: Boolean,
+        enqueue: Boolean = true,
     ) {
         finished = true
         val nowNanos = history.nanoNow
@@ -145,7 +151,7 @@ class TransferHandle internal constructor(
                 newHash = newHash ?: row.newHash,
                 nextTryAtMs = null,
             )
-        history.enqueue(row)
+        if (enqueue) history.enqueue(row)
     }
 
     private fun nanosToMs(nanos: Long): Long = TimeUnit.NANOSECONDS.toMillis(nanos.coerceAtLeast(0))
@@ -169,6 +175,7 @@ class TransferHandle internal constructor(
  * It implements [AuditSink] so it can stand where the mount engine already reports mutations; a row
  * that arrives that way carries no timing (null, not 0).
  */
+@Suppress("TooManyFunctions") // the history's producer, reader, listener and lifecycle operations
 class TransferHistory private constructor(
     private val profile: String,
     private val clock: () -> Long,
@@ -249,9 +256,10 @@ class TransferHistory private constructor(
     }
 
     internal fun enqueue(row: TransferRow) = writer.offer(row)
+    internal fun replace(row: TransferRow, previousId: String) = writer.replace(row, previousId)
 
     // gkrost/unidrive-cli#134: the last refusal of each path, so that the same refusal offered again is one row.
-    internal val refusals = RefusalMemory { operationId -> writer.discard(operationId) }
+    internal val refusals = RefusalMemory()
 
     private var metrics: RequestMetricsRecorder? = null
 

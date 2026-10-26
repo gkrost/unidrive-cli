@@ -5,9 +5,7 @@ package org.krost.unidrive.telemetry
  * leaves when any other transfer of it ends. Bounded: the paths least recently refused are forgotten first. The memory is the
  * history's own and goes with the process.
  */
-internal class RefusalMemory(
-    private val discardRow: (operationId: String) -> Unit,
-) {
+internal class RefusalMemory {
     private val refusals =
         object : LinkedHashMap<Pair<TransferDirection, String>, Pair<String, TransferRow>>(INITIAL_CAPACITY, LOAD_FACTOR, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<TransferDirection, String>, Pair<String, TransferRow>>) =
@@ -34,9 +32,6 @@ internal class RefusalMemory(
     ) {
         synchronized(refusals) { refusals.remove(direction to path) }
     }
-
-    /** The earlier row [earlier] of a path is replaced by a newer one: it leaves the file. */
-    fun discard(earlier: TransferRow) = discardRow(earlier.operationId)
 
     private companion object {
         const val MAX_REMEMBERED = 4096

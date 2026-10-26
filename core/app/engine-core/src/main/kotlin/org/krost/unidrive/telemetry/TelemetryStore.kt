@@ -156,12 +156,17 @@ internal class TelemetryStore private constructor(
         }
     }
 
-    /** Removes the row of [operationId], if the file has it. */
     @Synchronized
-    fun delete(operationId: String) {
-        connection().prepareStatement("DELETE FROM transfers WHERE operation_id = ?").use {
-            it.setString(1, operationId)
-            it.executeUpdate()
+    fun replace(row: TransferRow, previousId: String) {
+        inTransaction { c ->
+            c.prepareStatement(UPSERT).use { ps ->
+                TransferRowCodec.bind(ps, row)
+                ps.executeUpdate()
+            }
+            c.prepareStatement("DELETE FROM transfers WHERE operation_id = ?").use {
+                it.setString(1, previousId)
+                it.executeUpdate()
+            }
         }
     }
 

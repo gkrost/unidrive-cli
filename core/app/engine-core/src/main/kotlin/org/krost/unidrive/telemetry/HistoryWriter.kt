@@ -26,8 +26,9 @@ internal class HistoryWriter(
             val row: TransferRow,
         ) : Op
 
-        class Discard(
-            val operationId: String,
+        class Replace(
+            val row: TransferRow,
+            val previousId: String,
         ) : Op
 
         class Barrier(
@@ -70,9 +71,12 @@ internal class HistoryWriter(
         }
     }
 
-    /** Hands the removal of one row to the queue; a full queue drops it (the row stays, a duplicate at worst) and counts nothing. */
-    fun discard(operationId: String) {
-        if (accepting.get()) queue.offer(Op.Discard(operationId))
+    fun replace(row: TransferRow, previousId: String) {
+        if (!accepting.get()) return
+        if (!queue.offer(Op.Replace(row, previousId))) {
+            dropped.incrementAndGet()
+            droppedUnrecorded.set(true)
+        }
     }
 
     fun flush(timeoutMs: Long): Boolean = control(timeoutMs) { Op.Barrier(it) }
@@ -145,9 +149,9 @@ internal class HistoryWriter(
         for (op in batch) {
             when (op) {
                 is Op.Write -> pending[op.row.operationId] = op.row
-                is Op.Discard -> {
+                is Op.Replace -> {
                     writePending(pending)
-                    discardRow(op.operationId)
+                    replaceRow(op.row, op.previousId)
                 }
                 is Op.Barrier -> {
                     writePending(pending)
@@ -166,13 +170,17 @@ internal class HistoryWriter(
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private fun discardRow(operationId: String) {
+    private fun replaceRow(row: TransferRow, previousId: String) {
         try {
-            store.delete(operationId)
+            store.replace(row, previousId)
+            written.incrementAndGet()
+            writtenSincePrune++
+            tail.publishReplacement(row)
+            recordGapIfAny()
         } catch (e: SQLException) {
-            log.debug("History for {}: a replaced row was not removed: {}", profile, e.message)
+            writeFailed(1, e)
         } catch (e: RuntimeException) {
-            log.debug("History for {}: a replaced row was not removed: {}", profile, e.javaClass.simpleName)
+            writeFailed(1, e)
         }
     }
 
