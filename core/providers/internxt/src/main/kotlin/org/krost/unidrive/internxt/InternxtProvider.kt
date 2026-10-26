@@ -1636,18 +1636,24 @@ class InternxtProvider(
                                             e
                                         }
                                     }
-                                tombMutex.withLock {
-                                    completed[index] = etag
-                                    val parts =
-                                        completed.entries
-                                            .map { MultipartPartRecord(it.key, it.value) }
-                                            .sortedBy { it.index }
-                                    currentTomb =
-                                        currentTomb.copy(
-                                            multipart = current.copy(parts = parts),
-                                            tombstoneWrittenAtMillis = System.currentTimeMillis(),
-                                        )
-                                    withContext(Dispatchers.IO) { tombstoneStore.write(pathHashStr, currentTomb) }
+                                // Completed in NonCancellable: when a sibling part's ladder gives up, this scope
+                                // cancels every part still in it — a part whose PUT landed but whose write was
+                                // still queued would then never reach the tombstone, and the next attempt would
+                                // re-put a part the server already has. A completed part is always persisted.
+                                withContext(NonCancellable) {
+                                    tombMutex.withLock {
+                                        completed[index] = etag
+                                        val parts =
+                                            completed.entries
+                                                .map { MultipartPartRecord(it.key, it.value) }
+                                                .sortedBy { it.index }
+                                        currentTomb =
+                                            currentTomb.copy(
+                                                multipart = current.copy(parts = parts),
+                                                tombstoneWrittenAtMillis = System.currentTimeMillis(),
+                                            )
+                                        withContext(Dispatchers.IO) { tombstoneStore.write(pathHashStr, currentTomb) }
+                                    }
                                 }
                             }
                         }
