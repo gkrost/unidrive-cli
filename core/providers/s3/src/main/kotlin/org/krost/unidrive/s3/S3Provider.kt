@@ -480,7 +480,10 @@ class S3Provider(
         private const val MAX_PRESIGN_SECONDS = 7L * 24 * 3600
         private const val COPY_PART_SIZE = 512L * 1024 * 1024
 
-        fun keyOf(path: String): String = path.trim('/')
+        // Exactly one leading slash comes off: an object whose key starts with one (another tool's `/a.txt`, listed
+        // at `//a.txt`) must be addressed at that same key, not at the object without it (#82 E). Trailing slashes
+        // are folder addressing and never part of a file key.
+        fun keyOf(path: String): String = path.removePrefix("/").trimEnd('/')
 
         private fun prefixOf(path: String): String = keyOf(path).let { if (it.isEmpty()) "" else "$it/" }
 
