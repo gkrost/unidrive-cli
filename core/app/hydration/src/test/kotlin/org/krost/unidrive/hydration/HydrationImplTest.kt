@@ -208,7 +208,24 @@ internal class MinimalFakeProvider(
     // WB-3 (archive#87): the unlink ghost check probes the cloud for a local: row's content. A path with
     // no seeded remote content answers "not found" the way the provider would (a 404-shaped
     // exception that remoteItemOrNull maps to null).
+    // gkrost/unidrive-cli#134: the folders a listing by path finds (getMetadata answers a folder for them); a path in neither this
+    // nor [remoteFiles] is not found.
+    val liveFolders: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     override suspend fun getMetadata(path: String): CloudItem {
+        if (path in liveFolders) {
+            return CloudItem(
+                id = "live-$path",
+                name = path.substringAfterLast('/'),
+                path = path,
+                size = 0L,
+                isFolder = true,
+                modified = Instant.parse("2026-03-28T12:00:00Z"),
+                created = null,
+                hash = null,
+                mimeType = null,
+            )
+        }
         remoteFiles[path]
             ?: throw ProviderException("Item not found: $path")
         return CloudItem(
@@ -416,8 +433,12 @@ internal class MinimalFakeProvider(
     // tests (a refused mkdir must not reach the provider).
     val createdFolders = mutableListOf<String>()
 
+    // gkrost/unidrive-cli#134: createFolder fails with this (null: it creates).
+    @Volatile var createFolderFailure: Exception? = null
+
     override suspend fun createFolder(path: String): CloudItem {
         createdFolders.add(path)
+        createFolderFailure?.let { throw it }
         return CloudItem(
             id = "folder-$path",
             name = path.substringAfterLast('/'),
@@ -934,6 +955,16 @@ internal class HydrationTestEnv(
         /** archive#580: what the provider answers when asked for the folder [remoteId] by its id. */
         fun answerFolderState(remoteId: String, state: org.krost.unidrive.FolderState) {
             fakeProvider.folderStates[remoteId] = state
+        }
+
+        /** gkrost/unidrive-cli#134: a listing by path finds the folder [path] (it is live in the cloud). */
+        fun liveFolder(path: String) {
+            fakeProvider.liveFolders.add(path)
+        }
+
+        /** gkrost/unidrive-cli#134: creating a folder fails with [failure] (null: it works again). */
+        fun failCreateFolder(failure: Exception?) {
+            fakeProvider.createFolderFailure = failure
         }
 
         /** archive#580: every lookup of a folder by its id fails with [failure] (null: they answer again). */
