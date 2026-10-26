@@ -5,9 +5,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
@@ -1583,6 +1585,9 @@ class InternxtProvider(
             // silently cap the configured parallelism there (and starve every other
             // bridge call while a large upload runs). A lane per parts pass also
             // resets its throttle memory with the session, which is where the parts live.
+            // TooGenericExceptionCaught: the drain records whatever a part died of and rethrows it after the drain;
+            // a CancellationException is rethrown at once. ThrowsCount: the failures of the ladder are throws.
+            @Suppress("TooGenericExceptionCaught", "ThrowsCount")
             suspend fun putParts(current: MultipartResume): Map<Int, String> {
                 val partBudget =
                     org.krost.unidrive.http.HttpRetryBudget(
@@ -1594,71 +1599,84 @@ class InternxtProvider(
                 for (part in current.parts) completed[part.index] = part.etag
                 val tombMutex = kotlinx.coroutines.sync.Mutex()
                 val partsSem = kotlinx.coroutines.sync.Semaphore(effectiveUploadConcurrency)
-                kotlinx.coroutines.coroutineScope {
+                // supervisorScope, not coroutineScope: a part that used its ladder up does not cancel the parts still
+                // in flight — their PUTs are let finish (bounded by the per-part watchdog), so what the server already
+                // has lands in the tombstone and the next attempt re-PUTs only what it must. No new part starts once
+                // one failed. The first failure is rethrown below, after the drain.
+                val firstFailure = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+                kotlinx.coroutines.supervisorScope {
                     for (index in 0 until current.numParts) {
-                        if (completed.containsKey(index)) continue
+                        if (completed.containsKey(index) || firstFailure.get() != null) continue
                         val offset = index.toLong() * current.chunkSize
                         val size = partSize(current, index, encryptedSize)
                         launch {
                             partsSem.withPermit {
-                                val etag =
-                                    try {
-                                        retryShardCommit {
-                                            val put =
-                                                api.putEncryptedPartFromFile(
-                                                    current.urls[index],
-                                                    tempFile,
-                                                    offset,
-                                                    size,
-                                                    partBudget,
-                                                    onBytesSent = { sent ->
-                                                        // The single-PUT convention (archive#1197), scaled from this
-                                                        // part's window of the ciphertext to plaintext bytes:
-                                                        // live values while the body streams, always held below
-                                                        // the total; the one final report follows the last part.
-                                                        val scaled = ((offset + sent).toDouble() / encryptedSize * fileSize).toLong()
-                                                        onProgress?.invoke(scaled.coerceIn(0L, fileSize - 1), fileSize)
-                                                    },
-                                                )
-                                            if (put.isNullOrBlank()) {
-                                                throw InternxtApiException("Part ${index + 1} of $remotePath answered no ETag")
+                                if (firstFailure.get() != null) return@withPermit
+                                try {
+                                    val etag =
+                                        try {
+                                            retryShardCommit {
+                                                val put =
+                                                    api.putEncryptedPartFromFile(
+                                                        current.urls[index],
+                                                        tempFile,
+                                                        offset,
+                                                        size,
+                                                        partBudget,
+                                                        onBytesSent = { sent ->
+                                                            // The single-PUT convention (archive#1197), scaled from this
+                                                            // part's window of the ciphertext to plaintext bytes:
+                                                            // live values while the body streams, always held below
+                                                            // the total; the one final report follows the last part.
+                                                            val scaled = ((offset + sent).toDouble() / encryptedSize * fileSize).toLong()
+                                                            onProgress?.invoke(scaled.coerceIn(0L, fileSize - 1), fileSize)
+                                                        },
+                                                    )
+                                                if (put.isNullOrBlank()) {
+                                                    throw InternxtApiException("Part ${index + 1} of $remotePath answered no ETag")
+                                                }
+                                                put
                                             }
-                                            put
+                                        } catch (e: InternxtApiException) {
+                                            // A part PUT carries no bridge auth — a 403 means the
+                                            // presigned URL itself is refused, which is the session's
+                                            // signature having expired (or the URL mangled). Retrying
+                                            // the URL cannot help; a fresh session can.
+                                            throw if (e.statusCode == 403) {
+                                                PresignedUrlsDeadException("part ${index + 1} of $remotePath: ${e.message}", e)
+                                            } else {
+                                                e
+                                            }
                                         }
-                                    } catch (e: InternxtApiException) {
-                                        // A part PUT carries no bridge auth — a 403 means the
-                                        // presigned URL itself is refused, which is the session's
-                                        // signature having expired (or the URL mangled). Retrying
-                                        // the URL cannot help; a fresh session can.
-                                        throw if (e.statusCode == 403) {
-                                            PresignedUrlsDeadException("part ${index + 1} of $remotePath: ${e.message}", e)
-                                        } else {
-                                            e
+                                    // Completed in NonCancellable: when the daemon stops an upload, this scope
+                                    // cancels every part still in it — a part whose PUT landed but whose write was
+                                    // still queued would then never reach the tombstone, and the next attempt would
+                                    // re-put a part the server already has. A completed part is always persisted.
+                                    withContext(NonCancellable) {
+                                        tombMutex.withLock {
+                                            completed[index] = etag
+                                            val parts =
+                                                completed.entries
+                                                    .map { MultipartPartRecord(it.key, it.value) }
+                                                    .sortedBy { it.index }
+                                            currentTomb =
+                                                currentTomb.copy(
+                                                    multipart = current.copy(parts = parts),
+                                                    tombstoneWrittenAtMillis = System.currentTimeMillis(),
+                                                )
+                                            withContext(Dispatchers.IO) { tombstoneStore.write(pathHashStr, currentTomb) }
                                         }
                                     }
-                                // Completed in NonCancellable: when a sibling part's ladder gives up, this scope
-                                // cancels every part still in it — a part whose PUT landed but whose write was
-                                // still queued would then never reach the tombstone, and the next attempt would
-                                // re-put a part the server already has. A completed part is always persisted.
-                                withContext(NonCancellable) {
-                                    tombMutex.withLock {
-                                        completed[index] = etag
-                                        val parts =
-                                            completed.entries
-                                                .map { MultipartPartRecord(it.key, it.value) }
-                                                .sortedBy { it.index }
-                                        currentTomb =
-                                            currentTomb.copy(
-                                                multipart = current.copy(parts = parts),
-                                                tombstoneWrittenAtMillis = System.currentTimeMillis(),
-                                            )
-                                        withContext(Dispatchers.IO) { tombstoneStore.write(pathHashStr, currentTomb) }
-                                    }
+                                } catch (e: CancellationException) {
+                                    throw e   // the daemon took the upload down; nothing to drain
+                                } catch (e: Throwable) {
+                                    firstFailure.compareAndSet(null, e)
                                 }
                             }
                         }
                     }
                 }
+                firstFailure.get()?.let { throw it }
                 return completed
             }
 
