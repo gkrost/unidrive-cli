@@ -14,9 +14,10 @@ class ConfigValueExitCodeTest {
         val dir = Files.createTempDirectory("config-value-exit")
         try {
             val root = Files.createDirectories(dir.resolve("local")).toString().replace('\\', '/')
+            val remote = Files.createDirectories(dir.resolve("remote")).toString().replace('\\', '/')
             Files.writeString(
                 dir.resolve("config.toml"),
-                "[general]\n$general\n\n[providers.test]\ntype = \"localfs\"\nsync_root = \"$root\"\nroot_path = \"$root\"\n",
+                "[general]\n$general\n\n[providers.test]\ntype = \"localfs\"\nsync_root = \"$root\"\nroot_path = \"$remote\"\n",
             )
             val err = ByteArrayOutputStream()
             val originalErr = System.err
