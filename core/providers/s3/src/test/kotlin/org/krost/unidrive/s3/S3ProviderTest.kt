@@ -85,7 +85,8 @@ class S3ProviderTest {
             assertEquals(2, progress.size)
             val x = page.items.single { it.path == "/docs/deep/x.txt" }
             assertEquals("docs/deep/x.txt", x.id)
-            assertEquals(FakeS3.md5Hex("22".toByteArray()), x.hash)
+            assertNull(x.hash)
+            assertEquals(FakeS3.md5Hex("22".toByteArray()), x.version)
             assertEquals(2, x.size)
         }
 

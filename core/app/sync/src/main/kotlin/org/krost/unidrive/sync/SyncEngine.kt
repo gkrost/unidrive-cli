@@ -2909,6 +2909,7 @@ open class SyncEngine(
                 remotePath = action.remoteTarget,
                 remoteId = result.id,
                 remoteHash = result.hash,
+                remoteVersion = result.version,
                 remoteSize = result.size,
                 remoteModified = result.modified,
                 localMtime = mtime,
@@ -2999,6 +3000,7 @@ open class SyncEngine(
                 remotePath = action.remoteTarget,
                 remoteId = result.id,
                 remoteHash = result.hash,
+                remoteVersion = result.version,
                 remoteSize = oldEntry?.remoteSize ?: result.size,
                 remoteModified = result.modified,
                 localMtime = baseline?.localMtime ?: mtime,
@@ -3768,6 +3770,7 @@ open class SyncEngine(
                     path = action.path,
                     remoteId = result.id,
                     remoteHash = result.hash,
+                    remoteVersion = result.version,
                     remoteSize = result.size,
                     remoteModified = result.modified,
                     localMtime = mtime,
@@ -3825,6 +3828,7 @@ open class SyncEngine(
         remotePath = if (item.path != path) item.path else null,
         remoteId = item.id,
         remoteHash = item.hash,
+        remoteVersion = item.version,
         remoteSize = item.size,
         remoteModified = item.modified,
         localMtime = placeholder.localMtime(path),
@@ -3838,14 +3842,14 @@ open class SyncEngine(
     // archive#396: for a provider with no remote content hash (Internxt), record the SHA-256 of the
     // bytes the engine itself just wrote (download) or sent (upload). LocalScanner uses it to
     // recognise a file whose mtime was bumped by something else (shell handler, indexer,
-    // antivirus) as unchanged instead of planning a redundant re-upload. Hash-capable
-    // providers are left alone: the scanner already compares against the remote hash there.
+    // antivirus) as unchanged instead of planning a redundant re-upload. When the item has
+    // a remote hash the scanner compares against that instead.
     //
     // The hash is kept only if the file still has the mtime and size the row records, so a
     // write that lands while we are hashing cannot turn the new bytes into the tracked
     // baseline. Any read failure just leaves the hash null (today's mtime+size behaviour).
     private fun withLocalHash(entry: SyncEntry): SyncEntry {
-        if (provider.hashAlgorithm() != null || entry.isFolder) return entry
+        if ((provider.hashAlgorithm() != null && !entry.remoteHash.isNullOrEmpty()) || entry.isFolder) return entry
         val mtime = entry.localMtime ?: return entry
         val size = entry.localSize ?: return entry
         return withLocalHash(entry, placeholder.resolveLocal(entry.path), mtime, size)
@@ -3874,7 +3878,7 @@ open class SyncEngine(
         streamedHash: String?,
     ): SyncEntry =
         if (receipt.plaintextSha256 != null) {
-            if (provider.hashAlgorithm() == null && !entry.isFolder) {
+            if ((provider.hashAlgorithm() == null || entry.remoteHash.isNullOrEmpty()) && !entry.isFolder) {
                 entry.copy(
                     localHash = streamedHash,
                     localMtime = receipt.stagedMtimeMillis,
@@ -3976,7 +3980,9 @@ open class SyncEngine(
     private fun differsFromCloud(
         row: SyncEntry,
         item: CloudItem,
-    ): Boolean = row.remoteHash != item.hash || row.remoteSize != item.size || row.remoteModified != item.modified
+    ): Boolean =
+        row.remoteHash != item.hash || row.remoteSize != item.size || row.remoteModified != item.modified ||
+            (row.remoteVersion != null && item.version != null && row.remoteVersion != item.version)
 
     private fun actionLabel(action: SyncAction): String =
         when (action) {
@@ -4039,7 +4045,7 @@ open class SyncEngine(
         try {
             val row = db.getEntry(path)
             db.upsertEntry(
-                row?.copy(isHydrated = false, remoteHash = item.hash, remoteSize = item.size, remoteModified = item.modified)
+                row?.copy(isHydrated = false, remoteHash = item.hash, remoteVersion = item.version, remoteSize = item.size, remoteModified = item.modified)
                     ?: entryFromCloudItem(item, path, isHydrated = false),
             )
         } catch (e: Exception) {

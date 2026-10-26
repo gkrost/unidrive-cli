@@ -1,12 +1,14 @@
 package org.krost.unidrive.s3
 
 import kotlinx.coroutines.test.runTest
+import org.krost.unidrive.RemoteConflictException
 import java.nio.file.Files
 import java.time.Instant
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 
 /**
@@ -48,6 +50,36 @@ class S3EtagHashTest {
     }
 
     @Test
+    fun `opaque ETags remain available as write tokens`() = runTest {
+        val fake = FakeS3()
+        val etag = "d41d8cd98f00b204e9800998ecf8427e-7"
+        fake.objects["mp.txt"] = obj("mp.txt", etag)
+        val provider = provider(fake)
+
+        assertEquals(etag, provider.getMetadata("/mp.txt").version)
+        assertEquals(etag, provider.listChildren("/").single().version)
+        assertEquals(etag, provider.delta(null).items.single { it.id == "mp.txt" }.version)
+    }
+
+    @Test
+    fun `a stale opaque ETag prevents a multipart overwrite`() = runTest {
+        val fake = FakeS3()
+        fake.objects["mp.txt"] = obj("mp.txt", "d41d8cd98f00b204e9800998ecf8427e-7")
+        val config = S3Config(
+            "b", "us-east-1", "http://localhost:9000", "AK", "SK", dir,
+            multipartThreshold = 0,
+            vendor = S3Config.Vendor("aws", 10_000, conditionalWrites = true),
+        )
+        val provider = S3Provider(config, fake.engine)
+        val version = provider.delta(null).items.single { it.id == "mp.txt" }.version
+        fake.put("mp.txt", "new remote bytes")
+        val local = dir.resolve("mine").also { Files.writeString(it, "my bytes") }
+
+        assertFailsWith<RemoteConflictException> { provider.upload(local, "/mp.txt", ifMatchETag = version) }
+        assertEquals("new remote bytes", fake.text("mp.txt"))
+    }
+
+    @Test
     fun `an upload through multipart reports no hash`() = runTest {
         val fake = FakeS3()
         val provider = provider(fake)
@@ -62,24 +94,42 @@ class S3EtagHashTest {
     fun `an SSE-KMS or SSE-C object reports no hash where a HEAD can see it`() = runTest {
         val fake = FakeS3()
         fake.objects["kms.txt"] = obj("kms.txt", "opaque-kms-etag", sse = "aws:kms")
-        fake.objects["ssec.txt"] = obj("ssec.txt", "opaque-ssec-etag", sse = "aws:kms:dsse")
+        fake.objects["dsse.txt"] = obj("dsse.txt", "opaque-dsse-etag", sse = "aws:kms:dsse")
+        val bytes = "ssec".toByteArray()
+        fake.objects["ssec.txt"] = FakeS3.Obj(bytes, bytes.size.toLong(), "d41d8cd98f00b204e9800998ecf8427e", emptyMap(), Instant.EPOCH, sseCustomer = "AES256")
 
         val provider = provider(fake)
 
         assertNull(provider.getMetadata("/kms.txt").hash)
+        assertNull(provider.getMetadata("/dsse.txt").hash)
         assertNull(provider.getMetadata("/ssec.txt").hash)
+    }
+
+    @Test
+    fun `a listing does not mistake a KMS ETag for a plaintext hash`() = runTest {
+        val fake = FakeS3()
+        val etag = "d41d8cd98f00b204e9800998ecf8427e"
+        fake.objects["kms.txt"] = obj("kms.txt", etag, sse = "aws:kms")
+        val provider = provider(fake)
+
+        val listed = provider.delta(null).items.single { it.id == "kms.txt" }
+        assertNull(listed.hash)
+        assertEquals(etag, listed.version)
+        assertNull(provider.listChildren("/").single().hash)
     }
 
     @Test
     fun `a plain object keeps its MD5`() = runTest {
         val fake = FakeS3()
         fake.put("plain.txt", "PLAIN")
-        fake.objects["ssec3.txt"] = obj("ssec3.txt", "anything", sse = "AES256")
+        val sseEtag = FakeS3.md5Hex("ssec3.txt-bytes".toByteArray())
+        fake.objects["ssec3.txt"] = obj("ssec3.txt", sseEtag, sse = "AES256")
 
         val provider = provider(fake)
         val items = provider.listChildren("/").associateBy { it.id }
 
-        assertEquals(FakeS3.md5Hex("PLAIN".toByteArray()), items.getValue("plain.txt").hash)
-        assertEquals("anything", items.getValue("ssec3.txt").hash, "SSE-S3 leaves the ETag the content's MD5")
+        assertNull(items.getValue("plain.txt").hash)
+        assertEquals(FakeS3.md5Hex("PLAIN".toByteArray()), provider.getMetadata("/plain.txt").hash)
+        assertEquals(sseEtag, provider.getMetadata("/ssec3.txt").hash, "SSE-S3 leaves the ETag the content's MD5")
     }
 }

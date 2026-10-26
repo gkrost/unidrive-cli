@@ -66,9 +66,9 @@ data class S3Object(
     val lastModified: Instant?,
     val mtime: Instant? = null,
     // Set by a HEAD: the object is stored with SSE-KMS (x-amz-server-side-encryption: aws:kms, DSSE included) or with
-    // SSE-C, either of which replaces the ETag-is-the-MD5 rule (#82 C). A listing carries no such header, so a listed
-    // object reports false even when encrypted; only its ETag's shape can speak there.
+    // SSE-C, either of which replaces the ETag-is-the-MD5 rule. A listing cannot establish the encryption kind.
     val sseKmsOrCustomer: Boolean = false,
+    val encryptionKnown: Boolean = false,
 )
 
 data class S3ListPage(
@@ -165,6 +165,7 @@ class S3Api(
             sseKmsOrCustomer =
                 response.headers["x-amz-server-side-encryption"]?.startsWith("aws:kms") == true ||
                 response.headers["x-amz-server-side-encryption-customer-algorithm"] != null,
+            encryptionKnown = true,
         )
     }
 

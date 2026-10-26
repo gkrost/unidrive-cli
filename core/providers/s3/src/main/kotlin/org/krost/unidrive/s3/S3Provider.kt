@@ -438,11 +438,11 @@ class S3Provider(
             // The listing's time: a listing carries no user metadata, and the engine compares the time it recorded.
             modified = obj.lastModified,
             created = null,
-            // The ETag is the content's MD5 only for a plain single-part object: a multipart upload appends
-            // `-<parts>`, and SSE-KMS or SSE-C storage replaces it (#82 C). Reported as a hash, such an ETag made
-            // the engine re-run whole multipart uploads and refuse verified hydration of encrypted files.
-            hash = obj.etag?.takeUnless { it.contains('-') || obj.sseKmsOrCustomer },
+            // Listings do not say whether the object uses KMS or SSE-C; their ETags are opaque write tokens.
+            // A HEAD can identify a plain single-part MD5, which can additionally verify the content.
+            hash = obj.etag?.takeIf { obj.encryptionKnown && !obj.sseKmsOrCustomer && it.matches(MD5_ETAG) },
             mimeType = null,
+            version = obj.etag,
         )
 
     private fun folderItem(path: String): CloudItem {
@@ -485,6 +485,7 @@ class S3Provider(
         private const val FULL_LISTING = "full-listing"
         private const val MAX_PRESIGN_SECONDS = 7L * 24 * 3600
         private const val COPY_PART_SIZE = 512L * 1024 * 1024
+        private val MD5_ETAG = Regex("[0-9a-fA-F]{32}")
 
         // Exactly one leading slash comes off: an object whose key starts with one (another tool's `/a.txt`, listed
         // at `//a.txt`) must be addressed at that same key, not at the object without it (#82 E). Trailing slashes

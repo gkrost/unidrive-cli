@@ -124,6 +124,16 @@ class RemoteEnumerationTest {
         return p
     }
 
+    @Test
+    fun `an item whose remote path begins with two slashes is not placed in the tree`() = runTest {
+        provider.items = listOf(file("/a.txt", "//a.txt"))
+
+        enumeration().enumerate(reset = false)
+
+        assertNull(db.getEntry("//a.txt"))
+        assertNull(db.getEntry("/a.txt"))
+    }
+
     // ---- archive#147: the merge runs in transactions of mergeChunkRows rows ----
 
     @Test
@@ -1116,6 +1126,37 @@ class RemoteEnumerationTest {
             enumeration.enumerate(reset = false)
 
             assertTrue(assertNotNull(db.getEntry("/a.txt")).isHydrated)
+        }
+
+    @Test
+    fun `a changed opaque version invalidates a clean same-size cached item`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(sizedFile("a", "/a.txt", "unused").copy(hash = null, version = "etag-old"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            hydratedRowOf("/a.txt", "unused")
+            db.upsertEntry(db.getEntry("/a.txt")!!.copy(remoteHash = null, remoteVersion = "etag-old"))
+
+            provider.items = listOf(sizedFile("a", "/a.txt", "unused").copy(hash = null, version = "etag-new"))
+            enumeration.enumerate(reset = false)
+
+            assertFalse(assertNotNull(db.getEntry("/a.txt")).isHydrated)
+        }
+
+    @Test
+    fun `the first opaque version invalidates a clean item tracked only by a hash`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(sizedFile("a", "/a.txt", "old-etag"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            hydratedRowOf("/a.txt", "old-etag")
+
+            provider.items = listOf(sizedFile("a", "/a.txt", "unused").copy(hash = null, version = "new-etag"))
+            enumeration.enumerate(reset = false)
+
+            assertFalse(assertNotNull(db.getEntry("/a.txt")).isHydrated)
         }
 
     @Test

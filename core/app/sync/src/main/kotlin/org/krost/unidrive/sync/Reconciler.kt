@@ -22,6 +22,27 @@ data class LocalFileInfo(
     val size: Long,
 )
 
+// A hash is only comparable when both sides have one. A row written before the provider reported a hash (Internxt rows have
+// remote_hash = null; archive#464 gave its listing a version token) must not look remotely modified just because the listing now
+// carries one: that would re-download every existing file on the first sync after the upgrade. mtime still decides then.
+// A folder can carry a newer modified time with no content change: its mtime moves whenever a child
+// is added or removed (the uploads of a first sync touch the remote folder after its row was
+// recorded). The no-op metadata update that would follow is suppressed in resolveAction, not here:
+// the same MODIFIED classification must still raise a delete-vs-modify conflict instead of letting
+// a local folder delete propagate as a recursive DeleteRemote (archive#694). A file turning into a folder,
+// or the reverse, is a change either way.
+// Compare a version when an item has no content hash; the first such delivery after a hash-only row is uncertain.
+private fun remoteMetadataChanged(remoteItem: CloudItem, entry: SyncEntry): Boolean =
+    remoteItem.isFolder != entry.isFolder ||
+        remoteHashChanged(remoteItem.hash, entry.remoteHash) ||
+        ((!remoteItem.isFolder && (remoteItem.hash == null || entry.remoteHash == null)) &&
+            remoteHashChanged(remoteItem.version, entry.remoteVersion)) ||
+        (!remoteItem.isFolder && remoteItem.hash == null && remoteItem.version != null &&
+            entry.remoteHash != null && entry.remoteVersion == null) ||
+        remoteItem.modified != entry.remoteModified
+
+private fun remoteHashChanged(remote: String?, recorded: String?): Boolean = remote != null && recorded != null && remote != recorded
+
 class Reconciler(
     private val db: StateDatabase,
     private val syncRoot: Path,
@@ -88,28 +109,6 @@ class Reconciler(
     // bounded chunks of indexed path lookups, so a streamed gather reads the page's and the local
     // changes' rows, not the whole table once per delta page. A test substitutes a counting wrapper.
     internal var entryLookup: (Collection<String>) -> Map<String, SyncEntry> = { paths -> entriesByPathsChunked(db, paths) }
-
-    // A hash is only comparable when both sides have one. A row written before the provider reported a hash (Internxt rows have
-    // remote_hash = null; archive#464 gave its listing a version token) must not look remotely modified just because the listing now
-    // carries one: that would re-download every existing file on the first sync after the upgrade. mtime still decides then.
-    private fun remoteHashChanged(
-        remote: String?,
-        recorded: String?,
-    ): Boolean = remote != null && recorded != null && remote != recorded
-
-    // A folder can carry a newer modified time with no content change: its mtime moves whenever a child
-    // is added or removed (the uploads of a first sync touch the remote folder after its row was
-    // recorded). The no-op metadata update that would follow is suppressed in resolveAction, not here:
-    // the same MODIFIED classification must still raise a delete-vs-modify conflict instead of letting
-    // a local folder delete propagate as a recursive DeleteRemote (archive#694). A file turning into a folder,
-    // or the reverse, is a change either way.
-    private fun remoteMetadataChanged(
-        remoteItem: CloudItem,
-        entry: SyncEntry,
-    ): Boolean =
-        remoteItem.isFolder != entry.isFolder ||
-            remoteHashChanged(remoteItem.hash, entry.remoteHash) ||
-            remoteItem.modified != entry.remoteModified
 
     var lastUnhydratedFolderDeletes: List<String> = emptyList()
         private set
@@ -332,6 +331,7 @@ class Reconciler(
                     created = null,
                     hash = entry.remoteHash,
                     mimeType = null,
+                    version = entry.remoteVersion,
                 )
             actions.add(SyncAction.DownloadContent(entry.path, remoteItem))
         }
@@ -587,6 +587,7 @@ class Reconciler(
                     created = null,
                     hash = entry.remoteHash,
                     mimeType = null,
+                    version = entry.remoteVersion,
                 )
             actions.add(SyncAction.DownloadContent(entry.path, remoteItem))
         }
@@ -1088,6 +1089,7 @@ class Reconciler(
                         created = null,
                         hash = entry.remoteHash,
                         mimeType = null,
+                        version = entry.remoteVersion,
                     ),
                     policyForPath(path),
                 )
@@ -1510,6 +1512,7 @@ class Reconciler(
         created = null,
         hash = entry.remoteHash,
         mimeType = null,
+        version = entry.remoteVersion,
     )
 
     private fun detectRemoteRenames(
