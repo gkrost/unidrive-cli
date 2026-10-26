@@ -88,6 +88,11 @@ import java.util.concurrent.atomic.AtomicLong
  *                         {"ok":false,"error":"busy"}               an upload below is in flight (archive#87)
  *                         {"ok":false,"error":"<msg>"}              EIO
  *
+ *   name_clash  (gkrost/unidrive-cli#24) create, mkdir, open_write, open_write_begin, rename, unlink and rmdir answer
+ *               {"ok":false,"error":"name_clash"} when the path names a name, or a folder above it, by another Unicode
+ *               spelling (composed / decomposed) than the one a client used for it first in this daemon run: both are one
+ *               row and one cloud path, so the second would overwrite or delete the first. Rename one of them.
+ *
  *   create      request:  {"verb":"hydration.create",["handle_id":"...",]"path":"/foo.txt"}
  *               (handle_id absent: the daemon issues it, as for open_write)
  *               reply:    {"ok":true,"cache_path":"/home/.../foo.txt","handle_id":"..."}
@@ -377,6 +382,7 @@ class HydrationIpcHandler(
                 // base_etag is OPTIONAL: absent (or a row with no recorded token) →
                 // unconditional upload, byte-identical to the pre-guard contract.
                 val baseEtag = pluck(jsonRequest, "base_etag")
+                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
                 val unansweredKey = "$connectionId\u0000$path"
                 if (clientHandleId == null) {
                     val pending = unansweredOpenWrite[unansweredKey]
@@ -390,7 +396,10 @@ class HydrationIpcHandler(
                 if (clientHandleId == null) unansweredOpenWrite[unansweredKey] = handleId
                 try {
                     when (val r = hydration.openForWrite(connectionId, handleId, path, cachePath, baseEtag)) {
-                        is OpenResult.Ok -> openOkReply(r, issuedHandleId = handleId.takeIf { clientHandleId == null })
+                        is OpenResult.Ok -> {
+                            spellings.record(rawPath(jsonRequest, "path"))
+                            openOkReply(r, issuedHandleId = handleId.takeIf { clientHandleId == null })
+                        }
                         is OpenResult.Failed -> reply(ok = false, error = r.error.message)
                     }
                 } finally {
@@ -403,8 +412,12 @@ class HydrationIpcHandler(
                 // absent → one-shot setattr/bare-truncate (no registration).
                 val handleId = pluck(jsonRequest, "handle_id")
                 if (reservedHandleId(handleId)) return reply(ok = false, error = INVALID_HANDLE_ID)
+                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
                 when (val r = hydration.openWriteBegin(connectionId, path, handleId)) {
-                    is OpenResult.Ok -> openOkReply(r)
+                    is OpenResult.Ok -> {
+                        spellings.record(rawPath(jsonRequest, "path"))
+                        openOkReply(r)
+                    }
                     is OpenResult.Failed -> reply(ok = false, error = r.error.message)
                 }
             }
@@ -465,8 +478,12 @@ class HydrationIpcHandler(
             }
             "hydration.mkdir" -> {
                 val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
+                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
                 when (val r = hydration.mkdir(path)) {
-                    is MkdirResult.Ok -> reply(ok = true)
+                    is MkdirResult.Ok -> {
+                        spellings.record(rawPath(jsonRequest, "path"))
+                        reply(ok = true)
+                    }
                     MkdirResult.ParentNotFound -> reply(ok = false, error = "parent_not_found")
                     is MkdirResult.Failed -> reply(ok = false, error = r.error.message)
                 }
@@ -475,8 +492,12 @@ class HydrationIpcHandler(
                 val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
                 // archive#1178: "permanent":true deletes for good (rm --permanent); the provider must be able to.
                 val permanent = pluckBool(jsonRequest, "permanent") == true
+                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
                 when (val r = hydration.unlink(path, permanent)) {
-                    is UnlinkResult.Ok -> reply(ok = true)
+                    is UnlinkResult.Ok -> {
+                        spellings.forget(rawPath(jsonRequest, "path"))
+                        reply(ok = true)
+                    }
                     UnlinkResult.PathIsFolder -> reply(ok = false, error = "path_is_folder")
                     UnlinkResult.Busy -> reply(ok = false, error = "busy")
                     is UnlinkResult.Failed -> reply(ok = false, error = r.error.message)
@@ -487,8 +508,12 @@ class HydrationIpcHandler(
                 // archive#1035: plain rmdir is strict; "recursive":true is the client meaning the whole tree.
                 val recursive = pluckBool(jsonRequest, "recursive") == true
                 val permanent = pluckBool(jsonRequest, "permanent") == true
+                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
                 when (val r = hydration.rmdir(path, recursive, permanent)) {
-                    is RmdirResult.Ok -> reply(ok = true)
+                    is RmdirResult.Ok -> {
+                        spellings.forget(rawPath(jsonRequest, "path"))
+                        reply(ok = true)
+                    }
                     RmdirResult.PathIsFile -> reply(ok = false, error = "path_is_file")
                     RmdirResult.NotEmpty -> reply(ok = false, error = "not_empty")
                     RmdirResult.Busy -> reply(ok = false, error = "busy")
@@ -500,14 +525,17 @@ class HydrationIpcHandler(
                 val clientHandleId = pluck(jsonRequest, "handle_id")
                 if (reservedHandleId(clientHandleId)) return reply(ok = false, error = INVALID_HANDLE_ID)
                 val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
+                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
                 val handleId = clientHandleId ?: issueHandleId()
                 when (val r = hydration.create(connectionId, handleId, path)) {
-                    is CreateResult.Ok ->
+                    is CreateResult.Ok -> {
+                        spellings.record(rawPath(jsonRequest, "path"))
                         if (r.excluded) {
                             """{"ok":true,"cache_path":${jsonEsc(r.cachePath.toString())},"handle_id":${jsonEsc(r.handleId)},"excluded":true}"""
                         } else {
                             """{"ok":true,"cache_path":${jsonEsc(r.cachePath.toString())},"handle_id":${jsonEsc(r.handleId)}}"""
                         }
+                    }
                     CreateResult.ParentNotFound -> reply(ok = false, error = "parent_not_found")
                     CreateResult.PathExists -> reply(ok = false, error = "path_exists")
                     is CreateResult.Failed -> reply(ok = false, error = r.error.message)
@@ -518,8 +546,13 @@ class HydrationIpcHandler(
                 val newPath = pluckPath(jsonRequest, "new_path") ?: return reply(ok = false, error = "missing_new_path")
                 // replace is OPTIONAL (default false): POSIX overwrite-if-exists.
                 val replace = pluckBool(jsonRequest, "replace") ?: false
+                nameClash(rawPath(jsonRequest, "old_path"), rawPath(jsonRequest, "new_path"))?.let { return it }
                 when (val r = hydration.rename(oldPath, newPath, replace)) {
-                    is RenameResult.Ok -> reply(ok = true)
+                    is RenameResult.Ok -> {
+                        spellings.forget(rawPath(jsonRequest, "old_path"))
+                        spellings.record(rawPath(jsonRequest, "new_path"))
+                        reply(ok = true)
+                    }
                     RenameResult.OldPathNotFound -> reply(ok = false, error = "old_path_not_found")
                     RenameResult.NewParentNotFound -> reply(ok = false, error = "new_parent_not_found")
                     RenameResult.NewPathExists -> reply(ok = false, error = "new_path_exists")
@@ -574,6 +607,15 @@ class HydrationIpcHandler(
     // passes through.
     private fun pluckPath(line: String, key: String): String? =
         pluck(line, key)?.let { requireLogicalPath(PathNormalizer.nfc(it)) }
+
+    // gkrost/unidrive-cli#24: the path field as the client spelled it, before the NFC canonicalisation; see [NameSpellings].
+    private val spellings = NameSpellings()
+
+    private fun rawPath(line: String, key: String): String = pluck(line, key).orEmpty()
+
+    // The name_clash answer for a verb that names a name by another spelling than the one a client used for it first.
+    private fun nameClash(vararg raws: String): String? =
+        if (raws.any { spellings.clashes(it) }) reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN) else null
 
     // The validation of a LOGICAL path at the IPC boundary, for every verb that takes one.
     // A path is a list of names separated by '/'; a `.` or `..` segment, a control
