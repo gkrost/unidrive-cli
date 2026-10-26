@@ -203,10 +203,7 @@ class DropboxAuth(
     ): DropboxToken {
         val response = httpClient.submitForm(config.tokenUrl, form)
         val body = response.bodyAsText()
-        if (!response.status.isSuccess()) {
-            // 400 invalid_grant: the refresh token was revoked or the code is spent; a new sign-in is the only way.
-            throw AuthenticationException("Dropbox refused the sign-in (${response.status.value}): ${truncateErrorBody(body)}")
-        }
+        if (!response.status.isSuccess()) tokenRefused(response.status.value, body, refreshing = previousRefreshToken != null)
         val parsed = json.decodeFromString(DropboxTokenResponse.serializer(), body)
         val fresh =
             DropboxToken(
@@ -237,4 +234,18 @@ class DropboxAuth(
     companion object {
         const val TOKEN_FILE = "token.json"
     }
+}
+
+// A refresh that meets an outage or a throttle at the token endpoint (408, 429, 5xx) is retryable: it says nothing about
+// the grant. (A code exchange has no refresh token and keeps failing as a refused sign-in.)
+private fun tokenRefused(
+    status: Int,
+    body: String,
+    refreshing: Boolean,
+): Nothing {
+    if (refreshing && HttpRetryBudget.isTransientHttpStatus(status)) {
+        throw TransientNetworkException("Dropbox's token endpoint answered $status to the refresh; retryable")
+    }
+    // 400 invalid_grant: the refresh token was revoked or the code is spent; a new sign-in is the only way.
+    throw AuthenticationException("Dropbox refused the sign-in ($status): ${truncateErrorBody(body)}")
 }

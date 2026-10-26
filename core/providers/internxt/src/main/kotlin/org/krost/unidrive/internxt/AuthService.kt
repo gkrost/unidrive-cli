@@ -17,6 +17,7 @@ import org.krost.unidrive.auth.CredentialStore
 import org.krost.unidrive.auth.JwtExtractor
 import org.krost.unidrive.auth.RefreshableTokenLatch
 import org.krost.unidrive.http.ErrorBodyExcerpt
+import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.internxt.model.*
 import org.slf4j.LoggerFactory
 import kotlinx.serialization.json.JsonObject
@@ -540,7 +541,7 @@ open class AuthService(
             // fatal and a watch daemon would stop. 401/403 (and any other 4xx) really
             // are a rejected token. The retry hint is information only; the caller's
             // own backoff decides when to try again.
-            if (status == 408 || status == 429 || status in 500..599) {
+            if (HttpRetryBudget.isTransientHttpStatus(status)) {
                 throw TransientNetworkException(detail, requestId = requestId)
             }
             throw AuthenticationException(detail, requestId = requestId)

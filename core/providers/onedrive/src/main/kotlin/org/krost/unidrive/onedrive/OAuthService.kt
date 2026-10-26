@@ -11,8 +11,10 @@ import kotlinx.serialization.json.Json
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CompleteAuthResult
 import org.krost.unidrive.HttpDefaults
+import org.krost.unidrive.TransientNetworkException
 import org.krost.unidrive.auth.CredentialStore
 import org.krost.unidrive.auth.Pkce
+import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.onedrive.model.*
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -288,9 +290,7 @@ class OAuthService(
                     }.formUrlEncode()
             }
 
-        if (!response.status.isSuccess()) {
-            throw AuthenticationException("Failed to refresh token: ${response.bodyAsText()}")
-        }
+        if (!response.status.isSuccess()) refreshRefused(response)
 
         val tokenResponse = json.decodeFromString<TokenResponse>(response.bodyAsText())
         val token = tokenResponse.toToken().let { it.copy(refreshToken = it.refreshToken ?: refreshToken) }
@@ -351,3 +351,12 @@ class OAuthService(
 }
 
 private const val MAX_AUTH_FLAKE_ATTEMPTS = 3
+
+// 408 / 429 / 5xx say nothing about the refresh token: an outage or a throttle at the token endpoint must not read as
+// "expired, re-authenticate" (the daemon would stop). 400 invalid_grant, 401 and 403 are rejections.
+private suspend fun refreshRefused(response: HttpResponse): Nothing {
+    if (HttpRetryBudget.isTransientHttpStatus(response.status.value)) {
+        throw TransientNetworkException("Token refresh failed (HTTP ${response.status.value}); the endpoint is unavailable, not rejecting the token")
+    }
+    throw AuthenticationException("Failed to refresh token: ${response.bodyAsText()}")
+}
