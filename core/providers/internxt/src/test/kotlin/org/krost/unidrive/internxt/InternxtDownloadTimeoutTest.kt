@@ -54,7 +54,7 @@ class InternxtDownloadTimeoutTest {
                 loopbackService(client, listingSocketMs = 5_000).use { api ->
                     val received =
                         runBlocking {
-                            api.downloadFileStreaming("http://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = expectedSize)
+                            api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = expectedSize)
                         }
                     assertEquals(totalBytes, received.bytesWritten)
                     assertEquals(totalBytes, Files.size(destination))
@@ -85,11 +85,11 @@ class InternxtDownloadTimeoutTest {
     fun `a download that did use up its budget fails with a typed IOException`() =
         runBlocking {
             val destination = tempDestination()
-            val client = HttpClient(MockEngine { throw HttpRequestTimeoutException("http://shard-host.invalid/get/shard-0", 600_000L) })
+            val client = HttpClient(MockEngine { throw HttpRequestTimeoutException("https://shard-host.invalid/get/shard-0", 600_000L) })
             mockService(client).use { api ->
                 val e =
                     assertFailsWith<InternxtDownloadBudgetExhaustedException> {
-                        api.downloadFileStreaming("http://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = 4096L)
+                        api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = 4096L)
                     }
                 assertTrue(e is java.io.IOException, "stays an IOException: a later sync pass still retries it")
                 assertTrue(e.cause is HttpRequestTimeoutException)

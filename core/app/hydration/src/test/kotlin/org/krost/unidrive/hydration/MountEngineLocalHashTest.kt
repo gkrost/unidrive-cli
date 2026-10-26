@@ -164,6 +164,7 @@ class MountEngineLocalHashTest {
 
             val second = "fresh remote bytes for the re-download".toByteArray()
             provider.files["/doc.bin"] = second
+            provider.deltaItems = listOf(remoteFile("/doc.bin", second.size.toLong())) // the drive confirms the shorter file
             val cachePath = eng.resolveCachePath("/doc.bin")
             Files.deleteIfExists(cachePath)
             eng.ensureHydrated("/doc.bin")

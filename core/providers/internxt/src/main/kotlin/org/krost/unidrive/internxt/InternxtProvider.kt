@@ -725,7 +725,10 @@ class InternxtProvider(
         return first
     }
 
-    // The check to run for [recorded], or null when its shape is unknown (reported once, then read unverified).
+    // The check to run for [recorded]. A shape this client cannot check is refused: the content is AES-CTR with no MAC,
+    // so the recorded hash is the only integrity there is, and whoever controls the shard host or the path to it could
+    // flip chosen plaintext bits unseen. Only `allow_unverified_shard_hash = true` reads such an object (reported once,
+    // then read unverified, the null returned).
     private fun shardHashCheck(
         fileId: String,
         remotePath: String,
@@ -734,10 +737,34 @@ class InternxtProvider(
         when (val parsed = ShardHashExpectation.parse(recorded)) {
             is ShardHashExpectation.Checkable -> parsed
             is ShardHashExpectation.Unrecognised -> {
+                if (!config.allowUnverifiedShardHash) {
+                    warnShardHashRefused(fileId, remotePath, parsed)
+                    throw RemoteContentRefusedDownloadException(
+                        "Internxt shard hash of $remotePath has a shape this client cannot check (${parsed.description}); " +
+                            "refusing to read the content without the integrity check",
+                        reason = "its shard hash cannot be checked",
+                    )
+                }
                 warnShardHashUnverified(fileId, remotePath, parsed)
                 null
             }
         }
+
+    private fun warnShardHashRefused(
+        fileId: String,
+        remotePath: String,
+        recorded: ShardHashExpectation.Unrecognised,
+    ) {
+        val message =
+            "download of {} refused: its recorded shard hash has a shape this client cannot check ({}); " +
+                "known shapes: 40 hex = RIPEMD-160(SHA-256), 64 hex = SHA-256. " +
+                "Set allow_unverified_shard_hash = true in the profile to read such objects without the integrity check"
+        if (firstShardHashReport("refused-shape:$fileId")) {
+            log.warn(message, remotePath, recorded.description)
+        } else {
+            log.debug(message, remotePath, recorded.description)
+        }
+    }
 
     private fun warnShardHashUnverified(
         fileId: String,
@@ -746,7 +773,8 @@ class InternxtProvider(
     ) {
         val message =
             "Internxt shard hash of {} has a shape this client cannot check ({}); " +
-                "its ciphertext is read WITHOUT the integrity check (known shapes: 40 hex = RIPEMD-160(SHA-256), 64 hex = SHA-256)"
+                "its ciphertext is read WITHOUT the integrity check (allow_unverified_shard_hash is set; " +
+                "known shapes: 40 hex = RIPEMD-160(SHA-256), 64 hex = SHA-256)"
         if (firstShardHashReport("unverified:$fileId")) {
             log.warn(message, remotePath, recorded.description)
         } else {
@@ -1036,8 +1064,7 @@ class InternxtProvider(
         checkReplaceTarget(existingRemoteId, ifMatchETag, remotePath)
 
         val fileName = segments.last()
-        val ext = if (fileName.contains('.')) fileName.substringAfterLast('.') else null
-        val plainName = if (ext != null) fileName.substringBeforeLast('.') else fileName
+        val (plainName, ext) = splitLeaf(fileName)
         val parentPath = "/" + segments.dropLast(1).joinToString("/")
 
         // Inline GC sweep for stale tombstones (missing-local or > RESUME_TTL_MS
@@ -1246,6 +1273,18 @@ class InternxtProvider(
                 }
                 encryptedSize = withContext(Dispatchers.IO) { Files.size(tempFile) }
                 hashHex = digest.digest().joinToString("") { "%02x".format(it) }
+                // The cipher is a stream cipher: the ciphertext is as long as the bytes it read. The file was sized before this
+                // pass; a source that changed length in between would be created with the old size and stored with another
+                // length, and every download of it refused as incomplete. Nothing is sent: the next attempt reads it afresh.
+                if (encryptedSize != fileSize) {
+                    withContext(Dispatchers.IO) {
+                        runCatching { Files.deleteIfExists(tempFile) }
+                        tombstoneStore.discard(pathHashStr)
+                    }
+                    throw ProviderException(
+                        "$remotePath changed while it was being read for upload ($fileSize bytes when sized, $encryptedSize read); will be retried",
+                    )
+                }
             } catch (e: java.nio.file.NoSuchFileException) {
                 // Mid-upload delete — local file vanished after we sized it.
                 withContext(Dispatchers.IO) { tombstoneStore.discard(pathHashStr) }
@@ -1736,43 +1775,35 @@ class InternxtProvider(
         // NEW uploads POST /files (create). Defensive fallback below catches the 409 that
         // appears when the reconciler thought a path was new but the remote already has it.
         val finalItem: CloudItem
-        if (existingRemoteId != null) {
-            checkWriteToken(existingRemoteId, ifMatchETag, remotePath) // the narrow window between the early check and the replace
-            // Destructive-overwrite guard: when `keepOverwritten` is on,
-            // rename the prior cloud content to `${plainName}.unidrive-prev-${utcStamp}`
-            // and create the new content as a fresh file instead of letting
-            // `replaceFile` drop the prior bytes (Internxt has no server-side
-            // versioning). Falls through to the destructive replace if the
-            // rename can't be made unique after `MAX_KEEP_OVERWRITTEN_RETRIES`
-            // collision attempts or the rename itself errors — better to land
-            // the new content than to strand the local edit.
-            val archived = if (config.keepOverwritten) tryKeepOverwrittenRename(existingRemoteId, plainName) else false
-            if (archived) {
-                val encryptedName = crypto.encryptName(plainName, "${creds.mnemonic}-$parentUuid")
-                val created =
-                    api.createFile(
-                        bucket = bucket,
-                        folderUuid = parentUuid,
-                        plainName = plainName,
-                        encryptedName = encryptedName,
+        // Destructive-overwrite guard: when `keepOverwritten` is on,
+        // rename the prior cloud content to `${plainName}.unidrive-prev-${utcStamp}`
+        // and create the new content as a fresh file instead of letting
+        // `replaceFile` drop the prior bytes (Internxt has no server-side
+        // versioning). Falls through to the destructive replace if the
+        // rename can't be made unique after `MAX_KEEP_OVERWRITTEN_RETRIES`
+        // collision attempts or the rename itself errors — better to land
+        // the new content than to strand the local edit.
+        val archivedPrior =
+            if (existingRemoteId != null) {
+                checkWriteToken(existingRemoteId, ifMatchETag, remotePath) // the narrow window between the early check and the replace
+                config.keepOverwritten && tryKeepOverwrittenRename(existingRemoteId, plainName)
+            } else {
+                false
+            }
+        if (existingRemoteId != null && !archivedPrior) {
+            val replaced =
+                api
+                    .replaceFile(
+                        uuid = existingRemoteId,
                         size = fileSize,
-                        type = ext,
                         fileId = bucketEntry.id,
                         modificationTime = localMtime,
-                    )
-                finalItem = created.toCloudItem(parentPath)
-            } else {
-                val replaced =
-                    api
-                        .replaceFile(
-                            uuid = existingRemoteId,
-                            size = fileSize,
-                            fileId = bucketEntry.id,
-                            modificationTime = localMtime,
-                        ).afterReplace(localMtime)
-                finalItem = replaced.toCloudItem(parentPath)
-            }
+                    ).afterReplace(localMtime)
+            finalItem = replaced.toCloudItem(parentPath)
         } else {
+            // A create, or the create that follows the archive rename of a replace: the same answers to a 409 and to a
+            // lost response. A replace whose create had landed would otherwise fail with the prior content already
+            // archived, and its retry would archive the archive.
             val encryptedName = crypto.encryptName(plainName, "${creds.mnemonic}-$parentUuid")
             val created =
                 try {
@@ -1792,9 +1823,10 @@ class InternxtProvider(
                     // content identity; anything else keeps both copies.
                     if (e.statusCode != 409) throw e
                     log.warn(
-                        "UD-366: 409 on POST /files for {} despite existingRemoteId=null — " +
-                            "reconciler/DB drift; inspecting remote for content-identity check",
+                        "UD-366: 409 on POST /files for {} (prior file {}) — " +
+                            "reconciler/DB drift or a create that had landed; inspecting remote for content-identity check",
                         remotePath,
+                        if (archivedPrior) "archived" else "none",
                     )
                     // Get the raw InternxtFile (not CloudItem) so we keep fileId, the
                     // bucket-entry content-address.  parentUuid is already resolved above.
@@ -2311,7 +2343,13 @@ class InternxtProvider(
                     require(created.size == chunk.size) {
                         "createFoldersBatch returned ${created.size} folders for ${chunk.size} requested"
                     }
-                    chunk.zip(created).forEach { (idx, folder) ->
+                    chunk.forEachIndexed { position, idx ->
+                        // The answer is paired by name: its order is not documented, and a folder cached under another
+                        // folder's name sends everything below that name to the wrong place. An answer that does not name
+                        // its folders is taken in the order of the request.
+                        val folder =
+                            created.firstOrNull { it.plainName != null && sanitizeName(it.plainName) == sanitizeName(idx.name) }
+                                ?: created[position]
                         // UD-357: populate cache so later resolveFolder calls don't race.
                         folderCache.put(parentUuid, sanitizeName(idx.name), folder.uuid)
                         results[idx.originalIndex] = folder.toCloudItem(parentPath)
@@ -3129,6 +3167,9 @@ class InternxtProvider(
         fullGather: Boolean = false,
     ): DeltaPage {
         val creds = authService.getValidCredentials()
+        // The folders this pass names were renamed, moved or trashed (or are new): what the folder cache holds for them is
+        // from before. Another device's `mv docs old-docs; mkdir docs` must not keep sending uploads to the old folder.
+        folderCache.invalidateFolders(allFolders.map { it.uuid })
         // Mutable so the self-healing ancestor re-fetch can splice missing
         // ancestors in as it resolves; `associateBy` keeps the last entry per
         // uuid. Fetched ancestors live only in this map (they are unchanged
@@ -3676,6 +3717,7 @@ class InternxtProvider(
                 skipped,
             )
         }
+        folderCache.invalidateFolders(inventory.folders.map { it.uuid }) // see assembleFullDelta
         return scopedDeltaPage(inventory, rootUuid, startedAt.toString(), skipped)
     }
 
@@ -3874,15 +3916,8 @@ class InternxtProvider(
             // cache (populated by createFolder) does.
             val cached = folderCache.get(currentUuid, segment)
             if (cached != null) {
-                // TODO: if a subsequent op using `cached` as a parent UUID returns
-                // 404 (stale entry — folder deleted out-of-band), call
-                // `folderCache.invalidate(currentUuid, segment)` so the next
-                // resolveFolder re-fetches via the listing. To wire this cleanly,
-                // track `parentUuid` here and wrap the downstream getFolderContents
-                // call in a catch that invalidates on 404 before re-throwing.
-                // The SyncEngine.deleteRemote idempotency fix (fix/unlink-idempotent-gone)
-                // masks the resulting ProviderException for not-found paths, so this
-                // TODO is low-urgency — the stale entry self-heals after a process restart.
+                // A folder renamed, moved or trashed elsewhere leaves the cache when a change feed names it
+                // (assembleFullDelta); folderStateById drops a folder it finds gone.
                 currentUuid = cached
                 continue
             }
@@ -4330,12 +4365,28 @@ class InternxtProvider(
             return org.krost.unidrive.io.NameLimit.fitStem(plainName, tail.length + extensionUnits(type)) + tail
         }
 
-        /** UD-369: split a leaf filename into (plainName, type). Returned type is the bare extension or null. */
-        fun stripExtension(filename: String): String =
-            if (filename.contains('.')) filename.substringBeforeLast('.') else filename
+        /**
+         * UD-369: split a leaf filename into (plainName, type). Returned type is the bare extension or null.
+         *
+         * The listing joins the two again as `plainName.type`, but trims the plainName and does not repeat a type the
+         * plainName already ends in ([fileToCloudItem]). A name for which that join is not the name itself is therefore
+         * kept whole in the plainName, with no type: `a.txt.txt` (split as `a.txt` + `txt` it is listed as `a.txt`),
+         * `a.` (type empty, listed as `a`), `Scan 1 .pdf` (the plainName's trailing space is trimmed), and a dotfile
+         * (an empty plainName, which the drive refuses). A name that is listed under another name is a rename of the
+         * user's file as far as the engine can tell, and a path lookup of the uploaded name no longer finds it.
+         */
+        fun splitLeaf(filename: String): Pair<String, String?> {
+            val dot = filename.lastIndexOf('.')
+            if (dot <= 0 || dot == filename.length - 1) return filename to null
+            val stem = filename.substring(0, dot)
+            val type = filename.substring(dot + 1)
+            if (stem != sanitizeName(stem) || type != sanitizeName(type) || stem.endsWith(".$type")) return filename to null
+            return stem to type
+        }
 
-        fun newFileType(filename: String): String? =
-            if (filename.contains('.')) filename.substringAfterLast('.') else null
+        fun stripExtension(filename: String): String = splitLeaf(filename).first
+
+        fun newFileType(filename: String): String? = splitLeaf(filename).second
 
         /**
          * UD-317: strip leading/trailing whitespace (incl. `\n`, `\r`, `\t`)
