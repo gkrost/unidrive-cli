@@ -525,6 +525,8 @@ internal class HydrationTestEnv(
     val failedReplayDelayMs: Long = HydrationImpl.DEFAULT_FAILED_REPLAY_DELAY_MS,
     /** archive#658: the cache budget in bytes; 0 = unlimited. */
     val cacheMaxBytes: Long = HydrationImpl.DEFAULT_CACHE_MAX_BYTES,
+    /** gkrost/unidrive-cli#70: rounds of the in-process retry of an upload that used all its attempts; off in this harness. */
+    val exhaustedRetryDelaysMs: List<Long> = emptyList(),
     providerId: String = "fake-hydration",
     /** The provider has write tokens of its own ([CloudProvider.reportsItemVersions]; OneDrive). */
     reportsItemVersions: Boolean = false,
@@ -618,6 +620,7 @@ internal class HydrationTestEnv(
             uploadProgressMinIntervalMs = uploadProgressMinIntervalMs,
             failedReplayDelayMs = failedReplayDelayMs,
             cacheMaxBytes = cacheMaxBytes,
+            exhaustedRetryDelaysMs = exhaustedRetryDelaysMs,
             history = history,
         )
     }
