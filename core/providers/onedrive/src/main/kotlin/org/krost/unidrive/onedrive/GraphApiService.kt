@@ -487,12 +487,7 @@ class GraphApiService(
                 setBody(content)
             }
 
-        if (response.status == HttpStatusCode.Unauthorized) {
-            throw AuthenticationException("Authentication failed (401): ${response.bodyAsText()}")
-        }
-        if (!response.status.isSuccess()) {
-            throw GraphApiException("Upload failed: ${response.status} - ${response.bodyAsText()}", response.status.value)
-        }
+        requireSuccess(response, "Upload")
 
         val body = response.bodyAsText()
         val item = json.decodeFromString<DriveItem>(body)
@@ -517,15 +512,7 @@ class GraphApiService(
                 contentType(ContentType.Application.Json)
                 setBody(body.toString())
             }
-        if (response.status == HttpStatusCode.Unauthorized) {
-            throw AuthenticationException("Authentication failed (401): ${response.bodyAsText()}")
-        }
-        if (!response.status.isSuccess()) {
-            throw GraphApiException(
-                "fileSystemInfo PATCH failed: ${response.status} - ${response.bodyAsText()}",
-                response.status.value,
-            )
-        }
+        requireSuccess(response, "fileSystemInfo PATCH")
         return json.decodeFromString<DriveItem>(response.bodyAsText())
     }
 
@@ -538,12 +525,8 @@ class GraphApiService(
                 if (ifMatchETag != null) header(HttpHeaders.IfMatch, ifMatchETag)
             }
 
-        if (response.status == HttpStatusCode.Unauthorized) {
-            throw AuthenticationException("Authentication failed (401): ${response.bodyAsText()}")
-        }
-        if (!response.status.isSuccess() && response.status != HttpStatusCode.NoContent && response.status != HttpStatusCode.NotFound) {
-            throw GraphApiException("Delete failed: ${response.status}", response.status.value)
-        }
+        // 404 is "already gone", a delete's own success.
+        if (response.status != HttpStatusCode.NotFound) requireSuccess(response, "Delete")
     }
 
     /**
@@ -554,12 +537,7 @@ class GraphApiService(
     suspend fun permanentDeleteItem(itemId: String) {
         val response = sendThrottled("${itemUrl(itemId)}/permanentDelete", HttpMethod.Post)
 
-        if (response.status == HttpStatusCode.Unauthorized) {
-            throw AuthenticationException("Authentication failed (401): ${response.bodyAsText()}")
-        }
-        if (!response.status.isSuccess() && response.status != HttpStatusCode.NoContent && response.status != HttpStatusCode.NotFound) {
-            throw GraphApiException("Permanent delete failed: ${response.status}", response.status.value)
-        }
+        if (response.status != HttpStatusCode.NotFound) requireSuccess(response, "Permanent delete")
     }
 
     suspend fun createFolder(
@@ -586,12 +564,7 @@ class GraphApiService(
                 setBody(requestBody.toString())
             }
 
-        if (response.status == HttpStatusCode.Unauthorized) {
-            throw AuthenticationException("Authentication failed (401): ${response.bodyAsText()}")
-        }
-        if (!response.status.isSuccess()) {
-            throw GraphApiException("Create folder failed: ${response.status} - ${response.bodyAsText()}", response.status.value)
-        }
+        requireSuccess(response, "Create folder")
 
         return json.decodeFromString<DriveItem>(response.bodyAsText())
     }
@@ -651,12 +624,7 @@ class GraphApiService(
                 setBody(body.toString())
             }
 
-        if (response.status == HttpStatusCode.Unauthorized) {
-            throw AuthenticationException("Authentication failed (401): ${response.bodyAsText()}")
-        }
-        if (!response.status.isSuccess()) {
-            throw GraphApiException("Move failed: ${response.status} - ${response.bodyAsText()}", response.status.value)
-        }
+        requireSuccess(response, "Move")
 
         return json.decodeFromString<DriveItem>(response.bodyAsText())
     }
@@ -950,15 +918,7 @@ class GraphApiService(
     }
 
     private suspend fun requireCreatedSession(sessionResponse: HttpResponse) {
-        if (sessionResponse.status == HttpStatusCode.Unauthorized) {
-            throw AuthenticationException("Authentication failed (401): ${sessionResponse.bodyAsText()}")
-        }
-        if (!sessionResponse.status.isSuccess()) {
-            throw GraphApiException(
-                "Create upload session failed: ${sessionResponse.status} - ${sessionResponse.bodyAsText()}",
-                sessionResponse.status.value,
-            )
-        }
+        requireSuccess(sessionResponse, "Create upload session")
     }
 
     private suspend fun createUploadSession(
@@ -1261,7 +1221,12 @@ class GraphApiService(
         }
     }
 
-    private suspend fun requireSuccess(response: HttpResponse): HttpResponse {
+    // [what] names the operation in the message of a write ("Upload failed: ..."); without it the message is "API error: ...".
+    // Either way the Graph request id rides on the exception and the error body is cut.
+    private suspend fun requireSuccess(
+        response: HttpResponse,
+        what: String? = null,
+    ): HttpResponse {
         if (response.status == HttpStatusCode.Unauthorized) {
             // UD-203: capture request-id so the failing call is correlatable in Graph's logs.
             throw AuthenticationException(
@@ -1272,7 +1237,7 @@ class GraphApiService(
         if (!response.status.isSuccess()) {
             // UD-203: capture request-id for support-ticket correlation.
             throw GraphApiException(
-                "API error: ${response.status} - ${truncateErrorBody(response.bodyAsText())}",
+                "${what?.let { "$it failed" } ?: "API error"}: ${response.status} - ${truncateErrorBody(response.bodyAsText())}",
                 response.status.value,
                 requestId = extractRequestId(response),
             )
@@ -1438,9 +1403,8 @@ class GraphApiService(
         val item = getItemByPath(path)
         val url = "$baseUrl/me/drive/items/${item.id}/permissions/$permissionId"
         val response = sendThrottled(url, HttpMethod.Delete)
-        if (response.status == HttpStatusCode.Unauthorized) {
-            throw AuthenticationException("Authentication failed (401): ${response.bodyAsText()}")
-        }
+        // Only a refused token is an error here; any other answer is "not removed".
+        if (response.status == HttpStatusCode.Unauthorized) requireSuccess(response, "Delete permission")
         return response.status == HttpStatusCode.NoContent
     }
 
