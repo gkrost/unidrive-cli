@@ -2,6 +2,7 @@ package org.krost.unidrive.internxt
 
 import org.krost.unidrive.io.defaultTokenPath
 import org.krost.unidrive.auth.CredentialProtector
+import org.krost.unidrive.auth.CredentialProtectors
 import java.nio.file.Path
 
 data class InternxtConfig(
@@ -27,7 +28,7 @@ data class InternxtConfig(
     // sync then relies on the adaptive poll alone. Anything else, or unset, keeps it on.
     val notificationsEnabled: Boolean = parseNotificationsEnabled(System.getenv("INTERNXT_NOTIFICATIONS")),
     /** The current host's native credential store is the secure default for every auth entrypoint. */
-    val credentialProtector: CredentialProtector? = InternxtCredentialProtectors.forCurrentPlatform(),
+    val credentialProtector: CredentialProtector? = CredentialProtectors.forCurrentPlatform(),
 ) {
     companion object {
         internal fun parseNotificationsEnabled(raw: String?): Boolean = raw?.trim()?.lowercase() !in setOf("off", "0", "false")

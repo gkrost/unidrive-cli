@@ -8,6 +8,8 @@ import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteReadChannel
 import kotlinx.coroutines.runBlocking
 import org.krost.unidrive.CompleteAuthResult
+import org.krost.unidrive.auth.CredentialData
+import org.krost.unidrive.auth.CredentialProtector
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -36,8 +38,13 @@ class OneDrivePendingFlowTest {
         profileDir.toFile().deleteRecursively()
     }
 
-    private fun factory(engine: MockEngine) =
-        object : OneDriveProviderFactory() {
+    // The default factory protects the pending flow with the host's native store on Windows and macOS; these tests read
+    // the file, so they run unprotected unless they say otherwise.
+    private fun factory(
+        engine: MockEngine,
+        protector: CredentialProtector? = null,
+    ) =
+        object : OneDriveProviderFactory(protector) {
             override fun newOAuthServiceForBegin(profileDir: Path): OAuthService =
                 OAuthService(OneDriveConfig(tokenPath = profileDir), HttpClient(engine))
 
@@ -78,6 +85,31 @@ class OneDrivePendingFlowTest {
         val text = Files.readString(pendingFile)
         assertTrue(handle in text)
         assertTrue("DC-abc-123" in text, "the device code is what a later process redeems")
+    }
+
+    @Test
+    fun `begin keeps the device code protected when the factory has a protector`() {
+        val protector =
+            object : CredentialProtector {
+                override fun protect(
+                    id: String,
+                    plaintext: String,
+                ) = "protected-reference"
+
+                override fun decode(
+                    id: String,
+                    stored: String,
+                ) = CredentialData(stored, false)
+
+                override fun delete(id: String) = Unit
+            }
+
+        runBlocking {
+            val handle = factory(json(deviceCodeBody), protector).beginInteractiveAuth(profileDir).continuationHandle
+            OneDriveDeviceFlowRegistry.remove(handle)?.oauthService?.close()
+        }
+
+        assertEquals("protected-reference", Files.readString(pendingFile))
     }
 
     @Test

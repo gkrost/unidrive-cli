@@ -13,7 +13,7 @@ import org.krost.unidrive.ProviderFactory
 import org.krost.unidrive.auth.CredentialProtectionException
 import org.krost.unidrive.internxt.BadCredentialsException
 import org.krost.unidrive.internxt.InternxtConfig
-import org.krost.unidrive.internxt.InternxtCredentialProtectors
+import org.krost.unidrive.auth.CredentialProtectors
 import org.krost.unidrive.internxt.TfaInvalidException
 import org.krost.unidrive.internxt.TfaRequiredException
 import org.krost.unidrive.sync.IpcEndpoint
@@ -187,7 +187,7 @@ private suspend fun callInternxtLogin(
 ) {
     try {
         LifecycleHooks.internxtLogin(
-            InternxtConfig(tokenPath = target.profileDir, credentialProtector = InternxtCredentialProtectors.forCurrentPlatform()),
+            InternxtConfig(tokenPath = target.profileDir, credentialProtector = CredentialProtectors.forCurrentPlatform()),
             email,
             password,
             totp,

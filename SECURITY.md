@@ -34,10 +34,11 @@ in [#83](https://github.com/gkrost/unidrive-cli/issues/83).
 
 - **Tokens and keys at rest.** Internxt credentials go to the host's native store (Linux Secret Service through
   `secret-tool`, Windows DPAPI for the current user, macOS login Keychain); an unavailable or locked store is a failure,
-  never a plaintext file. OneDrive and Dropbox keep their tokens in `token.json` in the profile folder: written
-  atomically, owner-only (`0600` in a `0700` folder on POSIX, an owner-only ACL on Windows), not encrypted. OneDrive can
-  keep the token in a protected store when the code that embeds the engine passes a `CredentialProtector`; the CLI passes
-  none. S3 keys are in the profile's `config.toml` or are read from the environment. Provider notes:
+  never a plaintext file. OneDrive's token and pending sign-in are protected the same way on Windows (DPAPI) and macOS
+  (Keychain) by default, and a `token.json` written earlier is protected the first time it is read; a front-end that
+  embeds the engine can pass its own `CredentialProtector`. On Linux, and for Dropbox on every platform, the token stays
+  in `token.json` in the profile folder: written atomically, owner-only (`0600` in a `0700` folder on POSIX, an
+  owner-only ACL on Windows), not encrypted (a headless Linux daemon may have no Secret Service). S3 keys are in the profile's `config.toml` or are read from the environment. Provider notes:
   [`core/providers/onedrive`](core/providers/onedrive/README.md), [`core/providers/internxt`](core/providers/internxt/README.md).
 - **Where the bearer token goes.** OneDrive requests that carry the token are refused unless the URL has the scheme,
   host and port of the Graph endpoint, so a paging or delta link taken from a response body cannot send the token to

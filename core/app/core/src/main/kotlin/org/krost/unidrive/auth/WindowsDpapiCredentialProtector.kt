@@ -1,8 +1,5 @@
-package org.krost.unidrive.internxt
+package org.krost.unidrive.auth
 
-import org.krost.unidrive.auth.CredentialData
-import org.krost.unidrive.auth.CredentialProtectionException
-import org.krost.unidrive.auth.CredentialProtector
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
