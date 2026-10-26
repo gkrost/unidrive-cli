@@ -83,6 +83,24 @@ class FolderUuidCacheTest {
     }
 
     @Test
+    fun `invalidateFolders drops the folders named and what hangs below them in one pass`() {
+        val cache = FolderUuidCache()
+        cache.put("root", "docs", "u-docs")
+        cache.put("u-docs", "inner", "u-inner")
+        cache.put("root", "pics", "u-pics")
+        cache.put("root", "music", "u-music")
+
+        cache.invalidateFolders(listOf("u-docs", "u-music"))
+
+        assertNull(cache.get("root", "docs"))
+        assertNull(cache.get("u-docs", "inner"))
+        assertNull(cache.get("root", "music"))
+        assertEquals("u-pics", cache.get("root", "pics"))
+        cache.invalidateFolders(emptyList())
+        assertEquals(1, cache.size())
+    }
+
+    @Test
     fun `size and clear support the test infrastructure`() {
         val cache = FolderUuidCache()
         assertEquals(0, cache.size())
