@@ -228,7 +228,9 @@ class DropboxApi(
                 continue
             }
             if (isThrottle(response.status) && throttleAttempts < MAX_THROTTLE_ATTEMPTS) {
-                val waitMs = backoffMs(response, response.bodyAsText(), throttleAttempts)
+                // A bounded read of the answer for the retry hint: no megabyte String is built of a gateway page, and the JSON hint (Dropbox's
+                // bodies are a few hundred bytes) is still read. The HTTP client has buffered the response by now; only the copy is bounded.
+                val waitMs = backoffMs(response, readBoundedErrorBody(response), throttleAttempts)
                 log.warn("Dropbox answered {} on {}; waiting {} ms", response.status.value, endpoint.substringAfter("/2/"), waitMs)
                 budget.recordThrottle(waitMs)
                 delay(waitMs)
