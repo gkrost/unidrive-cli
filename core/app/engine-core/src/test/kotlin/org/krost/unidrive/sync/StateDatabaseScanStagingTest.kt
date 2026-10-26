@@ -160,6 +160,26 @@ class StateDatabaseScanStagingTest {
     }
 
     @Test
+    fun `a scan that replaces a checkpoint does not inherit the old scan's progress stamp`() {
+        // begin() on top of a checkpoint (a later scan replacing an older one) left the old scan's last-progress
+        // stamp in place; the new scan, with no page yet, was then judged stale by an instant older than its own start.
+        val db = opened()
+        try {
+            val older = db.beginScan(initialMarker = null)
+            db.persistScanPage(older, items(0, 3), marker = "m1")
+            db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_LAST_PROGRESS_AT, Instant.now().minus(Duration.ofDays(1)).toString())
+
+            val replacement = db.beginScan(initialMarker = null)
+            assertNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_LAST_PROGRESS_AT), "a new scan has made no progress yet")
+
+            val active = assertNotNull(db.getActiveScan(Duration.ofHours(6)), "a scan started just now is not stale")
+            assertEquals(replacement, active.scanId)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
     fun `a checkpoint whose last page is past the threshold is no active scan`() {
         val db = opened()
         try {

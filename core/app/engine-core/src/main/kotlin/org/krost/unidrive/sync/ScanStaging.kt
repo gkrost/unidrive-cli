@@ -221,6 +221,9 @@ internal class ScanStaging(
             }
             setMeta(c, StateDatabase.SCAN_IN_PROGRESS_ID, scanId)
             setMeta(c, StateDatabase.SCAN_IN_PROGRESS_STARTED_AT, Instant.now().toString())
+            // A scan that replaces a checkpoint has made no progress yet: the replaced scan's last-page stamp would
+            // be older than this start, and getActiveScan would judge the new scan by it.
+            clearMeta(c, StateDatabase.SCAN_IN_PROGRESS_LAST_PROGRESS_AT)
             if (initialMarker != null) {
                 setMeta(c, StateDatabase.SCAN_IN_PROGRESS_MARKER, initialMarker)
             } else {
