@@ -34,8 +34,32 @@ What the provider does:
 - When the server name is refused as well, the provider raises `NameRefusedException` (reason `similar_name`, the conflicting sibling when one can be found by the ASCII part of the names). Nothing is retried; the mount blocks the entry and reports it (`daemon.status` `uploads.blocked`).
 - Path lookups (`getMetadata`, `delete`, `move`, download) accept an item only when it has exactly the name asked for (NFC, case-insensitive); a lookup that resolves to a similar sibling reads as "not found", so a delete or a move never reaches the wrong item.
 
+## Delta paths and writes by id
+
+- **Where a delta item lives.** Graph documents `parentReference.path` as optional on a delta item and as
+  percent-encoded when present; OneDrive for Business and SharePoint leave it off every item. A path that is present is
+  read decoded (`DriveItem.decodedPath`: only `%XX` runs that form UTF-8 are decoded, a `+` stays a plus; a later reader
+  of the path must use that form, never the raw string). A live item without a path is placed below its parent folder
+  (`OneDriveProvider.placed`): the folder is found among the same page's items first, else by `GET items/{id}` up the
+  chain to the item with the `root` facet, each answer remembered for the page. A folder that answers 404 leaves its
+  items out of the page with a WARN (a deletion below it arrives as its own tombstone); any other failed lookup fails the
+  page, because a guessed path would delete or overwrite the wrong item. A tombstone without a path gets the
+  unknown-path marker `/`, which the engine resolves by remote id; it never gets `/<name>`, which would name a file at
+  the drive root.
+- **By-id writes address the id.** `deleteById`, `moveById` and `deletePermanentlyById` act on the id the row keeps.
+  Between the gather and the call the item may have been renamed away and another item created at the old path, which
+  a path lookup would delete. A 404 on the id means the item is gone and is not retried by path, on purpose. (The
+  path-addressed `delete`, `move` and `deletePermanently` resolve the path first, as before.)
+
 ## Robustness
 
+- **The bearer token goes to the Graph origin only.** `sendThrottled` refuses any URL whose scheme, host and port differ
+  from `baseUrl` (a `ProviderException`, nothing is sent). Paging and delta links come out of response bodies and are
+  kept as the persisted cursor, so a tampered or poisoned link cannot make the client hand its token to another host.
+  The pre-signed `@microsoft.graph.downloadUrl` is fetched without the token, as before.
+- **A download is timed from its declared size.** `downloadFile` sets the request timeout from the item's size
+  (`UploadTimeoutPolicy.computeRequestTimeoutMs`), so a large file on a slow link is not cut by the flat 10 minute
+  cap (`HttpDefaults.REQUEST_TIMEOUT_MS`). S3 and Dropbox downloads still run under that flat cap (gkrost/unidrive-cli#58).
 - **Auth refresh** is per-call: `TokenManager.isNearExpiry(5 min)` is checked at each request; on 401 the token is force-refreshed once. Refresh is `withContext(NonCancellable)`-wrapped and mutex-serialised so sibling cancellation can't half-write the token to disk and a 401 storm produces exactly one refresh.
 - **The token at rest** is `token.json` in the profile folder, written atomically and readable by the current user only (`CredentialStore`). `OneDriveConfig.credentialProtector` (a `CredentialProtector`, null by default) lets an embedding front-end keep the token in a protected store instead: the file then holds an opaque reference, an existing plaintext `token.json` is rewritten protected when it is first loaded, and `OAuthService.deleteToken` (which `TokenManager.logout` calls) removes the protected copy with the file. It is a constructor parameter only: there is no profile key, environment variable or service-loader hook for it, and the CLI and `OneDriveProviderFactory` pass none, so a CLI profile keeps the owner-only plaintext file. (Internxt, by contrast, defaults to the host's native store.)
 - **Retry placement** is inline at the HTTP layer (`authenticatedRequest`, `downloadFile`); `SyncEngine` only sees `Done` or terminal exceptions.
