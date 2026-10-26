@@ -725,7 +725,10 @@ class InternxtProvider(
         return first
     }
 
-    // The check to run for [recorded], or null when its shape is unknown (reported once, then read unverified).
+    // The check to run for [recorded]. A shape this client cannot check is refused: the content is AES-CTR with no MAC,
+    // so the recorded hash is the only integrity there is, and whoever controls the shard host or the path to it could
+    // flip chosen plaintext bits unseen. Only `allow_unverified_shard_hash = true` reads such an object (reported once,
+    // then read unverified, the null returned).
     private fun shardHashCheck(
         fileId: String,
         remotePath: String,
@@ -734,10 +737,34 @@ class InternxtProvider(
         when (val parsed = ShardHashExpectation.parse(recorded)) {
             is ShardHashExpectation.Checkable -> parsed
             is ShardHashExpectation.Unrecognised -> {
+                if (!config.allowUnverifiedShardHash) {
+                    warnShardHashRefused(fileId, remotePath, parsed)
+                    throw RemoteContentRefusedDownloadException(
+                        "Internxt shard hash of $remotePath has a shape this client cannot check (${parsed.description}); " +
+                            "refusing to read the content without the integrity check",
+                        reason = "its shard hash cannot be checked",
+                    )
+                }
                 warnShardHashUnverified(fileId, remotePath, parsed)
                 null
             }
         }
+
+    private fun warnShardHashRefused(
+        fileId: String,
+        remotePath: String,
+        recorded: ShardHashExpectation.Unrecognised,
+    ) {
+        val message =
+            "download of {} refused: its recorded shard hash has a shape this client cannot check ({}); " +
+                "known shapes: 40 hex = RIPEMD-160(SHA-256), 64 hex = SHA-256. " +
+                "Set allow_unverified_shard_hash = true in the profile to read such objects without the integrity check"
+        if (firstShardHashReport("refused-shape:$fileId")) {
+            log.warn(message, remotePath, recorded.description)
+        } else {
+            log.debug(message, remotePath, recorded.description)
+        }
+    }
 
     private fun warnShardHashUnverified(
         fileId: String,
@@ -746,7 +773,8 @@ class InternxtProvider(
     ) {
         val message =
             "Internxt shard hash of {} has a shape this client cannot check ({}); " +
-                "its ciphertext is read WITHOUT the integrity check (known shapes: 40 hex = RIPEMD-160(SHA-256), 64 hex = SHA-256)"
+                "its ciphertext is read WITHOUT the integrity check (allow_unverified_shard_hash is set; " +
+                "known shapes: 40 hex = RIPEMD-160(SHA-256), 64 hex = SHA-256)"
         if (firstShardHashReport("unverified:$fileId")) {
             log.warn(message, remotePath, recorded.description)
         } else {

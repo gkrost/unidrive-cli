@@ -148,6 +148,7 @@
           "rclone_config": { "type": "string" },
           "fast_bootstrap": { "type": "boolean" },
           "keep_overwritten": { "type": "boolean" },
+          "allow_unverified_shard_hash": { "type": "boolean", "description": "Internxt: read a download whose recorded shard hash this client cannot check, without the integrity check. Default false: such a download is refused." },
           "sync_direction": { "type": "string", "enum": ["bidirectional", "upload", "download"], "description": "This profile's sync direction; overrides [general] sync_direction for this profile only. `unidrive backup add` writes \"upload\"." },
           "file_versioning": { "type": "boolean", "description": "Overrides [general] file_versioning for this profile only." },
           "max_versions": { "type": "integer", "minimum": 1, "description": "Overrides [general] max_versions for this profile only." },

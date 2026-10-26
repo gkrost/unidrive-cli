@@ -40,7 +40,7 @@ class InternxtShardHashDownloadTest {
     private val bucket = "6928426c1a2316b856c9ab81"
     private val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
     private val index64 = "11".repeat(32)
-    private val shardUrl = "https://shard-host.invalid/get/shard-0"
+    private var shardUrl = "https://shard-host.invalid/get/shard-0"
 
     // RIPEMD-160(SHA-256("0123456789A")), computed independently with Node's crypto module.
     private val knownBody = "0123456789A".toByteArray()
@@ -58,9 +58,16 @@ class InternxtShardHashDownloadTest {
     private fun chainHex(bytes: ByteArray) =
         Ripemd160.digest(MessageDigest.getInstance("SHA-256").digest(bytes)).joinToString("") { "%02x".format(it) }
 
-    private fun newProvider(): InternxtProvider {
+    private fun newProvider(allowUnverifiedShardHash: Boolean = false): InternxtProvider {
         destination = Files.createTempDirectory("ud-shard-hash").resolve("out.bin")
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-shard-token", ".tmp")))
+        val provider =
+            InternxtProvider(
+                InternxtConfig(
+                    credentialProtector = null,
+                    tokenPath = Files.createTempFile("ud-shard-token", ".tmp"),
+                    allowUnverifiedShardHash = allowUnverifiedShardHash,
+                ),
+            )
         val authField = InternxtProvider::class.java.getDeclaredField("authService")
         authField.isAccessible = true
         val authService = authField.get(provider)
@@ -231,10 +238,10 @@ class InternxtShardHashDownloadTest {
     // ---- a value in no known shape: not a mismatch ----------------------------------------------------------------
 
     @Test
-    fun `a shard hash in an unknown shape downloads unverified and warns once with its length and class`() =
+    fun `with allow_unverified_shard_hash a shard hash in an unknown shape downloads unverified and warns once with its length and class`() =
         runTest {
             recordedHash = "ab".repeat(64) // SHA-512 sized
-            val provider = newProvider()
+            val provider = newProvider(allowUnverifiedShardHash = true)
 
             capturingProviderLog { appender ->
                 assertEquals(11L, provider.downloadById(fileUuid, "/unknown.bin", destination))
@@ -250,10 +257,10 @@ class InternxtShardHashDownloadTest {
         }
 
     @Test
-    fun `an empty shard hash is read unverified, not called a mismatch`() =
+    fun `with allow_unverified_shard_hash an empty shard hash is read unverified, not called a mismatch`() =
         runTest {
             recordedHash = ""
-            val provider = newProvider()
+            val provider = newProvider(allowUnverifiedShardHash = true)
 
             capturingProviderLog { appender ->
                 assertEquals(11L, provider.downloadById(fileUuid, "/nohash.bin", destination))
@@ -262,10 +269,10 @@ class InternxtShardHashDownloadTest {
         }
 
     @Test
-    fun `when the per-object report cap is reached one WARN says so and later objects stay quiet`() =
+    fun `with allow_unverified_shard_hash, when the per-object report cap is reached one WARN says so and later objects stay quiet`() =
         runTest {
             recordedHash = "ab".repeat(64)
-            val provider = newProvider()
+            val provider = newProvider(allowUnverifiedShardHash = true)
             provider.shardHashReportCap = 2
 
             capturingProviderLog { appender ->
@@ -283,15 +290,95 @@ class InternxtShardHashDownloadTest {
 
     // The right length for a known shape but not hex: malformed, so unrecognised like any other unknown shape.
     @Test
-    fun `a malformed shard hash of a known length is read unverified with a warning`() =
+    fun `with allow_unverified_shard_hash a malformed shard hash of a known length is read unverified with a warning`() =
         runTest {
             recordedHash = "z".repeat(40)
-            val provider = newProvider()
+            val provider = newProvider(allowUnverifiedShardHash = true)
 
             capturingProviderLog { appender ->
                 assertEquals(11L, provider.downloadById(fileUuid, "/malformed.bin", destination))
                 assertTrue("length 40, base64" in warnings(appender).single())
             }
+        }
+
+    // ---- fail closed: the recorded hash is the only integrity check there is ------------------------------------------
+
+    private fun assertRefusedBeforeAnyShardRequest(
+        e: RemoteContentRefusedDownloadException,
+        valueNotInMessage: String? = null,
+    ) {
+        assertTrue(requestLog.none { it.contains("shard-host.invalid") }, "no shard request was made: $requestLog")
+        assertNothingLeft()
+        valueNotInMessage?.takeIf { it.isNotEmpty() }?.let { assertFalse(it in e.message.orEmpty(), "never the value") }
+    }
+
+    @Test
+    fun `a shard hash in an unknown shape is refused by default before the shard is requested`() {
+        recordedHash = "ab".repeat(64) // SHA-512 sized
+        val provider = newProvider()
+
+        capturingProviderLog { appender ->
+            val e = assertFailsWith<RemoteContentRefusedDownloadException> { runTest { provider.downloadById(fileUuid, "/unknown.bin", destination) } }
+
+            assertRefusedBeforeAnyShardRequest(e, recordedHash)
+            assertTrue("length 128, hex" in e.message.orEmpty(), "the shape is named: ${e.message}")
+            assertEquals("its shard hash cannot be checked", e.reason)
+            val warned = warnings(appender)
+            assertEquals(1, warned.size, "once per object: $warned")
+            assertTrue("allow_unverified_shard_hash" in warned.single(), "the opt-out is named: ${warned.single()}")
+            assertFalse(recordedHash in warned.single(), "never the value")
+        }
+    }
+
+    @Test
+    fun `an empty shard hash is refused by default`() {
+        recordedHash = ""
+        val provider = newProvider()
+
+        val e = assertFailsWith<RemoteContentRefusedDownloadException> { runTest { provider.downloadById(fileUuid, "/nohash.bin", destination) } }
+
+        assertRefusedBeforeAnyShardRequest(e)
+        assertTrue("length 0, empty" in e.message.orEmpty(), e.message)
+    }
+
+    @Test
+    fun `a malformed shard hash of a known length is refused by default`() {
+        recordedHash = "z".repeat(40)
+        val provider = newProvider()
+
+        val e = assertFailsWith<RemoteContentRefusedDownloadException> { runTest { provider.downloadById(fileUuid, "/malformed.bin", destination) } }
+
+        assertRefusedBeforeAnyShardRequest(e, recordedHash)
+    }
+
+    @Test
+    fun `a refusal for an unknown shape is permanent, so the engine quarantines it instead of retrying`() {
+        recordedHash = ""
+        val provider = newProvider()
+
+        assertFailsWith<PermanentDownloadFailureException> { runTest { provider.downloadById(fileUuid, "/nohash.bin", destination) } }
+    }
+
+    @Test
+    fun `a shard served over plain http is refused before any request to it`() {
+        recordedHash = knownBodyChain
+        shardUrl = "http://shard-host.invalid/get/shard-0"
+        val provider = newProvider()
+
+        val e = assertFailsWith<RemoteContentRefusedDownloadException> { runTest { provider.downloadById(fileUuid, "/plain.bin", destination) } }
+
+        assertRefusedBeforeAnyShardRequest(e)
+        assertEquals("its shard is not served over https", e.reason)
+        assertFalse("shard-host" in e.message.orEmpty(), "the URL can carry a token and is not put in the message")
+    }
+
+    @Test
+    fun `a shard hash of a known shape over https still downloads`() =
+        runTest {
+            recordedHash = knownBodyChain
+            val provider = newProvider()
+
+            assertEquals(11L, provider.downloadById(fileUuid, "/ok.bin", destination))
         }
 
     // ---- diagnostics and the early refusal ---------------------------------------------------------------------------

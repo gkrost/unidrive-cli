@@ -1242,6 +1242,13 @@ class InternxtApiService(
         }
     }
 
+    private fun isHttps(url: String): Boolean =
+        try {
+            java.net.URI(url).scheme.equals("https", ignoreCase = true)
+        } catch (_: java.net.URISyntaxException) {
+            false
+        }
+
     /** Streams encrypted bytes through [cipher] to [destination], hashing plaintext before atomic publication. */
     @Suppress("ThrowsCount") // The baseline entry predates target mtime and the streamed content receipt.
     internal suspend fun downloadFileStreaming(
@@ -1252,6 +1259,15 @@ class InternxtApiService(
         expectedShardHash: ShardHashExpectation.Checkable? = null,
         targetMtimeMillis: Long? = null,
     ): InternxtDownloadedContent {
+        // The content is AES-CTR with no MAC, so a shard fetched over plain http can be altered on the way unseen
+        // (the recorded hash is the only check, and it too comes from a response that is not ours to trust blindly).
+        // The URL is never put in the message: it can carry a signed token.
+        if (!isHttps(downloadUrl)) {
+            throw RemoteContentRefusedDownloadException(
+                "Internxt shard URL for ${destination.fileName} is not https; refusing to download over an unprotected connection",
+                reason = "its shard is not served over https",
+            )
+        }
         bridgeBudget.awaitSlot()
         try {
             val downloaded =

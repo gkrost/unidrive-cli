@@ -477,6 +477,10 @@ data class RawProvider(
     // version. Opt-in recovery insurance; default off. Threaded into
     // InternxtConfig.keepOverwritten by InternxtProviderFactory.
     val keep_overwritten: Boolean? = null,
+    // Internxt: read a download whose recorded shard hash this client cannot check (blank, another length, not hex),
+    // without the integrity check. Default off: such a download is refused. Threaded into
+    // InternxtConfig.allowUnverifiedShardHash by InternxtProviderFactory.
+    val allow_unverified_shard_hash: Boolean? = null,
     // The sync policy of this profile alone: each key overrides the same-named [general] key for this profile
     // (`unidrive backup add` writes them). Absent = the [general] value, then the default.
     val sync_direction: String? = null,
