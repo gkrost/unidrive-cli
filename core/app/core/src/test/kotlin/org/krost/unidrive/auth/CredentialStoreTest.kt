@@ -154,6 +154,40 @@ class CredentialStoreTest {
     }
 
     @Test
+    fun `a decode error is logged without the payload it choked on`() {
+        // kotlinx's decode errors quote the JSON input in their message; a truncated credential file is
+        // exactly that — the token on the tail (issue#83 E).
+        val secret = "super-secret-refresh-token"
+        Files.writeString(dir.resolve("creds.json"), """{"expiresAt": 1, "accessToken": "$secret" """)
+        val logger = org.slf4j.LoggerFactory.getLogger(CredentialStore::class.java) as ch.qos.logback.classic.Logger
+        val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            assertNull(store().load())
+        } finally {
+            logger.detachAppender(appender)
+        }
+        val logged = appender.list.joinToString("\n") { it.formattedMessage }
+        assertTrue("not readable" in logged, "the discard is still told apart from a missing file: $logged")
+        assertFalse(secret in logged, "no payload text in the log: $logged")
+    }
+
+    @Test
+    fun `a payload missing a field is logged by field name`() {
+        Files.writeString(dir.resolve("creds.json"), """{"expiresAt": 9}""")
+        val logger = org.slf4j.LoggerFactory.getLogger(CredentialStore::class.java) as ch.qos.logback.classic.Logger
+        val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            assertNull(store().load())
+        } finally {
+            logger.detachAppender(appender)
+        }
+        val logged = appender.list.joinToString("\n") { it.formattedMessage }
+        assertTrue("missing fields accessToken" in logged, logged)
+    }
+
+    @Test
     fun `load discards a value that fails the validate hook`() {
         val s =
             store(validate = { it.accessToken.length >= 32 })
