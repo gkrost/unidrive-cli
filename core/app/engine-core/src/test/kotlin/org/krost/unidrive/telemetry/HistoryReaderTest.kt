@@ -9,6 +9,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -234,6 +235,47 @@ class HistoryReaderTest {
         assertEquals(all, seen, "pages of two walk the same rows")
         assertEquals(false, r.query(HistoryQuery(results = wanted, limit = 5)).hasMore)
         assertEquals(true, r.query(HistoryQuery(results = wanted, limit = 4)).hasMore)
+    }
+
+    @Test
+    fun `several results use one snapshot while a transfer finishes`() {
+        val history = open()
+        val transfer = history.begin(TransferDirection.UPLOAD, "/changing")
+        transfer.started()
+        assertTrue(history.flush())
+        var reads = 0
+        val r = HistoryReader(db) {
+            if (++reads == 1) {
+                transfer.finish(TransferResult.FAILED)
+                assertTrue(history.flush())
+            }
+        }.also { readers += it }
+
+        val query = HistoryQuery(results = linkedSetOf(TransferResult.RUNNING, TransferResult.FAILED), limit = 1)
+        val page = r.query(query)
+        assertEquals(listOf(TransferResult.RUNNING), page.rows.map { it.result })
+        assertFalse(page.hasMore)
+        assertEquals(listOf(TransferResult.FAILED), r.query(query).rows.map { it.result })
+    }
+
+    @Test
+    fun `a failed merged read releases its snapshot`() {
+        val history = open()
+        val transfer = history.begin(TransferDirection.UPLOAD, "/changing")
+        transfer.started()
+        assertTrue(history.flush())
+        var fail = true
+        val r = HistoryReader(db) {
+            if (fail) {
+                fail = false
+                error("interrupted read")
+            }
+        }.also { readers += it }
+        val query = HistoryQuery(results = setOf(TransferResult.RUNNING, TransferResult.FAILED))
+        assertFailsWith<IllegalStateException> { r.query(query) }
+        transfer.finish(TransferResult.FAILED)
+        assertTrue(history.flush())
+        assertEquals(listOf(TransferResult.FAILED), r.query(query).rows.map { it.result })
     }
 
     @Test

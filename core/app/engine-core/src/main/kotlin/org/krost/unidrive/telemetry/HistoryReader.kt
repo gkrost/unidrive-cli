@@ -76,6 +76,7 @@ data class HistoryPage(
  */
 class HistoryReader internal constructor(
     private val dbPath: Path,
+    private val afterResultRead: () -> Unit = {},
 ) : AutoCloseable {
     private var conn: Connection? = null
 
@@ -111,11 +112,23 @@ class HistoryReader internal constructor(
     // gkrost/unidrive-cli#134: `result IN (a, b)` cannot be seeked in time order, so the planner reads every row newer than the matches
     // on the time index. One query per result seeks its own range of `idx_transfers_result_time`; each is newest first and holds up to
     // limit + 1 rows, so the newest limit + 1 of their union are the newest limit + 1 of the whole.
-    private fun mergedPerResult(query: HistoryQuery): List<TransferRow> =
-        perResult(query)
-            .flatMap { read(it) }
-            .sortedWith(compareByDescending<TransferRow> { it.finishedAt ?: it.queuedAt }.thenByDescending { it.operationId })
-            .take(query.limit + 1)
+    private fun mergedPerResult(query: HistoryQuery): List<TransferRow> {
+        // The writer can change a row's result between reads. Keep one WAL snapshot for the whole page.
+        val c = connection()
+        c.autoCommit = false
+        try {
+            return perResult(query)
+                .flatMap { read(it).also { afterResultRead() } }
+                .sortedWith(compareByDescending<TransferRow> { it.finishedAt ?: it.queuedAt }.thenByDescending { it.operationId })
+                .take(query.limit + 1)
+        } finally {
+            try {
+                c.rollback()
+            } finally {
+                c.autoCommit = true
+            }
+        }
+    }
 
     private fun perResult(query: HistoryQuery): List<HistoryQuery> = query.results.map { query.copy(results = setOf(it)) }
 
