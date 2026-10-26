@@ -337,6 +337,9 @@ class MountOperationsParityTest {
                     ProviderException("Folder not found: a in /a/x"),
                     ParityStatusCodeException(404),
                     RuntimeException("wrapped", ParityStatusCodeException(404)),
+                    // archive#1256 A: S3's absence (httpStatus on the ProviderException) and the local-directory provider's.
+                    ProviderException("S3 has nothing at /x", httpStatus = 404),
+                    java.io.FileNotFoundException("localfs: no such item: /x"),
                 )
             for (error in absent) {
                 provider.getMetadataError = error

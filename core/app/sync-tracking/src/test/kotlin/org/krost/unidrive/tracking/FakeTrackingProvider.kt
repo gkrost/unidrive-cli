@@ -33,6 +33,9 @@ class FakeTrackingProvider : CloudProvider {
     val uploadedPaths: MutableList<String> = mutableListOf()
     val deletedPaths: MutableList<String> = mutableListOf()
 
+    /** Test hook: what [getMetadata] throws instead of answering (a transient failure, say). */
+    var getMetadataError: Throwable? = null
+
     /**
      * Test hook: the cursor passed to every [delta] invocation, in call
      * order. Lets tests pin that a subsequent pass resumes from the cursor
@@ -247,7 +250,8 @@ class FakeTrackingProvider : CloudProvider {
     }
 
     override suspend fun getMetadata(path: String): CloudItem {
-        val bytes = files[path] ?: throw NoSuchElementException("no remote at $path")
+        getMetadataError?.let { throw it }
+        val bytes = files[path] ?: throw org.krost.unidrive.ProviderException("Item not found: $path")
         return itemFor(path, bytes)
     }
 
@@ -447,7 +451,7 @@ class HashlessFakeProvider : CloudProvider {
     override suspend fun listChildren(path: String): List<org.krost.unidrive.CloudItem> = emptyList()
 
     override suspend fun getMetadata(path: String): org.krost.unidrive.CloudItem {
-        val bytes = files[path] ?: throw NoSuchElementException("no remote at $path")
+        val bytes = files[path] ?: throw org.krost.unidrive.ProviderException("Item not found: $path")
         return itemFor(path, bytes)
     }
 

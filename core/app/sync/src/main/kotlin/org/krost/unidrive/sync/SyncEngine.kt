@@ -671,7 +671,8 @@ open class SyncEngine(
         )
 
     // archive#560 U2: the classification lives in :app:engine-core (RemoteErrors), shared with the mount.
-    // See [org.krost.unidrive.engine.RemoteErrors.isAlreadyGone] for the two shapes it accepts.
+    // A delete is idempotent only on the typed signal ([org.krost.unidrive.engine.RemoteErrors.isAlreadyGone]): a bare
+    // HTTP 404 on a delete can be a misrouted call, and a tombstoned row never re-emits the delete.
     private fun isAlreadyGone(e: Throwable): Boolean = org.krost.unidrive.engine.RemoteErrors.isAlreadyGone(e)
 
     // The remote item at [path], or null only when the provider proves it ABSENT; transient failures
@@ -681,20 +682,12 @@ open class SyncEngine(
         try {
             provider.getMetadata(path)
         } catch (e: Exception) {
-            if (isAlreadyGone(e) || statusCodeOf(e) == 404 || (e.cause?.let { statusCodeOf(it) } == 404)) {
+            if (org.krost.unidrive.engine.RemoteErrors.isNotFound(e)) {
                 null
             } else {
                 throw e
             }
         }
-
-    // Reflectively read a `getStatusCode(): Int` off a provider exception without a
-    // provider-module classpath dependency (mirrors the hydration SPI helper).
-    private fun statusCodeOf(e: Throwable): Int? =
-        runCatching {
-            val getter = e.javaClass.methods.firstOrNull { it.name == "getStatusCode" && it.parameterCount == 0 }
-            getter?.invoke(e) as? Int
-        }.getOrNull()
 
     /**
      * One-way remote→state.db refresh for view consumers (the FUSE mount). Reuses the remote
@@ -1952,10 +1945,8 @@ open class SyncEngine(
         }
     }
 
-    // archive#419: the provider says the path does not exist — the typed Internxt "not found"
-    // shapes, or an HTTP 404 carried on the exception (same probe as remoteItemOrNull).
-    private fun isRemoteNotFound(e: Throwable): Boolean =
-        isAlreadyGone(e) || statusCodeOf(e) == 404 || (e.cause?.let { statusCodeOf(it) } == 404)
+    // archive#419: the provider says the path does not exist (the one rule, RemoteErrors.isNotFound).
+    private fun isRemoteNotFound(e: Throwable): Boolean = org.krost.unidrive.engine.RemoteErrors.isNotFound(e)
 
     /**
      * Ancestor directories of [filePath], immediate parent up to — but not

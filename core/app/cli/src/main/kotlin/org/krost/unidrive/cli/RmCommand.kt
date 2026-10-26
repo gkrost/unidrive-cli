@@ -21,7 +21,6 @@ import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
-import java.io.FileNotFoundException
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.file.Files
@@ -478,19 +477,16 @@ private suspend fun deleteWithProvider(
 }
 
 /** The item at [path], or null when the provider proves it absent; any other failure propagates. */
+@Suppress("TooGenericExceptionCaught") // classified by RemoteErrors.isNotFound, anything else is rethrown unchanged
 private suspend fun metadataOrNull(
     provider: CloudProvider,
     path: String,
 ): CloudItem? =
     try {
         provider.getMetadata(path)
-    } catch (_: FileNotFoundException) {
-        null
-    } catch (e: ProviderException) {
-        if (RemoteErrors.isAlreadyGone(e) || e.httpStatus == HTTP_NOT_FOUND) null else throw e
+    } catch (e: Exception) {
+        if (RemoteErrors.isNotFound(e)) null else throw e
     }
-
-private const val HTTP_NOT_FOUND = 404
 
 /**
  * The system console as a yes/no question, only when it is a real terminal. JDK 22+ hands out a [java.io.Console] even
