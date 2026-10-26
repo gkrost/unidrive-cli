@@ -615,6 +615,11 @@ class HydrationImpl(
         // An edit begun by open_write_begin has been noted since then.
         if (entry.remoteId != null) stateDb.markEdited(path, baseEtag ?: writeToken.orEmpty())
 
+        // gkrost/unidrive-cli#134: a client that offers the file itself is retrying it, and the provider's earlier refusal of these
+        // bytes (kept for hours, completeRefused) must not answer the retry. The engine's own resubmission, the crash-recovery
+        // replay (`recovery-` handles), keeps being answered from it.
+        if (!handleId.startsWith("recovery-")) runCatching { stateDb.clearUploadRefusal(path) }
+
         // Crash-recovery replay: the co-daemon's cache_scanner fires open_write with
         // handle_id = "recovery-<n>" for each cache file whose mtime exceeds the
         // last_synced watermark. These calls happen BEFORE the FUSE mount goes live,
