@@ -184,15 +184,20 @@ class FakeS3(
         }
         val page = entries.take(max)
         val truncated = entries.size > max
+        // Like S3: with encoding-type=url the Key and Prefix elements are URL-encoded (spaces as '+') and the answer says so;
+        // without it they are raw, which XML 1.0 cannot carry for a control character.
+        val urlEncoded = q["encoding-type"] == "url"
+        val name: (String) -> String = { if (urlEncoded) java.net.URLEncoder.encode(it, Charsets.UTF_8) else esc(it) }
         val body =
             buildString {
                 append("<ListBucketResult><IsTruncated>$truncated</IsTruncated>")
+                if (urlEncoded) append("<EncodingType>url</EncodingType>")
                 if (truncated) append("<NextContinuationToken>${esc(page.last().first)}</NextContinuationToken>")
                 page.forEach { (key, obj) ->
                     if (obj == null) {
-                        append("<CommonPrefixes><Prefix>${esc(key)}</Prefix></CommonPrefixes>")
+                        append("<CommonPrefixes><Prefix>${name(key)}</Prefix></CommonPrefixes>")
                     } else {
-                        append("<Contents><Key>${esc(key)}</Key><LastModified>${obj.lastModified}</LastModified>")
+                        append("<Contents><Key>${name(key)}</Key><LastModified>${obj.lastModified}</LastModified>")
                         append("<ETag>&quot;${obj.etag}&quot;</ETag><Size>${obj.size}</Size></Contents>")
                     }
                 }
