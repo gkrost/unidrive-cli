@@ -1036,8 +1036,7 @@ class InternxtProvider(
         checkReplaceTarget(existingRemoteId, ifMatchETag, remotePath)
 
         val fileName = segments.last()
-        val ext = if (fileName.contains('.')) fileName.substringAfterLast('.') else null
-        val plainName = if (ext != null) fileName.substringBeforeLast('.') else fileName
+        val (plainName, ext) = splitLeaf(fileName)
         val parentPath = "/" + segments.dropLast(1).joinToString("/")
 
         // Inline GC sweep for stale tombstones (missing-local or > RESUME_TTL_MS
@@ -4330,12 +4329,28 @@ class InternxtProvider(
             return org.krost.unidrive.io.NameLimit.fitStem(plainName, tail.length + extensionUnits(type)) + tail
         }
 
-        /** UD-369: split a leaf filename into (plainName, type). Returned type is the bare extension or null. */
-        fun stripExtension(filename: String): String =
-            if (filename.contains('.')) filename.substringBeforeLast('.') else filename
+        /**
+         * UD-369: split a leaf filename into (plainName, type). Returned type is the bare extension or null.
+         *
+         * The listing joins the two again as `plainName.type`, but trims the plainName and does not repeat a type the
+         * plainName already ends in ([fileToCloudItem]). A name for which that join is not the name itself is therefore
+         * kept whole in the plainName, with no type: `a.txt.txt` (split as `a.txt` + `txt` it is listed as `a.txt`),
+         * `a.` (type empty, listed as `a`), `Scan 1 .pdf` (the plainName's trailing space is trimmed), and a dotfile
+         * (an empty plainName, which the drive refuses). A name that is listed under another name is a rename of the
+         * user's file as far as the engine can tell, and a path lookup of the uploaded name no longer finds it.
+         */
+        fun splitLeaf(filename: String): Pair<String, String?> {
+            val dot = filename.lastIndexOf('.')
+            if (dot <= 0 || dot == filename.length - 1) return filename to null
+            val stem = filename.substring(0, dot)
+            val type = filename.substring(dot + 1)
+            if (stem != sanitizeName(stem) || type != sanitizeName(type) || stem.endsWith(".$type")) return filename to null
+            return stem to type
+        }
 
-        fun newFileType(filename: String): String? =
-            if (filename.contains('.')) filename.substringAfterLast('.') else null
+        fun stripExtension(filename: String): String = splitLeaf(filename).first
+
+        fun newFileType(filename: String): String? = splitLeaf(filename).second
 
         /**
          * UD-317: strip leading/trailing whitespace (incl. `\n`, `\r`, `\t`)
