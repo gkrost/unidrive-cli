@@ -295,7 +295,7 @@ class MountEngine private constructor(
      *   state.db has a row for (the local folder exists), and the rows take the new ids. A level without a row stops it:
      *   nothing local asks for that folder.
      * - Live: the walk and the id disagree (a listing that lags behind a create, archive#132), so the folder is looked up
-     *   by its path once more, and a row whose id differs takes the folder's id.
+     *   by path once more; only the same id can be retried.
      * - Unknown, or any failure of the lookup (a 5xx, a degraded gateway, a timeout): nothing is done.
      *
      * Returns true when the folders are there to be tried again; the caller sends the bytes once more, and only when
@@ -330,39 +330,57 @@ class MountEngine private constructor(
         was: FolderState,
         path: String,
     ): Boolean {
-        for (level in levels) {
+        val expected = levels.toMutableList()
+        for (index in expected.indices) {
+            val level = expected[index]
+            if (!db.batch { expected.all(::folderStillTracked) }) return false
             val item = provider.createFolder(level.remotePath)
             recordProviderContact()
-            if (item.nameOverridden) {
-                log.info("#134: the folder {} came back under another name; the upload is not tried again", level.remotePath)
+            if (item.nameOverridden || item.deleted) {
+                log.info("#134: the folder {} did not come back under the requested name", level.remotePath)
                 return false
             }
-            db.upsertEntry(
-                level.row.copy(
+            if (!item.isFolder || item.id.isEmpty()) return false
+            val updated = db.batch {
+                if (!expected.all(::folderStillTracked) || idBelongsElsewhere(item.id, level.row.path)) return@batch null
+                val current = db.getEntry(level.row.path) ?: return@batch null
+                val row = current.copy(
                     remoteId = item.id,
                     remoteModified = item.modified ?: Instant.now(),
-                    parentUuid = item.parentId ?: level.row.parentUuid,
+                    parentUuid = item.parentId ?: current.parentUuid,
                     lastErrorAt = null,
                     lastSynced = Instant.now(),
-                ),
-            )
+                )
+                db.upsertEntry(row, keepMarks = true)
+                row
+            } ?: return false
+            expected[index] = ParentLevel(level.remotePath, updated)
             log.info("#134: the folder {} was {} in the cloud and was created again for the upload of {}", level.remotePath, was, path)
         }
         return true
     }
 
-    // The folder the walk missed is live by its id: a lookup by its path says whether the listing sees it now, and a row that
-    // holds another id for it takes the id found.
+    // The folder the walk missed is live by its id: retry only if the path resolves to that same folder, not a replacement.
     private suspend fun adoptLiveFolder(
         level: ParentLevel,
         path: String,
     ): Boolean {
         val live = watchingCredentials { provider.getMetadata(level.remotePath) }.also { recordProviderContact() }
-        if (!live.isFolder) return false
-        if (live.id != level.row.remoteId) db.upsertEntry(level.row.copy(remoteId = live.id, lastErrorAt = null))
+        if (!live.isFolder || live.deleted || live.id != level.row.remoteId) return false
+        if (!db.batch { folderStillTracked(level) }) return false
         log.info("#134: the folder {} is live in the cloud; the upload of {} is tried again", level.remotePath, path)
         return true
     }
+
+    // The lookup and creation suspend; a rename, delete or enumeration may change a row in the meantime.
+    // Recheck under the database transaction and preserve its current fields when updating its identity.
+    private fun folderStillTracked(level: ParentLevel): Boolean =
+        db.getEntry(level.row.path)?.let {
+            it.isFolder && it.remoteId == level.row.remoteId && it.remotePath == level.row.remotePath
+        } == true
+
+    private fun idBelongsElsewhere(id: String, path: String): Boolean =
+        db.recovery.getEntryByRemoteIdAnyStatus(id)?.let { it.path != path || it.status != EntryStatus.EXISTS } == true
 
     // A folder from [goneFolder] down to the folder of [path], with the remote path it has and the row that tracks it.
     private class ParentLevel(

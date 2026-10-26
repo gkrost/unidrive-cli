@@ -125,14 +125,14 @@ class HydrationParentGoneRecoveryTest {
     }
 
     // A folder the id lookup finds live although the walk missed it (a listing that lags behind): it is looked up by its path
-    // again, and when that finds it the bytes go once more, without a folder being created.
+    // again, and when that finds the same folder the bytes go once more, without a folder being created.
     @Test
     fun `a folder the id lookup finds live and the path lookup finds is tried again without creating it`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this)
         val cache = env.seedNewFileIn(listOf("/docs"), "/docs/new.txt")
         env.syncEngine.refuseUploadsParentGone(1, folder = "/docs")
         env.syncEngine.answerFolderState("id-/docs", FolderState.LIVE)
-        env.syncEngine.liveFolder("/docs")
+        env.syncEngine.liveFolder("/docs", "id-/docs")
 
         env.hydration.openForWrite("conn1", "h1", "/docs/new.txt", cache)
         advanceUntilIdle()
@@ -140,7 +140,7 @@ class HydrationParentGoneRecoveryTest {
         assertTrue(env.syncEngine.createdFolders().isEmpty(), "a live folder is not created")
         assertEquals(2, env.syncEngine.uploadAttempts())
         assertEquals("the user's bytes", env.syncEngine.remoteContentSeen("/docs/new.txt"))
-        assertEquals("live-/docs", env.stateDb.remoteIdOf("/docs"), "the row takes the id the path lookup found")
+        assertEquals("id-/docs", env.stateDb.remoteIdOf("/docs"), "the path lookup found the tracked folder")
         assertNull(env.stateDb.uploadRefusal("/docs/new.txt"))
     }
 
@@ -185,4 +185,84 @@ class HydrationParentGoneRecoveryTest {
         assertNotNull(env.stateDb.uploadRefusal("/docs/new.txt"))
         assertFalse(env.syncEngine.folderStateLookups() > 1, "at most the tombstone's own lookup")
     }
+    @Test
+    fun `a replacement during folder creation is not evicted or followed`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this)
+        val cache = env.seedNewFileIn(listOf("/a", "/a/b"), "/a/b/new.txt")
+        env.syncEngine.refuseUploadsParentGone(1, folder = "/a")
+        env.syncEngine.answerFolderState("id-/a", FolderState.NOT_FOUND)
+        env.syncEngine.onCreateFolder { if (it == "/a") env.stateDb.insertFolderEntry("/a", remoteId = "replacement") }
+
+        env.hydration.openForWrite("conn1", "h1", "/a/b/new.txt", cache)
+        advanceUntilIdle()
+
+        assertEquals("replacement", env.stateDb.remoteIdOf("/a"))
+        assertEquals(listOf("/a"), env.syncEngine.createdFolders())
+        assertEquals(1, env.syncEngine.uploadAttempts())
+    }
+
+    @Test
+    fun `a folder deleted while its live path is looked up is not restored`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this)
+        val cache = env.seedNewFileIn(listOf("/docs"), "/docs/new.txt")
+        env.syncEngine.refuseUploadsParentGone(1, folder = "/docs")
+        env.syncEngine.answerFolderState("id-/docs", FolderState.LIVE)
+        env.syncEngine.liveFolder("/docs", "id-/docs")
+        env.syncEngine.onFolderMetadata { env.stateDb.deleteRow(it) }
+
+        env.hydration.openForWrite("conn1", "h1", "/docs/new.txt", cache)
+        advanceUntilIdle()
+
+        assertNull(env.stateDb.remoteIdOf("/docs"))
+        assertEquals(1, env.syncEngine.uploadAttempts())
+    }
+
+    @Test
+    fun `a live path lookup cannot steal an id tracked at another path`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this)
+        val cache = env.seedNewFileIn(listOf("/docs", "/elsewhere"), "/docs/new.txt")
+        env.stateDb.insertFolderEntry("/elsewhere", remoteId = "live-/docs")
+        env.syncEngine.refuseUploadsParentGone(1, folder = "/docs")
+        env.syncEngine.answerFolderState("id-/docs", FolderState.LIVE)
+        env.syncEngine.liveFolder("/docs")
+
+        env.hydration.openForWrite("conn1", "h1", "/docs/new.txt", cache)
+        advanceUntilIdle()
+
+        assertEquals("live-/docs", env.stateDb.remoteIdOf("/elsewhere"))
+        assertEquals("id-/docs", env.stateDb.remoteIdOf("/docs"))
+        assertEquals(1, env.syncEngine.uploadAttempts())
+    }
+
+    @Test
+    fun `a live folder at the same path with a different id is not adopted`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this)
+        val cache = env.seedNewFileIn(listOf("/docs"), "/docs/new.txt")
+        env.syncEngine.refuseUploadsParentGone(1, folder = "/docs")
+        env.syncEngine.answerFolderState("id-/docs", FolderState.LIVE)
+        env.syncEngine.liveFolder("/docs")
+
+        env.hydration.openForWrite("conn1", "h1", "/docs/new.txt", cache)
+        advanceUntilIdle()
+
+        assertEquals("id-/docs", env.stateDb.remoteIdOf("/docs"))
+        assertEquals(1, env.syncEngine.uploadAttempts())
+        assertNotNull(env.stateDb.uploadRefusal("/docs/new.txt"))
+    }
+
+    @Test
+    fun `a created folder id already tracked elsewhere is not stolen`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this)
+        val cache = env.seedNewFileIn(listOf("/docs", "/elsewhere"), "/docs/new.txt")
+        env.stateDb.insertFolderEntry("/elsewhere", remoteId = "folder-/docs")
+        env.syncEngine.refuseUploadsParentGone(1, folder = "/docs")
+        env.syncEngine.answerFolderState("id-/docs", FolderState.NOT_FOUND)
+
+        env.hydration.openForWrite("conn1", "h1", "/docs/new.txt", cache)
+        advanceUntilIdle()
+
+        assertEquals("folder-/docs", env.stateDb.remoteIdOf("/elsewhere"))
+        assertEquals(1, env.syncEngine.uploadAttempts())
+    }
+
 }

@@ -211,11 +211,15 @@ internal class MinimalFakeProvider(
     // gkrost/unidrive-cli#134: the folders a listing by path finds (getMetadata answers a folder for them); a path in neither this
     // nor [remoteFiles] is not found.
     val liveFolders: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    val liveFolderIds = ConcurrentHashMap<String, String>()
+
+    var onFolderMetadata: ((String) -> Unit)? = null
 
     override suspend fun getMetadata(path: String): CloudItem {
+        onFolderMetadata?.invoke(path)
         if (path in liveFolders) {
             return CloudItem(
-                id = "live-$path",
+                id = liveFolderIds[path] ?: "live-$path",
                 name = path.substringAfterLast('/'),
                 path = path,
                 size = 0L,
@@ -436,8 +440,11 @@ internal class MinimalFakeProvider(
     // gkrost/unidrive-cli#134: createFolder fails with this (null: it creates).
     @Volatile var createFolderFailure: Exception? = null
 
+    var onCreateFolder: ((String) -> Unit)? = null
+
     override suspend fun createFolder(path: String): CloudItem {
         createdFolders.add(path)
+        onCreateFolder?.invoke(path)
         createFolderFailure?.let { throw it }
         return CloudItem(
             id = "folder-$path",
@@ -958,9 +965,14 @@ internal class HydrationTestEnv(
         }
 
         /** gkrost/unidrive-cli#134: a listing by path finds the folder [path] (it is live in the cloud). */
-        fun liveFolder(path: String) {
+        fun liveFolder(path: String, id: String = "live-$path") {
             fakeProvider.liveFolders.add(path)
+            fakeProvider.liveFolderIds[path] = id
         }
+
+        fun onCreateFolder(block: (String) -> Unit) { fakeProvider.onCreateFolder = block }
+
+        fun onFolderMetadata(block: (String) -> Unit) { fakeProvider.onFolderMetadata = block }
 
         /** gkrost/unidrive-cli#134: creating a folder fails with [failure] (null: it works again). */
         fun failCreateFolder(failure: Exception?) {
