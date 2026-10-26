@@ -864,9 +864,11 @@ class HydrationImpl(
         slot.retryAtMs = null
         // archive#610: a never-uploaded file renamed while its upload waits (queued, or in a retry backoff) is uploaded at the
         // path the rename moved it to; see [followRename]. The path and the cache copy are the slot's current ones.
-        var path = submittedPath
-        var cachePath = submittedCachePath
-        val followsRenames = followsRenames(slot, path, baseEtag)
+        val followsRenames = followsRenames(slot, submittedPath, baseEtag)
+        var (path, cachePath) = followed(slot, submittedPath, submittedCachePath, followsRenames)
+        // A client retry clears the refusal only once it holds the path's upload slot: an earlier in-flight
+        // upload may otherwise record its refusal after open_write cleared it. Recovery replays keep the refusal.
+        if (!handleId.startsWith("recovery-")) runCatching { stateDb.clearUploadRefusal(path) }
         // archive#493: the provider refused exactly these bytes before; asking again would be refused again.
         refusedEarlier(path, cachePath)?.let { reason ->
             val err = HydrationError.ParentGone.parse(reason) ?: HydrationError.Generic("refused earlier: $reason")

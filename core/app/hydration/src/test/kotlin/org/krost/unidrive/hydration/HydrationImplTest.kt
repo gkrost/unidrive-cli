@@ -91,6 +91,7 @@ internal class MinimalFakeProvider(
     // Optional gate: when set, upload() suspends until this deferred completes.
     // Used by the promptness test to prove openForWrite returns before the upload finishes.
     var uploadGate: CompletableDeferred<Unit>? = null
+    var uploadBeforeRefusalGate: CompletableDeferred<Unit>? = null
 
     // archive#613: paths whose upload reaches the provider and then suspends (stall-watchdog
     // tests). A silent gate suspends with no progress at all; a ticking gate reports
@@ -337,6 +338,7 @@ internal class MinimalFakeProvider(
     ): CloudItem {
         lastUploadIfMatch = ifMatchETag
         uploadAttempts.incrementAndGet()
+        uploadBeforeRefusalGate?.await()
         if (uploadFailuresRemaining.getAndUpdate { p -> if (p > 0) p - 1 else p } > 0) {
             throw IllegalStateException("injected upload failure")
         }
@@ -1044,6 +1046,8 @@ internal class HydrationTestEnv(
          * promptness test to hold the upload in flight while asserting that
          * openForWrite already returned Ok.
          */
+        fun setUploadBeforeRefusalGate(gate: CompletableDeferred<Unit>) { fakeProvider.uploadBeforeRefusalGate = gate }
+
         fun setUploadGate(gate: CompletableDeferred<Unit>) {
             fakeProvider.uploadGate = gate
         }

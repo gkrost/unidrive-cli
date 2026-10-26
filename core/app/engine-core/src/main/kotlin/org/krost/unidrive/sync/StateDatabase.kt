@@ -1690,6 +1690,23 @@ class StateDatabase(
         }
 
     /**
+     * gkrost/unidrive-cli#134: forgets the refusal [markUploadRefused] recorded for the alive row at [pathRaw], so that the next
+     * upload of its bytes asks the provider again. A client's own retry does it. The row's local baseline, which the refusal
+     * stamp moved, stays. Returns true when a refusal was there.
+     */
+    fun clearUploadRefusal(pathRaw: String): Boolean =
+        locked("clearUploadRefusal") {
+            beginWrite()
+            val path = PathNormalizer.nfc(pathRaw)
+            conn
+                .prepareStatement("UPDATE sync_entries SET upload_refused=NULL WHERE path=? AND status='EXISTS' AND upload_refused IS NOT NULL")
+                .use { stmt ->
+                    stmt.setString(1, path)
+                    stmt.executeUpdate() == 1
+                }
+        }
+
+    /**
      * archive#1070/#1069: notes that the cache copy of the alive cloud-backed file row at [pathRaw] holds an edit the cloud
      * has not seen, started from the cloud version [base] (the row's remote token, "" when it has none; see
      * [SyncEntry.editBase]). Only the first edit sets it: a row that already carries a base keeps it until an upload

@@ -48,7 +48,8 @@ class HydrationParentGoneTest {
     }
 
     // archive#580: a resubmission of the same bytes is answered from the row's refusal without asking the provider, and with
-    // the same typed token as the first refusal, not a generic "refused earlier" text.
+    // the same typed token as the first refusal, not a generic "refused earlier" text. The resubmission here is the engine's own
+    // (a crash-recovery replay, `recovery-` handle); a client's open_write is a retry and clears the refusal (gkrost/unidrive-cli#134).
     @Test
     fun `a resubmission into a folder gone in the cloud repeats the parent_gone token without an attempt`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this, maxUploadAttempts = 3, uploadRetryDelaysMs = listOf(1L, 1L))
@@ -63,14 +64,14 @@ class HydrationParentGoneTest {
         val collector = launch { env.hydration.events.collect { events.add(it) } }
         yield()
 
-        env.hydration.openForWrite("conn1", "h2", "/trashed/new.txt", cache)
+        env.hydration.openForWrite("conn1", "recovery-2", "/trashed/new.txt", cache)
         advanceUntilIdle()
 
         assertEquals(1, env.syncEngine.uploadAttempts(), "the same bytes are not sent again")
         val failed = events.filterIsInstance<HydrationEvent.Failed>().single()
         assertEquals("parent_gone: /trashed", failed.error.message)
         assertEquals(false, failed.retryScheduled)
-        assertEquals("parent_gone: /trashed", events.filterIsInstance<HydrationEvent.Completed>().single { it.handleId == "h2" }.error?.message)
+        assertEquals("parent_gone: /trashed", events.filterIsInstance<HydrationEvent.Completed>().single { it.handleId == "recovery-2" }.error?.message)
         collector.cancel()
     }
 }
