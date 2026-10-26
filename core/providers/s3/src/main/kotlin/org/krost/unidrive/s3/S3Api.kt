@@ -115,23 +115,33 @@ class S3Api(
             buildList {
                 add("list-type" to "2")
                 add("max-keys" to maxKeys.toString())
+                // XML 1.0 cannot carry a key with a control character (ASCII 0-10); S3 answers Key and Prefix
+                // URL-encoded when asked, so one such key does not fail the parse of the whole page.
+                add("encoding-type" to "url")
                 if (prefix.isNotEmpty()) add("prefix" to uriEncode(prefix))
                 if (delimiter != null) add("delimiter" to uriEncode(delimiter))
                 if (startAfter != null && token == null) add("start-after" to uriEncode(startAfter))
                 if (token != null) add("continuation-token" to uriEncode(token))
             }
         val root = xml(requireOk(send(HttpMethod.Get, null, query)).bodyAsText())
+        // Decode only what the answer says it encoded: a store that ignores encoding-type returns raw names.
+        val decode: (String) -> String =
+            if (root.text("EncodingType") == "url") {
+                { java.net.URLDecoder.decode(it, Charsets.UTF_8) }
+            } else {
+                { it }
+            }
         return S3ListPage(
             objects =
                 root.children("Contents").map {
                     S3Object(
-                        key = it.text("Key") ?: "",
+                        key = decode(it.text("Key") ?: ""),
                         etag = it.text("ETag")?.trim('"'),
                         size = it.text("Size")?.toLongOrNull() ?: 0,
                         lastModified = it.text("LastModified")?.let(::parseIso),
                     )
                 },
-            prefixes = root.children("CommonPrefixes").mapNotNull { it.text("Prefix") },
+            prefixes = root.children("CommonPrefixes").mapNotNull { it.text("Prefix")?.let(decode) },
             nextToken = root.text("NextContinuationToken")?.takeIf { root.text("IsTruncated") == "true" },
         )
     }

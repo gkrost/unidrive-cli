@@ -19,6 +19,7 @@ data class DriveItem(
     @SerialName("remoteItem") val remoteItem: RemoteItem? = null,
     @SerialName("@microsoft.graph.removed") val removed: Removed? = null,
     @SerialName("deleted") val deleted: Deleted? = null,
+    @SerialName("root") val root: RootFacet? = null,
     // Optimistic-concurrency tag; changes on any metadata or content mutation. Threaded
     // back to PATCH calls via the `If-Match` header so a concurrent editor can be
     // detected (Graph returns 412 Precondition Failed instead of silently overwriting).
@@ -96,7 +97,48 @@ data class ParentReference(
     @SerialName("driveType") val driveType: String? = null,
     @SerialName("path") val path: String? = null,
     @SerialName("name") val name: String? = null,
-)
+) {
+    /**
+     * [path] as the drive spells the names. Graph documents `itemReference.path` as percent-encoded
+     * (`/drive/root:/Documents/my%20file.docx`, https://learn.microsoft.com/en-us/graph/api/resources/itemreference).
+     * Only `%XX` sequences that form UTF-8 are decoded (a `+` stays a plus); anything else is left as it came.
+     */
+    val decodedPath: String? get() = path?.let(::percentDecode)
+}
+
+internal fun percentDecode(text: String): String {
+    if ('%' !in text) return text
+    val result = StringBuilder(text.length)
+    val run = java.io.ByteArrayOutputStream()
+
+    fun flush(): Boolean {
+        if (run.size() == 0) return true
+        val decoded =
+            try {
+                Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(run.toByteArray())).toString()
+            } catch (_: java.nio.charset.CharacterCodingException) {
+                return false
+            }
+        result.append(decoded)
+        run.reset()
+        return true
+    }
+
+    var i = 0
+    while (i < text.length) {
+        val hi = if (text[i] == '%' && i + 2 < text.length) Character.digit(text[i + 1], 16) else -1
+        val lo = if (hi >= 0) Character.digit(text[i + 2], 16) else -1
+        if (hi >= 0 && lo >= 0) {
+            run.write(hi * 16 + lo)
+            i += 3
+        } else {
+            if (!flush()) return text
+            result.append(text[i])
+            i++
+        }
+    }
+    return if (flush()) result.toString() else text
+}
 
 @Serializable
 data class FileSystemInfo(
@@ -128,6 +170,10 @@ data class Removed(
 data class Deleted(
     @SerialName("state") val state: String? = null,
 )
+
+/** The `root` facet: an empty object, present on the drive's root folder only. */
+@Serializable
+class RootFacet
 
 @Serializable
 data class RemoteItem(

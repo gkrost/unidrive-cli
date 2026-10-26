@@ -45,13 +45,14 @@ class VerifyRemoteObjectsTest {
         configDir = Files.createTempDirectory("ud-verify-ro-cfg")
         reportDir = Files.createTempDirectory("ud-verify-ro-report")
         val syncRoot = Files.createTempDirectory("ud-verify-ro-local")
+        val remoteRoot = Files.createTempDirectory("ud-verify-ro-remote")
         Files.writeString(
             configDir.resolve("config.toml"),
             """
             |[providers.fake]
             |type = "localfs"
             |sync_root = "${syncRoot.toString().replace('\\', '/')}"
-            |root_path = "${syncRoot.toString().replace('\\', '/')}"
+            |root_path = "${remoteRoot.toString().replace('\\', '/')}"
             """.trimMargin(),
         )
         captured = ByteArrayOutputStream()

@@ -318,6 +318,7 @@ class SyncEngineTest {
     @Test
     fun `sync deletes remote file when local deleted`() =
         runTest {
+            provider.files["/to-remove.txt"] = ByteArray(100)
             provider.deltaItems = listOf(cloudItem("/to-remove.txt", size = 100))
             engine.syncOnce()
 
@@ -414,6 +415,7 @@ class SyncEngineTest {
     @Test
     fun `zero-byte remote files are auto-hydrated`() =
         runTest {
+            provider.files["/empty.txt"] = ByteArray(0)
             provider.deltaItems = listOf(cloudItem("/empty.txt", size = 0))
             engine.syncOnce()
 
@@ -1065,6 +1067,7 @@ class SyncEngineTest {
             // Invariant under test: after a folder move-remote, the destination folder
             // row carries the canonical remoteId from provider.move() AND the descendant
             // rows survive at the new prefix.
+            provider.files["/a/docs/file.txt"] = ByteArray(42)
             provider.deltaItems =
                 listOf(
                     cloudItem("/a", isFolder = true),
@@ -4175,6 +4178,7 @@ class SyncEngineTest {
         size: Long = 100,
         isFolder: Boolean = false,
         deleted: Boolean = false,
+        hash: String? = "hash-$path",
     ) = CloudItem(
         id = "id-$path",
         name = path.substringAfterLast("/"),
@@ -4183,7 +4187,7 @@ class SyncEngineTest {
         isFolder = isFolder,
         modified = Instant.parse("2026-03-28T12:00:00Z"),
         created = Instant.parse("2026-03-28T10:00:00Z"),
-        hash = "hash-$path",
+        hash = hash,
         mimeType = "application/octet-stream",
         deleted = deleted,
     )
@@ -4271,15 +4275,27 @@ class SyncEngineTest {
     private fun stageTwoTrees(
         aFiles: Int,
         bFiles: Int,
+        realHashes: Boolean = false,
     ) {
+        // realHashes: the cloud rows carry the bytes' real hash, so a content check can verify them
+        // (#97). With the fake hash strings a same-size file can never be proven identical, and a
+        // re-widened subtree whose files stayed on disk would plan a conflict instead of an adoption.
+        provider.hashAlgorithmOverride = if (realHashes) org.krost.unidrive.HashAlgorithm.Sha256Hex else null
+        fun hashed(path: String, content: ByteArray): String? =
+            if (realHashes) {
+                val digest = java.security.MessageDigest.getInstance("SHA-256").digest(content)
+                digest.joinToString("") { "%02x".format(it) }
+            } else {
+                "hash-$path"
+            }
         val items = mutableListOf(cloudItem("/a", isFolder = true), cloudItem("/b", isFolder = true))
         for (i in 0 until aFiles) {
             provider.files["/a/f$i.txt"] = "a$i".toByteArray()
-            items += cloudItem("/a/f$i.txt", size = "a$i".length.toLong())
+            items += cloudItem("/a/f$i.txt", size = "a$i".length.toLong(), hash = hashed("/a/f$i.txt", "a$i".toByteArray()))
         }
         for (i in 0 until bFiles) {
             provider.files["/b/f$i.txt"] = "b$i".toByteArray()
-            items += cloudItem("/b/f$i.txt", size = "b$i".length.toLong())
+            items += cloudItem("/b/f$i.txt", size = "b$i".length.toLong(), hash = hashed("/b/f$i.txt", "b$i".toByteArray()))
         }
         provider.deltaItems = items
     }
@@ -4324,7 +4340,7 @@ class SyncEngineTest {
     @Test
     fun `re-widening after narrowing keeps the files that stayed on disk`() =
         runTest {
-            stageTwoTrees(aFiles = 2, bFiles = 4)
+            stageTwoTrees(aFiles = 2, bFiles = 4, realHashes = true)
             engineForScope().syncOnce()
             engineForScope(syncPaths = listOf("/a"), standingScope = listOf("/a")).syncOnce()
 
@@ -4654,6 +4670,7 @@ class SyncEngineTest {
             // Seed an alive row that the engine will propagate-delete to the
             // cloud (local file vanished while cloud was unchanged → engine
             // emits DeleteRemote → provider.delete + status flip).
+            provider.files["/will-trash.txt"] = ByteArray(100)
             provider.deltaItems = listOf(cloudItem("/will-trash.txt", size = 100))
             engine.syncOnce()
             assertNotNull(db.getEntry("/will-trash.txt"))
@@ -4941,6 +4958,7 @@ class SyncEngineTest {
     fun `delete_of_already_gone_remote_tombstones_row_without_throwing`() =
         runTest {
             // Seed an alive, hydrated row (initial sync hydrates the file).
+            provider.files["/already-gone.txt"] = ByteArray(100)
             provider.deltaItems = listOf(cloudItem("/already-gone.txt", size = 100))
             engine.syncOnce()
             assertNotNull(db.getEntry("/already-gone.txt"))
@@ -4971,6 +4989,7 @@ class SyncEngineTest {
     fun `delete_with_transient_provider_error_rethrows_and_preserves_row`() =
         runTest {
             // Seed an alive, hydrated row.
+            provider.files["/transient.txt"] = ByteArray(100)
             provider.deltaItems = listOf(cloudItem("/transient.txt", size = 100))
             engine.syncOnce()
             assertNotNull(db.getEntry("/transient.txt"))

@@ -477,6 +477,10 @@ data class RawProvider(
     // version. Opt-in recovery insurance; default off. Threaded into
     // InternxtConfig.keepOverwritten by InternxtProviderFactory.
     val keep_overwritten: Boolean? = null,
+    // Internxt: read a download whose recorded shard hash this client cannot check (blank, another length, not hex),
+    // without the integrity check. Default off: such a download is refused. Threaded into
+    // InternxtConfig.allowUnverifiedShardHash by InternxtProviderFactory.
+    val allow_unverified_shard_hash: Boolean? = null,
     // The sync policy of this profile alone: each key overrides the same-named [general] key for this profile
     // (`unidrive backup add` writes them). Absent = the [general] value, then the default.
     val sync_direction: String? = null,
@@ -710,6 +714,7 @@ data class SyncConfig(
             "**/*.swx",           // vim swap
             "**/*.tmp",           // generic temp
             "**/*.unidrive-tmp",  // a provider's staging file of a download (also .ud-<hex>.unidrive-tmp), archive#1049 X2
+            "**/*.unidrive-download-*", // the tracking engine's staging file of a download (.<name>.unidrive-download-<uuid>), #100
             "**/*~",              // generic backup
         )
 
@@ -969,7 +974,8 @@ data class SyncConfig(
          * case (their profile folders, IPC sockets and cache keys would collide on a
          * case-insensitive filesystem). A mount profile's `sync_root` key is not compared: the
          * cutover left it unused, and a pending retire-or-adopt folder must not block unrelated
-         * profiles.
+         * profiles. A localfs profile's `root_path` (the folder the engine reads and deletes below) is
+         * compared with every sync root, its own included; two localfs profiles may share one `root_path`.
          *
          * Each root is compared both as the lexical path and as the resolved real path (symlinks
          * collapsed; a not-yet-existing path keeps its lexical form), so nesting is caught before
@@ -986,7 +992,19 @@ data class SyncConfig(
                 val profile: String,
                 val lexical: java.nio.file.Path,
                 val real: java.nio.file.Path,
+                // A localfs `root_path` is the profile's "cloud": the engine reads and deletes below it.
+                val isProviderRoot: Boolean = false,
             )
+
+            fun rootOf(
+                profile: String,
+                configured: String,
+                isProviderRoot: Boolean,
+            ): Root {
+                val lexical = Paths.get(expandTilde(configured)).normalize().toAbsolutePath()
+                val real = runCatching { lexical.toRealPath() }.getOrDefault(lexical)
+                return Root(profile, lexical, real, isProviderRoot)
+            }
 
             val roots = mutableListOf<Root>()
             for ((name, rp) in raw.providers) {
@@ -997,11 +1015,12 @@ data class SyncConfig(
                         "IPC sockets and caches would collide. Rename one of them."
                 }
                 seenNames[lower] = name
+                if ((rp.type ?: name).lowercase() == "localfs") {
+                    rp.root_path?.let { roots.add(rootOf(name, it, isProviderRoot = true)) }
+                }
                 if (rp.mode?.lowercase() == "mount") continue // touches no sync root after the cutover
-                val rootStr = rp.sync_root?.let { expandTilde(it) } ?: continue
-                val lexical = Paths.get(rootStr).normalize().toAbsolutePath()
-                val real = runCatching { lexical.toRealPath() }.getOrDefault(lexical)
-                roots.add(Root(name, lexical, real))
+                val syncRoot = rp.sync_root ?: continue
+                roots.add(rootOf(name, syncRoot, isProviderRoot = false))
             }
             // Compare on '/'-separated strings so the rules read the same on every OS.
             fun fold(p: java.nio.file.Path): String {
@@ -1014,6 +1033,9 @@ data class SyncConfig(
                 for (j in roots.indices) {
                     if (j <= i) continue
                     val (a, b) = roots[i] to roots[j]
+                    // Two localfs profiles may share one provider directory; only a sync root against any other
+                    // root is compared when one side is a provider root.
+                    if (a.isProviderRoot && b.isProviderRoot) continue
                     val la = fold(a.lexical)
                     val lb = fold(b.lexical)
                     val ra = fold(a.real)

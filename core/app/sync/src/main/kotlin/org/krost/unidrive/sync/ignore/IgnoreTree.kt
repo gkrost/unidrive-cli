@@ -29,7 +29,7 @@ object IgnoreDefaults {
         listOf(
             ".git", ".svn", ".hg", ".bzr",
             ".directory.lock", ".DS_Store", "._*", "Thumbs.db", "ehthumbs.db", "desktop.ini",
-            "~\$*", "*.part", "*.crdownload", "*.swp", "*.swx", "*.tmp", "*.unidrive-tmp", "*~",
+            "~\$*", "*.part", "*.crdownload", "*.swp", "*.swx", "*.tmp", "*.unidrive-tmp", "*.unidrive-download-*", "*~",
         )
 }
 

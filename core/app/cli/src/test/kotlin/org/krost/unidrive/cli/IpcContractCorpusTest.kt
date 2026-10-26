@@ -1544,9 +1544,12 @@ class IpcContractCorpusTest {
             readOnly(oldPath) || readOnly(newPath) -> RenameResult.Failed(HydrationError.ReadOnly)
             oldPath.startsWith("/missing") -> RenameResult.OldPathNotFound
             newPath.startsWith("/missing/") -> RenameResult.NewParentNotFound
-            // Without replace an existing destination refuses; with replace the
-            // scripted fake succeeds (the delete-then-move sequence is opaque here).
-            newPath == "/docs/sub" && !replace -> RenameResult.NewPathExists
+            // /docs/sub is a folder: the engine's replace overwrites a file with a file only (HydrationImpl.rename), so a
+            // folder destination refuses with or without replace.
+            newPath == "/docs/sub" -> RenameResult.NewPathExists
+            // An existing file destination refuses without replace; with replace the scripted fake succeeds
+            // (the delete-then-move sequence is opaque here).
+            newPath == "/docs/existing.txt" && !replace -> RenameResult.NewPathExists
             oldPath.startsWith("/outside") || newPath.startsWith("/outside") -> RenameResult.Failed(HydrationError.OutOfScope)
             newPath.startsWith("/excluded/") -> RenameResult.Failed(HydrationError.Excluded)
             else -> RenameResult.Ok

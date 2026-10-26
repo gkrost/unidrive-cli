@@ -123,7 +123,7 @@ class HydrationViewAliasTest {
                 env.hydration.lastSynced("/Docs/sub/deep/c.txt"),
                 env.hydration.lastSynced("/Favorites/Docs/sub/deep/c.txt"),
             )
-            env.syncEngine.seedRemoteContent("/Docs/sub/b.txt", "bee")
+            env.syncEngine.seedRemoteContent("/Docs/sub/b.txt", "beeee")
             assertEquals(HydrateResult.Ok, env.hydration.hydrate("/Favorites/Docs/sub/b.txt"))
             assertTrue(env.stateDb.isHydrated("/Docs/sub/b.txt"))
             assertEquals(DehydrateResult.Ok, env.hydration.dehydrate("/Favorites/Docs/sub/b.txt"))

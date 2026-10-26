@@ -7,6 +7,10 @@
 {"verb":"hydration.rename","old_path":"/docs/report.txt","new_path":"/docs/sub"}
 {"ok":false,"error":"new_path_exists"}
 {"verb":"hydration.rename","old_path":"/docs/report.txt","new_path":"/docs/sub","replace":true}
+{"ok":false,"error":"new_path_exists"}
+{"verb":"hydration.rename","old_path":"/docs/report.txt","new_path":"/docs/existing.txt"}
+{"ok":false,"error":"new_path_exists"}
+{"verb":"hydration.rename","old_path":"/docs/report.txt","new_path":"/docs/existing.txt","replace":true}
 {"ok":true}
 {"verb":"hydration.rename","old_path":"/docs/report.txt","new_path":"/outside/renamed.txt"}
 {"ok":false,"error":"outside_scope"}

@@ -26,7 +26,7 @@ Multi-platform cloud-sync core. Pure JVM, zero telemetry. Modular SPI for Intern
 
 ## Build
 
-JDK 21+ and Linux with `systemd --user` for the packaged daemon. Internxt uses the host's native credential store: Linux requires an unlocked Secret Service and `secret-tool` (`libsecret-tools`), Windows uses user-scoped DPAPI, and macOS uses the user's login Keychain (macOS is not supported or tested in CI yet). Unsupported platforms and unavailable or locked stores fail closed without writing plaintext credentials. The Gradle wrapper lives in `core/`.
+JDK 21+ and Linux with `systemd --user` for the packaged daemon. Internxt uses the host's native credential store: Linux requires an unlocked Secret Service and `secret-tool` (`libsecret-tools`), Windows uses user-scoped DPAPI, and macOS uses the user's login Keychain (macOS is not supported or tested in CI yet). Unsupported platforms and unavailable or locked stores fail closed without writing plaintext credentials; that is the Internxt rule. OneDrive and Dropbox keep their tokens in `token.json` in the profile folder, written atomically and readable by the current user only, not encrypted; a front-end that embeds the engine can hand OneDrive a protector (see [`SECURITY.md`](SECURITY.md)). The Gradle wrapper lives in `core/`.
 
 ```bash
 cd core && ./gradlew :app:cli:shadowJar    # build fat JAR → core/app/cli/build/libs/unidrive-*.jar
@@ -47,8 +47,11 @@ cd core && ./gradlew :app:cli:shadowJar :app:cli:runtimeImage
 ```
 
 The image's JDK module set is pinned — a new dependency that changes it fails
-`check` (see `RuntimeModulesTest`), and CI runs the whole gate a second time
-with the engine executing on the bundled runtime JDK. Launchers honour
+`check` (see `RuntimeModulesTest`, which compares the set with what `jdeps` reports),
+and CI runs the whole gate a second time with the tests executing on the runtime
+JDK's release (the `check-runtime-jdk` job, a full Zulu JDK on Linux). No CI job runs
+the `jlink` image itself: the module-set test and the `jdeps` guard are what pin it
+(gkrost/unidrive-cli#60). Launchers honour
 `UNIDRIVE_XMX` (bare size, e.g. `512m`, `2g`; default `2g`) and pin
 `-Djdk.net.unixdomain.tmpdir` to the host's temp directory. Launchers and the
 CLI's auto-spawn write post-mortem diagnostics — fatal-crash `hs_err` logs, OOM
@@ -119,7 +122,7 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 - `share` — generate a shareable link for a file or folder
 - `trash` — trash emulation (`list`, `restore`, `purge`)
 - `versions` — versioned files (`list`, `restore`, `purge`)
-- `relocate` — migrate data between cloud providers
+- `relocate` — migrate data between cloud providers (switched off until its data-loss issues #56, #61, #62, #63 are fixed; it refuses to run, see [the plan to switch it on](docs/dev/ops/relocate-switched-off.md))
 - `vault` — credential vault (`init`, `encrypt`, `decrypt`, `change-passphrase`)
 - `sweep` — detect and rehydrate zero-byte stub files (`--null-bytes` scan; `--dry-run` and `--rehydrate` modify it)
 
@@ -133,6 +136,10 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 - `TrackingEngine.kt` — the frozen tracking-set engine, reachable only as `unidrive ts ...`
 - `HydrationImpl.kt` — physical payload de/reconstruction lifecycle
 - `MountEngine.kt` — mount operations (cache, hydration verbs, mirror hand-off) since the engine split
+
+## Project state
+
+What is open is in the [issue tracker](https://github.com/gkrost/unidrive-cli/issues) (labels `lane:*`, `sev:*`, `area:*`). [`CLOSED.md`](CLOSED.md) is the ledger of what is done, and [`BOOSTERS.md`](BOOSTERS.md) maps the provider APIs the engine uses and misses.
 
 ## Issue references
 

@@ -246,6 +246,10 @@ class GraphApiService(
                 val statement =
                     httpClient.prepareGet(url) {
                         if (authNeeded) bearerAuth(tokenProvider(authRefreshed))
+                        // Ktor counts the request timeout up to the end of the `execute` block, so the client's flat
+                        // 10 minute cap cut every download that needs longer, steady transfer or not. Sized from the
+                        // declared size like an upload (the larger of that floor and the time at the minimum throughput).
+                        timeout { requestTimeoutMillis = UploadTimeoutPolicy.computeRequestTimeoutMs(item.size) }
                     }
                 val outcome: DownloadOutcome =
                     statement.execute { response ->
@@ -1221,6 +1225,11 @@ class GraphApiService(
         method: HttpMethod,
         configure: suspend HttpRequestBuilder.() -> Unit = {},
     ): HttpResponse {
+        // Paging and delta links come from response bodies (and are kept as the persisted cursor): the bearer token goes
+        // only to the Graph origin, never to whatever host (or scheme) such a link names.
+        if (!isGraphUrl(endpoint)) {
+            throw ProviderException("Refusing to send the OneDrive token to a URL that is not on the Graph origin")
+        }
         var refreshed = false
         var throttleAttempts = 0
         var totalThrottleWaitMs = 0L
@@ -1260,6 +1269,18 @@ class GraphApiService(
             return response
         }
     }
+
+    // Same origin (scheme, host, port) as [baseUrl], which is the Graph host over https; a test points it at a loopback server.
+    private fun isGraphUrl(url: String): Boolean =
+        try {
+            val target = java.net.URI(url)
+            val graph = java.net.URI(baseUrl)
+            target.scheme.equals(graph.scheme, ignoreCase = true) &&
+                target.host.equals(graph.host, ignoreCase = true) &&
+                target.port == graph.port
+        } catch (_: java.net.URISyntaxException) {
+            false
+        }
 
     private suspend fun requireSuccess(response: HttpResponse): HttpResponse {
         if (response.status == HttpStatusCode.Unauthorized) {

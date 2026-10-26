@@ -63,6 +63,16 @@ class FolderUuidCache {
         map.entries.removeIf { it.value == uuid || it.key.parentUuid == uuid }
     }
 
+    /**
+     * [invalidateFolder] for each of [uuids] in one pass: the folders a change feed named. A folder renamed, moved or trashed
+     * elsewhere is no longer what its old name led to, and the new holder of that name is not in the cache.
+     */
+    fun invalidateFolders(uuids: Collection<String>) {
+        if (uuids.isEmpty()) return
+        val gone = uuids.toHashSet()
+        map.entries.removeIf { it.value in gone || it.key.parentUuid in gone }
+    }
+
     /** For tests. Returns the number of cached entries. */
     fun size(): Int = map.size
 

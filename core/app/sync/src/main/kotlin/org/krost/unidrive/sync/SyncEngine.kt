@@ -3207,6 +3207,16 @@ open class SyncEngine(
         } else {
             db.deleteEntry(action.path)
         }
+        // #98: a provider that reports a deleted folder alone (Dropbox, OneDrive delta) cascades here
+        // as ONE DeleteLocal for the folder. Its rows below would stay alive for a folder gone on both
+        // sides, and the next pass would read them as local deletes of unchanged remote items —
+        // planning DeleteRemote for what the cloud already deleted, or what the user restored from its
+        // trash. The mount flips the subtree; the mirror does the same. The update touches only rows
+        // still EXISTS, and a follow-up action of this same pass finds its row already tombstoned and
+        // no-ops (deleteEntry keeps tombstones).
+        if (priorEntry?.isFolder == true) {
+            db.markDescendantsDeleted(action.path)
+        }
     }
 
     /**
