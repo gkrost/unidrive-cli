@@ -92,64 +92,39 @@ class VaultEncryptCommand : Runnable {
 
         val configLines = Files.readAllLines(configPath)
         val raw = SyncConfig.parseRaw(configLines.joinToString("\n"), configPath.toString())
-        val linesToRemove = mutableSetOf<Int>()
-        var encryptedCount = 0
-
-        // Build section ranges: [providers.<name>] → line indices
-        val sectionRanges = mutableMapOf<String, IntRange>()
-        val sectionPattern = Regex("""^\[providers\.(.+)]$""")
-        var currentSection: String? = null
-        var currentStart = -1
-        for ((idx, line) in configLines.withIndex()) {
-            val match = sectionPattern.matchEntire(line.trim())
-            if (match != null) {
-                if (currentSection != null) {
-                    sectionRanges[currentSection] = currentStart until idx
-                }
-                currentSection = match.groupValues[1]
-                currentStart = idx
-            }
-        }
-        if (currentSection != null) {
-            sectionRanges[currentSection] = currentStart until configLines.size
-        }
-
+        val vaultedCreds = mutableMapOf<String, Map<String, String>>()
         for ((profileName, rp) in raw.providers) {
-            val creds = mutableMapOf<String, String>()
-            extractIfPresent(rp.access_key_id, "access_key_id", creds)
-            extractIfPresent(rp.secret_access_key, "secret_access_key", creds)
-            extractIfPresent(rp.password, "password", creds)
-            extractIfPresent(rp.client_id, "client_id", creds)
-            extractIfPresent(rp.client_secret, "client_secret", creds)
-
+            val creds = secretCreds(rp)
             if (creds.isNotEmpty()) {
                 mutableData[profileName] = (mutableData[profileName] ?: emptyMap()) + creds
-                encryptedCount++
-                // Mark lines for removal — scoped to this profile's section only
-                val range = sectionRanges[profileName] ?: continue
-                for (key in creds.keys) {
-                    for (idx in range) {
-                        val trimmed = configLines[idx].trim()
-                        if (trimmed.startsWith("$key ") || trimmed.startsWith("$key=")) {
-                            linesToRemove.add(idx)
-                        }
-                    }
-                }
+                vaultedCreds[profileName] = creds
             }
         }
 
-            if (encryptedCount == 0) {
+            if (vaultedCreds.isEmpty()) {
                 println("No sensitive credentials found in config.toml.")
                 return@withLock
             }
 
+            val filteredLines = filterVaultedLines(configLines, vaultedCreds)
+
             vault.write(passphrase, mutableData)
 
-            val filteredLines = configLines.filterIndexed { idx, _ -> idx !in linesToRemove }
             ConfigFileTransaction.writeAtomically(configPath, filteredLines.joinToString("\n"))
 
-            println("Encrypted credentials for $encryptedCount profile(s).")
+            println("Encrypted credentials for ${vaultedCreds.size} profile(s).")
         }
+    }
+
+    /** The sensitive fields of a parsed provider profile that move into the vault. */
+    private fun secretCreds(rp: org.krost.unidrive.sync.RawProvider): Map<String, String> {
+        val creds = mutableMapOf<String, String>()
+        extractIfPresent(rp.access_key_id, "access_key_id", creds)
+        extractIfPresent(rp.secret_access_key, "secret_access_key", creds)
+        extractIfPresent(rp.password, "password", creds)
+        extractIfPresent(rp.client_id, "client_id", creds)
+        extractIfPresent(rp.client_secret, "client_secret", creds)
+        return creds
     }
 
     private fun extractIfPresent(
@@ -159,6 +134,84 @@ class VaultEncryptCommand : Runnable {
     ) {
         if (!value.isNullOrBlank()) target[key] = value
     }
+}
+
+/** The named sensitive field of a parsed provider profile, for the post-filter plaintext check. */
+private fun rawProviderSecret(
+    profile: org.krost.unidrive.sync.RawProvider?,
+    key: String,
+): String? =
+    when (key) {
+        "access_key_id" -> profile?.access_key_id
+        "secret_access_key" -> profile?.secret_access_key
+        "password" -> profile?.password
+        "client_id" -> profile?.client_id
+        "client_secret" -> profile?.client_secret
+        else -> null
+    }
+
+/**
+ * The indices in [range] whose line sets [key]: leading whitespace and any spacing around the `=` (ktoml
+ * accepts `key<TAB>=`), and only a whole bare key matches, not one that merely starts with the same characters.
+ */
+private fun linesSettingKey(
+    configLines: List<String>,
+    range: IntRange,
+    key: String,
+): List<Int> {
+    val keyPattern = Regex("""^\s*${Regex.escape(key)}\s*=""")
+    return range.filter { keyPattern.containsMatchIn(configLines[it]) }
+}
+
+/**
+ * The config lines left after the vaulted credentials are cut out of their `[providers.<name>]` sections
+ * (issue#83 C). Header and key shapes are the tolerant ones ktoml accepts — inner and trailing whitespace in
+ * the header, a trailing comment, spacing around the `=` — so a secret is not left behind in a shape the
+ * strict match used to miss; any header line closes the section before it. As the backstop, the filtered
+ * lines are re-parsed and the function refuses (naming the profile and key, never the value) if ktoml still
+ * reads a vaulted value out of them: what the parser still finds would win over the vault.
+ */
+internal fun filterVaultedLines(
+    configLines: List<String>,
+    vaulted: Map<String, Map<String, String>>,
+): List<String> {
+    val headerPattern = Regex("""^\s*\[([^\]]+)]\s*(?:#.*)?$""")
+    val sectionRanges = mutableMapOf<String, IntRange>()
+    var currentSection: String? = null
+    var currentStart = -1
+    for ((idx, line) in configLines.withIndex()) {
+        val header = headerPattern.matchEntire(line)?.groupValues?.get(1)?.trim()
+        if (header != null) {
+            if (currentSection != null) {
+                sectionRanges[currentSection] = currentStart until idx
+            }
+            currentSection = header
+            currentStart = idx
+        }
+    }
+    if (currentSection != null) {
+        sectionRanges[currentSection] = currentStart until configLines.size
+    }
+
+    val linesToRemove = mutableSetOf<Int>()
+    for ((profileName, creds) in vaulted) {
+        // Scoped to this profile's section only.
+        val range = sectionRanges["providers.$profileName"] ?: continue
+        linesToRemove += creds.keys.flatMap { key -> linesSettingKey(configLines, range, key) }
+    }
+
+    val filteredLines = configLines.filterIndexed { idx, _ -> idx !in linesToRemove }
+    val remaining = SyncConfig.parseRaw(filteredLines.joinToString("\n"))
+    val leftBehind =
+        vaulted.flatMapTo(mutableListOf()) { (profileName, creds) ->
+            val profile = remaining.providers[profileName]
+            creds.keys.filter { rawProviderSecret(profile, it) != null }.map { "$profileName.$it" }
+        }
+    check(leftBehind.isEmpty()) {
+        "vault encrypt would leave ${leftBehind.joinToString()} as plaintext in config.toml; " +
+            "nothing was written — the config uses a key or section shape this command cannot cut, please report it"
+    }
+    return filteredLines
 }
 
 // ── vault decrypt ────────────────────────────────────────────────────────────
