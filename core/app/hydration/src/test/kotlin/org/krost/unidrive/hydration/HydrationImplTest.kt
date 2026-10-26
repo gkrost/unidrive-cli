@@ -1045,7 +1045,9 @@ class HydrationImplTest {
         val env = HydrationTestEnv()
         env.stateDb.insertHydratedEntry("/foo.txt", localSize = 11) // remoteSize = 11
         env.syncEngine.seedRemoteContent("/foo.txt", "hello world") // the real 11 bytes
-        env.syncEngine.seedCacheContent("/foo.txt", "")             // stale 0-byte cache
+        // A stale 0-byte cache that is the row's own baseline: nobody edited it (a copy that differs from the baseline
+        // is an unsynced edit, not served by a download over it).
+        env.seedSyncedCacheContent("/foo.txt", "")
 
         val result = env.hydration.openForRead("conn1", "h1", "/foo.txt")
 
