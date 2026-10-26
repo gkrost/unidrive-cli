@@ -2749,9 +2749,9 @@ class InternxtProvider(
         val onProgress = scanContext?.onProgress
         if (cursor == null && scopeRoots.isNotEmpty()) return scopedFullDelta(scopeRoots, onPageProgress, onProgress, scanContext = scanContext)
         // archive#517 R3: once a full gather ended in an unavailable account-wide listing, later
-        // full gathers skip the doomed attempt for a while — with the listing watchdog at
-        // 330 s even one doomed attempt is minutes of heavy load the walk was going
-        // to replace anyway (the live account re-bought it every ~7 min for 4 h).
+        // full gathers skip the doomed attempt for a while — one doomed attempt is minutes of heavy
+        // load the walk was going to replace anyway, the gateway's 524 at about 125 s and the
+        // listing watchdog's 150 s (#71) included (the live account re-bought it every ~7 min for 4 h).
         // Full gathers only: an incremental poll is one cheap updatedAt-filtered query,
         // the walk in its place costs a whole enumeration, and a first sync that ended
         // in the walk would be followed by a second walk at its first poll.
@@ -2863,8 +2863,9 @@ class InternxtProvider(
         // offset, archive#517 F3) and the flat 60 s socket watchdog cut every one of them —
         // reported by Ktor-over-TLS as "the server prematurely closed the connection",
         // which looked like a gateway cap and was our own timer (archive#517 F1, loopback
-        // probe). R2 raised their watchdog to 330 s, so what remains here are real
-        // closes and pages past the server's own 300 s statement timeout. Either
+        // probe). R2 raised their watchdog past the gateway's own cut (330 s then; 150 s, a little
+        // above the gateway's ~125 s 524, since #71), so what remains here are real closes and
+        // the gateway's 524, which arrives as the synthetic 503. Either
         // listing failing as 500/503 still means: list the folder tree instead
         // (per-folder listings, up to 4 in flight), the walk a scoped profile does
         // anyway. A failing /folders used to end the whole gather, and a failing

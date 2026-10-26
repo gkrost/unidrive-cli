@@ -365,7 +365,7 @@ class SyncEngineTest {
 
     // ── archive#523: a whole-drive gather that skipped a folder must not look complete afterwards —
     // the idle enumeration status carries the last gather's completeness for the status UI and
-    // daemon.status (the per-folder timer itself is already the archive#518 330 s listing timer).
+    // daemon.status (the per-folder timer itself is the archive#518 listing timer, 150 s since #71).
 
     @Test
     fun `#523 an incomplete gather surfaces lastScanComplete=false in the idle status`() =

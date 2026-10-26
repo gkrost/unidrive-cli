@@ -93,8 +93,8 @@ class InternxtApiService(
         HttpRetryBudget(maxConcurrency = 2, minSpacingMs = 500, stormSpacingMs = 1_000),
     private val bridgeBudget: HttpRetryBudget =
         HttpRetryBudget(maxConcurrency = 4, minSpacingMs = 0, stormSpacingMs = 0),
-    // The socket timeout of the listings, whose answers need minutes on a large account. A parameter so that
-    // loopback tests can run with a small one.
+    // The socket timeout of the listings, whose answers can need over a minute on a large account (see
+    // [LISTING_SOCKET_TIMEOUT_MS]). A parameter so that loopback tests can run with a small one.
     private val listingSocketTimeoutMs: Long = LISTING_SOCKET_TIMEOUT_MS,
     // The seam the daemon attaches its request-attempt recorder to; no sink, no metrics (see attachRequestMetrics).
     private val requestMetrics: RequestMetricsTap = RequestMetricsTap(),
@@ -234,14 +234,16 @@ class InternxtApiService(
             return params
         }
 
-        // archive#517 R2/F3: a whole-drive offset page can need 25-56 s and up to the
-        // server's statement_timeout of 300 s (public source) before the first
-        // byte; the flat 60 s watchdog cut every one of them. 330 s = statement
-        // timeout + 10 percent — past it the server errors on its own, which is
-        // the answer we want, not a silent client cut.
-        // A folder's content is such a listing too: a flat folder of 29,000 files needed 106 s and 31 MB, so
-        // getFolderContents rides at this limit as well.
-        internal const val LISTING_SOCKET_TIMEOUT_MS: Long = 330_000
+        // The socket timeout of the listings, whose answers can need tens of seconds before the first byte:
+        // a whole-drive offset page takes 25-56 s (archive#517 R2/F3), and a flat folder of 29,000 files needed
+        // 106 s and 31 MB in one body, so getFolderContents rides at this limit as well. The former 330 s (the
+        // server's 300 s statement timeout + 10 percent, so its own error answer would arrive instead of a
+        // silent client cut) could never fire: every Drive REST call rides the Cloudflare gateway, which
+        // answers a 524 of its own at about 125 s — mapped by [authenticatedGetReply] to the synthetic 503 the
+        // callers' fallbacks act on — so no answer can arrive between the gateway's cut and the statement
+        // timeout. The limit sits just above the cap (#71): it only bounds a connection that hangs without any
+        // answer, and bounds it at 150 s instead of 330 s.
+        internal const val LISTING_SOCKET_TIMEOUT_MS: Long = 150_000
 
         // The floor of the shard PUT's outer safety net (UD-337/UD-353): an upload slower than this on average is
         // the only one the net cuts while it still moves (archive#571).

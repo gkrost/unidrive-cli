@@ -193,7 +193,7 @@ internal fun loopbackClient(
     }
 
 /**
- * The service on [client], with a listing socket timeout of [listingSocketMs] instead of the production 330 s and the
+ * The service on [client], with a listing socket timeout of [listingSocketMs] instead of the production 150 s and the
  * shard PUT watchdog limits [shardPutWatchdog].
  */
 internal fun loopbackService(
