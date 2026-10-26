@@ -880,7 +880,11 @@ class HydrationImpl(
         // archive#1217: an attempt that landed its item while a rename moved the row, and whose move to the new path failed:
         // the next attempt retries that move instead of uploading the bytes a second time.
         var strayed: UploadOutcome? = null
-        for (attempt in 1..maxUploadAttempts) {
+        // gkrost/unidrive-cli#134: a parent_gone refusal gets one look at the folder before it stands; see [MountEngine.recoverGoneParent].
+        val parentLook = OneLookAtTheParent(mount)
+        var attempt = 0
+        while (attempt < maxUploadAttempts) {
+            attempt++
             val target = followed(slot, path, cachePath, followsRenames)
             path = target.first
             cachePath = target.second
@@ -915,37 +919,20 @@ class HydrationImpl(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: org.krost.unidrive.RemoteConflictException) {
-                // The cloud copy changed between the row's token and the
-                // transfer (upload-time convergence): not transient — a retry
-                // would collide again. The client keeps both copies; surface
-                // the conflict and stop.
-                runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
-                _events.emit(HydrationEvent.Failed(path, HydrationError.Conflict, retryScheduled = false))
-                log.warn("upload of {} hit a remote conflict, not retrying: {}", path, e.message ?: "conflict")
-                tx?.finish(TransferResult.CONFLICT, errorClass = e.javaClass.simpleName, message = e.message)
-                return HydrationEvent.Completed(
-                    path = path,
-                    handleId = handleId,
-                    direction = HydrationEvent.Completed.Direction.UPLOAD,
-                    ok = false,
-                    error = HydrationError.Conflict,
-                )
+                return completeConflict(path, handleId, e, tx)
             } catch (e: org.krost.unidrive.NameRefusedException) {
-                // The drive refuses this entry by its name, whatever its content: a retry would be refused the same way,
-                // and so would a replay until the sibling is gone. The row is marked blocked with the reason, the local
-                // file stays where it is, and only the next start asks again.
-                runCatching { stateDb.markNameBlocked(path, e.reason, e.sibling) }
-                val err = HydrationError.NameRefused(e.reason, e.sibling)
-                _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
-                log.warn("upload of {} refused by the drive by its name, blocked ({}): {}", path, err.message, e.message ?: "name refused")
-                return HydrationEvent.Completed(path = path, handleId = handleId, direction = HydrationEvent.Completed.Direction.UPLOAD, ok = false, error = err)
+                return completeNameRefused(path, handleId, e)
             } catch (e: BlockedByParentException) {
-                // A folder above was refused by name and does not exist on the drive: nothing was asked, nothing to retry.
-                runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
-                val err = HydrationError.BlockedByParent(e.parent)
-                _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
-                log.info("upload of {} not attempted: {}", path, err.message)
-                return HydrationEvent.Completed(path = path, handleId = handleId, direction = HydrationEvent.Completed.Direction.UPLOAD, ok = false, error = err)
+                return completeBlockedByParent(path, handleId, e)
+            } catch (e: org.krost.unidrive.ParentGoneException) {
+                // gkrost/unidrive-cli#134: a folder the provider's walk missed gets one look before the refusal stands; see
+                // [MountEngine.recoverGoneParent]. The look is not an attempt of the ladder.
+                if (parentLook.putBack(path, e.parent)) {
+                    log.info("upload of {}: the folder {} is back in the cloud, trying once more", path, e.parent)
+                    attempt--
+                    continue
+                }
+                return completeRefused(path, handleId, cachePath, e, tx)
             } catch (e: org.krost.unidrive.PermanentUploadFailureException) {
                 return completeRefused(path, handleId, cachePath, e, tx)
             } catch (e: Exception) {
@@ -1001,6 +988,55 @@ class HydrationImpl(
             ok = false,
             error = lastError,
         )
+    }
+
+    // The cloud copy changed between the row's token and the transfer (upload-time convergence): not transient — a retry would
+    // collide again. The client keeps both copies; surface the conflict and stop.
+    private suspend fun completeConflict(
+        path: String,
+        handleId: String,
+        e: org.krost.unidrive.RemoteConflictException,
+        tx: TransferHandle?,
+    ): HydrationEvent.Completed {
+        runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
+        _events.emit(HydrationEvent.Failed(path, HydrationError.Conflict, retryScheduled = false))
+        log.warn("upload of {} hit a remote conflict, not retrying: {}", path, e.message ?: "conflict")
+        tx?.finish(TransferResult.CONFLICT, errorClass = e.javaClass.simpleName, message = e.message)
+        return HydrationEvent.Completed(
+            path = path,
+            handleId = handleId,
+            direction = HydrationEvent.Completed.Direction.UPLOAD,
+            ok = false,
+            error = HydrationError.Conflict,
+        )
+    }
+
+    // The drive refuses this entry by its name, whatever its content: a retry would be refused the same way, and so would a replay
+    // until the sibling is gone. The row is marked blocked with the reason, the local file stays where it is, and only the next
+    // start asks again.
+    private suspend fun completeNameRefused(
+        path: String,
+        handleId: String,
+        e: org.krost.unidrive.NameRefusedException,
+    ): HydrationEvent.Completed {
+        runCatching { stateDb.markNameBlocked(path, e.reason, e.sibling) }
+        val err = HydrationError.NameRefused(e.reason, e.sibling)
+        _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
+        log.warn("upload of {} refused by the drive by its name, blocked ({}): {}", path, err.message, e.message ?: "name refused")
+        return HydrationEvent.Completed(path = path, handleId = handleId, direction = HydrationEvent.Completed.Direction.UPLOAD, ok = false, error = err)
+    }
+
+    // A folder above was refused by name and does not exist on the drive: nothing was asked, nothing to retry.
+    private suspend fun completeBlockedByParent(
+        path: String,
+        handleId: String,
+        e: BlockedByParentException,
+    ): HydrationEvent.Completed {
+        runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
+        val err = HydrationError.BlockedByParent(e.parent)
+        _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
+        log.info("upload of {} not attempted: {}", path, err.message)
+        return HydrationEvent.Completed(path = path, handleId = handleId, direction = HydrationEvent.Completed.Direction.UPLOAD, ok = false, error = err)
     }
 
     /** A refusal of the request itself (archive#493): the row remembers it with the content's stamp, and nothing is retried. */
@@ -3056,5 +3092,22 @@ class HydrationImpl(
         e is UnsupportedRemoteObjectDownloadException -> HydrationError.UnsupportedObject(e.reason)
         DownloadFailures.isNotFound(e) -> HydrationError.NotFound
         else -> HydrationError.Generic(e.message ?: fallback)
+    }
+}
+
+// gkrost/unidrive-cli#134: the one look at a missing folder that one submission gets ([MountEngine.recoverGoneParent]); a refusal
+// that comes again after it stands.
+private class OneLookAtTheParent(
+    private val mount: MountEngine,
+) {
+    private var looked = false
+
+    suspend fun putBack(
+        path: String,
+        goneFolder: String,
+    ): Boolean {
+        if (looked) return false
+        looked = true
+        return mount.recoverGoneParent(path, goneFolder)
     }
 }
