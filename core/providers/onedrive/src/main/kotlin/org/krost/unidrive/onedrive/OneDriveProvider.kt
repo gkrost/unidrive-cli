@@ -262,7 +262,7 @@ class OneDriveProvider(
         val got = item.name
         if (wanted.isEmpty() || got == null) return item
         // The parent the drive reports, when it reports one, must be the parent asked for as well.
-        val actualParent = item.parentReference?.path?.removePrefix("/drive/root:")?.trimEnd('/')
+        val actualParent = item.parentReference?.decodedPath?.removePrefix("/drive/root:")?.trimEnd('/')
         val parentMatches = actualParent == null || OneDriveServerNames.sameName(actualParent, clean.substringBeforeLast('/'))
         if (OneDriveServerNames.sameName(got, wanted) && parentMatches) return item
         throw GraphApiException(
@@ -840,7 +840,7 @@ class OneDriveProvider(
     // resolves a pathless tombstone via its remote id.
     private fun DriveItem.isRootItem(): Boolean {
         if (removed != null || deleted != null) return false
-        val parentPath = parentReference?.path
+        val parentPath = parentReference?.decodedPath
         return parentPath == null || parentPath == "/drive/root"
     }
 
@@ -858,7 +858,7 @@ class OneDriveProvider(
     private fun DriveItem.toCloudItem(): CloudItem {
         val parentPath =
             parentReference
-                ?.path
+                ?.decodedPath
                 ?.removePrefix("/drive/root:")
                 ?.ifEmpty { "/" }
                 ?: "/"
