@@ -1391,12 +1391,18 @@ class RemoteGather(
      * its path ([keepsPendingUpload]); a tracked item RENAMED onto that path moves the pending row aside under a keep-both
      * name first ([MergeDisplacement.movePendingUploadAside]). The mirror merges it, as before: its reconciler sees the
      * file new on both sides and keeps both from the sync root's copy.
+     *
+     * [cacheIsPlainCopy] (archive#1040 M6): the mount's enumeration says whether the cache copy of a row holds nothing but the
+     * bytes the row recorded. A hydrated row whose item arrives with other content of the SAME size is then marked not
+     * hydrated ([outlivedByContent]): the read compares sizes only, and would serve the old bytes for ever. The mirror
+     * (null) compares hashes itself.
      */
     fun updateRemoteEntries(
         remoteChanges: Map<String, CloudItem>,
         remoteToLocalTop: Map<String, String>,
         guardContext: Map<String, CloudItem> = remoteChanges,
         keepPendingUploads: Boolean = false,
+        cacheIsPlainCopy: ((SyncEntry) -> Boolean)? = null,
     ): RemoteMerge {
         // archive#115: the remoteChanges keys are canonical remote paths. An aliased item is
         // persisted at its REAL-LOCAL path (with the canonical in remote_path),
@@ -1459,6 +1465,7 @@ class RemoteGather(
                     existing.copy(
                         remoteId = item.id,
                         remoteHash = item.hash,
+                        isHydrated = existing.isHydrated && !outlivedByContent(existing, item, cacheIsPlainCopy),
                         // The write token moves with the delivered version (null from a provider without one).
                         remoteVersion = item.version,
                         remoteSize = item.size,
@@ -1516,6 +1523,24 @@ class RemoteGather(
         refreshTrash()
         return RemoteMerge(changedPaths = changed, moved = moved, replaced = replaced)
     }
+
+    // archive#1040 M6: the content of a hydrated file changed without changing its size (another device rewrote it in place), so
+    // the cache copy is a version the cloud no longer has. Judged by the content hash both sides carry (a provider without
+    // one is not covered) and only for a cache copy that is no edit: an edit is guarded by the mount's own rules.
+    private fun outlivedByContent(
+        existing: SyncEntry,
+        item: CloudItem,
+        cacheIsPlainCopy: ((SyncEntry) -> Boolean)?,
+    ): Boolean =
+        cacheIsPlainCopy != null &&
+            existing.isHydrated &&
+            !existing.isFolder &&
+            existing.remoteId == item.id &&
+            existing.remoteSize == item.size &&
+            !existing.remoteHash.isNullOrEmpty() &&
+            !item.hash.isNullOrEmpty() &&
+            existing.remoteHash != item.hash &&
+            cacheIsPlainCopy(existing)
 
     // The remote path of a row the merge keeps: on a rename the new one ([aliasedRemote], null when it is the path); else
     // the row's own, which a collision row that kept the NFC key learns its item's spelling in (archive#491), and a spelling the

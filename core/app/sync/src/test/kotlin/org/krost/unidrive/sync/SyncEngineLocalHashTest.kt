@@ -312,7 +312,9 @@ class SyncEngineLocalHashTest {
         runTest {
             val eng = engine()
             downloadFile(eng, "old.txt", "rename me".toByteArray())
-            val expected = db.getEntry("/old.txt")?.localHash
+            val before = db.getEntry("/old.txt")
+            assertNotNull(before)
+            val expected = before.localHash
             assertNotNull(expected)
 
             quietRemote("cursor-2")
@@ -322,6 +324,13 @@ class SyncEngineLocalHashTest {
             assertEquals(listOf("/old.txt" to "/new.txt"), provider.movedPaths)
             assertNull(db.getEntry("/old.txt"))
             assertEquals(expected, db.getEntry("/new.txt")?.localHash)
+            // archive#1088 item 3: the row is the same remote item at a new path, not a new item. A move that took
+            // the id, hash or size from a folder-shaped answer would pass the checks above.
+            val after = db.getEntry("/new.txt")
+            assertNotNull(after)
+            assertEquals(before.remoteId, after.remoteId, "a rename keeps the remote id")
+            assertEquals(before.remoteSize, after.remoteSize, "a rename keeps the size")
+            assertEquals(false, after.isFolder)
         }
 
     @Test
