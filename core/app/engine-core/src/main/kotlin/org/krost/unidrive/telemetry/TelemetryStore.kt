@@ -157,6 +157,20 @@ internal class TelemetryStore private constructor(
     }
 
     @Synchronized
+    fun replace(row: TransferRow, previousId: String) {
+        inTransaction { c ->
+            c.prepareStatement(UPSERT).use { ps ->
+                TransferRowCodec.bind(ps, row)
+                ps.executeUpdate()
+            }
+            c.prepareStatement("DELETE FROM transfers WHERE operation_id = ?").use {
+                it.setString(1, previousId)
+                it.executeUpdate()
+            }
+        }
+    }
+
+    @Synchronized
     fun putMeta(
         key: String,
         value: String,
