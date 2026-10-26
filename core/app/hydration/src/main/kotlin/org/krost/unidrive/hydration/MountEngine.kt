@@ -487,7 +487,7 @@ class MountEngine private constructor(
                         watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged) }
                     }
                 }
-            val downloadedSize = fetched.bytes
+            val downloadedSize = confirmedDownloadSize(path, entry, fetched)
             remoteIncomplete.forget(entry)
             if (options.verifyIntegrity) {
                 // The bytes of an item read by its live id (archive#796) are checked against that item's hash, not the row's.
@@ -562,6 +562,36 @@ class MountEngine private constructor(
             throw PermanentDownloadFailureException("$path was deleted or moved while it was being downloaded")
         }
         return rowNow
+    }
+
+    /**
+     * gkrost/unidrive-cli#80: the byte count of a finished download, or a failure when it is short. A provider whose
+     * truncation guard needs a `Content-Length` can return fewer bytes than the item has without throwing (a chunked
+     * response that closes early); taking that count as the row's new `remote_size` would switch off the size check
+     * of the read and serve the truncated file as complete. A count below the size the row (or the live item
+     * it was read from) holds is therefore accepted only when the provider confirms that size for the file now (a file
+     * that shrank since the enumeration); a longer body is a file that grew and is taken as before.
+     * A short body is a transient failure (EIO, read again), not a statement about the cloud object.
+     */
+    private suspend fun confirmedDownloadSize(
+        path: String,
+        entry: SyncEntry,
+        fetched: Fetched,
+    ): Long {
+        val expected = fetched.liveItem?.size ?: entry.remoteSize
+        if (expected <= 0 || fetched.bytes >= expected) return fetched.bytes
+        val live =
+            try {
+                provider.getMetadata(remotePathOf(path, entry))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.debug("#80: cannot confirm the size of {} after a download of {} bytes: {}", path, fetched.bytes, e.javaClass.simpleName)
+                null
+            }
+        val confirmed = live != null && live.size == fetched.bytes && !(live.isFolder || live.deleted)
+        if (confirmed) return fetched.bytes
+        throw java.io.IOException("download of $path ended after ${fetched.bytes} of $expected bytes")
     }
 
     /** What a cold download brought: the bytes, and the live item it was read from when the row's own id did not resolve. */

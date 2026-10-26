@@ -119,6 +119,12 @@ interface CloudProvider {
 
     suspend fun getMetadata(path: String): CloudItem
 
+    /**
+     * Downloads [remotePath] to [destination] and returns the number of bytes written. A download that ends with fewer
+     * bytes than the item has (a closed connection, a chunked response with no `Content-Length`) must throw, not return
+     * the short count; the mount re-checks the count against the item's size and refuses a mismatch the provider does
+     * not confirm (gkrost/unidrive-cli#80), but a provider that knows the size should fail first.
+     */
     suspend fun download(
         remotePath: String,
         destination: Path,
