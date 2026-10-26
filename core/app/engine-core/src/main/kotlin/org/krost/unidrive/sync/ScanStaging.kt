@@ -229,7 +229,11 @@ internal class ScanStaging(
         }
     }
 
-    /** The rows of one page and the marker after it, in one transaction. */
+    /**
+     * The rows of one page and the marker after it, in one transaction; the page also refreshes the checkpoint's
+     * last-progress stamp, the instant [StateDatabase.getActiveScan] measures its staleness from, so a scan that
+     * keeps paging on a large account is never judged stale by the age of its start.
+     */
     fun persistPage(
         scanId: String,
         items: List<CloudItem>,
@@ -250,6 +254,7 @@ internal class ScanStaging(
                 }
             }
             setMeta(c, StateDatabase.SCAN_IN_PROGRESS_MARKER, marker)
+            setMeta(c, StateDatabase.SCAN_IN_PROGRESS_LAST_PROGRESS_AT, Instant.now().toString())
         }
     }
 

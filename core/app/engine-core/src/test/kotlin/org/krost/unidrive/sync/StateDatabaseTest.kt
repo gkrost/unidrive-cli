@@ -1001,11 +1001,10 @@ class StateDatabaseTest {
     fun `staging — getActiveScan clears + returns null on stale checkpoint`() {
         val scanId = db.beginScan(initialMarker = "stale-marker")
         db.persistScanPage(scanId, listOf(staged("u1", "/old.txt")), marker = "stale-marker")
-        // Backdate the started_at so the stale-detection threshold trips.
-        db.setSyncState(
-            StateDatabase.SCAN_IN_PROGRESS_STARTED_AT,
-            Instant.now().minus(Duration.ofDays(1)).toString(),
-        )
+        // Backdate both stamps — staleness is measured from the last page — so the threshold trips.
+        val past = Instant.now().minus(Duration.ofDays(1)).toString()
+        db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_STARTED_AT, past)
+        db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_LAST_PROGRESS_AT, past)
 
         val active = db.getActiveScan(staleThreshold = Duration.ofHours(6))
 

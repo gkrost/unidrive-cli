@@ -142,6 +142,42 @@ class StateDatabaseScanStagingTest {
     }
 
     @Test
+    fun `a checkpoint past the threshold of its start stays active while its pages keep landing`() {
+        // A full walk of a large account can outlive the threshold while paging steadily; measured from the
+        // start it was discarded on every restart past the threshold and paged from item 0 again.
+        val db = opened()
+        try {
+            val scanId = db.beginScan(initialMarker = null)
+            db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_STARTED_AT, Instant.now().minus(Duration.ofDays(1)).toString())
+            db.persistScanPage(scanId, items(0, 3), marker = "m1")
+            assertNotNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_LAST_PROGRESS_AT), "the page stamped the checkpoint's progress")
+
+            val active = assertNotNull(db.getActiveScan(Duration.ofHours(6)), "progress inside the threshold keeps the scan resumable")
+            assertEquals("m1", active.marker)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `a checkpoint whose last page is past the threshold is no active scan`() {
+        val db = opened()
+        try {
+            val scanId = db.beginScan(initialMarker = null)
+            db.persistScanPage(scanId, items(0, 3), marker = "m1")
+            val past = Instant.now().minus(Duration.ofDays(1)).toString()
+            db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_STARTED_AT, past)
+            db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_LAST_PROGRESS_AT, past)
+
+            assertNull(db.getActiveScan(Duration.ofHours(6)))
+            assertNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID))
+            assertEquals(0, db.loadStagedItems(scanId).size, "a stale scan's rows are discarded")
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
     fun `a scan killed between pages resumes with exactly the pages it committed`() {
         val java = ProcessHandle.current().info().command().orElse("java")
         val child =

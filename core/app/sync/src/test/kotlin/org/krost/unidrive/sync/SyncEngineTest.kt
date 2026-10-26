@@ -3432,10 +3432,10 @@ class SyncEngineTest {
                 listOf(cloudItem("/stale.txt", size = 1)),
                 marker = "999|999",
             )
-            db.setSyncState(
-                StateDatabase.SCAN_IN_PROGRESS_STARTED_AT,
-                Instant.now().minus(java.time.Duration.ofDays(1)).toString(),
-            )
+            // Backdate both stamps — staleness is measured from the last page — so the checkpoint is stale.
+            val past = Instant.now().minus(java.time.Duration.ofDays(1)).toString()
+            db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_STARTED_AT, past)
+            db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_LAST_PROGRESS_AT, past)
 
             provider.deltaItems = listOf(cloudItem("/fresh.txt", size = 5))
             provider.deltaCursor = "fresh-after-stale"
