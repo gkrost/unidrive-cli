@@ -1,8 +1,5 @@
-package org.krost.unidrive.internxt
+package org.krost.unidrive.auth
 
-import org.krost.unidrive.auth.CredentialData
-import org.krost.unidrive.auth.CredentialProtectionException
-import org.krost.unidrive.auth.CredentialProtector
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
@@ -14,7 +11,7 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.UUID
 
-/** Stores Internxt credentials in the current macOS user's login Keychain. */
+/** Stores provider credentials in the current macOS user's login Keychain. */
 class MacKeychainCredentialProtector : CredentialProtector {
     override fun protect(id: String, plaintext: String): String {
         requireMacOS()
@@ -36,7 +33,7 @@ class MacKeychainCredentialProtector : CredentialProtector {
         if (!stored.startsWith(STORED_PREFIX)) return CredentialData(stored, false)
         val revision = stored.removePrefix(STORED_PREFIX)
         if (runCatching { UUID.fromString(revision) }.isFailure) {
-            throw CredentialProtectionException("Internxt credential reference is invalid; refusing plaintext fallback")
+            throw CredentialProtectionException("Credential reference is invalid; refusing plaintext fallback")
         }
         requireMacOS()
         return CredentialData(keychain.lookup(keyFor(id), revision), true)

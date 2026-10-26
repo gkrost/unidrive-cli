@@ -1,8 +1,5 @@
-package org.krost.unidrive.internxt
+package org.krost.unidrive.auth
 
-import org.krost.unidrive.auth.CredentialData
-import org.krost.unidrive.auth.CredentialProtectionException
-import org.krost.unidrive.auth.CredentialProtector
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.UUID
@@ -30,7 +27,7 @@ class LinuxSecretServiceCredentialProtector(
         if (!stored.startsWith(STORED_PREFIX)) return CredentialData(stored, false)
         val revision = stored.removePrefix(STORED_PREFIX)
         if (runCatching { UUID.fromString(revision) }.isFailure) {
-            throw CredentialProtectionException("Internxt credential reference is invalid; refusing plaintext fallback")
+            throw CredentialProtectionException("Credential reference is invalid; refusing plaintext fallback")
         }
         return CredentialData(lookup(keyFor(id), revision), true)
     }

@@ -1,6 +1,5 @@
-package org.krost.unidrive.internxt
+package org.krost.unidrive.auth
 
-import org.krost.unidrive.auth.CredentialProtectionException
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.AfterTest

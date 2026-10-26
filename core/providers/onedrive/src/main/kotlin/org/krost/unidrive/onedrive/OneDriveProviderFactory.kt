@@ -1,6 +1,5 @@
 package org.krost.unidrive.onedrive
 
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import org.krost.unidrive.AccountName
 import org.krost.unidrive.AccountOwner
@@ -10,6 +9,9 @@ import org.krost.unidrive.CompleteAuthResult
 import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.ProviderFactory
 import org.krost.unidrive.ProviderMetadata
+import org.krost.unidrive.auth.CredentialProtector
+import org.krost.unidrive.auth.CredentialProtectors
+import org.krost.unidrive.auth.CredentialStore
 import org.krost.unidrive.auth.JwtExtractor
 import org.krost.unidrive.onedrive.model.Drive
 import org.krost.unidrive.onedrive.model.Token
@@ -17,7 +19,15 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 
-open class OneDriveProviderFactory : ProviderFactory {
+/**
+ * [credentialProtector] keeps token.json (and the pending device flow) protected at rest. The default is the host's
+ * native store where every host has one (Windows DPAPI, the macOS Keychain); on Linux it is none, the owner-only file
+ * (see [CredentialProtectors.atRestDefaultOrNull]). A token file written before is read as it is and rewritten
+ * protected the first time it is loaded.
+ */
+open class OneDriveProviderFactory(
+    private val credentialProtector: CredentialProtector? = CredentialProtectors.atRestDefaultOrNull(),
+) : ProviderFactory {
     override val id = "onedrive"
 
     override fun describeConnection(
@@ -27,8 +37,7 @@ open class OneDriveProviderFactory : ProviderFactory {
         val tokenFile = profileDir.resolve("token.json")
         if (!Files.exists(tokenFile)) return "onedrive (no token)"
         return try {
-            val json = Json { ignoreUnknownKeys = true }
-            val token = json.decodeFromString<Token>(Files.readString(tokenFile))
+            val token = storedToken(profileDir, credentialProtector) ?: return "onedrive (token unreadable)"
             val parts = mutableListOf<String>()
             // Try to extract email/upn from JWT access token payload
             val email =
@@ -88,6 +97,7 @@ open class OneDriveProviderFactory : ProviderFactory {
                 authEndpoint = authEndpoint,
                 includeShared = includeShared,
                 remoteNotifications = remoteNotifications,
+                credentialProtector = credentialProtector,
             )
         return OneDriveProvider(config)
     }
@@ -106,8 +116,7 @@ open class OneDriveProviderFactory : ProviderFactory {
             return CredentialHealth.Missing("No token.json")
         }
         return try {
-            val json = Json { ignoreUnknownKeys = true }
-            val token = json.decodeFromString<Token>(Files.readString(tokenFile))
+            val token = storedToken(profileDir, credentialProtector) ?: return CredentialHealth.Warning("token.json exists but could not be parsed")
             when {
                 token.isExpired && token.refreshToken == null ->
                     // Nothing can renew it: expired, with zero time left (daemon.status reports `expired`).
@@ -278,7 +287,7 @@ open class OneDriveProviderFactory : ProviderFactory {
     }
 
     private fun pendingFlowStore(profileDir: Path) =
-        org.krost.unidrive.auth.CredentialStore(profileDir, PENDING_DEVICE_FLOW_FILE, PendingDeviceFlow.serializer())
+        CredentialStore(profileDir, PENDING_DEVICE_FLOW_FILE, PendingDeviceFlow.serializer(), protector = credentialProtector)
 
     /**
      * The flow [handle] began in an earlier process (`auth begin` of the CLI), rebuilt from the
@@ -329,12 +338,18 @@ open class OneDriveProviderFactory : ProviderFactory {
     internal open fun newGraphApiForIdentity(
         profileDir: Path,
         token: Token,
-    ): GraphApiService = GraphApiService(OneDriveConfig(tokenPath = profileDir)) { token.accessToken }
+    ): GraphApiService = GraphApiService(OneDriveConfig(tokenPath = profileDir, credentialProtector = credentialProtector)) { token.accessToken }
 
     /** UD-014 test seam: subclassed in OneDriveInteractiveAuthContractTest
      *  to inject a Ktor MockEngine-backed HttpClient. Production code
      *  uses the default. Open + internal so the test in the same module
      *  can override; never overridden in production. */
     internal open fun newOAuthServiceForBegin(profileDir: Path): OAuthService =
-        OAuthService(OneDriveConfig(tokenPath = profileDir))
+        OAuthService(OneDriveConfig(tokenPath = profileDir, credentialProtector = credentialProtector))
 }
+
+// The stored token as the provider reads it, through the same store (and protector) it was written with.
+private fun storedToken(
+    profileDir: Path,
+    protector: CredentialProtector?,
+): Token? = CredentialStore(profileDir, "token.json", Token.serializer(), protector = protector).load()

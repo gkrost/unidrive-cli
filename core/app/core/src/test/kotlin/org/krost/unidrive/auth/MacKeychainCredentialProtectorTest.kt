@@ -1,7 +1,6 @@
-package org.krost.unidrive.internxt
+package org.krost.unidrive.auth
 
 import org.junit.Assume.assumeTrue
-import org.krost.unidrive.auth.CredentialProtectionException
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
