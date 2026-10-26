@@ -722,7 +722,10 @@ class TrackingEngine(
                 hash = item.hash,
                 serverMtime = item.modified,
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // Only a proven absence is "the remote is not there": a throttle, a dropped connection or an expired token
+            // must not be recorded as absence (the adopt below would then treat a live remote file as gone).
+            if (!org.krost.unidrive.engine.RemoteErrors.isNotFound(e)) throw e
             RemoteObservation(
                 exists = false,
                 remoteFileId = null,

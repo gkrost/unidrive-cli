@@ -202,7 +202,14 @@ class DropboxProvider(
         val target = apiPath(path)
         if (target.isEmpty()) return ROOT
         ready()
-        return items.toCloudItem(metadata(target))
+        return try {
+            items.toCloudItem(metadata(target))
+        } catch (e: DropboxApiException) {
+            // Dropbox answers a missing path with HTTP 409 `path/not_found`, which no caller reads as absence. The typed
+            // not-found message and a 404 are what the engine's one rule (RemoteErrors.isNotFound) recognises.
+            if (e.isA("path/not_found")) throw ProviderException("Item not found: $path", cause = e, requestId = e.requestId, httpStatus = HTTP_NOT_FOUND)
+            throw e
+        }
     }
 
     private suspend fun metadata(target: String): JsonObject = api.rpc("files/get_metadata", obj("path" to target, "include_deleted" to false))
@@ -721,6 +728,7 @@ class DropboxProvider(
     }
 
     companion object {
+        private const val HTTP_NOT_FOUND = 404
         private const val LIST_LIMIT = 2000
         private const val LONGPOLL_TIMEOUT_S = 480
         private const val IDLE_POLL_MS = 5_000L

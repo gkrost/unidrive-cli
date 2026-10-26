@@ -10,6 +10,7 @@ dependencies {
     implementation(project(":app:core"))
     // TrackingEngine reuses the sync engine's Reconciler, ConflictLog and TrashManager.
     implementation(project(":app:sync"))
+    implementation(project(":app:engine-core"))
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.sqlite.jdbc)

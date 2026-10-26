@@ -164,8 +164,8 @@ class MigrateUploadQuarantinedCommand : Runnable {
 
     // True when the provider proves [path] present. A proven absence is false; anything else propagates: an
     // upload that guesses past an unreadable probe is the overwrite this must never do. The absence signals are
-    // the house ones: the typed not-found messages, the provider's own httpStatus (S3's NoSuchKey), or an
-    // exception carrying a reflective `getStatusCode()` of 404 (OneDrive's GraphApiException).
+    // the house rule, RemoteErrors.isNotFound.
+    @Suppress("TooGenericExceptionCaught") // classified by RemoteErrors.isNotFound, anything else is rethrown unchanged
     private suspend fun taken(
         provider: org.krost.unidrive.CloudProvider,
         path: String,
@@ -173,22 +173,9 @@ class MigrateUploadQuarantinedCommand : Runnable {
         try {
             provider.getMetadata(path)
             true
-        } catch (e: ProviderException) {
-            val gone =
-                RemoteErrors.isAlreadyGone(e) ||
-                    e.httpStatus == 404 ||
-                    statusCodeOf(e) == 404 ||
-                    (e.cause?.let { statusCodeOf(it) } == 404)
-            if (gone) false else throw e
+        } catch (e: Exception) {
+            if (RemoteErrors.isNotFound(e)) false else throw e
         }
-
-    // Reflectively read a `getStatusCode(): Int` off a provider exception without a provider-module
-    // classpath dependency (the same copy MountEngine and SyncEngine keep).
-    private fun statusCodeOf(e: Throwable): Int? =
-        runCatching {
-            val getter = e.javaClass.methods.firstOrNull { it.name == "getStatusCode" && it.parameterCount == 0 }
-            getter?.invoke(e) as? Int
-        }.getOrNull()
 }
 
 /**

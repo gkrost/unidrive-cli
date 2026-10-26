@@ -1500,29 +1500,20 @@ class MountEngine private constructor(
     // failures (auth expiry, throttling, 5xx, network) are PROPAGATED, never read
     // as absence — otherwise a ghost probed during a blip would fall to the
     // local-only path and silently skip the cloud move/delete (orphan/duplicate).
-    // isAlreadyGone covers the typed Internxt "not found"; statusCode 404 covers
-    // OneDrive's GraphApiException.
+    // RemoteErrors.isNotFound is the one rule: the typed not-found messages, an HTTP 404 on the exception (OneDrive, S3,
+    // Internxt) and a FileNotFoundException (the local-directory provider).
     suspend fun remoteItemOrNull(path: String): CloudItem? =
         try {
             // An entry the drive refused by name cannot be there under that name, and a lookup by it could only
             // reach a similar sibling: nothing to probe.
             if (isNameBlocked(path)) null else provider.getMetadata(remotePathOf(path))
         } catch (e: Exception) {
-            if (isAlreadyGone(e) || statusCodeOf(e) == 404 || (e.cause?.let { statusCodeOf(it) } == 404)) {
+            if (org.krost.unidrive.engine.RemoteErrors.isNotFound(e)) {
                 null
             } else {
                 throw e
             }
         }
-
-    // Reflectively read a `getStatusCode(): Int` off a provider exception without a
-    // provider-module classpath dependency (mirrors the hydration SPI helper). SyncEngine keeps its
-    // own copy for the mirror pass (archive#560 U2 kept the probe beside its callers).
-    private fun statusCodeOf(e: Throwable): Int? =
-        runCatching {
-            val getter = e.javaClass.methods.firstOrNull { it.name == "getStatusCode" && it.parameterCount == 0 }
-            getter?.invoke(e) as? Int
-        }.getOrNull()
 
     private fun statBeforeUpload(local: Path): Pair<Long, Long>? = Transfers.statBeforeUpload(local)
 
