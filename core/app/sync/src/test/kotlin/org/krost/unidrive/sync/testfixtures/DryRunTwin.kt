@@ -404,7 +404,8 @@ class World(
     }
 }
 
-private val VOLATILE_STATE_KEYS = setOf("last_full_scan", "last_scan_secs_local", "last_scan_secs_remote", "scan_in_progress_started_at")
+private val VOLATILE_STATE_KEYS =
+    setOf("last_full_scan", "last_scan_secs_local", "last_scan_secs_remote", "scan_in_progress_started_at", "scan_in_progress_last_progress_at")
 
 private fun category(key: String): String =
     when {

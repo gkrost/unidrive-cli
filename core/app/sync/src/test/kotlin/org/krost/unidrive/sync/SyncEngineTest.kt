@@ -365,7 +365,7 @@ class SyncEngineTest {
 
     // ── archive#523: a whole-drive gather that skipped a folder must not look complete afterwards —
     // the idle enumeration status carries the last gather's completeness for the status UI and
-    // daemon.status (the per-folder timer itself is already the archive#518 330 s listing timer).
+    // daemon.status (the per-folder timer itself is the archive#518 listing timer, 150 s since #71).
 
     @Test
     fun `#523 an incomplete gather surfaces lastScanComplete=false in the idle status`() =
@@ -3432,10 +3432,10 @@ class SyncEngineTest {
                 listOf(cloudItem("/stale.txt", size = 1)),
                 marker = "999|999",
             )
-            db.setSyncState(
-                StateDatabase.SCAN_IN_PROGRESS_STARTED_AT,
-                Instant.now().minus(java.time.Duration.ofDays(1)).toString(),
-            )
+            // Backdate both stamps — staleness is measured from the last page — so the checkpoint is stale.
+            val past = Instant.now().minus(java.time.Duration.ofDays(1)).toString()
+            db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_STARTED_AT, past)
+            db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_LAST_PROGRESS_AT, past)
 
             provider.deltaItems = listOf(cloudItem("/fresh.txt", size = 5))
             provider.deltaCursor = "fresh-after-stale"
