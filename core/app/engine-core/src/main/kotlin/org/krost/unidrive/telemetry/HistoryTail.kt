@@ -14,7 +14,7 @@ internal class HistoryTail(
     private val listeners = CopyOnWriteArrayList<(Long, TransferRow) -> Unit>()
     private val counter = AtomicLong()
 
-    /** The number of the last snapshot committed (0 before any). A reader that read it first sees at least those rows. */
+    /** The last committed tail position (0 before any), including gaps for removed rows. */
     val seq: Long
         get() = counter.get()
 
@@ -24,6 +24,13 @@ internal class HistoryTail(
 
     fun remove(listener: (seq: Long, row: TransferRow) -> Unit) {
         listeners -= listener
+    }
+
+    // A removed row has no row-snapshot event. Leave a sequence gap so existing subscribers receive
+    // history.lost and reload the list before applying the replacement snapshot.
+    fun publishReplacement(row: TransferRow) {
+        counter.incrementAndGet()
+        publish(listOf(row))
     }
 
     // A listener that throws loses that one row for itself, never the writer or the other listeners.

@@ -329,7 +329,8 @@ class HydrationUploadQueueTest {
         assertEquals(1, env.syncEngine.uploadAttempts())
 
         assertEquals(0, env.hydration.replayPendingUploads(), "the refused row is not replayed at a start")
-        env.hydration.openForWrite("conn1", "h2", "/docs/f.txt", env.syncEngine.resolveCachePath("/docs/f.txt"))
+        // The engine's own resubmission (a crash-recovery replay); a client's open_write is a retry and asks again (gkrost/unidrive-cli#134).
+        env.hydration.openForWrite("conn1", "recovery-2", "/docs/f.txt", env.syncEngine.resolveCachePath("/docs/f.txt"))
         advanceUntilIdle()
         assertEquals(1, env.syncEngine.uploadAttempts(), "unchanged content is not sent again")
 

@@ -513,9 +513,10 @@ class StateDatabase(
         stampSchemaVersion()
     }
 
-    // The staged scan used to live in this file (a `scan_staging` table, the checkpoint in three `sync_state` keys); it
-    // has a file of its own now ([scanStaging]). Both go, in one transaction; a scan that was in flight starts again,
-    // its staged rows are not carried over. Idempotent: on a migrated or new file there is nothing to drop.
+    // The staged scan used to live in this file (a `scan_staging` table, the checkpoint in the `scan_state` keys of
+    // [SCAN_CHECKPOINT_KEYS]); it has a file of its own now ([scanStaging]). Both go, in one transaction; a scan that was
+    // in flight starts again, its staged rows are not carried over. Idempotent: on a migrated or new file there is
+    // nothing to drop.
     private fun dropMainFileStaging() {
         val hadTable = tableExists("scan_staging")
         // Most opens find neither: then nothing is written (a commit per open would cost every CLI command a disk flush).
@@ -525,7 +526,7 @@ class StateDatabase(
             conn.createStatement().use { stmt ->
                 if (hadTable) stmt.executeUpdate("DROP TABLE scan_staging")
             }
-            conn.prepareStatement("DELETE FROM sync_state WHERE key IN (?, ?, ?)").use { stmt ->
+            conn.prepareStatement("DELETE FROM sync_state WHERE key IN (${checkpointKeyPlaceholders})").use { stmt ->
                 SCAN_CHECKPOINT_KEYS.forEachIndexed { i, key -> stmt.setString(i + 1, key) }
                 stmt.executeUpdate()
             }
@@ -540,7 +541,7 @@ class StateDatabase(
     }
 
     private fun mainFileHoldsCheckpointKeys(): Boolean =
-        conn.prepareStatement("SELECT 1 FROM sync_state WHERE key IN (?, ?, ?) LIMIT 1").use { stmt ->
+        conn.prepareStatement("SELECT 1 FROM sync_state WHERE key IN (${checkpointKeyPlaceholders}) LIMIT 1").use { stmt ->
             SCAN_CHECKPOINT_KEYS.forEachIndexed { i, key -> stmt.setString(i + 1, key) }
             stmt.executeQuery().use { it.next() }
         }
@@ -1689,6 +1690,23 @@ class StateDatabase(
         }
 
     /**
+     * gkrost/unidrive-cli#134: forgets the refusal [markUploadRefused] recorded for the alive row at [pathRaw], so that the next
+     * upload of its bytes asks the provider again. A client's own retry does it. The row's local baseline, which the refusal
+     * stamp moved, stays. Returns true when a refusal was there.
+     */
+    fun clearUploadRefusal(pathRaw: String): Boolean =
+        locked("clearUploadRefusal") {
+            beginWrite()
+            val path = PathNormalizer.nfc(pathRaw)
+            conn
+                .prepareStatement("UPDATE sync_entries SET upload_refused=NULL WHERE path=? AND status='EXISTS' AND upload_refused IS NOT NULL")
+                .use { stmt ->
+                    stmt.setString(1, path)
+                    stmt.executeUpdate() == 1
+                }
+        }
+
+    /**
      * archive#1070/#1069: notes that the cache copy of the alive cloud-backed file row at [pathRaw] holds an edit the cloud
      * has not seen, started from the cloud version [base] (the row's remote token, "" when it has none; see
      * [SyncEntry.editBase]). Only the first edit sets it: a row that already carries a base keeps it until an upload
@@ -2540,9 +2558,15 @@ class StateDatabase(
     }
 
     /**
-     * Returns the active scan checkpoint when one exists and is fresher
-     * than [staleThreshold]. A stale checkpoint is cleared in-place
-     * (staging slice deleted + checkpoint cleared) so the caller can
+     * Returns the active scan checkpoint when one exists and made progress within
+     * [staleThreshold]: the horizon is measured from the instant of the last page
+     * the scan persisted (each page refreshes it, see [ScanStaging.persistPage]),
+     * not from its start — a full walk of a large account can run longer than any
+     * threshold while paging steadily, and measured from the start every restart
+     * past the threshold would discard a living scan's progress and page from item
+     * 0 again. A checkpoint no page has advanced yet, and one an older jar wrote
+     * without the stamp, falls back to its start. A stale checkpoint is cleared
+     * in-place (staging slice deleted + checkpoint cleared) so the caller can
      * treat a null return as "start from scratch".
      *
      * Also invalidates the checkpoint when `last_full_scan` was set AFTER
@@ -2561,10 +2585,16 @@ class StateDatabase(
         val checkpoint = scanStaging.checkpoint()
         val scanId = checkpoint[SCAN_IN_PROGRESS_ID] ?: return null
         val startedAt = checkpoint[SCAN_IN_PROGRESS_STARTED_AT]?.let { runCatching { Instant.parse(it) }.getOrNull() }
+        // The horizon of the staleness verdict: the last page this scan persisted, which every page refreshes;
+        // before the first page (and for a checkpoint an older jar wrote without the stamp) it is the start.
+        val lastProgressAt =
+            checkpoint[SCAN_IN_PROGRESS_LAST_PROGRESS_AT]?.let { runCatching { Instant.parse(it) }.getOrNull() }
+                ?: startedAt
         val lastFullScan = getSyncState("last_full_scan")?.let { runCatching { Instant.parse(it) }.getOrNull() }
         val stale =
             startedAt == null ||
-                Instant.now().isAfter(startedAt.plus(staleThreshold)) ||
+                lastProgressAt == null ||
+                Instant.now().isAfter(lastProgressAt.plus(staleThreshold)) ||
                 (lastFullScan != null && lastFullScan.isAfter(startedAt))
         if (stale) {
             completeScan(scanId)
@@ -3014,7 +3044,14 @@ class StateDatabase(
         const val SCAN_IN_PROGRESS_ID: String = "scan_in_progress_id"
         const val SCAN_IN_PROGRESS_MARKER: String = "scan_in_progress_marker"
         const val SCAN_IN_PROGRESS_STARTED_AT: String = "scan_in_progress_started_at"
-        internal val SCAN_CHECKPOINT_KEYS = setOf(SCAN_IN_PROGRESS_ID, SCAN_IN_PROGRESS_MARKER, SCAN_IN_PROGRESS_STARTED_AT)
+
+        /** The instant of the last page the scan persisted; [getActiveScan] measures its staleness from it, falling back to the start. */
+        const val SCAN_IN_PROGRESS_LAST_PROGRESS_AT: String = "scan_in_progress_last_progress_at"
+        internal val SCAN_CHECKPOINT_KEYS =
+            setOf(SCAN_IN_PROGRESS_ID, SCAN_IN_PROGRESS_MARKER, SCAN_IN_PROGRESS_STARTED_AT, SCAN_IN_PROGRESS_LAST_PROGRESS_AT)
+
+        /** One `?` per checkpoint key, for the `IN (...)` of the main file's staging drop. */
+        private val checkpointKeyPlaceholders: String = SCAN_CHECKPOINT_KEYS.joinToString(", ") { "?" }
 
         /** The file of the resumable scan's staged rows and checkpoint, next to `state.db` (see [ScanStaging]). */
         const val SCAN_STAGING_FILE_NAME: String = "scan-staging.db"

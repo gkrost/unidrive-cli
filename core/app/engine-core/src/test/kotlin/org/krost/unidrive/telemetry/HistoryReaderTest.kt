@@ -9,6 +9,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -190,6 +191,91 @@ class HistoryReaderTest {
             ).joinToString(" | ")
         assertTrue("idx_transfers_time" in plan, plan)
         assertFalse("TEMP B-TREE" in plan, plan)
+    }
+
+    // gkrost/unidrive-cli#134: a result filter on the time index reads every row newer than the matches (a page of failed rows among
+    // hundreds of thousands of successes, or the running rows of a long-lived file, took seconds). Each result is asked on its own.
+    @Test
+    fun `a result filter seeks its own index and does not scan the table`() {
+        val history = open()
+        finished(history, "/a", 1_000, 2_000, result = TransferResult.FAILED)
+        assertTrue(history.flush())
+        val r = reader(history)
+        for (results in listOf(setOf(TransferResult.FAILED), setOf(TransferResult.RUNNING))) {
+            val plan = r.explain(HistoryQuery(results = results, limit = 500)).joinToString(" | ")
+            assertTrue("idx_transfers_result_time" in plan, plan)
+            assertFalse("SCAN" in plan, plan)
+            assertFalse("TEMP B-TREE" in plan, plan)
+        }
+        // Several results: one such query per result, merged; none of them scans.
+        val several = r.explainEach(HistoryQuery(results = setOf(TransferResult.FAILED, TransferResult.CONFLICT), limit = 500))
+        assertEquals(2, several.size)
+        several.forEach { plan -> assertTrue("idx_transfers_result_time" in plan && "SCAN" !in plan, plan) }
+    }
+
+    @Test
+    fun `several results page in one newest-first order across pages`() {
+        val history = open()
+        val kinds = listOf(TransferResult.FAILED, TransferResult.SUCCESS, TransferResult.CONFLICT, TransferResult.FAILED, TransferResult.CONFLICT, TransferResult.SUCCESS, TransferResult.FAILED)
+        kinds.forEachIndexed { i, result -> finished(history, "/f$i", queuedAt = 1_000L + i, finishedAt = 2_000L + i, result = result) }
+        assertTrue(history.flush())
+        val r = reader(history)
+        val wanted = setOf(TransferResult.FAILED, TransferResult.CONFLICT)
+
+        val all = paths(r.query(HistoryQuery(results = wanted)))
+        assertEquals(listOf("/f6", "/f4", "/f3", "/f2", "/f0"), all, "success rows are left out, the rest newest first")
+
+        val seen = mutableListOf<String>()
+        var cursor: HistoryCursor? = null
+        do {
+            val page = r.query(HistoryQuery(results = wanted, after = cursor, limit = 2))
+            seen += paths(page)
+            cursor = if (page.hasMore) HistoryCursor.of(page.rows.last()) else null
+        } while (cursor != null)
+        assertEquals(all, seen, "pages of two walk the same rows")
+        assertEquals(false, r.query(HistoryQuery(results = wanted, limit = 5)).hasMore)
+        assertEquals(true, r.query(HistoryQuery(results = wanted, limit = 4)).hasMore)
+    }
+
+    @Test
+    fun `several results use one snapshot while a transfer finishes`() {
+        val history = open()
+        val transfer = history.begin(TransferDirection.UPLOAD, "/changing")
+        transfer.started()
+        assertTrue(history.flush())
+        var reads = 0
+        val r = HistoryReader(db) {
+            if (++reads == 1) {
+                transfer.finish(TransferResult.FAILED)
+                assertTrue(history.flush())
+            }
+        }.also { readers += it }
+
+        val query = HistoryQuery(results = linkedSetOf(TransferResult.RUNNING, TransferResult.FAILED), limit = 1)
+        val page = r.query(query)
+        assertEquals(listOf(TransferResult.RUNNING), page.rows.map { it.result })
+        assertFalse(page.hasMore)
+        assertEquals(listOf(TransferResult.FAILED), r.query(query).rows.map { it.result })
+    }
+
+    @Test
+    fun `a failed merged read releases its snapshot`() {
+        val history = open()
+        val transfer = history.begin(TransferDirection.UPLOAD, "/changing")
+        transfer.started()
+        assertTrue(history.flush())
+        var fail = true
+        val r = HistoryReader(db) {
+            if (fail) {
+                fail = false
+                error("interrupted read")
+            }
+        }.also { readers += it }
+        val query = HistoryQuery(results = setOf(TransferResult.RUNNING, TransferResult.FAILED))
+        assertFailsWith<IllegalStateException> { r.query(query) }
+        transfer.finish(TransferResult.FAILED)
+        assertTrue(history.flush())
+        assertEquals(listOf(TransferResult.FAILED), r.query(query).rows.map { it.result })
     }
 
     @Test

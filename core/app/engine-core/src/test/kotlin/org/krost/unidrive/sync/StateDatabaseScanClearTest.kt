@@ -109,7 +109,9 @@ class StateDatabaseScanClearTest {
         stage(older, "b", 3)
         val scanId = db.beginScan(initialMarker = null) // the checkpoint names this one
         stage(scanId, "a", chunk + 1)
-        db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_STARTED_AT, Instant.now().minus(Duration.ofDays(1)).toString())
+        val past = Instant.now().minus(Duration.ofDays(1)).toString()
+        db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_STARTED_AT, past)
+        db.setSyncState(StateDatabase.SCAN_IN_PROGRESS_LAST_PROGRESS_AT, past)
         val held = mutableListOf<Boolean>()
         db.scanClearChunkGap = { held += Thread.holdsLock(db) || Thread.holdsLock(db.scanStaging) }
 
