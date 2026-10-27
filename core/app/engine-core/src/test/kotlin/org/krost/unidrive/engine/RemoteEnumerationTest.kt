@@ -1159,6 +1159,57 @@ class RemoteEnumerationTest {
             assertFalse(assertNotNull(db.getEntry("/a.txt")).isHydrated)
         }
 
+    // ---- another device replaced the file with one of another size (gkrost/unidrive-cli#146) ----
+
+    @Test
+    fun `a change of the size ends the hydration of the row, so the listing reports the new size and not the old copy's`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(sizedFile("a", "/a.txt", "h1"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            hydratedRowOf("/a.txt", "h1")
+
+            provider.items = listOf(sizedFile("a", "/a.txt", "h2").copy(size = 3))
+            enumeration.enumerate(reset = false)
+
+            val row = assertNotNull(db.getEntry("/a.txt"))
+            assertEquals(3L, row.remoteSize)
+            assertFalse(row.isHydrated, "a hydrated row reports its local size: the placeholder would keep the old one and every read fail")
+        }
+
+    @Test
+    fun `a change of the size without a hash or version still ends the hydration of a clean cached row`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(sizedFile("a", "/a.txt", "unused").copy(hash = null))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            hydratedRowOf("/a.txt", "unused")
+            db.upsertEntry(db.getEntry("/a.txt")!!.copy(remoteHash = null, remoteVersion = null))
+
+            provider.items = listOf(sizedFile("a", "/a.txt", "unused").copy(hash = null, size = 3))
+            enumeration.enumerate(reset = false)
+
+            assertFalse(assertNotNull(db.getEntry("/a.txt")).isHydrated)
+        }
+
+    @Test
+    fun `a change of the size leaves the row hydrated while its cache copy holds an unsent edit`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(sizedFile("a", "/a.txt", "h1"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            hydratedRowOf("/a.txt", "h1")
+            Files.setLastModifiedTime(cachePath("/a.txt"), FileTime.from(Instant.now().plusSeconds(3600)))
+
+            provider.items = listOf(sizedFile("a", "/a.txt", "h2").copy(size = 3))
+            enumeration.enumerate(reset = false)
+
+            assertTrue(assertNotNull(db.getEntry("/a.txt")).isHydrated, "the copy may be the only copy of an edit")
+        }
+
     @Test
     fun `a same-size change of the content leaves the row hydrated while its cache copy holds an unsent edit`() =
         runTest {

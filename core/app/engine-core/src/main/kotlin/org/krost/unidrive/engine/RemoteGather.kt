@@ -1394,9 +1394,10 @@ class RemoteGather(
      * file new on both sides and keeps both from the sync root's copy.
      *
      * [cacheIsPlainCopy] (archive#1040 M6): the mount's enumeration says whether the cache copy of a row holds nothing but the
-     * bytes the row recorded. A hydrated row whose item arrives with other content of the SAME size is then marked not
-     * hydrated ([outlivedByContent]): the read compares sizes only, and would serve the old bytes for ever. The mirror
-     * (null) compares hashes itself.
+     * bytes the row recorded. A hydrated row whose item arrives with other content is then marked not hydrated
+     * ([outlivedByContent]): with the SAME size the read compares sizes only and would serve the old bytes for ever; with
+     * ANOTHER size (gkrost/unidrive-cli#146) the listing reported the old copy's size and the client's placeholder never
+     * learned the new one. The mirror (null) compares hashes itself.
      */
     fun updateRemoteEntries(
         remoteChanges: Map<String, CloudItem>,
@@ -1525,9 +1526,9 @@ class RemoteGather(
         return RemoteMerge(changedPaths = changed, moved = moved, replaced = replaced)
     }
 
-    // archive#1040 M6: the content of a hydrated file changed without changing its size (another device rewrote it in place), so
-    // the cache copy is a version the cloud no longer has. Judged by the content hash both sides carry (a provider without
-    // one is not covered) and only for a cache copy that is no edit: an edit is guarded by the mount's own rules.
+    // archive#1040 M6: the content of a hydrated file changed (another device rewrote or replaced it), so the cache copy is a
+    // version the cloud no longer has. Judged by the size, then by the content hash both sides carry, then by the version
+    // token, and only for a cache copy that is no edit: an edit is guarded by the mount's own rules.
     private fun outlivedByContent(
         existing: SyncEntry,
         item: CloudItem,
@@ -1537,8 +1538,10 @@ class RemoteGather(
             existing.isHydrated &&
             !existing.isFolder &&
             existing.remoteId == item.id &&
-            existing.remoteSize == item.size &&
-            ((!existing.remoteHash.isNullOrEmpty() && !item.hash.isNullOrEmpty() && existing.remoteHash != item.hash) ||
+            // gkrost/unidrive-cli#146: another size is another content whatever the hash and version say; a hydrated row reports
+            // its local size, so the client's placeholder kept the old one and every read of the new bytes failed.
+            (existing.remoteSize != item.size ||
+                (!existing.remoteHash.isNullOrEmpty() && !item.hash.isNullOrEmpty() && existing.remoteHash != item.hash) ||
                 ((existing.remoteHash.isNullOrEmpty() || item.hash.isNullOrEmpty()) &&
                     !existing.remoteVersion.isNullOrEmpty() && !item.version.isNullOrEmpty() && existing.remoteVersion != item.version) ||
                 (!existing.remoteHash.isNullOrEmpty() && existing.remoteVersion == null && item.hash == null && item.version != null)) &&
