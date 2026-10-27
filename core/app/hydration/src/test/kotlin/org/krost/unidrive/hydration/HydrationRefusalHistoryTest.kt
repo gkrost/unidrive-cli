@@ -34,17 +34,26 @@ class HydrationRefusalHistoryTest {
         }
     }
 
-    @Test
-    fun `a refused file offered again is one failed row, not one per offer`() = runTest {
-        val env = HydrationTestEnv(recoveryUploadScope = this, history = history)
-        env.stateDb.insertCreatedRow("/trashed/new.txt")
-        val cache = env.syncEngine.resolveCachePath("/trashed/new.txt")
+    private fun HydrationTestEnv.refusedFile(refusals: Int): Path {
+        stateDb.insertCreatedRow("/trashed/new.txt")
+        val cache = syncEngine.resolveCachePath("/trashed/new.txt")
         Files.createDirectories(cache.parent)
         Files.writeString(cache, "the user's bytes")
-        env.syncEngine.refuseUploadsParentGone(1, folder = "/trashed")
+        syncEngine.refuseUploadsParentGone(refusals, folder = "/trashed")
+        return cache
+    }
 
-        for (offer in 1..6) {
-            env.hydration.openForWrite("conn1", "h$offer", "/trashed/new.txt", cache)
+    // The engine's own resubmissions (`recovery-` handles) are answered from the stored refusal: they never reach the provider and
+    // add no row.
+    @Test
+    fun `a refused file resubmitted by the engine is one failed row, not one per offer`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this, history = history)
+        val cache = env.refusedFile(refusals = 1)
+
+        env.hydration.openForWrite("conn1", "h1", "/trashed/new.txt", cache)
+        advanceUntilIdle()
+        for (offer in 2..6) {
+            env.hydration.openForWrite("conn1", "recovery-$offer", "/trashed/new.txt", cache)
             advanceUntilIdle()
         }
 
@@ -54,5 +63,23 @@ class HydrationRefusalHistoryTest {
         assertEquals("/trashed/new.txt", rows.single().path)
         assertEquals("ParentGoneException", rows.single().errorClass, "the row of the real refusal")
         assertEquals(1, rows.single().attempts, "the repeats made no attempt")
+    }
+
+    // A client's own open_write is a retry (it clears the stored refusal) and reaches the provider each time; when it is refused
+    // each time, the path still has one failed row.
+    @Test
+    fun `a file whose client retries are refused each time is still one failed row`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this, history = history)
+        val cache = env.refusedFile(refusals = 999)
+
+        for (offer in 1..6) {
+            env.hydration.openForWrite("conn1", "h$offer", "/trashed/new.txt", cache)
+            advanceUntilIdle()
+        }
+
+        assertEquals(6, env.syncEngine.uploadAttempts(), "every client retry asked the provider")
+        val rows = failedRows()
+        assertEquals(1, rows.size, "one row for the path: ${rows.map { it.errorClass }}")
+        assertEquals("ParentGoneException", rows.single().errorClass)
     }
 }
