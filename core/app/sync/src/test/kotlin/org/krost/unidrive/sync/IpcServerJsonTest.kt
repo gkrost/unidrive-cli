@@ -256,6 +256,29 @@ class IpcServerJsonTest {
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
+    /** The shape logged for an unanswerable request names its size and the member names, never a value (issue#83 E). */
+    @Test
+    fun `the logged shape of a request without a usable verb carries no value text`() {
+        val line = """{"password":"hunter2","email":"person@example.com","nested":{"token":"xyz"}}"""
+
+        val shape = IpcServer.requestShape(line)
+
+        assertTrue("hunter2" !in shape, shape)
+        assertTrue("person@example.com" !in shape, shape)
+        assertTrue("xyz" !in shape, shape)
+        assertTrue("password" in shape, shape)
+        assertTrue("email" in shape, shape)
+        assertTrue(shape.startsWith("length "), shape)
+    }
+
+    @Test
+    fun `a request that is not one json object logs only its length`() {
+        val shape = IpcServer.requestShape("""{"verb":"auth.login","password":"hunter2" """)
+
+        assertTrue("not one JSON object" in shape, shape)
+        assertTrue("hunter2" !in shape, shape)
+    }
+
     private suspend fun connect(): SocketChannel {
         val deadline = System.currentTimeMillis() + 3_000
         while (true) {

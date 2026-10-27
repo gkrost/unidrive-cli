@@ -592,7 +592,7 @@ class IpcServer(
         val reply = when {
             gate != null -> gate.json
             verb == null -> {
-                log.warn("IPC: request without a usable 'verb' (missing, not a string, repeated, or not one JSON object): {}", line.take(80))
+                log.warn("IPC: request without a usable 'verb' (missing, not a string, repeated, or not one JSON object): {}", requestShape(line))
                 """{"ok":false,"error":"missing_verb"}"""
             }
             handler == null -> {
@@ -857,6 +857,17 @@ class IpcServer(
             val verb = (request as? JsonObject)?.get("verb") as? JsonPrimitive ?: return null
             return if (verb.isString) verb.content else null
         }
+
+        /**
+         * What a log may say about an unanswerable request: its length and the top-level member names. The line
+         * itself is never logged — an authenticated request can carry a password (`auth.login`), and the value of
+         * any member would put it in the log (issue#83 E).
+         */
+        internal fun requestShape(line: String): String =
+            runCatching { (Json.parseToJsonElement(line) as? JsonObject)?.keys?.joinToString(", ") { jsonString(it) } }
+                .getOrNull()
+                ?.let { "length ${line.length}, members: ${it.take(200)}" }
+                ?: "length ${line.length}, not one JSON object"
 
         // How many members of the top-level object are named [name], or -1 when the line nests
         // deeper than MAX_REQUEST_DEPTH or a string does not end. Only a count of exactly 1 on a

@@ -67,7 +67,7 @@ class LinuxSecretServiceCredentialProtector(
         stdin: String,
     ): String {
         val process =
-            runCatching { ProcessBuilder(listOf(executable) + args).start() }
+            runCatching { org.krost.unidrive.io.childProcessBuilder(listOf(executable) + args).start() }
                 .getOrElse { processFailure(it) }
         val output = CompletableFuture.supplyAsync {
             process.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }

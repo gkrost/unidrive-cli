@@ -81,10 +81,17 @@ class WindowsDpapiCredentialProtector : CredentialProtector {
         val inputBlob = blob(arena, input)
         val entropyBlob = blob(arena, entropy)
         val outputBlob = arena.allocate(DATA_BLOB)
-        if (invokeCrypt(inputBlob, entropyBlob, outputBlob, protect) == 0) {
-            throw CredentialProtectionException("Windows DPAPI failed; check the current user profile and retry")
+        try {
+            if (invokeCrypt(inputBlob, entropyBlob, outputBlob, protect) == 0) {
+                throw CredentialProtectionException("Windows DPAPI failed; check the current user profile and retry")
+            }
+            copyAndFreeOutput(outputBlob)
+        } finally {
+            // The arena holds copies of the plaintext and the entropy; scrub them before the arena frees
+            // the memory, so the bytes do not outlive the call in freed native memory (issue#83 E).
+            runCatching { zeroBlob(inputBlob) }
+            runCatching { zeroBlob(entropyBlob) }
         }
-        copyAndFreeOutput(outputBlob)
     }
 
     private fun invokeCrypt(input: MemorySegment, entropy: MemorySegment, output: MemorySegment, protect: Boolean): Int =
@@ -100,8 +107,9 @@ class WindowsDpapiCredentialProtector : CredentialProtector {
 
     private fun copyAndFreeOutput(outputBlob: MemorySegment): ByteArray {
         val output = outputBlob.get(ADDRESS, DATA_BLOB.byteOffset(MemoryLayout.PathElement.groupElement("data")))
+        var size = -1
         try {
-            val size = outputBlob.get(JAVA_INT, 0)
+            size = outputBlob.get(JAVA_INT, 0)
             if (output == MemorySegment.NULL || size < 0) {
                 throw CredentialProtectionException("Windows DPAPI returned invalid credential data")
             }
@@ -109,8 +117,23 @@ class WindowsDpapiCredentialProtector : CredentialProtector {
                 MemorySegment.copy(output.reinterpret(size.toLong()), 0, MemorySegment.ofArray(it), 0, size.toLong())
             }
         } finally {
-            if (output != MemorySegment.NULL) localFree.invoke(output)
+            if (output != MemorySegment.NULL) {
+                // DPAPI's own buffer holds the plaintext (or the ciphertext about to be re-encrypted);
+                // zero it before the free (issue#83 E).
+                runCatching { if (size > 0) output.reinterpret(size.toLong()).fill(0) }
+                localFree.invoke(output)
+            }
         }
+    }
+
+    /** Zeroes one DATA_BLOB built by [blob]: its byte payload and then the struct itself. */
+    private fun zeroBlob(blob: MemorySegment) {
+        val size = blob.get(JAVA_INT, 0)
+        if (size > 0) {
+            val data = blob.get(ADDRESS, DATA_BLOB.byteOffset(MemoryLayout.PathElement.groupElement("data")))
+            if (data != MemorySegment.NULL && size.toLong() > 0) data.reinterpret(size.toLong()).fill(0)
+        }
+        blob.fill(0)
     }
 
     private fun blob(

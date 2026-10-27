@@ -75,6 +75,15 @@ public class CredentialStore<T>(
             parsed
         } catch (e: CredentialProtectionException) {
             throw e
+        } catch (e: kotlinx.serialization.SerializationException) {
+            // A decode error's message quotes the JSON it choked on, which for a credential file is the
+            // secret itself; name the shape instead (issue#83 E).
+            log.warn(
+                "Credential file at {} is not readable ({}); discarding so the caller refreshes",
+                file,
+                describeDecodeError(e),
+            )
+            null
         } catch (e: Exception) {
             log.warn("Failed to load credentials from {}: {}", file, e.message)
             null

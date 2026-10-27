@@ -139,8 +139,9 @@ class DropboxAuthTest {
     fun `an expired flow refuses with expired`() =
         kotlinx.coroutines.runBlocking<Unit> {
             val fake = FakeDropbox()
+            // No protector: this test edits the pending-flow file as plaintext to age it past its window.
             val factory =
-                object : DropboxProviderFactory() {
+                object : DropboxProviderFactory(null) {
                     override fun newHttpClientForBegin() = io.ktor.client.HttpClient(fake.engine)
                 }
             val begun = factory.beginInteractiveAuth(dir, profile)

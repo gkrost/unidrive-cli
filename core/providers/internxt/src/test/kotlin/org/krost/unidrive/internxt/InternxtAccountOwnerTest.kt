@@ -38,13 +38,14 @@ class InternxtAccountOwnerTest {
             config = InternxtConfig(credentialProtector = null, tokenPath = dir),
             crypto =
                 object : InternxtCrypto() {
+                    // The sign-in runs on the char-based crypto overloads (issue#83 E).
                     override fun decryptMnemonic(
                         encryptedMnemonicHex: String,
-                        password: String,
+                        password: CharArray,
                     ): String = "mnemonic"
 
                     override fun hashPassword(
-                        password: String,
+                        password: CharArray,
                         sKey: String,
                         cryptoKey: String,
                     ): String = "hashed"

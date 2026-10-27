@@ -1,5 +1,6 @@
 package org.krost.unidrive.dropbox
 
+import org.krost.unidrive.auth.CredentialProtector
 import org.krost.unidrive.io.defaultTokenPath
 import java.nio.file.Path
 
@@ -22,6 +23,9 @@ data class DropboxConfig(
     val simpleUploadMaxBytes: Long = SIMPLE_UPLOAD_MAX_BYTES,
     /** The size of one upload-session append; a multiple of Dropbox's 4 MiB block. */
     val uploadChunkBytes: Int = UPLOAD_CHUNK_BYTES,
+    // issue#83 B: protects token.json and the pending sign-in at rest, as OneDriveConfig.credentialProtector does.
+    // Null keeps the owner-only plaintext file; the Android app passes its Keystore-backed protector.
+    val credentialProtector: CredentialProtector? = null,
 ) {
     companion object {
         const val API_BASE = "https://api.dropboxapi.com/2"
