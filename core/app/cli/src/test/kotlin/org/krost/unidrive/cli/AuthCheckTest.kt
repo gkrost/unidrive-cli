@@ -25,6 +25,9 @@ import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.PrintStream
+import java.net.UnknownHostException
+import java.nio.channels.UnresolvedAddressException
+import java.nio.file.AccessDeniedException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -188,6 +191,28 @@ class AuthCheckTest {
         assertEquals(0, run("auth", "check", "--json"))
 
         assertFalse("account" in json(), out.toString())
+    }
+
+    @Test
+    fun `a check that cannot reach the provider is network_error however deep the cause, as in the sign-in steps (#143)`() {
+        val cases =
+            listOf<Pair<Exception, String>>(
+                UnresolvedAddressException() to "network_error",
+                RuntimeException("wrapped", UnknownHostException("login.example.test")) to "network_error",
+                IllegalStateException("outer", RuntimeException("inner", UnresolvedAddressException())) to "network_error",
+                // The provider answered: its status decides, not the I/O failure under it.
+                RuntimeException("wrapped", ProviderException("no drive", IOException("reset"), httpStatus = 403)) to "provider_error",
+                // A local file is not the network.
+                IllegalStateException("odd", AccessDeniedException("/x/token.json")) to "provider_error",
+            )
+        val wrong = mutableListOf<String>()
+        for ((failure, token) in cases) {
+            using(CheckProvider { throw failure })
+            val code = run("auth", "check", "--json")
+            val got = errorToken()
+            if (code != 1 || got != token) wrong += "$failure (cause ${failure.cause}): $got (exit $code)"
+        }
+        assertEquals(emptyList(), wrong)
     }
 
     @Test
