@@ -31,6 +31,7 @@ import org.krost.unidrive.hydration.HydrationImpl
 import org.krost.unidrive.hydration.HydrationIpcHandler
 import org.krost.unidrive.hydration.LastSyncedResult
 import org.krost.unidrive.hydration.ListResult
+import org.krost.unidrive.hydration.RefuseNameResult
 import org.krost.unidrive.hydration.MatchesLocalResult
 import org.krost.unidrive.hydration.MkdirResult
 import org.krost.unidrive.hydration.OpenResult
@@ -1380,6 +1381,19 @@ class IpcContractCorpusTest {
         override suspend fun lastSynced(path: String): LastSyncedResult =
             if (path.startsWith("/missing")) LastSyncedResult.Unknown(HydrationError.UNKNOWN_PATH_TOKEN)
             else LastSyncedResult.Ok(FIXED_MTIME_MS)
+
+        // refuse_name (gkrost/unidrive-cli#24): `/cloud...` names a cloud row, `/folder` a folder row, `/nofolder/...` a missing parent;
+        // a clear finds a refusal only under `/refused...`.
+        override suspend fun refuseName(path: String, sibling: String?): RefuseNameResult =
+            when {
+                readOnly(path) -> RefuseNameResult.Failed(HydrationError.ReadOnly)
+                path.startsWith("/cloud") -> RefuseNameResult.InCloud
+                path == "/folder" -> RefuseNameResult.PathIsFolder
+                path.startsWith("/nofolder/") -> RefuseNameResult.ParentNotFound
+                else -> RefuseNameResult.Ok
+            }
+
+        override suspend fun clearNameRefusal(path: String): Boolean = path.startsWith("/refused")
 
         // matches_local (archive#1219): the proofs the daemon has, one path prefix each; the file name says the local file cannot be read.
         override suspend fun matchesLocal(path: String, localPath: java.nio.file.Path): MatchesLocalResult =

@@ -1770,6 +1770,22 @@ class StateDatabase(
                 }
         }
 
+    /**
+     * Takes the name block off the alive row at [pathRaw] (gkrost/unidrive-cli#24: the client's clash that caused it is over), and the
+     * `last_error_at` stamp [markNameBlocked] put with it, so the row's upload is not held back as a failed one. True when there was one.
+     */
+    fun clearNameBlock(pathRaw: String): Boolean =
+        locked("clearNameBlock") {
+            beginWrite()
+            conn
+                .prepareStatement(
+                    "UPDATE sync_entries SET name_block=NULL, last_error_at=NULL WHERE path=? AND status='EXISTS' AND name_block IS NOT NULL",
+                ).use { stmt ->
+                    stmt.setString(1, PathNormalizer.nfc(pathRaw))
+                    return stmt.executeUpdate() == 1
+                }
+        }
+
     /** The name block recorded by [markNameBlocked] for this alive row, or null. */
     fun nameBlock(pathRaw: String): NameBlock? =
         locked("nameBlock") {
@@ -2064,6 +2080,24 @@ class StateDatabase(
                 countAlive(-deleted)
                 return deleted > 0
             }
+        }
+
+    /**
+     * Deletes the alive file row at [path] while it is a `local:` row that holds no bytes (`is_hydrated=0`): the row of a name a client
+     * refused before anything of it reached the engine (gkrost/unidrive-cli#24). A row with a real remote id, or one with a cache copy,
+     * is never touched here. True when a row went away.
+     */
+    fun deleteLocalEmptyRow(path: String): Boolean =
+        locked("deleteLocalEmptyRow") {
+            conn
+                .prepareStatement(
+                    "DELETE FROM sync_entries WHERE path=? AND status='EXISTS' AND remote_id GLOB 'local:*' AND is_folder=0 AND is_hydrated=0",
+                ).use { stmt ->
+                    stmt.setString(1, PathNormalizer.nfc(path))
+                    val deleted = stmt.executeUpdate()
+                    countAlive(-deleted)
+                    return deleted > 0
+                }
         }
 
     fun pendingUploadRows(): List<PendingUploadRow> =

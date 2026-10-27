@@ -93,6 +93,19 @@ import java.util.concurrent.atomic.AtomicLong
  *               spelling (composed / decomposed) than the one a client used for it first in this daemon run: both are one
  *               row and one cloud path, so the second would overwrite or delete the first. Rename one of them.
  *
+ *   refuse_name (gkrost/unidrive-cli#24) request: {"verb":"hydration.refuse_name","path":"/café.txt"[,"sibling":"café.txt"]}
+ *               the client does not upload this file: another file of its folder (sibling, its name as spelled on disk) is the
+ *               same name after NFC. Kept as a row blocked by name (blocked:"name_collides_after_normalisation" in list,
+ *               uploads.blocked in daemon.status); never pending, never replayed. Idempotent.
+ *               reply:    {"ok":true}
+ *                         {"ok":false,"error":"path_exists"}        the cloud has the name: its row is not marked
+ *                         {"ok":false,"error":"path_is_folder"}     only files are refused this way
+ *                         {"ok":false,"error":"parent_not_found"}   no folder row above it
+ *                         {"ok":false,"error":"read_only"|"outside_scope"|"invalid_path"}
+ *               request:  {"verb":"hydration.refuse_name","path":"/café.txt","clear":true}  the clash is over
+ *               reply:    {"ok":true,"cleared":true|false}   false: there was no such refusal (idempotent)
+ *               daemon.status lists "hydration.refuse_name" in capabilities on an engine that answers it.
+ *
  *   create      request:  {"verb":"hydration.create",["handle_id":"...",]"path":"/foo.txt"}
  *               (handle_id absent: the daemon issues it, as for open_write)
  *               reply:    {"ok":true,"cache_path":"/home/.../foo.txt","handle_id":"..."}
@@ -323,8 +336,12 @@ class HydrationIpcHandler(
             "hydration.create",
             "hydration.rename",
             "hydration.cancel",
+            REFUSE_NAME,
             VIEW_PAGE,
         )
+
+        /** A file the client does not upload for its twin, recorded and cleared (gkrost/unidrive-cli#24); also the daemon.status capability. */
+        const val REFUSE_NAME = "hydration.refuse_name"
 
         /** One page of a read-only view for a front-end's own list (the Recents list's "more" button). */
         const val VIEW_PAGE = "view.page"
@@ -539,6 +556,20 @@ class HydrationIpcHandler(
                     CreateResult.ParentNotFound -> reply(ok = false, error = "parent_not_found")
                     CreateResult.PathExists -> reply(ok = false, error = "path_exists")
                     is CreateResult.Failed -> reply(ok = false, error = r.error.message)
+                }
+            }
+            REFUSE_NAME -> {
+                // Not guarded by name_clash: two spellings of one name are exactly what this verb reports.
+                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
+                if (pluckBool(jsonRequest, "clear") == true) {
+                    return """{"ok":true,"cleared":${hydration.clearNameRefusal(path)}}"""
+                }
+                when (val r = hydration.refuseName(path, pluck(jsonRequest, "sibling")?.takeIf { it.isNotEmpty() })) {
+                    RefuseNameResult.Ok -> reply(ok = true)
+                    RefuseNameResult.InCloud -> reply(ok = false, error = "path_exists")
+                    RefuseNameResult.PathIsFolder -> reply(ok = false, error = "path_is_folder")
+                    RefuseNameResult.ParentNotFound -> reply(ok = false, error = "parent_not_found")
+                    is RefuseNameResult.Failed -> reply(ok = false, error = r.error.message)
                 }
             }
             "hydration.rename" -> {

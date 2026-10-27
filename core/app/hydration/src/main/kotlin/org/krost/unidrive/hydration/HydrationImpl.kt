@@ -1282,6 +1282,7 @@ class HydrationImpl(
             // point, so a stop is only honoured if the loop itself checks for it.
             coroutineContext.ensureActive()
             val cachePath = cacheCopy(pass, path) ?: continue
+            if (refusedForTwin(path)) continue // gkrost/unidrive-cli#24: one spelling's bytes under the name both share
             if (refusedEarlier(path, cachePath) != null) { refused++; continue } // archive#493: not replayed at every start
             if (failedReplayDelayMs > 0 && stateDb.getEntry(path)?.lastErrorAt != null) {
                 deferred++
@@ -1434,7 +1435,7 @@ class HydrationImpl(
     fun pendingUploadSplit(): PendingUploads.Split =
         PendingUploads.split(
             stateDb.pendingUploadRows(),
-            ::skipsReplay,
+            { skipsReplay(it) || refusedForTwin(it) },
             PendingUploads.localCopyCheck(mount.hydrationCacheDir(), mount.localRoot()),
         )
 
@@ -2757,6 +2758,64 @@ class HydrationImpl(
             }
         }
     }
+
+    // gkrost/unidrive-cli#24: the client holds two files whose names are one name after NFC and uploads neither (the owner's
+    // decision of 2026-10-03). Without a row here nothing said so: the file was in no count, no listing and no status. The
+    // refusal is kept through the channel of the drive's own name refusals (name_block): a row that exists only here gets the
+    // block; a name without a row gets one that holds no bytes (is_hydrated=0, so no pending count, replay or drop touches it).
+    // A cloud row is never marked: a blocked row's delete and rename are local-only (MountEngine.remoteItemOrNull).
+    override suspend fun refuseName(
+        path: String,
+        sibling: String?,
+    ): RefuseNameResult {
+        val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
+        if (normalised == "/" || !resolvesInsideCache(normalised)) return RefuseNameResult.Failed(HydrationError.InvalidPath)
+        val mutex = createMutexes.computeIfAbsent(normalised) { Mutex() }
+        return mutex.withLock {
+            if (mount.isReadOnlyPath(normalised)) return@withLock RefuseNameResult.Failed(HydrationError.ReadOnly)
+            if (mount.isOutOfScope(normalised)) return@withLock RefuseNameResult.Failed(HydrationError.OutOfScope)
+            val existing = stateDb.getEntry(normalised)
+            when {
+                existing?.isFolder == true -> return@withLock RefuseNameResult.PathIsFolder
+                existing?.remoteId != null -> return@withLock RefuseNameResult.InCloud
+                existing == null -> {
+                    val parent = normalised.substringBeforeLast('/', missingDelimiterValue = "")
+                    if (parent.isNotEmpty() && stateDb.getEntry(parent)?.isFolder != true) return@withLock RefuseNameResult.ParentNotFound
+                    stateDb.upsertEntry(
+                        org.krost.unidrive.sync.model.SyncEntry(
+                            path = normalised,
+                            remoteId = null,
+                            remoteHash = null,
+                            remoteSize = 0L,
+                            remoteModified = null,
+                            localMtime = null,
+                            localSize = null,
+                            isFolder = false,
+                            isPinned = false,
+                            isHydrated = false,
+                            lastSynced = java.time.Instant.now(),
+                        ),
+                    )
+                }
+            }
+            stateDb.markNameBlocked(normalised, HydrationError.NAME_COLLIDES_TOKEN, sibling)
+            log.info("upload of {} refused by the client: another file of its folder is the same name after NFC", CachePaths.forLog(normalised))
+            RefuseNameResult.Ok
+        }
+    }
+
+    override suspend fun clearNameRefusal(path: String): Boolean {
+        val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
+        val mutex = createMutexes.computeIfAbsent(normalised) { Mutex() }
+        return mutex.withLock {
+            if (stateDb.nameBlock(normalised)?.reason != HydrationError.NAME_COLLIDES_TOKEN) return@withLock false
+            // A row that is only the refusal goes; one with bytes in the cache (created before its twin arrived) keeps them.
+            stateDb.deleteLocalEmptyRow(normalised) || stateDb.clearNameBlock(normalised)
+        }
+    }
+
+    // A row the client refused for its twin (refuseName): not waiting for an upload, and never replayed while the refusal stands.
+    private fun refusedForTwin(path: String): Boolean = stateDb.nameBlock(path)?.reason == HydrationError.NAME_COLLIDES_TOKEN
 
     override suspend fun rename(
         oldPath: String,

@@ -220,6 +220,8 @@ class IpcAuth(
                     // Changes nothing, but reads a local file the CALLER names and answers whether it is the cloud's: not for a read-scope
                     // client (a status UI), which would have an oracle over any file of the user (archive#1219).
                     "hydration.matches_local",
+                    // Records or clears a client's refusal of a file for its twin (gkrost/unidrive-cli#24): a write to state.db.
+                    "hydration.refuse_name",
                 ).forEach { put(it, VerbClass.WRITE) }
                 listOf("daemon.shutdown", "daemon.pause", "daemon.resume", "refresh.run", "auth.logout").forEach { put(it, VerbClass.ADMIN) }
                 // The sign-in steps carry a password or a code in their body: owner-only (full scope), like auth.logout. auth.check carries nothing
