@@ -519,7 +519,7 @@ private class PageTokenGuard(
     }
 
     companion object {
-        // A thousand-page listing is ten million keys: far above any bucket this holds a cursor into.
+        // A 10,000-page listing is ten million keys (1,000 a page): far above any bucket this holds a cursor into.
         private const val MAX_PAGES = 10_000
     }
 }

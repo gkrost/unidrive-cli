@@ -1350,7 +1350,7 @@ class GraphApiService(
         private const val DEFAULT_BACKOFF_START_MS = 2_000L
         private const val MAX_FLAKE_ATTEMPTS = 3
 
-        // A thousand-page listing is a million children: far above any folder this holds a link into (#82 F).
+        // A 10,000-page listing is ten million children (999 a page): far above any folder this holds a link into (#82 F).
         private const val MAX_PAGES = 10_000
 
         // The waits before the retries of one chunk (archive#1175: a dropped connection is retried as a chunk, not as an attempt).

@@ -738,7 +738,7 @@ class DropboxProvider(
         private const val HTTP_NOT_FOUND = 404
         private const val LIST_LIMIT = 2000
 
-        // A thousand-page listing is two million entries: far above any folder this holds a cursor into.
+        // A 10,000-page listing is twenty million entries (2,000 a page): far above any folder this holds a cursor into.
         private const val MAX_PAGES = 10_000
         private const val LONGPOLL_TIMEOUT_S = 480
         private const val IDLE_POLL_MS = 5_000L
