@@ -3,26 +3,15 @@ package org.krost.unidrive.sync
 import org.krost.unidrive.PlanLimitException
 
 /**
- * The refusal [StateDatabase.markUploadRefused] keeps on a row, read the same way by every reader (the mirror's recovery scan,
- * `status`). It starts with the watermark `<mtime>|<size>|` of the refused bytes and holds only for exactly those bytes.
+ * The refusal [StateDatabase.markUploadRefused] keeps on a row, as `status` reads it. It starts with the watermark
+ * `<mtime>|<size>|` of the refused bytes and holds only for exactly those bytes.
  *
- * gkrost/unidrive-cli#145: a refusal by the provider's plan (`plan_limit`) is not for ever: the user may upgrade the plan. It is
- * written as `<mtime>|<size>|<retry at, epoch ms>|plan_limit[: <sentence>]` (the form the mount's refusals already have) and
- * stops holding at that instant, so the unchanged file is offered once more. Every other refusal keeps holding until the
- * content changes, as before.
+ * gkrost/unidrive-cli#145: a refusal by the provider's plan (`plan_limit`) is not for ever: the user may upgrade the plan.
+ * The mirror's SyncEngine and the mount write it as `<mtime>|<size>|<retry at, epoch ms>|plan_limit[: <sentence>]`, and it
+ * stops holding at that instant, so the unchanged file is offered once more (the mirror's Reconciler applies the same
+ * rule). Every other refusal keeps holding until the content changes, as before.
  */
 object UploadRefusals {
-    /** How long a plan's refusal holds before the same bytes are offered again (the mount's refusal deadline, 6 h). */
-    const val PLAN_LIMIT_RETRY_AFTER_MS: Long = 6L * 60 * 60 * 1000
-
-    /** The stamp of a plan's refusal of the bytes `<mtime>|<size>` that holds until [retryAtMs]. */
-    fun planLimitStamp(
-        mtime: Long?,
-        size: Long?,
-        retryAtMs: Long,
-        e: PlanLimitException,
-    ): String = "$mtime|$size|$retryAtMs|${e.reason}"
-
     /** Whether [refusal] still holds for the bytes `<mtime>|<size>` at [nowMs]. */
     fun holds(
         refusal: String?,

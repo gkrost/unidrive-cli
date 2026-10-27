@@ -120,30 +120,60 @@ class SyncEngineTest {
             assertEquals(2, provider.uploadAttempts.size, "changed content gets one fresh attempt")
         }
 
-    // gkrost/unidrive-cli#145: a plan's refusal (402) is skipped like any other until its deadline, then the unchanged file is
-    // offered once more (the user may have upgraded the plan); other refusals keep holding (the test above).
     @Test
-    fun `a plan-limit refusal is skipped until its deadline and then offered again unchanged`() =
+    fun `a plan refusal is retried after its deadline without changing the file`() =
         runTest {
             provider.deltaItems = emptyList()
-            val local = syncRoot.resolve("empty.txt")
+            val local = syncRoot.resolve("plan.txt")
             Files.writeString(local, "")
-            provider.uploadThrowByPath["/empty.txt"] = org.krost.unidrive.PlanLimitException("402", detail = "upgrade your plan")
-
+            provider.uploadThrowByPath["/plan.txt"] = PlanLimitException("plan refusal")
             engine.syncOnce()
-            val refusal = assertNotNull(db.uploadRefusal("/empty.txt"))
-            assertTrue(refusal.endsWith("|plan_limit: upgrade your plan"), refusal)
+            assertEquals(1, provider.uploadAttempts.size)
             engine.syncOnce()
-            assertEquals(listOf("/empty.txt"), provider.uploadAttempts, "before the deadline the same bytes are not sent again")
-
-            // The deadline passes: the stamp keeps the watermark, its retry instant lies in the past.
-            val watermark = refusal.substringBefore("|plan_limit").substringBeforeLast('|')
-            assertTrue(db.markUploadRefused("/empty.txt", "$watermark|${System.currentTimeMillis() - 1}|plan_limit: upgrade your plan"))
-            provider.uploadThrowByPath.remove("/empty.txt")
+            assertEquals(1, provider.uploadAttempts.size)
+            val refusal = assertNotNull(db.uploadRefusal("/plan.txt"))
+            val parts = refusal.split('|', limit = 4)
+            assertEquals("plan_limit", parts.last())
+            assertTrue(db.markUploadRefused("/plan.txt", "${parts[0]}|${parts[1]}|0|plan_limit"))
+            provider.uploadThrowByPath.remove("/plan.txt")
             engine.syncOnce()
+            assertEquals(2, provider.uploadAttempts.size)
+            assertTrue(provider.uploadedPaths.contains("/plan.txt"))
+        }
 
-            assertEquals(listOf("/empty.txt", "/empty.txt"), provider.uploadAttempts, "the unchanged file is offered again after the deadline")
-            assertTrue(provider.uploadedPaths.contains("/empty.txt"))
+    @Test
+    fun `an existing file refused by a plan is retried after its deadline`() =
+        runTest {
+            provider.deltaItems = listOf(cloudItem("/existing.txt", size = 3))
+            provider.files["/existing.txt"] = "old".toByteArray()
+            engine.syncOnce()
+            Files.writeString(syncRoot.resolve("existing.txt"), "")
+            provider.uploadThrowByPath["/existing.txt"] = PlanLimitException("plan refusal")
+            engine.syncOnce()
+            assertEquals(1, provider.uploadAttempts.size)
+            engine.syncOnce()
+            assertEquals(1, provider.uploadAttempts.size, "the refused content is not retried before its deadline")
+            val parts = assertNotNull(db.uploadRefusal("/existing.txt")).split('|', limit = 4)
+            assertEquals("plan_limit", parts.last())
+            assertTrue(db.markUploadRefused("/existing.txt", "${parts[0]}|${parts[1]}|0|plan_limit", keepCloudBaseline = true))
+            provider.uploadThrowByPath.remove("/existing.txt")
+            engine.syncOnce()
+            assertEquals(2, provider.uploadAttempts.size)
+        }
+
+    @Test
+    fun `a remote change after a refused edit does not overwrite the local bytes`() =
+        runTest {
+            provider.deltaItems = listOf(cloudItem("/existing.txt", size = 3))
+            provider.files["/existing.txt"] = "old".toByteArray()
+            engine.syncOnce()
+            Files.writeString(syncRoot.resolve("existing.txt"), "")
+            provider.uploadThrowByPath["/existing.txt"] = PlanLimitException("plan refusal")
+            engine.syncOnce()
+            provider.files["/existing.txt"] = "remote".toByteArray()
+            provider.deltaItems = listOf(cloudItem("/existing.txt", size = 6, hash = "new-remote-hash"))
+            engine.syncOnce()
+            assertTrue(Files.walk(syncRoot).use { paths -> paths.anyMatch { Files.isRegularFile(it) && Files.size(it) == 0L } }, "the refused bytes remain available")
         }
 
     @Test

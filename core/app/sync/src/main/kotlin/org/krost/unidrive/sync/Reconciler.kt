@@ -43,6 +43,29 @@ private fun remoteMetadataChanged(remoteItem: CloudItem, entry: SyncEntry): Bool
 
 private fun remoteHashChanged(remote: String?, recorded: String?): Boolean = remote != null && recorded != null && remote != recorded
 
+internal const val PLAN_REFUSAL_TOKEN = "plan_limit"
+internal const val PLAN_REFUSAL_DELAY_MS = 6L * 60 * 60 * 1000
+
+// A plan refusal is tied to the refused bytes and expires so a plan upgrade is eventually observed.
+private fun activePlanRefusal(db: StateDatabase, root: Path, path: String): Boolean {
+    val parts = db.uploadRefusal(path)?.split('|', limit = 4) ?: return false
+    if (parts.size != 4 || parts[3] != PLAN_REFUSAL_TOKEN) return false
+    val deadline = parts[2].toLongOrNull() ?: return false
+    if (System.currentTimeMillis() >= deadline) return false
+    val local = safeResolveLocalOrNull(root, path) ?: return false
+    return runCatching {
+        val attrs = Files.readAttributes(local, BasicFileAttributes::class.java)
+        attrs.isRegularFile && attrs.lastModifiedTime().toMillis().toString() == parts[0] && attrs.size().toString() == parts[1]
+    }.getOrDefault(false)
+}
+
+private fun skipRefusedPending(db: StateDatabase, root: Path, entry: SyncEntry): Boolean {
+    val refusal = db.uploadRefusal(entry.path) ?: return false
+    if (!refusal.startsWith("${entry.localMtime}|${entry.localSize}|")) return false
+    val parts = refusal.split('|', limit = 4)
+    return if (parts.size == 4 && parts[3] == PLAN_REFUSAL_TOKEN) activePlanRefusal(db, root, entry.path) else true
+}
+
 class Reconciler(
     private val db: StateDatabase,
     private val syncRoot: Path,
@@ -274,6 +297,7 @@ class Reconciler(
 
             // Skip if nothing changed on either side
             if (remoteState == ChangeState.UNCHANGED && localState == ChangeState.UNCHANGED) continue
+            if (remoteState == ChangeState.UNCHANGED && localState == ChangeState.MODIFIED && activePlanRefusal(db, syncRoot, path)) continue
 
             val action = resolveAction(path, localState, remoteState, remoteItem, entry, pinRules, alias, downloadOnly)
             if (action != null) actions.add(action)
@@ -350,7 +374,7 @@ class Reconciler(
             // real bytes to upload and belongs to the download-recovery lane above.
             if (!entry.isPendingUpload) continue
             if (entry.path in coveredPaths) continue
-            if (UploadRefusals.holds(db.uploadRefusal(entry.path), entry.localMtime, entry.localSize)) continue
+            if (skipRefusedPending(db, syncRoot, entry)) continue
             if (excludePatterns.any { matchesGlob(entry.path, it) } || isIgnored(entry.path, false)) continue
             // UD-901a: same scope guard as the UD-225 loop above.
             if (!SyncScope.contains(entry.path, syncPaths)) continue
@@ -505,6 +529,7 @@ class Reconciler(
                 }
 
             if (remoteState == ChangeState.UNCHANGED && localState == ChangeState.UNCHANGED) continue
+            if (remoteState == ChangeState.UNCHANGED && localState == ChangeState.MODIFIED && activePlanRefusal(db, syncRoot, path)) continue
             val action = resolveAction(path, localState, remoteState, remoteItem, entry, pinRules, alias, downloadOnly)
             if (action != null) actions.add(action)
         }
@@ -599,7 +624,7 @@ class Reconciler(
             // no bytes to upload — see the first UD-901 loop).
             if (!entry.isPendingUpload) continue
             if (entry.path in coveredPaths) continue
-            if (UploadRefusals.holds(db.uploadRefusal(entry.path), entry.localMtime, entry.localSize)) continue
+            if (skipRefusedPending(db, syncRoot, entry)) continue
             if (excludePatterns.any { matchesGlob(entry.path, it) } || isIgnored(entry.path, false)) continue
             if (!SyncScope.contains(entry.path, syncPaths)) continue
             // archive#526: an unresolvable name must not abort the recovery loop — skip the row.
