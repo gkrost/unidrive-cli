@@ -43,7 +43,9 @@ private fun remoteMetadataChanged(remoteItem: CloudItem, entry: SyncEntry): Bool
 
 private fun remoteHashChanged(remote: String?, recorded: String?): Boolean = remote != null && recorded != null && remote != recorded
 
-internal const val PLAN_REFUSAL_TOKEN = "plan_limit"
+// The mirror stamps the bare token (SyncEngine.handlePermanentUploadFailure); a mount's `plan_limit: <sentence>` keeps its
+// own deadline in the hydration layer's replay and is skipped here like any other refusal.
+internal const val PLAN_REFUSAL_TOKEN = org.krost.unidrive.PlanLimitException.REASON
 internal const val PLAN_REFUSAL_DELAY_MS = 6L * 60 * 60 * 1000
 
 // A plan refusal is tied to the refused bytes and expires so a plan upgrade is eventually observed.
