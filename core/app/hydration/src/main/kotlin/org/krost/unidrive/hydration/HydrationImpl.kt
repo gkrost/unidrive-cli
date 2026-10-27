@@ -868,7 +868,7 @@ class HydrationImpl(
         var (path, cachePath) = followed(slot, submittedPath, submittedCachePath, followsRenames)
         // A client retry clears the refusal only once it holds the path's upload slot: an earlier in-flight
         // upload may otherwise record its refusal after open_write cleared it. Recovery replays keep the refusal.
-        if (!handleId.startsWith("recovery-")) runCatching { stateDb.clearUploadRefusal(path) }
+        clearRefusalOfClientRetry(path, handleId)
         // archive#493: the provider refused exactly these bytes before; asking again would be refused again.
         refusedEarlier(path, cachePath)?.let { reason ->
             val err = HydrationError.ParentGone.parse(reason) ?: HydrationError.Generic("refused earlier: $reason")
@@ -1040,6 +1040,14 @@ class HydrationImpl(
         _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
         log.info("upload of {} not attempted: {}", path, err.message)
         return HydrationEvent.Completed(path = path, handleId = handleId, direction = HydrationEvent.Completed.Direction.UPLOAD, ok = false, error = err)
+    }
+
+    // The refusal a client's own retry (not the engine's `recovery-` replay) must not be answered from (gkrost/unidrive-cli#134).
+    private fun clearRefusalOfClientRetry(
+        path: String,
+        handleId: String,
+    ) {
+        if (!handleId.startsWith("recovery-")) runCatching { stateDb.clearUploadRefusal(path) }
     }
 
     /** A refusal of the request itself (archive#493): the row remembers it with the content's stamp, and nothing is retried. */
