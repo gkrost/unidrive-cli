@@ -46,6 +46,41 @@ class InternxtNameRoundTripTest {
     @Test
     fun `a name with a space before the extension round trips`() = assertRoundTrips("Scan 1 .pdf")
 
+    // #144: the golden unicode run's ` leading space.txt` came back as `leading space.txt`.
+    @Test
+    fun `a name with a leading space round trips`() = assertRoundTrips(" leading space.txt")
+
+    @Test
+    fun `a name with a trailing space round trips`() = assertRoundTrips("trailing space.txt ")
+
+    @Test
+    fun `a folder with a leading space is listed, walked and created into under its own name`() =
+        runTest {
+            val tmp = Files.createTempDirectory("ud-name-rt-")
+            try {
+                val drive = UploadDrive()
+                drive.folders += UploadDriveFolder("fs", " spaced", "root-folder-uuid")
+                drive.files += UploadDriveFile("x0", "in", "txt", 1, "f0", "fs")
+                val provider = rootedInternxtProvider(tmp, drive.engine)
+                try {
+                    assertEquals(listOf(" spaced"), provider.listChildren("/").map { it.name })
+                    assertEquals(listOf("in.txt"), provider.listChildren("/ spaced").map { it.name })
+                    assertEquals("fs", provider.getMetadata("/ spaced").id)
+                    // A folder created under a leading-space name is found again by the same name (the cache key and the
+                    // listing's comparison agree), and the walk under it reaches the folder, not a trimmed twin.
+                    val made = provider.createFolder("/ new dir")
+                    assertEquals(" new dir", made.name)
+                    val inner = provider.createFolder("/ new dir/inner")
+                    assertEquals(made.id, drive.folders.single { it.uuid == inner.id }.parentUuid)
+                    assertEquals(listOf(" new dir", " spaced"), provider.listChildren("/").map { it.name }.sorted())
+                } finally {
+                    provider.close()
+                }
+            } finally {
+                tmp.toFile().deleteRecursively()
+            }
+        }
+
     @Test
     fun `a plain extension round trips`() = assertRoundTrips("report.pdf")
 
