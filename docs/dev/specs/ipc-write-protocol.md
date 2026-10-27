@@ -253,6 +253,29 @@ that holds both as two files would have the second one's bytes replace the first
   persisted spelling needs a state.db column and is not built (#24 stays open for it). `HydrationIpcHandler` and
   `NameSpellings` hold the rule.
 
+**A refusal that shows (`hydration.refuse_name`).** A client that sees both spellings on disk uploads neither, so no
+mutating verb ever reaches the daemon and nothing above applies; without more, the files are in no count, listing or
+status (golden run of 2026-10-27, #24). Such a client records the refusal instead:
+
+```
+hydration.refuse_name {path, sibling?}   -> {"ok":true}
+hydration.refuse_name {path, clear:true} -> {"ok":true,"cleared":true|false}
+```
+
+- `path` is the file's engine path (NFC, as always), `sibling` the other file's name as the client spells it on disk.
+  The daemon keeps the refusal as a row blocked by name with the reason `name_collides_after_normalisation`: `blocked`
+  on the `hydration.list` entry and an item of `uploads.blocked` in `daemon.status`, like a drive's own `similar_name`.
+  Such a row is never pending, never replayed at a start and never dropped as gone. Refusing again is the same
+  refusal (the newest sibling is named).
+- A name without a row gets a row that holds no bytes. A never-uploaded row (its file was created before the twin
+  arrived) keeps its bytes and is marked. A cloud row is not marked (`path_exists`): a blocked row's delete and rename
+  stay local, which a cloud item must not. Only files: a folder is `path_is_folder`, a missing parent `parent_not_found`.
+- `clear` when the clash is over (one of the two renamed or deleted): a row that was only the refusal goes, a marked row
+  keeps its bytes and waits for its upload again. A client clears before it creates the name: the refusal's row would
+  otherwise answer that create with `path_exists`.
+- `daemon.status` lists `hydration.refuse_name` in `capabilities` on an engine that answers the verb; a client sends it
+  only then, and keeps the refusal to itself on an older engine.
+
 ## 4. Events (subscription stream)
 
 | Event | Shape | Meaning |
@@ -527,6 +550,7 @@ still leave a remote item; the caller follows with the row-level verb
 | `excluded` | completed event, rename | keep-local name, never uploaded; a rename of a row that has a cloud copy onto such a name is refused with it (the row and the remote are untouched, `HydrationImpl.rename`) |
 | `cancelled` | completed event | upload aborted by hydration.cancel |
 | `similar_name[: <sibling>]` | failed and completed events, `hydration.list` (`blocked`) | the drive compares the entry's name as equal to a sibling's and refused it under its own name and under a server name; the local file is kept, nothing is retried. `: <sibling>` names the conflicting sibling when known |
+| `name_collides_after_normalisation` | `hydration.list` (`blocked`), `daemon.status` (`uploads.blocked`) | a client refused to upload the file because another file of its folder is the same name after NFC (`hydration.refuse_name`, section 3.9); the file stays local, nothing is retried until the client clears it |
 | `blocked_by_parent: <path>` | failed and completed events, `hydration.list` (`blocked`) | a folder above the entry was refused by name and exists only in this mount; no request was made for the entry |
 | `parent_gone: <path>` | failed and completed events of an upload (`retry_scheduled:false`) | the folder the file goes into is gone in the cloud (trashed or deleted elsewhere, often before the drive's change feed reports it): the provider listed the folder above `<path>` successfully and `<path>` was not in it. `<path>` is the first folder of the file's path that was not found (the file's own folder or one above it). A listing that failed is never this. The upload is not retried; the same bytes are not sent again at a daemon start or a resubmission (a resubmission is answered with the same token without a request); new content of the file is. The bytes stay in the cache, the row shows the failure (`error` in `hydration.list`). A client shows the file as failed because its folder was deleted in the cloud, and keeps the local copy. A client matches the token up to `": "`; one that does not know the token sees a failed upload that is not retried, as before the token existed. Pinned by `events/failed-parent-gone.ndjson` and `events/completed-parent-gone.ndjson` |
 | `not_found` | open_read, hydrate (and their `failed` / `completed` events) | the cloud object is gone: the provider answered a stable "not found" for it, so no download can succeed until the row is refreshed. It means only that; a file that exists in the cloud but cannot be served carries one of the tokens below |

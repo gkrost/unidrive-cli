@@ -44,6 +44,9 @@ internal const val RUNNING_UPLOADS_CAPABILITY = "uploads.running"
 /** The `daemon.status` capability that says the daemon answers `hydration.matches_local` (archive#1219). */
 internal const val MATCHES_LOCAL_CAPABILITY = "hydration.matches_local"
 
+/** The `daemon.status` capability that says the daemon answers `hydration.refuse_name` (gkrost/unidrive-cli#24). */
+internal const val REFUSE_NAME_CAPABILITY = "hydration.refuse_name"
+
 /**
  * `uploads.running` (archive#1200): the uploads holding a transfer permit right now, present only while there is one. `count` is all
  * of them, `items` the first [HydrationImpl.RUNNING_ITEMS_CAP] by start time, `more` the rest. Each item: `path`,

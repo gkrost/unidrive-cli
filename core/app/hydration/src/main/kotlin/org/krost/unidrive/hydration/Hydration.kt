@@ -84,6 +84,23 @@ interface Hydration {
     ): MatchesLocalResult = MatchesLocalResult.Unknown("not_supported")
 
     /**
+     * The client does not upload the file [path] because a file of its folder, [sibling] (its name as the client spells it), is the same
+     * name after NFC (`hydration.refuse_name`, gkrost/unidrive-cli#24). The refusal is kept as a row blocked by name
+     * ([HydrationError.NAME_COLLIDES_TOKEN]), so the status and `hydration.list` show the file is not in the cloud and why. Idempotent.
+     * The default refuses the request for a front-end without state.
+     */
+    suspend fun refuseName(
+        path: String,
+        sibling: String?,
+    ): RefuseNameResult = RefuseNameResult.Failed(HydrationError.Generic("not_supported"))
+
+    /**
+     * The clash of [path] is over (one of the two files was renamed or deleted): its refusal goes. A row that was only the refusal is
+     * removed; a row that holds bytes keeps them and waits for its upload again. True when there was a refusal to clear.
+     */
+    suspend fun clearNameRefusal(path: String): Boolean = false
+
+    /**
      * One page of the read-only view [kind] (its wire name, `recents`, ...) for a front-end's own list: the provider's
      * references from [offset] on, at most [limit], as the real rows (`view.page`, ipc-write-protocol.md section 4.2).
      * [ViewPageResult.UnknownView] when the profile shows no such view (a layer without views answers that for every kind).
@@ -296,6 +313,20 @@ sealed class CreateResult {
     data class Failed(val error: HydrationError) : CreateResult()
     data object ParentNotFound : CreateResult()
     data object PathExists : CreateResult()
+}
+
+/** The answer of `hydration.refuse_name` (gkrost/unidrive-cli#24). */
+sealed class RefuseNameResult {
+    data object Ok : RefuseNameResult()
+
+    /** The cloud has the name already: its row is the cloud item's and is not marked (a block would make its delete and rename local-only). */
+    data object InCloud : RefuseNameResult()
+
+    data object PathIsFolder : RefuseNameResult()
+
+    data object ParentNotFound : RefuseNameResult()
+
+    data class Failed(val error: HydrationError) : RefuseNameResult()
 }
 
 sealed class RenameResult {

@@ -652,10 +652,11 @@ class DaemonRuntime(
                     // `views` is a capability only where the profile shows a view: a daemon without one answers as it always did.
                     // `view_page` with it: such a daemon answers view.page for its views.
                     // `notifications.status` (archive#111): this reply carries the `notifications` object.
+                    // `hydration.refuse_name` (gkrost/unidrive-cli#24): the daemon records a client's refusal of a twin.
                     val capabilitiesJson = kotlinx.serialization.json.JsonArray(
                         (
                             profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-                                (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY)) +
+                                (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY)) +
                                 (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page"))
                         )
                             .map { kotlinx.serialization.json.JsonPrimitive(it) },

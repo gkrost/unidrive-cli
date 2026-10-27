@@ -388,6 +388,7 @@ class DaemonRuntimeTest {
                     """{"verb":"hydration.cancel","path":"/startup/cancel.txt"}""",
                     """{"verb":"hydration.create","handle_id":"h4","path":"/startup/create.txt"}""",
                     """{"verb":"hydration.rename","old_path":"/startup/r1.txt","new_path":"/startup/r2.txt"}""",
+                    """{"verb":"hydration.refuse_name","path":"/startup/twin.txt","sibling":"Twin.txt"}""", // gkrost/unidrive-cli#24
                     """{"verb":"sync.subscribe"}""",
                     """{"verb":"history.list"}""",
                     """{"verb":"history.subscribe"}""",

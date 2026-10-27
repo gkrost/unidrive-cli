@@ -334,7 +334,7 @@ class IpcAuthTest {
             setOf(
                 "hydration.hydrate", "hydration.dehydrate", "hydration.create", "hydration.open_write", "hydration.open_write_begin",
                 "hydration.close_handle", "hydration.mkdir", "hydration.unlink", "hydration.rmdir", "hydration.rename",
-                "hydration.cancel", "sync.enumerate", "hydration.matches_local",
+                "hydration.cancel", "sync.enumerate", "hydration.matches_local", "hydration.refuse_name",
             )
         val admin = setOf("daemon.shutdown", "daemon.pause", "daemon.resume", "refresh.run", "auth.logout", "auth.begin", "auth.complete", "auth.login", "auth.check")
         assertEquals(read, IpcAuth.VERB_CLASSES.filterValues { it == IpcAuth.VerbClass.READ }.keys)

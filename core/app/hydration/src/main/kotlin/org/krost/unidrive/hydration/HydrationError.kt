@@ -276,6 +276,12 @@ sealed interface HydrationError {
         /** Wire token for a name given in another Unicode spelling than the one a client used for it first (gkrost/unidrive-cli#24). */
         const val NAME_CLASH_TOKEN = "name_clash"
 
+        /**
+         * The reason of a row a client refused to upload because another file of its folder is the same name after NFC
+         * (`hydration.refuse_name`, gkrost/unidrive-cli#24): `blocked` in `hydration.list`, `uploads.blocked` in the status.
+         */
+        const val NAME_COLLIDES_TOKEN = "name_collides_after_normalisation"
+
         /** Wire token for [Paused]. */
         const val PAUSED_TOKEN = "paused"
     }
