@@ -43,7 +43,10 @@ object UploadRefusals {
         return refusal?.takeIf { it.startsWith(watermark) }?.substring(watermark.length)
     }
 
-    // The deadline of a plan's refusal (`<retry at>|plan_limit…`); null for any other refusal, which has none here.
+    // The deadline of a plan's refusal (`<retry at>|plan_limit[: <sentence>]`); null for any other refusal, which has none here.
     private fun planLimitDeadline(rest: String): Long? =
-        rest.substringBefore('|').toLongOrNull()?.takeIf { rest.substringAfter('|').startsWith(PlanLimitException.REASON) }
+        rest.substringBefore('|').toLongOrNull()?.takeIf { isPlanLimitReason(rest.substringAfter('|')) }
+
+    private fun isPlanLimitReason(reason: String): Boolean =
+        reason == PlanLimitException.REASON || reason.startsWith("${PlanLimitException.REASON}: ")
 }
