@@ -4392,19 +4392,23 @@ class InternxtProvider(
         /**
          * UD-369: split a leaf filename into (plainName, type). Returned type is the bare extension or null.
          *
-         * The listing joins the two again as `plainName.type`, but trims the plainName and does not repeat a type the
-         * plainName already ends in ([fileToCloudItem]). A name for which that join is not the name itself is therefore
-         * kept whole in the plainName, with no type: `a.txt.txt` (split as `a.txt` + `txt` it is listed as `a.txt`),
-         * `a.` (type empty, listed as `a`), `Scan 1 .pdf` (the plainName's trailing space is trimmed), and a dotfile
-         * (an empty plainName, which the drive refuses). A name that is listed under another name is a rename of the
-         * user's file as far as the engine can tell, and a path lookup of the uploaded name no longer finds it.
+         * The listing joins the two again as `plainName.type`, but strips control characters from both ends of the
+         * plainName and does not repeat a type the plainName already ends in ([fileToCloudItem]). A name for which that
+         * join is not the name itself is therefore kept whole in the plainName, with no type: `a.txt.txt` (split as
+         * `a.txt` + `txt` it is listed as `a.txt`), `a.` (type empty, listed as `a`), and a dotfile (an empty plainName,
+         * which the drive refuses). A name that is listed under another name is a rename of the user's file as far as the
+         * engine can tell, and a path lookup of the uploaded name no longer finds it.
+         *
+         * A stem or type with whitespace at an end (`Scan 1 .pdf`, ` leading space.txt`) is also kept whole. Until #144 the
+         * listing trimmed spaces too, and that is the shape such names have been uploaded in; keeping it means the fix
+         * changes only how a name is listed, not what is sent.
          */
         fun splitLeaf(filename: String): Pair<String, String?> {
             val dot = filename.lastIndexOf('.')
             if (dot <= 0 || dot == filename.length - 1) return filename to null
             val stem = filename.substring(0, dot)
             val type = filename.substring(dot + 1)
-            if (stem != sanitizeName(stem) || type != sanitizeName(type) || stem.endsWith(".$type")) return filename to null
+            if (stem != stem.trim() || type != type.trim() || stem.endsWith(".$type")) return filename to null
             return stem to type
         }
 
@@ -4420,8 +4424,17 @@ class InternxtProvider(
          * construction to fail with `Illegal char <\n> at index 0`. We
          * `.trim()` defensively rather than reject, so the file still
          * syncs. Interior whitespace is preserved (legal filename char).
+         *
+         * #144: `.trim()` also took U+0020, and a space at either end is
+         * a legal part of a name the user gave the file. The golden
+         * unicode run of 2026-10-27 uploaded ` leading space.txt`, the
+         * listing returned `leading space.txt`, and the engine followed
+         * that as a rename of the user's file. Only control characters
+         * (C0 `\u0000`..`\u001f` and DEL `\u007f`) are stripped now, at
+         * both ends; spaces, no-break spaces and other Unicode whitespace
+         * stay. The `\n` of UD-317 is still stripped.
          */
-        fun sanitizeName(raw: String): String = raw.trim()
+        fun sanitizeName(raw: String): String = raw.trim { it < ' ' || it == '\u007f' }
 
         internal fun internxtVersionToken(file: InternxtFile): String =
             "${file.uuid}|${file.modificationTime.orEmpty()}|${file.size}"

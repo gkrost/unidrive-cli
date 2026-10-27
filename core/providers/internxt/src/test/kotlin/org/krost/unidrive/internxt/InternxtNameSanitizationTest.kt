@@ -15,6 +15,10 @@ import kotlin.test.assertTrue
  *
  * Covers [InternxtProvider.sanitizeName] and the model-to-CloudItem conversions end-to-end so a
  * regression anywhere in the pipeline (toCloudItem, toDeltaCloudItem) is caught.
+ *
+ * #144: only control characters are stripped. A leading or trailing space is part of the name the
+ * user gave the file (` leading space.txt`); trimming it lists the file under another name, and the
+ * engine follows that as a rename of the user's file.
  */
 class InternxtNameSanitizationTest {
     // -- pure sanitizeName --------------------------------------------------------------------
@@ -25,8 +29,38 @@ class InternxtNameSanitizationTest {
     }
 
     @Test
-    fun `surrounding spaces are stripped`() {
-        assertEquals("spaced.txt", InternxtProvider.sanitizeName("   spaced.txt   "))
+    fun `surrounding spaces are kept`() {
+        assertEquals("   spaced.txt   ", InternxtProvider.sanitizeName("   spaced.txt   "))
+    }
+
+    @Test
+    fun `a leading space is kept`() {
+        assertEquals(" a.txt", InternxtProvider.sanitizeName(" a.txt"))
+    }
+
+    @Test
+    fun `a trailing space is kept`() {
+        assertEquals("a.txt ", InternxtProvider.sanitizeName("a.txt "))
+    }
+
+    @Test
+    fun `a leading newline before the name is stripped`() {
+        assertEquals("a.txt", InternxtProvider.sanitizeName("\na.txt"))
+    }
+
+    @Test
+    fun `control characters around a space are stripped and the space is kept`() {
+        assertEquals(" a", InternxtProvider.sanitizeName("\t a\r\n"))
+    }
+
+    @Test
+    fun `NUL and DEL at the ends are stripped`() {
+        assertEquals("a", InternxtProvider.sanitizeName("\u0000a\u007f"))
+    }
+
+    @Test
+    fun `a no-break space is kept`() {
+        assertEquals(" a ", InternxtProvider.sanitizeName(" a "))
     }
 
     @Test
@@ -51,8 +85,8 @@ class InternxtNameSanitizationTest {
 
     @Test
     fun `interior whitespace is preserved`() {
-        // Only leading/trailing whitespace is stripped — internal spaces are legal filename chars.
-        assertEquals("my file name", InternxtProvider.sanitizeName("  my file name  "))
+        // Only control characters at the ends are stripped — spaces are legal filename chars.
+        assertEquals("  my file name  ", InternxtProvider.sanitizeName("\t  my file name  \n"))
     }
 
     // -- file conversion (covers listChildren + getMetadata code paths) -----------------------
@@ -74,7 +108,7 @@ class InternxtNameSanitizationTest {
     }
 
     @Test
-    fun `fileToCloudItem trims spaces around plainName and appends type`() {
+    fun `fileToCloudItem keeps spaces around plainName and appends type`() {
         val file =
             InternxtFile(
                 uuid = "file-2",
@@ -83,8 +117,8 @@ class InternxtNameSanitizationTest {
                 size = "0",
             )
         val item = InternxtProvider.fileToCloudItem(file, parentPath = "/Docs")
-        assertEquals("spaced.txt", item.name)
-        assertEquals("/Docs/spaced.txt", item.path)
+        assertEquals("   spaced   .txt", item.name)
+        assertEquals("/Docs/   spaced   .txt", item.path)
     }
 
     @Test
@@ -105,7 +139,7 @@ class InternxtNameSanitizationTest {
         val file =
             InternxtFile(
                 uuid = "file-4",
-                name = " encrypted-blob ",
+                name = "encrypted-blob\n",
                 plainName = null,
                 type = "bin",
                 size = "0",
@@ -130,15 +164,15 @@ class InternxtNameSanitizationTest {
     }
 
     @Test
-    fun `folderToCloudItem trims surrounding whitespace`() {
+    fun `folderToCloudItem keeps surrounding spaces`() {
         val folder =
             InternxtFolder(
                 uuid = "folder-2",
                 plainName = "  Work  ",
             )
         val item = InternxtProvider.folderToCloudItem(folder, parentPath = "/root")
-        assertEquals("Work", item.name)
-        assertEquals("/root/Work", item.path)
+        assertEquals("  Work  ", item.name)
+        assertEquals("/root/  Work  ", item.path)
     }
 
     // -- delta pathway (covers delta() code path) ---------------------------------------------
@@ -159,7 +193,7 @@ class InternxtNameSanitizationTest {
 
     @Test
     fun `folderToDeltaCloudItem trims name`() {
-        val folder = InternxtFolder(uuid = "folder-3", plainName = "   Projects   ")
+        val folder = InternxtFolder(uuid = "folder-3", plainName = "\r\nProjects\t")
         val item = InternxtProvider.folderToDeltaCloudItem(folder, parentPath = "")
         assertEquals("Projects", item.name)
         assertEquals("/Projects", item.path)
@@ -170,8 +204,8 @@ class InternxtNameSanitizationTest {
     /**
      * Simulates a `FolderContentResponse` coming off the wire with the exact pathology observed in
      * the 2026-04-19 JFR capture: one file name with a leading `\n`, one with surrounding spaces.
-     * Verifies the CloudItems emitted to SyncEngine are all clean — no leading/trailing whitespace,
-     * no control chars at the start of the path.
+     * Verifies the CloudItems emitted to SyncEngine are all clean — no control characters in a name
+     * or path — and that the spaces, which are part of the name (#144), are kept.
      */
     @Test
     fun `listFolder-equivalent pipeline scrubs unsanitary names`() {
@@ -197,15 +231,11 @@ class InternxtNameSanitizationTest {
             response.children.map { InternxtProvider.folderToCloudItem(it, "/") } +
                 response.files.map { InternxtProvider.fileToCloudItem(it, "/") }
 
-        // Every name and path must be free of leading/trailing whitespace.
+        // No name or path may carry a control character.
         for (item in items) {
-            assertEquals(item.name.trim(), item.name, "name not trimmed for ${item.id}: ${repr(item.name)}")
+            assertFalse(item.name.any { it.isISOControl() }, "name has a control char for ${item.id}: ${repr(item.name)}")
             assertFalse(item.path.contains('\n'), "path contains newline for ${item.id}: ${repr(item.path)}")
             assertFalse(item.path.contains('\r'), "path contains CR for ${item.id}: ${repr(item.path)}")
-            assertFalse(
-                item.path.removePrefix("/").startsWith(" "),
-                "path starts with whitespace for ${item.id}: ${repr(item.path)}",
-            )
         }
 
         // Specific regression assertions for the log-observed inputs.
@@ -214,7 +244,9 @@ class InternxtNameSanitizationTest {
         assertEquals("/internxt-cli.desktop", desktop.path)
 
         val spacedFile = items.single { it.id == "f2" }
-        assertEquals("spaced.txt", spacedFile.name)
+        assertEquals("   spaced.txt   ", spacedFile.name)
+
+        assertEquals("   Spaced Dir   ", items.single { it.id == "d2" }.name)
 
         val messyFolder = items.single { it.id == "d1" }
         assertEquals("Messy Folder", messyFolder.name)
