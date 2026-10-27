@@ -285,6 +285,128 @@ class MountEngine private constructor(
         return wiring.enumeration.goneFolders.tombstone(folder, keep)
     }
 
+    /**
+     * gkrost/unidrive-cli#134: the upload of [path] was refused because the provider's walk did not find the folder
+     * [goneFolder] (a remote path above the file) in a listing. Before that stands as a refusal, the mount looks again:
+     * the folder the walk missed is a folder this mount tracks (state.db has its row, with the id it had), so the
+     * provider is asked for it by that id.
+     *
+     * - Trashed or not found: the folders from there down to the file's own folder are created again, each one that
+     *   state.db has a row for (the local folder exists), and the rows take the new ids. A level without a row stops it:
+     *   nothing local asks for that folder.
+     * - Live: the walk and the id disagree (a listing that lags behind a create, archive#132), so the folder is looked up
+     *   by path once more; only the same id can be retried.
+     * - Unknown, or any failure of the lookup (a 5xx, a degraded gateway, a timeout): nothing is done.
+     *
+     * Returns true when the folders are there to be tried again; the caller sends the bytes once more, and only when
+     * that is refused too does the refusal stand.
+     */
+    suspend fun recoverGoneParent(
+        path: String,
+        goneFolder: String,
+    ): Boolean {
+        val levels = parentLevelsFrom(path, goneFolder) ?: return false
+        val first = levels.first()
+        val firstId = first.row.remoteId ?: return false
+        return try {
+            val state = watchingCredentials { provider.folderStateById(firstId) }.also { recordProviderContact() }
+            when (state) {
+                FolderState.TRASHED, FolderState.NOT_FOUND -> recreateFolders(levels, state, path)
+                FolderState.LIVE -> adoptLiveFolder(first, path)
+                FolderState.UNKNOWN -> false
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.info("#134: the folder {} for the upload of {} was not put back: {}", goneFolder, path, e.message ?: e.javaClass.simpleName)
+            false
+        }
+    }
+
+    // The folders of [levels] created again, topmost first, each row taking the id of its new folder. False when the provider
+    // put one under another name (the rows below it would follow a name this mount does not know).
+    private suspend fun recreateFolders(
+        levels: List<ParentLevel>,
+        was: FolderState,
+        path: String,
+    ): Boolean {
+        val expected = levels.toMutableList()
+        for (index in expected.indices) {
+            val level = expected[index]
+            if (!db.batch { expected.all(::folderStillTracked) }) return false
+            val item = provider.createFolder(level.remotePath)
+            recordProviderContact()
+            if (item.nameOverridden || item.deleted) {
+                log.info("#134: the folder {} did not come back under the requested name", level.remotePath)
+                return false
+            }
+            if (!item.isFolder || item.id.isEmpty()) return false
+            val updated = db.batch {
+                if (!expected.all(::folderStillTracked) || idBelongsElsewhere(item.id, level.row.path)) return@batch null
+                val current = db.getEntry(level.row.path) ?: return@batch null
+                val row = current.copy(
+                    remoteId = item.id,
+                    remoteModified = item.modified ?: Instant.now(),
+                    parentUuid = item.parentId ?: current.parentUuid,
+                    lastErrorAt = null,
+                    lastSynced = Instant.now(),
+                )
+                db.upsertEntry(row, keepMarks = true)
+                row
+            } ?: return false
+            expected[index] = ParentLevel(level.remotePath, updated)
+            log.info("#134: the folder {} was {} in the cloud and was created again for the upload of {}", level.remotePath, was, path)
+        }
+        return true
+    }
+
+    // The folder the walk missed is live by its id: retry only if the path resolves to that same folder, not a replacement.
+    private suspend fun adoptLiveFolder(
+        level: ParentLevel,
+        path: String,
+    ): Boolean {
+        val live = watchingCredentials { provider.getMetadata(level.remotePath) }.also { recordProviderContact() }
+        if (!live.isFolder || live.deleted || live.id != level.row.remoteId) return false
+        if (!db.batch { folderStillTracked(level) }) return false
+        log.info("#134: the folder {} is live in the cloud; the upload of {} is tried again", level.remotePath, path)
+        return true
+    }
+
+    // The lookup and creation suspend; a rename, delete or enumeration may change a row in the meantime.
+    // Recheck under the database transaction and preserve its current fields when updating its identity.
+    private fun folderStillTracked(level: ParentLevel): Boolean =
+        db.getEntry(level.row.path)?.let {
+            it.isFolder && it.remoteId == level.row.remoteId && it.remotePath == level.row.remotePath
+        } == true
+
+    private fun idBelongsElsewhere(id: String, path: String): Boolean =
+        db.recovery.getEntryByRemoteIdAnyStatus(id)?.let { it.path != path || it.status != EntryStatus.EXISTS } == true
+
+    // A folder from [goneFolder] down to the folder of [path], with the remote path it has and the row that tracks it.
+    private class ParentLevel(
+        val remotePath: String,
+        val row: SyncEntry,
+    )
+
+    // The tracked folders on the way from [goneFolder] (a remote path) to the parent of the file at [path], topmost first;
+    // null when [goneFolder] is not above the file, or when one of them has no folder row (it does not exist locally).
+    private fun parentLevelsFrom(
+        path: String,
+        goneFolder: String,
+    ): List<ParentLevel>? {
+        val remoteSegments = remotePathOf(path).split('/').filter { it.isNotEmpty() }
+        val localSegments = path.split('/').filter { it.isNotEmpty() }
+        val goneDepth = goneFolder.split('/').count { it.isNotEmpty() }
+        if (remoteSegments.size != localSegments.size || goneDepth == 0 || goneDepth >= remoteSegments.size) return null
+        if (remoteSegments.take(goneDepth) != goneFolder.split('/').filter { it.isNotEmpty() }) return null
+        return (goneDepth until remoteSegments.size).map { depth ->
+            val row =
+                db.getEntry("/" + localSegments.take(depth).joinToString("/"))?.takeIf { it.isFolder && !it.remoteId.isNullOrEmpty() }
+                    ?: return null
+            ParentLevel("/" + remoteSegments.take(depth).joinToString("/"), row)
+        }
+    }
+
     /** The enumeration's tracker; the daemon's poller records its next attempt on it. */
     val enumerationTracker: EnumerationTracker get() = wiring.enumeration.tracker
 

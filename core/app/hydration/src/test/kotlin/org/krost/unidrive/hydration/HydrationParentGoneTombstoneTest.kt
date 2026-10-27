@@ -36,6 +36,9 @@ class HydrationParentGoneTombstoneTest {
         Files.createDirectories(cache.parent)
         Files.writeString(cache, "the user's bytes")
         syncEngine.refuseUploadsParentGone(1, folder = "/trashed")
+        // gkrost/unidrive-cli#134: a folder this mount tracks is created again before its refusal stands; these tests are about the
+        // refusal that stands, so the provider cannot create it.
+        syncEngine.failCreateFolder(ProviderException("the folder cannot be created again"))
         return cache
     }
 
@@ -53,7 +56,7 @@ class HydrationParentGoneTombstoneTest {
 
         val deleted = EntryStatus.DELETED
         val exists = EntryStatus.EXISTS
-        assertEquals(1, env.syncEngine.folderStateLookups(), "the folder is asked for by its id once")
+        assertEquals(2, env.syncEngine.folderStateLookups(), "the folder is asked for by its id before the upload is tried again, and by the tombstone")
         for (path in listOf("/trashed", "/trashed/sub", "/trashed/clean.txt", "/trashed/sub/deep.txt")) {
             assertEquals(deleted, env.stateDb.statusOf(path), "$path is tombstoned")
         }
@@ -78,7 +81,7 @@ class HydrationParentGoneTombstoneTest {
             env.hydration.openForWrite("conn1", "h1", "/trashed/new.txt", cache)
             advanceUntilIdle()
 
-            assertEquals(1, env.syncEngine.folderStateLookups(), "the folder is asked for by its id ($failure)")
+            assertEquals(2, env.syncEngine.folderStateLookups(), "the folder is asked for by its id twice ($failure): for the upload, for the tombstone")
             for (path in listOf("/trashed", "/trashed/sub", "/trashed/clean.txt", "/trashed/sub/deep.txt", "/trashed/new.txt", "/trashed/edited.txt")) {
                 assertEquals(EntryStatus.EXISTS, env.stateDb.statusOf(path), "$path stays after $failure")
             }
@@ -99,7 +102,7 @@ class HydrationParentGoneTombstoneTest {
             env.hydration.openForWrite("conn1", "h1", "/trashed/new.txt", cache)
             advanceUntilIdle()
 
-            assertEquals(1, env.syncEngine.folderStateLookups())
+            assertEquals(2, env.syncEngine.folderStateLookups())
             for (path in listOf("/trashed", "/trashed/sub", "/trashed/clean.txt", "/trashed/sub/deep.txt")) {
                 assertEquals(EntryStatus.EXISTS, env.stateDb.statusOf(path), "$path stays when $state")
             }

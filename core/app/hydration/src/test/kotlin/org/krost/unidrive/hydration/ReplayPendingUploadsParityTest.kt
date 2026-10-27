@@ -53,7 +53,8 @@ class ReplayPendingUploadsParityTest {
                 engine = newEngine()
                 hydration = HydrationImpl(syncEngine = engine, stateDb = db, recoveryUploadScope = this, failedReplayDelayMs = 0)
                 assertEquals(0, hydration.replayPendingUploads())
-                hydration.openForWrite("conn", "unchanged", "/refused.txt", cache)
+                // The engine's own resubmission (`recovery-`); a client's open_write is a retry and asks again (gkrost/unidrive-cli#134).
+                hydration.openForWrite("conn", "recovery-unchanged", "/refused.txt", cache)
                 advanceUntilIdle()
                 assertEquals(1, provider.uploadAttempts(), "a fresh daemon never replays the refused bytes")
                 assertEquals("regular non-empty content", Files.readString(cache), "the only copy remains intact")

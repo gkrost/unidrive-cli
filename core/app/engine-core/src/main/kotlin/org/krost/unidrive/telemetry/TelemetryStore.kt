@@ -91,6 +91,9 @@ internal class TelemetryStore private constructor(
             // The order history.list pages in (newest first, ties by id): a seek and a range scan, no sort of the table.
             // CREATE ... IF NOT EXISTS, so an existing file gets it at its next open without a schema version of its own.
             st.execute("CREATE INDEX IF NOT EXISTS idx_transfers_time ON transfers($SORT_TIME, operation_id)")
+            // gkrost/unidrive-cli#134: a `result` filter (failed, running) seeks its rows in time order instead of reading every newer row
+            // on the index above. Created at the next open of an existing file, like the one above, without a schema version of its own.
+            st.execute("CREATE INDEX IF NOT EXISTS idx_transfers_result_time ON transfers(result, $SORT_TIME, operation_id)")
             st.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID")
             // Schema step 2: the request-attempt tables. A file at step 1 gains them; nothing of step 1 changes.
             if (version < ATTEMPTS_SCHEMA_VERSION) AttemptTables.create(c)
@@ -153,6 +156,20 @@ internal class TelemetryStore private constructor(
             throw e
         } finally {
             runCatching { c.autoCommit = true }
+        }
+    }
+
+    @Synchronized
+    fun replace(row: TransferRow, previousId: String) {
+        inTransaction { c ->
+            c.prepareStatement(UPSERT).use { ps ->
+                TransferRowCodec.bind(ps, row)
+                ps.executeUpdate()
+            }
+            c.prepareStatement("DELETE FROM transfers WHERE operation_id = ?").use {
+                it.setString(1, previousId)
+                it.executeUpdate()
+            }
         }
     }
 

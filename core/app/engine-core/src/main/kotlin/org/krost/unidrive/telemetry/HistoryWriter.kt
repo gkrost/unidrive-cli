@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong
  * [TelemetryStore] behind. The producer side ([offer]) never blocks and never throws; everything that
  * touches the disk happens on the writer thread.
  */
+@Suppress("TooManyFunctions") // the queue's producer calls and the writer thread's steps, one each
 internal class HistoryWriter(
     private val profile: String,
     private val config: HistoryConfig,
@@ -23,6 +24,11 @@ internal class HistoryWriter(
     private sealed interface Op {
         class Write(
             val row: TransferRow,
+        ) : Op
+
+        class Replace(
+            val row: TransferRow,
+            val previousId: String,
         ) : Op
 
         class Barrier(
@@ -60,6 +66,14 @@ internal class HistoryWriter(
     fun offer(row: TransferRow) {
         if (!accepting.get()) return
         if (!queue.offer(Op.Write(row))) {
+            dropped.incrementAndGet()
+            droppedUnrecorded.set(true)
+        }
+    }
+
+    fun replace(row: TransferRow, previousId: String) {
+        if (!accepting.get()) return
+        if (!queue.offer(Op.Replace(row, previousId))) {
             dropped.incrementAndGet()
             droppedUnrecorded.set(true)
         }
@@ -135,6 +149,10 @@ internal class HistoryWriter(
         for (op in batch) {
             when (op) {
                 is Op.Write -> pending[op.row.operationId] = op.row
+                is Op.Replace -> {
+                    writePending(pending)
+                    replaceRow(op.row, op.previousId)
+                }
                 is Op.Barrier -> {
                     writePending(pending)
                     op.done.complete(Unit)
@@ -149,6 +167,21 @@ internal class HistoryWriter(
         }
         writePending(pending)
         return keepRunning
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun replaceRow(row: TransferRow, previousId: String) {
+        try {
+            store.replace(row, previousId)
+            written.incrementAndGet()
+            writtenSincePrune++
+            tail.publishReplacement(row)
+            recordGapIfAny()
+        } catch (e: SQLException) {
+            writeFailed(1, e)
+        } catch (e: RuntimeException) {
+            writeFailed(1, e)
+        }
     }
 
     @Suppress("TooGenericExceptionCaught") // history is never a correctness dependency: nothing here may kill the writer
