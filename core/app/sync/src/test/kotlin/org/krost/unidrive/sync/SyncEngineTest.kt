@@ -121,6 +121,62 @@ class SyncEngineTest {
         }
 
     @Test
+    fun `a plan refusal is retried after its deadline without changing the file`() =
+        runTest {
+            provider.deltaItems = emptyList()
+            val local = syncRoot.resolve("plan.txt")
+            Files.writeString(local, "")
+            provider.uploadThrowByPath["/plan.txt"] = PlanLimitException("plan refusal")
+            engine.syncOnce()
+            assertEquals(1, provider.uploadAttempts.size)
+            engine.syncOnce()
+            assertEquals(1, provider.uploadAttempts.size)
+            val refusal = assertNotNull(db.uploadRefusal("/plan.txt"))
+            val parts = refusal.split('|', limit = 4)
+            assertEquals("plan_limit", parts.last())
+            assertTrue(db.markUploadRefused("/plan.txt", "${parts[0]}|${parts[1]}|0|plan_limit"))
+            provider.uploadThrowByPath.remove("/plan.txt")
+            engine.syncOnce()
+            assertEquals(2, provider.uploadAttempts.size)
+            assertTrue(provider.uploadedPaths.contains("/plan.txt"))
+        }
+
+    @Test
+    fun `an existing file refused by a plan is retried after its deadline`() =
+        runTest {
+            provider.deltaItems = listOf(cloudItem("/existing.txt", size = 3))
+            provider.files["/existing.txt"] = "old".toByteArray()
+            engine.syncOnce()
+            Files.writeString(syncRoot.resolve("existing.txt"), "")
+            provider.uploadThrowByPath["/existing.txt"] = PlanLimitException("plan refusal")
+            engine.syncOnce()
+            assertEquals(1, provider.uploadAttempts.size)
+            engine.syncOnce()
+            assertEquals(1, provider.uploadAttempts.size, "the refused content is not retried before its deadline")
+            val parts = assertNotNull(db.uploadRefusal("/existing.txt")).split('|', limit = 4)
+            assertEquals("plan_limit", parts.last())
+            assertTrue(db.markUploadRefused("/existing.txt", "${parts[0]}|${parts[1]}|0|plan_limit", keepCloudBaseline = true))
+            provider.uploadThrowByPath.remove("/existing.txt")
+            engine.syncOnce()
+            assertEquals(2, provider.uploadAttempts.size)
+        }
+
+    @Test
+    fun `a remote change after a refused edit does not overwrite the local bytes`() =
+        runTest {
+            provider.deltaItems = listOf(cloudItem("/existing.txt", size = 3))
+            provider.files["/existing.txt"] = "old".toByteArray()
+            engine.syncOnce()
+            Files.writeString(syncRoot.resolve("existing.txt"), "")
+            provider.uploadThrowByPath["/existing.txt"] = PlanLimitException("plan refusal")
+            engine.syncOnce()
+            provider.files["/existing.txt"] = "remote".toByteArray()
+            provider.deltaItems = listOf(cloudItem("/existing.txt", size = 6, hash = "new-remote-hash"))
+            engine.syncOnce()
+            assertTrue(Files.walk(syncRoot).use { paths -> paths.anyMatch { Files.isRegularFile(it) && Files.size(it) == 0L } }, "the refused bytes remain available")
+        }
+
+    @Test
     fun `refresh skips Pass 2 — local file gets pending row but is not uploaded`() =
         runTest {
             // First sync establishes baseline (no items, no actions).
