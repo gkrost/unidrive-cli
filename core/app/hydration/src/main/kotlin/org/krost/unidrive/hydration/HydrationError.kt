@@ -260,7 +260,7 @@ sealed interface HydrationError {
         const val PARENT_GONE_TOKEN = "parent_gone"
 
         /** Wire token prefix for [PlanLimit]; the provider's sentence, when known, follows after ": ". */
-        const val PLAN_LIMIT_TOKEN = "plan_limit"
+        const val PLAN_LIMIT_TOKEN = org.krost.unidrive.PlanLimitException.REASON
 
         /** Wire token prefix for [BlockedByParent]. */
         const val BLOCKED_BY_PARENT_TOKEN = "blocked_by_parent"

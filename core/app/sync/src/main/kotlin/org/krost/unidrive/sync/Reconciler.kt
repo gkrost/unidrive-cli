@@ -350,7 +350,7 @@ class Reconciler(
             // real bytes to upload and belongs to the download-recovery lane above.
             if (!entry.isPendingUpload) continue
             if (entry.path in coveredPaths) continue
-            if (db.uploadRefusal(entry.path)?.startsWith("${entry.localMtime}|${entry.localSize}|") == true) continue
+            if (UploadRefusals.holds(db.uploadRefusal(entry.path), entry.localMtime, entry.localSize)) continue
             if (excludePatterns.any { matchesGlob(entry.path, it) } || isIgnored(entry.path, false)) continue
             // UD-901a: same scope guard as the UD-225 loop above.
             if (!SyncScope.contains(entry.path, syncPaths)) continue
@@ -599,7 +599,7 @@ class Reconciler(
             // no bytes to upload — see the first UD-901 loop).
             if (!entry.isPendingUpload) continue
             if (entry.path in coveredPaths) continue
-            if (db.uploadRefusal(entry.path)?.startsWith("${entry.localMtime}|${entry.localSize}|") == true) continue
+            if (UploadRefusals.holds(db.uploadRefusal(entry.path), entry.localMtime, entry.localSize)) continue
             if (excludePatterns.any { matchesGlob(entry.path, it) } || isIgnored(entry.path, false)) continue
             if (!SyncScope.contains(entry.path, syncPaths)) continue
             // archive#526: an unresolvable name must not abort the recovery loop — skip the row.

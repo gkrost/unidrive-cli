@@ -230,7 +230,15 @@ open class PlanLimitException(
     val detail: String? = null,
     cause: Throwable? = null,
     requestId: String? = null,
-) : PermanentUploadFailureException(message, cause, requestId)
+) : PermanentUploadFailureException(message, cause, requestId) {
+    /** The stable reason of this refusal: [REASON], followed by `: <detail>` when the provider gave one. */
+    val reason: String get() = if (detail.isNullOrBlank()) REASON else "$REASON: $detail"
+
+    companion object {
+        /** The stable token of a plan's refusal, on the wire and on the row's stored refusal. */
+        const val REASON = "plan_limit"
+    }
+}
 
 /** A remote item changed after the caller captured its write token. */
 open class RemoteConflictException(

@@ -4201,7 +4201,14 @@ open class SyncEngine(
     ) {
         val localPath = placeholder.resolveLocal(action.path)
         val attrs = runCatching { Files.readAttributes(localPath, java.nio.file.attribute.BasicFileAttributes::class.java) }.getOrNull()
-        val stamp = "${attrs?.lastModifiedTime()?.toMillis()}|${attrs?.size()}|${e.message.orEmpty()}"
+        val mtime = attrs?.lastModifiedTime()?.toMillis()
+        // gkrost/unidrive-cli#145: a plan's refusal expires (the plan may be upgraded); every other one holds until the content changes.
+        val stamp =
+            if (e is org.krost.unidrive.PlanLimitException) {
+                UploadRefusals.planLimitStamp(mtime, attrs?.size(), System.currentTimeMillis() + UploadRefusals.PLAN_LIMIT_RETRY_AFTER_MS, e)
+            } else {
+                "$mtime|${attrs?.size()}|${e.message.orEmpty()}"
+            }
         val recorded = db.markUploadRefused(action.path, stamp)
         log.warn(
             "Permanent upload refusal for {}: {}{}",
