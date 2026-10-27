@@ -17,7 +17,6 @@ import org.krost.unidrive.auth.CredentialProtectors
 import org.krost.unidrive.internxt.TfaInvalidException
 import org.krost.unidrive.internxt.TfaRequiredException
 import org.krost.unidrive.sync.IpcEndpoint
-import java.io.IOException
 
 /*
  * The steps of a console-free sign-in (`auth begin`, `auth complete`, `auth login`), shared by the two callers that run
@@ -55,8 +54,9 @@ internal fun deviceCodeFactory(
         ?: throw LifecycleError("no_device_code_flow", "profile '${target.name}' (type ${target.type}) has no device-code sign-in$hint")
 
 /**
- * Runs one call of the provider's own sign-in code: whatever it throws (but a cancellation) is the [token] refusal,
- * worded by the exception's type only (its message could quote a response).
+ * Runs one call of the provider's own sign-in code: whatever it throws (but a cancellation) is the [token] refusal, or
+ * `network_error` when the provider could not be reached ([unreachableRefusal]), worded by the exception's type only
+ * (its message could quote a response).
  */
 @Suppress("TooGenericExceptionCaught")
 private suspend fun <T> providerStep(
@@ -69,7 +69,7 @@ private suspend fun <T> providerStep(
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
     } catch (e: Exception) {
-        throw LifecycleError(token, "the sign-in could not be $what: ${e.javaClass.simpleName}", e)
+        throw unreachableRefusal(e) ?: LifecycleError(token, "the sign-in could not be $what: ${e.javaClass.simpleName}", e)
     }
 
 /** `auth begin`: starts the device-code flow; the pending flow is kept in the profile folder by the provider. */
@@ -210,8 +210,7 @@ private fun internxtLoginRefusal(e: Exception): LifecycleError =
         is AccountChangedException -> LifecycleError(ACCOUNT_CHANGED, e.message ?: ACCOUNT_CHANGED)
         is AccountUnverifiedException -> LifecycleError(ACCOUNT_UNVERIFIED, e.message ?: ACCOUNT_UNVERIFIED)
         is AuthenticationException -> LifecycleError("auth_failed", "the provider refused the sign-in")
-        is IOException -> LifecycleError("network_error", "the provider could not be reached: ${e.javaClass.simpleName}")
-        else -> LifecycleError("login_failed", "the sign-in failed: ${e.javaClass.simpleName}")
+        else -> unreachableRefusal(e) ?: LifecycleError("login_failed", "the sign-in failed: ${e.javaClass.simpleName}")
     }
 
 // ── the hand-over to a running daemon ───────────────────────────────────────

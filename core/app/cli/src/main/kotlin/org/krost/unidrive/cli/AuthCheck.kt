@@ -15,13 +15,10 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.CredentialProof
 import org.krost.unidrive.NotSignedInException
 import org.krost.unidrive.ProviderException
-import org.krost.unidrive.TransientNetworkException
 import org.slf4j.LoggerFactory
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
-import java.io.IOException
-import java.nio.channels.UnresolvedAddressException
 import java.util.concurrent.Callable
 
 /*
@@ -57,10 +54,11 @@ internal fun checkFailure(e: Throwable): LifecycleError =
         e is AuthenticationException ->
             LifecycleError("credentials_rejected", "the provider did not accept the stored sign-in (revoked, expired or another account)", e)
         e is UnsupportedOperationException -> LifecycleError("unsupported", "this provider has no credential check", e)
-        e is TransientNetworkException || e is IOException || e is UnresolvedAddressException ->
-            LifecycleError("network_error", "the provider could not be asked: ${e.javaClass.simpleName}", e)
-        e is ProviderException -> providerAnswerFailure(e)
-        else -> LifecycleError("provider_error", "the check failed: ${e.javaClass.simpleName}", e)
+        // The same classifier as the sign-in steps (#143): the cause chain, not only the exception's own type.
+        else ->
+            unreachableRefusal(e, "asked")
+                ?: (e as? ProviderException)?.let(::providerAnswerFailure)
+                ?: LifecycleError("provider_error", "the check failed: ${e.javaClass.simpleName}", e)
     }
 
 // A provider failure without an HTTP status never got an answer; a gateway or timeout status says the same.
