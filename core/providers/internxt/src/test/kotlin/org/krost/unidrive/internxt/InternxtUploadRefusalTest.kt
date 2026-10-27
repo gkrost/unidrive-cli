@@ -9,6 +9,7 @@ import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.ParentGoneException
 import org.krost.unidrive.PermanentUploadFailureException
+import org.krost.unidrive.PlanLimitException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -36,6 +37,8 @@ class InternxtUploadRefusalTest {
         val listingByFolder: Map<String, String> = emptyMap(),
         // When set, every folder listing answers with this status (a degraded gateway).
         val listingFailure: HttpStatusCode? = null,
+        // When set, the body the drive answers a refused createFile with.
+        val createRefusalBody: String? = null,
     )
 
     private val bucket = "6928426c1a2316b856c9ab81"
@@ -125,7 +128,7 @@ class InternxtUploadRefusalTest {
                             if (createStatus == HttpStatusCode.OK) {
                                 respond("""{"uuid":"drive-file-1","fileId":"bucket-entry-1","plainName":"f","type":"txt","size":"10","bucket":"$bucket","folderUuid":"root-folder-uuid"}""", createStatus, json)
                             } else {
-                                respond("""{"statusCode":${createStatus.value},"message":["refused"],"error":"x"}""", createStatus, json)
+                                respond(scenario.createRefusalBody ?: """{"statusCode":${createStatus.value},"message":["refused"],"error":"x"}""", createStatus, json)
                             }
                         else -> respond("""{"error":"unexpected ${request.method.value} $url"}""", HttpStatusCode.NotFound, json)
                     }
@@ -294,6 +297,25 @@ class InternxtUploadRefusalTest {
                     provider.upload(local(), "/f.txt", existingRemoteId = null, onProgress = null)
                 }
                 assertTrue("400" in (e.message ?: ""), "the status is named: ${e.message}")
+            } finally {
+                provider.close()
+            }
+        }
+
+    // gkrost/unidrive-cli#145: the free plan refuses an empty file with 402 and this body (the web UI refuses the same): a plan
+    // limit, refused again at every attempt, typed so the hydration layer reports the `plan_limit` token with the sentence.
+    @Test
+    fun `a 402 from the drive is a typed plan-limit refusal with the server's sentence`() =
+        runTest {
+            val sentence = "You can not have empty files, upgrade your plan to get more features"
+            val provider =
+                newProviderWith(HttpStatusCode.PaymentRequired, scenario = UploadScenario(createRefusalBody = """{"message":"$sentence"}"""))
+            try {
+                val e = assertFailsWith<PlanLimitException> {
+                    provider.upload(local().also { Files.write(it, ByteArray(0)) }, "/empty.txt", existingRemoteId = null, onProgress = null)
+                }
+                assertEquals(sentence, e.detail)
+                assertTrue("402" in (e.message ?: ""), "the status is named: ${e.message}")
             } finally {
                 provider.close()
             }

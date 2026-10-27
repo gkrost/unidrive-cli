@@ -99,11 +99,22 @@ class HydrationErrorTest {
             is HydrationError.NameRefused -> "name_refused"
             is HydrationError.BlockedByParent -> "blocked_by_parent"
             is HydrationError.ParentGone -> "parent_gone"
+            is HydrationError.PlanLimit -> "plan_limit"
             HydrationError.Paused -> "paused"
             HydrationError.ReadOnly -> "read_only"
             HydrationError.PermanentUnsupported -> "permanent_unsupported"
         }
         assertTrue(rendered.startsWith("generic:"))
+    }
+
+    // gkrost/unidrive-cli#145: the token alone, or with the provider's sentence after ": "; a stored reason parses back.
+    @Test
+    fun `plan limit carries the stable plan_limit token and parses back`() {
+        assertEquals("plan_limit", HydrationError.PlanLimit(null).message)
+        assertEquals("plan_limit: upgrade your plan", HydrationError.PlanLimit("upgrade your plan").message)
+        assertEquals(HydrationError.PlanLimit("upgrade your plan"), HydrationError.PlanLimit.parse("plan_limit: upgrade your plan"))
+        assertEquals(HydrationError.PlanLimit(null), HydrationError.PlanLimit.parse("plan_limit"))
+        assertEquals(null, HydrationError.PlanLimit.parse("plan_limits"))
     }
 
     // The trash namespace is read-only: every verb that would write answers this, and list says it beforehand.

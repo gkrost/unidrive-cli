@@ -323,6 +323,9 @@ class HydrationImpl(
         // state can expire.
         private const val UPLOAD_REFUSAL_RETRY_AFTER_MS = 6L * 60 * 60 * 1000
 
+        // gkrost/unidrive-cli#145: the status of a plan's refusal ([planLimitOf]).
+        private const val HTTP_PAYMENT_REQUIRED = 402
+
         // Wire token for "an upload of the path is still in flight, retry"; the same literal
         // dehydrate's Busy reply puts on the wire.
         private const val BUSY_TOKEN = "busy"
@@ -871,7 +874,7 @@ class HydrationImpl(
         clearRefusalOfClientRetry(path, handleId)
         // archive#493: the provider refused exactly these bytes before; asking again would be refused again.
         refusedEarlier(path, cachePath)?.let { reason ->
-            val err = HydrationError.ParentGone.parse(reason) ?: HydrationError.Generic("refused earlier: $reason")
+            val err = storedRefusalError(reason)
             _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
             log.info("upload of {} not attempted: the provider refused this content before ({})", path, reason)
             // gkrost/unidrive-cli#134: the same refusal offered again is the row it already has, not a new one.
@@ -1065,7 +1068,7 @@ class HydrationImpl(
         // provider until the deadline (archive#493). New content, an expired deadline, or any rewrite makes it eligible.
         // archive#580: a folder the provider's walk proved gone is reported (and remembered on the row) as its own token.
         val err = refusalError(e)
-        val reason = if (err is HydrationError.ParentGone) err.message else e.message ?: "refused"
+        val reason = if (err is HydrationError.Generic) e.message ?: "refused" else err.message
         refusalStamp(cachePath)?.let { stamp ->
             val retryAt = System.currentTimeMillis() + UPLOAD_REFUSAL_RETRY_AFTER_MS
             runCatching { stateDb.markUploadRefused(path, "$stamp|$retryAt|$reason", keepCloudBaseline = true) }
@@ -1127,6 +1130,8 @@ class HydrationImpl(
             } catch (_: TransferPausedException) {
                 // The upload is back in the queue: waiting, not failed.
                 _events.emit(HydrationEvent.Queued(path))
+            } catch (e: org.krost.unidrive.ProviderException) {
+                throw planLimitOf(e) // gkrost/unidrive-cli#145: a 402 reaches the retry ladder as the permanent refusal it is
             }
         }
     }
@@ -1513,13 +1518,28 @@ class HydrationImpl(
     }
 
     // archive#493: <cache mtime ms>|<cache size> of the bytes an upload sends; null when the cache copy is gone.
-    // The token of a provider's permanent upload refusal: `parent_gone` for a folder its walk proved gone (archive#580), else the
-    // provider's own text.
+    // The token of a provider's permanent upload refusal: `parent_gone` for a folder its walk proved gone (archive#580),
+    // `plan_limit` for an upload the plan does not allow (gkrost/unidrive-cli#145), else the provider's own text.
     private fun refusalError(e: org.krost.unidrive.PermanentUploadFailureException): HydrationError =
-        if (e is org.krost.unidrive.ParentGoneException) {
-            HydrationError.ParentGone(e.parent)
+        when (e) {
+            is org.krost.unidrive.ParentGoneException -> HydrationError.ParentGone(e.parent)
+            is org.krost.unidrive.PlanLimitException -> HydrationError.PlanLimit(e.detail)
+            else -> HydrationError.Generic(e.message ?: "upload refused")
+        }
+
+    // The error of a refusal remembered on the row ([refusedEarlier]): its typed token again, else the stored text.
+    private fun storedRefusalError(reason: String): HydrationError =
+        HydrationError.ParentGone.parse(reason)
+            ?: HydrationError.PlanLimit.parse(reason)
+            ?: HydrationError.Generic("refused earlier: $reason")
+
+    // gkrost/unidrive-cli#145: HTTP 402 Payment Required from an upload is the plan's refusal, whichever provider answered it and
+    // whether or not it typed it: the same bytes are refused again until the plan changes. Anything else is returned unchanged.
+    private fun planLimitOf(e: org.krost.unidrive.ProviderException): Exception =
+        if (e.httpStatus == HTTP_PAYMENT_REQUIRED && e !is org.krost.unidrive.PermanentUploadFailureException) {
+            org.krost.unidrive.PlanLimitException(e.message ?: "upload refused by the plan (402)", cause = e, requestId = e.requestId)
         } else {
-            HydrationError.Generic(e.message ?: "upload refused")
+            e
         }
 
     // archive#580: after a parent_gone refusal ([refusal]) of [refusedPath], the mount asks the provider for the folder by its id

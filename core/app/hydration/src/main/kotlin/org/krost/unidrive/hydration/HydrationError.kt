@@ -199,6 +199,28 @@ sealed interface HydrationError {
     }
 
     /**
+     * gkrost/unidrive-cli#145: the provider's plan does not allow this upload (HTTP 402; Internxt's free plan refuses empty
+     * files). Permanent until the plan changes: the upload is tried once, not retried, not offered again in later rounds, and
+     * the same bytes are not sent again at a replay or a resubmission; the bytes stay in the cache. Wire form: the STABLE token
+     * `plan_limit`, followed by `: <the provider's sentence>` when it gave one; a client matches the prefix up to ": ".
+     */
+    data class PlanLimit(
+        val detail: String?,
+    ) : HydrationError {
+        override val message: String = if (detail.isNullOrBlank()) PLAN_LIMIT_TOKEN else "$PLAN_LIMIT_TOKEN: $detail"
+
+        companion object {
+            /** The [PlanLimit] of a wire form or a stored refusal reason `plan_limit[: <detail>]`, else null. */
+            fun parse(text: String): PlanLimit? =
+                when {
+                    text == PLAN_LIMIT_TOKEN -> PlanLimit(null)
+                    text.startsWith("$PLAN_LIMIT_TOKEN: ") -> PlanLimit(text.substring(PLAN_LIMIT_TOKEN.length + 2))
+                    else -> null
+                }
+        }
+    }
+
+    /**
      * The daemon is paused (archive#778) and the request would start a cloud download: refused at once, nothing is
      * started and nothing is left waiting. A front-end asks the user whether to lift the pause (the action
      * unpauses everything), calls `daemon.resume` and sends the request again. A file already in the cache is
@@ -236,6 +258,9 @@ sealed interface HydrationError {
 
         /** Wire token prefix for [ParentGone]; the folder's path follows after ": ". */
         const val PARENT_GONE_TOKEN = "parent_gone"
+
+        /** Wire token prefix for [PlanLimit]; the provider's sentence, when known, follows after ": ". */
+        const val PLAN_LIMIT_TOKEN = "plan_limit"
 
         /** Wire token prefix for [BlockedByParent]. */
         const val BLOCKED_BY_PARENT_TOKEN = "blocked_by_parent"
