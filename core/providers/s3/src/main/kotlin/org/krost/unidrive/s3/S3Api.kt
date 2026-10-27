@@ -45,6 +45,7 @@ import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Base64
 import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
@@ -64,6 +65,10 @@ data class S3Object(
     val size: Long,
     val lastModified: Instant?,
     val mtime: Instant? = null,
+    // Set by a HEAD: the object is stored with SSE-KMS (x-amz-server-side-encryption: aws:kms, DSSE included) or with
+    // SSE-C, either of which replaces the ETag-is-the-MD5 rule. A listing cannot establish the encryption kind.
+    val sseKmsOrCustomer: Boolean = false,
+    val encryptionKnown: Boolean = false,
 )
 
 data class S3ListPage(
@@ -157,6 +162,10 @@ class S3Api(
             size = response.headers["Content-Length"]?.toLongOrNull() ?: 0,
             lastModified = response.headers["Last-Modified"]?.let(::parseHttpDate),
             mtime = response.headers[MTIME_HEADER]?.let(::parseEpoch),
+            sseKmsOrCustomer =
+                response.headers["x-amz-server-side-encryption"]?.startsWith("aws:kms") == true ||
+                response.headers["x-amz-server-side-encryption-customer-algorithm"] != null,
+            encryptionKnown = true,
         )
     }
 
@@ -533,9 +542,13 @@ class S3Api(
                 Instant.ofEpochSecond(seconds, it.subtract(seconds.toBigDecimal()).movePointRight(9).toLong())
             }
 
-        private fun parseIso(text: String): Instant? = runCatching { Instant.parse(text) }.getOrNull()
+        // Whole seconds on both sources: a listing carries milliseconds while a HEAD's RFC-1123 date cannot, and the
+        // engine compares the time it recorded with the listed one — sub-second listing precision made every uploaded
+        // file read as remotely changed (#82 D).
+        private fun parseIso(text: String): Instant? = runCatching { Instant.parse(text).truncatedTo(ChronoUnit.SECONDS) }.getOrNull()
 
-        private fun parseHttpDate(text: String): Instant? = runCatching { ZonedDateTime.parse(text, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
+        private fun parseHttpDate(text: String): Instant? =
+            runCatching { ZonedDateTime.parse(text, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().truncatedTo(ChronoUnit.SECONDS) }.getOrNull()
 
         private fun escapeXml(text: String): String =
             text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&apos;")

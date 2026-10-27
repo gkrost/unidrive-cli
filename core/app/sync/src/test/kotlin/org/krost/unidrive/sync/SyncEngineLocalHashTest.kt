@@ -217,6 +217,32 @@ class SyncEngineLocalHashTest {
         assertNull(result.localHash)
     }
 
+    @Test
+    fun `a hash-capable provider records a local baseline when this item has no hash`() {
+        provider.hashAlgorithmOverride = HashAlgorithm.Md5Hex
+        val file = syncRoot.resolve("opaque.bin")
+        Files.writeString(file, "opaque content")
+        val row = rowWithStaleHash(file)
+
+        val result = engine().withLocalHash(row, file, row.localMtime!!, row.localSize!!)
+
+        assertEquals(sha256(file), result.localHash)
+    }
+
+    @Test
+    fun `downloading a hashless item keeps its opaque write token`() = runTest {
+        provider.hashAlgorithmOverride = HashAlgorithm.Md5Hex
+        val bytes = "content".toByteArray()
+        provider.files["/opaque.txt"] = bytes
+        provider.deltaItems = listOf(remoteFile("/opaque.txt", bytes.size.toLong()).copy(version = "opaque-etag"))
+
+        engine().syncOnce()
+
+        val row = assertNotNull(db.getEntry("/opaque.txt"))
+        assertEquals("opaque-etag", row.remoteVersion)
+        assertEquals(sha256(syncRoot.resolve("opaque.txt")), row.localHash)
+    }
+
     // archive#337: an upload row takes the file's stats after the transfer, so an edit that lands
     // mid-upload is already in the baseline. Its hash must not be recorded too, or a later
     // touch would be absorbed as unchanged and the edit would never reach the remote.

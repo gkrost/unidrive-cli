@@ -44,10 +44,15 @@ internal class ScanStaging(
         conn?.let { if (!it.isClosed) return it }
         if (readOnly) {
             if (file == null || !Files.exists(file)) return null
-            return connector.openReadOnly(file).also { c ->
-                c.autoCommit = true
-                conn = c
+            val c = connector.openReadOnly(file)
+            c.autoCommit = true
+            val compatible = c.createStatement().use(::hasVersionColumn)
+            if (!compatible) {
+                c.close()
+                return null
             }
+            conn = c
+            return c
         }
         val c = openWritableRetrying()
         conn = c
@@ -127,13 +132,39 @@ internal class ScanStaging(
                 size        INTEGER NOT NULL DEFAULT 0,
                 modified    TEXT,
                 remote_hash TEXT,
+                remote_version TEXT,
                 reconciled  INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (scan_id, remote_id)
             )
             """,
         )
+        val hasVersion = hasVersionColumn(stmt)
         stmt.executeUpdate("CREATE TABLE IF NOT EXISTS scan_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        if (!hasVersion) {
+            val c = stmt.connection
+            c.autoCommit = false
+            var committed = false
+            try {
+                stmt.executeUpdate("ALTER TABLE scan_staging ADD COLUMN remote_version TEXT")
+                // Old pages cannot distinguish an opaque ETag from a content hash or restore the write token.
+                // Discard the checkpoint together with its pages so the next scan starts from the beginning.
+                stmt.executeUpdate("DELETE FROM scan_staging")
+                stmt.executeUpdate("DELETE FROM scan_meta")
+                c.commit()
+                committed = true
+            } finally {
+                if (!committed) runCatching { c.rollback() }
+                c.autoCommit = true
+            }
+        }
     }
+
+    private fun hasVersionColumn(stmt: Statement): Boolean =
+        stmt.executeQuery("PRAGMA table_info(scan_staging)").use { rs ->
+            var found = false
+            while (rs.next()) if (rs.getString("name") == "remote_version") found = true
+            found
+        }
 
     private fun writable(): Connection = connection() ?: error("the scan staging of a read-only state database cannot be written")
 
@@ -253,6 +284,7 @@ internal class ScanStaging(
                     stmt.setLong(6, item.size)
                     stmt.setString(7, item.modified?.toString())
                     stmt.setString(8, item.hash)
+                    stmt.setString(9, item.version)
                     stmt.executeUpdate()
                 }
             }
@@ -269,13 +301,15 @@ internal class ScanStaging(
     ): List<CloudItem> {
         val c = connection() ?: return emptyList()
         val sql =
-            "SELECT remote_id, parent_uuid, plain_name, is_folder, size, modified, remote_hash FROM scan_staging " +
+            "SELECT * FROM scan_staging " +
                 "WHERE scan_id = ?" + (if (reconciled == null) "" else " AND reconciled = ?") + " ORDER BY remote_id"
         return c.prepareStatement(sql).use { stmt ->
             stmt.setString(1, scanId)
             if (reconciled != null) stmt.setInt(2, if (reconciled) 1 else 0)
             stmt.executeQuery().use { rs ->
                 val items = mutableListOf<CloudItem>()
+                val columns = rs.metaData
+                val hasVersion = (1..columns.columnCount).any { columns.getColumnName(it) == "remote_version" }
                 while (rs.next()) {
                     val name = rs.getString("plain_name")
                     items.add(
@@ -291,6 +325,7 @@ internal class ScanStaging(
                             hash = rs.getString("remote_hash"),
                             mimeType = null,
                             parentId = rs.getString("parent_uuid"),
+                            version = if (hasVersion) rs.getString("remote_version") else null,
                         ),
                     )
                 }
@@ -419,7 +454,7 @@ internal class ScanStaging(
         private const val SET_META_SQL = "INSERT OR REPLACE INTO scan_meta (key, value) VALUES (?, ?)"
         private const val UPSERT_STAGED_ITEM_SQL =
             "INSERT OR REPLACE INTO scan_staging " +
-                "(scan_id, remote_id, parent_uuid, plain_name, is_folder, size, modified, remote_hash) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                "(scan_id, remote_id, parent_uuid, plain_name, is_folder, size, modified, remote_hash, remote_version) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     }
 }

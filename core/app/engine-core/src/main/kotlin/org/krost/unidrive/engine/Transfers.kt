@@ -54,7 +54,7 @@ object Transfers {
 
     /**
      * archive#396: [entry] with the SHA-256 of [local] as its local hash, for a provider without a content
-     * hash ([algorithm] null). The hash is kept only if the file still has [mtime] and [size], so a
+     * hash (either [algorithm] is null or this item has no hash). The hash is kept only if the file still has [mtime] and [size], so a
      * write that lands while it is hashed cannot turn the new bytes into the tracked baseline. The
      * callers pass a row that already carries the new mtime/size but may still hold the hash of the
      * previous contents, so a failed hash clears it rather than keeping it.
@@ -72,7 +72,7 @@ object Transfers {
         algorithm: HashAlgorithm?,
         log: Logger,
     ): SyncEntry {
-        if (algorithm != null || entry.isFolder) return entry
+        if ((algorithm != null && !entry.remoteHash.isNullOrEmpty()) || entry.isFolder) return entry
         return try {
             val hash = HashVerifier.computeSha256Hex(local)
             if (Files.getLastModifiedTime(local).toMillis() == mtime && Files.size(local) == size) {

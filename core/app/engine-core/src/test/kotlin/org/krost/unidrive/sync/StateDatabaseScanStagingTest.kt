@@ -38,6 +38,46 @@ class StateDatabaseScanStagingTest {
     private fun opened(): StateDatabase = StateDatabase(dbFile).also { it.initialize() }
 
     @Test
+    fun `an older staged scan restarts before its untyped hashes can be used`() {
+        opened().close()
+        val stagingFile = dir.resolve(StateDatabase.SCAN_STAGING_FILE_NAME)
+        DriverManager.getConnection("jdbc:sqlite:$stagingFile").use { c ->
+            c.createStatement().use { st ->
+                st.executeUpdate(
+                    "CREATE TABLE scan_staging (scan_id TEXT NOT NULL, remote_id TEXT NOT NULL, parent_uuid TEXT, " +
+                        "plain_name TEXT NOT NULL, is_folder INTEGER NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0, " +
+                        "modified TEXT, remote_hash TEXT, reconciled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (scan_id, remote_id))",
+                )
+                st.executeUpdate("INSERT INTO scan_staging (scan_id, remote_id, plain_name) VALUES ('old', 'old-id', 'old')")
+                st.executeUpdate("CREATE TABLE scan_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                st.executeUpdate("INSERT INTO scan_meta VALUES ('${StateDatabase.SCAN_IN_PROGRESS_ID}', 'old')")
+            }
+        }
+        val readOnly = StateDatabase(dbFile, readOnly = true).also { it.initialize() }
+        try {
+            assertTrue(readOnly.loadStagedItems("old").isEmpty())
+            assertNull(readOnly.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID))
+        } finally {
+            readOnly.close()
+        }
+        val db = opened()
+        try {
+            assertTrue(db.loadStagedItems("old").isEmpty())
+            assertNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID))
+            db.persistScanPage("old", listOf(items(0, 1).single().copy(version = "opaque-etag")), "marker")
+            assertEquals("opaque-etag", db.loadStagedItems("old").single { it.version != null }.version)
+        } finally {
+            db.close()
+        }
+        val reopened = opened()
+        try {
+            assertEquals("opaque-etag", reopened.loadStagedItems("old").single { it.version != null }.version)
+        } finally {
+            reopened.close()
+        }
+    }
+
+    @Test
     fun `a staged scan leaves the main file as it was`() {
         val db = opened()
         try {

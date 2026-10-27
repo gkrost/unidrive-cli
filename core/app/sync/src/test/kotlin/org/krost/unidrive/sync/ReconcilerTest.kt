@@ -152,6 +152,26 @@ class ReconcilerTest {
     }
 
     @Test
+    fun `changed opaque version of a hashless item re-downloads even when time is unchanged`() {
+        db.upsertEntry(dbEntry("/mod.txt", isHydrated = true).copy(remoteHash = null, remoteVersion = "etag-old"))
+        val remote = cloudItem("/mod.txt", hash = null).copy(version = "etag-new")
+
+        val actions = reconciler.reconcile(mapOf("/mod.txt" to remote), emptyMap())
+
+        assertTrue(actions.any { it is SyncAction.DownloadContent }, "got $actions")
+    }
+
+    @Test
+    fun `the first hashless version of a formerly hashed item is re-downloaded`() {
+        db.upsertEntry(dbEntry("/mod.txt", remoteHash = "old-etag", isHydrated = true))
+        val remote = cloudItem("/mod.txt", hash = null).copy(version = "new-etag")
+
+        val actions = reconciler.reconcile(mapOf("/mod.txt" to remote), emptyMap())
+
+        assertTrue(actions.any { it is SyncAction.DownloadContent }, "got $actions")
+    }
+
+    @Test
     fun `remote deleted removes local`() {
         db.upsertEntry(dbEntry("/del.txt"))
         val remoteChanges = mapOf("/del.txt" to cloudItem("/del.txt", deleted = true))

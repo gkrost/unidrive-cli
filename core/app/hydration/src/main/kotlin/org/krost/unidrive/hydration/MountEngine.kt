@@ -586,6 +586,7 @@ class MountEngine private constructor(
             created = entry.remoteModified ?: Instant.now(),
             hash = entry.remoteHash,
             mimeType = null,
+            version = entry.remoteVersion,
         )
         Files.createDirectories(cachePath.parent)
         // archive#318: download to a temp sibling and atomically swap it in, so a handle

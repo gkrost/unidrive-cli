@@ -521,6 +521,7 @@ class RemoteGather(
                 created = null,
                 hash = row.remoteHash,
                 mimeType = null,
+                version = row.remoteVersion,
             )
     }
 
@@ -1537,9 +1538,10 @@ class RemoteGather(
             !existing.isFolder &&
             existing.remoteId == item.id &&
             existing.remoteSize == item.size &&
-            !existing.remoteHash.isNullOrEmpty() &&
-            !item.hash.isNullOrEmpty() &&
-            existing.remoteHash != item.hash &&
+            ((!existing.remoteHash.isNullOrEmpty() && !item.hash.isNullOrEmpty() && existing.remoteHash != item.hash) ||
+                ((existing.remoteHash.isNullOrEmpty() || item.hash.isNullOrEmpty()) &&
+                    !existing.remoteVersion.isNullOrEmpty() && !item.version.isNullOrEmpty() && existing.remoteVersion != item.version) ||
+                (!existing.remoteHash.isNullOrEmpty() && existing.remoteVersion == null && item.hash == null && item.version != null)) &&
             cacheIsPlainCopy(existing)
 
     // The remote path of a row the merge keeps: on a rename the new one ([aliasedRemote], null when it is the path); else
