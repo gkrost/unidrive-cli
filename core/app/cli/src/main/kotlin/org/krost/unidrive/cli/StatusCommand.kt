@@ -18,6 +18,7 @@ import org.krost.unidrive.sync.Reconciler
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncScope
+import org.krost.unidrive.sync.UploadRefusals
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
@@ -250,9 +251,8 @@ class StatusCommand : Runnable {
                 // archive#136: hydrated rows use the whole UD-901 predicate; the !isHydrated
                 // branch above already routed sparse partial-downloads to downloads.
                 val refusal = db.uploadRefusal(entry.path)
-                val watermark = "${entry.localMtime}|${entry.localSize}|"
-                if (refusal != null && refusal.startsWith(watermark)) {
-                    refusedUploads += entry.path to refusal.substringAfter(watermark)
+                if (UploadRefusals.holds(refusal, entry.localMtime, entry.localSize)) {
+                    refusedUploads += entry.path to UploadRefusals.reason(refusal, entry.localMtime, entry.localSize).orEmpty()
                     continue
                 }
                 uploadsPending++

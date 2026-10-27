@@ -145,6 +145,12 @@ internal class MinimalFakeProvider(
 
     @Volatile var uploadParentGoneFolder: String = "/"
 
+    // gkrost/unidrive-cli#145: like [uploadFailuresRemaining] but upload() throws [uploadFailure] itself (a provider error of a
+    // given HTTP status, say).
+    val uploadFailureRemaining = AtomicInteger(0)
+
+    @Volatile var uploadFailure: Exception = IllegalStateException("injected upload failure")
+
     // archive#580: what folderStateById answers per remote id (UNKNOWN when unset); a set failure is thrown instead.
     val folderStates = ConcurrentHashMap<String, org.krost.unidrive.FolderState>()
 
@@ -342,6 +348,7 @@ internal class MinimalFakeProvider(
         if (uploadFailuresRemaining.getAndUpdate { p -> if (p > 0) p - 1 else p } > 0) {
             throw IllegalStateException("injected upload failure")
         }
+        uploadFailureRemaining.getAndUpdate { p -> if (p > 0) p - 1 else p }.let { before -> if (before > 0) throw uploadFailure }
         uploadConflictRemaining.getAndUpdate { p -> if (p > 0) p - 1 else p }.let { before ->
             if (before > 0) throw org.krost.unidrive.RemoteConflictException("injected remote conflict: $remotePath")
         }
@@ -992,6 +999,12 @@ internal class HydrationTestEnv(
         /** Injects [count] upload() failures before the next success. */
         fun failUploads(count: Int) {
             fakeProvider.uploadFailuresRemaining.set(count)
+        }
+
+        /** gkrost/unidrive-cli#145: injects [count] upload() failures that throw [failure] before the next success. */
+        fun failUploadsWith(count: Int, failure: Exception) {
+            fakeProvider.uploadFailure = failure
+            fakeProvider.uploadFailureRemaining.set(count)
         }
 
         /** Total upload() attempts seen by the provider (retry tests). */

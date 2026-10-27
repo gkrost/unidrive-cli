@@ -1028,7 +1028,8 @@ class InternxtProvider(
 
     // archive#493: a request the server refuses as such (400 Bad Request, 413, 415, 422) is refused again with the same bytes; it
     // becomes a PermanentUploadFailureException, so the hydration queue does not run its retry ladder on it. Everything else
-    // (5xx, 408, unrelated 409, 429, auth, network) keeps its type and stays retryable.
+    // (5xx, 408, unrelated 409, 429, auth, network) keeps its type and stays retryable. gkrost/unidrive-cli#145: a 402 is the plan's
+    // refusal (the free plan refuses empty files) and becomes the typed PlanLimitException, with the server's sentence.
     // MissingUploadsError with no landed entry after a successful reconcile is refused at commit time below.
     override suspend fun upload(
         localPath: Path,
@@ -1040,6 +1041,14 @@ class InternxtProvider(
         try {
             uploadUnclassified(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress)
         } catch (e: InternxtApiException) {
+            if (e.statusCode == PLAN_LIMIT_STATUS) {
+                throw org.krost.unidrive.PlanLimitException(
+                    "Internxt refused the upload of $remotePath (${e.statusCode}): ${e.message}",
+                    detail = serverSentence(e.message),
+                    cause = e,
+                    requestId = e.requestId,
+                )
+            }
             if (e.statusCode !in PERMANENT_UPLOAD_STATUS) throw e
             throw org.krost.unidrive.PermanentUploadFailureException(
                 "Internxt refused the upload of $remotePath (${e.statusCode}): ${e.message}",
@@ -4026,6 +4035,15 @@ class InternxtProvider(
 
         /** archive#493: statuses by which the server refuses an upload request as such; another attempt is refused again. */
         internal val PERMANENT_UPLOAD_STATUS = setOf(400, 413, 415, 422)
+
+        // gkrost/unidrive-cli#145: Payment Required, the plan's refusal of an upload.
+        internal const val PLAN_LIMIT_STATUS = 402
+
+        private val SERVER_MESSAGE = Regex("\"message\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+
+        // The `message` string of the JSON body an API error quotes ("API error: 402 Payment Required - {"message":"…"}"), else null.
+        internal fun serverSentence(errorMessage: String?): String? =
+            errorMessage?.let { SERVER_MESSAGE.find(it)?.groupValues?.get(1) }?.replace("\\\"", "\"")?.takeIf { it.isNotBlank() }
 
         // How many per-folder requests are in flight at once when the paths are resolved: the same four as the folders
         // of the tree walk being listed (the default of collectScopedInventoryImpl's concurrency).

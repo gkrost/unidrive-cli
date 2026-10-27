@@ -4201,8 +4201,10 @@ open class SyncEngine(
     ) {
         val localPath = placeholder.resolveLocal(action.path)
         val attrs = runCatching { Files.readAttributes(localPath, java.nio.file.attribute.BasicFileAttributes::class.java) }.getOrNull()
-        val stamp = "${attrs?.lastModifiedTime()?.toMillis()}|${attrs?.size()}|${e.message.orEmpty()}"
-        val recorded = db.markUploadRefused(action.path, stamp)
+        val planLimit = e is org.krost.unidrive.PlanLimitException
+        val reason = if (planLimit) "${System.currentTimeMillis() + PLAN_REFUSAL_DELAY_MS}|$PLAN_REFUSAL_TOKEN" else e.message.orEmpty()
+        val stamp = "${attrs?.lastModifiedTime()?.toMillis()}|${attrs?.size()}|$reason"
+        val recorded = db.markUploadRefused(action.path, stamp, keepCloudBaseline = planLimit && db.getEntry(action.path)?.remoteId != null)
         log.warn(
             "Permanent upload refusal for {}: {}{}",
             action.path,

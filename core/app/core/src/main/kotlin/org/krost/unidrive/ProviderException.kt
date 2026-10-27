@@ -218,6 +218,28 @@ open class ParentGoneException(
     requestId: String? = null,
 ) : PermanentUploadFailureException(message, cause, requestId)
 
+/**
+ * gkrost/unidrive-cli#145: the provider's plan does not allow this upload (HTTP 402 Payment Required; live evidence: Internxt's
+ * free plan answers an empty file with "You can not have empty files, upgrade your plan to get more features", and its web UI
+ * refuses the same). Another attempt with the same bytes is refused the same way until the plan changes, so this is a
+ * [PermanentUploadFailureException]: no retry ladder, no re-offer rounds, no replay of the same bytes at a start. [detail] is
+ * the provider's own sentence when it gave one (never a file name); the hydration layer reports the `plan_limit` token.
+ */
+open class PlanLimitException(
+    message: String,
+    val detail: String? = null,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : PermanentUploadFailureException(message, cause, requestId) {
+    /** The stable reason of this refusal: [REASON], followed by `: <detail>` when the provider gave one. */
+    val reason: String get() = if (detail.isNullOrBlank()) REASON else "$REASON: $detail"
+
+    companion object {
+        /** The stable token of a plan's refusal, on the wire and on the row's stored refusal. */
+        const val REASON = "plan_limit"
+    }
+}
+
 /** A remote item changed after the caller captured its write token. */
 open class RemoteConflictException(
     message: String,
