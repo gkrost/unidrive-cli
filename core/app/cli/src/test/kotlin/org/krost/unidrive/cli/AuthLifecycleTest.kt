@@ -25,6 +25,11 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.PrintStream
+import java.net.ConnectException
+import java.net.UnknownHostException
+import java.net.http.HttpConnectTimeoutException
+import java.nio.channels.UnresolvedAddressException
+import java.nio.file.AccessDeniedException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -385,7 +390,7 @@ class AuthLifecycleTest {
                 override suspend fun beginInteractiveAuth(
                     profileDir: Path,
                     properties: Map<String, String?>,
-                ): BeginAuthResult = throw IOException("client_secret=SHHH")
+                ): BeginAuthResult = error("client_secret=SHHH")
 
                 override fun supportsInteractiveAuth() = true
             }
@@ -395,6 +400,57 @@ class AuthLifecycleTest {
 
         assertEquals("begin_failed", errorToken())
         assertFalse("SHHH" in everything())
+    }
+
+    /** A device-code provider whose begin and complete both fail with [failure]. */
+    private fun failingFactory(failure: () -> Exception) =
+        object : ProviderFactory by DeviceFactory(ArrayDeque()) {
+            override suspend fun beginInteractiveAuth(
+                profileDir: Path,
+                properties: Map<String, String?>,
+            ): BeginAuthResult = throw failure()
+
+            override suspend fun completeInteractiveAuth(
+                profileDir: Path,
+                continuationHandle: String,
+                secret: String?,
+                properties: Map<String, String?>,
+            ): CompleteAuthResult = throw failure()
+
+            override fun supportsInteractiveAuth() = true
+        }
+
+    // Every case is run and the wrong ones are listed together: a loop that stops at the first one hides the rest.
+    private fun signInTokens(
+        failures: List<Pair<String, () -> Exception>>,
+        beginToken: String,
+        completeToken: String,
+    ): List<String> {
+        val wrong = mutableListOf<String>()
+        for ((name, failure) in failures) {
+            LifecycleHooks.factoryFor = { failingFactory(failure) }
+            for ((step, args, token) in
+                listOf(
+                    Triple("begin", arrayOf("auth", "begin", "--json"), beginToken),
+                    Triple("complete", arrayOf("auth", "complete", "--handle", "handle-1", "--json"), completeToken),
+                )) {
+                val code = run(*args)
+                val got = errorToken()
+                if (code != 1 || got != token) wrong += "$step, $name: $got (exit $code)"
+                assertFalse("SHHH" in everything(), "$step, $name must not echo the exception's message")
+            }
+        }
+        return wrong
+    }
+
+    @Test
+    fun `a sign-in step that cannot reach the provider is network_error, however deep the cause (#143)`() {
+        assertEquals(emptyList(), signInTokens(unreachableFailures(), "network_error", "network_error"))
+    }
+
+    @Test
+    fun `a sign-in step that fails without a network cause keeps begin_failed and complete_failed (#143)`() {
+        assertEquals(emptyList(), signInTokens(reachableFailures(), "begin_failed", "complete_failed"))
     }
 
     @Test
@@ -548,6 +604,31 @@ class AuthLifecycleTest {
             assertEquals(token, errorToken())
             assertFalse("SHHH" in everything(), "$token must not echo the provider's message")
         }
+    }
+
+    private fun loginTokens(
+        failures: List<Pair<String, () -> Exception>>,
+        token: String,
+    ): List<String> {
+        val wrong = mutableListOf<String>()
+        for ((name, failure) in failures) {
+            fakeLogin(mutableListOf()) { throw failure() }
+            val code = run("auth", "login", "--profile", "ix", "--email", "a@b.test", "--password-stdin", "--json", stdin = "pw\n")
+            val got = errorToken()
+            if (code != 1 || got != token) wrong += "$name: $got (exit $code)"
+            assertFalse("SHHH" in everything(), "$name must not echo the exception's message")
+        }
+        return wrong
+    }
+
+    @Test
+    fun `a login that cannot reach the provider is network_error, however deep the cause (#143)`() {
+        assertEquals(emptyList(), loginTokens(unreachableFailures(), "network_error"))
+    }
+
+    @Test
+    fun `a login that fails without a network cause stays login_failed (#143)`() {
+        assertEquals(emptyList(), loginTokens(reachableFailures(), "login_failed"))
     }
 
     @Test
@@ -769,5 +850,32 @@ class AuthLifecycleTest {
         } finally {
             holder.unlock()
         }
+    }
+
+    private companion object {
+        /** What a sign-in step throws with no network: each exception directly, and wrapped one and two causes deep. */
+        fun unreachableFailures(): List<Pair<String, () -> Exception>> {
+            val roots =
+                listOf<Pair<String, () -> Exception>>(
+                    "UnresolvedAddressException" to { UnresolvedAddressException() },
+                    "UnknownHostException" to { UnknownHostException("login.example.test SHHH") },
+                    "ConnectException" to { ConnectException("refused SHHH") },
+                    "HttpConnectTimeoutException" to { HttpConnectTimeoutException("timed out SHHH") },
+                )
+            return roots.flatMap { (name, root) ->
+                listOf(
+                    name to root,
+                    "$name in one cause" to { RuntimeException("wrapped SHHH", root()) },
+                    "$name in two causes" to { IllegalStateException("outer SHHH", RuntimeException("inner SHHH", root())) },
+                )
+            }
+        }
+
+        /** Failures that are not the network: a plain bug, and a local file the provider could not write. */
+        fun reachableFailures(): List<Pair<String, () -> Exception>> =
+            listOf(
+                "IllegalStateException" to { IllegalStateException("SHHH") },
+                "AccessDeniedException in a cause" to { IllegalStateException("SHHH", AccessDeniedException("/x/token.json")) },
+            )
     }
 }
