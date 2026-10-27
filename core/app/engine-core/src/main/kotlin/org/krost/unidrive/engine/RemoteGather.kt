@@ -110,7 +110,7 @@ class RemoteGather(
      * it is. Every path that gathers pages calls this on each page before it resolves paths and admits items.
      */
     fun placeTrashed(page: DeltaPage): DeltaPage {
-        val placed = guard.trash.place(page.items) { liveTopLevelNames() }
+        val placed = guard.trash.place(page.items, { db.getEntry(it)?.remoteId }) { liveTopLevelNames() }
         return if (placed === page.items) page else page.copy(items = placed)
     }
 
@@ -127,7 +127,7 @@ class RemoteGather(
      * or is the root of the trash namespace, which has no counterpart at the provider.
      */
     internal fun trackedRow(remoteId: String): CloudItem? {
-        if (remoteId == TrashNamespace.ROOT_ID) return null
+        if (TrashNamespace.isOwnKey(remoteId)) return null
         val entry = db.getEntryByRemoteId(remoteId) ?: return null
         // archive#491: the gather's key space is NFC; a row may keep its item's own spelling in remote_path.
         val path = PathNormalizer.nfc(entry.remotePath ?: entry.path)
@@ -137,7 +137,7 @@ class RemoteGather(
                 null
             } else {
                 val parent = db.getEntryByRemotePath(parentPath)?.takeIf { it.isFolder } ?: return null
-                parent.remoteId?.takeIf { it != TrashNamespace.ROOT_ID } ?: return null
+                parent.remoteId?.takeIf { !TrashNamespace.isOwnKey(it) } ?: return null
             }
         return CloudItem(
             id = remoteId,

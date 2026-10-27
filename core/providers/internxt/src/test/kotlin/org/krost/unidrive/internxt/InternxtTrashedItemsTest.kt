@@ -162,6 +162,37 @@ class InternxtTrashedItemsTest {
             assertTrue(tombstone.deleted && !tombstone.trashed, "a file trashed in a live folder is gone from the live view: $tombstone")
         }
 
+    // #148: folders trashed in the web UI below live folders, on an account added afterwards. The first listing carries
+    // them, flagged, at the path of the provider's tree; the live folders above them are not trashed.
+    @Test
+    fun `a folder trashed below live folders is reported on the first listing, and the folders above it stay live`() =
+        runTest {
+            val drive =
+                FakeDrive(
+                    folders =
+                        listOf(
+                            FakeFolder("in", "_INBOX", "root", fakeAt("19:00:00")),
+                            FakeFolder("v2", "golden", "in", fakeAt("19:01:00")),
+                            FakeFolder("ch", "Черновики", "v2", fakeAt("19:40:00"), "TRASHED"),
+                            FakeFolder("sy", "symbols", "v2", fakeAt("19:41:00"), "TRASHED"),
+                        ),
+                    files =
+                        listOf(
+                            FakeFile("c1", "письмо", "ch", fakeAt("19:20:00")),
+                            FakeFile("s1", "a+b", "sy", fakeAt("19:21:00")),
+                            FakeFile("g1", "live", "v2", fakeAt("19:22:00")),
+                        ),
+                )
+
+            val page = fullListing(drive, walled = false)
+
+            assertTrue(page.complete)
+            assertEquals(setOf("ch", "sy", "c1", "s1"), page.items.filter { it.trashed }.map { it.id }.toSet())
+            assertEquals("/_INBOX/golden/Черновики", page.item("ch").path)
+            assertEquals("/_INBOX/golden/symbols", page.item("sy").path)
+            for (id in listOf("in", "v2", "g1")) assertFalse(page.item(id).trashed, "$id is live")
+        }
+
     // ---- the engine reads the flag, not the path -------------------------------------------------------------------
 
     @Test

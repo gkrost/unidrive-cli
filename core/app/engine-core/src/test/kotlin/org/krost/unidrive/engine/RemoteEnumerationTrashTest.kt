@@ -180,6 +180,60 @@ class RemoteEnumerationTrashTest {
             assertNull(trash.rootPath())
         }
 
+    // #148: a folder trashed below live folders. The folders above it are live and stay where they are; under the root the
+    // way down to it exists as folders of the namespace, or the root lists empty.
+    private fun trashedBelowLive() =
+        listOf(
+            item("in", "/Inbox", isFolder = true),
+            item("v2", "/Inbox/v2", isFolder = true, parentId = "in"),
+            item("live", "/Inbox/v2/live.txt", parentId = "v2"),
+            item("sym", "/Inbox/v2/symbols", isFolder = true, trashed = true, parentId = "v2"),
+            item("s1", "/Inbox/v2/symbols/a.txt", trashed = true, parentId = "sym"),
+            item("dr", "/Inbox/v2/Drafts", isFolder = true, trashed = true, parentId = "v2"),
+            item("d1", "/Inbox/v2/Drafts/b.txt", trashed = true, parentId = "dr"),
+        )
+
+    @Test
+    fun `a folder trashed below live folders is reached from the root through folders of the namespace`() =
+        runTest {
+            provider.items = trashedBelowLive()
+
+            val result = enumeration.enumerate(reset = false)
+
+            assertTrue(result.ok)
+            assertEquals(listOf("/Papierkorb/Inbox"), db.listDirectChildren("/Papierkorb").map { it.path })
+            assertEquals(listOf("/Papierkorb/Inbox/v2"), db.listDirectChildren("/Papierkorb/Inbox").map { it.path })
+            assertEquals(
+                listOf("/Papierkorb/Inbox/v2/Drafts", "/Papierkorb/Inbox/v2/symbols"),
+                db.listDirectChildren("/Papierkorb/Inbox/v2").map { it.path }.sorted(),
+            )
+            assertEquals("s1", db.getEntry("/Papierkorb/Inbox/v2/symbols/a.txt")?.remoteId)
+            assertEquals("d1", db.getEntry("/Papierkorb/Inbox/v2/Drafts/b.txt")?.remoteId)
+            for (path in listOf("/Papierkorb/Inbox", "/Papierkorb/Inbox/v2")) {
+                val row = assertNotNull(db.getEntry(path), path)
+                assertTrue(row.isFolder, path)
+                assertTrue(trash.holdsId(row.remoteId), "$path: its key is the namespace's, so no write names it")
+            }
+            assertEquals("in", db.getEntry("/Inbox")?.remoteId, "the live folder keeps its row and its id")
+            assertEquals("v2", db.getEntry("/Inbox/v2")?.remoteId)
+            assertEquals("live", db.getEntry("/Inbox/v2/live.txt")?.remoteId)
+            assertNull(db.getEntry("/Inbox/v2/symbols"), "not among the live items")
+        }
+
+    @Test
+    fun `the folders on the way down leave with the last trashed item below them`() =
+        runTest {
+            provider.items = trashedBelowLive()
+            enumeration.enumerate(reset = false)
+
+            provider.items = trashedBelowLive().filter { !it.trashed }
+            val result = enumeration.enumerate(reset = false)
+
+            assertTrue(result.ok)
+            assertEquals(listOf("/Inbox", "/Inbox/v2", "/Inbox/v2/live.txt"), alive().map { it.path })
+            assertNull(trash.rootPath())
+        }
+
     // ---- the rows a provider may ask for -------------------------------------------------------------------------
 
     @Test
