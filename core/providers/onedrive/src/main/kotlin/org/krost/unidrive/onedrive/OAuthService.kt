@@ -312,7 +312,6 @@ class OAuthService(
             scope = scope,
         )
 
-
     override fun close() {
         httpClient.close()
     }
@@ -353,8 +352,6 @@ class OAuthService(
 
 private const val MAX_AUTH_FLAKE_ATTEMPTS = 3
 
-// 408 / 429 / 5xx say nothing about the refresh token: an outage or a throttle at the token endpoint must not read as
-// "expired, re-authenticate" (the daemon would stop). 400 invalid_grant, 401 and 403 are rejections.
 // A decode error's message quotes the JSON it choked on — for a token response that is the access and
 // refresh token themselves. Rethrow with the same exception family (callers already classify it) and only
 // the shape named (issue#83 E).
@@ -367,6 +364,8 @@ private fun Json.decodeTokenResponse(body: String): TokenResponse =
         )
     }
 
+// 408 / 429 / 5xx say nothing about the refresh token: an outage or a throttle at the token endpoint must not read as
+// "expired, re-authenticate" (the daemon would stop). 400 invalid_grant, 401 and 403 are rejections.
 private suspend fun refreshRefused(response: HttpResponse): Nothing {
     if (HttpRetryBudget.isTransientHttpStatus(response.status.value)) {
         throw TransientNetworkException("Token refresh failed (HTTP ${response.status.value}); the endpoint is unavailable, not rejecting the token")
