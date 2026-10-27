@@ -4430,11 +4430,18 @@ class InternxtProvider(
          * unicode run of 2026-10-27 uploaded ` leading space.txt`, the
          * listing returned `leading space.txt`, and the engine followed
          * that as a rename of the user's file. Only control characters
-         * (C0 `\u0000`..`\u001f` and DEL `\u007f`) are stripped now, at
-         * both ends; spaces, no-break spaces and other Unicode whitespace
-         * stay. The `\n` of UD-317 is still stripped.
+         * (C0 `\u0000`..`\u001f` and DEL `\u007f`) in the whitespace at
+         * either end are stripped; spaces, no-break spaces and other Unicode
+         * whitespace stay. The `\n` of UD-317 is still stripped.
          */
-        fun sanitizeName(raw: String): String = raw.trim { it < ' ' || it == '\u007f' }
+        fun sanitizeName(raw: String): String {
+            fun control(c: Char) = c < ' ' || c == '\u007f'
+            val first = raw.indexOfFirst { !it.isWhitespace() && !control(it) }
+            if (first < 0) return raw.filterNot(::control)
+            val last = raw.indexOfLast { !it.isWhitespace() && !control(it) }
+            return raw.substring(0, first).filterNot(::control) + raw.substring(first, last + 1) +
+                raw.substring(last + 1).filterNot(::control)
+        }
 
         internal fun internxtVersionToken(file: InternxtFile): String =
             "${file.uuid}|${file.modificationTime.orEmpty()}|${file.size}"

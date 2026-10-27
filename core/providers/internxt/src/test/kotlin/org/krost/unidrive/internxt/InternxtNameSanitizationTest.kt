@@ -54,6 +54,11 @@ class InternxtNameSanitizationTest {
     }
 
     @Test
+    fun `controls mixed with edge spaces are stripped without losing the spaces`() {
+        assertEquals(" a ", InternxtProvider.sanitizeName(" \na\r "))
+    }
+
+    @Test
     fun `NUL and DEL at the ends are stripped`() {
         assertEquals("a", InternxtProvider.sanitizeName("\u0000a\u007f"))
     }
