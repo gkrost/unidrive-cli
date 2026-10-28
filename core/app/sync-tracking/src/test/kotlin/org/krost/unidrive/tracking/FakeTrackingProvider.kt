@@ -33,6 +33,19 @@ class FakeTrackingProvider : CloudProvider {
     val uploadedPaths: MutableList<String> = mutableListOf()
     val deletedPaths: MutableList<String> = mutableListOf()
 
+    /**
+     * Test hook: bytes a [download] delivers for a path, overriding [files].
+     * Models a remote that moves on (or a truncated transfer) between the
+     * metadata read and the download, so the staged bytes differ from what
+     * [getMetadata] reported.
+     */
+    val downloadContents: MutableMap<String, ByteArray> = mutableMapOf()
+
+    /** Test hook: the algorithm [hashAlgorithm] reports. Null = the provider has none. */
+    var hashAlgorithmOverride: org.krost.unidrive.HashAlgorithm? = null
+
+    override fun hashAlgorithm(): org.krost.unidrive.HashAlgorithm? = hashAlgorithmOverride
+
     /** Test hook: what [getMetadata] throws instead of answering (a transient failure, say). */
     var getMetadataError: Throwable? = null
 
@@ -259,7 +272,7 @@ class FakeTrackingProvider : CloudProvider {
         remotePath: String,
         destination: Path,
     ): Long {
-        val bytes = files[remotePath] ?: throw NoSuchElementException("no remote at $remotePath")
+        val bytes = downloadContents[remotePath] ?: files[remotePath] ?: throw NoSuchElementException("no remote at $remotePath")
         beforeDownload?.also { beforeDownload = null; it() }
         Files.createDirectories(destination.parent)
         Files.write(destination, bytes)
@@ -439,6 +452,10 @@ class FakeTrackingProvider : CloudProvider {
  */
 class HashlessFakeProvider : CloudProvider {
     val files: MutableMap<String, ByteArray> = mutableMapOf()
+
+    /** Test hook: bytes a [download] delivers, overriding [files] (see [FakeTrackingProvider.downloadContents]). */
+    val downloadContents: MutableMap<String, ByteArray> = mutableMapOf()
+
     override val id = "hashless-fake"
     override val displayName = "Hashless Fake"
     override var isAuthenticated: Boolean = true
@@ -459,7 +476,7 @@ class HashlessFakeProvider : CloudProvider {
         remotePath: String,
         destination: Path,
     ): Long {
-        val bytes = files[remotePath] ?: throw NoSuchElementException("no remote at $remotePath")
+        val bytes = downloadContents[remotePath] ?: files[remotePath] ?: throw NoSuchElementException("no remote at $remotePath")
         Files.createDirectories(destination.parent)
         Files.write(destination, bytes)
         return bytes.size.toLong()

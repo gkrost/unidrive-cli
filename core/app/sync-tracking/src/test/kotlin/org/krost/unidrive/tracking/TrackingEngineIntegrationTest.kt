@@ -13,6 +13,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.HashAlgorithm
 
 /**
  * End-to-end integration test for the tracking-set engine.
@@ -1023,6 +1024,87 @@ class TrackingEngineIntegrationTest {
                 "the pass after a claim must plan an upload of the claimed copy, plan=${report.plan}",
             )
             assertEquals("local", provider.files["/x.txt"]?.decodeToString(), "the claimed local copy must win")
+        } finally {
+            tracking2.close()
+        }
+    }
+
+    /**
+     * The download path must read the remote metadata BEFORE the transfer and
+     * verify the staged bytes against it: a download is recorded with the etag
+     * of the version that was actually fetched. Bytes that fail the check are
+     * not adopted as synced — the row stays resumable and the next pass
+     * downloads again.
+     */
+    @Test
+    fun `a download that does not match the remote metadata fails and is retried next pass`() {
+        provider.hashAlgorithmOverride = HashAlgorithm.Sha256Hex
+        provider.files["/d.txt"] = "v1".toByteArray()
+        // The transfer delivers bytes that are not what the metadata described
+        // (the remote moved on between the metadata read and the download).
+        provider.downloadContents["/d.txt"] = "v2-with-other-bytes".toByteArray()
+
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = TrackingEngine(provider, tracking, syncRoot).syncOnce()
+            assertEquals(
+                ApplyOutcome.FAILED,
+                report.applied.single().outcome,
+                "unverified bytes must not be adopted as synced, was ${report.applied}",
+            )
+            val row = tracking.lookup("/d.txt")
+            assertTrue(
+                row == null || row.state == TrackState.PendingDownload,
+                "the row must stay resumable for the next pass, was $row",
+            )
+            assertFalse(Files.exists(syncRoot.resolve("d.txt")), "unverified bytes must not land at the destination")
+        } finally {
+            tracking.close()
+        }
+
+        provider.downloadContents.clear()
+        val tracking2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = TrackingEngine(provider, tracking2, syncRoot).syncOnce()
+            assertTrue(
+                report.applied.all { it.outcome == ApplyOutcome.SUCCESS },
+                "the retry with matching bytes must succeed, was ${report.applied}",
+            )
+            assertEquals("v1", Files.readString(syncRoot.resolve("d.txt")))
+        } finally {
+            tracking2.close()
+        }
+    }
+
+    /**
+     * Same contract for a provider without content hashes: the size read
+     * before the download is the only check, and a short transfer must fail
+     * the action instead of being adopted as synced.
+     */
+    @Test
+    fun `a short download from a hashless provider is not adopted as synced`() {
+        val hashless = HashlessFakeProvider()
+        hashless.files["/h.txt"] = "v1-longer".toByteArray()
+        hashless.downloadContents["/h.txt"] = "v1".toByteArray() // truncated transfer
+
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = TrackingEngine(hashless, tracking, syncRoot).syncOnce()
+            assertEquals(
+                ApplyOutcome.FAILED,
+                report.applied.single().outcome,
+                "a download shorter than the remote item must not be adopted, was ${report.applied}",
+            )
+            assertFalse(Files.exists(syncRoot.resolve("h.txt")))
+        } finally {
+            tracking.close()
+        }
+
+        hashless.downloadContents.clear()
+        val tracking2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            TrackingEngine(hashless, tracking2, syncRoot).syncOnce()
+            assertEquals("v1-longer", Files.readString(syncRoot.resolve("h.txt")))
         } finally {
             tracking2.close()
         }

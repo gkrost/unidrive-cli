@@ -7,6 +7,7 @@ import org.krost.unidrive.DeltaCursorExpiredException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.sync.ConflictLog
+import org.krost.unidrive.sync.HashVerifier
 import org.krost.unidrive.sync.Reconciler
 import org.krost.unidrive.sync.TrashManager
 import org.slf4j.LoggerFactory
@@ -265,13 +266,26 @@ class TrackingEngine(
 
         Files.createDirectories(dest.parent ?: syncRoot)
         val staged = dest.resolveSibling(".${dest.fileName}.unidrive-download-${UUID.randomUUID()}")
+        // The remote's identity is read BEFORE the bytes: the row must record
+        // the etag of the version that was actually downloaded, not of
+        // whatever a probe after the transfer happens to see. Verification
+        // below binds the staged bytes to this metadata.
+        val meta = provider.getMetadata(path)
         try {
-            provider.download(path, staged)
+            val written = provider.download(path, staged)
             val current = observeLocal(path)
             if (!matchesTrackedLocalSnapshot(existing, current)) {
                 preserveConflict(path, dest, "remote download would overwrite local changes")
                 if (existing == null) trackingSet.remove(path) else trackingSet.upsert(existing)
                 return AppliedAction(action, ApplyOutcome.SKIPPED, "local changed after scan; preserved conflict copy")
+            }
+            if (!HashVerifier.verify(staged, meta.hash, provider.hashAlgorithm())) {
+                throw ProviderException(
+                    "download of $path does not match the remote hash reported before the transfer (${meta.hash})",
+                )
+            }
+            if (written != meta.size) {
+                throw ProviderException("download of $path wrote $written bytes, the remote item has ${meta.size}")
             }
             Files.move(staged, dest, StandardCopyOption.REPLACE_EXISTING)
         } finally {
@@ -279,7 +293,19 @@ class TrackingEngine(
         }
 
         val l = observeLocal(path)
-        val r = observeRemote(path)
+        // Adopt the remote state of the version that was downloaded — the
+        // metadata read before the transfer, never a fresh probe: a remote
+        // change after the download must stay visible as a remote change on
+        // the next pass, not be adopted as synced.
+        val r =
+            RemoteObservation(
+                exists = true,
+                remoteFileId = meta.id,
+                etag = meta.hash,
+                size = meta.size,
+                hash = meta.hash,
+                serverMtime = meta.modified,
+            )
         trackingSet.adopt(path, provider.id, l, r)
         return AppliedAction(action, ApplyOutcome.SUCCESS, null)
     }
