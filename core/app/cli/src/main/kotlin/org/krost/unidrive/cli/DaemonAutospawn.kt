@@ -225,11 +225,11 @@ object DaemonAutospawn {
         }
     }
 
-    /** The child daemon's post-mortem flags into [dir]: where fatal-crash hs_err logs and the OOM
-     *  heap dump land (the dump's -XX:+HeapDumpOnOutOfMemoryError rides jvm-flags.txt), plus the
-     *  bounded GC log, one per profile ([gcLogFileName]). The JVM silently skips a dump into a
-     *  missing directory and treats a path without a trailing separator as a FILE name: the
-     *  directory is created here, the paths carry the trailing separator. A directory that cannot be created degrades to the JVM's silent
+    /** The child daemon's post-mortem flags into [dir]: where fatal-crash hs_err logs, the OOM
+     *  heap dump (the dump's -XX:+HeapDumpOnOutOfMemoryError rides jvm-flags.txt) and the
+     *  bounded GC log land, one per profile ([heapDumpFileName], [gcLogFileName]). The JVM
+     *  silently skips a dump into a missing directory: the directory is created here, the paths
+     *  are FILE names (no trailing separator). A directory that cannot be created degrades to the JVM's silent
      *  skip — the spawn itself never fails on diagnostics. */
     private fun diagArgs(
         dir: Path,
@@ -240,10 +240,18 @@ object DaemonAutospawn {
         val diag = dir.toString().removeSuffix(sep) + sep
         return listOf(
             "-XX:ErrorFile=${diag}hs_err_pid%p.log",
-            "-XX:HeapDumpPath=$diag",
+            "-XX:HeapDumpPath=$diag${heapDumpFileName(profileName)}",
             "-Xlog:gc*:file=$diag${gcLogFileName(profileName)}:time,uptime:filecount=5,filesize=10m",
         )
     }
+
+    /** The profile's own OOM heap dump, `heap-<profile>.hprof`, under the profile-name rule of [gcLogFileName].
+     *  One FIXED file per profile: HotSpot does not overwrite an existing dump, so an OOM restart loop cannot
+     *  stack a fresh ~2 GB hprof — which holds decrypted tokens — on every restart; the first dump stays for
+     *  the operator to prune, and deleting it lets the next OOM dump again. The launchers build the same name
+     *  (dist/launcher/unidrive.ps1.tmpl, unidrive.sh.tmpl). */
+    internal fun heapDumpFileName(profileName: String): String =
+        if (FILE_SAFE_PROFILE.matches(profileName)) "heap-$profileName.hprof" else "heap-default.hprof"
 
     /** The profile's own GC log file, `gc-<profile>.log`: two daemons (one per profile) sharing one file
      *  cannot rotate it (the second JVM's rename of a file the first holds open fails with "Permission
