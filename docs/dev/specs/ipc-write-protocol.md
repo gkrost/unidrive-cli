@@ -276,6 +276,26 @@ hydration.refuse_name {path, clear:true} -> {"ok":true,"cleared":true|false}
 - `daemon.status` lists `hydration.refuse_name` in `capabilities` on an engine that answers the verb; a client sends it
   only then, and keeps the refusal to itself on an older engine.
 
+**Browsing before the first scan has finished (`hydration.list_live`).** A profile's first enumeration writes its rows at
+the end of a scan that takes hours on a big drive (#27). On an engine that lists `hydration.list_live` in the
+`daemon.status` `capabilities`, `hydration.list` of a folder state.db does not know yet reads the folder from the
+cloud (one provider listing, paged by the provider) and answers with it. Nothing changes on the wire: the same reply,
+the same entries (cloud-only rows: `hydrated:false`, `remote_id` and `remote_modified_ms` set).
+
+- **When.** While no enumeration has completed (`daemon.status` `enumeration.first` is true) and the folder holds no row
+  that came from the cloud: the root, or a folder that the scan or an earlier live listing has brought in. A folder
+  state.db knows keeps answering from state.db; after the first scan completes nothing here applies and a folder with
+  no rows is empty. A path in the trash namespace, a view, or outside the `sync_path` scope is never read live.
+- **What is kept.** The rows go into state.db as the scan writes them (same fields, same scope and name checks), so
+  the scan later finds them and reaps nothing that exists in the cloud. A pending upload's row stays its own; two
+  cloud items of one name are left to the scan, which places both under their decorated names.
+- **Failure.** A listing that fails answers `hydration.list` with `ok:false` (ask again), never with an empty folder.
+  A folder the cloud no longer has answers from state.db.
+- **Cost.** One listing per folder at a time, four at once across folders, and a folder found empty in the cloud is not
+  asked again for ten seconds. A client that lists many folders together may do so; the later ones wait for a permit.
+- A client needs no new handling: it may read the capability to know that a folder lists at once during the first scan
+  (to drop a "waiting for the scan" state for folders it can open), and treats an older engine as before.
+
 ## 4. Events (subscription stream)
 
 | Event | Shape | Meaning |

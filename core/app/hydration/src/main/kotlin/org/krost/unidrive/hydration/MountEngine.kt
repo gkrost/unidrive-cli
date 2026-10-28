@@ -91,6 +91,7 @@ import java.time.Instant
  *    scope, so an upload still running then is not cancelled first; a row it could not settle stays
  *    pending for the replay at the next start (unchanged by archive#560 U3).
  */
+@Suppress("LargeClass") // the mount verbs share one set of per-path locks and the row/provider rules; see the notes above
 class MountEngine private constructor(
     private val wiring: MountWiring,
 ) : EnumerationEntryPoint {
@@ -253,6 +254,25 @@ class MountEngine private constructor(
      * not wait for it. See `RemoteEnumeration.status`.
      */
     fun enumerationStatus(): EnumerationStatus = wiring.enumeration.status()
+
+    // gkrost/unidrive-cli#27: folders listed from the provider while the first scan has not completed.
+    private val liveFolders =
+        LiveFolderList(
+            db = db,
+            gather = gather,
+            guard = guard,
+            remotePathOf = { path, row -> remotePathOf(path, row) },
+            listRemote = { remotePath -> watchingCredentials { provider.listChildren(remotePath) }.also { recordProviderContact() } },
+            log = log,
+        )
+
+    /**
+     * gkrost/unidrive-cli#27: the rows of [folder] (the engine path without the trailing slash, "" for the root) after
+     * a live listing, or null when the folder is answered from state.db. A live listing happens only while no enumeration
+     * has completed and state.db holds no cloud row of the folder; the rows are saved as the scan saves them. A failed
+     * listing throws. See [LiveFolderList].
+     */
+    suspend fun listFolderLive(folder: String): List<SyncEntry>? = liveFolders.rowsOrNull(folder)
 
     /**
      * archive#580: an upload was refused because the provider's path walk found the folder [folderPath] (a remote path) gone.
