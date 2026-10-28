@@ -14,6 +14,7 @@ import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.ProviderException
+import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.http.Priority
 import org.krost.unidrive.io.moveFile
@@ -2850,7 +2851,14 @@ open class SyncEngine(
         }
     }
 
-    private suspend fun applyUpload(action: SyncAction.Upload) {
+    private suspend fun applyUpload(
+        action: SyncAction.Upload,
+        // gkrost/unidrive-cli#57: the cloud version this write replaces when it is not the row's: the one a last-writer-wins
+        // conflict decided to overwrite. Null: the row's.
+        replaces: CloudItem? = null,
+        // A refused write is resolved once (compared, adopted or kept both); the writes of that resolution are not resolved again.
+        resolveRefusal: Boolean = true,
+    ) {
         // archive#115: LOCAL read uses action.path (the real local path); the REMOTE
         // upload target is action.remoteTarget ?: action.path. For a non-aliased
         // upload remoteTarget is null, so remotePath == action.path and this is
@@ -2862,23 +2870,35 @@ open class SyncEngine(
         log.debug("Upload: {} -> {} ({} bytes)", action.path, remotePath, sizeForLog)
         // UD-113: capture pre-action remote hash so the audit entry's oldHash reflects
         // the version we replaced (or null for a fresh upload).
-        val prevHash = db.getEntry(action.path)?.remoteHash
+        val row = db.getEntry(action.path)
+        val prevHash = row?.remoteHash
+        // gkrost/unidrive-cli#57: a modify is based on the version the row records (or [replaces]): the provider refuses it when
+        // the cloud item has changed since (Dropbox writes against its rev, S3 sends If-Match, Internxt compares its token).
+        val ifMatch = if (action.remoteId == null) null else writeGuard(replaces?.let { it.version ?: it.hash } ?: row?.writeToken)
         val sent = statBeforeUpload(localPath)
+
+        fun auditFailure(e: Exception) =
+            auditLog?.emit(
+                action = "Upload",
+                path = action.path,
+                size = if (sizeForLog >= 0) sizeForLog else null,
+                oldHash = prevHash,
+                result = "failed:${e.javaClass.simpleName}: ${e.message}",
+            )
         val result =
             try {
                 // UD-366: action.remoteId carries the existing remote UUID for MODIFIED uploads;
                 // null for NEW. Internxt routes through PUT /files/{uuid} when non-null.
-                provider.upload(localPath, remotePath, existingRemoteId = action.remoteId) { transferred, total ->
+                provider.upload(localPath, remotePath, existingRemoteId = action.remoteId, ifMatchETag = ifMatch) { transferred, total ->
                     reporter.onTransferProgress(action.path, transferred, total)
                 }
+            } catch (e: RemoteConflictException) {
+                auditFailure(e)
+                if (!resolveRefusal) throw e
+                resolveRefusedUpload(action, remotePath, localPath, e)
+                return
             } catch (e: Exception) {
-                auditLog?.emit(
-                    action = "Upload",
-                    path = action.path,
-                    size = if (sizeForLog >= 0) sizeForLog else null,
-                    oldHash = prevHash,
-                    result = "failed:${e.javaClass.simpleName}: ${e.message}",
-                )
+                auditFailure(e)
                 throw e
             }
         // The eventually-consistent delta feed may not list this just-written remote
@@ -2930,6 +2950,67 @@ open class SyncEngine(
             result = "success",
         )
     }
+
+    // gkrost/unidrive-cli#57: the token a mirror write hands the provider as ifMatchETag. A provider with versions of its own
+    // (OneDrive) guards a replace itself, with the item's current eTag at upload time, and answers a refusal by keeping both on
+    // its side (CloudItem.keptBoth), which the mirror does not apply: it gets no token, as before.
+    private fun writeGuard(token: String?): String? = token?.takeUnless { provider.reportsItemVersions }
+
+    /**
+     * gkrost/unidrive-cli#57: the provider refused a guarded write: the item changed in the cloud after the plan (a modify), or a
+     * create met an item at the path. As OneDrive and Internxt do with their own collisions, the content decides: an item that
+     * holds the local bytes already is adopted, and nothing is sent; any other, or one that cannot be compared, is kept, and
+     * the local file becomes a keep-both copy beside it, the conflict of a file changed on both sides. A path that is gone,
+     * or a folder, leaves the refusal standing: the next pass plans it again from a fresh listing.
+     */
+    private suspend fun resolveRefusedUpload(
+        action: SyncAction.Upload,
+        remotePath: String,
+        localPath: Path,
+        refusal: RemoteConflictException,
+    ) {
+        val current = currentItemOrNull(remotePath)
+        if (current == null || current.isFolder || current.deleted) throw refusal
+        if (holdsLocalBytes(current, localPath)) {
+            log.info("Upload of {} refused: the cloud holds the same bytes already; adopted", action.path)
+            applyCreatePlaceholder(SyncAction.CreatePlaceholder(action.path, current, shouldHydrate = false))
+            return
+        }
+        log.warn("Upload of {} refused: the cloud item changed since the plan; keeping both", action.path)
+        val localState = if (action.remoteId == null) ChangeState.NEW else ChangeState.MODIFIED
+        applyConflict(
+            SyncAction.Conflict(action.path, localState, ChangeState.MODIFIED, current, conflictPolicyFor(conflictOverrides, action.path, conflictPolicy)),
+        )
+    }
+
+    private suspend fun currentItemOrNull(remotePath: String): CloudItem? =
+        try {
+            provider.getMetadata(remotePath)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: AuthenticationException) {
+            throw e
+        } catch (e: Exception) {
+            log.debug("The item at {} cannot be looked up: {}", remotePath, e.message)
+            null
+        }
+
+    // The provider's content hash, else its own proof (Internxt); whatever cannot be compared holds other bytes, the safe side.
+    private suspend fun holdsLocalBytes(
+        item: CloudItem,
+        localPath: Path,
+    ): Boolean =
+        try {
+            HashVerifier.matches(localPath, item.hash, provider.hashAlgorithm()) ||
+                provider.contentMatchesLocal(item.id, item.path, localPath)?.same == true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: AuthenticationException) {
+            throw e
+        } catch (e: Exception) {
+            log.debug("Content of {} could not be compared: {}", item.path, e.message)
+            false
+        }
 
     private suspend fun applyMoveRemote(action: SyncAction.MoveRemote) {
         // archive#115: action.fromPath / action.path are REAL-LOCAL (DB + resolveLocal
@@ -3734,7 +3815,7 @@ open class SyncEngine(
                     action.remoteItem.path.substringBeforeLast('/') + "/" + keptCopyPath.substringAfterLast('/')
                 val copyTarget = if (canonicalCopy != keptCopyPath) canonicalCopy else null
                 try {
-                    applyUpload(SyncAction.Upload(keptCopyPath, remoteTarget = copyTarget))
+                    applyUpload(SyncAction.Upload(keptCopyPath, remoteTarget = copyTarget), resolveRefusal = false)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: AuthenticationException) {
@@ -3811,7 +3892,8 @@ open class SyncEngine(
             // UD-366: conflict-loser is the remote — overwrite it in place rather than
             // POSTing a duplicate. action.remoteItem is non-null on this branch because
             // remoteWins=false implies a remote modification was the conflict trigger.
-            applyUpload(SyncAction.Upload(action.path, remoteId = action.remoteItem?.id))
+            // gkrost/unidrive-cli#57: guarded by the version that lost, the conflict's, not the older one the row records.
+            applyUpload(SyncAction.Upload(action.path, remoteId = action.remoteItem?.id), replaces = action.remoteItem, resolveRefusal = false)
         }
     }
 

@@ -122,8 +122,13 @@ class FakeCloudProvider : CloudProvider {
     // adopted cursor never enumerated them) — getMetadata sees them, the delta does not.
     val remoteFoldersExisting = mutableSetOf<String>()
 
+    // gkrost/unidrive-cli#57: what getMetadata answers for a path before the delta items: the provider's own current view,
+    // which may be newer than the delta the engine gathered.
+    val metadataOverride = mutableMapOf<String, CloudItem>()
+
     override suspend fun getMetadata(path: String): CloudItem {
         getMetadataError?.let { throw it }
+        metadataOverride[path]?.let { return it }
         if (path in remoteFoldersExisting) {
             return CloudItem(
                 id = "exists-" + path,
@@ -234,6 +239,11 @@ class FakeCloudProvider : CloudProvider {
     var lastUploadExistingRemoteId: String? = null
         private set
 
+    // gkrost/unidrive-cli#57: (remotePath, ifMatchETag) of every upload attempt, and a stand-in for a provider with conditional
+    // writes: when it answers true for (remotePath, existingRemoteId, ifMatchETag) the upload is refused as a conflict.
+    val uploadIfMatches = mutableListOf<Pair<String, String?>>()
+    var refuseUpload: ((remotePath: String, existingRemoteId: String?, ifMatchETag: String?) -> Boolean)? = null
+
     // archive#417: when set, upload() reports this as the item's modified time (what a real
     // provider returns for the write: the time the server will list next).
     var uploadModified: Instant? = null
@@ -250,7 +260,11 @@ class FakeCloudProvider : CloudProvider {
         onProgress: ((Long, Long) -> Unit)?,
     ): CloudItem {
         uploadAttempts.add(remotePath)
+        uploadIfMatches.add(remotePath to ifMatchETag)
         uploadThrowByPath[remotePath]?.let { throw it }
+        if (refuseUpload?.invoke(remotePath, existingRemoteId, ifMatchETag) == true) {
+            throw RemoteConflictException("'$remotePath' changed since it was last synced")
+        }
         lastUploadExistingRemoteId = existingRemoteId
         if (authFailOnUpload) throw AuthenticationException("Token expired")
         if (uploadFailCount > 0) {
