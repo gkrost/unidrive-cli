@@ -3037,6 +3037,22 @@ class StateDatabase(
             }
         }
 
+        /**
+         * Copies the database at [source] into the new file [target], the way [snapshotOf] does: `VACUUM INTO` through a
+         * read-only connection, so it is a consistent copy while another connection (the daemon) holds writes, and one
+         * file that holds what the WAL held (no sidecars). The copy is neither opened nor migrated. `sync --reset` and
+         * `refresh --reset` keep the state they clear this way (#100).
+         */
+        fun copyInto(
+            source: Path,
+            target: Path,
+        ) {
+            DriverManager.getConnection("jdbc:sqlite:${source.toAbsolutePath().toUri()}?mode=ro&busy_timeout=5000").use { c ->
+                val into = target.toAbsolutePath().toString().replace('\\', '/').replace("'", "''")
+                c.createStatement().use { it.execute("VACUUM INTO '$into'") }
+            }
+        }
+
         private fun readSchemaVersionOf(c: Connection): Int? =
             try {
                 c.prepareStatement("SELECT value FROM sync_state WHERE key=?").use { st ->
