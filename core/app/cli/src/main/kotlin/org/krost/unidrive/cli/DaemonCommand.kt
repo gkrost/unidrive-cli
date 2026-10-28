@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import org.krost.unidrive.AuthRequiredException
+import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
@@ -176,6 +177,13 @@ class DaemonRunCommand : Runnable {
             // The IPC token files could not be written or verified: the daemon never runs without its
             // IPC. The reason is already on stderr and in the log, as one line.
             kotlin.system.exitProcess(IpcAuth.STARTUP_REFUSED_EXIT_CODE)
+        } catch (_: AuthenticationException) {
+            // The provider refused the credentials — at start (the one-line stderr report beside
+            // authenticateAndLog) or surfaced by the serve loop (the lifecycle-error log line).
+            // Restarting cannot fix revoked or expired credentials, so exit 78, the config-shaped
+            // refusal the shipped units treat as a clean stop, instead of 1, which Restart=on-failure
+            // would retry at a fixed interval for ever.
+            kotlin.system.exitProcess(parent.MODE_REFUSAL_EXIT)
         }
     }
 }
