@@ -388,6 +388,10 @@ open class SyncEngine(
         r.foldCase = caseFolds
         // archive#660: the mirror's ignore rules, applied wherever the exclude patterns are.
         if (mirrorRules != null) r.isIgnored = ::ignoredByRules
+        // archive#503: the local names the last scan refused as an NFC clash, asked by the reconciler's folder walk
+        // (a remote folder delete must not take a blocked member with it). Read at call time: the scanner rebuilds
+        // its clash set on every scan.
+        r.isBlocked = { scanner.isUnderNfcCollision(it) }
     }
 
     // Debounce state for remote-change wake hints (Internxt notifications WS).

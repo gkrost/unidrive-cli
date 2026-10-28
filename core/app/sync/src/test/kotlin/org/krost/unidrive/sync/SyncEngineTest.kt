@@ -7,7 +7,9 @@ import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.*
 import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.sync.audit.AuditLog
+import org.krost.unidrive.sync.model.ChangeState
 import org.krost.unidrive.sync.model.ConflictPolicy
+import org.krost.unidrive.sync.model.SyncAction
 import org.krost.unidrive.sync.model.SyncEntry
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -4260,6 +4262,18 @@ class SyncEngineTest {
     // UD-256 — persist --sync-path scope across runs; refuse bare bidirectional
     // when prior scoped runs left an effective_scope behind.
 
+    // The conflict tests drive applyConflict directly: a last-writer-wins engine whose deletes are
+    // plain deletes (no trash round-trip asserting on OS-trash state).
+    private fun conflictEngine() =
+        SyncEngine(
+            provider = provider,
+            db = db,
+            syncRoot = syncRoot,
+            conflictPolicy = ConflictPolicy.LAST_WRITER_WINS,
+            reporter = ProgressReporter.Silent,
+            useTrash = false,
+        )
+
     private fun engineForScope(
         reporter: ProgressReporter = ProgressReporter.Silent,
         syncPath: String? = null,
@@ -5188,4 +5202,33 @@ class SyncEngineTest {
                 }
             assertTrue(messages.none { it.contains("outside the standing scope") }, "no drift expected: $messages")
         }
+
+    @Test
+    fun `a remote folder delete keeps an excluded file below it`() =
+        runTest {
+            provider.files["/dir/a.txt"] = ByteArray(3)
+            provider.deltaItems = listOf(cloudItem("/dir", isFolder = true), cloudItem("/dir/a.txt", size = 3))
+            provider.deltaCursor = "cursor-1"
+            engine.syncOnce()
+            assertTrue(Files.exists(syncRoot.resolve("dir/a.txt")))
+
+            // The scan never reports the repository metadata below the folder; deleting the folder must not take it.
+            Files.createDirectories(syncRoot.resolve("dir/.git"))
+            Files.writeString(syncRoot.resolve("dir/.git/x"), "repository metadata")
+            provider.files.remove("/dir/a.txt")
+            provider.deltaItems =
+                listOf(cloudItem("/dir", isFolder = true, deleted = true), cloudItem("/dir/a.txt", deleted = true))
+            provider.deltaCursor = "cursor-2"
+            engine.syncOnce()
+
+            assertEquals(
+                "repository metadata",
+                Files.readString(syncRoot.resolve("dir/.git/x")),
+                "the excluded file the scan never reports survives",
+            )
+            assertFalse(Files.exists(syncRoot.resolve("dir/a.txt")), "the tracked, unchanged file below the folder is still deleted")
+            assertTrue(Files.isDirectory(syncRoot.resolve("dir")), "the folder stays for the content it holds")
+            assertEquals(listOf("/dir"), provider.createdFolders.toList(), "the folder the remote deleted is created again")
+        }
+
 }
