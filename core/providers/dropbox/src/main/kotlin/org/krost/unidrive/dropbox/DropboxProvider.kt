@@ -59,7 +59,8 @@ import java.util.Collections
  *   last cursor is the wake-up hint.
  * - **Conditional writes:** the engine's write token is the content hash it last saw. A guarded upload or delete reads
  *   the file's metadata, refuses when the hash moved on ([RemoteConflictException]), and otherwise writes against that
- *   metadata's `rev` (`update` mode, `parent_rev`), so a change landing in between is refused by Dropbox itself.
+ *   metadata's `rev` (`update` mode, `parent_rev`), so a change landing in between is refused by Dropbox itself. A create
+ *   uses `add` mode: a file of another content at the path is a conflict too.
  * - **Ids:** every item's `id:` addresses it directly, so the id-addressed download, move and delete never resolve by
  *   name.
  * - **Team spaces:** when the account's root namespace is not its home namespace, every call carries the root as its
@@ -262,11 +263,14 @@ class DropboxProvider(
         }
         ready()
         val size = Files.size(localPath)
+        // gkrost/unidrive-cli#57: a create (nothing to replace, no token) adds: a file that appeared at the path after the plan
+        // is a conflict for the caller to resolve, never overwritten. A replace without a token overwrites.
+        val create = existingRemoteId == null && ifMatchETag == null
         val mode =
-            if (ifMatchETag != null) {
-                obj(".tag" to "update", "update" to currentRev(target, ifMatchETag))
-            } else {
-                obj(".tag" to "overwrite")
+            when {
+                ifMatchETag != null -> obj(".tag" to "update", "update" to currentRev(target, ifMatchETag))
+                create -> obj(".tag" to "add")
+                else -> obj(".tag" to "overwrite")
             }
         val commit =
             obj(
@@ -287,7 +291,7 @@ class DropboxProvider(
                     uploadInSession(remotePath, localPath, size, commit, onProgress)
                 }
             } catch (e: DropboxApiException) {
-                throw uploadFailure(e, remotePath, guarded = ifMatchETag != null)
+                throw uploadFailure(e, remotePath, guarded = ifMatchETag != null || create)
             }
         onProgress?.invoke(size, size)
         return items.toCloudItem(meta)

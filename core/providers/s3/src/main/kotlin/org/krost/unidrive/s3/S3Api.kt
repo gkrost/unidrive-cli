@@ -208,15 +208,19 @@ class S3Api(
         data class Done(val bytes: Long) : Fetch
     }
 
-    /** PUTs [file] (or an empty body) to [key] with [meta]; [ifMatch] makes it conditional. Returns the new ETag. */
+    /**
+     * PUTs [file] (or an empty body) to [key] with [meta]; [ifMatch] makes it conditional, [ifNoneMatch] makes it a create
+     * that a taken key refuses (`If-None-Match: *`). Returns the new ETag.
+     */
     suspend fun put(
         key: String,
         file: Path?,
         meta: Map<String, String> = emptyMap(),
         ifMatch: String? = null,
+        ifNoneMatch: Boolean = false,
     ): String? {
         val size = file?.let { Files.size(it) } ?: 0L
-        val headers = meta.mapKeys { "x-amz-meta-${it.key}" } + listOfNotNull(ifMatch?.let { "If-Match" to "\"$it\"" })
+        val headers = meta.mapKeys { "x-amz-meta-${it.key}" } + conditionHeaders(ifMatch, ifNoneMatch)
         val response =
             send(HttpMethod.Put, key, emptyList(), headers, SigV4Signer.UNSIGNED_PAYLOAD, timeoutMs = UploadTimeoutPolicy.computeRequestTimeoutMs(size)) {
                 if (file != null) streamingFileBody(file, size) else ByteArray(0)
@@ -282,6 +286,7 @@ class S3Api(
         uploadId: String,
         parts: List<Pair<Int, String>>,
         ifMatch: String? = null,
+        ifNoneMatch: Boolean = false,
     ): String? {
         val body =
             parts.sortedBy { it.first }.joinToString("", "<CompleteMultipartUpload>", "</CompleteMultipartUpload>") { (n, etag) ->
@@ -292,7 +297,7 @@ class S3Api(
                 HttpMethod.Post,
                 key,
                 listOf("uploadId" to uriEncode(uploadId)),
-                listOfNotNull(ifMatch?.let { "If-Match" to "\"$it\"" }).toMap(),
+                conditionHeaders(ifMatch, ifNoneMatch),
                 SigV4Signer.sha256Hex(body),
             ) { body }
         val root = xml(requireOk(response, "CompleteMultipartUpload").bodyAsText())
@@ -430,6 +435,12 @@ class S3Api(
             return response
         }
     }
+
+    private fun conditionHeaders(
+        ifMatch: String?,
+        ifNoneMatch: Boolean,
+    ): Map<String, String> =
+        listOfNotNull(ifMatch?.let { "If-Match" to "\"$it\"" }, ("If-None-Match" to "*").takeIf { ifNoneMatch }).toMap()
 
     private suspend fun requireOk(
         response: HttpResponse,

@@ -2023,7 +2023,7 @@ private fun dropScopedAncestorRemoteDeletesOf(actions: MutableList<SyncAction>, 
 // #100: an override names a folder, not a string. It covers the folder itself and what is inside it
 // (a segment boundary), never a sibling that only shares the prefix (`Docs` is not `Docs-old`), and
 // the most specific override wins, whatever the map order. An override for the root covers everything.
-private fun conflictPolicyFor(
+internal fun conflictPolicyFor(
     overrides: Map<String, ConflictPolicy>,
     path: String,
     default: ConflictPolicy,
