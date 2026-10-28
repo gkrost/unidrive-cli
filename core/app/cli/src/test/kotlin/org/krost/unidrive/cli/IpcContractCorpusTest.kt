@@ -1427,10 +1427,11 @@ class IpcContractCorpusTest {
             if (prefix == "/docs") {
                 ListResult.Ok(
                     listOf(
+                        // The provider names the stored object the bytes are (gkrost/unidrive-cli#171): `content_id`.
                         ListResult.Entry(
                             "/docs/report.txt", 42, FIXED_MTIME_MS, isHydrated = true, isFolder = false,
                             remoteModifiedEpochMillis = FIXED_REMOTE_MS, remoteId = "rid-report", etag = "etag-report",
-                            pendingUpload = false, hasError = false,
+                            pendingUpload = false, hasError = false, contentId = "obj-report|42",
                         ),
                         ListResult.Entry(
                             "/docs/sub", 0, FIXED_MTIME_MS, isHydrated = false, isFolder = true,

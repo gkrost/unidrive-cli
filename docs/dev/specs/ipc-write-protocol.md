@@ -386,7 +386,7 @@ top-level folder with that name through the mount gets `read_only` while the vie
 `mtime_ms` is the daemon's start (constant while it runs; `remote_modified_ms` is `null`). `hydration.list("/Recents")` has one
 entry per reference, in the provider's order (Recents: the newest change first), its `remote_id` the synthetic key
 `unidrive:view:recents:<id of the real item>`, never the bare id (a client must not see one id at two paths). `size`,
-`mtime_ms`, `remote_modified_ms`, `etag`, `hydrated`, `pending_upload`, `error`, `excluded` and `blocked` are the real row's, read
+`mtime_ms`, `remote_modified_ms`, `etag`, `content_id`, `hydrated`, `pending_upload`, `error`, `excluded` and `blocked` are the real row's, read
 at each listing. A view is flat except for folders (below): `hydration.list` of a path below a file entry answers an empty list.
 
 **Folder aliases.** A reference to a folder is an entry whose `folder` is `true` and which is a read-only **alias** of the real
@@ -604,6 +604,15 @@ that is cancelled (a client's cancel, a daemon stop) is a cancellation, not a fa
 else the row's last-synced time): for a cloud-only row the time of the enumeration that wrote it, for a hydrated row
 the time of its download (`ListResult.Entry`). The provider's own modified time is `remote_modified_ms` (`null` for a
 never-uploaded row). Many rows with the same `mtime_ms` are one enumeration batch, not an adoption.
+
+**What a listed file's bytes are** (gkrost/unidrive-cli#171). `content_id` names the stored object the row's bytes are, where the
+provider names one: on Internxt `<fileId>|<size>` (`|0` for an empty file), the bucket object a version is stored as. A rename or
+move keeps it, while it changes `remote_modified_ms` (Internxt stamps the move's time) and `etag` (the write token holds that
+time); new bytes change it. A client that keeps a local copy can therefore tell a rename from a new version: the same
+`content_id` under a new time is the same bytes. The field is absent when the provider names no such object (every provider
+but Internxt today; a OneDrive eTag or a content hash already changes only with the content or as before) and on a row that
+has not met one yet (a row written before the engine recorded it, until the next enumeration of the item); absent means "no
+proof", never "changed". No capability names it: it is additive, and a client that does not know it reads the times as before.
 
 ## 8. Who may write the mounted folder
 

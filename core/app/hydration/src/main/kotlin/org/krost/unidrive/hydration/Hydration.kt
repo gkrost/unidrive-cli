@@ -262,6 +262,11 @@ sealed class ListResult {
         // For an entry in a view: the logical path of the real item it stands for (reads of the entry are resolved to it).
         // Null for the view's root folder and for every other row; only serialized on the wire when set.
         val viewTarget: String? = null,
+        // The stored object the row's bytes are (SyncEntry.remoteContentId; Internxt `<fileId>|<size>`): unlike [etag] and
+        // [remoteModifiedEpochMillis] it stays the same across a rename or move, and changes with new bytes. Null when the provider
+        // names none (every provider but Internxt) or the row has not met it yet; only serialized on the wire when set
+        // (gkrost/unidrive-cli#171).
+        val contentId: String? = null,
     )
 }
 

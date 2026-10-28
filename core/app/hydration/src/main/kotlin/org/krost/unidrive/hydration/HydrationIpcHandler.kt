@@ -885,6 +885,7 @@ private fun serialiseListEntries(entries: List<ListResult.Entry>): String {
         if (e.blocked != null) sb.append(",\"blocked\":").append(jsonEsc(e.blocked))
         if (e.view != null) sb.append(",\"view\":").append(jsonEsc(e.view))
         if (e.viewTarget != null) sb.append(",\"view_target\":").append(jsonEsc(e.viewTarget))
+        if (e.contentId != null) sb.append(",\"content_id\":").append(jsonEsc(e.contentId))
         sb.append('}')
     }
     sb.append("]}")
