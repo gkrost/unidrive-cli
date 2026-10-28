@@ -2,6 +2,7 @@ package org.krost.unidrive.sync
 
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.model.EntryStatus
+import org.krost.unidrive.sync.model.RenameIntent
 import org.krost.unidrive.sync.model.SyncEntry
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -625,6 +626,18 @@ class StateDatabase(
                     id      INTEGER PRIMARY KEY AUTOINCREMENT,
                     pattern TEXT NOT NULL UNIQUE,
                     pinned  INTEGER NOT NULL
+                )
+            """,
+            )
+            // archive#1040 M4: the mount's renames between their cloud move and their cache copy's move ([recordRenameIntent]). A
+            // table of its own, created where it is missing: no schema_version bump, an older file simply has no record.
+            stmt.executeUpdate(
+                """
+                CREATE TABLE IF NOT EXISTS rename_intents (
+                    old_path  TEXT PRIMARY KEY,
+                    new_path  TEXT NOT NULL,
+                    remote_id TEXT,
+                    ghost     INTEGER NOT NULL DEFAULT 0
                 )
             """,
             )
@@ -2561,6 +2574,49 @@ class StateDatabase(
                 return rules
             }
         }
+
+    /**
+     * archive#1040 M4 (the owner's decision of 2026-10-28, roll forward): records, before the mount moves [RenameIntent.oldPath] in
+     * the cloud, that the row and its cache copy are to end at [RenameIntent.newPath]. The record stays until both are there
+     * ([clearRenameIntent]): a cache copy that could not follow at once, or a daemon that stopped between the cloud move and the
+     * row's, is finished from it later. One record per old path; a new one for the same path replaces it.
+     */
+    fun recordRenameIntent(intent: RenameIntent) {
+        locked("recordRenameIntent") {
+            beginWrite()
+            conn.prepareStatement("INSERT OR REPLACE INTO rename_intents (old_path, new_path, remote_id, ghost) VALUES (?, ?, ?, ?)").use { stmt ->
+                stmt.setString(1, intent.oldPath)
+                stmt.setString(2, intent.newPath)
+                stmt.setString(3, intent.remoteId)
+                stmt.setInt(4, if (intent.ghost) 1 else 0)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    /** archive#1040 M4: the renames [recordRenameIntent] recorded and nothing has cleared yet. */
+    fun renameIntents(): List<RenameIntent> =
+        locked("renameIntents") {
+            conn.createStatement().use { stmt ->
+                val rs = stmt.executeQuery("SELECT old_path, new_path, remote_id, ghost FROM rename_intents")
+                val intents = mutableListOf<RenameIntent>()
+                while (rs.next()) {
+                    intents += RenameIntent(rs.getString("old_path"), rs.getString("new_path"), rs.getString("remote_id"), rs.getInt("ghost") == 1)
+                }
+                return intents
+            }
+        }
+
+    /** archive#1040 M4: the rename of [oldPath] owes nothing any more (or never moved anything). */
+    fun clearRenameIntent(oldPath: String) {
+        locked("clearRenameIntent") {
+            beginWrite()
+            conn.prepareStatement("DELETE FROM rename_intents WHERE old_path = ?").use { stmt ->
+                stmt.setString(1, oldPath)
+                stmt.executeUpdate()
+            }
+        }
+    }
 
     /**
      * Resumable-scan staging slice + checkpoint primitives.

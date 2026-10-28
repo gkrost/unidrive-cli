@@ -1559,6 +1559,22 @@ class MountEngine private constructor(
         // archive#402/#403: moved by its cloud id where the row has one (see deleteRemote).
         val remoteId = oldEntry?.remoteId?.takeUnless { it.startsWith("local:") }
         val moved = if (remoteId != null) provider.moveById(remoteId, oldRemote, newRemote) else provider.move(oldRemote, newRemote)
+        followRemoteMove(oldPath, newPath, moved, oldEntry)
+    }
+
+    /**
+     * The state.db side of [renameRemote], once the cloud moved the item of [oldPath] to [newPath] ([moved]: the item there now):
+     * the row moves with the rows below a folder, and the remote paths follow. archive#1040 M4: also the roll forward of a rename
+     * whose cloud move was done when the daemon stopped, found at the next start.
+     */
+    fun followRemoteMove(
+        oldPath: String,
+        newPath: String,
+        moved: CloudItem,
+        oldEntry: SyncEntry? = db.getEntry(oldPath),
+    ) {
+        val oldRemote = remotePathOf(oldPath, oldEntry)
+        val newRemote = remotePathOf(newPath, entry = null)
         db.renamePrefix(oldPath, newPath)
         db.rebaseRemotePaths(oldRemote, newRemote)
         if (newRemote != newPath) db.assignRemotePaths(newPath, newRemote)
