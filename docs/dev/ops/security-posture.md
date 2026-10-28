@@ -23,6 +23,7 @@ workflows on 2026-10-26; items not listed here are unchanged.
 | CodeQL is off and nothing runs (gap 2) | `codeql.yml` (advanced setup, push, pull request and weekly) runs for `actions` only. The `java-kotlin` leg is commented out because the CodeQL extractor aborts on the Kotlin version the build uses (see the comment in `codeql.yml`). The default setup is still `not-configured`. So the gap of gap 2 stands: no analysis reads the Kotlin. CodeQL is advisory, not a required check |
 | Dependabot `github-actions` covers the action pins | The entry lists `/` only. The composite action `.github/actions/pinned-git` pins its own `actions/cache` and, by Dependabot's documented rule that composite actions need their own `directories` entry, is not bumped automatically (not tested here) |
 | Dependency verification: the release builds strict, every other build lenient | Unchanged and confirmed: `org.gradle.dependency.verification=lenient` in `core/gradle.properties`, `--dependency-verification strict` in `release.yml` for `check`, `shadowJar` and the SBOM. Metadata is trust on first use: `core/gradle/verification-metadata.xml` records the checksum the mirror served when it was written |
+| Dependabot PRs do not update the verification metadata (an okhttp bump reached `main` without its hashes) | `.github/workflows/dependabot-verification-metadata.yml` regenerates the metadata for every Dependabot Gradle PR from an empty Gradle user home (the release's `shadowJar` and SBOM tasks included) and commits it to the PR branch; the job that runs the build has a read-only token, the job that pushes runs no build. The PR's `build` runs on that commit wait for the owner's approval (GitHub does not start runs for a push made with the workflow token without it). PR CI stays lenient, so a dependency change made by hand still reaches `main` without its entries unless its author regenerates them, and then fails at the release tag. The wrapper's `distributionSha256Sum` is the sha256 gradle.org publishes for its distribution zip |
 
 References to `AGENTS.md` and `BACKLOG.md` in the audit below, and the doc-location note at its end, describe the
 engine's archived tracker tree: neither file is in this repository (they are working files kept off the public tree). The
@@ -110,6 +111,8 @@ analysis with a non-zero `rules_count` covering the `core/` Kotlin modules.
 > `--dependency-verification strict`, every other build is lenient (warnings only,
 > `core/gradle.properties`). The wrapper distribution is pinned by
 > `distributionSha256Sum` in `core/gradle/wrapper/gradle-wrapper.properties`.
+> Dependabot Gradle PRs carry the regenerated metadata
+> (`.github/workflows/dependabot-verification-metadata.yml`).
 
 ## Gaps worth closing (highest value first)
 
