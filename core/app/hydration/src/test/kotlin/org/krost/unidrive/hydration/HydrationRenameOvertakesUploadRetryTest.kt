@@ -60,6 +60,10 @@ class HydrationRenameOvertakesUploadRetryTest {
 
         // Ids whose first id-addressed move fails (transient), so the retry has to move the item again.
         val failMoveFirst = mutableSetOf<String>()
+
+        // gkrost/unidrive-cli#76: a real drive moves a folder together with everything in it; by default this fake keeps every
+        // other item at its own path (a folder move moves only the folder item itself).
+        var folderMoveCarriesChildren = false
         private var nextId = 0
 
         override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
@@ -123,7 +127,16 @@ class HydrationRenameOvertakesUploadRetryTest {
             val moved = (items.remove(fromPath) ?: throw ProviderException("Item not found: $fromPath"))
                 .copy(path = toPath, name = toPath.substringAfterLast('/'))
             items[toPath] = moved
+            if (moved.isFolder && folderMoveCarriesChildren) carryChildren(fromPath, toPath)
             return moved
+        }
+
+        private fun carryChildren(fromPath: String, toPath: String) {
+            for (key in items.keys.filter { it.startsWith("$fromPath/") }) {
+                val child = items.remove(key)!!
+                val newPath = toPath + key.removePrefix(fromPath)
+                items[newPath] = child.copy(path = newPath)
+            }
         }
 
         // Addressed by the item's id, as the real providers do: the item is found wherever it is, not by the name.
@@ -133,6 +146,7 @@ class HydrationRenameOvertakesUploadRetryTest {
             val at = items.entries.firstOrNull { it.value.id == remoteId }?.key ?: throw ProviderException("Item not found: $remoteId")
             val moved = items.remove(at)!!.copy(path = toPath, name = toPath.substringAfterLast('/'))
             items[toPath] = moved
+            if (moved.isFolder && folderMoveCarriesChildren) carryChildren(fromPath, toPath)
             return moved
         }
 
@@ -598,5 +612,53 @@ class HydrationRenameOvertakesUploadRetryTest {
         assertNull(rig.db.getEntry("/move/b.txt"), "no row at the old path")
         val row = assertNotNull(rig.db.getEntry("/moved/b.txt"))
         assertEquals(rig.drive.items["/moved/b.txt"]?.id, row.remoteId, "the row at the new path is the uploaded item: ${rig.drive.log}")
+    }
+
+    // gkrost/unidrive-cli#76 case 2: a child's first attempt landed its item but the answer was lost (a ghost), so its row is
+    // still pending while the item sits in the cloud. The folder is renamed; the drive moves the item along with the folder.
+    // The child's retry must meet that item (the row adopts it), not create the file a second time beside it.
+    @Test
+    fun `a ghost child of a renamed folder is adopted, not uploaded a second time`() = runTest {
+        val rig = Rig(this)
+        rig.seedFolder("/move")
+        rig.drive.cloudFolder("/move")
+        rig.drive.folderMoveCarriesChildren = true
+        rig.drive.ghostFirst += "/move/g.txt"
+
+        val completed = renameFolderWhileUploadsWait(rig, listOf("g.txt"))
+
+        assertOneItemPerChildAtTheNewPath(rig, listOf("g.txt"), folderInDrive = true)
+        assertTrue(
+            rig.drive.log.none { it == "upload:/moved/g.txt(existing=none)" },
+            "nothing may create the child a second time at its new path: ${rig.drive.log}",
+        )
+        assertTrue(completed.single { it.handleId == "h0" }.ok, "the child's upload completes: $completed")
+    }
+
+    // gkrost/unidrive-cli#76 case 4: the slot of a child was opened under the decomposed (NFD) spelling of its path while the
+    // folder is renamed under the composed (NFC) one; state.db keeps one spelling (NFC), so both name the same file.
+    @Test
+    fun `a child whose slot was opened under another unicode spelling follows its folder's rename`() = runTest {
+        val rig = Rig(this)
+        val oldFolderNfc = "/möve"
+        val oldFolderNfd = "/möve"
+        rig.seedFolder(oldFolderNfc)
+        rig.drive.cloudFolder(oldFolderNfc)
+        // The provider is asked under the spelling the upload was opened with.
+        rig.drive.failFirst += listOf("$oldFolderNfc/f.txt", "$oldFolderNfd/f.txt")
+        val completed = mutableListOf<HydrationEvent.Completed>()
+        val collector = launch { rig.impl.events.collect { if (it is HydrationEvent.Completed) completed += it } }
+        runCurrent()
+        val cache = rig.seedWritten("$oldFolderNfc/f.txt", "content-f")
+        launch { assertTrue(rig.impl.openForWrite("c", "h0", "$oldFolderNfd/f.txt", cache, null) is OpenResult.Ok) }
+        runCurrent()
+
+        assertEquals(RenameResult.Ok, rig.impl.rename(oldFolderNfc, "/moved"), "rename of the folder")
+        advanceUntilIdle()
+        collector.cancel()
+
+        assertEquals(listOf("/moved/f.txt"), rig.drive.items.keys.filter { it.endsWith("f.txt") }, "one cloud item at the new path: ${rig.drive.log}")
+        assertTrue(completed.single { it.handleId == "h0" }.ok, "the child's upload completes at the new path: $completed")
+        assertEquals(rig.drive.items["/moved/f.txt"]?.id, rig.db.getEntry("/moved/f.txt")?.remoteId, "the row at the new path is the uploaded item")
     }
 }

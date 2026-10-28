@@ -3036,8 +3036,49 @@ class HydrationImpl(
         val intent = renames.begin(oldNorm, newNorm, sourceEntry.remoteId, ghost = false)
         movedInCloud(intent)?.let { return it }
         renames.finish(intent)
+        if (sourceEntry.isFolder) adoptGhostChildren(oldNorm, newNorm)
         rekeyUploadSlot(oldNorm, newNorm)
         return RenameResult.Ok
+    }
+
+    /**
+     * gkrost/unidrive-cli#76: a folder's rename has moved the folder in the cloud, and a drive takes what lies in it along. A child
+     * whose upload still waits (its slot is below the old path) and failed before may be a ghost: its item landed and the answer was
+     * lost, so its row is still pending while the item now sits at the new path. Its retry would create the file a second time
+     * beside it, so the row adopts the item here, as the rename of a single ghost does ([rename]). Best effort: the cloud move
+     * stands, so a failed probe changes nothing for the child (its retry goes on as before) and never fails the rename.
+     */
+    private suspend fun adoptGhostChildren(oldFolder: String, newFolder: String) {
+        val below = if (oldFolder == "/") "" else "${PathNormalizer.nfc(oldFolder)}/"
+        for (key in uploadSlots.keys.toList()) {
+            val keyNfc = PathNormalizer.nfc(key)
+            if (!keyNfc.startsWith(below)) continue
+            val child = PathNormalizer.nfc(newFolder) + if (oldFolder == "/") keyNfc else keyNfc.removePrefix(PathNormalizer.nfc(oldFolder))
+            val row = stateDb.getEntry(child) ?: continue
+            // Only an attempt that failed can have left a ghost: a child that never failed is not probed.
+            if (row.isFolder || row.lastErrorAt == null || row.remoteId?.startsWith("local:") == false) continue
+            val ghost = try {
+                mount.ghostItemOrNull(child)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.info("rename of {}: the cloud was not asked about {} ({}); its upload goes on", oldFolder, child, e.message)
+                continue
+            }
+            if (ghost == null || ghost.isFolder) continue
+            stateDb.getEntry(child)?.takeIf { it.remoteId == null || it.remoteId?.startsWith("local:") == true }?.let { current ->
+                stateDb.upsertEntry(
+                    current.copy(
+                        remoteId = ghost.id,
+                        remoteHash = ghost.hash,
+                        remoteVersion = ghost.version,
+                        remoteSize = ghost.size,
+                        remoteModified = ghost.modified,
+                    ),
+                )
+                log.info("rename of {}: {} had landed in the cloud before; its row adopts the item", oldFolder, child)
+            }
+        }
     }
 
     // archive#1040 M4: the cloud move of the recorded rename [intent]. Null when the cloud and the row moved; else the failure to
@@ -3068,15 +3109,24 @@ class HydrationImpl(
     // each waiting child's retry takes the row at its new path (archive#610) instead of
     // finding it gone and being given up until the next start. The same identity
     // rule holds per moved slot.
+    //
+    // gkrost/unidrive-cli#76: keys are compared and written in NFC, the form state.db keeps its paths in: a slot opened under
+    // the decomposed spelling of a path still follows the rename that names it composed (or the reverse).
     private fun rekeyUploadSlot(oldPath: String, newPath: String) {
         if (oldPath == newPath) return
-        uploadSlots.remove(oldPath)?.let { uploadSlots[newPath] = it }
-        val below = if (oldPath == "/") "" else "$oldPath/"
+        val oldNfc = PathNormalizer.nfc(oldPath)
+        val newNfc = PathNormalizer.nfc(newPath)
+        val below = if (oldNfc == "/") "" else "$oldNfc/"
         for (key in uploadSlots.keys.toList()) {
-            if (!key.startsWith(below)) continue
+            val keyNfc = PathNormalizer.nfc(key)
+            if (keyNfc != oldNfc && !keyNfc.startsWith(below)) continue
             val slot = uploadSlots.remove(key) ?: continue
-            val suffix = if (oldPath == "/") key else key.removePrefix(oldPath)
-            uploadSlots[newPath + suffix] = slot
+            val newKey = newNfc + if (oldNfc == "/") keyNfc else keyNfc.removePrefix(oldNfc)
+            uploadSlots[newKey] = slot
+            // The last upload of the slot may have finished between the remove and the put: its releaseSlot then found no
+            // entry to remove, and the put would keep a slot nothing owns (busy until the next start). Removed again here;
+            // a finish that comes after this check removes the entry itself.
+            if (slot.pending.get() == 0) uploadSlots.remove(newKey, slot)
         }
     }
 
@@ -3146,7 +3196,7 @@ class HydrationImpl(
     private fun renamedTo(
         slot: UploadSlot,
         path: String,
-    ): String? = uploadSlots.entries.firstOrNull { it.value === slot }?.key?.takeIf { it != path }
+    ): String? = uploadSlots.entries.firstOrNull { it.value === slot }?.key?.takeIf { PathNormalizer.nfc(it) != PathNormalizer.nfc(path) }
 
     // Deletes the existing destination before a replace-rename, through the same
     // path `unlink` takes — the destination gets the delete's trash/undo
