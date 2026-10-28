@@ -2273,7 +2273,8 @@ class HydrationImpl(
             val entryOf = listEntryMaker()
             // A path in a view lists the view (its references joined to the rows); the top level lists the views' roots too.
             views.listing(normalised, entryOf)?.let { return ListResult.Ok(it) }
-            val rows = stateDb.listDirectChildren(normalised)
+            // gkrost/unidrive-cli#27: a folder the first scan has not brought in yet is read from the provider.
+            val rows = mount.listFolderLive(normalised) ?: stateDb.listDirectChildren(normalised)
             ListResult.Ok(rows.map(entryOf) + (if (normalised.isEmpty()) views.rootEntries() else emptyList()))
         } catch (e: CancellationException) {
             throw e

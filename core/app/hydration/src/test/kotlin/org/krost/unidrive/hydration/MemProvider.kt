@@ -24,6 +24,14 @@ internal class MemProvider : CloudProvider {
     // When set, upload() suspends here before storing anything: holds a background upload in its slot.
     @Volatile var uploadGate: CompletableDeferred<Unit>? = null
 
+    // When set, delta() suspends here: a full scan that has not finished (the first scan of a big drive).
+    @Volatile var deltaGate: CompletableDeferred<Unit>? = null
+
+    // The folders listChildren was asked for, in order; and what it answers instead of the folder's children, or throws.
+    val listCalls = java.util.concurrent.CopyOnWriteArrayList<String>()
+    @Volatile var listFailure: Exception? = null
+    @Volatile var listOverride: List<CloudItem>? = null
+
     /** A file that already exists on the remote with a fixed modified time (what an enumeration reports). */
     fun seed(
         path: String,
@@ -45,11 +53,34 @@ internal class MemProvider : CloudProvider {
             )
     }
 
+    /** A folder that already exists on the remote. */
+    fun seedFolder(path: String) {
+        items[path] =
+            CloudItem(
+                id = "id-$path",
+                name = path.substringAfterLast("/"),
+                path = path,
+                size = 0,
+                isFolder = true,
+                modified = Instant.parse("2026-03-28T12:00:00Z"),
+                created = Instant.parse("2026-03-28T12:00:00Z"),
+                hash = null,
+                mimeType = null,
+            )
+    }
+
     override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
 
     override suspend fun authenticate() {}
 
-    override suspend fun listChildren(path: String): List<CloudItem> = items.values.toList()
+    // The direct children of [path]: an item whose parent folder is [path] (the fake used to answer every item for any path).
+    override suspend fun listChildren(path: String): List<CloudItem> {
+        listCalls += path
+        listFailure?.let { throw it }
+        listOverride?.let { return it }
+        val parent = path.trimEnd('/')
+        return items.values.filter { it.path.substringBeforeLast('/') == parent }
+    }
 
     override suspend fun getMetadata(path: String): CloudItem = items[path] ?: error("not found: $path")
 
@@ -124,8 +155,10 @@ internal class MemProvider : CloudProvider {
             ).also { items[toPath] = it }
     }
 
-    override suspend fun delta(cursor: String?, onPageProgress: ((Int) -> Unit)?, scanContext: org.krost.unidrive.ScanContext?): DeltaPage =
-        DeltaPage(items = items.values.toList(), cursor = "cursor", hasMore = false)
+    override suspend fun delta(cursor: String?, onPageProgress: ((Int) -> Unit)?, scanContext: org.krost.unidrive.ScanContext?): DeltaPage {
+        deltaGate?.await()
+        return DeltaPage(items = items.values.toList(), cursor = "cursor", hasMore = false)
+    }
 
     override suspend fun quota(): QuotaInfo = QuotaInfo(total = 0L, used = 0L, remaining = 0L)
 }

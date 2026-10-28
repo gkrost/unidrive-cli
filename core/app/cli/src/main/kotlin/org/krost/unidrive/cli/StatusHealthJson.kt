@@ -47,6 +47,9 @@ internal const val MATCHES_LOCAL_CAPABILITY = "hydration.matches_local"
 /** The `daemon.status` capability that says the daemon answers `hydration.refuse_name` (gkrost/unidrive-cli#24). */
 internal const val REFUSE_NAME_CAPABILITY = "hydration.refuse_name"
 
+/** The `daemon.status` capability that says `hydration.list` reads a folder from the cloud while the first scan has not brought it in (gkrost/unidrive-cli#27). */
+internal const val LIST_LIVE_CAPABILITY = "hydration.list_live"
+
 /**
  * `uploads.running` (archive#1200): the uploads holding a transfer permit right now, present only while there is one. `count` is all
  * of them, `items` the first [HydrationImpl.RUNNING_ITEMS_CAP] by start time, `more` the rest. Each item: `path`,
