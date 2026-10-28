@@ -7,6 +7,7 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonObject
 import org.krost.unidrive.ParentGoneException
 import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.PlanLimitException
@@ -66,6 +67,7 @@ class InternxtUploadRefusalTest {
         scenario: UploadScenario = UploadScenario(),
     ): InternxtProvider {
         val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmp))
+        provider.parentRelistDelayMs = 0
         val authField = InternxtProvider::class.java.getDeclaredField("authService")
         authField.isAccessible = true
         val authService = authField.get(provider)
@@ -99,9 +101,16 @@ class InternxtUploadRefusalTest {
                 MockEngine { request ->
                     val url = request.url.toString()
                     val listedFolder = url.substringAfter("/folders/content/", "").substringBefore('?').substringBefore('/')
+                    // gkrost/unidrive-cli#134: the second look at a missing parent reads the cursor listing of the folders; it shows what the combined one does.
+                    val cursorFolder = url.substringAfter("/folders/v2/content/", "").substringBefore('/')
                     when {
                         scenario.listingFailure != null && url.contains("/folders/") ->
                             respond("""{"error":"gateway"}""", scenario.listingFailure, json)
+                        cursorFolder.isNotEmpty() && request.url.encodedPath.endsWith("/folders") -> {
+                            val listing = scenario.listingByFolder[cursorFolder] ?: scenario.reconcileListing
+                            val children = kotlinx.serialization.json.Json.parseToJsonElement(listing).jsonObject["children"]
+                            respond("""{"folders":$children,"nextCursor":null}""", HttpStatusCode.OK, json)
+                        }
                         listedFolder in scenario.listingByFolder ->
                             respond(scenario.listingByFolder.getValue(listedFolder), HttpStatusCode.OK, json)
                         (scenario.emptyListing || scenario.missingUploads || scenario.missingUploadsCount > 0) && url.contains("/folders/content/") ->
