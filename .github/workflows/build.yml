@@ -42,6 +42,28 @@ jobs:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
           GITLEAKS_VERSION: 8.28.0
 
+  # Advisory Kotlin SAST. The custom rules in .semgrep.yml and .semgrep/rules/
+  # were run by no workflow before this job existed. Advisory like gitleaks and
+  # CodeQL: continue-on-error, and never a required merge check — `check` (and
+  # `windows-security`) stay the only gates. Findings appear in the job log.
+  semgrep:
+    name: semgrep (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Unpinned on purpose: the job gates nothing, so a semgrep release or a
+      # new rule cannot break a merge.
+      - name: Install semgrep
+        run: pipx install semgrep
+
+      - name: Semgrep scan
+        run: semgrep scan --config .semgrep.yml --config .semgrep/rules --metrics=off
+
   # Docs-only changes (Markdown and docs/) must not start a Gradle build. `check` is a REQUIRED status check (repository
   # ruleset), so the workflow itself cannot be path-filtered: a workflow that never starts leaves the required check
   # pending forever. Instead the heavy jobs are skipped; a skipped job satisfies a required check.
