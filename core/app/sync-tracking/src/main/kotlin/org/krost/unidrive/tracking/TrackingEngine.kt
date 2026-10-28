@@ -499,8 +499,16 @@ class TrackingEngine(
                 log.debug("Skipped reaping non-empty directory {}: {}", dir, e.message)
                 trackingSet.addPendingReap(dir)
             } catch (e: Exception) {
-                log.warn("Failed to reap empty directory {}: {}", dir, e.message)
-                trackingSet.addPendingReap(dir)
+                if (org.krost.unidrive.engine.RemoteErrors.isNotFound(e)) {
+                    // Already gone (trashed elsewhere, or an ancestor's reap
+                    // cascaded): the goal is met, so a persisted retry is
+                    // cleared rather than retried forever.
+                    log.debug("Remote directory {} already gone, nothing to reap", dir)
+                    trackingSet.removePendingReap(dir)
+                } else {
+                    log.warn("Failed to reap empty directory {}: {}", dir, e.message)
+                    trackingSet.addPendingReap(dir)
+                }
             }
         }
         return reaped

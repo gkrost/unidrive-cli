@@ -225,6 +225,13 @@ class FakeTrackingProvider : CloudProvider {
     val failDeleteDirs: MutableSet<String> = mutableSetOf()
 
     /**
+     * Test hook: directory paths whose [listChildren] throws a typed
+     * not-found — the directory is already gone remotely (trashed elsewhere,
+     * or an ancestor's reap cascaded).
+     */
+    val goneListDirs: MutableSet<String> = mutableSetOf()
+
+    /**
      * Test hook: directory paths that report one phantom child on the FIRST
      * [listChildren] call and then settle to their real (empty) contents —
      * modelling an eventually-consistent provider's read-after-write lag where a
@@ -240,6 +247,9 @@ class FakeTrackingProvider : CloudProvider {
      * empty before reaping it.
      */
     override suspend fun listChildren(path: String): List<CloudItem> {
+        if (path in goneListDirs) {
+            throw org.krost.unidrive.ProviderException("Folder not found: $path")
+        }
         if (lagDirsOnce.remove(path)) {
             // First listing after a delete: pretend a stale child is still shown.
             return listOf(itemFor("$path/.__lagging__", ByteArray(0)))
