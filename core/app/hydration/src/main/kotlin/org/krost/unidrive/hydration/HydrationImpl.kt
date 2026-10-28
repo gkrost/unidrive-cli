@@ -37,6 +37,7 @@ import org.krost.unidrive.io.moveFile
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.PendingUploads
 import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.model.RenameIntent
 import org.krost.unidrive.telemetry.TransferDirection
 import org.krost.unidrive.telemetry.TransferHandle
 import org.krost.unidrive.telemetry.TransferHistory
@@ -442,6 +443,8 @@ class HydrationImpl(
     // The read of a real path; a view entry is read through the real item's path (see [HydrationViews]).
     private suspend fun openForReadAt(connectionId: String, handleId: String, path: String): OpenResult {
         if (!resolvesInsideCache(path)) return OpenResult.Failed(HydrationError.InvalidPath)
+        // archive#1040 M4: a read would download over an edit whose cache copy has not followed its rename yet.
+        if (renames.blocks(path)) return OpenResult.Failed(HydrationError.Generic(BUSY_TOKEN))
         val entry = stateDb.getEntry(path)
             ?: return OpenResult.Failed(HydrationError.UnknownPath)
         // An excluded item is kept local: a copy this machine already holds is served, but its cloud content is
@@ -541,6 +544,7 @@ class HydrationImpl(
         baseEtag: String?,
     ): OpenResult {
         if (!resolvesInsideCache(path)) return OpenResult.Failed(HydrationError.InvalidPath)
+        if (renames.blocks(path)) return OpenResult.Failed(HydrationError.Generic(BUSY_TOKEN)) // archive#1040 M4, see openForReadAt
         // The trash namespace is read-only: no upload is queued for a change there. The copy the client holds is
         // untouched (a refusal is not a delete), the client says why from the `read_only` token.
         if (mount.isReadOnlyPath(path)) return OpenResult.Failed(HydrationError.ReadOnly)
@@ -1266,6 +1270,9 @@ class HydrationImpl(
         // it probes is remembered, so the rows that share an ancestor — and the rows whose cache copy is gone —
         // do not pay for the same walk (and its internally thrown Windows probes) again.
         val pass = CachePaths.Pass(mount.hydrationCacheDir())
+        // archive#1040 M4: renames that still owe their cache copy's move (or their row's) are finished first: the replay looks
+        // for each copy at its row's path, and #86 drops a pending row whose copy it does not find there.
+        renames.settleAll()
         // Folders the drive refused by name are asked again before their files: one that is accepted now unblocks the
         // files below it, whose uploads are replayed below.
         try {
@@ -2164,6 +2171,7 @@ class HydrationImpl(
 
     private suspend fun hydrateAt(path: String): HydrateResult {
         if (!resolvesInsideCache(path)) return HydrateResult.Failed(HydrationError.InvalidPath)
+        if (renames.blocks(path)) return HydrateResult.Failed(HydrationError.Generic(BUSY_TOKEN)) // archive#1040 M4, see openForReadAt
         touch(path)
         val tx = history?.begin(TransferDirection.DOWNLOAD, path, bytesTotal = stateDb.getEntry(path)?.remoteSize?.takeIf { it > 0 })
         return try {
@@ -2193,6 +2201,7 @@ class HydrationImpl(
 
     private suspend fun dehydrateAt(path: String): DehydrateResult {
         if (!resolvesInsideCache(path)) return DehydrateResult.Failed(HydrationError.InvalidPath)
+        if (renames.blocks(path)) return DehydrateResult.Busy // archive#1040 M4: the copy has not followed its rename yet
         val entry = stateDb.getEntry(path)
             ?: return DehydrateResult.Failed(HydrationError.UnknownPath)
 
@@ -2424,6 +2433,8 @@ class HydrationImpl(
     ): UnlinkResult {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
         if (mount.isReadOnlyPath(normalised)) return UnlinkResult.Failed(HydrationError.ReadOnly)
+        // archive#1040 M4: a delete would evict a cache copy before it followed its rename, or leave it behind.
+        if (renames.blocks(normalised)) return UnlinkResult.Busy
         val entry = stateDb.getEntry(normalised)
             ?: return UnlinkResult.Failed(HydrationError.UnknownPath)
         if (entry.isFolder) return UnlinkResult.PathIsFolder
@@ -2531,6 +2542,7 @@ class HydrationImpl(
     ): RmdirResult {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
         if (mount.isReadOnlyPath(normalised)) return RmdirResult.Failed(HydrationError.ReadOnly)
+        if (renames.blocks(normalised)) return RmdirResult.Busy // archive#1040 M4, see unlinkRow
         val entry = stateDb.getEntry(normalised)
             ?: return RmdirResult.Failed(HydrationError.UnknownPath)
         if (!entry.isFolder) return RmdirResult.PathIsFile
@@ -2605,6 +2617,9 @@ class HydrationImpl(
         return stamp != "$baselineMtime|$baselineSize"
     }
 
+    // archive#1040 M4: the renames whose cache copy still has to follow them (see [RenameRollForward]).
+    private val renames = RenameRollForward(stateDb, mount) { oldNorm, newNorm -> moveCacheFile(oldNorm, newNorm) }
+
     // Follow a renamed file's hydration cache from old to new path. A missing
     // cache file is tolerated (a zero-byte temp that was never written, or an
     // unhydrated placeholder). Shared by the genuinely-local and ghost rename paths.
@@ -2671,6 +2686,8 @@ class HydrationImpl(
     override suspend fun openWriteBegin(connectionId: String, path: String, handleId: String?): OpenResult {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
         if (!resolvesInsideCache(normalised)) return OpenResult.Failed(HydrationError.InvalidPath)
+        // archive#1040 M4: a truncate would empty a cache copy that has not followed its rename yet.
+        if (renames.blocks(normalised)) return OpenResult.Failed(HydrationError.Generic(BUSY_TOKEN))
         // Scope guard: same rationale as mkdir — a truncate outside the
         // profile's sync_path set would touch cloud data the view never shows.
         // Read-only before scope, as for mkdir (archive#1074).
@@ -2707,6 +2724,8 @@ class HydrationImpl(
     override suspend fun create(connectionId: String, handleId: String, path: String): CreateResult {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
         if (refusedNewName(normalised)) return CreateResult.Failed(HydrationError.InvalidPath)
+        // archive#1040 M4: a file created at the old name of a rename whose cache copy is still there would truncate it.
+        if (renames.blocks(normalised)) return CreateResult.Failed(HydrationError.Generic(BUSY_TOKEN))
         val mutex = createMutexes.computeIfAbsent(normalised) { Mutex() }
         return mutex.withLock {
             // Scope guard: a file created outside the profile's sync_path set
@@ -2853,6 +2872,10 @@ class HydrationImpl(
             return RenameResult.Failed(HydrationError.OutOfScope)
         }
 
+        // archive#1040 M4: a recorded rename whose cache copy has not followed it yet names one of the paths (or a folder
+        // around them): finished first, else busy, so that nothing moves the copy's row or path from under it.
+        if (renames.blocks(oldNorm) || renames.blocks(newNorm)) return RenameResult.Failed(HydrationError.Generic(BUSY_TOKEN))
+
         // Pre-flight: source must exist in state.db.
         val sourceEntry = stateDb.getEntry(oldNorm)
             ?: return RenameResult.OldPathNotFound
@@ -2956,10 +2979,10 @@ class HydrationImpl(
                 return RenameResult.Failed(HydrationError.Generic(e.message ?: "remote probe failed"))
             }
             if (ghost != null && !ghost.isFolder) {
+                val intent = renames.begin(oldNorm, newNorm, ghost.id, ghost = true)
+                movedInCloud(intent)?.let { return it }
                 return runCatching {
-                    mount.renameRemote(oldNorm, newNorm)
-                    moveCacheFile(oldNorm, newNorm)
-                    rekeyUploadSlot(oldNorm, newNorm)
+                    // archive#1040 M4: the row is the moved item's before its cache copy follows, which may have to wait.
                     stateDb.getEntry(newNorm)?.let { moved ->
                         stateDb.upsertEntry(
                             moved.copy(
@@ -2972,8 +2995,12 @@ class HydrationImpl(
                             ),
                         )
                     }
+                    renames.finish(intent)
+                    rekeyUploadSlot(oldNorm, newNorm)
                     RenameResult.Ok
                 }.getOrElse { e ->
+                    // The cloud and the row moved: the record stays, and the next request or start finishes the rest.
+                    renames.interrupted(intent)
                     RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
                 }
             }
@@ -2995,15 +3022,31 @@ class HydrationImpl(
         // uploadFromCache now refuses to recreate rows — the bytes survive in the
         // moved cache and the co-daemon's recovery scanner replays them at the new
         // path, instead of the upload resurrecting the old remote path.
-        return runCatching {
-            mount.renameRemote(oldNorm, newNorm)
-            moveCacheFile(oldNorm, newNorm)
-            rekeyUploadSlot(oldNorm, newNorm)
-            RenameResult.Ok
-        }.getOrElse { e ->
+        //
+        // archive#1040 M4 (the owner's decision of 2026-10-28, roll forward): the rename is recorded before the cloud move.
+        // Once the cloud and the row moved it stands, even when the cache copy cannot follow at once: the record keeps that
+        // move owed ([RenameRollForward]) instead of a failure whose retry could only be answered old_path_not_found.
+        val intent = renames.begin(oldNorm, newNorm, sourceEntry.remoteId, ghost = false)
+        movedInCloud(intent)?.let { return it }
+        renames.finish(intent)
+        rekeyUploadSlot(oldNorm, newNorm)
+        return RenameResult.Ok
+    }
+
+    // archive#1040 M4: the cloud move of the recorded rename [intent]. Null when the cloud and the row moved; else the failure to
+    // answer, the cloud having refused (nothing moved, the record goes). A rename stopped half way keeps its record: the next
+    // start asks the cloud where the item is.
+    private suspend fun movedInCloud(intent: RenameIntent): RenameResult? =
+        try {
+            mount.renameRemote(intent.oldPath, intent.newPath)
+            null
+        } catch (e: CancellationException) {
+            renames.interrupted(intent)
+            throw e
+        } catch (e: Exception) {
+            renames.abandon(intent)
             RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
         }
-    }
 
     // archive#319: move a live upload slot from the old to the new path across a rename,
     // so dehydrate's busy check, the replace-rename refusal, and list's
