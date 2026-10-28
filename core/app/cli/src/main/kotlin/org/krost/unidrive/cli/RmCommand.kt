@@ -493,7 +493,7 @@ private suspend fun metadataOrNull(
  * when the streams are redirected, so [java.io.Console.isTerminal] decides there (called reflectively: the compile
  * toolchain is JDK 21); up to JDK 21 a console exists only on a terminal.
  */
-private fun systemConsoleConfirm(): ((String) -> Boolean)? {
+internal fun systemConsoleConfirm(): ((String) -> Boolean)? {
     val console = System.console() ?: return null
     val isTerminalMethod = java.io.Console::class.java.methods.firstOrNull { it.name == "isTerminal" && it.parameterCount == 0 }
     val isTerminal = isTerminalMethod?.invoke(console) as? Boolean ?: true

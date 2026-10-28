@@ -5,6 +5,7 @@ import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcAuthException
 import org.krost.unidrive.sync.IpcEndpoint
 import org.krost.unidrive.sync.IpcServer
+import picocli.CommandLine
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
@@ -34,7 +35,12 @@ import java.nio.file.Files
     ],
     mixinStandardHelpOptions = true,
 )
-class RefreshCommand : Runnable {
+class RefreshCommand : Runnable, CommandLine.IExitCodeGenerator {
+    /** 1 when a `--reset` was refused, declined or could not copy state.db aside (#100); the other failures exit the JVM. */
+    private var refusedExitCode: Int = 0
+
+    override fun getExitCode(): Int = refusedExitCode
+
     @ParentCommand
     lateinit var parent: Main
 
@@ -51,15 +57,29 @@ class RefreshCommand : Runnable {
         description = [
             "Clear state.db on the daemon and re-enumerate the full cloud tree. " +
                 "Recovers from poisoned delta cursors (e.g. when the cloud was modified " +
-                "while sync was offline and the cursor returned only the recent delta).",
+                "while sync was offline and the cursor returned only the recent delta). " +
+                "Asks first (--yes for scripts); state.db is copied aside first, as " +
+                "state-before-reset-<UTC time>.db next to it.",
         ],
     )
     var reset: Boolean = false
+
+    @Option(names = ["-y", "--yes"], description = ["With --reset: do not ask first (state.db is still copied aside)"])
+    var yes: Boolean = false
 
     override fun run() {
         applyPositionalProfile(parent, profilePositional)
         val profile = parent.resolveCurrentProfile()
         val socketPath = IpcServer.defaultSocketPath(profile.name)
+
+        // #100: asked before anything else, so a refused or declined reset starts no daemon either.
+        if (reset) {
+            StateReset.refusal("refresh", profile.name, yes)?.let {
+                System.err.println("unidrive refresh: $it")
+                refusedExitCode = 1
+                return
+            }
+        }
 
         // archive#142: the first client connection starts the profile's daemon — `unidrive refresh` works on a
         // fresh machine without the operator starting a daemon by hand. A stale socket file (a killed
@@ -77,6 +97,20 @@ class RefreshCommand : Runnable {
             )
             System.exit(1)
             return
+        }
+
+        // #100: the daemon clears state.db when it runs the reset; the copy is taken just before the request, through
+        // SQLite, so it is consistent while the daemon writes. Stderr: stdout carries the daemon's JSON events.
+        if (reset) {
+            val backup =
+                try {
+                    StateReset.backup(parent.providerConfigDir().resolve("state.db"))
+                } catch (e: java.io.IOException) {
+                    System.err.println("unidrive refresh: state.db could not be copied aside (${e.message}); nothing was reset.")
+                    refusedExitCode = 1
+                    return
+                }
+            if (backup != null) System.err.println("unidrive refresh: state.db copied to $backup before the reset.")
         }
 
         try {

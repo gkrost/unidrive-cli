@@ -62,11 +62,12 @@ internal fun restrictProfileForSync(
 open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
     /**
      * The exit code of a run that ends without a throw. 0 unless `--watch` stopped on an authentication
-     * error (archive#1082): a supervisor must see that the watch ended because the sign-in is gone.
+     * error (archive#1082): a supervisor must see that the watch ended because the sign-in is gone; or a
+     * `--reset` was refused, declined or could not copy state.db aside (#100), and nothing ran.
      */
-    private var watchExitCode: Int = 0
+    private var runExitCode: Int = 0
 
-    override fun getExitCode(): Int = watchExitCode
+    override fun getExitCode(): Int = runExitCode
 
     // refresh/apply override these via subclass to drive partial syncs.
     // refresh = skipTransfers=true (Pass 1 only, defer byte transfers).
@@ -93,8 +94,17 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
     @Option(names = ["--dry-run"], description = ["Show what would be synced without making changes"])
     var dryRun: Boolean = false
 
-    @Option(names = ["--reset"], description = ["Clear sync state and rescan everything from scratch"])
+    @Option(
+        names = ["--reset"],
+        description = [
+            "Clear sync state and rescan everything from scratch. Asks first (--yes for scripts);",
+            "state.db is copied aside first, as state-before-reset-<UTC time>.db next to it.",
+        ],
+    )
     var reset: Boolean = false
+
+    @Option(names = ["-y", "--yes"], description = ["With --reset: do not ask first (state.db is still copied aside)"])
+    var yes: Boolean = false
 
     @Option(
         names = ["--sync-path"],
@@ -277,6 +287,15 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         // archive#603 (U4): the hosting contract, before the lock or anything else mutates - `sync` is the
         // mirror-mode command; a modeless or mount profile is refused before anything is touched.
         parent.requireProfileMode(parent.resolveCurrentProfile(), ProfileMode.MIRROR, "sync")
+        // #100: a reset throws away what the profile knows about its files, so it is asked for before the lock (a
+        // question left open must not hold the profile). A dry run resets a throwaway copy only and asks nothing.
+        if (reset && !dryRun) {
+            StateReset.refusal("sync", parent.resolveCurrentProfile().name, yes)?.let {
+                System.err.println(it)
+                runExitCode = 1
+                return
+            }
+        }
         val lock = parent.acquireProfileLock()
         Runtime.getRuntime().addShutdownHook(Thread { lock.unlock() })
 
@@ -368,11 +387,24 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                 println("Dry-run: working on a throwaway copy of state.db; the real state is not touched.")
             }
         } else {
+            // #100: copied before the file is opened, under the profile lock: the copy is what the last run left.
+            val resetBackup =
+                if (reset) {
+                    try {
+                        StateReset.backup(dbPath)
+                    } catch (e: java.io.IOException) {
+                        System.err.println("Sync error: state.db could not be copied aside (${e.message}); nothing was reset.")
+                        runExitCode = 1
+                        return
+                    }
+                } else {
+                    null
+                }
             db = StateDatabase(dbPath)
             db.initialize()
             if (reset) {
                 db.resetAll()
-                println("Sync state cleared.")
+                println(if (resetBackup != null) "Sync state cleared; the previous state.db is saved as $resetBackup." else "Sync state cleared.")
             }
         }
 
@@ -690,7 +722,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                         } catch (e: AuthenticationException) {
                             ipcReporter.emitSyncError(e.message ?: "Authentication error")
                             System.err.println("Authentication error, stopping: ${e.message}")
-                            watchExitCode = 1
+                            runExitCode = 1
                             return@runBlocking
                         } catch (e: Exception) {
                             ipcReporter.emitSyncError(e.message ?: "Sync failed")
@@ -721,7 +753,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                             } catch (e: AuthenticationException) {
                                 ipcReporter.emitSyncError(e.message ?: "Authentication error")
                                 System.err.println("Authentication error, stopping: ${e.message}")
-                                watchExitCode = 1
+                                runExitCode = 1
                                 break
                             } catch (e: Exception) {
                                 ipcReporter.emitSyncError(e.message ?: "Sync failed")
