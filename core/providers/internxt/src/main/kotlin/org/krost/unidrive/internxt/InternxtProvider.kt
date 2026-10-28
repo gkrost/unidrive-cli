@@ -2022,7 +2022,14 @@ class InternxtProvider(
      */
     private suspend fun resolveUploadParent(parentPath: String, remotePath: String): String =
         try {
-            resolveFolder(parentPath)
+            try {
+                resolveFolder(parentPath)
+            } catch (e: FolderNotFoundException) {
+                // gkrost/unidrive-cli#134: the first walk may have trusted a cached ancestor or a listing that lags behind the
+                // cloud (archive#132, UD-357). Absence stands only after a second, uncached look at complete listings.
+                log.info("upload of {}: the walk did not find {}; looking again through the complete listings", remotePath, e.missingFolder)
+                resolveFolderAfresh(parentPath)
+            }
         } catch (e: FolderNotFoundException) {
             throw org.krost.unidrive.ParentGoneException(
                 "parent folder of $remotePath is gone in the cloud (trashed?): ${e.message}",
@@ -2030,6 +2037,40 @@ class InternxtProvider(
                 cause = e,
             )
         }
+
+    /**
+     * gkrost/unidrive-cli#134: [resolveFolder] for the second look at a path whose first walk did not find [firstMissing].
+     * Nothing is taken from [folderCache] on the way down (a stale entry for an ancestor is what the first walk may have
+     * followed), the child folders of each level come from the paged listing, which ends only on its last page, after
+     * [parentRelistDelayMs] so that a listing that lags behind a create or a trash has caught up, and every folder found
+     * replaces the cache's entry for its name. Only a folder missing from such a listing is absent: [FolderNotFoundException].
+     * A listing that fails propagates with its own (retryable) type; it proves nothing.
+     */
+    private suspend fun resolveFolderAfresh(path: String): String {
+        kotlinx.coroutines.delay(parentRelistDelayMs)
+        val segments = pathSegments(path)
+        var currentUuid = authService.getValidCredentials().rootFolderId
+        for ((index, segment) in segments.withIndex()) {
+            val children =
+                api.getChildFoldersPaged(currentUuid).filter { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == segment }
+            val child =
+                when (children.size) {
+                    0 -> {
+                        folderCache.invalidate(currentUuid, segment)
+                        throw FolderNotFoundException(segment, path, "/" + segments.take(index + 1).joinToString("/"))
+                    }
+                    1 -> children[0]
+                    else -> throwAmbiguous(children.size, segment, path)
+                }
+            folderCache.put(currentUuid, segment, child.uuid)
+            currentUuid = child.uuid
+        }
+        return currentUuid
+    }
+
+    // How long the second look at a missing upload parent waits first: a listing that does not show a folder just created or
+    // just restored is seen to lag for 1-3 s (FolderUuidCache, archive#132). A test seam, like [clock].
+    internal var parentRelistDelayMs: Long = PARENT_RELIST_DELAY_MS
 
     private suspend fun uploadEmpty(
         segments: List<String>,
@@ -5144,6 +5185,9 @@ private val finishUploadLog = org.slf4j.LoggerFactory.getLogger("org.krost.unidr
 internal const val RECONCILE_WINDOW_MS: Long = 5L * 60 * 1000
 
 internal const val RECONCILE_RELIST_DELAY_MS: Long = 2_000L
+
+// gkrost/unidrive-cli#134: the wait before the second look at an upload parent the first walk did not find.
+internal const val PARENT_RELIST_DELAY_MS: Long = 2_000L
 
 // True only for the IOException class that proves the request reached the server
 // and a response began before the connection dropped — i.e. the body was lost in

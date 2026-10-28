@@ -321,6 +321,25 @@ class InternxtApiService(
             FolderContentResponse(children = folders, files = files)
         }
 
+    internal val childFoldersPagedDedup = InFlightDedup<String, List<InternxtFolder>>()
+
+    /**
+     * gkrost/unidrive-cli#134: the child FOLDERS of a folder through the paged listing alone (the cursor stream, the offset one
+     * when the gateway has no cursor route), for the second look at a path segment the combined call did not show. The stream
+     * ends only on a page that names no next cursor (an empty page for the offset one), so a result is the complete list of
+     * the folders, never a first page; a stream that cannot end fails instead of answering short. The files stream is not read:
+     * the walk never needs it, and a folder of 30k files needs 30 requests for it.
+     */
+    suspend fun getChildFoldersPaged(folderUuid: String): List<InternxtFolder> =
+        childFoldersPagedDedup.load(folderUuid, currentPriority()) {
+            cursorStreamOrOffsetFallback(
+                folderUuid,
+                "folders",
+                { it.uuid },
+                { parseFoldersSyncPage(it) },
+            ) { json.decodeFromString<PagedFolderFoldersResponse>(it).folders }
+        }
+
     private suspend fun <T> cursorStreamOrOffsetFallback(
         folderUuid: String,
         stream: String,

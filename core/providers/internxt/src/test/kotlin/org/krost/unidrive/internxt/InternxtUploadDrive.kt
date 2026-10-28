@@ -97,6 +97,15 @@ internal class UploadDrive(
     /** The file is stored although [createFault] answers an error: the commit landed and the response was lost. */
     @Volatile var storeBeforeFault: Boolean = false
 
+    /**
+     * Folder uuid -> how many listings of its parent still leave it out (the combined call and the cursor stream of the folders
+     * both count, one per call): a listing that lags behind a create or a restore, as the real one does for 1-3 s.
+     */
+    val listingLag = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** Answers every cursor listing of a folder's children with this status instead (null lets it through). */
+    @Volatile var pagedListingFault: HttpStatusCode? = null
+
     /** The order in which a batch `POST /folders` answers its folders. */
     @Volatile var batchAnswerOrder: (List<UploadDriveFolder>) -> List<UploadDriveFolder> = { it }
 
@@ -108,6 +117,14 @@ internal class UploadDrive(
             "\"size\":\"${f.size}\",\"fileId\":\"${f.fileId}\",\"bucket\":\"6928426c1a2316b856c9ab81\",\"folderUuid\":\"${f.folderUuid}\"," +
             "\"status\":\"EXISTS\",\"creationTime\":\"2026-10-01T10:00:00.000Z\",\"modificationTime\":\"2026-10-01T10:00:00.000Z\"," +
             "\"updatedAt\":\"${f.updatedAt}\"}"
+
+    // The folders below [parent] this listing shows: a folder in [listingLag] is left out and counts the listing off.
+    private fun listedFolders(parent: String): List<UploadDriveFolder> =
+        folders.filter { it.parentUuid == parent }.filter { f ->
+            val hidden = listingLag[f.uuid] ?: 0
+            if (hidden > 0) listingLag[f.uuid] = hidden - 1
+            hidden == 0
+        }
 
     private fun folderJson(f: UploadDriveFolder) =
         "{\"uuid\":\"${f.uuid}\",\"plainName\":${JsonPrimitive(f.plainName)},\"parentUuid\":\"${f.parentUuid}\",\"status\":\"EXISTS\"," +
@@ -228,9 +245,20 @@ internal class UploadDrive(
                     val f = folders.firstOrNull { it.uuid == path.substringBeforeLast("/meta").substringAfterLast('/') }
                     if (f == null) notFound() else respond(folderJson(f), HttpStatusCode.OK, jsonHeaders)
                 }
+                request.method == HttpMethod.Get && "/drive/folders/v2/content/" in url -> {
+                    val (folder, stream) = path.substringAfter("/v2/content/").split('/')
+                    val fault = pagedListingFault
+                    when {
+                        fault != null -> respond("""{"statusCode":${fault.value},"message":"injected"}""", fault, jsonHeaders)
+                        stream == "folders" ->
+                            respond(listedFolders(folder).joinToString(",", "{\"folders\":[", "],\"nextCursor\":null}") { folderJson(it) }, HttpStatusCode.OK, jsonHeaders)
+                        else ->
+                            respond(files.filter { it.folderUuid == folder }.joinToString(",", "{\"files\":[", "],\"nextCursor\":null}") { fileJson(it) }, HttpStatusCode.OK, jsonHeaders)
+                    }
+                }
                 request.method == HttpMethod.Get && "/drive/folders/content/" in url -> {
                     val folder = path.substringAfterLast('/')
-                    val children = folders.filter { it.parentUuid == folder }.joinToString(",") { folderJson(it) }
+                    val children = listedFolders(folder).joinToString(",") { folderJson(it) }
                     val listed = files.filter { it.folderUuid == folder }.joinToString(",") { fileJson(it) }
                     respond("""{"children":[$children],"files":[$listed]}""", HttpStatusCode.OK, jsonHeaders)
                 }
