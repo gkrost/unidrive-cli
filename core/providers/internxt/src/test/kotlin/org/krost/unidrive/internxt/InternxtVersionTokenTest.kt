@@ -34,6 +34,33 @@ class InternxtVersionTokenTest {
         assertTrue(InternxtProvider.internxtVersionToken(file(mtime = null)).isNotEmpty()) // a missing time still gives a token
     }
 
+    // gkrost/unidrive-cli#164: the token moves with a rename (the server stamps a new modification time); the name of the bytes
+    // moves only with another stored object or size.
+    @Test
+    fun `the name of the bytes changes with the stored object and the size, not with the time or the name`() {
+        val base = file().copy(fileId = "obj-1")
+        val named = InternxtProvider.internxtContentId(base)
+
+        assertEquals("obj-1|100", named)
+        assertEquals(named, InternxtProvider.internxtContentId(base.copy(modificationTime = "2026-10-02T09:00:00.000Z", plainName = "b")))
+        assertNotEquals(named, InternxtProvider.internxtContentId(base.copy(fileId = "obj-2")))
+        assertNotEquals(named, InternxtProvider.internxtContentId(base.copy(size = "101")))
+    }
+
+    @Test
+    fun `an empty file is named by its size, a file of some bytes without a stored object by nothing`() {
+        assertEquals("|0", InternxtProvider.internxtContentId(file(size = "0")))
+        assertEquals(null, InternxtProvider.internxtContentId(file()), "the answer named no object: nothing to compare")
+        assertEquals(null, InternxtProvider.internxtContentId(file().copy(fileId = "obj-1", size = null)))
+    }
+
+    @Test
+    fun `the items of every converter name their bytes`() {
+        val listed = file().copy(fileId = "obj-1")
+        assertEquals("obj-1|100", InternxtProvider.fileToCloudItem(listed, "/").contentId)
+        assertEquals("obj-1|100", InternxtProvider.fileToDeltaCloudItem(listed, "").contentId)
+    }
+
     private fun providerWithMeta(
         metaJson: String,
         startCalls: AtomicInteger,

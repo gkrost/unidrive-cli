@@ -1609,6 +1609,99 @@ class StateDatabaseTest {
     }
 
     @Test
+    fun `migration - remote_content_id column is added in-place to an existing DB and existing rows read it as null`() {
+        // gkrost/unidrive-cli#164: the shipped shape BEFORE remote_content_id (mount_deleted_at is the newest column). An existing
+        // row survives and names no bytes: its remote_hash decides alone, as before.
+        val tmpDir = Files.createTempDirectory("unidrive-contentid-migration")
+        val dbFile = tmpDir.resolve("state.db")
+        DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    """
+                    CREATE TABLE sync_entries (
+                        remote_id            TEXT PRIMARY KEY,
+                        parent_uuid          TEXT,
+                        path                 TEXT NOT NULL,
+                        remote_path          TEXT,
+                        remote_hash          TEXT,
+                        remote_size          INTEGER NOT NULL DEFAULT 0,
+                        remote_modified      TEXT,
+                        local_mtime          INTEGER,
+                        local_size           INTEGER,
+                        is_folder            INTEGER NOT NULL DEFAULT 0,
+                        is_pinned            INTEGER NOT NULL DEFAULT 0,
+                        is_hydrated          INTEGER NOT NULL DEFAULT 0,
+                        last_synced          TEXT NOT NULL,
+                        status               TEXT NOT NULL DEFAULT 'EXISTS'
+                                             CHECK (status IN ('EXISTS','TRASHED','DELETED')),
+                        download_quarantined INTEGER NOT NULL DEFAULT 0,
+                        last_error_at        TEXT,
+                        local_hash           TEXT,
+                        cache_backed         INTEGER,
+                        upload_refused       TEXT,
+                        name_block           TEXT,
+                        edit_base            TEXT,
+                        remote_version       TEXT,
+                        mount_deleted_at     TEXT
+                    )
+                """,
+                )
+                stmt.executeUpdate(
+                    "CREATE VIEW alive_entries AS SELECT * FROM sync_entries WHERE status='EXISTS'",
+                )
+                stmt.executeUpdate(
+                    "CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_state VALUES ('${StateDatabase.SCHEMA_VERSION_KEY}', " +
+                        "'${StateDatabase.SCHEMA_VERSION}')",
+                )
+                stmt.executeUpdate(
+                    "INSERT INTO sync_entries (remote_id, path, remote_hash, local_mtime, local_size, is_hydrated, last_synced) " +
+                        "VALUES ('u-existing', '/Docs/report.pdf', 'u-existing|2026-01-01T00:00:00.000Z|42', 1711627200000, 42, 1, " +
+                        "'2026-01-01T00:00:00Z')",
+                )
+            }
+        }
+
+        val upgraded = StateDatabase(dbFile)
+        upgraded.initialize()
+        try {
+            val row = upgraded.getEntry("/Docs/report.pdf")
+            assertNotNull(row, "a row from before the column must survive the additive migration")
+            assertNull(row.remoteContentId, "no backfill: an old row names no bytes")
+            assertEquals("u-existing|2026-01-01T00:00:00.000Z|42", row.remoteHash)
+            assertEquals(
+                StateDatabase.SCHEMA_VERSION.toString(),
+                upgraded.getSyncState(StateDatabase.SCHEMA_VERSION_KEY),
+                "additive column: no schema_version bump",
+            )
+            upgraded.upsertEntry(row.copy(remoteContentId = "obj-1|42"))
+            assertEquals("obj-1|42", upgraded.getEntry("/Docs/report.pdf")?.remoteContentId)
+            // Second initialize() is idempotent (column already present) and keeps the value.
+            upgraded.initialize()
+            assertEquals("obj-1|42", upgraded.getEntry("/Docs/report.pdf")?.remoteContentId)
+        } finally {
+            upgraded.close()
+        }
+    }
+
+    @Test
+    fun `remote_content_id round-trips through both upserts`() {
+        db.upsertEntry(entry("/c.txt").copy(remoteContentId = "obj-1|5"))
+        assertEquals("obj-1|5", db.getEntry("/c.txt")?.remoteContentId)
+
+        // The merge's upsert (keeping the refusal and name marks) stores it as well, and still carries the marks over.
+        assertTrue(db.markNameBlocked("/c.txt", "name_conflict", "C.txt"))
+        db.upsertEntry(db.getEntry("/c.txt")!!.copy(remoteContentId = "obj-2|5"), keepMarks = true)
+        assertEquals("obj-2|5", db.getEntry("/c.txt")?.remoteContentId)
+        assertNotNull(db.nameBlock("/c.txt"), "the name mark survives the merge's upsert")
+
+        db.upsertEntry(db.getEntry("/c.txt")!!.copy(remoteContentId = null))
+        assertNull(db.getEntry("/c.txt")?.remoteContentId)
+    }
+
+    @Test
     fun `the write token rules - which base a row accepts and what may be sent as If-Match`() {
         val versioned = entry("/w.txt").copy(remoteVersion = "\"{A},3\"")
         assertTrue(versioned.isBasedOn("\"{A},3\""), "the current version")

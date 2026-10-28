@@ -778,11 +778,7 @@ class MountEngine private constructor(
 
     // The row with the cloud identity of [live], the item its bytes were read from; unchanged when there is none.
     private fun SyncEntry.adopting(live: CloudItem?): SyncEntry =
-        if (live == null) {
-            this
-        } else {
-            copy(remoteId = live.id, remoteHash = live.hash, remoteVersion = live.version, remoteModified = live.modified ?: remoteModified)
-        }
+        live?.let { copy(remoteId = it.id, remoteHash = it.hash, remoteVersion = it.version, remoteModified = it.modified ?: remoteModified, remoteContentId = it.contentId) } ?: this
 
     /**
      * The directory that holds this profile's hydration cache (every cache file lives below it, laid
@@ -1164,6 +1160,7 @@ class MountEngine private constructor(
             // The write token of the version just written (every write moves OneDrive's eTag), so that the next edit's
             // base matches it. A skipped upload keeps the token the cloud still holds.
             remoteVersion = result.version,
+            remoteContentId = result.contentId,
             remoteSize = result.size,
             remoteModified = result.modified,
             localMtime = mtime,
@@ -1284,6 +1281,7 @@ class MountEngine private constructor(
                     remoteHash = current?.hash ?: row.remoteHash,
                     // A version the row knows to be stale is no base for a write: unknown until a delivery brings it.
                     remoteVersion = current?.version,
+                    remoteContentId = if (current != null) current.contentId else row.remoteContentId,
                     remoteSize = current?.size ?: row.remoteSize,
                     remoteModified = current?.modified ?: row.remoteModified,
                     isHydrated = false,
@@ -1342,6 +1340,7 @@ class MountEngine private constructor(
                 lastSynced = Instant.now(),
                 parentUuid = copy.parentId,
                 cacheBacked = true,
+                remoteContentId = copy.contentId,
             )
         db.upsertEntry(withSentHash(row, target, sent))
         return true
@@ -1573,30 +1572,30 @@ class MountEngine private constructor(
         val newRemote = remotePathOf(newPath, entry = null)
         // archive#402/#403: moved by its cloud id where the row has one (see deleteRemote).
         val remoteId = oldEntry?.remoteId?.takeUnless { it.startsWith("local:") }
+        val heldBefore = MoveRecord.versionHeldBefore(provider, oldEntry, oldRemote, log)
         val moved = if (remoteId != null) provider.moveById(remoteId, oldRemote, newRemote) else provider.move(oldRemote, newRemote)
-        followRemoteMove(oldPath, newPath, moved, oldEntry)
+        followRemoteMove(oldPath, newPath, moved, oldEntry, heldBefore)
     }
 
     /**
      * The state.db side of [renameRemote], once the cloud moved the item of [oldPath] to [newPath] ([moved]: the item there now):
      * the row moves with the rows below a folder, and the remote paths follow. archive#1040 M4: also the roll forward of a rename
-     * whose cloud move was done when the daemon stopped, found at the next start.
+     * whose cloud move was done when the daemon stopped, found at the next start. The row takes what [MoveRecord] says it takes
+     * from [moved] (gkrost/unidrive-cli#164); [heldBefore]: the version the cloud held right before the move, where it was the row's.
      */
     fun followRemoteMove(
         oldPath: String,
         newPath: String,
         moved: CloudItem,
         oldEntry: SyncEntry? = db.getEntry(oldPath),
+        heldBefore: CloudItem? = null,
     ) {
         val oldRemote = remotePathOf(oldPath, oldEntry)
         val newRemote = remotePathOf(newPath, entry = null)
         db.renamePrefix(oldPath, newPath)
         db.rebaseRemotePaths(oldRemote, newRemote)
         if (newRemote != newPath) db.assignRemotePaths(newPath, newRemote)
-        // A move gives the item a new write token (OneDrive's eTag moves with the name): the next edit is based on it.
-        if (oldEntry?.remoteVersion != null && !moved.isFolder && moved.version != oldEntry.remoteVersion) {
-            db.getEntry(newPath)?.let { db.upsertEntry(it.copy(remoteVersion = moved.version), keepMarks = true) }
-        }
+        MoveRecord.follow(db, oldEntry, newPath, moved, heldBefore)
     }
 
     /**
@@ -1631,6 +1630,7 @@ class MountEngine private constructor(
             remoteHash = moved.hash ?: landed.item.hash,
             // The move gave the item a new write token: the next edit is based on it.
             remoteVersion = moved.version,
+            remoteContentId = moved.contentId ?: landed.item.contentId,
             remoteSize = moved.size,
             remoteModified = moved.modified,
             localMtime = mtime,

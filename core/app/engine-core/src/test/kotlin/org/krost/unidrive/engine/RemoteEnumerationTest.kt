@@ -1226,6 +1226,84 @@ class RemoteEnumerationTest {
             assertTrue(assertNotNull(db.getEntry("/a.txt")).isHydrated, "the copy may be the only copy of an edit")
         }
 
+    // ---- a provider that names the bytes apart from its hash (gkrost/unidrive-cli#164; Internxt's hash is its write token) ----
+
+    private fun namedFile(
+        path: String,
+        token: String,
+        contentId: String?,
+    ) = sizedFile("a", path, token).copy(contentId = contentId)
+
+    @Test
+    fun `the same name of the bytes keeps the row hydrated although the token moved`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(namedFile("/a.txt", "t1", "obj-1"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            hydratedRowOf("/a.txt", "t1")
+
+            provider.items = listOf(namedFile("/b.txt", "t2", "obj-1"))
+            enumeration.enumerate(reset = false)
+
+            val row = assertNotNull(db.getEntry("/b.txt"))
+            assertTrue(row.isHydrated, "a rename changes no byte")
+            assertEquals("t2", row.remoteHash, "the row takes the new token for the next write")
+            assertEquals("obj-1", row.remoteContentId)
+        }
+
+    @Test
+    fun `another name of the bytes ends the hydration although the token stayed`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(namedFile("/a.txt", "t1", "obj-1"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            hydratedRowOf("/a.txt", "t1")
+            invalidations.clear()
+
+            provider.items = listOf(namedFile("/a.txt", "t1", "obj-2"))
+            enumeration.enumerate(reset = false)
+
+            assertFalse(assertNotNull(db.getEntry("/a.txt")).isHydrated)
+            assertTrue(invalidations.any { "/a.txt" in it.first }, "the view learns of the new bytes")
+        }
+
+    @Test
+    fun `a row that names no bytes yet is judged by its hash and learns the name from the delivery`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(sizedFile("a", "/a.txt", "t1"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            hydratedRowOf("/a.txt", "t1")
+
+            provider.items = listOf(namedFile("/a.txt", "t1", "obj-1"))
+            enumeration.enumerate(reset = false)
+
+            val row = assertNotNull(db.getEntry("/a.txt"))
+            assertTrue(row.isHydrated, "the token says nothing changed")
+            assertEquals("obj-1", row.remoteContentId)
+        }
+
+    @Test
+    fun `an item that names no bytes keeps the row's name while it is the version the row records`() =
+        runTest {
+            // A listing resumed from staged rows, which keep no stored object.
+            provider.fullListing = false
+            provider.items = listOf(namedFile("/a.txt", "t1", "obj-1"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+
+            provider.items = listOf(namedFile("/a.txt", "t1", null))
+            enumeration.enumerate(reset = false)
+            assertEquals("obj-1", assertNotNull(db.getEntry("/a.txt")).remoteContentId)
+
+            provider.items = listOf(namedFile("/a.txt", "t2", null))
+            enumeration.enumerate(reset = false)
+            assertNull(assertNotNull(db.getEntry("/a.txt")).remoteContentId, "another version: the name is not known")
+        }
+
     // ---- archive#580: the tombstone of a folder the provider confirmed gone by its id ----
 
     @Test
