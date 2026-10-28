@@ -3961,12 +3961,31 @@ open class SyncEngine(
                 SyncAction.CreatePlaceholder(action.path, action.remoteItem, shouldHydrate = true),
                 localBytesLost = true,
             )
+        } else if (remoteWins && action.remoteItem?.deleted == true) {
+            // A tombstone that is the newer writer IS the newer write: the delete applies (Internxt tombstones
+            // carry modificationInstant, so a delete can be the last writer). Without this branch neither side
+            // ran: the row stayed unchanged, and the next pass planned an upload against the gone item.
+            // applyDeleteLocal tombstones or drops the row, so nothing is left to re-plan.
+            if (Files.exists(localPath)) {
+                applyDeleteLocal(SyncAction.DeleteLocal(action.path))
+            } else {
+                val row = db.getEntry(action.path)
+                val remoteId = row?.remoteId
+                if (remoteId != null) db.setStatusTrashed(remoteId) else db.deleteEntry(action.path)
+            }
         } else if (!remoteWins && Files.exists(localPath)) {
             // UD-366: conflict-loser is the remote — overwrite it in place rather than
             // POSTing a duplicate. action.remoteItem is non-null on this branch because
             // remoteWins=false implies a remote modification was the conflict trigger.
             // gkrost/unidrive-cli#57: guarded by the version that lost, the conflict's, not the older one the row records.
-            applyUpload(SyncAction.Upload(action.path, remoteId = action.remoteItem?.id), replaces = action.remoteItem, resolveRefusal = false)
+            // A tombstone the local edit out-writes is not a version to replace in place (the item is gone):
+            // the upload goes up as a new item, as the keep-both branch uploads over a remote delete.
+            val replacedRemote = action.remoteItem?.takeUnless { it.deleted }
+            applyUpload(
+                SyncAction.Upload(action.path, remoteId = replacedRemote?.id),
+                replaces = replacedRemote,
+                resolveRefusal = false,
+            )
         }
     }
 

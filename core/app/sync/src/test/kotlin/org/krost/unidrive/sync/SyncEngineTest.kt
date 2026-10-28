@@ -5260,4 +5260,83 @@ class SyncEngineTest {
             assertEquals(listOf("/" + kept[0].first), provider.uploadedPaths, "the kept copy is uploaded like a keep-both copy")
             assertEquals("id-/doc.txt", db.getEntry("/doc.txt")?.remoteId, "the canonical row tracks the downloaded version")
         }
+    @Test
+    fun `last-writer-wins against a newer remote tombstone applies the delete`() =
+        runTest {
+            Files.writeString(syncRoot.resolve("doc.txt"), "local edit")
+            val local = syncRoot.resolve("doc.txt")
+            Files.setLastModifiedTime(local, java.nio.file.attribute.FileTime.from(Instant.parse("2026-01-01T00:00:00Z")))
+            db.upsertEntry(
+                SyncEntry(
+                    path = "/doc.txt",
+                    remoteId = "id-remote",
+                    remoteHash = "hash-remote",
+                    remoteVersion = null,
+                    remoteSize = 11,
+                    remoteModified = Instant.parse("2025-12-01T00:00:00Z"),
+                    localMtime = Files.getLastModifiedTime(local).toMillis(),
+                    localSize = 10,
+                    isFolder = false,
+                    isPinned = false,
+                    isHydrated = true,
+                    lastSynced = Instant.parse("2025-12-01T00:00:00Z"),
+                ),
+            )
+            val tombstone = cloudItem("/doc.txt", deleted = true, hash = "hash-remote")
+
+            conflictEngine().applyConflict(
+                SyncAction.Conflict(
+                    path = "/doc.txt",
+                    localState = ChangeState.MODIFIED,
+                    remoteState = ChangeState.DELETED,
+                    remoteItem = tombstone,
+                    policy = ConflictPolicy.LAST_WRITER_WINS,
+                ),
+            )
+
+            assertFalse(Files.exists(local), "the newer tombstone wins: the local file is deleted")
+            assertNull(db.getEntry("/doc.txt"), "the row is tombstoned, not left unchanged")
+        }
+
+    @Test
+    fun `last-writer-wins against an older remote tombstone uploads the local edit as a new item`() =
+        runTest {
+            Files.writeString(syncRoot.resolve("doc.txt"), "local edit")
+            val local = syncRoot.resolve("doc.txt")
+            Files.setLastModifiedTime(local, java.nio.file.attribute.FileTime.from(Instant.parse("2027-01-01T00:00:00Z")))
+            db.upsertEntry(
+                SyncEntry(
+                    path = "/doc.txt",
+                    remoteId = "id-remote",
+                    remoteHash = "hash-remote",
+                    remoteVersion = null,
+                    remoteSize = 11,
+                    remoteModified = Instant.parse("2025-12-01T00:00:00Z"),
+                    localMtime = Files.getLastModifiedTime(local).toMillis(),
+                    localSize = 10,
+                    isFolder = false,
+                    isPinned = false,
+                    isHydrated = true,
+                    lastSynced = Instant.parse("2025-12-01T00:00:00Z"),
+                ),
+            )
+            val tombstone = cloudItem("/doc.txt", deleted = true, hash = "hash-remote")
+
+            conflictEngine().applyConflict(
+                SyncAction.Conflict(
+                    path = "/doc.txt",
+                    localState = ChangeState.MODIFIED,
+                    remoteState = ChangeState.DELETED,
+                    remoteItem = tombstone,
+                    policy = ConflictPolicy.LAST_WRITER_WINS,
+                ),
+            )
+
+            assertEquals(listOf("/doc.txt"), provider.uploadedPaths, "the local edit wins and is uploaded")
+            assertNull(
+                provider.lastUploadExistingRemoteId,
+                "the upload must not replace in place on the deleted item's id: it goes up as a new item",
+            )
+            assertEquals("id-/doc.txt", db.getEntry("/doc.txt")?.remoteId, "the row records the upload's new remote id")
+        }
 }
