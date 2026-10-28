@@ -21,7 +21,9 @@ concurrency:
 # overnight: pair it with re-deriving the oracle's drift leg and re-measuring
 # the workers cap.
 jobs:
-  # Advisory full-history secret scan. The required gates are `check` and
+  # Advisory secret scan. gitleaks-action scans the event's commit range (push
+  # or pull request), not the full history; the full checkout is what makes the
+  # range resolvable. The required gates are `check` and
   # `windows-security` (repository ruleset); this job reports findings without becoming a required check.
   gitleaks:
     name: gitleaks (advisory)
