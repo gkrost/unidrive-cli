@@ -1024,12 +1024,7 @@ class Reconciler(
                 // metadata instead (CreatePlaceholder keeps the local bytes: with real content
                 // of the remote's size it records the row without re-downloading).
                 val localFile = resolveLocal(path)
-                if (
-                    remoteItem != null &&
-                    !remoteItem.isFolder &&
-                    Files.isRegularFile(localFile) &&
-                    sameContent?.invoke(localFile, remoteItem) == true
-                ) {
+                if (remoteItem != null && !remoteItem.isFolder && provenSame(localFile, remoteItem, sameContent)) {
                     SyncAction.CreatePlaceholder(path, remoteItem, shouldHydrate = false)
                 } else {
                     SyncAction.Conflict(path, localState, remoteState, remoteItem, policyForPath(path))
@@ -2067,6 +2062,13 @@ private fun adoptableAsSameFile(
         }
     return same != false || SparseProbe.isStub(localFile, remoteItem.size)
 }
+
+// archive#532: the both-modified pair holds the same bytes; "cannot tell" (#97) is not "same" there.
+private fun provenSame(
+    localFile: Path,
+    remoteItem: CloudItem,
+    sameContent: ((Path, CloudItem) -> Boolean?)?,
+): Boolean = Files.isRegularFile(localFile) && sameContent?.invoke(localFile, remoteItem) == true
 
 // gkrost/unidrive-cli#97: a both-new conflict of two files, a candidate for a remote rename onto the local file.
 private fun isBothNewFileConflict(

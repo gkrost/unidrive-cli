@@ -5,7 +5,6 @@
     <ID>ComplexCondition:GlobPattern.kt$GlobPattern.Companion$t in r[0]..r[1] || (ignoreCase &amp;&amp; isLower(t) &amp;&amp; upper(t) in r[0]..r[1])</ID>
     <ID>ComplexCondition:IpcAuth.kt$IpcAuth.Companion$text.isEmpty() || text.any { !(it.isLetterOrDigit() &amp;&amp; it.code &lt; 128) &amp;&amp; it != '-' &amp;&amp; it != '_' }</ID>
     <ID>ComplexCondition:IpcAuthClient.kt$IpcAuthClient$step1.isOk() &amp;&amp; step1.int("step") == 1 &amp;&amp; serverNonce != null &amp;&amp; IpcAuth.decode(serverNonce)?.size == IpcAuth.NONCE_BYTES</ID>
-    <ID>ComplexCondition:Reconciler.kt$Reconciler$remoteItem != null &amp;&amp; !remoteItem.isFolder &amp;&amp; sameContent != null &amp;&amp; Files.isRegularFile(localFile) &amp;&amp; sameContent(localFile, remoteItem)</ID>
     <ID>ComplexCondition:Reconciler.kt$Reconciler.Companion$c == '\n' || c == '\r' || c == '\u0085' || c == ' ' || c == ' '</ID>
     <ID>ComplexCondition:VersionManager.kt$VersionManager$current != versionsDir &amp;&amp; current.exists() &amp;&amp; current.isDirectory() &amp;&amp; current.listDirectoryEntries().isEmpty()</ID>
     <ID>CyclomaticComplexMethod:GlobPattern.kt$GlobPattern.Companion$private fun bracket( p: ByteArray, start: Int, ignoreCase: Boolean, ): Pair&lt;BooleanArray, Int&gt;?</ID>
