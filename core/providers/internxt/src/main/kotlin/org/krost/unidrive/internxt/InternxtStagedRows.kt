@@ -1,6 +1,9 @@
 package org.krost.unidrive.internxt
 
+import kotlinx.serialization.Serializable
+import org.krost.unidrive.CloudItem
 import org.krost.unidrive.internxt.model.InternxtFile
+import org.krost.unidrive.internxt.model.InternxtJson
 
 // The version token of a file ("<uuid>|<modificationTime>|<size>", see InternxtProvider.internxtVersionToken) is built from the
 // modification time string the server sent. A staged row keeps no such string (scan_staging holds the time as an Instant, whose
@@ -24,3 +27,53 @@ internal fun stagedModificationTime(hash: String?): String? {
     val prefix = listOf(TREE_FILE_PREFIX, CURSOR_FILE_PREFIX, OFFSET_FILE_PREFIX).firstOrNull { hash.startsWith(it) } ?: return null
     return hash.removePrefix(prefix)
 }
+
+// A gather that cannot hold its files hands them over from the staging (ScanContext.stagedPage, archive#638). A staged row
+// keeps the cloud identity only, so a file read back from its row alone would differ from the one the listing delivered: the
+// creation time is not stored, the name of a legacy row is the ciphertext, and the root-level parent is collapsed to null.
+// The file rows of such a gather therefore carry the file itself, trimmed to what the item is built from, in the row's
+// version column (nothing reads a version of a staged row but this): the item built from the row is the item built from
+// the page. The payload names the gather it belongs to ([StagedFilePayload.gather], the instant the enumeration began,
+// which a resume keeps), so the rows an earlier, abandoned listing left in the same scan are not taken for this one's.
+
+@Serializable
+internal class StagedFilePayload(
+    val gather: String,
+    val file: InternxtFile,
+)
+
+/** The payload of the staged row of [file] for the gather [gather]. */
+internal fun stagedFilePayload(
+    gather: String,
+    file: InternxtFile,
+): String =
+    InternxtJson.encodeToString(
+        StagedFilePayload.serializer(),
+        StagedFilePayload(
+            gather,
+            InternxtFile(
+                uuid = file.uuid,
+                name = file.name,
+                plainName = file.plainName,
+                type = file.type,
+                size = file.size,
+                folderUuid = file.folderUuid,
+                creationTime = file.creationTime,
+                modificationTime = file.modificationTime,
+            ),
+        ),
+    )
+
+/** The payload [row] carries, or null for a row without one (staged by an earlier version or by a gather that holds its files). */
+internal fun stagedFilePayloadOf(row: CloudItem): StagedFilePayload? {
+    val raw = row.version ?: return null
+    return try {
+        InternxtJson.decodeFromString(StagedFilePayload.serializer(), raw)
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+}
+
+// The cursor a full gather names between the chunks of its hand-over (see InternxtProvider.GatherHandover). It is no poll cursor,
+// which is a timestamp; the provider tells them apart by this prefix.
+internal const val GATHER_CURSOR_PREFIX: String = "internxt-gather|"

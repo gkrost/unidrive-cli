@@ -306,32 +306,58 @@ internal class ScanStaging(
         return c.prepareStatement(sql).use { stmt ->
             stmt.setString(1, scanId)
             if (reconciled != null) stmt.setInt(2, if (reconciled) 1 else 0)
-            stmt.executeQuery().use { rs ->
-                val items = mutableListOf<CloudItem>()
-                val columns = rs.metaData
-                val hasVersion = (1..columns.columnCount).any { columns.getColumnName(it) == "remote_version" }
-                while (rs.next()) {
-                    val name = rs.getString("plain_name")
-                    items.add(
-                        CloudItem(
-                            id = rs.getString("remote_id"),
-                            name = name,
-                            // Placeholder path: the provider rewrites it once it has the full folder graph.
-                            path = "/$name",
-                            size = rs.getLong("size"),
-                            isFolder = rs.getInt("is_folder") == 1,
-                            modified = rs.getString("modified")?.let { Instant.parse(it) },
-                            created = null,
-                            hash = rs.getString("remote_hash"),
-                            mimeType = null,
-                            parentId = rs.getString("parent_uuid"),
-                            version = if (hasVersion) rs.getString("remote_version") else null,
-                        ),
-                    )
-                }
-                items
-            }
+            stmt.executeQuery().use { rs -> rs.stagedItems() }
         }
+    }
+
+    /**
+     * Up to [limit] staged rows of [scanId] (all reconciled states) whose id sorts after [afterId], in id order: the
+     * rows [load] returns, read a page at a time, so that a reader never holds the whole scan. The last id of a page is
+     * the [afterId] of the next; a page shorter than [limit] is the last.
+     */
+    @Synchronized
+    fun loadPage(
+        scanId: String,
+        afterId: String?,
+        limit: Int,
+    ): List<CloudItem> {
+        val c = connection() ?: return emptyList()
+        val sql =
+            "SELECT * FROM scan_staging WHERE scan_id = ?" + (if (afterId == null) "" else " AND remote_id > ?") +
+                " ORDER BY remote_id LIMIT ?"
+        return c.prepareStatement(sql).use { stmt ->
+            stmt.setString(1, scanId)
+            var next = 2
+            if (afterId != null) stmt.setString(next++, afterId)
+            stmt.setInt(next, limit)
+            stmt.executeQuery().use { rs -> rs.stagedItems() }
+        }
+    }
+
+    private fun java.sql.ResultSet.stagedItems(): List<CloudItem> {
+        val items = mutableListOf<CloudItem>()
+        val columns = metaData
+        val hasVersion = (1..columns.columnCount).any { columns.getColumnName(it) == "remote_version" }
+        while (next()) {
+            val name = getString("plain_name")
+            items.add(
+                CloudItem(
+                    id = getString("remote_id"),
+                    name = name,
+                    // Placeholder path: the provider rewrites it once it has the full folder graph.
+                    path = "/$name",
+                    size = getLong("size"),
+                    isFolder = getInt("is_folder") == 1,
+                    modified = getString("modified")?.let { Instant.parse(it) },
+                    created = null,
+                    hash = getString("remote_hash"),
+                    mimeType = null,
+                    parentId = getString("parent_uuid"),
+                    version = if (hasVersion) getString("remote_version") else null,
+                ),
+            )
+        }
+        return items
     }
 
     @Synchronized

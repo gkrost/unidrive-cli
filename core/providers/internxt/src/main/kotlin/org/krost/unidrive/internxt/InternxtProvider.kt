@@ -2749,6 +2749,9 @@ class InternxtProvider(
         onPageProgress: ((itemsSoFar: Int) -> Unit)?,
         scanContext: org.krost.unidrive.ScanContext?,
     ): DeltaPage {
+        // The next chunk of a full gather that hands its files over from the staging (see [GatherHandover]): not a poll,
+        // whatever the cursor looks like.
+        if (cursor != null && cursor.startsWith(GATHER_CURSOR_PREFIX)) return continueGather(cursor, onPageProgress, scanContext)
         foldersScanned.set(0)
         foldersSkipped.set(0)
         // A full enumeration of a scoped profile lists only the scope roots. An
@@ -3199,26 +3202,66 @@ class InternxtProvider(
         tracked: ((String) -> CloudItem?)? = null,
         fullGather: Boolean = false,
     ): DeltaPage {
-        val creds = authService.getValidCredentials()
-        // The folders this pass names were renamed, moved or trashed (or are new): what the folder cache holds for them is
-        // from before. Another device's `mv docs old-docs; mkdir docs` must not keep sending uploads to the old folder.
-        folderCache.invalidateFolders(allFolders.map { it.uuid })
+        val assembly =
+            FullAssembly(
+                allFolders = allFolders,
+                fileParents = allFiles.asSequence().map { it.folderUuid },
+                gathered = allFiles.size + allFolders.size,
+                trackedFiles = allFiles,
+                cursor = cursor,
+                ancestorRows = ancestorRows,
+                onProgress = onProgress,
+                listing = listing,
+                tracked = tracked,
+                fullGather = fullGather,
+            )
+        assembly.prepare()
+        val files = assembly.placeFiles(allFiles)
+        val rest = assembly.finish()
+        return rest.copy(items = files + rest.items)
+    }
+
+    // The work of [assembleFullDelta] in three steps, so that a gather which cannot hold its files can place them a chunk at
+    // a time: [prepare] resolves the folders every path runs through (all of them known before the first path is built),
+    // [placeFiles] gives a path to the files it is handed and may be called any number of times, and [finish] places the
+    // folders and the trashed folders the items hang below and says what the pass left out. The items come out in the order
+    // the single call gave them: the files, then the folders, then the trashed folders. [fileParents] are the parent folders
+    // of every file the pass will place, [gathered] the number of items it will see; [trackedFiles] are only read when
+    // [tracked] is given (an incremental delta, whose files are all in hand).
+    @Suppress("LongParameterList", "TooManyFunctions")
+    private inner class FullAssembly(
+        private val allFolders: Collection<InternxtFolder>,
+        private val fileParents: Sequence<String?>,
+        private val gathered: Int,
+        private val trackedFiles: Collection<InternxtFile>,
+        private val cursor: String,
+        private val ancestorRows: Map<String, InternxtFolder>,
+        private val onProgress: ((ScanProgress) -> Unit)?,
+        private val listing: String?,
+        private val tracked: ((String) -> CloudItem?)?,
+        private val fullGather: Boolean,
+    ) {
+        private var rootUuid: String = ""
+
         // Mutable so the self-healing ancestor re-fetch can splice missing
         // ancestors in as it resolves; `associateBy` keeps the last entry per
         // uuid. Fetched ancestors live only in this map (they are unchanged
         // folders, not part of this delta's changed set) so they enable path
         // resolution without being emitted as spurious folder changes.
-        val folderMap = allFolders.associateByTo(mutableMapOf()) { it.uuid }
+        private val folderMap = allFolders.associateByTo(mutableMapOf()) { it.uuid }
+
         // Memoisation shared across the whole pass so a missing ancestor uuid is
         // fetched at most once: a known-gone uuid never re-requested, a fetched
         // one served from folderMap thereafter. Bounds the re-fetch at the count
         // of distinct missing ancestors (not the count of orphaned leaves) —
         // mandatory at ~196k-file / deep-tree scale.
-        val unfetchableAncestors = mutableSetOf<String>()
+        private val unfetchableAncestors = mutableSetOf<String>()
+
         // The folders whose meta the server answered with 404 or 410: gone for good, not merely out of reach. A subset of
         // [unfetchableAncestors], filled from the concurrent fetches of resolveAncestors. Nothing is asked twice: both
         // sets are consulted before a request, so a gone folder costs one request however many items hang below it.
-        val goneAncestors: MutableSet<String> = ConcurrentHashMap.newKeySet()
+        private val goneAncestors: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
         // The ancestor can't be resolved (404 / 410, any other non-fatal API error): it degrades to null, the items
         // below it are left out and counted, and never throws out of delta(). What the pass says about them depends on
         // why: a folder that is GONE (404 / 410: deleted or purged, it will not come back) leaves them unreachable, and
@@ -3230,11 +3273,10 @@ class InternxtProvider(
         // of the pass alone. A transport failure was retried by the call itself.
         // A fetched folder whose meta answers no parent is the top of a tree of its own: the meta is the server's word,
         // where a row of the staging or of state.db says null for a folder below the root as well.
-        val treeTops: MutableSet<String> = ConcurrentHashMap.newKeySet()
-        allFolders.filter { it.updatedAt != null && it.parentUuid == null && it.uuid != creds.rootFolderId }.mapTo(treeTops) { it.uuid }
-        val fetchAncestor: suspend (String) -> InternxtFolder? = { uuid ->
+        private val treeTops: MutableSet<String> = ConcurrentHashMap.newKeySet()
+        private val fetchAncestor: suspend (String) -> InternxtFolder? = { uuid ->
             try {
-                api.getFolderMeta(uuid).also { if (it.parentUuid == null && uuid != creds.rootFolderId) treeTops.add(uuid) }
+                api.getFolderMeta(uuid).also { if (it.parentUuid == null && uuid != rootUuid) treeTops.add(uuid) }
             } catch (e: InternxtApiException) {
                 if (e.statusCode in PERMANENT_ABSENCE_STATUSES) {
                     goneAncestors.add(uuid)
@@ -3248,124 +3290,172 @@ class InternxtProvider(
                 null
             }
         }
-        // Folders last so that path collisions in gatherRemoteChanges resolve in favour of folders.
-        // toDeltaCloudItem returns null when an ancestor uuid is absent from folderMap AND
-        // unfetchable (the /folders delta returned a changed leaf without its unchanged
-        // ancestors and the ancestor is gone or could not be asked). A drop below a folder that is
-        // gone is reported as unreachable; any other drop is counted so `complete` reflects
-        // the residual gap and the engine skips detectMissingAfterFullSync + leaves the
-        // cursor un-advanced.
-        val nameDecryptor = mnemonicOrNull()
-        // The folders every path runs through, all found before the first path is built: the listing and the
-        // ancestor-only rows answer most, the rest is fetched a few at a time instead of one request after the other
-        // as the first item below each of them was met.
-        val gathered = allFiles.size + allFolders.size
-        // The folders above the items that the engine tracks and nothing in this pass contradicts are rows like the ones
-        // the listing saw: they answer the paths and are not asked for.
-        val trackedRows = tracked?.let { trackedAncestorRows(allFiles, allFolders, folderMap, ancestorRows, creds.rootFolderId, it) }.orEmpty()
-        val rowsSeen = if (trackedRows.isEmpty()) ancestorRows else trackedRows + ancestorRows
-        val resolution =
-            resolveAncestors(
-                parents = allFiles.asSequence().map { it.folderUuid } + allFolders.asSequence().map { it.parentUuid },
-                folderMap = folderMap,
-                ancestors = rowsSeen,
-                rootUuid = creds.rootFolderId,
-                unfetchable = unfetchableAncestors,
-                fetchFolder = fetchAncestor,
-            ) { done, total ->
-                onProgress?.invoke(ScanProgress(items = gathered, listing = listing, pathsDone = done, pathsTotal = total))
-            }
-        if (resolution.needed > 0) {
-            log.info(
-                "Resolved the paths of {} items: {} folders were not in the listing, {} came from rows it saw ({} of them rows state.db tracks), {} were fetched, {} could not be",
-                gathered,
-                resolution.needed,
-                resolution.fromRows,
-                trackedRows.keys.count { it in folderMap },
-                resolution.fetched,
-                resolution.unfetchable,
-            )
-        }
-        val rawFiles =
-            allFiles.map { it.toDeltaCloudItem(folderMap, creds.rootFolderId, unfetchableAncestors, fetchAncestor, rowsSeen, nameDecryptor) }
-        val rawFolders =
-            allFolders.map { it.toDeltaCloudItem(folderMap, creds.rootFolderId, unfetchableAncestors, fetchAncestor, rowsSeen, nameDecryptor) }
+        private var nameDecryptor: String? = null
+        private var rowsSeen: Map<String, InternxtFolder> = emptyMap()
+        private lateinit var trashed: TrashChains
+
         // Why each item left out was left out: a folder above it is gone for good (the item is unreachable), or one could
         // not be asked and the item may be placeable next pass (a drop that keeps the pass incomplete).
-        val unreachable = UnreachableItems()
-        var filesDropped = 0
-        var foldersDropped = 0
-        allFiles.zip(rawFiles).forEach { (file, item) ->
-            if (item != null) return@forEach
-            val gone = goneAncestorOf(file.folderUuid, folderMap, rowsSeen, creds.rootFolderId, unfetchableAncestors, goneAncestors)
-            if (gone != null) unreachable.add(file.uuid, gone, isFolder = false) else filesDropped++
-        }
-        allFolders.zip(rawFolders).forEach { (folder, item) ->
-            if (item != null) return@forEach
-            val gone = goneAncestorOf(folder.parentUuid, folderMap, rowsSeen, creds.rootFolderId, unfetchableAncestors, goneAncestors)
-            if (gone != null) unreachable.add(folder.uuid, gone, isFolder = true) else foldersDropped++
-        }
-        val trashed = TrashChains(folderMap, creds.rootFolderId)
-        val placed =
-            allFiles.zip(rawFiles).mapNotNull { (file, item) -> item?.markIfTrashed(trashed, file.folderUuid) } +
-                allFolders.zip(rawFolders).mapNotNull { (folder, item) -> item?.markIfTrashed(trashed, folder.parentUuid) } +
-                trashedFolderItems(trashed, allFolders.mapTo(HashSet()) { it.uuid }) { folder ->
-                    folder.toDeltaCloudItem(folderMap, creds.rootFolderId, unfetchableAncestors, fetchAncestor, rowsSeen, nameDecryptor)
+        private val unreachable = UnreachableItems()
+        private var filesDropped = 0
+        private var foldersDropped = 0
+        private val outsideIds = HashSet<String>()
+        private val censusFiles = HashMap<String, Int>()
+        private val censusFolders = HashMap<String, Int>()
+        private var inTrash = 0
+        private var foldersInTrash = 0
+
+        suspend fun prepare() {
+            rootUuid = authService.getValidCredentials().rootFolderId
+            // The folders this pass names were renamed, moved or trashed (or are new): what the folder cache holds for them is
+            // from before. Another device's `mv docs old-docs; mkdir docs` must not keep sending uploads to the old folder.
+            folderCache.invalidateFolders(allFolders.map { it.uuid })
+            allFolders.filter { it.updatedAt != null && it.parentUuid == null && it.uuid != rootUuid }.mapTo(treeTops) { it.uuid }
+            // Folders last so that path collisions in gatherRemoteChanges resolve in favour of folders.
+            // toDeltaCloudItem returns null when an ancestor uuid is absent from folderMap AND
+            // unfetchable (the /folders delta returned a changed leaf without its unchanged
+            // ancestors and the ancestor is gone or could not be asked). A drop below a folder that is
+            // gone is reported as unreachable; any other drop is counted so `complete` reflects
+            // the residual gap and the engine skips detectMissingAfterFullSync + leaves the
+            // cursor un-advanced.
+            nameDecryptor = mnemonicOrNull()
+            // The folders every path runs through, all found before the first path is built: the listing and the
+            // ancestor-only rows answer most, the rest is fetched a few at a time instead of one request after the other
+            // as the first item below each of them was met.
+            // The folders above the items that the engine tracks and nothing in this pass contradicts are rows like the ones
+            // the listing saw: they answer the paths and are not asked for.
+            val trackedRows = tracked?.let { trackedAncestorRows(trackedFiles, allFolders, folderMap, ancestorRows, rootUuid, it) }.orEmpty()
+            rowsSeen = if (trackedRows.isEmpty()) ancestorRows else trackedRows + ancestorRows
+            val resolution =
+                resolveAncestors(
+                    parents = fileParents + allFolders.asSequence().map { it.parentUuid },
+                    folderMap = folderMap,
+                    ancestors = rowsSeen,
+                    rootUuid = rootUuid,
+                    unfetchable = unfetchableAncestors,
+                    fetchFolder = fetchAncestor,
+                ) { done, total ->
+                    onProgress?.invoke(ScanProgress(items = gathered, listing = listing, pathsDone = done, pathsTotal = total))
                 }
+            if (resolution.needed > 0) {
+                log.info(
+                    "Resolved the paths of {} items: {} folders were not in the listing, {} came from rows it saw ({} of them rows state.db tracks), {} were fetched, {} could not be",
+                    gathered,
+                    resolution.needed,
+                    resolution.fromRows,
+                    trackedRows.keys.count { it in folderMap },
+                    resolution.fetched,
+                    resolution.unfetchable,
+                )
+            }
+            trashed = TrashChains(folderMap, rootUuid)
+        }
+
+        /** The items of [files], each with its path; the ones whose folders cannot be resolved are left out and counted. */
+        suspend fun placeFiles(files: Collection<InternxtFile>): List<CloudItem> {
+            val raw = files.map { it.toDeltaCloudItem(folderMap, rootUuid, unfetchableAncestors, fetchAncestor, rowsSeen, nameDecryptor) }
+            files.zip(raw).forEach { (file, item) ->
+                if (item != null) return@forEach
+                val gone = goneAncestorOf(file.folderUuid, folderMap, rowsSeen, rootUuid, unfetchableAncestors, goneAncestors)
+                if (gone != null) unreachable.add(file.uuid, gone, isFolder = false) else filesDropped++
+            }
+            return keepInDrive(files.zip(raw).mapNotNull { (file, item) -> item?.markIfTrashed(trashed, file.folderUuid) })
+        }
+
+        // One more item below a tree of its own, counted under the top of that tree.
+        private fun count(item: CloudItem) {
+            val top = if (item.id in treeTops) item.id else treeTopOf(item.parentId, folderMap, rootUuid, treeTops) ?: return
+            (if (item.isFolder) censusFolders else censusFiles).merge(top, 1, Int::plus)
+        }
+
+        /** The folders, then the trashed folders the placed items hang below, and what the whole pass left out. */
+        suspend fun finish(): DeltaPage {
+            val rawFolders =
+                allFolders.map { it.toDeltaCloudItem(folderMap, rootUuid, unfetchableAncestors, fetchAncestor, rowsSeen, nameDecryptor) }
+            allFolders.zip(rawFolders).forEach { (folder, item) ->
+                if (item != null) return@forEach
+                val gone = goneAncestorOf(folder.parentUuid, folderMap, rowsSeen, rootUuid, unfetchableAncestors, goneAncestors)
+                if (gone != null) unreachable.add(folder.uuid, gone, isFolder = true) else foldersDropped++
+            }
+            val placed =
+                allFolders.zip(rawFolders).mapNotNull { (folder, item) -> item?.markIfTrashed(trashed, folder.parentUuid) } +
+                    trashedFolderItems(trashed, allFolders.mapTo(HashSet()) { it.uuid }) { folder ->
+                        folder.toDeltaCloudItem(folderMap, rootUuid, unfetchableAncestors, fetchAncestor, rowsSeen, nameDecryptor)
+                    }
+            val items = keepInDrive(placed)
+            if (treeTops.isNotEmpty()) {
+                log.info(
+                    "Internxt delta gather: {} item(s) sit below {} folder(s) outside the drive (trees of their own, such as device backups); " +
+                        "they are left out and never written to",
+                    outsideIds.size,
+                    treeTops.size,
+                )
+            }
+            if (fullGather) logTreeTops(censusFiles, censusFolders, treeTops)
+            if (inTrash > 0) {
+                log.info("{} items sit in the trash ({} of them trashed folders); they are reported as trashed", inTrash, foldersInTrash)
+            }
+            val skipped = foldersSkipped.get()
+            if (skipped > 0) {
+                log.warn(
+                    "Internxt delta gather skipped {} folder(s) due to 500/503; " +
+                        "returning DeltaPage(complete=false). detectMissingAfterFullSync will be suppressed.",
+                    skipped,
+                )
+            }
+            val ancestorDrops = filesDropped + foldersDropped
+            if (ancestorDrops > 0) {
+                log.warn(
+                    "Internxt delta gather dropped {} item(s) ({} file(s), {} folder(s)) " +
+                        "whose ancestor folder could not be resolved even after re-fetch " +
+                        "(unavailable / unreadable); returning DeltaPage(complete=false). " +
+                        "Dropped items recover when their ancestors answer again or via --reset.",
+                    ancestorDrops,
+                    filesDropped,
+                    foldersDropped,
+                )
+            }
+            // One line for the unreachable items, not one per gone folder. They are not deleted: the server still lists them,
+            // under folders it no longer has. The pass is complete without them, and the engine leaves their rows as they are.
+            if (unreachable.count > 0) {
+                log.info(
+                    "Internxt delta gather: {} item(s) ({} file(s), {} folder(s)) sit below {} folder(s) that no longer exist " +
+                        "(HTTP 404 / 410); they are unreachable, not deleted, and the pass is complete without them.",
+                    unreachable.count,
+                    unreachable.files,
+                    unreachable.folders,
+                    unreachable.goneFolders.size,
+                )
+            }
+            return DeltaPage(
+                items = items,
+                cursor = cursor,
+                hasMore = false,
+                complete = skipped == 0 && ancestorDrops == 0,
+                unreachableIds = if (outsideIds.isEmpty()) unreachable.ids else unreachable.ids + outsideIds,
+            )
+        }
+
         // The items of a tree of its own got a path at the sync root (`/<device>/...`), where they would be ordinary
         // writable rows and merge by name into a real top-level folder. They are left out and named unreachable: the
         // engine keeps the rows it has, deletes nothing locally, and creates none.
-        val outside = outsideDriveItems(placed, treeTops, folderMap, creds.rootFolderId)
-        if (fullGather) logTreeTops(placed.filter { it.id in outside }, treeTops, folderMap, creds.rootFolderId)
-        val items = if (outside.isEmpty()) placed else placed.filter { it.id !in outside }
-
-        val inTrash = items.count { it.trashed }
-        if (inTrash > 0) {
-            log.info("{} items sit in the trash ({} of them trashed folders); they are reported as trashed", inTrash, items.count { it.trashed && it.isFolder })
+        private fun keepInDrive(placed: List<CloudItem>): List<CloudItem> {
+            val outside = outsideDriveItems(placed, treeTops, folderMap, rootUuid)
+            if (outside.isNotEmpty()) {
+                outsideIds.addAll(outside)
+                if (fullGather) placed.filter { it.id in outside }.forEach(::count)
+            }
+            val items = if (outside.isEmpty()) placed else placed.filter { it.id !in outside }
+            for (item in items) {
+                if (!item.trashed) continue
+                inTrash++
+                if (item.isFolder) foldersInTrash++
+            }
+            return items
         }
-        val skipped = foldersSkipped.get()
-        if (skipped > 0) {
-            log.warn(
-                "Internxt delta gather skipped {} folder(s) due to 500/503; " +
-                    "returning DeltaPage(complete=false). detectMissingAfterFullSync will be suppressed.",
-                skipped,
-            )
-        }
-        val ancestorDrops = filesDropped + foldersDropped
-        if (ancestorDrops > 0) {
-            log.warn(
-                "Internxt delta gather dropped {} item(s) ({} file(s), {} folder(s)) " +
-                    "whose ancestor folder could not be resolved even after re-fetch " +
-                    "(unavailable / unreadable); returning DeltaPage(complete=false). " +
-                    "Dropped items recover when their ancestors answer again or via --reset.",
-                ancestorDrops,
-                filesDropped,
-                foldersDropped,
-            )
-        }
-        // One line for the unreachable items, not one per gone folder. They are not deleted: the server still lists them,
-        // under folders it no longer has. The pass is complete without them, and the engine leaves their rows as they are.
-        if (unreachable.count > 0) {
-            log.info(
-                "Internxt delta gather: {} item(s) ({} file(s), {} folder(s)) sit below {} folder(s) that no longer exist " +
-                    "(HTTP 404 / 410); they are unreachable, not deleted, and the pass is complete without them.",
-                unreachable.count,
-                unreachable.files,
-                unreachable.folders,
-                unreachable.goneFolders.size,
-            )
-        }
-
-        return DeltaPage(
-            items = items,
-            cursor = cursor,
-            hasMore = false,
-            complete = skipped == 0 && ancestorDrops == 0,
-            unreachableIds = if (outside.isEmpty()) unreachable.ids else unreachable.ids + outside,
-        )
     }
 
-    // The ids of the [items] that are the top of a tree of its own ([treeTops]) or hang below one, told in one line.
+    // The ids of the [items] that are the top of a tree of its own ([treeTops]) or hang below one.
     private fun outsideDriveItems(
         items: List<CloudItem>,
         treeTops: Set<String>,
@@ -3374,37 +3464,22 @@ class InternxtProvider(
     ): Set<String> {
         if (treeTops.isEmpty()) return emptySet()
         outsideDriveFolders.addAll(treeTops)
-        val outside =
-            items.asSequence().filter { it.id in treeTops || treeTopOf(it.parentId, folderMap, rootUuid, treeTops) != null }.mapTo(HashSet()) { it.id }
-        log.info(
-            "Internxt delta gather: {} item(s) sit below {} folder(s) outside the drive (trees of their own, such as device backups); " +
-                "they are left out and never written to",
-            outside.size,
-            treeTops.size,
-        )
-        return outside
+        return items.asSequence().filter { it.id in treeTops || treeTopOf(it.parentId, folderMap, rootUuid, treeTops) != null }.mapTo(HashSet()) { it.id }
     }
 
-    // One line per full gather: how many of the [outside] items hang below each tree of its own, by the top folder's uuid
-    // (never a name or a path, the line ends up in logs that get shared), and which of those tops are backup devices of
-    // the account (those uuids, the count, and how many devices the account lists). Measured only: what the listing
-    // returns does not change. The device list is asked once, and only when there is a top to compare; a failure to
-    // read it is reported in the line and never fails the gather.
+    // One line per full gather: how many of the items outside the drive hang below each tree of its own ([files] and
+    // [folders], by the top folder's uuid; never a name or a path, the line ends up in logs that get shared), and which of
+    // those tops are backup devices of the account (those uuids, the count, and how many devices the account lists).
+    // Measured only: what the listing returns does not change. The device list is asked once, and only when there is a top
+    // to compare; a failure to read it is reported in the line and never fails the gather.
     private suspend fun logTreeTops(
-        outside: List<CloudItem>,
+        files: Map<String, Int>,
+        folders: Map<String, Int>,
         treeTops: Set<String>,
-        folderMap: Map<String, InternxtFolder>,
-        rootUuid: String,
     ) {
         if (treeTops.isEmpty()) {
             log.info("Internxt full gather: no item hangs below a folder without a parent other than the drive root")
             return
-        }
-        val files = HashMap<String, Int>()
-        val folders = HashMap<String, Int>()
-        for (item in outside) {
-            val top = if (item.id in treeTops) item.id else treeTopOf(item.parentId, folderMap, rootUuid, treeTops) ?: continue
-            (if (item.isFolder) folders else files).merge(top, 1, Int::plus)
         }
         val ordered =
             treeTops.sortedWith(compareByDescending<String> { (files[it] ?: 0) + (folders[it] ?: 0) }.thenBy { it })
@@ -3496,6 +3571,200 @@ class InternxtProvider(
         }
     }
 
+    // ---- a full gather that hands its files over from the staging (gkrost/unidrive-cli#35) ----
+    //
+    // The cursor listing used to keep every file of the account in a map until the last page, and then built the item of every
+    // file at once: on an account of 245k items the whole remote tree was in the heap twice over. When the engine gives the
+    // gather a staging it can read back (ScanContext.stagedPage), the gather keeps only what the paths are built from: the
+    // folders (a tenth of an account), the set of folders the files hang below, and the few rows a page told to forget. Each
+    // file page is staged in its own transaction with the cursors of both streams, as before, and then released. Once both
+    // streams are done, the files are read back from the staging a page at a time, given their paths from the folders in hand
+    // and handed to the engine as pages of their own (hasMore, with a continuation cursor); the last page carries the folders.
+    // A crash or a cancel at any point leaves the staged pages and the cursors that stand for them, so the next gather resumes
+    // from the last page that was stored and hands the files over again; no row is skipped, and one that is staged twice
+    // (it changed while the listing ran) is staged once, the later version winning, as the map did.
+
+    /** What the cursor listing keeps of the files of a gather whose files wait in the staging. */
+    private class GatherStream(
+        val id: String,
+        // True for a resumed listing: rows an earlier version staged carry no payload and belong to the gather they were
+        // resumed into. Rows with a payload are taken when they name this gather.
+        private val legacyRows: Boolean,
+    ) {
+        /** The folders the staged files hang below, as the listing named them (null: no folder named). */
+        val parents = HashSet<String?>()
+
+        // Files an unfiltered page delivered as no longer live: their staged rows are not handed over. A row that is live again later leaves.
+        private val gone = HashSet<String>()
+
+        /** The rows staged so far; a row delivered twice is counted twice, so it is a progress figure and no more. */
+        var staged = 0
+            private set
+
+        fun pageIn(
+            live: List<InternxtFile>,
+            notLive: List<InternxtFile>,
+        ) {
+            for (f in notLive) gone.add(f.uuid)
+            for (f in live) {
+                gone.remove(f.uuid)
+                parents.add(f.folderUuid)
+            }
+            staged += live.size
+        }
+
+        fun resumed(row: CloudItem) {
+            parents.add(row.parentId)
+            staged++
+        }
+
+        /** The file of [row] to hand over, or null for a row that is no file of this gather. */
+        fun fileOf(row: CloudItem): InternxtFile? {
+            if (row.isFolder || !isCursorStaged(row) || row.id in gone) return null
+            val payload = stagedFilePayloadOf(row)
+            return when {
+                payload != null -> payload.file.takeIf { payload.gather == id }
+                legacyRows -> row.toResumedFile()
+                else -> null
+            }
+        }
+    }
+
+    /** A finished listing whose files are handed over in chunks: the paths it builds them with, and where the hand-over stands. */
+    private inner class GatherHandover(
+        val stream: GatherStream,
+        val assembly: FullAssembly,
+        val stagedPage: (afterId: String?, limit: Int) -> List<CloudItem>,
+        val cutShort: Boolean,
+    ) {
+        val id: String = java.util.UUID.randomUUID().toString()
+        var after: String? = null
+    }
+
+    // The rows of a resumed cursor listing back into the gather: the folders and the ancestor-only records into their maps, the
+    // files into [files], or, for a gather that hands its files over from the staging, only as far as [stream] needs them.
+    private fun resumeFrom(
+        resume: CursorResume,
+        stream: GatherStream?,
+        folders: MutableMap<String, InternxtFolder>,
+        files: MutableMap<String, InternxtFile>,
+        ancestors: MutableMap<String, InternxtFolder>,
+    ) {
+        for (row in resume.rows) {
+            when {
+                row.isFolder -> folders[row.id] = row.toResumedFolder()
+                stream != null -> stream.resumed(row)
+                else -> files[row.id] = row.toResumedFile()
+            }
+        }
+        for (row in resume.ancestors) ancestors[row.id] = row.toResumedAncestor()
+    }
+
+    // A page of the files stream into the gather: into [files], or, when the files are handed over from the staging, only as far as [stream] needs.
+    private fun keepFilePage(
+        stream: GatherStream?,
+        files: MutableMap<String, InternxtFile>,
+        live: List<InternxtFile>,
+        gone: List<InternxtFile>,
+    ) {
+        if (stream != null) {
+            stream.pageIn(live, gone)
+            return
+        }
+        for (f in gone) files.remove(f.uuid)
+        for (f in live) files[f.uuid] = f
+    }
+
+    // The files wait in the staging; their paths are built a chunk at a time, from the folders in hand.
+    @Suppress("LongParameterList")
+    private suspend fun startHandover(
+        stream: GatherStream,
+        readBack: (afterId: String?, limit: Int) -> List<CloudItem>,
+        folders: List<InternxtFolder>,
+        ancestors: Map<String, InternxtFolder>,
+        startedAt: String,
+        onProgress: ((ScanProgress) -> Unit)?,
+        cutShort: Boolean,
+    ): DeltaPage {
+        val assembly =
+            FullAssembly(
+                allFolders = folders,
+                fileParents = stream.parents.asSequence(),
+                gathered = folders.size + stream.staged,
+                trackedFiles = emptyList(),
+                cursor = startedAt,
+                ancestorRows = ancestors,
+                onProgress = onProgress,
+                listing = ScanProgress.LISTING_CURSOR,
+                tracked = null,
+                fullGather = true,
+            )
+        assembly.prepare()
+        val handover = GatherHandover(stream, assembly, readBack, cutShort)
+        gatherHandover.set(handover)
+        return nextGatherChunk(handover)
+    }
+
+    // The staged row of a live file of the cursor listing; a gather that hands its files over from the staging adds the file.
+    private fun InternxtFile.toStagedFileRow(
+        rootUuid: String,
+        stream: GatherStream?,
+    ): CloudItem =
+        toStagedCloudItem(rootUuid).copy(
+            hash = stagedFileTag(CURSOR_FILE_PREFIX, this),
+            version = stream?.let { stagedFilePayload(it.id, this) },
+        )
+
+    // The next chunk of the hand-over: the files of the next page of the staging, with their paths; the last chunk also
+    // carries the folders and says what the whole gather left out. A page of the staging that holds no file (folder rows
+    // sort among them by uuid) is passed over, so a chunk is never empty before the last.
+    private suspend fun nextGatherChunk(handover: GatherHandover): DeltaPage {
+        while (true) {
+            val rows = withContext(Dispatchers.IO) { handover.stagedPage(handover.after, gatherChunkRows) }
+            if (rows.isNotEmpty()) handover.after = rows.last().id
+            val last = rows.size < gatherChunkRows
+            val files = rows.mapNotNull(handover.stream::fileOf)
+            if (files.isEmpty() && !last) continue
+            if (files.size > gatherPeakFileRows) gatherPeakFileRows = files.size
+            val items = handover.assembly.placeFiles(files)
+            if (!last) return DeltaPage(items = items, cursor = GATHER_CURSOR_PREFIX + handover.id, hasMore = true)
+            val rest = handover.assembly.finish()
+            gatherHandover.compareAndSet(handover, null)
+            val page = rest.copy(items = items + rest.items)
+            if (!handover.cutShort) return page
+            log.warn(
+                "A cursor stream was cut short by a guard; returning DeltaPage(complete=false). " +
+                    "detectMissingAfterFullSync will be suppressed.",
+            )
+            return page.copy(complete = false)
+        }
+    }
+
+    // The engine asks for the next chunk of a hand-over by the cursor the last one named. A provider that does not hold that
+    // hand-over (it was rebuilt, or another full gather took its place) cannot continue it: the drive is listed again, which
+    // resumes from the stored cursors and takes the files from the staging as before.
+    private suspend fun continueGather(
+        cursor: String,
+        onPageProgress: ((itemsSoFar: Int) -> Unit)?,
+        scanContext: ScanContext?,
+    ): DeltaPage {
+        val handover = gatherHandover.get()
+        if (handover != null && cursor == GATHER_CURSOR_PREFIX + handover.id) return nextGatherChunk(handover)
+        log.warn("The continuation {} of a full gather is not one this provider holds; listing the drive again", cursor)
+        return delta(null, onPageProgress, scanContext)
+    }
+
+    private val gatherHandover = java.util.concurrent.atomic.AtomicReference<GatherHandover?>(null)
+
+    // How many staged rows are read back for one chunk of a hand-over.
+    @Volatile
+    internal var gatherChunkRows: Int = InternxtConfig.LISTING_PAGE_SIZE
+
+    // The most files one chunk of a hand-over has held, since this provider was made: what the bound on the gather's memory is
+    // measured by (a test reads it).
+    @Volatile
+    internal var gatherPeakFileRows: Int = 0
+
     // The full enumeration of the whole drive by the cursor listings. The folders and the files stream run
     // at once, each strictly one request at a time (a cursor names the page before it). Every page is staged
     // with a marker that holds both cursors, so a failed or killed attempt continues from the cursors and not
@@ -3542,22 +3811,22 @@ class InternxtProvider(
         var filesAt = resume?.marker?.files ?: StreamPosition()
         val folders = LinkedHashMap<String, InternxtFolder>()
         val files = LinkedHashMap<String, InternxtFile>()
+        // With a staging to read back from the files are not held, see [GatherHandover]; without one they stay in [files].
+        val readBack = scanContext?.stagedPage
+        val stream = if (readBack != null) GatherStream(startedAt, legacyRows = resume != null) else null
         // The trashed folders an unfiltered page returned: no items, but live items can hang below them, so their rows
         // answer the paths that run through them. Staged with the live rows, so a restart keeps them.
         val ancestors = LinkedHashMap<String, InternxtFolder>()
         if (resume == null) {
             logFreshCursorStart(scanContext?.resumeMarker, staged.size)
         } else {
-            for (row in resume.rows) {
-                if (row.isFolder) folders[row.id] = row.toResumedFolder() else files[row.id] = row.toResumedFile()
-            }
-            for (row in resume.ancestors) ancestors[row.id] = row.toResumedAncestor()
+            resumeFrom(resume, stream, folders, files, ancestors)
             log.info(
                 "Resuming the cursor listing begun {}: folders {}, files {}, {} staged rows, {} ancestor-only rows",
                 startedAt,
                 describeResume(foldersAt),
                 describeResume(filesAt),
-                folders.size + files.size,
+                folders.size + (stream?.staged ?: files.size),
                 ancestors.size,
             )
         }
@@ -3571,7 +3840,7 @@ class InternxtProvider(
         // row an unfiltered page delivers as no longer live against what the filtered pages stored — a few
         // rows against hundreds of thousands, and the heartbeat's wall-clock half keeps reporting through it.
         fun report() {
-            val total = folders.size + files.size
+            val total = folders.size + (stream?.staged ?: files.size)
             heartbeat?.tick(total)
             onProgress?.invoke(ScanProgress(items = total, listing = ScanProgress.LISTING_CURSOR))
         }
@@ -3611,11 +3880,9 @@ class InternxtProvider(
                                 onPage = { page, at ->
                                     lock.withLock {
                                         val (live, gone) = page.partitionLive(at.unfiltered) { it.isLive() }
-                                        for (f in gone) files.remove(f.uuid)
-                                        for (f in live) files[f.uuid] = f
+                                        keepFilePage(stream, files, live, gone)
                                         filesAt = at
-                                        val rows = live.map { it.toStagedCloudItem(rootUuid).copy(hash = stagedFileTag(CURSOR_FILE_PREFIX, it)) }
-                                        persist?.invoke(rows, cursorMarker(startedAt, foldersAt, filesAt))
+                                        persist?.invoke(live.map { it.toStagedFileRow(rootUuid, stream) }, cursorMarker(startedAt, foldersAt, filesAt))
                                         report()
                                     }
                                 },
@@ -3646,7 +3913,7 @@ class InternxtProvider(
                     scanContext?.scopeRoots.orEmpty().ifEmpty { listOf("/") },
                     onPageProgress,
                     onProgress,
-                    folders.size + files.size,
+                    folders.size + (stream?.staged ?: files.size),
                 )
             }
 
@@ -3654,8 +3921,11 @@ class InternxtProvider(
             "Cursor listing finished in {} s: {} folders, {} files",
             (System.nanoTime() - begun) / 1_000_000_000L,
             folders.size,
-            files.size,
+            stream?.staged ?: files.size,
         )
+        if (stream != null && readBack != null) {
+            return startHandover(stream, readBack, folders.values.toList(), ancestors, startedAt, onProgress, cutShort)
+        }
         val page = assembleFullDelta(files.values.toList(), folders.values.toList(), startedAt, ancestors, onProgress, ScanProgress.LISTING_CURSOR, fullGather = true)
         if (!cutShort) return page
         log.warn(

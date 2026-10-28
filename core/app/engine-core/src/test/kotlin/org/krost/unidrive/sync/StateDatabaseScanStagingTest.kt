@@ -355,6 +355,52 @@ class StateDatabaseScanStagingTest {
                 )
             }
     }
+
+    @Test
+    fun `the staged rows are read back a page at a time in id order, every row once`() {
+        val db = opened()
+        try {
+            val scanId = db.beginScan(initialMarker = null)
+            val items =
+                (0 until 25).map { i ->
+                    CloudItem(
+                        id = "id%02d".format(i),
+                        name = "n$i",
+                        path = "/n$i",
+                        size = i.toLong(),
+                        isFolder = i % 5 == 0,
+                        modified = null,
+                        created = null,
+                        hash = "tag|$i",
+                        mimeType = null,
+                        parentId = "p",
+                        version = "v$i",
+                    )
+                }
+            // Staged in two pages, out of id order; a row staged again replaces its row.
+            db.persistScanPage(scanId, items.drop(10).reversed(), "m1")
+            db.persistScanPage(scanId, items.take(12), "m2")
+            db.persistScanPage("another-scan", items.take(3), "m3")
+
+            val pages = mutableListOf<List<CloudItem>>()
+            var after: String? = null
+            while (true) {
+                val page = db.loadStagedPage(scanId, after, 10)
+                if (page.isEmpty()) break
+                pages += page
+                after = page.last().id
+                if (page.size < 10) break
+            }
+
+            assertEquals(listOf(10, 10, 5), pages.map { it.size })
+            assertEquals(items.map { it.id }, pages.flatten().map { it.id }, "every row once, in id order")
+            assertEquals(db.loadStagedItems(scanId), pages.flatten(), "the pages are the rows loadStagedItems returns")
+            assertEquals("v7", pages.flatten().first { it.id == "id07" }.version, "the version column survives the read-back")
+            assertTrue(db.loadStagedPage(scanId, "id24", 10).isEmpty())
+        } finally {
+            db.close()
+        }
+    }
 }
 
 /** Stages pages of ten rows and halts the JVM after the last one: no close, no shutdown hook. */

@@ -2237,6 +2237,7 @@ open class SyncEngine(
                 resumedItems = resumedItems,
                 persistPage = { items, marker -> db.persistScanPage(scanId, items, marker) },
                 scopeRoots = trackScope,
+                stagedPage = { after, limit -> db.loadStagedPage(scanId, after, limit) },
             )
 
         suspend fun nextPage(c: String?): DeltaPage {

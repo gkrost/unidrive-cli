@@ -2733,6 +2733,18 @@ class StateDatabase(
     fun loadStagedItems(scanId: String): List<CloudItem> = scanStaging.load(scanId, reconciled = null)
 
     /**
+     * One page of the staged rows of [scanId], as [loadStagedItems] returns them but at most [limit] at a time: the rows
+     * whose id sorts after [afterId] (null: from the first), in id order. A provider that stages every page of a long
+     * listing reads its rows back through this, a page at a time, instead of holding the listing (see
+     * [org.krost.unidrive.ScanContext.stagedPage]).
+     */
+    fun loadStagedPage(
+        scanId: String,
+        afterId: String?,
+        limit: Int,
+    ): List<CloudItem> = scanStaging.loadPage(scanId, afterId, limit)
+
+    /**
      * Streaming-reconciliation per-row state machine. Returns only the
      * STAGED rows (reconciled=0) — the slice the post-restart reconciler
      * must re-process. RECONCILED rows (reconciled=1) were already
