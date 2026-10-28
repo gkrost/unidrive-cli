@@ -8,9 +8,6 @@ import org.krost.unidrive.sync.model.SyncEntry
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
-import org.junit.experimental.categories.Category
-import org.krost.unidrive.testing.Flaky
-import org.krost.unidrive.testing.FlakyTests
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -55,19 +52,6 @@ class MirrorAuditReconcilerTest {
 
     // X1: a first sync into an existing folder meets a local and a remote file of one path and one size. Size alone is
     // not content: with a content check that says "different", the pair must be a conflict, not an adoption.
-    //
-    // Quarantined, though this one is red on purpose rather than flaky: the test reproduces the
-    // candidate of #97, whose fix needs an owner decision (conflict vs adopt changes what the mirror treats as
-    // equal), so it fails `check` every run until that lands. It stays here, visible and tracked, and leaves the
-    // quarantine the moment the fix removes it. A first probe of the fix showed the equal-size adopt is
-    // load-bearing beyond first sync: the freed-stub fill, the remote rename onto an unsynced same-size local
-    // file, and the narrow/widen re-adoption all ride it today.
-    @Category(FlakyTests::class)
-    @Flaky(
-        issue = 97,
-        reason = "red by design until the owner decides #97 (conflict vs adopt for equal-size both-new paths); the decision changes what the mirror treats as equal and three flows ride the current adoption",
-        firstFailure = "https://github.com/gkrost/unidrive-cli/actions/runs/40286036886",
-    )
     @Test
     fun `X1 equal size on both sides is not adopted when the content differs`() {
         Files.writeString(syncRoot.resolve("a.txt"), "AAAA")
@@ -79,6 +63,41 @@ class MirrorAuditReconcilerTest {
             )
         assertFalse(actions.any { it is SyncAction.CreatePlaceholder }, "adopted a different file of equal size: $actions")
         assertTrue(actions.any { it is SyncAction.Conflict }, "expected a conflict, got $actions")
+    }
+
+    private fun bothNewEqualSize(
+        bytes: ByteArray,
+        sameContent: (Path, CloudItem) -> Boolean?,
+    ): List<SyncAction> {
+        Files.write(syncRoot.resolve("a.bin"), bytes)
+        return Reconciler(db, syncRoot, ConflictPolicy.KEEP_BOTH, sameContent = sameContent).reconcile(
+            mapOf("/a.bin" to cloudItem("/a.bin", size = bytes.size.toLong(), hash = "hash-a")),
+            mapOf("/a.bin" to ChangeState.NEW),
+        )
+    }
+
+    // #97: the same bytes on both sides are one file.
+    @Test
+    fun `X1 equal size on both sides is adopted when the content is the same`() {
+        val actions = bothNewEqualSize("AAAA".toByteArray()) { _, _ -> true }
+        assertEquals(listOf("/a.bin"), actions.filterIsInstance<SyncAction.CreatePlaceholder>().map { it.path }, "planned $actions")
+    }
+
+    // #97: without a hash or a comparator nothing proves a difference; the pair is adopted, so re-widening a scope does
+    // not duplicate every file that stayed on disk.
+    @Test
+    fun `X1 equal size on both sides is adopted when the content cannot be compared`() {
+        val actions = bothNewEqualSize("AAAA".toByteArray()) { _, _ -> null }
+        assertEquals(listOf("/a.bin"), actions.filterIsInstance<SyncAction.CreatePlaceholder>().map { it.path }, "planned $actions")
+    }
+
+    // #97: a local file of zeros only (what `unidrive free` leaves, its row lost) holds no data of the user's: the cloud's
+    // bytes fill it. CreatePlaceholder does that on apply (the stub probe); a conflict would upload the zeros as a copy.
+    @Test
+    fun `X1 an all-zero local file of the remote's size is filled from the cloud, not kept both`() {
+        val actions = bothNewEqualSize(ByteArray(3 * SparseProbe.PAGE)) { _, _ -> false }
+        assertEquals(listOf("/a.bin"), actions.filterIsInstance<SyncAction.CreatePlaceholder>().map { it.path }, "planned $actions")
+        assertFalse(actions.any { it is SyncAction.Conflict }, "planned $actions")
     }
 
     // X5: a profile synced unscoped and narrowed to /A/B keeps /A hydrated; a scoped scan reports an ancestor of the

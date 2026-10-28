@@ -1347,8 +1347,11 @@ class SyncEngineTest {
             val renameRun = RecordingReporter()
             engineWithReporter(renameRun).syncOnce()
 
-            assertEquals(listOf("CONFLICT"), renameRun.actions.map { it.label })
+            // gkrost/unidrive-cli#97: planned as the move of /a.txt, which keeps the file in the way as a conflict copy
+            // (archive#1046). As a plain conflict the old /a.txt stayed on disk without its row and went up again.
+            assertEquals(listOf("move"), renameRun.actions.map { it.label })
             assertEquals("remote bytes", Files.readString(syncRoot.resolve("b.txt")), "remote rename owns the canonical path")
+            assertFalse(Files.exists(syncRoot.resolve("a.txt")), "the old name is gone locally")
             val keptCopy =
                 Files.list(syncRoot).use { paths ->
                     paths.filter { it.fileName.toString().contains(".conflict-local-") }.findFirst().orElse(null)
@@ -1356,6 +1359,12 @@ class SyncEngineTest {
             assertNotNull(keptCopy, "pre-existing local destination must survive as a conflict copy")
             assertEquals("local unsynced bytes", Files.readString(keptCopy), "conflict copy retains local bytes")
             assertEquals("remote-a", db.getEntry("/b.txt")?.remoteId, "the renamed remote item remains tracked")
+
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-3"
+            engine.syncOnce()
+            assertFalse("/a.txt" in provider.uploadedPaths, "the old name is not uploaded again: ${provider.uploadedPaths}")
+            assertTrue(provider.deletedPaths.isEmpty(), "nothing is deleted in the cloud: ${provider.deletedPaths}")
         }
 
     // UD-297 — empty-local + populated-DB sanity check

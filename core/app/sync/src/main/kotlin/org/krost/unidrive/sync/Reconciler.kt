@@ -92,7 +92,9 @@ class Reconciler(
     // archive#532: content-equality for the MODIFIED/MODIFIED branch. The engine wires HashVerifier
     // (hash of the local file, provider algorithm, vs the remote item's hash). Null keeps the
     // plain conflict — a provider without a content hash has nothing to compare.
-    private val sameContent: ((localFile: java.nio.file.Path, remoteItem: CloudItem) -> Boolean)? = null,
+    // gkrost/unidrive-cli#97: the answer is true (same bytes), false (proven different) or null (cannot tell: no
+    // remote hash, no provider algorithm); the both-new branch adopts on null, the both-modified one keeps the conflict.
+    private val sameContent: ((localFile: java.nio.file.Path, remoteItem: CloudItem) -> Boolean?)? = null,
     // archive#439: SHA-256 of a local file, compared against a delete row's recorded localHash (archive#396)
     // before a DeleteRemote+Upload pair is converted into a file MoveRemote. Null when the file
     // cannot be read — an unverifiable candidate counts as a mismatch, the safe side.
@@ -1004,15 +1006,9 @@ class Reconciler(
                     // Both created a folder — merge, no conflict
                     remoteItem != null && remoteItem.isFolder && Files.isDirectory(localPath) ->
                         SyncAction.CreatePlaceholder(path, remoteItem, shouldHydrate = false)
-                    // File exists locally with matching size — adopt (pin rules may still hydrate).
-                    // #97: size alone is not content; whether a differing same-size pair is a conflict
-                    // (keep both) or an adoption is the owner's call there — a first probe showed the
-                    // equal-size adopt is load-bearing beyond first sync (the freed-stub fill, the
-                    // remote rename onto an unsynced same-size local file, the narrow/widen re-adoption).
-                    remoteItem != null &&
-                        !remoteItem.isFolder &&
-                        Files.isRegularFile(localPath) &&
-                        Files.size(localPath) == remoteItem.size ->
+                    // File exists locally with matching size — adopt (pin rules may still hydrate), unless the
+                    // content check proves the bytes differ (#97).
+                    remoteItem != null && !remoteItem.isFolder && adoptableAsSameFile(localPath, remoteItem, sameContent) ->
                         SyncAction.CreatePlaceholder(path, remoteItem, shouldHydrate = shouldPin(path, remoteItem, pinRules))
                     // Real conflict — sizes differ or other mismatch
                     else ->
@@ -1031,9 +1027,8 @@ class Reconciler(
                 if (
                     remoteItem != null &&
                     !remoteItem.isFolder &&
-                    sameContent != null &&
                     Files.isRegularFile(localFile) &&
-                    sameContent(localFile, remoteItem)
+                    sameContent?.invoke(localFile, remoteItem) == true
                 ) {
                     SyncAction.CreatePlaceholder(path, remoteItem, shouldHydrate = false)
                 } else {
@@ -1519,7 +1514,7 @@ class Reconciler(
         }
         // An unreadable candidate cannot be verified: a mismatch, the safe side.
         return try {
-            compare(resolveLocal(candidatePath), recordedItem(entry, entry.path))
+            compare(resolveLocal(candidatePath), recordedItem(entry, entry.path)) == true
         } catch (_: java.io.IOException) {
             false
         }
@@ -1560,9 +1555,12 @@ class Reconciler(
     ) {
         // UD-222: renames of remote non-folders now arrive as DownloadContent (not
         // CreatePlaceholder) because hydration moved to Pass 2. Scan both action types.
+        // gkrost/unidrive-cli#97: and a both-new conflict of two files, a rename onto an unsynced local file the reconciler
+        // did not adopt (other bytes or another size): the move keeps that file aside (archive#1046). As a conflict alone
+        // the old name stayed on disk without its row, and the next pass uploaded it as a new file.
         val candidates: List<SyncAction> =
             actions.filter {
-                it is SyncAction.CreatePlaceholder || it is SyncAction.DownloadContent
+                it is SyncAction.CreatePlaceholder || it is SyncAction.DownloadContent || isBothNewFileConflict(it, ::resolveLocal)
             }
         if (candidates.isEmpty()) return
 
@@ -2047,3 +2045,36 @@ private fun overrideCovers(path: String, prefixRaw: String): Boolean {
     val p = path.removePrefix("/")
     return p == prefix || p.startsWith("$prefix/")
 }
+
+/**
+ * gkrost/unidrive-cli#97: a local and a remote file new at one path with equal sizes are the same file unless the content
+ * check proves otherwise. "Cannot tell" (no hash, no comparator, an unreadable file) adopts, so re-widening a scope does not
+ * duplicate every file that stayed on disk. A local file of zeros only is no user data (a freed stub that lost its row): the
+ * cloud's bytes fill it, which the adoption does on apply (the stub probe), where a conflict would upload the zeros as a copy.
+ */
+private fun adoptableAsSameFile(
+    localFile: Path,
+    remoteItem: CloudItem,
+    sameContent: ((Path, CloudItem) -> Boolean?)?,
+): Boolean {
+    if (!Files.isRegularFile(localFile) || Files.size(localFile) != remoteItem.size) return false
+    val compare = sameContent ?: return true
+    val same =
+        try {
+            compare(localFile, remoteItem)
+        } catch (_: java.io.IOException) {
+            null
+        }
+    return same != false || SparseProbe.isStub(localFile, remoteItem.size)
+}
+
+// gkrost/unidrive-cli#97: a both-new conflict of two files, a candidate for a remote rename onto the local file.
+private fun isBothNewFileConflict(
+    action: SyncAction,
+    localFile: (String) -> Path,
+): Boolean =
+    action is SyncAction.Conflict &&
+        action.localState == ChangeState.NEW &&
+        action.remoteState == ChangeState.NEW &&
+        action.remoteItem?.isFolder == false &&
+        Files.isRegularFile(localFile(action.path), java.nio.file.LinkOption.NOFOLLOW_LINKS)
