@@ -48,10 +48,11 @@ jobs:
       # dependency and plugin artifact must match its sha256 in
       # core/gradle/verification-metadata.xml, whichever mirror served it,
       # or the job stops before the jar is built and signed. Other builds
-      # run lenient (core/gradle.properties). A dependency change that did
-      # not update the metadata fails here: regenerate it in core/ as
-      # core/gradle.properties describes (empty Gradle user home), review the
-      # diff, commit, and tag again.
+      # run lenient (core/gradle.properties). Dependabot Gradle PRs get the
+      # regenerated metadata from dependabot-verification-metadata.yml. A
+      # dependency change that did not update the metadata fails here:
+      # regenerate it in core/ as core/gradle.properties describes (empty
+      # Gradle user home), review the diff, commit, and tag again.
       - name: Gradle check
         working-directory: core
         run: ./gradlew check --no-daemon --dependency-verification strict

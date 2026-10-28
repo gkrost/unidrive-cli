@@ -8,6 +8,9 @@
 #   - GitHub Actions ecosystem for action pin updates across
 #     .github/workflows/.
 #
+# A Gradle PR's core/gradle/verification-metadata.xml is regenerated and
+# committed to its branch by .github/workflows/dependabot-verification-metadata.yml.
+#
 # Out of scope (separate ticket):
 #   - shell-win/ CMake FetchContent (not supported by Dependabot natively).
 
