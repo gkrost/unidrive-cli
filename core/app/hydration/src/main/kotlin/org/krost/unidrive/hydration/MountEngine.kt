@@ -778,11 +778,7 @@ class MountEngine private constructor(
 
     // The row with the cloud identity of [live], the item its bytes were read from; unchanged when there is none.
     private fun SyncEntry.adopting(live: CloudItem?): SyncEntry =
-        if (live == null) {
-            this
-        } else {
-            copy(remoteId = live.id, remoteHash = live.hash, remoteVersion = live.version, remoteModified = live.modified ?: remoteModified)
-        }
+        live?.let { copy(remoteId = it.id, remoteHash = it.hash, remoteVersion = it.version, remoteModified = it.modified ?: remoteModified, remoteContentId = it.contentId) } ?: this
 
     /**
      * The directory that holds this profile's hydration cache (every cache file lives below it, laid
@@ -1164,6 +1160,7 @@ class MountEngine private constructor(
             // The write token of the version just written (every write moves OneDrive's eTag), so that the next edit's
             // base matches it. A skipped upload keeps the token the cloud still holds.
             remoteVersion = result.version,
+            remoteContentId = result.contentId,
             remoteSize = result.size,
             remoteModified = result.modified,
             localMtime = mtime,
@@ -1284,6 +1281,7 @@ class MountEngine private constructor(
                     remoteHash = current?.hash ?: row.remoteHash,
                     // A version the row knows to be stale is no base for a write: unknown until a delivery brings it.
                     remoteVersion = current?.version,
+                    remoteContentId = if (current != null) current.contentId else row.remoteContentId,
                     remoteSize = current?.size ?: row.remoteSize,
                     remoteModified = current?.modified ?: row.remoteModified,
                     isHydrated = false,
@@ -1342,6 +1340,7 @@ class MountEngine private constructor(
                 lastSynced = Instant.now(),
                 parentUuid = copy.parentId,
                 cacheBacked = true,
+                remoteContentId = copy.contentId,
             )
         db.upsertEntry(withSentHash(row, target, sent))
         return true
@@ -1631,6 +1630,7 @@ class MountEngine private constructor(
             remoteHash = moved.hash ?: landed.item.hash,
             // The move gave the item a new write token: the next edit is based on it.
             remoteVersion = moved.version,
+            remoteContentId = moved.contentId ?: landed.item.contentId,
             remoteSize = moved.size,
             remoteModified = moved.modified,
             localMtime = mtime,

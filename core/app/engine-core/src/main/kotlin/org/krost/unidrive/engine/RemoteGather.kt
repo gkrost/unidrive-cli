@@ -1462,6 +1462,7 @@ class RemoteGather(
                         isPinned = false,
                         isHydrated = false,
                         lastSynced = Instant.now(),
+                        remoteContentId = item.contentId,
                     )
                 } else {
                     existing.copy(
@@ -1470,6 +1471,7 @@ class RemoteGather(
                         isHydrated = existing.isHydrated && !outlivedByContent(existing, item, cacheIsPlainCopy),
                         // The write token moves with the delivered version (null from a provider without one).
                         remoteVersion = item.version,
+                        remoteContentId = mergedContentId(existing, item),
                         remoteSize = item.size,
                         remoteModified = item.modified,
                         // lastSynced stays (a delivery syncs nothing, and the reap guard reads an edit as a cache
@@ -1501,19 +1503,7 @@ class RemoteGather(
             if (renamedFrom != null && item.id == TrashNamespace.ROOT_ID) db.renamePrefix(renamedFrom, realLocalPath)
             db.upsertEntry(merged, keepMarks = true)
             clearQuarantineOf(existing)
-            // archive#595: the view only learns what actually changed. A re-delivered
-            // unchanged item (Internxt's rewound cursor re-names the same items every
-            // poll) must not invalidate it.
-            val contentChanged =
-                existing == null ||
-                    existing.remoteId != item.id ||
-                    existing.remoteHash != item.hash ||
-                    // A new write token is news for the view too: a client's edit is based on the token it listed.
-                    existing.remoteVersion != item.version ||
-                    existing.remoteSize != item.size ||
-                    existing.remoteModified != item.modified ||
-                    existing.downloadQuarantined
-            if (contentChanged) changed += realLocalPath
+            if (isNewsForTheView(existing, item, merged)) changed += realLocalPath
             if (renamedFrom != null) {
                 moved += RemoteMerge.Move(from = renamedFrom, to = realLocalPath)
                 // Both ends of the move leave and enter the view, even when the
@@ -1526,9 +1516,29 @@ class RemoteGather(
         return RemoteMerge(changedPaths = changed, moved = moved, replaced = replaced)
     }
 
+    // archive#595: the view only learns what actually changed. A re-delivered unchanged item (Internxt's rewound cursor re-names
+    // the same items every poll) must not invalidate it. [merged] is the row the delivery left.
+    private fun isNewsForTheView(
+        existing: SyncEntry?,
+        item: CloudItem,
+        merged: SyncEntry,
+    ): Boolean =
+        existing == null ||
+            existing.remoteId != item.id ||
+            existing.remoteHash != item.hash ||
+            // A new write token is news for the view too: a client's edit is based on the token it listed.
+            existing.remoteVersion != item.version ||
+            existing.remoteSize != item.size ||
+            existing.remoteModified != item.modified ||
+            // gkrost/unidrive-cli#164: other bytes under the same token (an upload that kept the time); a row that only learns the
+            // name of its bytes is no news.
+            (existing.remoteContentId != null && existing.remoteContentId != merged.remoteContentId) ||
+            existing.downloadQuarantined
+
     // archive#1040 M6: the content of a hydrated file changed (another device rewrote or replaced it), so the cache copy is a
-    // version the cloud no longer has. Judged by the size, then by the content hash both sides carry, then by the version
-    // token, and only for a cache copy that is no edit: an edit is guarded by the mount's own rules.
+    // version the cloud no longer has. Judged by the size, then by the provider's name for the bytes where both sides carry one,
+    // else by the content hash both sides carry, then by the version token, and only for a cache copy that is no edit: an edit is
+    // guarded by the mount's own rules.
     private fun outlivedByContent(
         existing: SyncEntry,
         item: CloudItem,
@@ -1540,12 +1550,35 @@ class RemoteGather(
             existing.remoteId == item.id &&
             // gkrost/unidrive-cli#146: another size is another content whatever the hash and version say; a hydrated row reports
             // its local size, so the client's placeholder kept the old one and every read of the new bytes failed.
-            (existing.remoteSize != item.size ||
-                (!existing.remoteHash.isNullOrEmpty() && !item.hash.isNullOrEmpty() && existing.remoteHash != item.hash) ||
-                ((existing.remoteHash.isNullOrEmpty() || item.hash.isNullOrEmpty()) &&
-                    !existing.remoteVersion.isNullOrEmpty() && !item.version.isNullOrEmpty() && existing.remoteVersion != item.version) ||
-                (!existing.remoteHash.isNullOrEmpty() && existing.remoteVersion == null && item.hash == null && item.version != null)) &&
+            (existing.remoteSize != item.size || contentDiffers(existing, item)) &&
             cacheIsPlainCopy(existing)
+
+    // gkrost/unidrive-cli#164: where both sides name the bytes ([CloudItem.contentId]), that name decides alone: the provider's hash is
+    // then no content hash (Internxt's token moves with a rename, which changes no byte). A row from before the column has none: its
+    // hash decides as before, and a token that moved cannot tell a rename from another upload of the same size, so the copy goes
+    // (keeping it could serve the old bytes for ever).
+    private fun contentDiffers(
+        existing: SyncEntry,
+        item: CloudItem,
+    ): Boolean {
+        val recorded = existing.remoteContentId
+        val delivered = item.contentId
+        if (recorded != null && delivered != null) return recorded != delivered
+        return (!existing.remoteHash.isNullOrEmpty() && !item.hash.isNullOrEmpty() && existing.remoteHash != item.hash) ||
+            ((existing.remoteHash.isNullOrEmpty() || item.hash.isNullOrEmpty()) &&
+                !existing.remoteVersion.isNullOrEmpty() && !item.version.isNullOrEmpty() && existing.remoteVersion != item.version) ||
+            (!existing.remoteHash.isNullOrEmpty() && existing.remoteVersion == null && item.hash == null && item.version != null)
+    }
+
+    // gkrost/unidrive-cli#164: the name of the bytes a merged row records: the delivered item's; for an item that names none (Internxt:
+    // a listing resumed from its staged rows, which keep no stored object), the row's own as long as the item is the version the row
+    // records.
+    private fun mergedContentId(
+        existing: SyncEntry,
+        item: CloudItem,
+    ): String? =
+        item.contentId
+            ?: existing.remoteContentId?.takeIf { existing.remoteHash == item.hash && existing.remoteVersion == item.version && existing.remoteSize == item.size }
 
     // The remote path of a row the merge keeps: on a rename the new one ([aliasedRemote], null when it is the path); else
     // the row's own, which a collision row that kept the NFC key learns its item's spelling in (archive#491), and a spelling the

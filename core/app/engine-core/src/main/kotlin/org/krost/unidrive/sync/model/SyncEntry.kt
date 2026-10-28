@@ -74,6 +74,11 @@ data class SyncEntry(
     // a delivery and by an upload that lands. Null = the provider has none (its remoteHash is the token: Internxt),
     // or none is known yet (every row from before the column, until its item is delivered or uploaded again).
     val remoteVersion: String? = null,
+    // gkrost/unidrive-cli#164: the provider's name for the bytes of the version the row records
+    // ([org.krost.unidrive.CloudItem.contentId]; Internxt: the stored object and the size), for a provider whose [remoteHash] is no
+    // content hash. Written with [remoteHash] wherever the row takes an item's version. Null = the provider names none, or none is
+    // known yet (every row from before the column, until its item is delivered, read or uploaded again).
+    val remoteContentId: String? = null,
 ) {
     /**
      * The token a write of this row's file is based on, the one rule for the whole engine: the provider's own

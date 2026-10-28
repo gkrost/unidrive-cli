@@ -4464,6 +4464,22 @@ class InternxtProvider(
         internal fun internxtVersionToken(file: InternxtFile): String =
             "${file.uuid}|${file.modificationTime.orEmpty()}|${file.size}"
 
+        /**
+         * gkrost/unidrive-cli#164: the name of a file's bytes ([CloudItem.contentId]): its stored object (`fileId`, the bridge entry a
+         * new upload replaces) and the size. Nothing a rename, a move or any other change of the drive entry touches, where the
+         * [internxtVersionToken] carries the modification time those stamp. An empty file has no stored object (archive#485): the
+         * size names its bytes alone. Null when the answer names no object for a file of some bytes, or no size.
+         */
+        internal fun internxtContentId(file: InternxtFile): String? {
+            val size = file.size?.toLongOrNull() ?: return null
+            val fileId = file.fileId?.takeIf { it.isNotBlank() }
+            return when {
+                fileId != null -> "$fileId|$size"
+                size == 0L -> "|0"
+                else -> null
+            }
+        }
+
         internal fun InternxtFile.isLive(): Boolean = status == "EXISTS" && !isTombstoned()
 
         // The rows of a page to keep and the ones to drop. A page asked for without the status filter holds rows of
@@ -4593,6 +4609,7 @@ class InternxtProvider(
                 // bucket; we collapse that to CloudItem.parentId=null too so
                 // root rows store parent_uuid=NULL.
                 parentId = file.folderUuid,
+                contentId = internxtContentId(file),
             )
         }
 
@@ -4658,6 +4675,7 @@ class InternxtProvider(
                 // the `status` enum. Mirrors the folder helper at line ~562.
                 deleted = file.isTombstoned(),
                 parentId = file.folderUuid,
+                contentId = internxtContentId(file),
             )
         }
 

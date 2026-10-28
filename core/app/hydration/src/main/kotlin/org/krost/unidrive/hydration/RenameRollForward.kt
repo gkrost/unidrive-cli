@@ -135,7 +135,14 @@ internal class RenameRollForward(
         if (row.remoteId != null) return
         val item = movedItemOrNull(intent) ?: return
         stateDb.upsertEntry(
-            row.copy(remoteId = item.id, remoteHash = item.hash, remoteVersion = item.version, remoteSize = item.size, remoteModified = item.modified),
+            row.copy(
+                remoteId = item.id,
+                remoteHash = item.hash,
+                remoteVersion = item.version,
+                remoteSize = item.size,
+                remoteModified = item.modified,
+                remoteContentId = item.contentId,
+            ),
         )
     }
 

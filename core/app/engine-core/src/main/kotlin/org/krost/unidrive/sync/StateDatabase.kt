@@ -576,7 +576,8 @@ class StateDatabase(
                     name_block           TEXT,
                     edit_base            TEXT,
                     remote_version       TEXT,
-                    mount_deleted_at     TEXT
+                    mount_deleted_at     TEXT,
+                    remote_content_id    TEXT
                 )
             """,
             )
@@ -727,6 +728,12 @@ class StateDatabase(
             // provider listing that still reports the item. Old rows have no such provenance.
             if (!columnExists("sync_entries", "mount_deleted_at")) {
                 stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN mount_deleted_at TEXT")
+            }
+            // gkrost/unidrive-cli#164: the provider's name for the bytes of the recorded version, where remote_hash is no content
+            // hash (see SyncEntry.remoteContentId). Same additive pattern, no schema_version bump, no backfill: NULL = none known,
+            // which is every older row until its item is delivered, read or uploaded again; remote_hash then decides alone.
+            if (!columnExists("sync_entries", "remote_content_id")) {
+                stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN remote_content_id TEXT")
             }
             stmt.executeUpdate(
                 "CREATE INDEX IF NOT EXISTS idx_sync_entries_mount_deleted_at ON sync_entries(mount_deleted_at) " +
@@ -1023,12 +1030,13 @@ class StateDatabase(
                 if (backed == null) stmt.setNull(18, java.sql.Types.INTEGER) else stmt.setInt(18, if (backed) 1 else 0)
                 stmt.setString(19, entry.editBase)
                 stmt.setString(20, entry.remoteVersion)
+                stmt.setString(21, entry.remoteContentId)
                 if (keepMarks) {
                     // The sub-selects read the row this statement replaces, before it is replaced.
-                    stmt.setString(21, storedId)
-                    stmt.setString(22, entry.path)
-                    stmt.setString(23, storedId)
-                    stmt.setString(24, entry.path)
+                    stmt.setString(22, storedId)
+                    stmt.setString(23, entry.path)
+                    stmt.setString(24, storedId)
+                    stmt.setString(25, entry.path)
                 }
                 stmt.executeUpdate()
             }
@@ -2815,6 +2823,7 @@ class StateDatabase(
             cacheBacked = getInt("cache_backed").let { if (wasNull()) null else it == 1 },
             editBase = getString("edit_base"),
             remoteVersion = getString("remote_version"),
+            remoteContentId = getString("remote_content_id"),
         )
     }
 
@@ -2986,16 +2995,16 @@ class StateDatabase(
             "INSERT OR REPLACE INTO sync_entries " +
                 "(remote_id, parent_uuid, path, remote_path, remote_hash, remote_size, remote_modified, " +
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
-                "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 
         // The same, with the refusal stamp and the name block of the row it replaces carried over (see upsertEntry).
         private const val UPSERT_ENTRY_KEEPING_MARKS_SQL =
             "INSERT OR REPLACE INTO sync_entries " +
                 "(remote_id, parent_uuid, path, remote_path, remote_hash, remote_size, remote_modified, " +
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
-                "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, upload_refused, " +
-                "name_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+                "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
+                "upload_refused, name_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
                 "(SELECT upload_refused FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT name_block FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'))"
 
