@@ -5231,4 +5231,33 @@ class SyncEngineTest {
             assertEquals(listOf("/dir"), provider.createdFolders.toList(), "the folder the remote deleted is created again")
         }
 
+    @Test
+    fun `a download keeps an edit that landed between the scan and the placement as a conflict copy`() =
+        runTest {
+            provider.files["/doc.txt"] = "remote bytes v1".toByteArray()
+            provider.deltaItems = listOf(cloudItem("/doc.txt", size = 15))
+            engine.syncOnce()
+            assertEquals("remote bytes v1", Files.readString(syncRoot.resolve("doc.txt")))
+
+            // The row's baseline is what the scan recorded. The user saves an edit while the download of the
+            // remote v2 is already planned; the placement must keep it instead of replacing it silently.
+            Files.writeString(syncRoot.resolve("doc.txt"), "a local edit during the pass")
+            provider.files["/doc.txt"] = "remote bytes v2".toByteArray()
+
+            engine.applyDownload(
+                SyncAction.DownloadContent("/doc.txt", cloudItem("/doc.txt", size = 15, hash = "hash-v2")),
+            )
+
+            val local = syncRoot.resolve("doc.txt")
+            assertEquals("remote bytes v2", Files.readString(local), "the canonical path takes the remote version")
+            val kept =
+                Files.walk(syncRoot).use { s ->
+                    s.filter { Files.isRegularFile(it) && it != local }.map { it.fileName.toString() to Files.readString(it) }.toList()
+                }
+            assertEquals(1, kept.size, "the edit that landed after the scan is kept as one conflict copy: $kept")
+            assertEquals("a local edit during the pass", kept[0].second, "the conflict copy holds the local edit")
+            assertTrue(kept[0].first.startsWith("doc.") && kept[0].first.endsWith(".txt"), "the copy sits beside the canonical file: ${kept[0].first}")
+            assertEquals(listOf("/" + kept[0].first), provider.uploadedPaths, "the kept copy is uploaded like a keep-both copy")
+            assertEquals("id-/doc.txt", db.getEntry("/doc.txt")?.remoteId, "the canonical row tracks the downloaded version")
+        }
 }

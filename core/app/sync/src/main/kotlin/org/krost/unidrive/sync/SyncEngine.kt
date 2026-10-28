@@ -2793,7 +2793,8 @@ open class SyncEngine(
         targetMtimeMillis: Long?,
     ): DownloadReceipt = Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, destination, targetMtimeMillis)
 
-    private suspend fun applyDownload(action: SyncAction.DownloadContent) {
+    // Internal for the download-placement test (as applyConflict for the refused-case-collision test).
+    internal suspend fun applyDownload(action: SyncAction.DownloadContent) {
         log.debug("Download: {} ({} bytes)", action.path, action.remoteItem.size)
         // archive#230: a name that cannot exist on the local filesystem (Windows
         // all-dots / trailing-dot / reserved device name, etc.) can never be
@@ -2807,6 +2808,11 @@ open class SyncEngine(
             )
         }
         val localPath = placeholder.resolveLocal(action.path)
+        // A download replaces the local bytes only when the file still has the stats the row recorded at scan
+        // time. An edit that lands between the scan and this placement (pass 2 queued, a long streaming gather)
+        // has another mtime or size, and the provider places the download over it with nothing logged. The edit
+        // is moved aside as a conflict-local copy first, the way applyKeepBoth keeps a losing local edit.
+        val keptLocalEdit = keepLocalEditAsideIfEditedSinceScan(action.path, localPath)
         if (versionManager != null && Files.isRegularFile(localPath) && Files.size(localPath) > 0) {
             versionManager.snapshot(action.path)
             versionManager.pruneByCount(action.path, maxVersions)
@@ -2848,6 +2854,24 @@ open class SyncEngine(
                 newHash = action.remoteItem.hash,
                 result = "success",
             )
+            // The kept edit goes up in this pass, not on the next one (the plan was made before the copy existed):
+            // best effort, as applyKeepBoth uploads its copy. A failed upload leaves the copy local-only, and the
+            // next scan uploads it.
+            if (keptLocalEdit != null && syncDirection != SyncDirection.DOWNLOAD) {
+                // archive#115: the copy belongs next to the canonical remote file, as the reconciler's own Upload would.
+                val canonicalCopy =
+                    action.remoteItem.path.substringBeforeLast('/') + "/" + keptLocalEdit.substringAfterLast('/')
+                val copyTarget = if (canonicalCopy != keptLocalEdit) canonicalCopy else null
+                try {
+                    applyUpload(SyncAction.Upload(keptLocalEdit, remoteTarget = copyTarget), resolveRefusal = false)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: AuthenticationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log.warn("Conflict copy {} was kept locally but not uploaded yet: {}", keptLocalEdit, e.message)
+                }
+            }
         } catch (e: Exception) {
             auditLog?.emit(
                 action = "Download",
@@ -2858,6 +2882,41 @@ open class SyncEngine(
             )
             throw e
         }
+    }
+
+    // Moves [localPath] aside as a conflict-local copy when its current stats differ from the row's baseline
+    // (localMtime, localSize): an edit landed between the scan and the download about to replace the file.
+    // Returns the copy's path, or null when there is nothing to keep — the file is absent, untracked, or
+    // still at the baseline the scan recorded.
+    private suspend fun keepLocalEditAsideIfEditedSinceScan(
+        path: String,
+        localPath: Path,
+    ): String? {
+        if (!Files.isRegularFile(localPath)) return null
+        val row = db.getEntry(path) ?: return null
+        // A placeholder artifact (a 0-byte stub, a freed placeholder whose zeros a tool's mtime touch survived,
+        // a partial download) is not an edit: the download fills it in, as every unhydrated-row pass does.
+        if (looksLikePlaceholder(localPath, row, shorterIsPartialDownload = false)) return null
+        val baselineMtime = row.localMtime ?: return null
+        val baselineSize = row.localSize ?: return null
+        val stat = Transfers.statBeforeUpload(localPath) ?: return null
+        if (stat.first == baselineMtime && stat.second == baselineSize) return null
+        val conflictPath =
+            keepBothCopyPath(path, conflictStamp()) { candidate ->
+                Files.exists(placeholder.resolveLocal(candidate), java.nio.file.LinkOption.NOFOLLOW_LINKS) || db.getEntry(candidate) != null
+            }
+        withEchoSuppression(conflictPath) {
+            Files.move(localPath, placeholder.resolveLocal(conflictPath))
+        }
+        reporter.onWarning("Conflict: $path was edited after the scan planned its download; the edit is kept as $conflictPath")
+        conflictLog?.record(
+            path = path,
+            localState = ChangeState.MODIFIED.name,
+            remoteState = ChangeState.MODIFIED.name,
+            policy = "KEEP_BOTH",
+            loserFile = null,
+        )
+        return conflictPath
     }
 
     private suspend fun applyUpload(
