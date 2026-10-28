@@ -2372,6 +2372,13 @@ class HydrationImpl(
         // contract answers read_only for them (archive#1074).
         if (mount.isReadOnlyPath(normalised)) return MkdirResult.Failed(HydrationError.ReadOnly)
         if (mount.isOutOfScope(normalised)) return MkdirResult.Failed(HydrationError.OutOfScope)
+        // gkrost/unidrive-cli#68: a folder the ignore rules (or exclude_patterns) exclude is made here only, like any ignored
+        // item: listed (marked excluded), filled locally, never created in the cloud. The event says it is kept local.
+        if (mount.isExcludedPath(normalised, isDir = true)) {
+            mount.recordLocalOnlyFolder(normalised)
+            _events.emit(HydrationEvent.Skipped(normalised))
+            return MkdirResult.Ok
+        }
         return runCatching {
             _events.emit(HydrationEvent.Hydrating(normalised))
             mount.createRemoteFolder(normalised)

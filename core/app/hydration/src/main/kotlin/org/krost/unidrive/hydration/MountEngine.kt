@@ -1408,24 +1408,32 @@ class MountEngine private constructor(
         reason: String,
         sibling: String?,
     ) {
-        if (db.getEntry(path) == null) {
-            db.upsertEntry(
-                SyncEntry(
-                    path = path,
-                    remoteId = null,
-                    remoteHash = null,
-                    remoteSize = 0L,
-                    remoteModified = null,
-                    localMtime = null,
-                    localSize = null,
-                    isFolder = true,
-                    isPinned = false,
-                    isHydrated = false,
-                    lastSynced = Instant.now(),
-                ),
-            )
-        }
+        recordLocalOnlyFolder(path)
         if (reason == BLOCKED_BY_PARENT) db.markUploadFailed(path, Instant.now()) else db.markNameBlocked(path, reason, sibling)
+    }
+
+    /**
+     * The row of a folder that exists only here (no remote id): one the drive refused by name ([recordBlockedFolder]), or,
+     * gkrost/unidrive-cli#68, one the keep-local rules exclude ([isExcludedPath]), which is never created in the cloud. A path
+     * that has a row already keeps it.
+     */
+    fun recordLocalOnlyFolder(path: String) {
+        if (db.getEntry(path) != null) return
+        db.upsertEntry(
+            SyncEntry(
+                path = path,
+                remoteId = null,
+                remoteHash = null,
+                remoteSize = 0L,
+                remoteModified = null,
+                localMtime = null,
+                localSize = null,
+                isFolder = true,
+                isPinned = false,
+                isHydrated = false,
+                lastSynced = Instant.now(),
+            ),
+        )
     }
 
     /**
@@ -1438,7 +1446,11 @@ class MountEngine private constructor(
         for (blocked in db.blockedRows().filter { it.isFolder }) {
             if (!retryFolder(blocked.path)) continue
             created++
-            val below = db.getEntriesByPrefix(blocked.path.trimEnd('/') + "/").filter { it.isFolder && it.remoteId == null }.sortedBy { it.path }
+            // gkrost/unidrive-cli#68: an excluded folder below stays local-only.
+            val below =
+                db.getEntriesByPrefix(blocked.path.trimEnd('/') + "/")
+                    .filter { it.isFolder && it.remoteId == null && !isExcludedPath(it.path, isDir = true) }
+                    .sortedBy { it.path }
             for (folder in below) if (retryFolder(folder.path)) created++
         }
         return created
@@ -1492,7 +1504,10 @@ class MountEngine private constructor(
         val entryBefore = db.getEntry(path)
         // A folder the drive refused by name, or one beneath such a folder, was never created there: the delete is
         // local, and a lookup by its name could only reach a similar sibling.
-        val neverOnDrive = entryBefore != null && entryBefore.remoteId == null && entryBefore.isFolder && isNameBlocked(path)
+        // gkrost/unidrive-cli#68: so is an excluded folder made here, which has no cloud copy either.
+        val neverOnDrive =
+            entryBefore != null && entryBefore.remoteId == null && entryBefore.isFolder &&
+                (isNameBlocked(path) || isExcludedPath(path, isDir = true))
         if (!neverOnDrive) {
             try {
                 // archive#402/#403: a row with a cloud id is deleted by that id: the twin of a duplicate remote name shares its
