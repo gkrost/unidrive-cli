@@ -27,7 +27,7 @@ object HashVerifier {
         return when (algorithm) {
             org.krost.unidrive.HashAlgorithm.QuickXor -> verifyQuickXorHash(localPath, remoteHash)
             org.krost.unidrive.HashAlgorithm.Md5Hex -> verifyS3ETag(localPath, remoteHash)
-            org.krost.unidrive.HashAlgorithm.Sha256Hex -> verifySha256Hex(localPath, remoteHash)
+            org.krost.unidrive.HashAlgorithm.Sha256Hex -> computeSha256Hex(localPath).equals(remoteHash, ignoreCase = true)
             org.krost.unidrive.HashAlgorithm.DropboxContentHash -> computeDropboxContentHash(localPath).equals(remoteHash, ignoreCase = true)
         }
     }
@@ -43,21 +43,28 @@ object HashVerifier {
         localPath: java.nio.file.Path,
         remoteHash: String?,
         algorithm: org.krost.unidrive.HashAlgorithm?,
-    ): Boolean {
-        if (remoteHash.isNullOrEmpty() || algorithm == null) return false
+    ): Boolean = compare(localPath, remoteHash, algorithm) == true
+
+    /**
+     * gkrost/unidrive-cli#97: content equality with "cannot tell" kept apart from "different": true when the hashes
+     * match, false when they prove the bytes differ, null when there is nothing to compare (no remote hash, no
+     * provider algorithm, or an S3 multipart ETag, which is no MD5 of the bytes).
+     */
+    fun compare(
+        localPath: java.nio.file.Path,
+        remoteHash: String?,
+        algorithm: org.krost.unidrive.HashAlgorithm?,
+    ): Boolean? {
+        if (remoteHash.isNullOrEmpty() || algorithm == null) return null
 
         return when (algorithm) {
             org.krost.unidrive.HashAlgorithm.QuickXor -> computeQuickXorHash(localPath) == remoteHash
-            org.krost.unidrive.HashAlgorithm.Md5Hex -> computeMd5Hex(localPath).equals(remoteHash, ignoreCase = true)
+            org.krost.unidrive.HashAlgorithm.Md5Hex ->
+                if (remoteHash.contains("-")) null else computeMd5Hex(localPath).equals(remoteHash, ignoreCase = true)
             org.krost.unidrive.HashAlgorithm.Sha256Hex -> computeSha256Hex(localPath).equals(remoteHash, ignoreCase = true)
             org.krost.unidrive.HashAlgorithm.DropboxContentHash -> computeDropboxContentHash(localPath).equals(remoteHash, ignoreCase = true)
         }
     }
-
-    private fun verifySha256Hex(
-        localPath: java.nio.file.Path,
-        expectedHex: String,
-    ): Boolean = computeSha256Hex(localPath).equals(expectedHex, ignoreCase = true)
 
     private fun verifyQuickXorHash(
         localPath: Path,

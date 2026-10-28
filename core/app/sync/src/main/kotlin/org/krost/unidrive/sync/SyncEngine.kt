@@ -381,8 +381,8 @@ open class SyncEngine(
         xdgUserDirsOverrides = xdgUserDirsOverrides,
         // archive#532: identical edits on both sides are convergence, not a conflict — compare the
         // local file against the remote item with the provider's own content hash. Strict
-        // (matches, not verify): a provider without a hash keeps the conflict.
-        sameContent = { localFile, item -> HashVerifier.matches(localFile, item.hash, provider.hashAlgorithm()) },
+        // (compare, not verify): a provider without a hash answers "cannot tell" (null), never "same".
+        sameContent = { localFile, item -> HashVerifier.compare(localFile, item.hash, provider.hashAlgorithm()) },
     ).also { r ->
         r.foldCase = caseFolds
         // archive#660: the mirror's ignore rules, applied wherever the exclude patterns are.
@@ -2654,7 +2654,11 @@ open class SyncEngine(
         Triple(changes, safeAccumulator + deferred, resolvedLocal.get())
     }
 
-    private suspend fun applyCreatePlaceholder(action: SyncAction.CreatePlaceholder) {
+    private suspend fun applyCreatePlaceholder(
+        action: SyncAction.CreatePlaceholder,
+        // A conflict the cloud won: what is on disk is not the remote's content, whatever its size.
+        localBytesLost: Boolean = false,
+    ) {
         // archive#230 (PR archive#242 review): applyDownload guards the file-download path, but folders and
         // "both new" adopt placeholders reach createFolder/createPlaceholder here. A name that
         // cannot exist on the local filesystem (Windows reserved / all-dots / trailing-dot, etc.)
@@ -2681,7 +2685,7 @@ open class SyncEngine(
         val item = action.remoteItem
         val localPath = placeholder.resolveLocal(action.path)
         val sizeMatch = !item.isFolder && Files.isRegularFile(localPath) && Files.size(localPath) == item.size
-        val hasRealContent = sizeMatch && !placeholder.isSparse(localPath, item.size)
+        val hasRealContent = sizeMatch && !localBytesLost && !placeholder.isSparse(localPath, item.size)
         val shouldDownload = !item.isFolder && item.size > 0 && !hasRealContent
         var downloadReceipt: DownloadReceipt? = null
         var downloadedHash: String? = null
@@ -3806,7 +3810,12 @@ open class SyncEngine(
         )
 
         if (remoteWins && action.remoteItem != null && !action.remoteItem.deleted) {
-            applyCreatePlaceholder(SyncAction.CreatePlaceholder(action.path, action.remoteItem, shouldHydrate = true))
+            // gkrost/unidrive-cli#97: the local bytes lost (the conflict log keeps them): fetch the cloud's even when the
+            // sizes are equal, where the adoption would otherwise take the local bytes for the remote's.
+            applyCreatePlaceholder(
+                SyncAction.CreatePlaceholder(action.path, action.remoteItem, shouldHydrate = true),
+                localBytesLost = true,
+            )
         } else if (!remoteWins && Files.exists(localPath)) {
             // UD-366: conflict-loser is the remote — overwrite it in place rather than
             // POSTing a duplicate. action.remoteItem is non-null on this branch because
