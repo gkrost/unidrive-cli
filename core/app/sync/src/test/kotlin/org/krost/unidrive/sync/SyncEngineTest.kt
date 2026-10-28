@@ -1082,7 +1082,9 @@ class SyncEngineTest {
     @Test
     fun `local folder move across parents emits MoveRemote not delete-plus-create`() =
         runTest {
-            // Establish initial state: folder /a/docs and a file inside it
+            // Establish initial state: folder /a/docs and a file inside it. The file's bytes are seeded so the
+            // strict fake sees the folder the move is aimed at (gkrost/unidrive-cli#64 item 3).
+            provider.files["/a/docs/file.txt"] = ByteArray(42)
             provider.deltaItems =
                 listOf(
                     cloudItem("/a", isFolder = true),
@@ -1148,13 +1150,14 @@ class SyncEngineTest {
             // Source path is gone.
             assertNull(db.getEntry("/a/docs"), "source row must be deleted after move")
 
-            // Destination folder row exists AND carries the canonical remoteId
-            // from FakeCloudProvider.move() (which returns CloudItem(id = "id-$path")).
+            // Destination folder row exists AND carries the remoteId the move returned: a move is the same
+            // remote item at a new path, so the strict fake (gkrost/unidrive-cli#64 item 3) answers with the
+            // id the folder already had, not a fresh one.
             val movedDocs = db.getEntry("/b/docs")
             assertNotNull(movedDocs, "destination folder row must survive the rename — was being wiped by renamePrefix")
             assertTrue(movedDocs.isFolder)
             assertEquals(
-                "id-/b/docs",
+                "id-/a/docs",
                 movedDocs.remoteId,
                 "destination folder row must carry the remoteId returned by provider.move(), not be reset to null",
             )

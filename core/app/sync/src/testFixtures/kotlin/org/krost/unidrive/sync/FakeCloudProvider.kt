@@ -328,36 +328,111 @@ class FakeCloudProvider : CloudProvider {
 
     val movedPaths = mutableListOf<Pair<String, String>>() // (fromPath, toPath)
 
+    // gkrost/unidrive-cli#64 item 3: a move answers like a real provider's. A source that is not there and a
+    // target that already exists are refused; a moved item keeps its id and, for a file, its bytes and size;
+    // a moved folder takes the files below it along. A file the fake does not hold is not silently answered
+    // with a folder-shaped item any more.
+    private fun samePath(
+        a: String,
+        b: String,
+    ): Boolean = if (caseSensitivity == CaseSensitivity.SENSITIVE) a == b else a.equals(b, ignoreCase = true)
+
+    private fun samePathOrUnder(
+        a: String,
+        prefix: String,
+    ): Boolean =
+        samePath(a, prefix) ||
+            (
+                a.length > prefix.length &&
+                    a.substring(0, prefix.length + 1).equals("$prefix/", ignoreCase = caseSensitivity != CaseSensitivity.SENSITIVE)
+            )
+
+    // Paths the fake models as alive: the files it holds, folders a test staged or the engine created, the
+    // current delta listing, the metadata overrides — minus what the fake saw deleted.
+    private fun alivePaths(): List<String> {
+        val known = files.keys + remoteFoldersExisting + createdFolders + deltaItems.map { it.path } + metadataOverride.keys
+        return known.filter { p -> deletedPaths.none { d -> p == d || p.startsWith("$d/") } }
+    }
+
+    private fun targetOccupied(
+        fromPath: String,
+        toPath: String,
+    ): Boolean {
+        if (samePath(fromPath, toPath)) return false // the item itself: a case-only rename
+        return alivePaths().any { samePathOrUnder(it, toPath) }
+    }
+
+    private suspend fun doMove(
+        fromPath: String,
+        toPath: String,
+        carriedId: String?,
+    ): CloudItem {
+        val content = files[fromPath]
+        val subtree =
+            if (content != null) {
+                emptyMap()
+            } else {
+                files.filterKeys { it.startsWith("$fromPath/") }
+            }
+        val folderIsKnown =
+            fromPath in remoteFoldersExisting ||
+                createdFolders.contains(fromPath) ||
+                deltaItems.any { it.path == fromPath && it.isFolder } ||
+                metadataOverride[fromPath]?.isFolder == true
+        if (content == null && subtree.isEmpty() && !folderIsKnown) {
+            throw ProviderException("Not found: $fromPath")
+        }
+        if (targetOccupied(fromPath, toPath)) {
+            throw ProviderException("Move target already exists: $toPath")
+        }
+        files.remove(fromPath)
+        subtree.keys.forEach { files.remove(it) }
+        subtree.forEach { (p, bytes) -> files[toPath + p.substring(fromPath.length)] = bytes }
+        content?.let { files[toPath] = it }
+        val movedFolderMarkers = remoteFoldersExisting.filter { it == fromPath || it.startsWith("$fromPath/") }
+        remoteFoldersExisting.removeAll(movedFolderMarkers.toSet())
+        movedFolderMarkers.forEach { remoteFoldersExisting.add(toPath + it.substring(fromPath.length)) }
+        movedPaths.add(Pair(fromPath, toPath))
+        val id = carriedId ?: "id-$fromPath"
+        return if (content != null) {
+            CloudItem(
+                id = id,
+                name = toPath.substringAfterLast("/"),
+                path = toPath,
+                size = content.size.toLong(),
+                isFolder = false,
+                modified = Instant.now(),
+                created = Instant.now(),
+                hash = "uploaded",
+                mimeType = null,
+            )
+        } else {
+            CloudItem(
+                id = id,
+                name = toPath.substringAfterLast("/"),
+                path = toPath,
+                size = 0,
+                isFolder = true,
+                modified = Instant.now(),
+                created = Instant.now(),
+                hash = null,
+                mimeType = null,
+            )
+        }
+    }
+
     override suspend fun move(
         fromPath: String,
         toPath: String,
-    ): CloudItem {
-        movedPaths.add(Pair(fromPath, toPath))
-        return createFolder(toPath)
-    }
+    ): CloudItem = doMove(fromPath, toPath, carriedId = null)
 
-    // A file the fake holds moves with its bytes and keeps its id, as at a real provider; anything else is the
-    // folder-shaped answer [move] has always given.
+    // A file the fake holds moves with its bytes and keeps the id the caller tracks; a folder moves its
+    // subtree and keeps the id it was created or listed with.
     override suspend fun moveById(
         remoteId: String,
         fromPath: String,
         toPath: String,
-    ): CloudItem {
-        val content = files.remove(fromPath) ?: return move(fromPath, toPath)
-        movedPaths.add(Pair(fromPath, toPath))
-        files[toPath] = content
-        return CloudItem(
-            id = remoteId,
-            name = toPath.substringAfterLast("/"),
-            path = toPath,
-            size = content.size.toLong(),
-            isFolder = false,
-            modified = Instant.now(),
-            created = Instant.now(),
-            hash = "uploaded",
-            mimeType = null,
-        )
-    }
+    ): CloudItem = doMove(fromPath, toPath, carriedId = remoteId)
 
     // UD-360: when set, delta() returns DeltaPage(complete=false) so that
     // tests can exercise the engine's partial-gather suppression path.
