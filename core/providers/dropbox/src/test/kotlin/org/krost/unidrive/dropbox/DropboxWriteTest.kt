@@ -50,7 +50,7 @@ class DropboxWriteTest {
     }
 
     @Test
-    fun `a new upload overwrites, keeps the mtime in whole seconds and escapes non-ASCII in the header`() =
+    fun `a new upload adds, keeps the mtime in whole seconds and escapes non-ASCII in the header`() =
         runTest {
             fake.json("files/upload", file("/Grüße.txt", "id:9"))
 
@@ -60,7 +60,9 @@ class DropboxWriteTest {
             assertTrue(call.rawArgHeader!!.contains("\\u00fc"), "header: ${call.rawArgHeader}")
             assertTrue(call.rawArgHeader!!.all { it.code in 0x20..0x7E })
             assertEquals("/Grüße.txt", call.args!!["path"]!!.jsonPrimitive.content)
-            assertEquals("overwrite", call.args!!["mode"]!!.jsonObject[".tag"]!!.jsonPrimitive.content)
+            // gkrost/unidrive-cli#57: a create never replaces a file that appeared after the plan.
+            assertEquals("add", call.args!!["mode"]!!.jsonObject[".tag"]!!.jsonPrimitive.content)
+            assertEquals(false, call.args!!["autorename"]!!.jsonPrimitive.boolean)
             assertEquals("2026-03-04T05:06:07Z", call.args!!["client_modified"]!!.jsonPrimitive.content)
             assertContentEquals("hello".toByteArray(), call.body)
             assertEquals("id:9", item.id)
@@ -105,6 +107,25 @@ class DropboxWriteTest {
                 provider.upload(local("a.txt", "new"), "/a.txt", ifMatchETag = hashSeen)
             }
             assertTrue(fake.callsTo("files/upload").isEmpty())
+        }
+
+    // gkrost/unidrive-cli#57: the engine compares and keeps both; the provider only reports the taken path.
+    @Test
+    fun `a new upload onto a taken path is a conflict`() =
+        runTest {
+            fake.json("files/upload", """{"error_summary":"path/conflict/file/..","error":{".tag":"path"}}""", status = 409)
+
+            assertFailsWith<RemoteConflictException> { provider.upload(local("a.txt", "new"), "/a.txt") }
+        }
+
+    @Test
+    fun `a replace without a token still overwrites`() =
+        runTest {
+            fake.json("files/upload", file("/a.txt", "id:1"))
+
+            provider.upload(local("a.txt", "new"), "/a.txt", existingRemoteId = "id:1")
+
+            assertEquals("overwrite", fake.callsTo("files/upload").single().args!!["mode"]!!.jsonObject[".tag"]!!.jsonPrimitive.content)
         }
 
     @Test

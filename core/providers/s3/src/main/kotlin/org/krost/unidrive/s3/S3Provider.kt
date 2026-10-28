@@ -35,6 +35,8 @@ import java.time.Instant
  *   the file's mtime as rclone writes it.
  * - **Conditional writes:** the engine's write token is the ETag it saw. Where the vendor honours `If-Match`
  *   (AWS), the write carries it and a 412 is a conflict. Elsewhere a HEAD compares first, which leaves a short race.
+ *   A create carries `If-None-Match: *`, so a key taken since the plan is a conflict too; a vendor that refuses the
+ *   header (501, 400) gets the HEAD check instead.
  * - **Copies** (moves) above 5 GiB go through UploadPartCopy on every vendor.
  */
 class S3Provider(
@@ -190,10 +192,18 @@ class S3Provider(
         val meta = mapOf("mtime" to S3Api.epochText(mtime))
         if (ifMatchETag != null && !config.vendor.conditionalWrites) requireUnchanged(key, ifMatchETag)
         val ifMatch = ifMatchETag?.takeIf { config.vendor.conditionalWrites }
+        // gkrost/unidrive-cli#57: a create (nothing to replace, no token) must not replace an object that appeared after the plan.
+        val create = existingRemoteId == null && ifMatchETag == null
         if (size <= config.multipartThreshold) {
-            api.put(key, localPath, meta, ifMatch)
+            if (create) createGuarded(key) { api.put(key, localPath, meta, ifNoneMatch = it) } else api.put(key, localPath, meta, ifMatch)
         } else {
-            uploadInParts(localPath, key, size, mtime.toEpochMilli(), meta, ifMatch, onProgress)
+            uploadInParts(localPath, key, size, mtime.toEpochMilli(), meta, onProgress) { uploadId, parts ->
+                if (create) {
+                    createGuarded(key) { api.completeMultipart(key, uploadId, parts, ifNoneMatch = it) }
+                } else {
+                    api.completeMultipart(key, uploadId, parts, ifMatch)
+                }
+            }
         }
         onProgress?.invoke(size, size)
         return fileItem(api.head(key) ?: throw ProviderException("S3 does not show '$key' right after its upload"))
@@ -208,14 +218,45 @@ class S3Provider(
         if (current?.etag != etag) throw RemoteConflictException("'$key' changed on S3 since it was last synced")
     }
 
+    // gkrost/unidrive-cli#57: set once the vendor refused `If-None-Match` and the HEAD check took its place.
+    @Volatile
+    private var createGuardRefused = false
+
+    /**
+     * [write] as a create that a taken [key] refuses: with `If-None-Match: *` (AWS, MinIO, R2 answer 412, a conflict). A vendor
+     * that does not implement the header answers 501 or 400; then a HEAD checks that the key is free, the racy form a guarded
+     * modify without If-Match has too, the write goes without the header, and once that worked the header is not sent again.
+     */
+    private suspend fun <T> createGuarded(
+        key: String,
+        write: suspend (ifNoneMatch: Boolean) -> T,
+    ): T {
+        if (!createGuardRefused) {
+            try {
+                return write(true)
+            } catch (e: S3Exception) {
+                if (e.status != 501 && e.status != 400) throw e
+                log.info("S3 refused If-None-Match on '{}' ({} {}); checking that the key is free with a HEAD instead", key, e.status, e.code)
+            }
+            requireAbsent(key)
+            return write(false).also { createGuardRefused = true }
+        }
+        requireAbsent(key)
+        return write(false)
+    }
+
+    private suspend fun requireAbsent(key: String) {
+        if (api.head(key) != null) throw RemoteConflictException("'$key' is on S3 already")
+    }
+
     private suspend fun uploadInParts(
         localPath: Path,
         key: String,
         size: Long,
         mtimeMillis: Long,
         meta: Map<String, String>,
-        ifMatch: String?,
         onProgress: ((Long, Long) -> Unit)?,
+        complete: suspend (uploadId: String, parts: List<Pair<Int, String>>) -> Unit,
     ) {
         val partSize = partSizeFor(size)
         val (uploadId, held) = openUpload(localPath, key, size, mtimeMillis, partSize, meta)
@@ -233,7 +274,7 @@ class S3Provider(
             number++
             onProgress?.invoke(offset, size)
         }
-        api.completeMultipart(key, uploadId, parts, ifMatch)
+        complete(uploadId, parts)
         uploads.remove(key)
     }
 

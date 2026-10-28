@@ -17,7 +17,7 @@ import java.time.format.DateTimeFormatter
 
 /**
  * An in-memory S3 bucket behind a MockEngine, just enough of the API for the provider: objects with metadata, ListObjectsV2
- * (prefix, delimiter, start-after, continuation), HEAD, conditional PUT, multipart (with ListParts and part copies), copy,
+ * (prefix, delimiter, start-after, continuation), HEAD, conditional PUT (If-Match, If-None-Match: *), multipart (with ListParts and part copies), copy,
  * delete and DeleteObjects. Every request must carry a SigV4 Authorization; [requests] records them all.
  */
 class FakeS3(
@@ -130,6 +130,7 @@ class FakeS3(
                 val current = objects[r.key!!]
                 val ifMatch = r.headers["if-match"]?.trim('"')
                 if (ifMatch != null && current?.etag != ifMatch) return error(if (current == null) 404 else 412, "PreconditionFailed")
+                if (r.headers["if-none-match"] == "*" && current != null) return error(412, "PreconditionFailed")
                 objects[r.key] = Obj(r.body, r.body.size.toLong(), md5Hex(r.body), meta(r), nextTime())
                 respond("", HttpStatusCode.OK, headersOf("ETag", "\"${objects.getValue(r.key).etag}\""))
             }
@@ -258,6 +259,7 @@ class FakeS3(
         val (key, parts) = uploads[id] ?: return error(404, "NoSuchUpload")
         val ifMatch = r.headers["if-match"]?.trim('"')
         if (ifMatch != null && objects[key]?.etag != ifMatch) return error(412, "PreconditionFailed")
+        if (r.headers["if-none-match"] == "*" && objects[key] != null) return error(412, "PreconditionFailed")
         val numbers = Regex("<PartNumber>(\\d+)</PartNumber>").findAll(r.body.toString(Charsets.UTF_8)).map { it.groupValues[1].toInt() }.toList()
         check(numbers == numbers.sorted() && numbers.toSet() == parts.keys) { "complete lists $numbers, held ${parts.keys}" }
         val bytes = if (parts.values.all { it.bytes != null }) numbers.map { parts.getValue(it).bytes!! }.reduce { a, b -> a + b } else null
