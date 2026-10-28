@@ -175,11 +175,21 @@ class S3Api(
     suspend fun get(
         key: String,
         destination: Path,
+        timeoutMs: Long? = null,
     ): Long {
         var attempt = 0
         while (true) {
             budget.awaitSlot()
-            val statement = httpClient.prepareRequest { signed(HttpMethod.Get, key, emptyList(), emptyMap(), SigV4Signer.EMPTY_SHA256) }
+            val statement =
+                httpClient.prepareRequest {
+                    signed(HttpMethod.Get, key, emptyList(), emptyMap(), SigV4Signer.EMPTY_SHA256)
+                    // Ktor counts the request timeout up to the end of the `execute` block, so the client's flat 10 minute
+                    // cap cut every download that needs longer, steady transfer or not. The socket timeout stays at its
+                    // default: during a download the read-idle timer is the stall detector.
+                    if (timeoutMs != null) {
+                        timeout { requestTimeoutMillis = timeoutMs }
+                    }
+                }
             val outcome: Fetch =
                 statement.execute { response ->
                     when {
