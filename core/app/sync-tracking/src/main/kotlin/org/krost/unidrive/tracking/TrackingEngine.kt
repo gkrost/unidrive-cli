@@ -184,17 +184,33 @@ class TrackingEngine(
         }
 
     /**
-     * Manual claim: mark [path] as adopted using current observations.
-     * Used to resolve a [ReconcileAction.ReportCollision] (spec Amendment 2)
-     * by declaring the local copy authoritative. Re-emits as an upload
-     * on the next pass if the local diverges from the remote snapshot
-     * we capture here.
+     * Manual claim: resolve a [ReconcileAction.ReportCollision] (spec
+     * Amendment 2) by declaring the local copy authoritative. The row is left
+     * in `PendingUpload` with the local snapshot fields null: recording
+     * hash(local) alongside etag(remote) would read as "both sides match the
+     * snapshot", so the claimed copy would never be uploaded — and a later
+     * remote edit would download straight over it. With the local side
+     * unproven, the next pass reads localChanged against the observed remote
+     * and re-emits the upload; if the remote changed after the claim, that is
+     * a both-changed collision again, never a silent overwrite.
      */
     fun claim(path: String) {
         runBlocking {
             val l = observeLocal(path)
             val r = observeRemote(path)
-            trackingSet.adopt(path, provider.id, l, r)
+            trackingSet.upsert(
+                TrackingRecord(
+                    path = path,
+                    providerId = provider.id,
+                    remoteFileId = r.remoteFileId,
+                    state = TrackState.PendingUpload,
+                    localHash = null,
+                    localSize = null,
+                    remoteEtag = r.etag,
+                    remoteSize = r.size,
+                    lastSynced = Instant.now(),
+                ),
+            )
         }
     }
 

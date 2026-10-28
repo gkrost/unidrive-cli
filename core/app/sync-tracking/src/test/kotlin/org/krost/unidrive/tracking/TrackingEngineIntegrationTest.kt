@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.krost.unidrive.CloudItem
@@ -987,6 +988,43 @@ class TrackingEngineIntegrationTest {
             )
         } finally {
             tracking.close()
+        }
+    }
+
+    /**
+     * `ts claim` declares the local copy authoritative (spec Amendment 2). The
+     * row it leaves must NOT read as in-sync: a row carrying hash(local) AND
+     * etag(remote) makes the next pass see no change on either side, so the
+     * claimed copy is never uploaded — and a later remote edit downloads over
+     * it. The next pass must plan an upload of the claimed copy.
+     */
+    @Test
+    fun `claim re-emits the claimed copy as an upload on the next pass`() {
+        Files.writeString(syncRoot.resolve("x.txt"), "local")
+        provider.files["/x.txt"] = "remote".toByteArray()
+
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val first = engine(tracking = tracking).syncOnce()
+            assertTrue(first.collisions.any { it.path == "/x.txt" }, "expected a collision, got ${first.collisions}")
+
+            TrackingEngine(provider, tracking, syncRoot).claim("/x.txt")
+            val claimed = tracking.lookup("/x.txt")
+            assertNotNull(claimed, "claim must leave a tracking row")
+        } finally {
+            tracking.close()
+        }
+
+        val tracking2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = TrackingEngine(provider, tracking2, syncRoot).syncOnce()
+            assertTrue(
+                report.plan.any { it is ReconcileAction.UploadLocal && it.path == "/x.txt" },
+                "the pass after a claim must plan an upload of the claimed copy, plan=${report.plan}",
+            )
+            assertEquals("local", provider.files["/x.txt"]?.decodeToString(), "the claimed local copy must win")
+        } finally {
+            tracking2.close()
         }
     }
 
