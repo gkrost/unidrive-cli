@@ -126,6 +126,22 @@ class BothNewEqualSizeTest {
         }
 
     @Test
+    fun `a freed stub smaller than a page that lost its row is filled from the cloud even though its hash differs`() =
+        runTest {
+            val remoteBytes = "CCCCCCCC".toByteArray()
+            val stub = syncRoot.resolve("small.bin")
+            Files.write(stub, ByteArray(8))
+            provider.deltaItems = listOf(cloudFile("/small.bin", remoteBytes))
+
+            engine().syncOnce()
+            engine().syncOnce()
+
+            assertEquals("CCCCCCCC", Files.readString(stub), "the stub is filled from the cloud")
+            assertEquals(emptyList(), provider.uploadedPaths, "the zeros are never uploaded")
+            assertEquals(emptyList(), copies(), "zeros are no user data to keep")
+        }
+
+    @Test
     fun `under last-writer-wins a newer cloud file of equal size replaces the local bytes`() =
         runTest {
             val local = syncRoot.resolve("a.txt")
