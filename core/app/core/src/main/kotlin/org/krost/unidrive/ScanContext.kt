@@ -51,6 +51,13 @@ package org.krost.unidrive
  * The engine offers it on every gather; a full listing, which is what runs when the engine cannot believe its rows, does
  * not use it.
  *
+ * [stagedPage] reads the staged rows back a page at a time: up to `limit` rows whose id sorts after `afterId` (null: from
+ * the first), in id order, every row [persistPage] stored for this scan (the same rows, with the same limits, as
+ * [resumedItems]). A provider that stages each page of a long listing and releases it can hand the listing over in
+ * bounded chunks by reading its rows back through this, and so need not hold the listing to answer with it. Null when the
+ * engine keeps no staging for the pass (a preview, a scan context a test builds): the provider then holds what it needs,
+ * as it did before.
+ *
  * Providers that don't have a resume story (snapshot-once APIs, all-in-one
  * recursive listings) leave [ScanContext] unset on `delta()` and continue
  * accumulating in memory as before.
@@ -63,6 +70,7 @@ data class ScanContext(
     val readOnly: Boolean = false,
     val onProgress: ((ScanProgress) -> Unit)? = null,
     val trackedRow: ((remoteId: String) -> CloudItem?)? = null,
+    val stagedPage: ((afterId: String?, limit: Int) -> List<CloudItem>)? = null,
 )
 
 /**

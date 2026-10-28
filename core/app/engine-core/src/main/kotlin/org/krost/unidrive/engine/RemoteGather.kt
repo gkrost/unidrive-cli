@@ -767,6 +767,7 @@ class RemoteGather(
                 readOnly = readOnly,
                 onProgress = providerProgress,
                 trackedRow = ::trackedRow,
+                stagedPage = { after, limit -> db.loadStagedPage(scanId, after, limit) },
             )
 
         suspend fun nextPage(c: String?): DeltaPage {
@@ -868,6 +869,7 @@ class RemoteGather(
                     readOnly = readOnly,
                     onProgress = providerProgress,
                     trackedRow = ::trackedRow,
+                    stagedPage = { after, limit -> db.loadStagedPage(recoveryScanId, after, limit) },
                 )
             suspend fun nextPageRecovery(c: String?): DeltaPage {
                 val p =
