@@ -2450,10 +2450,12 @@ class HydrationImpl(
         if (entry.remoteId == null) {
             // Ghost check (see rename): a local: row whose content actually landed
             // on the cloud must be deleted remotely, not just dropped locally —
-            // otherwise the cloud copy is orphaned. Probe the remote; on a hit,
-            // delete it cloud-side, else hard-delete the genuinely-local row.
+            // otherwise the cloud copy is orphaned. Probe the remote; on a hit
+            // that holds this row's bytes, delete it cloud-side, else hard-delete
+            // the genuinely-local row (archive#1040 M7: an item of other size or
+            // content is another device's file and stays).
             val ghost = try {
-                mount.remoteItemOrNull(normalised)
+                mount.ghostItemOrNull(normalised)
             } catch (e: Exception) {
                 // Transient remote-probe failure: fail the unlink rather than
                 // hard-delete the row and orphan a ghost's cloud copy.
@@ -2943,9 +2945,11 @@ class HydrationImpl(
             // the remote move (leaving the cloud copy under its old name and risking
             // a duplicate re-upload). Probe the remote: if the file is actually
             // there, treat it as a ghost — move it on the cloud and adopt its real
-            // id — otherwise fall through to the genuinely-local rename.
+            // id — otherwise fall through to the genuinely-local rename. "Actually
+            // there" means this row's bytes (archive#1040 M7, compare first): an item
+            // of other size or content is another device's file, left where it is.
             val ghost = try {
-                mount.remoteItemOrNull(oldNorm)
+                mount.ghostItemOrNull(oldNorm)
             } catch (e: Exception) {
                 // Transient remote-probe failure: fail the rename rather than risk a
                 // local-only rename that would silently skip a ghost's cloud move.
@@ -3114,8 +3118,9 @@ class HydrationImpl(
                 RenameResult.Failed(HydrationError.Generic(e.message ?: "rename replace failed"))
             }
         }
+        // archive#1040 M7: only an item holding the destination row's bytes is its ghost; another device's file stays.
         val ghost = try {
-            mount.remoteItemOrNull(destNorm)
+            mount.ghostItemOrNull(destNorm)
         } catch (e: Exception) {
             // Transient remote-probe failure: fail the rename rather than
             // hard-delete the row and orphan a ghost's cloud copy.

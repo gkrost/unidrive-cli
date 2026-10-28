@@ -1638,6 +1638,23 @@ class MountEngine private constructor(
             }
         }
 
+    /**
+     * archive#1040 M7 (the owner's decision of 2026-10-28, compare first): the item [remoteItemOrNull] finds at the path of the
+     * never-uploaded row [path], when it is that row's own upload (a "ghost": the upload landed, its answer was lost), else null.
+     * An item at the path counts as the row's own only when it holds the bytes of the row's cache copy ([GhostMatch]: the size,
+     * then the content where both sides have one). Any other item is another device's file: the caller treats the row as
+     * genuinely local, so the rename moves only the local file (its upload stays owed and meets the item as a create
+     * collision, archive#1040 S2) and the unlink drops only the local file; the item stays where it is and the next
+     * enumeration brings it in. A folder is returned as found (the callers never take one as a ghost). Throws what
+     * [remoteItemOrNull] throws, and a failed read of the cache copy.
+     */
+    suspend fun ghostItemOrNull(path: String): CloudItem? {
+        val item = remoteItemOrNull(path) ?: return null
+        if (item.isFolder || GhostMatch.holdsCacheBytes(provider, item, resolveCachePath(path), remotePathOf(path), log)) return item
+        log.info("an item at {} is not the upload of its never-uploaded row (other size or content): kept as another file", path)
+        return null
+    }
+
     private fun statBeforeUpload(local: Path): Pair<Long, Long>? = Transfers.statBeforeUpload(local)
 
     // archive#337/#148: hash only the bytes that were sent, see Transfers.withSentHash.

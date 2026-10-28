@@ -4,9 +4,12 @@ import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.Capability
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.ContentProof
 import org.krost.unidrive.DeltaPage
+import org.krost.unidrive.HashAlgorithm
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
+import org.krost.unidrive.sync.HashVerifier
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.model.SyncEntry
@@ -30,6 +33,9 @@ import kotlin.test.assertTrue
 //  1. ghost rename     -> real cloud move + adopt the real id (row no longer local:).
 //  2. ghost unlink     -> real cloud delete.
 //  3. genuinely-local  -> remote-absent probe -> local-only rename, no cloud move.
+//  5. archive#1040 M7 (the owner's decision of 2026-10-28, compare first): an item at the path counts as the row's own
+//     upload only when its size and, where both sides have one, its content hash are the cache copy's. Any other item
+//     is another device's file: the rename and the unlink touch only the local file and leave that item alone.
 class HydrationImplGhostGuardTest {
 
     private class GhostFakeProvider : CloudProvider {
@@ -40,6 +46,12 @@ class HydrationImplGhostGuardTest {
         // Path that is actually present on the cloud despite a local: row locally.
         var ghostAt: String? = null
         val ghostId = "real-ghost-uuid"
+        var ghostSize = GHOST_SIZE
+        var ghostHash: String? = "ghost-hash"
+        var algorithm: HashAlgorithm? = null
+
+        // What contentMatchesLocal answers (a provider without a content hash proving from its stored object).
+        var proof: ContentProof? = null
         var lastMoveFrom: String? = null
         var lastMoveTo: String? = null
         var lastDeletePath: String? = null
@@ -49,6 +61,8 @@ class HydrationImplGhostGuardTest {
         var transientError: Throwable? = null
 
         override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
+        override fun hashAlgorithm(): HashAlgorithm? = algorithm
+        override suspend fun contentMatchesLocal(remoteId: String, remotePath: String, local: Path): ContentProof? = proof
         override suspend fun authenticate() {}
         override suspend fun listChildren(path: String): List<CloudItem> = emptyList()
 
@@ -59,11 +73,11 @@ class HydrationImplGhostGuardTest {
                     id = ghostId,
                     name = path.substringAfterLast('/'),
                     path = path,
-                    size = 4242L,
+                    size = ghostSize,
                     isFolder = false,
                     modified = Instant.parse("2026-05-24T09:00:00Z"),
                     created = null,
-                    hash = "ghost-hash",
+                    hash = ghostHash,
                     mimeType = null,
                 )
             } else {
@@ -88,11 +102,11 @@ class HydrationImplGhostGuardTest {
                 id = ghostId,
                 name = toPath.substringAfterLast('/'),
                 path = toPath,
-                size = 4242L,
+                size = ghostSize,
                 isFolder = false,
                 modified = Instant.parse("2026-05-24T09:00:00Z"),
                 created = null,
-                hash = "ghost-hash",
+                hash = ghostHash,
                 mimeType = null,
             )
         }
@@ -103,7 +117,14 @@ class HydrationImplGhostGuardTest {
         override suspend fun quota(): QuotaInfo = QuotaInfo(total = 0L, used = 0L, remaining = 0L)
     }
 
-    private fun freshEnv(): Triple<HydrationImpl, GhostFakeProvider, StateDatabase> {
+    private data class Env(
+        val hydration: HydrationImpl,
+        val provider: GhostFakeProvider,
+        val db: StateDatabase,
+        val engine: SyncEngine,
+    )
+
+    private fun freshEnv(): Env {
         val cacheRoot = Files.createTempDirectory("ud-ghost-cache")
         val dbPath = Files.createTempDirectory("ud-ghost-db").resolve("state.db")
         val provider = GhostFakeProvider()
@@ -112,10 +133,17 @@ class HydrationImplGhostGuardTest {
         val syncRoot = Files.createTempDirectory("ud-ghost-sync")
         val engine = SyncEngine(provider = provider, db = db, syncRoot = syncRoot, cacheRoot = cacheRoot)
         val hydration = HydrationImpl(syncEngine = engine, stateDb = db)
-        return Triple(hydration, provider, db)
+        return Env(hydration, provider, db, engine)
     }
 
-    private fun seedLocalGhostRow(db: StateDatabase, path: String) {
+    // A never-uploaded row whose cache copy holds [bytes] (by default as many as the fake's cloud item has).
+    private fun Env.seedLocalGhostRow(
+        path: String,
+        bytes: ByteArray = ByteArray(GHOST_SIZE.toInt()),
+    ) {
+        val cache = engine.resolveCachePath(path)
+        Files.createDirectories(cache.parent)
+        Files.write(cache, bytes)
         db.upsertEntry(
             SyncEntry(
                 path = path,
@@ -124,7 +152,7 @@ class HydrationImplGhostGuardTest {
                 remoteSize = 0L,
                 remoteModified = null,
                 localMtime = Instant.now().toEpochMilli(),
-                localSize = 4242L,
+                localSize = bytes.size.toLong(),
                 isFolder = false,
                 isPinned = false,
                 isHydrated = true,
@@ -136,8 +164,9 @@ class HydrationImplGhostGuardTest {
     @Test
     fun `ghost rename moves on remote and adopts the real id`() =
         runTest {
-            val (hydration, provider, db) = freshEnv()
-            seedLocalGhostRow(db, "/ghost.deb")
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/ghost.deb")
             provider.ghostAt = "/ghost.deb" // it IS on the cloud despite the local: row
 
             val result = hydration.rename("/ghost.deb", "/renamed.deb")
@@ -154,8 +183,9 @@ class HydrationImplGhostGuardTest {
     @Test
     fun `ghost unlink deletes on remote`() =
         runTest {
-            val (hydration, provider, db) = freshEnv()
-            seedLocalGhostRow(db, "/ghost.deb")
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/ghost.deb")
             provider.ghostAt = "/ghost.deb"
 
             val result = hydration.unlink("/ghost.deb")
@@ -167,8 +197,9 @@ class HydrationImplGhostGuardTest {
     @Test
     fun `genuinely local rename stays local when the remote has no such file`() =
         runTest {
-            val (hydration, provider, db) = freshEnv()
-            seedLocalGhostRow(db, "/pending.deb")
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/pending.deb")
             provider.ghostAt = null // not on the cloud → getMetadata throws not-found
 
             val result = hydration.rename("/pending.deb", "/pending-renamed.deb")
@@ -186,8 +217,9 @@ class HydrationImplGhostGuardTest {
     @Test
     fun `transient probe failure fails the rename and leaves the row untouched`() =
         runTest {
-            val (hydration, provider, db) = freshEnv()
-            seedLocalGhostRow(db, "/maybe-ghost.deb")
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/maybe-ghost.deb")
             provider.transientError = ProviderException("Internxt 503 Service Unavailable") // not a not-found
 
             val result = hydration.rename("/maybe-ghost.deb", "/renamed.deb")
@@ -201,8 +233,9 @@ class HydrationImplGhostGuardTest {
     @Test
     fun `transient probe failure fails the unlink and leaves the row untouched`() =
         runTest {
-            val (hydration, provider, db) = freshEnv()
-            seedLocalGhostRow(db, "/maybe-ghost.deb")
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/maybe-ghost.deb")
             provider.transientError = ProviderException("Internxt 503 Service Unavailable")
 
             val result = hydration.unlink("/maybe-ghost.deb")
@@ -211,4 +244,112 @@ class HydrationImplGhostGuardTest {
             assertNull(provider.lastDeletePath, "no cloud delete attempted on a transient probe failure")
             assertNotNull(db.getEntry("/maybe-ghost.deb"), "row must remain so the op can be retried")
         }
+
+    @Test
+    fun `rename leaves another device's file of another size where it is`() =
+        runTest {
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/notes.txt", "mine".toByteArray())
+            provider.ghostAt = "/notes.txt" // 4242 bytes: not the 4 bytes this row would have uploaded
+
+            val result = hydration.rename("/notes.txt", "/renamed.txt")
+
+            assertEquals(RenameResult.Ok, result)
+            assertNull(provider.lastMoveFrom, "another device's file must not be moved by a local file's rename")
+            assertNull(db.getEntry("/notes.txt"), "the local file's row moved")
+            val moved = assertNotNull(db.getEntry("/renamed.txt"))
+            assertNull(moved.remoteId, "the row does not adopt the other file: its own upload is still owed")
+            assertEquals("mine", Files.readString(env.engine.resolveCachePath("/renamed.txt")), "the local bytes moved with the row")
+        }
+
+    @Test
+    fun `unlink does not trash another device's file of another size`() =
+        runTest {
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/notes.txt", "mine".toByteArray())
+            provider.ghostAt = "/notes.txt"
+
+            val result = hydration.unlink("/notes.txt")
+
+            assertEquals(UnlinkResult.Ok, result)
+            assertNull(provider.lastDeletePath, "another device's file must not be trashed by a local file's delete")
+            assertNull(db.getEntry("/notes.txt"), "the local file's row is gone")
+            assertTrue(Files.notExists(env.engine.resolveCachePath("/notes.txt")), "the local file is gone")
+        }
+
+    @Test
+    fun `rename leaves a file of the same size with another content hash where it is`() =
+        runTest {
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            val other = Files.createTempFile("ud-ghost-other", ".bin").also { Files.write(it, ByteArray(GHOST_SIZE.toInt()) { 7 }) }
+            provider.algorithm = HashAlgorithm.Sha256Hex
+            provider.ghostHash = HashVerifier.computeSha256Hex(other)
+            env.seedLocalGhostRow("/same-size.bin")
+            provider.ghostAt = "/same-size.bin"
+
+            val result = hydration.rename("/same-size.bin", "/renamed.bin")
+
+            assertEquals(RenameResult.Ok, result)
+            assertNull(provider.lastMoveFrom, "an item of the same size but other content is another file")
+            assertNull(assertNotNull(db.getEntry("/renamed.bin")).remoteId)
+        }
+
+    @Test
+    fun `rename takes a file of the same size and content hash as the row's own upload`() =
+        runTest {
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/same.bin")
+            provider.algorithm = HashAlgorithm.Sha256Hex
+            provider.ghostHash = HashVerifier.computeSha256Hex(env.engine.resolveCachePath("/same.bin"))
+            provider.ghostAt = "/same.bin"
+
+            val result = hydration.rename("/same.bin", "/renamed.bin")
+
+            assertEquals(RenameResult.Ok, result)
+            assertEquals("/same.bin", provider.lastMoveFrom, "the row's own upload moves on the cloud")
+            assertEquals(provider.ghostId, assertNotNull(db.getEntry("/renamed.bin")).remoteId)
+        }
+
+    @Test
+    fun `a provider's own proof that the bytes differ keeps the file apart`() =
+        runTest {
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/notes.txt")
+            provider.ghostHash = null // no content hash, as on Internxt: the size matches, the stored object's proof decides
+            provider.proof = ContentProof(same = false, method = "shard")
+            provider.ghostAt = "/notes.txt"
+
+            val result = hydration.unlink("/notes.txt")
+
+            assertEquals(UnlinkResult.Ok, result)
+            assertNull(provider.lastDeletePath, "a proof of other bytes makes the item another device's file")
+            assertNull(db.getEntry("/notes.txt"))
+        }
+
+    @Test
+    fun `replace over a destination whose cloud item is another device's file leaves that file alone`() =
+        runTest {
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/a.txt", "source".toByteArray())
+            env.seedLocalGhostRow("/b.txt", "old".toByteArray())
+            provider.ghostAt = "/b.txt" // 4242 bytes: not the destination row's upload
+
+            val result = hydration.rename("/a.txt", "/b.txt", replace = true)
+
+            assertEquals(RenameResult.Ok, result)
+            assertNull(provider.lastDeletePath, "the replace must not trash another device's file at the destination")
+            assertNull(db.getEntry("/a.txt"))
+            assertNull(assertNotNull(db.getEntry("/b.txt")).remoteId, "the moved file's upload is still owed")
+            assertEquals("source", Files.readString(env.engine.resolveCachePath("/b.txt")))
+        }
+
+    private companion object {
+        const val GHOST_SIZE = 4242L
+    }
 }
