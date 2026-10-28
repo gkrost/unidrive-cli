@@ -56,7 +56,18 @@ class TrackingEngine(
     private val excludePatterns: List<String> = emptyList(),
     autoMatch: AutoMatchMode = AutoMatchMode.OFF,
 ) {
-    private val reconciler: TrackingReconciler = reconciler ?: TrackingReconciler(autoMatch)
+    private val reconciler: TrackingReconciler =
+        reconciler
+            ?: TrackingReconciler(
+                autoMatch,
+                remoteHashMatches = { path, remoteHash ->
+                    HashVerifier.matches(
+                        syncRoot.resolve(stripLeadingSlash(path)),
+                        remoteHash,
+                        provider.hashAlgorithm(),
+                    )
+                },
+            )
     private val log = LoggerFactory.getLogger(TrackingEngine::class.java)
 
     /**
@@ -90,7 +101,7 @@ class TrackingEngine(
 
                 // Adopt before reconcile so adopt-on-content-match doesn't
                 // emit a spurious DownloadRemote on the same pass.
-                if (reconciler.shouldAdopt(l, r, t)) {
+                if (reconciler.shouldAdopt(path, l, r, t)) {
                     if (!dryRun) {
                         trackingSet.adopt(path, provider.id, l, r)
                     }

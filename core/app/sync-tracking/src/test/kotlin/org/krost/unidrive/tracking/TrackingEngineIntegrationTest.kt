@@ -14,6 +14,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.HashAlgorithm
+import org.krost.unidrive.QuickXorHash
 
 /**
  * End-to-end integration test for the tracking-set engine.
@@ -1107,6 +1108,34 @@ class TrackingEngineIntegrationTest {
             assertEquals("v1-longer", Files.readString(syncRoot.resolve("h.txt")))
         } finally {
             tracking2.close()
+        }
+    }
+
+    /**
+     * First-scan adoption must compare the local file with the provider's own
+     * hash format (QuickXor, Dropbox content_hash, MD5) — the engine hashes
+     * locally with SHA-256 for change detection, and a raw SHA-256 vs
+     * provider-hash string comparison never matches, so every identical file
+     * on an existing tree surfaced as a collision and adoption was
+     * unreachable.
+     */
+    @Test
+    fun `first scan adopts identical files compared in the provider hash format`() {
+        provider.hashAlgorithmOverride = HashAlgorithm.QuickXor
+        provider.itemHashOverride = { bytes -> QuickXorHash.of(bytes.inputStream()) }
+        Files.writeString(syncRoot.resolve("q.txt"), "quickxor payload")
+        provider.files["/q.txt"] = "quickxor payload".toByteArray()
+
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = engine(tracking = tracking, dryRun = true).syncOnce()
+            assertTrue(
+                report.adopted.contains("/q.txt"),
+                "identical bytes must adopt when compared in the provider hash format, collisions=${report.collisions}",
+            )
+            assertFalse(report.collisions.any { it.path == "/q.txt" }, "an identical file must not be a collision")
+        } finally {
+            tracking.close()
         }
     }
 

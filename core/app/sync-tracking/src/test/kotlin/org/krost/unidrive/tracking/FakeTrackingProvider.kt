@@ -44,7 +44,22 @@ class FakeTrackingProvider : CloudProvider {
     /** Test hook: the algorithm [hashAlgorithm] reports. Null = the provider has none. */
     var hashAlgorithmOverride: org.krost.unidrive.HashAlgorithm? = null
 
-    override fun hashAlgorithm(): org.krost.unidrive.HashAlgorithm? = hashAlgorithmOverride
+    /**
+     * The fake's item hashes ARE SHA-256 hex (see [itemHashOverride] for a
+     * provider-format override), so the declared algorithm must match them:
+     * a hash without a declared algorithm is incomparable, and the engine
+     * treats it as a collision.
+     */
+    override fun hashAlgorithm(): org.krost.unidrive.HashAlgorithm? =
+        hashAlgorithmOverride ?: org.krost.unidrive.HashAlgorithm.Sha256Hex
+
+    /**
+     * Test hook: the content hash each item reports, overriding the default
+     * SHA-256 — for modelling a provider whose hash is in its own format
+     * (QuickXor, Dropbox content_hash, MD5) while the engine hashes locally
+     * with SHA-256.
+     */
+    var itemHashOverride: ((ByteArray) -> String?)? = null
 
     /** Test hook: what [getMetadata] throws instead of answering (a transient failure, say). */
     var getMetadataError: Throwable? = null
@@ -421,7 +436,7 @@ class FakeTrackingProvider : CloudProvider {
         path: String,
         bytes: ByteArray,
     ): CloudItem {
-        val hash = sha256Hex(bytes)
+        val hash = itemHashOverride?.invoke(bytes) ?: sha256Hex(bytes)
         return CloudItem(
             id = "hash-$hash",
             name = path.substringAfterLast('/'),
