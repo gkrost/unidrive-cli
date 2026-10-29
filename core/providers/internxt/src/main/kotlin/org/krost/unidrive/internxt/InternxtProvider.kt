@@ -556,8 +556,7 @@ class InternxtProvider(
                 stagedSize = Files.size(destination),
                 stagedMtimeMillis = Files.getLastModifiedTime(destination).toMillis(),
                 mtimeAppliedBeforePlacement = false,
-                contentId = internxtContentId(fileMeta),
-            )
+            ).naming(fileMeta)
         }
         val bucket = fileMeta.bucket ?: throw ProviderException("File has no bucket: $remotePath")
         val fileId = fileMeta.fileId ?: throw ProviderException("File has no fileId: $remotePath")
@@ -692,10 +691,14 @@ class InternxtProvider(
             stagedSize = downloaded.stagedSize,
             stagedMtimeMillis = downloaded.stagedMtimeMillis,
             mtimeAppliedBeforePlacement = downloaded.mtimeAppliedBeforePlacement,
-            // gkrost/unidrive-cli#171: the object read is the one fileMeta named when the read began, whatever the file was listed as.
-            contentId = internxtContentId(fileMeta),
-        )
+        ).naming(fileMeta)
     }
+
+    // gkrost/unidrive-cli#171: the version a download read is the one [fileMeta] named when the read began, whatever the file was
+    // listed as: its stored object, and the write token and time a listing of the same metadata builds (the token a replace is
+    // checked against).
+    private fun DownloadReceipt.naming(fileMeta: InternxtFile): DownloadReceipt =
+        copy(contentId = internxtContentId(fileMeta), itemHash = internxtVersionToken(fileMeta), itemModified = fileMeta.modificationInstant)
 
     // archive#940: WARN once per object and run; a pin retries, so later reports of the same object go to DEBUG.
     // Bounded: an account full of such objects must not grow this set without limit. Reaching the bound is said once,

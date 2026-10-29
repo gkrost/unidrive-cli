@@ -14,6 +14,7 @@ import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
+import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
@@ -51,7 +52,8 @@ class HydrationListContentIdTest {
      * A drive that names a file's bytes apart from its write token, like Internxt: the token is `<id>|<modified>|<size>`, a
      * move stamps a new modified time (a new token) and keeps the stored object, an upload stores a new object. An empty
      * file has no stored object and is named `|0`. A read looks the file's stored object up when it starts, as Internxt's
-     * does, and its receipt names the object that came down.
+     * does, and its receipt names the version that came down. A replace whose write token is not the file's current one is
+     * refused as a conflict, as Internxt refuses it.
      */
     private class ObjectNamingDrive : CloudProvider {
         override val id = "fake-object-naming"
@@ -71,6 +73,9 @@ class HydrationListContentIdTest {
         // Runs when a read has looked up the object it reads, before a byte of it is written.
         var whileDownloading: (suspend () -> Unit)? = null
 
+        var downloads = 0
+        var uploads = 0
+
         private fun tick(): Instant = clock.plusSeconds(60).also { clock = it }
 
         // A new stored object for [bytes]; an empty file has none.
@@ -78,6 +83,9 @@ class HydrationListContentIdTest {
 
         /** The bytes a content id names. */
         fun bytesNamed(contentId: String): ByteArray? = if (contentId == "|0") ByteArray(0) else stored[contentId.substringBefore('|')]
+
+        /** The bytes the file at [path] holds in the cloud now. */
+        fun bytesAt(path: String): String = String(content.getValue(items.getValue(path).id))
 
         private fun file(
             id: String,
@@ -169,10 +177,17 @@ class HydrationListContentIdTest {
         ): DownloadReceipt {
             val item = items.values.firstOrNull { it.id == remoteId } ?: throw ProviderException("Item not found: $remotePath")
             val bytes = content.getValue(remoteId)
+            downloads++
             whileDownloading?.invoke()
             Files.createDirectories(destination.parent)
             Files.write(destination, bytes)
-            return DownloadReceipt(bytes.size.toLong(), contentId = item.contentId)
+            return DownloadReceipt(
+                bytes.size.toLong(),
+                contentId = item.contentId,
+                itemHash = item.hash,
+                itemVersion = item.version,
+                itemModified = item.modified,
+            )
         }
 
         override suspend fun upload(
@@ -184,6 +199,8 @@ class HydrationListContentIdTest {
         ): CloudItem {
             val bytes = Files.readAllBytes(localPath)
             val prior = items[remotePath]
+            if (ifMatchETag != null && prior != null && prior.hash != ifMatchETag) throw RemoteConflictException("changed before replace: $remotePath")
+            uploads++
             val id = existingRemoteId ?: prior?.id ?: "u-${++ids}"
             content[id] = bytes
             val modified = prior?.modified?.takeIf { uploadKeepsToken } ?: tick()
@@ -256,19 +273,26 @@ class HydrationListContentIdTest {
             to: String,
         ) = assertEquals("""{"ok":true}""", call("""{"verb":"hydration.rename","old_path":"$from","new_path":"$to"}"""))
 
-        /** A save through the mount: new bytes in the cache copy, open_write, and the upload's completed event. */
+        /** A save through the mount, based on the etag [base] when the client has one: the upload's completed event. */
         suspend fun write(
             path: String,
             bytes: ByteArray,
-        ) = coroutineScope {
-            val handle = "h-$path"
-            val done = async(start = CoroutineStart.UNDISPATCHED) { hydration.events.filterIsInstance<HydrationEvent.Completed>().first { it.handleId == handle } }
-            val cache = engine.resolveCachePath(path)
-            Files.createDirectories(cache.parent)
-            Files.write(cache, bytes)
-            assertIs<OpenResult.Ok>(hydration.openForWrite("client", handle, path, cache))
-            assertTrue(withTimeout(TIMEOUT_MS) { done.await() }.ok, "the upload of $path landed")
-        }
+            base: String? = null,
+        ): HydrationEvent.Completed =
+            coroutineScope {
+                val handle = "h-$path"
+                val done = async(start = CoroutineStart.UNDISPATCHED) { hydration.events.filterIsInstance<HydrationEvent.Completed>().first { it.handleId == handle } }
+                val cache = engine.resolveCachePath(path)
+                Files.createDirectories(cache.parent)
+                Files.write(cache, bytes)
+                assertIs<OpenResult.Ok>(hydration.openForWrite("client", handle, path, cache, base))
+                withTimeout(TIMEOUT_MS) { done.await() }
+            }
+
+        /** The next start of the daemon over the same state: what it replays as edits the cloud has not seen. */
+        suspend fun replayAtStart(): Int = HydrationImpl(engine, db).replayPendingUploads()
+
+        fun cacheCopy(path: String): Path = engine.resolveCachePath(path)
     }
 
     // The entry of [path] in a hydration.list reply, as the text of its JSON object (no value of these tests holds a brace).
@@ -394,6 +418,125 @@ class HydrationListContentIdTest {
             assertEquals("\"obj-2|5\"", fresh.field("content_id"), fresh)
         }
 
+    // A refresh that overtakes a read leaves the row with the version the copy holds, not the newer one: an edit of that copy
+    // goes up based on what it was made from, and the cloud refuses it as a conflict instead of having it overwrite the newer
+    // version the edit never saw.
+    @Test
+    fun `an edit of a copy a refresh overtook goes up based on the version it holds and leaves the newer one alone`() =
+        runBlocking {
+            val drive = ObjectNamingDrive()
+            drive.seed("/a.txt", "hello".toByteArray())
+            val mount = Mount(drive)
+            mount.scan()
+            val listed = mount.entry("/a.txt")
+            drive.whileDownloading = {
+                drive.whileDownloading = null
+                drive.replace("/a.txt", "world".toByteArray())
+                mount.scan()
+            }
+            assertEquals("hello", servedBytes(mount.openRead("/a.txt")))
+            val held = mount.entry("/a.txt")
+
+            val upload = mount.write("/a.txt", "hello, edited".toByteArray(), base = assertNotNull(held.field("etag")).removeSurrounding("\""))
+
+            assertFalse(upload.ok, "the edit of the older version must not replace the newer one: $upload")
+            assertEquals(HydrationError.Conflict, upload.error)
+            assertEquals("world", drive.bytesAt("/a.txt"), "the newer version in the cloud is untouched")
+            assertEquals(listed.field("etag"), held.field("etag"), "the row named the version its copy held: $held")
+            assertEquals(listed.field("remote_modified_ms"), held.field("remote_modified_ms"))
+        }
+
+    // The other way round, nothing overtook the read but the cloud had moved on since the listing: the copy is that newer version,
+    // and the row takes it with its token, so an edit of the copy is based on the version it was made from and goes up.
+    @Test
+    fun `a file replaced before a cold read takes the version that came down, so an edit of the copy goes up`() =
+        runBlocking {
+            val drive = ObjectNamingDrive()
+            drive.seed("/a.txt", "hello".toByteArray())
+            val mount = Mount(drive)
+            mount.scan()
+            drive.replace("/a.txt", "world".toByteArray())
+            assertEquals("world", servedBytes(mount.openRead("/a.txt")))
+            val held = mount.entry("/a.txt")
+
+            val upload = mount.write("/a.txt", "world, edited".toByteArray(), base = assertNotNull(held.field("etag")).removeSurrounding("\""))
+
+            assertTrue(upload.ok, "an edit of the version the copy holds is no conflict: $upload")
+            assertEquals("world, edited", drive.bytesAt("/a.txt"))
+        }
+
+    // What the race must not cost: the copy a refresh overtook was served, so it is hydrated (a pin pass does not fetch it
+    // again); the size check holds it against its own size, not the newer version's; and its stats are the row's baseline, so
+    // neither the next start nor a client's recovery scan takes it for an edit to upload.
+    @Test
+    fun `a copy a refresh overtook stays hydrated, is served whole whatever the newer size, and is no edit to replay`() =
+        runBlocking {
+            val drive = ObjectNamingDrive()
+            drive.seed("/a.txt", "hello".toByteArray())
+            drive.seed("/b.txt", "hello".toByteArray())
+            val mount = Mount(drive)
+            mount.scan()
+            fun overtakeWith(path: String) {
+                drive.whileDownloading = {
+                    drive.whileDownloading = null
+                    drive.replace(path, "a newer and longer version".toByteArray())
+                    mount.scan()
+                }
+            }
+            suspend fun assertKept(path: String) {
+                val entry = mount.entry(path)
+                assertEquals("true", entry.field("hydrated"), "$path: $entry")
+                assertEquals("5", entry.field("size"), "$path: $entry")
+                val row = assertNotNull(db.getEntry(path))
+                val copy = mount.cacheCopy(path)
+                assertEquals(row.localMtime, Files.getLastModifiedTime(copy).toMillis(), "$path: the copy is the row's baseline")
+                assertEquals(row.localSize, Files.size(copy))
+                assertTrue(Files.getLastModifiedTime(copy).toMillis() <= row.lastSynced.toEpochMilli(), "$path: not newer than the watermark")
+                assertEquals(0, mount.replayAtStart(), "$path: the next start finds no edit to send")
+            }
+
+            overtakeWith("/a.txt")
+            val read = mount.openRead("/a.txt")
+
+            assertEquals("hello", servedBytes(read), "the read was served whole")
+            assertKept("/a.txt")
+
+            overtakeWith("/b.txt")
+            mount.hydrate("/b.txt")
+            val fetched = drive.downloads
+            mount.hydrate("/b.txt")
+
+            assertEquals(fetched, drive.downloads, "a pin pass does not fetch the hydrated copy again")
+            assertKept("/b.txt")
+            assertEquals(0, drive.uploads)
+        }
+
+    // A read that nothing overtook, of the version the row records, leaves the row's cloud fields as they were.
+    @Test
+    fun `a read no refresh overtook records what it recorded before`() =
+        runBlocking {
+            val drive = ObjectNamingDrive()
+            drive.seed("/a.txt", "hello".toByteArray())
+            val mount = Mount(drive)
+            mount.scan()
+            val before = assertNotNull(db.getEntry("/a.txt"))
+
+            mount.openRead("/a.txt")
+
+            val after = assertNotNull(db.getEntry("/a.txt"))
+            assertEquals(
+                before.copy(
+                    isHydrated = true,
+                    localMtime = after.localMtime,
+                    localSize = after.localSize,
+                    localHash = after.localHash,
+                    lastSynced = after.lastSynced,
+                    cacheBacked = after.cacheBacked,
+                ),
+                after,
+            )
+        }
+
     @Test
     fun `open_read of a copy that holds an unsynced edit names no bytes`() =
         runBlocking {
@@ -421,7 +564,7 @@ class HydrationListContentIdTest {
             mount.hydrate("/a.txt")
             val before = mount.entry("/a.txt")
 
-            mount.write("/a.txt", "world".toByteArray())
+            assertTrue(mount.write("/a.txt", "world".toByteArray()).ok, "the upload landed")
 
             val after = mount.entry("/a.txt")
             assertEquals(before.field("etag"), after.field("etag"), "the server kept the token: $after")

@@ -328,12 +328,15 @@ the provider's name for the bytes of the version the row records:
   fills holds without waiting for a listing, and a rename right after the read compares as one. It names the bytes the
   read served, as the provider named them when it sent them, which need not be the version the last listing gave: a file
   replaced in the cloud since that listing comes down as the new version and is named as it, and a read that a refresh
-  overtakes while the bytes come down is named as the older bytes it served. The download records that name with the
-  row, as it records their size, so the list entry names the same bytes until the next listing brings the cloud's (which
-  drops a copy that is not that version). It is absent for a cache copy that holds an unsynced edit (section 3.3), for a
-  kept-local copy of an excluded name, and wherever the provider names no bytes.
-- Nothing else in the entry changes: `etag` stays the base for `base_etag`, and `remote_modified_ms` stays the cloud's
-  modified time.
+  overtakes while the bytes come down is named as the older bytes it served. The download records that version with the
+  row (its `content_id`, `etag` and `remote_modified_ms`, as it records its size), so the list entry describes the copy
+  until the next listing brings the cloud's version, which drops a copy that is not that version. An edit of the copy
+  based on that `etag` meets a newer cloud version as a `conflict` instead of replacing it. A provider that names no
+  version for a download leaves the entry's `etag` as the last listing gave it. The `content_id` is absent for a cache
+  copy that holds an unsynced edit (section 3.3), for a kept-local copy of an excluded name, and wherever the provider
+  names no bytes.
+- Nothing else in the entry changes: `etag` stays the base for `base_etag`, and `remote_modified_ms` stays the cloud
+  item's modified time (after a read, those of the version the read brought down, as above).
 
 ## 4. Events (subscription stream)
 

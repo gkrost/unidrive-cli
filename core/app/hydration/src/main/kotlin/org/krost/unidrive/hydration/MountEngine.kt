@@ -11,6 +11,7 @@ import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.ContentProof
+import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.FolderState
 import org.krost.unidrive.NameRefusedException
 import org.krost.unidrive.PermanentDownloadFailureException
@@ -683,11 +684,7 @@ class MountEngine private constructor(
                 cacheBacked = true,
                 // The cache copy is the cloud's now: a mark left by an edit whose copy is gone (see servesFromLocalCopy) ends.
                 editBase = null,
-            ).adopting(fetched.liveItem)
-                // gkrost/unidrive-cli#171: and the name of the bytes the download read, as it takes their size, so the row names the copy
-                // it marks hydrated: also a version the cloud moved to since the listing, and an older one than a refresh brought in
-                // while the bytes came down, which the next refresh then finds outlived by that name.
-                .copy(remoteContentId = fetched.contentId)
+            ).adopting(fetched.liveItem).recordingVersionRead(fetched.receipt)
             // The row just adopted the cache copy's stats, so the hash must describe the cache
             // copy's bytes: keeping a hash recorded for the previous contents would pair stale
             // bytes with a fresh mtime/size and let a later touch be absorbed as unchanged.
@@ -749,10 +746,25 @@ class MountEngine private constructor(
     }
 
     /**
-     * What a cold download brought: the bytes, the live item it was read from when the row's own id did not resolve, and the
-     * name the provider gave the bytes it read ([org.krost.unidrive.DownloadReceipt.contentId]).
+     * What a cold download brought: the provider's [receipt] (the bytes, and the version it read where the provider names it),
+     * and the live item it was read from when the row's own id did not resolve.
      */
-    private data class Fetched(val bytes: Long, val liveItem: CloudItem?, val contentId: String?)
+    private data class Fetched(val receipt: DownloadReceipt, val liveItem: CloudItem?) {
+        val bytes: Long get() = receipt.bytesWritten
+        val contentId: String? get() = receipt.contentId
+    }
+
+    // gkrost/unidrive-cli#171: the row of a copy records the version the download read, as it records the size of what came down: also
+    // a version the cloud moved to since the listing, and an older one than a refresh brought in while the bytes came down. An
+    // edit of the copy then goes up based on the version it was made from (a newer one in the cloud refuses it as a conflict
+    // instead of being overwritten by it), and the next refresh finds a copy older than the cloud's version outlived. The name of
+    // the bytes is the receipt's, none where it names none. A provider that names no version for a download leaves the row's
+    // token and time as they were: the version the listing or a refresh gave it, as before.
+    private fun SyncEntry.recordingVersionRead(receipt: DownloadReceipt): SyncEntry {
+        val named = copy(remoteContentId = receipt.contentId)
+        if (receipt.itemHash == null && receipt.itemVersion == null) return named
+        return named.copy(remoteHash = receipt.itemHash, remoteVersion = receipt.itemVersion, remoteModified = receipt.itemModified ?: remoteModified)
+    }
 
     // gkrost/unidrive-cli#171: the name of the bytes a warm copy holds, from the row the serve was decided by: the download that filled
     // the copy recorded the name of what it read, and a later change of the name drops the copy (the enumeration's content rule) or
@@ -774,8 +786,7 @@ class MountEngine private constructor(
     ): Fetched {
         val remotePath = remotePathOf(path, entry)
         try {
-            val receipt = Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staged)
-            return Fetched(receipt.bytesWritten, liveItem = null, contentId = receipt.contentId)
+            return Fetched(Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staged), liveItem = null)
         } catch (e: Exception) {
             if (item.id.isEmpty() || !DownloadFailures.isNotFound(e)) throw e
             val live = liveFileReplacing(path, remotePath, item.id) ?: throw e
@@ -784,8 +795,7 @@ class MountEngine private constructor(
                     "whose id the row takes",
                 path,
             )
-            val receipt = Transfers.downloadByIdOrPathWithHash(provider, item.copy(id = live.id, size = live.size), remotePath, staged)
-            return Fetched(receipt.bytesWritten, live, receipt.contentId)
+            return Fetched(Transfers.downloadByIdOrPathWithHash(provider, item.copy(id = live.id, size = live.size), remotePath, staged), live)
         }
     }
 
