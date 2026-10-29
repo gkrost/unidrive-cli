@@ -114,6 +114,13 @@ class HydrationImpl(
     internal var cacheScanCheckpoint: () -> Unit = {}
 
     /**
+     * Test seam for the slot-release window (#210): runs between the last decrement of a slot's pending count and the
+     * removal of the slot's map entries, so a test can land a concurrent submit inside that window deterministically.
+     * Production runs nothing.
+     */
+    internal var slotReleaseWindow: () -> Unit = {}
+
+    /**
      * Test seam (archive#729): one call for every row the replay asks its containment pass for the cache copy of. A
      * replay that starts from the rows calls it once per uploaded row; one that starts from the cache calls it
      * once per cache file.
@@ -247,13 +254,15 @@ class HydrationImpl(
     // the row synced with the wrong mtime.
     //
     // A single ConcurrentHashMap<String, UploadSlot> replaces the former
-    // two-map design (uploadMutexes + uploadPendingCounts). Using
-    // ConcurrentHashMap.compute() for both the increment-or-create and the
-    // decrement-and-remove operations makes each of those steps atomic under
-    // the map's bin lock. This closes the race in the old design where
-    // coroutine A's decrementAndGet()→0 and its subsequent remove() were NOT
-    // atomic: a concurrent submitter B could bump the count and computeIfAbsent
-    // the same mutex between A's decrement and A's remove, leaving B holding a
+    // two-map design (uploadMutexes + uploadPendingCounts). The
+    // increment-or-create runs in ConcurrentHashMap.compute(), and the
+    // decrement-and-remove re-decides the removal under the same bin lock
+    // (removeDyingSlot): a submit that joins a dying slot between its
+    // decrementAndGet()→0 and the removal keeps the entry in the map, and its
+    // own release removes it at zero. This closes the race in the old design
+    // where the decrement and the remove were NOT atomic and the removal did
+    // not re-read the count: a concurrent submitter B could bump the count and
+    // join the same mutex between A's decrement and A's remove, leaving B holding a
     // mutex that A then deleted, causing a later submitter C to create a fresh
     // mutex — so B and C would run concurrently for the same path.
     private data class UploadSlot(
@@ -675,10 +684,10 @@ class HydrationImpl(
     // failure additionally WARN-logs. Durability across daemon restarts is
     // [replayPendingUploads] (the state.db row is the durable queue).
     //
-    // Map cleanup: ConcurrentHashMap.compute() is used for BOTH the
-    // increment-or-create (on launch) and the decrement-and-remove (in the
-    // finally block) — atomic under the map's bin lock, so a slot is never
-    // removed while another submitter is bumping its pending count.
+    // Map cleanup: the increment-or-create runs in ConcurrentHashMap.compute()
+    // (on launch) and the decrement-and-remove re-decides the removal under the
+    // same bin lock (removeDyingSlot, in the finally block) — a slot is never
+    // removed while another submitter holds a count on it (#210).
     private suspend fun launchSerializedUpload(
         path: String,
         cachePath: Path,
@@ -817,7 +826,22 @@ class HydrationImpl(
     // Gives back one submission's count on [slot]; the last one removes every map entry still pointing at the slot.
     private fun releaseSlot(slot: UploadSlot) {
         if (slot.pending.decrementAndGet() == 0) {
-            uploadSlots.entries.removeIf { it.value === slot }
+            slotReleaseWindow()
+            removeDyingSlot(slot)
+        }
+    }
+
+    // Removes every entry still mapped to [slot] once nothing waits on it — decided under the map's bin
+    // lock by re-reading the count there (#210). The decrement above and this removal are two steps, and a
+    // submit whose compute lands between them joins the slot and raises the count again: a plain
+    // remove-by-identity would then delete an entry a submitter holds, and the next submit would create a
+    // fresh slot — two uploads of one path at once, invisible to the busy guard, the cancel and the rekey.
+    // The re-read sees the raised count and keeps the entry; that submitter's own release removes it at zero.
+    private fun removeDyingSlot(slot: UploadSlot) {
+        for (key in uploadSlots.keys.toList()) {
+            uploadSlots.computeIfPresent(key) { _, s ->
+                if (s === slot && s.pending.get() == 0) null else s
+            }
         }
     }
 
