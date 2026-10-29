@@ -44,6 +44,9 @@ esac
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MOUNT_REPO="${UNIDRIVE_MOUNT_REPO:-$(cd "${REPO_ROOT}/.." && pwd)/unidrive-mount-linux}"
 LIB_DIR="${HOME}/.local/lib/unidrive"
+# Build logs live under the user's cache dir, not a fixed /tmp path a
+# pre-planted symlink on a shared host could redirect.
+LOG_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/unidrive"
 
 log() { printf '[redeploy] %s\n' "$*"; }
 die() {
@@ -74,20 +77,23 @@ if [[ "${check_only}" -eq 1 ]]; then
   exit 0
 fi
 
+mkdir -p "${LOG_DIR}"
+
 # --- unidrive JVM CLI ---
 ud_branch="$(git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD)"
 ud_commit="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
 log "unidrive: building :app:cli:shadowJar from '${ud_branch}' (${ud_commit})"
-if ! (cd "${REPO_ROOT}/core" && ./gradlew :app:cli:shadowJar --console=plain) >/tmp/redeploy-ud.log 2>&1; then
-  tail -25 /tmp/redeploy-ud.log >&2
-  die "unidrive build failed (full log: /tmp/redeploy-ud.log)"
+if ! (cd "${REPO_ROOT}/core" && ./gradlew :app:cli:shadowJar --console=plain) >"${LOG_DIR}/redeploy-ud.log" 2>&1; then
+  tail -25 "${LOG_DIR}/redeploy-ud.log" >&2
+  die "unidrive build failed (full log: ${LOG_DIR}/redeploy-ud.log)"
 fi
 
 shopt -s nullglob
 jars=("${REPO_ROOT}"/core/app/cli/build/libs/unidrive-*.jar)
 shopt -u nullglob
 [[ ${#jars[@]} -gt 0 ]] || die "no shadowJar found under core/app/cli/build/libs"
-jar="${jars[-1]}"
+# Version sort, not text sort: 0.0.10 must sort after 0.0.9 (same as install.sh).
+jar="$(printf '%s\n' "${jars[@]}" | sort -V | tail -1)"
 
 mkdir -p "${LIB_DIR}"
 target="${LIB_DIR}/$(basename "${jar}")"
@@ -107,9 +113,9 @@ if [[ -e "${MOUNT_REPO}/.git" ]]; then # -e not -d: a git worktree's .git is a f
   m_branch="$(git -C "${MOUNT_REPO}" rev-parse --abbrev-ref HEAD)"
   m_commit="$(git -C "${MOUNT_REPO}" rev-parse --short HEAD)"
   log "unidrive-mount: cargo build --release from '${m_branch}' (${m_commit})"
-  if ! (cd "${MOUNT_REPO}" && cargo build --release) >/tmp/redeploy-mount.log 2>&1; then
-    tail -25 /tmp/redeploy-mount.log >&2
-    die "unidrive-mount build failed (full log: /tmp/redeploy-mount.log)"
+  if ! (cd "${MOUNT_REPO}" && cargo build --release) >"${LOG_DIR}/redeploy-mount.log" 2>&1; then
+    tail -25 "${LOG_DIR}/redeploy-mount.log" >&2
+    die "unidrive-mount build failed (full log: ${LOG_DIR}/redeploy-mount.log)"
   fi
   mbin="${MOUNT_REPO}/target/release/unidrive-mount"
   [[ -f "${mbin}" ]] || die "no unidrive-mount binary at ${mbin}"

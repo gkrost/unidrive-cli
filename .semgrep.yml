@@ -12,7 +12,9 @@ rules:
           regex: '".*\\s+.*"'
       - pattern-not: ProcessBuilder(*$ARGS)
       - pattern-not: ProcessBuilder($ARG1, $ARG2, ...)
-    fix: ProcessBuilder(*$CMD.split("\\s+"))
+      # No autofix: the former fix rewrote ProcessBuilder("cmd arg") into
+      # ProcessBuilder(*cmd.split(Regex("\\s+"))), which destroys quoted
+      # arguments. Report the finding; fix it by hand.
 
   - id: command-injection-runtime-exec
     languages:
@@ -27,7 +29,8 @@ rules:
       - pattern-not: Runtime.getRuntime().exec(arrayOf(...))
       - pattern-not: Runtime.getRuntime().exec($ARG1, $ARG2, ...)
       - pattern-not: Runtime.getRuntime().exec($ENV, $ARG1, $ARG2, ...)
-    fix: Runtime.getRuntime().exec($CMD.split("\\s+"))
+      # No autofix, same reason as above: splitting on whitespace breaks
+      # quoted arguments.
 
   - id: path-traversal-literal-dotdot
     languages:

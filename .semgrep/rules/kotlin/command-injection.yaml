@@ -8,7 +8,8 @@ rules:
       - pattern: ProcessBuilder($CMD)
       - pattern-not: ProcessBuilder(*$ARGS)
       - pattern-not: ProcessBuilder($ARG1, $ARG2, ...)
-    fix: ProcessBuilder(*$CMD.split("\\s+"))
+      # No autofix: a rewrite like ProcessBuilder(*cmd.split(...)) would
+      # destroy quoted arguments. Report the finding; fix it by hand.
   - id: command-injection-runtime-exec
     languages:
       - kotlin
@@ -18,4 +19,4 @@ rules:
       - pattern: Runtime.getRuntime().exec($CMD)
       - pattern-not: Runtime.getRuntime().exec($ARG1, $ARG2, ...)
       - pattern-not: Runtime.getRuntime().exec($ENV, $ARG1, $ARG2, ...)
-    fix: Runtime.getRuntime().exec($CMD.split("\\s+"))
+      # No autofix, same reason as above.

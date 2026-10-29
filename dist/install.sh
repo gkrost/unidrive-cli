@@ -28,6 +28,12 @@ INSTALL_BIN="${HOME}/.local/bin"
 LOG_DIR="${HOME}/.local/share/unidrive"
 SYSTEMD_DIR="${HOME}/.config/systemd/user"
 
+# Fingerprint of the release signing key (release.yml signs the published JAR).
+# When set and a .asc signature sits next to the JAR being installed, the
+# signature is verified against it. Empty (default) skips the signature check
+# with a note; never fill this in with anything but the real fingerprint.
+RELEASE_KEY_FINGERPRINT="${UNIDRIVE_RELEASE_KEY_FINGERPRINT:-}"
+
 resolve_jar() {
     local dir="$1"
     local prefix="$2"
@@ -61,6 +67,43 @@ else
 fi
 
 CLI_BASENAME="$(basename "${CLI_JAR}")"
+
+# Verify the artefacts when they sit next to the JAR (as published by the
+# release workflow): sha256sum -c on the .sha256 file, and gpg --verify on the
+# .asc file against RELEASE_KEY_FINGERPRINT. A mismatch fails the install,
+# before any service is stopped or file touched.
+sha_file="${CLI_JAR}.sha256"
+if [[ -f "${sha_file}" ]]; then
+    echo "Verifying checksum: ${sha_file}"
+    (cd "$(dirname "${CLI_JAR}")" && sha256sum -c --ignore-missing "$(basename "${sha_file}")")
+else
+    echo "NOTE: no checksum file at ${sha_file}; skipping sha256 verification"
+fi
+
+asc_file="${CLI_JAR}.asc"
+if [[ -f "${asc_file}" ]]; then
+    if [[ -z "${RELEASE_KEY_FINGERPRINT}" ]]; then
+        echo "NOTE: signature file present at ${asc_file} but no release key fingerprint is configured"
+        echo "      (set UNIDRIVE_RELEASE_KEY_FINGERPRINT); skipping signature verification"
+    elif ! command -v gpg >/dev/null 2>&1; then
+        echo "ERROR: ${asc_file} is present but gpg is not installed; cannot verify the signature" >&2
+        exit 1
+    else
+        echo "Verifying signature: ${asc_file}"
+        verify_out="$(gpg --verify "${asc_file}" "${CLI_JAR}" 2>&1)" || {
+            printf '%s\n' "${verify_out}" >&2
+            echo "ERROR: signature verification failed for ${CLI_JAR}" >&2
+            exit 1
+        }
+        # gpg prints the primary key fingerprint in spaced hex groups; strip
+        # the spaces before comparing with the configured fingerprint.
+        if ! tr -d ' \n' <<<"${verify_out}" | grep -qF -- "${RELEASE_KEY_FINGERPRINT}"; then
+            printf '%s\n' "${verify_out}" >&2
+            echo "ERROR: signature was made by a key other than ${RELEASE_KEY_FINGERPRINT}" >&2
+            exit 1
+        fi
+    fi
+fi
 
 # Java is checked by the launcher on every run; warn here too so a missing runtime shows at install time.
 java_ok=0
