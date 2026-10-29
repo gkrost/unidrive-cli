@@ -18,11 +18,13 @@ class HydrationUploadScopeMdcTest {
     @BeforeTest
     fun clearMdc() {
         MDC.remove("profile")
+        MDC.remove("build")
     }
 
     @AfterTest
     fun clearMdcAfter() {
         MDC.remove("profile")
+        MDC.remove("build")
     }
 
     @Test
@@ -38,6 +40,18 @@ class HydrationUploadScopeMdcTest {
                             before to MDC.get("profile")
                         }.await()
                 assertEquals("qwprofile" to "qwprofile", seen)
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    // gkrost/unidrive-cli#225: the build too, as on every other line the daemon writes.
+    @Test
+    fun `hydration_upload_scope_carries_the_build_mdc`() =
+        runBlocking {
+            val scope = DaemonRuntime.hydrationUploadScope("qwprofile")
+            try {
+                assertEquals(BuildInfo.COMMIT, scope.async { MDC.get("build") }.await())
             } finally {
                 scope.cancel()
             }

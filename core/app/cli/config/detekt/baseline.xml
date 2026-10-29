@@ -4,7 +4,7 @@
   <CurrentIssues>
     <ID>ComplexCondition:DaemonRuntime.kt$DaemonRuntime$snap != null &amp;&amp; !snap.stale &amp;&amp; expired &amp;&amp; !quotaRefreshInFlight.get()</ID>
     <ID>ComplexCondition:ProfileCommand.kt$ProfileAddCommand$answer == null || answer.isEmpty() || answer == "y" || answer == "yes"</ID>
-    <ID>CyclomaticComplexMethod:DaemonRuntime.kt$DaemonRuntime$suspend fun start()</ID>
+    <ID>CyclomaticComplexMethod:DaemonRuntime.kt$DaemonRuntime$private suspend fun lifecycle()</ID>
     <ID>CyclomaticComplexMethod:LegacyInventory.kt$LegacyInventory$private fun classify( inputs: Inputs, lockFacts: LockFacts, state: State?, ): Report</ID>
     <ID>CyclomaticComplexMethod:MigrateConvertCommand.kt$LegacyConversion$internal fun execute( setup: Setup, rawMode: String, rawDisposition: String?, restart: Boolean, verbose: Boolean, ): Int</ID>
     <ID>CyclomaticComplexMethod:ProfileCommand.kt$ProfileAddCommand$private fun run()</ID>
@@ -15,7 +15,7 @@
     <ID>InstanceOfCheckForException:QuotaCommand.kt$QuotaCommand$e is IpcAuthException</ID>
     <ID>InstanceOfCheckForException:RefreshRpcHandler.kt$RefreshRpcHandler$e is IllegalStateException</ID>
     <ID>LargeClass:DaemonRuntimeTest.kt$DaemonRuntimeTest</ID>
-    <ID>LongMethod:DaemonRuntime.kt$DaemonRuntime$suspend fun start()</ID>
+    <ID>LongMethod:DaemonRuntime.kt$DaemonRuntime$private suspend fun lifecycle()</ID>
     <ID>LongMethod:GetCommand.kt$GetCommand$override fun call(): Int</ID>
     <ID>LongMethod:LegacyInventory.kt$LegacyInventory$private fun classify( inputs: Inputs, lockFacts: LockFacts, state: State?, ): Report</ID>
     <ID>LongMethod:MigrateConvertCommand.kt$LegacyConversion$internal fun execute( setup: Setup, rawMode: String, rawDisposition: String?, restart: Boolean, verbose: Boolean, ): Int</ID>
@@ -28,7 +28,7 @@
     <ID>NestedBlockDepth:DaemonAutospawn.kt$DaemonAutospawn$fun daemonAnswers( profileName: String, socketPath: Path, configDir: Path, replyTimeoutMs: Long = IpcAuthClient.HANDSHAKE_TIMEOUT_MS, ): Boolean</ID>
     <ID>NestedBlockDepth:DaemonCommand.kt$DaemonStatusCommand$override fun run()</ID>
     <ID>NestedBlockDepth:DaemonCommand.kt$internal fun requestDaemonShutdown(endpoint: IpcEndpoint, timeoutMs: Long = 3_000): Boolean</ID>
-    <ID>NestedBlockDepth:DaemonRuntime.kt$DaemonRuntime$suspend fun start()</ID>
+    <ID>NestedBlockDepth:DaemonRuntime.kt$DaemonRuntime$private suspend fun lifecycle()</ID>
     <ID>NestedBlockDepth:DoctorCommand.kt$DoctorCommand$internal fun checkHydrationCache( cacheDir: Path, budgetBytes: Long, ): CheckResult</ID>
     <ID>NestedBlockDepth:DoctorCommand.kt$DoctorCommand$internal fun checkLocalOrphans( db: StateDatabase, syncRoot: Path, full: Boolean, excludePatterns: List&lt;String&gt; = emptyList(), ): CheckResult</ID>
     <ID>NestedBlockDepth:LegacyInventory.kt$LegacyInventory$private fun readRows(c: Connection): List&lt;Row&gt;</ID>
@@ -61,7 +61,7 @@
     <ID>SwallowedException:RelocateCommandTest.kt$RelocateCommandTest$e: RuntimeException</ID>
     <ID>SwallowedException:WindowsArgv.kt$WindowsArgv$e: Throwable</ID>
     <ID>ThrowsCount:AuthLifecycleTest.kt$AuthLifecycleTest$@Test fun `login maps the provider's failures to tokens without echoing their messages`()</ID>
-    <ID>ThrowsCount:DaemonRuntime.kt$DaemonRuntime$suspend fun start()</ID>
+    <ID>ThrowsCount:DaemonRuntime.kt$DaemonRuntime$private suspend fun lifecycle()</ID>
     <ID>ThrowsCount:LifecycleJson.kt$internal fun resolveProfileTarget( main: Main, profileOption: String?, ): ProfileTarget</ID>
     <ID>ThrowsCount:Main.kt$Main$private fun loadVaultData(): Map&lt;String, Map&lt;String, String&gt;&gt;</ID>
     <ID>ThrowsCount:ProfileCreate.kt$ProfileCreator$fun create( configDir: Path, req: NewProfile, ): JsonObject</ID>

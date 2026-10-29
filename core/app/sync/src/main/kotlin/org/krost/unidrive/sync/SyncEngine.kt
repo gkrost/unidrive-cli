@@ -745,18 +745,41 @@ open class SyncEngine(
                 .randomUUID()
                 .toString()
                 .substring(0, 8)
+        withScanMdc(scanId) {
+            val startTime = System.currentTimeMillis()
+            log.info("Scan started scan={} reason={} dryRun={}", scanId, reason, dryRun)
+            try {
+                doSyncOnce(dryRun, forceDelete, scanId, reason, startTime, skipTransfers, skipRemoteGather)
+            } finally {
+                // The pass gathers outside the enumeration and writes the cursor and the listing figures the
+                // enumeration's status tells; that status is answered from what its last attempt left.
+                enumeration.settleStatus()
+                val duration = System.currentTimeMillis() - startTime
+                log.info("Scan ended scan={} reason={} duration={}ms", scanId, reason, duration)
+            }
+        }
+    }
+
+    /**
+     * Runs [block] with [scanId] as the `scan` MDC key. gkrost/unidrive-cli#225: a daemon's pass runs in a coroutine that
+     * carries the daemon's MDC in an [kotlinx.coroutines.slf4j.MDCContext], which puts its map back on every resume, so a
+     * bare MDC.put would be gone after the first suspension: the id joins that map instead (the same one element, so no
+     * cost per resume beyond what the daemon pays already). Without one (`unidrive sync`, which dropped MDCContext for its
+     * cost, UD-254a) the id goes into the thread's MDC as before, and the prior value comes back afterwards.
+     */
+    private suspend fun <T> withScanMdc(
+        scanId: String,
+        block: suspend () -> T,
+    ): T {
+        val carried = currentCoroutineContext()[kotlinx.coroutines.slf4j.MDCContext]
+        if (carried != null) {
+            return withContext(kotlinx.coroutines.slf4j.MDCContext(carried.contextMap.orEmpty() + ("scan" to scanId))) { block() }
+        }
         val priorScanMdc = org.slf4j.MDC.get("scan")
         org.slf4j.MDC.put("scan", scanId)
-        val startTime = System.currentTimeMillis()
-        log.info("Scan started scan={} reason={} dryRun={}", scanId, reason, dryRun)
         try {
-            doSyncOnce(dryRun, forceDelete, scanId, reason, startTime, skipTransfers, skipRemoteGather)
+            return block()
         } finally {
-            // The pass gathers outside the enumeration and writes the cursor and the listing figures the
-            // enumeration's status tells; that status is answered from what its last attempt left.
-            enumeration.settleStatus()
-            val duration = System.currentTimeMillis() - startTime
-            log.info("Scan ended scan={} reason={} duration={}ms", scanId, reason, duration)
             if (priorScanMdc == null) {
                 org.slf4j.MDC.remove("scan")
             } else {

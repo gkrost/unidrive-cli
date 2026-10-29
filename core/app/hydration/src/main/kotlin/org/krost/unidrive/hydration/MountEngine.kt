@@ -43,6 +43,7 @@ import org.krost.unidrive.sync.model.EntryStatus
 import org.krost.unidrive.sync.model.SyncEntry
 import org.krost.unidrive.telemetry.TransferHandle
 import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -277,6 +278,9 @@ class MountEngine private constructor(
      */
     suspend fun listFolderLive(folder: String): List<SyncEntry>? = liveFolders.rowsOrNull(folder)
 
+    // gkrost/unidrive-cli#225: the backfill logs under a name of its own, not the engine's, so its lines can be told apart.
+    private val contentIdLog: Logger = LoggerFactory.getLogger(ContentIdBackfill::class.java)
+
     // gkrost/unidrive-cli#202: the content ids of the rows from before the column, filled once per profile.
     private val contentIds =
         ContentIdBackfill(
@@ -305,7 +309,7 @@ class MountEngine private constructor(
                     // The folder, as the gather names a changed folder: a client lists it again (see ContentIdBackfill).
                     override fun folderFilled(folder: String) = gather.invalidateView(setOf(folder.ifEmpty { "/" }), false)
                 },
-            log = log,
+            log = contentIdLog,
         )
 
     /** One pass of the content-id backfill; see [ContentIdBackfill]. */
@@ -332,7 +336,7 @@ class MountEngine private constructor(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    log.warn("content ids: a pass failed; trying again later", e)
+                    contentIdLog.warn("content ids: a pass failed; trying again later", e)
                     null
                 }
             if (outcome != null && outcome !is ContentIdBackfill.Outcome.AwaitingFirstScan && outcome !is ContentIdBackfill.Outcome.Stopped) return

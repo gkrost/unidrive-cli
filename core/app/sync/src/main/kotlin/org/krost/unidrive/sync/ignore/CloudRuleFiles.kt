@@ -2,6 +2,7 @@ package org.krost.unidrive.sync.ignore
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.slf4j.MDCContext
 import kotlinx.coroutines.withTimeout
 import org.krost.unidrive.engine.RuleFileTransfers
 import org.slf4j.LoggerFactory
@@ -120,7 +121,9 @@ class CloudRuleFiles(
             Files.createDirectories(dir)
             Files.deleteIfExists(partial)
             val transfer = transfers().runner(path)
-            runBlocking(Dispatchers.IO) {
+            // gkrost/unidrive-cli#225: MDCContext() takes the probing thread's MDC (a daemon's profile and build) along to the
+            // download's worker thread, so its lines and the RequestId lines of its HTTP calls name them too.
+            runBlocking(Dispatchers.IO + MDCContext()) {
                 withTimeout(timeoutMs) { transfer { download(cloud.remoteId, cloud.remotePath, partial) } }
             }
             val written = Files.size(partial)

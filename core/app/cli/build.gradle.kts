@@ -725,6 +725,9 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test) // poll-loop virtual-time tests
+    // gkrost/unidrive-cli#225: the RequestId lines of an HTTP call a daemon makes, against a MockEngine (never a provider).
+    testImplementation(libs.ktor.client.core)
+    testImplementation(libs.ktor.client.mock)
 }
 
 tasks.test {

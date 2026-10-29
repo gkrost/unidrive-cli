@@ -2,6 +2,7 @@ package org.krost.unidrive.internxt
 
 import io.socket.client.Socket
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.MdcSnapshot
 import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -70,6 +71,11 @@ internal class NotificationsClient(
     private val scheduler: NotificationsScheduler = ThreadNotificationsScheduler(),
 ) {
     private val log = LoggerFactory.getLogger(NotificationsClient::class.java)
+
+    // gkrost/unidrive-cli#225: the MDC (profile, build) of the daemon that built the client. socket.io calls the listeners
+    // on its own event thread, one for the whole process, and the refresh runs on the scheduler's thread: both run
+    // their work around it, so the client's lines name the daemon in the log two daemons share.
+    private val logContext = MdcSnapshot.capture()
     private val running = AtomicBoolean(false)
     private val socketRef = AtomicReference<NotificationsSocket?>(null)
 
@@ -129,15 +135,20 @@ internal class NotificationsClient(
     private fun buildSocket(token: String): NotificationsSocket {
         val socket = socketFactory.create(notificationsUrl, token)
 
-        socket.on(Socket.EVENT_CONNECT) { onConnected(socket) }
+        fun on(
+            event: String,
+            listener: (List<Any?>) -> Unit,
+        ) = socket.on(event) { args -> logContext.around { listener(args) } }
 
-        socket.on(Socket.EVENT_DISCONNECT) { args ->
+        on(Socket.EVENT_CONNECT) { onConnected(socket) }
+
+        on(Socket.EVENT_DISCONNECT) { args ->
             log.debug("Internxt notifications WS disconnected: {}", args.firstOrNull())
         }
 
-        socket.on(Socket.EVENT_CONNECT_ERROR) { args -> onConnectError(socket, args.firstOrNull()) }
+        on(Socket.EVENT_CONNECT_ERROR) { args -> onConnectError(socket, args.firstOrNull()) }
 
-        socket.on("event") { args ->
+        on("event") { args ->
             val raw = args.firstOrNull()
             handleIncomingFrame(raw)
         }
@@ -268,17 +279,20 @@ internal class NotificationsClient(
         // socket.io invokes listeners on its own thread; the token supplier is
         // suspend and does an HTTP round-trip, so it runs on the scheduler's
         // thread, bridged with runBlocking. At most one per window, not a hot path.
-        scheduler.execute { refreshAndRebuild(socket, socketIsDead) }
+        scheduler.execute(logContext.wrap { refreshAndRebuild(socket, socketIsDead) })
     }
 
     /** Re-run [requestRefresh] once the window opens; needed for a destroyed socket, which stays silent. Caller holds [lock]. */
     private fun scheduleRetryLocked(socket: NotificationsSocket) {
         if (retryScheduled) return
         retryScheduled = true
-        scheduler.schedule((nextRefreshAtMs - clock()).coerceAtLeast(0L)) {
-            synchronized(lock) { retryScheduled = false }
-            if (running.get() && socketRef.get() === socket) requestRefresh(socket, socketIsDead = true)
-        }
+        scheduler.schedule(
+            (nextRefreshAtMs - clock()).coerceAtLeast(0L),
+            logContext.wrap {
+                synchronized(lock) { retryScheduled = false }
+                if (running.get() && socketRef.get() === socket) requestRefresh(socket, socketIsDead = true)
+            },
+        )
     }
 
     private fun refreshAndRebuild(

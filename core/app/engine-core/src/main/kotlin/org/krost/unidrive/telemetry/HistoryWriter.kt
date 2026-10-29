@@ -1,5 +1,6 @@
 package org.krost.unidrive.telemetry
 
+import org.krost.unidrive.MdcSnapshot
 import org.slf4j.LoggerFactory
 import java.sql.SQLException
 import java.util.concurrent.ArrayBlockingQueue
@@ -47,6 +48,10 @@ internal class HistoryWriter(
     private val dropped = AtomicLong()
     private val droppedUnrecorded = AtomicBoolean()
     private val accepting = AtomicBoolean(true)
+
+    // gkrost/unidrive-cli#225: the writer's lines (and the tail listeners it calls) carry the MDC (profile, build) of the daemon
+    // that opened the history.
+    private val logContext = MdcSnapshot.capture()
     private val thread = Thread(::writerLoop, "telemetry-writer-$profile").apply { isDaemon = true }
 
     // Writer thread only.
@@ -123,6 +128,7 @@ internal class HistoryWriter(
     }
 
     private fun writerLoop() {
+        logContext.applyToThisThread()
         val batch = ArrayList<Op>(config.batchSize)
         try {
             prune()

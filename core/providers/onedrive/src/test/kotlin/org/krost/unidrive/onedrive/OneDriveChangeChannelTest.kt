@@ -3,6 +3,7 @@ package org.krost.unidrive.onedrive
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.ThrowableProxyUtil
+import ch.qos.logback.core.AppenderBase
 import ch.qos.logback.core.read.ListAppender
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -13,6 +14,7 @@ import io.socket.client.Socket
 import kotlinx.coroutines.runBlocking
 import org.krost.unidrive.RemoteChangeChannelStatus.State
 import org.slf4j.LoggerFactory
+import org.slf4j.MDC
 import java.nio.file.Files
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -119,6 +121,45 @@ class OneDriveChangeChannelTest {
             assertTrue(sockets.last().connected)
         } finally {
             retryChannel.stop()
+        }
+    }
+
+    // gkrost/unidrive-cli#225: the channel's work runs on its own thread (the endpoint GET, the connect, socket.io's events
+    // posted to it), which carries no MDC of the daemon that opened the channel; its lines carry the MDC of the code that
+    // made the channel. The MDC is read while each line is logged, on the thread that logs it.
+    @Test
+    fun `the channel's lines carry the MDC of the code that made it, on the thread its work runs on`() {
+        val seen = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Map<String, String>>>()
+        val mdcAppender =
+            object : AppenderBase<ILoggingEvent>() {
+                override fun append(event: ILoggingEvent) {
+                    seen += event.formattedMessage to HashMap(event.mdcPropertyMap)
+                }
+            }.apply { start() }
+        packageLogger.addAppender(mdcAppender)
+        MDC.put("profile", "od-profile")
+        MDC.put("build", "od-build")
+        val made =
+            try {
+                OneDriveChangeChannel({ endpoint(1) }, onHint = {}, socketFactory = factory, clock = { now }, scheduler = scheduler)
+            } finally {
+                MDC.clear()
+            }
+        try {
+            made.start()
+            kotlin.concurrent.thread(name = "channel-thread") { scheduler.runDue() }.join()
+            sockets.single().fire(Socket.EVENT_CONNECT)
+            kotlin.concurrent.thread(name = "channel-thread") { scheduler.runDue() }.join()
+
+            assertTrue(seen.any { it.first.startsWith("OneDrive notifications: connecting") }, "the connect line: $seen")
+            assertTrue(seen.any { it.first == "OneDrive notifications connected" }, "the connected line: $seen")
+            for ((message, mdc) in seen) {
+                assertEquals("od-profile", mdc["profile"], "the profile of '$message'")
+                assertEquals("od-build", mdc["build"], "the build of '$message'")
+            }
+        } finally {
+            made.stop()
+            packageLogger.detachAppender(mdcAppender)
         }
     }
 

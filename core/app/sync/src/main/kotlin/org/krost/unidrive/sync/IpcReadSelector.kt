@@ -2,6 +2,7 @@ package org.krost.unidrive.sync
 
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
+import org.krost.unidrive.MdcSnapshot
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.nio.channels.CancelledKeyException
@@ -43,6 +44,10 @@ internal class IpcReadSelector : AutoCloseable {
     @Volatile
     private var closed = false
 
+    // gkrost/unidrive-cli#225: the selector thread's lines carry the MDC (profile, build) of the daemon whose IPC server made it.
+    // Declared before the thread, which starts at once.
+    private val logContext = MdcSnapshot.capture()
+
     private val thread =
         Thread(::run, "ipc-select").apply {
             isDaemon = true
@@ -82,6 +87,7 @@ internal class IpcReadSelector : AutoCloseable {
     }
 
     private fun run() {
+        logContext.applyToThisThread()
         try {
             while (!closed) {
                 while (true) arm(toArm.poll() ?: break)

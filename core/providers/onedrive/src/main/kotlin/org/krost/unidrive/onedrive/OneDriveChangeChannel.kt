@@ -2,6 +2,7 @@ package org.krost.unidrive.onedrive
 
 import io.socket.client.Socket
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.MdcSnapshot
 import org.krost.unidrive.RemoteChangeChannelStatus
 import org.krost.unidrive.http.UrlRedaction
 import org.slf4j.LoggerFactory
@@ -54,6 +55,10 @@ internal class OneDriveChangeChannel(
 ) {
     private val log = LoggerFactory.getLogger(OneDriveChangeChannel::class.java)
 
+    // gkrost/unidrive-cli#225: the MDC (profile, build) of the daemon that made the channel. Every task the channel hands to
+    // its scheduler runs around it, so the channel's lines name the daemon in the log two daemons share.
+    private val logContext = MdcSnapshot.capture()
+
     @Volatile private var running = false
 
     @Volatile private var stopped = false
@@ -77,7 +82,7 @@ internal class OneDriveChangeChannel(
         if (running || stopped) return
         running = true
         state = RemoteChangeChannelStatus.State.CONNECTING
-        scheduler.execute { openEndpoint(generation) }
+        scheduler.execute(logContext.wrap { openEndpoint(generation) })
     }
 
     /** Close the socket and drop every timer. Idempotent and final. */
@@ -146,7 +151,7 @@ internal class OneDriveChangeChannel(
                 expiresAtMs = expiry
             }
             val rotateAtMs = (expiry ?: (now + DEFAULT_LIFETIME_MS)) + ROTATION_GRACE_MS
-            scheduler.schedule(rotateAtMs - now) { if (running && gen == generation) rotateAtExpiry() }
+            scheduler.schedule(rotateAtMs - now, logContext.wrap { if (running && gen == generation) rotateAtExpiry() })
             log.debug("OneDrive notifications: connecting to endpoint #{} (expires in {} s)", endpoint.tag, expiry?.let { (it - now) / 1000 })
             created.connect()
         } catch (e: Exception) {
@@ -205,7 +210,7 @@ internal class OneDriveChangeChannel(
         } else {
             log.debug("OneDrive notifications: {} (attempt {}, {}); retrying in {} s", what, failures, describe(cause), delayMs / 1000)
         }
-        scheduler.schedule(delayMs) { openEndpoint(gen) }
+        scheduler.schedule(delayMs, logContext.wrap { openEndpoint(gen) })
     }
 
     @Suppress("TooGenericExceptionCaught") // the callback is the engine's; whatever it throws must not stop the channel
@@ -225,7 +230,7 @@ internal class OneDriveChangeChannel(
         from: ChangeSocket,
         task: () -> Unit,
     ) {
-        scheduler.execute { if (running && socket === from) task() }
+        scheduler.execute(logContext.wrap { if (running && socket === from) task() })
     }
 
     companion object {
