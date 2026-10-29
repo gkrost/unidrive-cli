@@ -33,7 +33,9 @@ internal fun stagedModificationTime(hash: String?): String? {
 // creation time is not stored, the name of a legacy row is the ciphertext, and the root-level parent is collapsed to null.
 // The file rows of such a gather therefore carry the file itself, trimmed to what the item is built from, in the row's
 // version column (nothing reads a version of a staged row but this): the item built from the row is the item built from
-// the page. The payload names the gather it belongs to ([StagedFilePayload.gather], the instant the enumeration began,
+// the page. The fileId rides along so the item keeps its contentId (the stored object's name, see internxtContentId) —
+// a file read back without it built the item of the held gather with a null contentId. The payload names the gather it
+// belongs to ([StagedFilePayload.gather], the instant the enumeration began,
 // which a resume keeps), so the rows an earlier, abandoned listing left in the same scan are not taken for this one's.
 
 @Serializable
@@ -53,6 +55,7 @@ internal fun stagedFilePayload(
             gather,
             InternxtFile(
                 uuid = file.uuid,
+                fileId = file.fileId,
                 name = file.name,
                 plainName = file.plainName,
                 type = file.type,
