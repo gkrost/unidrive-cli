@@ -9,9 +9,12 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.HashAlgorithm
+import org.krost.unidrive.QuickXorHash
 
 /**
  * End-to-end integration test for the tracking-set engine.
@@ -985,6 +988,152 @@ class TrackingEngineIntegrationTest {
                 },
                 "untracked mismatch must NEVER produce a delete",
             )
+        } finally {
+            tracking.close()
+        }
+    }
+
+    /**
+     * `ts claim` declares the local copy authoritative (spec Amendment 2). The
+     * row it leaves must NOT read as in-sync: a row carrying hash(local) AND
+     * etag(remote) makes the next pass see no change on either side, so the
+     * claimed copy is never uploaded — and a later remote edit downloads over
+     * it. The next pass must plan an upload of the claimed copy.
+     */
+    @Test
+    fun `claim re-emits the claimed copy as an upload on the next pass`() {
+        Files.writeString(syncRoot.resolve("x.txt"), "local")
+        provider.files["/x.txt"] = "remote".toByteArray()
+
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val first = engine(tracking = tracking).syncOnce()
+            assertTrue(first.collisions.any { it.path == "/x.txt" }, "expected a collision, got ${first.collisions}")
+
+            TrackingEngine(provider, tracking, syncRoot).claim("/x.txt")
+            val claimed = tracking.lookup("/x.txt")
+            assertNotNull(claimed, "claim must leave a tracking row")
+        } finally {
+            tracking.close()
+        }
+
+        val tracking2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = TrackingEngine(provider, tracking2, syncRoot).syncOnce()
+            assertTrue(
+                report.plan.any { it is ReconcileAction.UploadLocal && it.path == "/x.txt" },
+                "the pass after a claim must plan an upload of the claimed copy, plan=${report.plan}",
+            )
+            assertEquals("local", provider.files["/x.txt"]?.decodeToString(), "the claimed local copy must win")
+        } finally {
+            tracking2.close()
+        }
+    }
+
+    /**
+     * The download path must read the remote metadata BEFORE the transfer and
+     * verify the staged bytes against it: a download is recorded with the etag
+     * of the version that was actually fetched. Bytes that fail the check are
+     * not adopted as synced — the row stays resumable and the next pass
+     * downloads again.
+     */
+    @Test
+    fun `a download that does not match the remote metadata fails and is retried next pass`() {
+        provider.hashAlgorithmOverride = HashAlgorithm.Sha256Hex
+        provider.files["/d.txt"] = "v1".toByteArray()
+        // The transfer delivers bytes that are not what the metadata described
+        // (the remote moved on between the metadata read and the download).
+        provider.downloadContents["/d.txt"] = "v2-with-other-bytes".toByteArray()
+
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = TrackingEngine(provider, tracking, syncRoot).syncOnce()
+            assertEquals(
+                ApplyOutcome.FAILED,
+                report.applied.single().outcome,
+                "unverified bytes must not be adopted as synced, was ${report.applied}",
+            )
+            val row = tracking.lookup("/d.txt")
+            assertTrue(
+                row == null || row.state == TrackState.PendingDownload,
+                "the row must stay resumable for the next pass, was $row",
+            )
+            assertFalse(Files.exists(syncRoot.resolve("d.txt")), "unverified bytes must not land at the destination")
+        } finally {
+            tracking.close()
+        }
+
+        provider.downloadContents.clear()
+        val tracking2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = TrackingEngine(provider, tracking2, syncRoot).syncOnce()
+            assertTrue(
+                report.applied.all { it.outcome == ApplyOutcome.SUCCESS },
+                "the retry with matching bytes must succeed, was ${report.applied}",
+            )
+            assertEquals("v1", Files.readString(syncRoot.resolve("d.txt")))
+        } finally {
+            tracking2.close()
+        }
+    }
+
+    /**
+     * Same contract for a provider without content hashes: the size read
+     * before the download is the only check, and a short transfer must fail
+     * the action instead of being adopted as synced.
+     */
+    @Test
+    fun `a short download from a hashless provider is not adopted as synced`() {
+        val hashless = HashlessFakeProvider()
+        hashless.files["/h.txt"] = "v1-longer".toByteArray()
+        hashless.downloadContents["/h.txt"] = "v1".toByteArray() // truncated transfer
+
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = TrackingEngine(hashless, tracking, syncRoot).syncOnce()
+            assertEquals(
+                ApplyOutcome.FAILED,
+                report.applied.single().outcome,
+                "a download shorter than the remote item must not be adopted, was ${report.applied}",
+            )
+            assertFalse(Files.exists(syncRoot.resolve("h.txt")))
+        } finally {
+            tracking.close()
+        }
+
+        hashless.downloadContents.clear()
+        val tracking2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            TrackingEngine(hashless, tracking2, syncRoot).syncOnce()
+            assertEquals("v1-longer", Files.readString(syncRoot.resolve("h.txt")))
+        } finally {
+            tracking2.close()
+        }
+    }
+
+    /**
+     * First-scan adoption must compare the local file with the provider's own
+     * hash format (QuickXor, Dropbox content_hash, MD5) — the engine hashes
+     * locally with SHA-256 for change detection, and a raw SHA-256 vs
+     * provider-hash string comparison never matches, so every identical file
+     * on an existing tree surfaced as a collision and adoption was
+     * unreachable.
+     */
+    @Test
+    fun `first scan adopts identical files compared in the provider hash format`() {
+        provider.hashAlgorithmOverride = HashAlgorithm.QuickXor
+        provider.itemHashOverride = { bytes -> QuickXorHash.of(bytes.inputStream()) }
+        Files.writeString(syncRoot.resolve("q.txt"), "quickxor payload")
+        provider.files["/q.txt"] = "quickxor payload".toByteArray()
+
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = engine(tracking = tracking, dryRun = true).syncOnce()
+            assertTrue(
+                report.adopted.contains("/q.txt"),
+                "identical bytes must adopt when compared in the provider hash format, collisions=${report.collisions}",
+            )
+            assertFalse(report.collisions.any { it.path == "/q.txt" }, "an identical file must not be a collision")
         } finally {
             tracking.close()
         }

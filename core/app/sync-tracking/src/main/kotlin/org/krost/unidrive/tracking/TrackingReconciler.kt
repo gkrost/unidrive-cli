@@ -27,6 +27,18 @@ package org.krost.unidrive.tracking
  */
 class TrackingReconciler(
     val autoMatch: AutoMatchMode = AutoMatchMode.OFF,
+    /**
+     * Optional comparison of the local file against the remote's content
+     * hash, in the provider's own format: given the remote path and the
+     * remote hash, decide whether the local bytes match. The engine supplies
+     * [org.krost.unidrive.sync.HashVerifier.matches] because a provider hash
+     * (OneDrive QuickXor, Dropbox content_hash, S3 MD5) is never comparable
+     * with the SHA-256 the engine computes locally for change detection —
+     * a raw string comparison between the two never matches, so every
+     * identical file on an existing tree surfaced as a collision. Null (pure
+     * callers, tests) falls back to string equality of the two hashes.
+     */
+    private val remoteHashMatches: ((path: String, remoteHash: String) -> Boolean)? = null,
 ) {
     /**
      * Return the action to take for [path] given the live observations
@@ -44,7 +56,7 @@ class TrackingReconciler(
             // Both sides exist — adopt iff content matches, else loud collision.
             // No silent auto-rename: spec Amendment 2.
             if (local.exists && remote.exists) {
-                if (contentMatches(local, remote)) {
+                if (contentMatches(path, local, remote)) {
                     // Adoption is the engine's job; reconciler just signals NoOp.
                     // Engine pattern: if (track==null && both-exist && match) trackingSet.adopt(...).
                     // We return NoOp here so the action stream is clean; the engine
@@ -175,12 +187,14 @@ class TrackingReconciler(
      * re-deriving the conditions.
      */
     fun shouldAdopt(
+        path: String,
         local: LocalObservation,
         remote: RemoteObservation,
         track: TrackingRecord?,
-    ): Boolean = track == null && local.exists && remote.exists && contentMatches(local, remote)
+    ): Boolean = track == null && local.exists && remote.exists && contentMatches(path, local, remote)
 
     private fun contentMatches(
+        path: String,
         local: LocalObservation,
         remote: RemoteObservation,
     ): Boolean {
@@ -192,7 +206,7 @@ class TrackingReconciler(
         // (loud, user-recoverable) rather than silent adopt (data-corruption risk).
         val lh = local.hash
         val rh = remote.hash
-        if (lh != null && rh != null) return lh == rh
+        if (lh != null && rh != null) return remoteHashMatches?.invoke(path, rh) ?: (lh == rh)
 
         // Both hashes are null: content identity is unprovable.
         // Opt-in escape hatches via autoMatch — the operator asserts it is safe.

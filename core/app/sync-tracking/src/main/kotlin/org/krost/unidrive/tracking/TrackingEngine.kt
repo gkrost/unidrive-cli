@@ -7,6 +7,7 @@ import org.krost.unidrive.DeltaCursorExpiredException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.sync.ConflictLog
+import org.krost.unidrive.sync.HashVerifier
 import org.krost.unidrive.sync.Reconciler
 import org.krost.unidrive.sync.TrashManager
 import org.slf4j.LoggerFactory
@@ -55,7 +56,18 @@ class TrackingEngine(
     private val excludePatterns: List<String> = emptyList(),
     autoMatch: AutoMatchMode = AutoMatchMode.OFF,
 ) {
-    private val reconciler: TrackingReconciler = reconciler ?: TrackingReconciler(autoMatch)
+    private val reconciler: TrackingReconciler =
+        reconciler
+            ?: TrackingReconciler(
+                autoMatch,
+                remoteHashMatches = { path, remoteHash ->
+                    HashVerifier.matches(
+                        syncRoot.resolve(stripLeadingSlash(path)),
+                        remoteHash,
+                        provider.hashAlgorithm(),
+                    )
+                },
+            )
     private val log = LoggerFactory.getLogger(TrackingEngine::class.java)
 
     /**
@@ -89,7 +101,7 @@ class TrackingEngine(
 
                 // Adopt before reconcile so adopt-on-content-match doesn't
                 // emit a spurious DownloadRemote on the same pass.
-                if (reconciler.shouldAdopt(l, r, t)) {
+                if (reconciler.shouldAdopt(path, l, r, t)) {
                     if (!dryRun) {
                         trackingSet.adopt(path, provider.id, l, r)
                     }
@@ -184,17 +196,33 @@ class TrackingEngine(
         }
 
     /**
-     * Manual claim: mark [path] as adopted using current observations.
-     * Used to resolve a [ReconcileAction.ReportCollision] (spec Amendment 2)
-     * by declaring the local copy authoritative. Re-emits as an upload
-     * on the next pass if the local diverges from the remote snapshot
-     * we capture here.
+     * Manual claim: resolve a [ReconcileAction.ReportCollision] (spec
+     * Amendment 2) by declaring the local copy authoritative. The row is left
+     * in `PendingUpload` with the local snapshot fields null: recording
+     * hash(local) alongside etag(remote) would read as "both sides match the
+     * snapshot", so the claimed copy would never be uploaded — and a later
+     * remote edit would download straight over it. With the local side
+     * unproven, the next pass reads localChanged against the observed remote
+     * and re-emits the upload; if the remote changed after the claim, that is
+     * a both-changed collision again, never a silent overwrite.
      */
     fun claim(path: String) {
         runBlocking {
             val l = observeLocal(path)
             val r = observeRemote(path)
-            trackingSet.adopt(path, provider.id, l, r)
+            trackingSet.upsert(
+                TrackingRecord(
+                    path = path,
+                    providerId = provider.id,
+                    remoteFileId = r.remoteFileId,
+                    state = TrackState.PendingUpload,
+                    localHash = null,
+                    localSize = null,
+                    remoteEtag = r.etag,
+                    remoteSize = r.size,
+                    lastSynced = Instant.now(),
+                ),
+            )
         }
     }
 
@@ -249,13 +277,26 @@ class TrackingEngine(
 
         Files.createDirectories(dest.parent ?: syncRoot)
         val staged = dest.resolveSibling(".${dest.fileName}.unidrive-download-${UUID.randomUUID()}")
+        // The remote's identity is read BEFORE the bytes: the row must record
+        // the etag of the version that was actually downloaded, not of
+        // whatever a probe after the transfer happens to see. Verification
+        // below binds the staged bytes to this metadata.
+        val meta = provider.getMetadata(path)
         try {
-            provider.download(path, staged)
+            val written = provider.download(path, staged)
             val current = observeLocal(path)
             if (!matchesTrackedLocalSnapshot(existing, current)) {
                 preserveConflict(path, dest, "remote download would overwrite local changes")
                 if (existing == null) trackingSet.remove(path) else trackingSet.upsert(existing)
                 return AppliedAction(action, ApplyOutcome.SKIPPED, "local changed after scan; preserved conflict copy")
+            }
+            if (!HashVerifier.verify(staged, meta.hash, provider.hashAlgorithm())) {
+                throw ProviderException(
+                    "download of $path does not match the remote hash reported before the transfer (${meta.hash})",
+                )
+            }
+            if (written != meta.size) {
+                throw ProviderException("download of $path wrote $written bytes, the remote item has ${meta.size}")
             }
             Files.move(staged, dest, StandardCopyOption.REPLACE_EXISTING)
         } finally {
@@ -263,7 +304,19 @@ class TrackingEngine(
         }
 
         val l = observeLocal(path)
-        val r = observeRemote(path)
+        // Adopt the remote state of the version that was downloaded — the
+        // metadata read before the transfer, never a fresh probe: a remote
+        // change after the download must stay visible as a remote change on
+        // the next pass, not be adopted as synced.
+        val r =
+            RemoteObservation(
+                exists = true,
+                remoteFileId = meta.id,
+                etag = meta.hash,
+                size = meta.size,
+                hash = meta.hash,
+                serverMtime = meta.modified,
+            )
         trackingSet.adopt(path, provider.id, l, r)
         return AppliedAction(action, ApplyOutcome.SUCCESS, null)
     }
@@ -446,8 +499,16 @@ class TrackingEngine(
                 log.debug("Skipped reaping non-empty directory {}: {}", dir, e.message)
                 trackingSet.addPendingReap(dir)
             } catch (e: Exception) {
-                log.warn("Failed to reap empty directory {}: {}", dir, e.message)
-                trackingSet.addPendingReap(dir)
+                if (org.krost.unidrive.engine.RemoteErrors.isNotFound(e)) {
+                    // Already gone (trashed elsewhere, or an ancestor's reap
+                    // cascaded): the goal is met, so a persisted retry is
+                    // cleared rather than retried forever.
+                    log.debug("Remote directory {} already gone, nothing to reap", dir)
+                    trackingSet.removePendingReap(dir)
+                } else {
+                    log.warn("Failed to reap empty directory {}: {}", dir, e.message)
+                    trackingSet.addPendingReap(dir)
+                }
             }
         }
         return reaped

@@ -66,7 +66,7 @@ class TrackingReconcilerTest {
     fun `untracked + both present + content match → no-op (adopt is engine-level)`() {
         val a = rec.reconcile("/p", local(true, hash = "same"), remote(true, hash = "same"), null)
         assertTrue(a is ReconcileAction.NoOp)
-        assertTrue(rec.shouldAdopt(local(true, hash = "same"), remote(true, hash = "same"), null))
+        assertTrue(rec.shouldAdopt("/p", local(true, hash = "same"), remote(true, hash = "same"), null))
     }
 
     @Test
@@ -93,7 +93,7 @@ class TrackingReconcilerTest {
             action is ReconcileAction.ReportCollision,
             "expected ReportCollision when both hashes are null (Internxt), got $action",
         )
-        val shouldAdopt = rec.shouldAdopt(l, r, track = null)
+        val shouldAdopt = rec.shouldAdopt("/p", l, r, track = null)
         assertTrue(
             !shouldAdopt,
             "shouldAdopt must be false when hashes are null — size-only match is unprovable",
@@ -110,7 +110,7 @@ class TrackingReconcilerTest {
         val r = RemoteObservation(exists = true, remoteFileId = "rid", etag = "etag", size = 10L, hash = "abc123", serverMtime = null)
         val action = rec.reconcile("/p", l, r, track = null)
         assertTrue(action is ReconcileAction.NoOp, "hash-equal both-sides must produce NoOp (adopt-signal), got $action")
-        assertTrue(rec.shouldAdopt(l, r, track = null), "shouldAdopt must be true for a proven hash match")
+        assertTrue(rec.shouldAdopt("/p", l, r, track = null), "shouldAdopt must be true for a proven hash match")
     }
 
     /**
@@ -145,7 +145,7 @@ class TrackingReconcilerTest {
             "auto-match=size, null hashes, equal size must produce NoOp (adopt-signal), got $action",
         )
         assertTrue(
-            recSize.shouldAdopt(l, r, track = null),
+            recSize.shouldAdopt("/p", l, r, track = null),
             "auto-match=size, null hashes, equal size: shouldAdopt must be true",
         )
     }
@@ -179,7 +179,7 @@ class TrackingReconcilerTest {
             "auto-match=name, null hashes, same-path must produce NoOp (adopt-signal), got $action",
         )
         assertTrue(
-            recName.shouldAdopt(l, r, track = null),
+            recName.shouldAdopt("/p", l, r, track = null),
             "auto-match=name, null hashes: shouldAdopt must be true",
         )
     }

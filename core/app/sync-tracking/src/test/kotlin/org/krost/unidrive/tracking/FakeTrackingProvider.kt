@@ -33,6 +33,34 @@ class FakeTrackingProvider : CloudProvider {
     val uploadedPaths: MutableList<String> = mutableListOf()
     val deletedPaths: MutableList<String> = mutableListOf()
 
+    /**
+     * Test hook: bytes a [download] delivers for a path, overriding [files].
+     * Models a remote that moves on (or a truncated transfer) between the
+     * metadata read and the download, so the staged bytes differ from what
+     * [getMetadata] reported.
+     */
+    val downloadContents: MutableMap<String, ByteArray> = mutableMapOf()
+
+    /** Test hook: the algorithm [hashAlgorithm] reports. Null = the provider has none. */
+    var hashAlgorithmOverride: org.krost.unidrive.HashAlgorithm? = null
+
+    /**
+     * The fake's item hashes ARE SHA-256 hex (see [itemHashOverride] for a
+     * provider-format override), so the declared algorithm must match them:
+     * a hash without a declared algorithm is incomparable, and the engine
+     * treats it as a collision.
+     */
+    override fun hashAlgorithm(): org.krost.unidrive.HashAlgorithm? =
+        hashAlgorithmOverride ?: org.krost.unidrive.HashAlgorithm.Sha256Hex
+
+    /**
+     * Test hook: the content hash each item reports, overriding the default
+     * SHA-256 — for modelling a provider whose hash is in its own format
+     * (QuickXor, Dropbox content_hash, MD5) while the engine hashes locally
+     * with SHA-256.
+     */
+    var itemHashOverride: ((ByteArray) -> String?)? = null
+
     /** Test hook: what [getMetadata] throws instead of answering (a transient failure, say). */
     var getMetadataError: Throwable? = null
 
@@ -197,6 +225,13 @@ class FakeTrackingProvider : CloudProvider {
     val failDeleteDirs: MutableSet<String> = mutableSetOf()
 
     /**
+     * Test hook: directory paths whose [listChildren] throws a typed
+     * not-found — the directory is already gone remotely (trashed elsewhere,
+     * or an ancestor's reap cascaded).
+     */
+    val goneListDirs: MutableSet<String> = mutableSetOf()
+
+    /**
      * Test hook: directory paths that report one phantom child on the FIRST
      * [listChildren] call and then settle to their real (empty) contents —
      * modelling an eventually-consistent provider's read-after-write lag where a
@@ -212,6 +247,9 @@ class FakeTrackingProvider : CloudProvider {
      * empty before reaping it.
      */
     override suspend fun listChildren(path: String): List<CloudItem> {
+        if (path in goneListDirs) {
+            throw org.krost.unidrive.ProviderException("Folder not found: $path")
+        }
         if (lagDirsOnce.remove(path)) {
             // First listing after a delete: pretend a stale child is still shown.
             return listOf(itemFor("$path/.__lagging__", ByteArray(0)))
@@ -259,7 +297,7 @@ class FakeTrackingProvider : CloudProvider {
         remotePath: String,
         destination: Path,
     ): Long {
-        val bytes = files[remotePath] ?: throw NoSuchElementException("no remote at $remotePath")
+        val bytes = downloadContents[remotePath] ?: files[remotePath] ?: throw NoSuchElementException("no remote at $remotePath")
         beforeDownload?.also { beforeDownload = null; it() }
         Files.createDirectories(destination.parent)
         Files.write(destination, bytes)
@@ -408,7 +446,7 @@ class FakeTrackingProvider : CloudProvider {
         path: String,
         bytes: ByteArray,
     ): CloudItem {
-        val hash = sha256Hex(bytes)
+        val hash = itemHashOverride?.invoke(bytes) ?: sha256Hex(bytes)
         return CloudItem(
             id = "hash-$hash",
             name = path.substringAfterLast('/'),
@@ -439,6 +477,10 @@ class FakeTrackingProvider : CloudProvider {
  */
 class HashlessFakeProvider : CloudProvider {
     val files: MutableMap<String, ByteArray> = mutableMapOf()
+
+    /** Test hook: bytes a [download] delivers, overriding [files] (see [FakeTrackingProvider.downloadContents]). */
+    val downloadContents: MutableMap<String, ByteArray> = mutableMapOf()
+
     override val id = "hashless-fake"
     override val displayName = "Hashless Fake"
     override var isAuthenticated: Boolean = true
@@ -459,7 +501,7 @@ class HashlessFakeProvider : CloudProvider {
         remotePath: String,
         destination: Path,
     ): Long {
-        val bytes = files[remotePath] ?: throw NoSuchElementException("no remote at $remotePath")
+        val bytes = downloadContents[remotePath] ?: files[remotePath] ?: throw NoSuchElementException("no remote at $remotePath")
         Files.createDirectories(destination.parent)
         Files.write(destination, bytes)
         return bytes.size.toLong()
