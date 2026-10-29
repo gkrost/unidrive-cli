@@ -2854,24 +2854,8 @@ open class SyncEngine(
                 newHash = action.remoteItem.hash,
                 result = "success",
             )
-            // The kept edit goes up in this pass, not on the next one (the plan was made before the copy existed):
-            // best effort, as applyKeepBoth uploads its copy. A failed upload leaves the copy local-only, and the
-            // next scan uploads it.
-            if (keptLocalEdit != null && syncDirection != SyncDirection.DOWNLOAD) {
-                // archive#115: the copy belongs next to the canonical remote file, as the reconciler's own Upload would.
-                val canonicalCopy =
-                    action.remoteItem.path.substringBeforeLast('/') + "/" + keptLocalEdit.substringAfterLast('/')
-                val copyTarget = if (canonicalCopy != keptLocalEdit) canonicalCopy else null
-                try {
-                    applyUpload(SyncAction.Upload(keptLocalEdit, remoteTarget = copyTarget), resolveRefusal = false)
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: AuthenticationException) {
-                    throw e
-                } catch (e: Exception) {
-                    log.warn("Conflict copy {} was kept locally but not uploaded yet: {}", keptLocalEdit, e.message)
-                }
-            }
+            // The kept edit goes up in this pass, not on the next one (the plan was made before the copy existed).
+            if (keptLocalEdit != null && syncDirection != SyncDirection.DOWNLOAD) uploadKeptLocalEdit(keptLocalEdit, action.remoteItem)
         } catch (e: Exception) {
             auditLog?.emit(
                 action = "Download",
@@ -2881,6 +2865,27 @@ open class SyncEngine(
                 result = "failed:${e.javaClass.simpleName}: ${e.message}",
             )
             throw e
+        }
+    }
+
+    // Uploads the conflict-local copy [keptLocalEdit] that applyDownload moved aside, best effort, as applyKeepBoth
+    // uploads its copy: a failed upload leaves the copy local-only, and the next scan uploads it. A cancellation and
+    // an authentication failure are not swallowed: they fail the download that kept the copy.
+    private suspend fun uploadKeptLocalEdit(
+        keptLocalEdit: String,
+        remoteItem: CloudItem,
+    ) {
+        // archive#115: the copy belongs next to the canonical remote file, as the reconciler's own Upload would.
+        val canonicalCopy = remoteItem.path.substringBeforeLast('/') + "/" + keptLocalEdit.substringAfterLast('/')
+        val copyTarget = if (canonicalCopy != keptLocalEdit) canonicalCopy else null
+        try {
+            applyUpload(SyncAction.Upload(keptLocalEdit, remoteTarget = copyTarget), resolveRefusal = false)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: AuthenticationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("Conflict copy {} was kept locally but not uploaded yet: {}", keptLocalEdit, e.message)
         }
     }
 

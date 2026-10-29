@@ -1264,12 +1264,10 @@ class Reconciler(
             val local = safeResolveLocalOrNull(syncRoot, entry.path) ?: continue
             if (Files.isRegularFile(local)) holdsContent(entry.path)
         }
-        val tracked = dbEntries.filter { it.remoteId != null && it.status == EntryStatus.EXISTS }.mapTo(HashSet()) { it.path }
-        for (action in actions) {
-            if (action is SyncAction.DeleteLocal && firstUnreportedLocalEntry(action.path, tracked) != null) {
-                holders.add(action.path)
+        holders +=
+            foldersHoldingUnreportedLocalEntries(actions, dbEntries, syncRoot) { path, isDir ->
+                excludePatterns.any { matchesGlob(path, it) } || isIgnored(path, isDir) || isBlocked(path)
             }
-        }
         if (holders.isEmpty()) return
         val kept = mutableListOf<String>()
         val iterator = actions.listIterator()
@@ -1282,49 +1280,6 @@ class Reconciler(
         if (kept.isNotEmpty()) {
             log.warn("Not deleting {} local folder(s) the remote deleted: they hold local files the scan never reported, e.g. {}", kept.size, kept.first())
         }
-    }
-
-    // The first path under the folder [folderPath] (which itself is not judged) that deleteLocal would take with it
-    // and the scan never reports: an excluded, ignored or blocked entry, or one without a tracked file row (an alive
-    // row with a remote id). Null: everything below is tracked, the folder can go with its subtree. An excluded
-    // directory ends the walk: the scan skips such a subtree whole, so nothing below it is reported either.
-    private fun firstUnreportedLocalEntry(
-        folderPath: String,
-        tracked: Set<String>,
-    ): String? {
-        val folderLocal = safeResolveLocalOrNull(syncRoot, folderPath) ?: return null
-        if (!Files.isDirectory(folderLocal)) return null
-        var found: String? = null
-        runCatching {
-            Files.walkFileTree(
-                folderLocal,
-                object : java.nio.file.SimpleFileVisitor<Path>() {
-                    fun judge(local: Path, isDir: Boolean): java.nio.file.FileVisitResult {
-                        val path = PathNormalizer.nfc("/" + syncRoot.relativize(local).toString().replace('\\', '/'))
-                        val unreported =
-                            excludePatterns.any { matchesGlob(path, it) } ||
-                                isIgnored(path, isDir) ||
-                                isBlocked(path) ||
-                                path !in tracked
-                        if (unreported) found = path
-                        return if (unreported && isDir) java.nio.file.FileVisitResult.TERMINATE else java.nio.file.FileVisitResult.CONTINUE
-                    }
-
-                    override fun preVisitDirectory(
-                        dir: Path,
-                        attrs: BasicFileAttributes,
-                    ): java.nio.file.FileVisitResult =
-                        // The folder itself is the plan's business, not the walk's: only what it holds decides.
-                        if (dir == folderLocal) java.nio.file.FileVisitResult.CONTINUE else judge(dir, isDir = true)
-
-                    override fun visitFile(
-                        file: Path,
-                        attrs: BasicFileAttributes,
-                    ): java.nio.file.FileVisitResult = judge(file, isDir = false)
-                },
-            )
-        }
-        return found
     }
 
     private fun dropUnhydratedFolderDeletes(
@@ -2135,3 +2090,60 @@ private fun isBothNewFileConflict(
         action.remoteState == ChangeState.NEW &&
         action.remoteItem?.isFolder == false &&
         Files.isRegularFile(localFile(action.path), java.nio.file.LinkOption.NOFOLLOW_LINKS)
+
+// gkrost/unidrive-cli#79: the folders of [actions]' DeleteLocals that hold a local entry the scan never reports
+// (firstUnreportedLocalEntry), in plan order. A tracked file row is an alive row of [dbEntries] with a remote id.
+// [skippedByScan] is the reconciler's own rule for an entry the scan skips: excluded, ignored or blocked.
+private fun foldersHoldingUnreportedLocalEntries(
+    actions: List<SyncAction>,
+    dbEntries: List<SyncEntry>,
+    syncRoot: Path,
+    skippedByScan: (path: String, isDir: Boolean) -> Boolean,
+): List<String> {
+    val tracked = dbEntries.filter { it.remoteId != null && it.status == EntryStatus.EXISTS }.mapTo(HashSet()) { it.path }
+    return actions
+        .filterIsInstance<SyncAction.DeleteLocal>()
+        .filter { firstUnreportedLocalEntry(syncRoot, it.path, tracked, skippedByScan) != null }
+        .map { it.path }
+}
+
+// The first path under the folder [folderPath] (which itself is not judged) that deleteLocal would take with it
+// and the scan never reports: an entry [skippedByScan] (excluded, ignored or blocked), or one without a tracked file
+// row (an alive row with a remote id). Null: everything below is tracked, the folder can go with its subtree. An
+// excluded directory ends the walk: the scan skips such a subtree whole, so nothing below it is reported either.
+private fun firstUnreportedLocalEntry(
+    syncRoot: Path,
+    folderPath: String,
+    tracked: Set<String>,
+    skippedByScan: (path: String, isDir: Boolean) -> Boolean,
+): String? {
+    val folderLocal = safeResolveLocalOrNull(syncRoot, folderPath) ?: return null
+    if (!Files.isDirectory(folderLocal)) return null
+    var found: String? = null
+    runCatching {
+        Files.walkFileTree(
+            folderLocal,
+            object : java.nio.file.SimpleFileVisitor<Path>() {
+                fun judge(local: Path, isDir: Boolean): java.nio.file.FileVisitResult {
+                    val path = PathNormalizer.nfc("/" + syncRoot.relativize(local).toString().replace('\\', '/'))
+                    val unreported = skippedByScan(path, isDir) || path !in tracked
+                    if (unreported) found = path
+                    return if (unreported && isDir) java.nio.file.FileVisitResult.TERMINATE else java.nio.file.FileVisitResult.CONTINUE
+                }
+
+                override fun preVisitDirectory(
+                    dir: Path,
+                    attrs: BasicFileAttributes,
+                ): java.nio.file.FileVisitResult =
+                    // The folder itself is the plan's business, not the walk's: only what it holds decides.
+                    if (dir == folderLocal) java.nio.file.FileVisitResult.CONTINUE else judge(dir, isDir = true)
+
+                override fun visitFile(
+                    file: Path,
+                    attrs: BasicFileAttributes,
+                ): java.nio.file.FileVisitResult = judge(file, isDir = false)
+            },
+        )
+    }
+    return found
+}
