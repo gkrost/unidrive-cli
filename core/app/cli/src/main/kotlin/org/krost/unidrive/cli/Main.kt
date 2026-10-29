@@ -13,6 +13,7 @@ import org.krost.unidrive.sync.RawSyncConfig
 import org.krost.unidrive.sync.NoDefaultProfileException
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
+import org.krost.unidrive.io.childProcessBuilder
 import org.slf4j.MDC
 import picocli.CommandLine
 import picocli.CommandLine.Command
@@ -858,7 +859,7 @@ internal fun ntfsFileId(configFile: Path): String? {
     if (!System.getProperty("os.name").orEmpty().contains("windows", ignoreCase = true)) return null
     return try {
         val proc =
-            ProcessBuilder("fsutil", "file", "queryfileid", configFile.toAbsolutePath().toString())
+            childProcessBuilder(listOf("fsutil", "file", "queryfileid", configFile.toAbsolutePath().toString()))
                 .redirectErrorStream(true)
                 .start()
         val out =

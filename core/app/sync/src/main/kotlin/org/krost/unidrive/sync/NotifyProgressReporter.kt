@@ -1,8 +1,22 @@
 package org.krost.unidrive.sync
 
+import org.krost.unidrive.io.childProcessBuilder
 import org.krost.unidrive.http.UrlRedaction
 import org.slf4j.LoggerFactory
 import java.util.concurrent.TimeUnit
+
+/**
+ * The production executor of a desktop notification's command (#221): the notifier is a third-party program, so it never
+ * inherits [org.krost.unidrive.io.VAULT_PASSPHRASE_ENV] ([childProcessBuilder], #83 E), its output is discarded (a chatty
+ * child must not block on a full pipe) and a child that outlives the budget is destroyed, not left behind.
+ */
+internal val DEFAULT_NOTIFY_EXECUTOR: (List<String>) -> Unit = { cmd ->
+    val process = childProcessBuilder(cmd)
+        .redirectErrorStream(true)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        .start()
+    if (!process.waitFor(5, TimeUnit.SECONDS)) process.destroy()
+}
 
 /**
  * ProgressReporter that sends desktop notifications via notify-send.
@@ -11,9 +25,7 @@ import java.util.concurrent.TimeUnit
  */
 class NotifyProgressReporter(
     private val profileName: String,
-    private val commandExecutor: (List<String>) -> Unit = { cmd ->
-        ProcessBuilder(cmd).redirectErrorStream(true).start().waitFor(5, TimeUnit.SECONDS)
-    },
+    private val commandExecutor: (List<String>) -> Unit = DEFAULT_NOTIFY_EXECUTOR,
 ) : ProgressReporter {
     private val log = LoggerFactory.getLogger(NotifyProgressReporter::class.java)
 
@@ -88,7 +100,7 @@ class NotifyProgressReporter(
         /** Returns true if notify-send is available on the system. */
         fun isAvailable(): Boolean =
             try {
-                val p = ProcessBuilder("which", "notify-send").start()
+                val p = childProcessBuilder(listOf("which", "notify-send")).start()
                 p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) && p.exitValue() == 0
             } catch (_: Exception) {
                 false
