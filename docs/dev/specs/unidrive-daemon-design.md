@@ -1,6 +1,6 @@
 # `unidrive daemon` — per-profile long-lived IPC server
 
-**Status:** draft (2026-05-25)
+**Status:** implemented (first draft 2026-05-25; the daemon runs: `daemon.status` and `refresh.run` are registered in `DaemonRuntime`, and `ipc-write-protocol.md` is the wire contract in force)
 **Branches affected:** `unidrive` main repo (`core/app/cli/`, `core/app/sync/` minor), `unidrive-mount-linux` sibling (error-message wording only)
 **BACKLOG entry this spec resolves:** "`unidrive mount` has no JVM-side IPC server lifecycle (mount-only mode is dead-on-arrival)" — High tier in `BACKLOG.md`.
 **BACKLOG entries this spec defers:**
@@ -202,7 +202,7 @@ exit <the co-daemon's exit code, unchanged>.
 
 ### 4.1 Existing verbs (unchanged, inherited from current IpcServer)
 
-- `hydration.read`, `hydration.open_write`, `hydration.list`, `hydration.subscribe`
+- `hydration.open_read`, `hydration.open_write`, `hydration.list`, `hydration.subscribe`
 - `hydration.mkdir`, `hydration.unlink`, `hydration.rmdir` (Phase 2 namespace verbs)
 
 All reply shapes per the established pattern: `{"ok": true, ...}` on success, `{"ok": false, "error": "<wire-string>", "message": "..."}` on failure.

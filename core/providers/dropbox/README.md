@@ -24,7 +24,6 @@ unidrive does not ship a Dropbox app yet, so a profile names one:
 - **The grant:** PKCE with `token_access_type=offline`. The browser comes back to the loopback callback.
 - **The token:** `token.json` in the profile folder keeps a short-lived access token and the refresh token. A refresh answer carries no new refresh token, so the old one is kept.
 - **Device code:** Dropbox has none.
-- **Not covered:** `auth begin` / `auth complete` (the front-end flow that runs in separate processes) is not supported yet. The loopback listener cannot outlive `auth begin`.
 
 ## API surface used
 
@@ -64,6 +63,4 @@ Dropbox compares paths without case:
 
 ## Not yet
 
-- **Resumable upload sessions:** an interrupted session starts over.
-- **Front-end sign-in:** `auth begin` / `auth complete`.
 - **Live tests:** a test against a real account.

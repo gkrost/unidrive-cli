@@ -7,8 +7,8 @@ gets back, and the guarantees the daemon makes underneath. A co-client should
 be able to implement write-back from this document without reading engine
 code. Request/reply byte shapes are pinned by the golden corpus under
 `core/app/cli/src/test/resources/ipc-contract/` (replayed by
-`IpcContractCorpusTest`), and the end-to-end sequences below are pinned by
-`IpcWriteSequenceContractTest` over a live socket.
+`IpcContractCorpusTest`), and the end-to-end sequences below are pinned at the SPI level (section 9: `HydrationUploadQueueTest`,
+`HydrationScopeAndExclusionTest` and the tests beside them).
 
 **Touches:**
 - `core/app/hydration/src/main/kotlin/org/krost/unidrive/hydration/` — SPI, implementation, IPC handler.
@@ -275,6 +275,12 @@ hydration.refuse_name {path, clear:true} -> {"ok":true,"cleared":true|false}
   otherwise answer that create with `path_exists`.
 - `daemon.status` lists `hydration.refuse_name` in `capabilities` on an engine that answers the verb; a client sends it
   only then, and keeps the refusal to itself on an older engine.
+
+**`hydration.matches_local`.** `daemon.status` lists `hydration.matches_local` in `capabilities` on a daemon with a hydration layer
+(`MATCHES_LOCAL_CAPABILITY`, `StatusHealthJson.kt`). The verb takes a path and an absolute `local_path` and answers, without downloading the
+cloud copy, `same`, `differs` or `unknown` (with a reason; `unknown` is never a difference: the caller falls back to a download and a byte
+compare). It is write class although it changes nothing, because it reads a file the caller names (`ipc-authentication.md`). The request
+and reply are described in the KDoc of `HydrationIpcHandler`; `invalid_local_path` and `local_file_unreadable` are its refusals.
 
 **Browsing before the first scan has finished (`hydration.list_live`).** A profile's first enumeration writes its rows at
 the end of a scan that takes hours on a big drive (#27). On an engine that lists `hydration.list_live` in the

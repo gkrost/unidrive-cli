@@ -193,6 +193,11 @@ operator-facing semantics aren't fully captured here yet. Fill in as
 operator-facing behavior is touched. Test-only flags are intentionally
 excluded.
 
+- `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (S3: used when the profile names no bucket or keys; see `core/providers/s3/README.md`)
+- `CREDENTIALS_DIRECTORY` (a systemd credential directory: the file `unidrive-vault-pass` in it is the vault passphrase when `UNIDRIVE_VAULT_PASS` is not set)
+- `XDG_CACHE_HOME` (moves the hydration cache base on Linux)
+- `RUST_LOG` (the Linux FUSE co-daemon's log filter; `mount` defaults it to `info` when it is unset or blank)
+- `NO_COLOR` (switches ANSI colour off in the CLI output)
 - `UNIDRIVE_CONFIG_DIR`
 - `UNIDRIVE_DROPBOX_CLIENT_ID`, `UNIDRIVE_DROPBOX_OAUTH_PORT` (Dropbox: the app key when the profile has no `client_id`, and the OAuth callback port; see `core/providers/dropbox/README.md`)
 - `UNIDRIVE_STRICT_CONFIG`

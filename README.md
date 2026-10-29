@@ -93,7 +93,7 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 
 ### Session & Identity
 - `auth` — OAuth/token provisioning: the interactive sign-in, `begin` and `complete` (a sign-in in two steps, for front-ends), `login` (Internxt, without a console) and `check` (`--json`: asks the provider with one call whether the profile's stored sign-in is still accepted, with no daemon, scan, sync or prompt; [spec](docs/dev/specs/cli-auth-check.md)). A sign-in as another user than the one the profile's sync state belongs to is refused (`account_changed`) before anything is stored ([spec](docs/dev/specs/cli-account-name.md))
-- `profile` — multi-profile management (`add`, `list`, `remove`)
+- `profile` — multi-profile management (`add`, `list`, `remove`, `default`, `set`)
 - `backup` — backup profiles (`add`, `list`)
 - `logout` — sign out: remove stored credentials and revoke the token where the provider has a revoke call (Dropbox; for the others only the local credentials go, and the output says so); the sync state is kept (`--delete-state` removes it), and a running daemon performs the sign-out over IPC (`--json` for front-ends)
 
@@ -102,6 +102,9 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 - `refresh` — update `state.db` with remote changes through the running daemon (`--reset` re-enumerates the whole cloud tree)
 - `apply` — drain pending transfers left by a `refresh`, without fetching remote changes again
 - `status` — show alignment, transfers, exceptions
+- `pending` — `list` and `drop` the uploads waiting in a profile's queue
+- `rm` — remove a remote path ([spec](docs/dev/specs/cli-rm-command.md))
+- `autostart` — what the installed systemd unit runs: `sync --watch` for a mirror profile, `daemon run` for a mount profile
 - `scope` — show or change the sync scope (`sync_path`) of a profile: `show`, `set <paths...>`, `clear`. `set` and `clear` edit config.toml, apply the scope transition to `state.db` (rows outside the new scope stop being tracked; files stay), replace the scoped history with the new scope, and print what the next run does; after `clear` the next bidirectional sync reconciles the whole drive without `--full-tree`. Refused while a daemon or sync holds the profile; `--json` for front-ends
 - `conflicts` — show recent conflicts; restore or clear conflict backups (`list`, `restore`, `clear`)
 - `verify` — report-only audit of the sync root, `state.db` and a live remote listing (exit 0 converged, 1 divergence, 2 could not audit)
