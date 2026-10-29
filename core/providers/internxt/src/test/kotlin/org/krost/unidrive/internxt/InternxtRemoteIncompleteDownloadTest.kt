@@ -20,6 +20,7 @@ import org.krost.unidrive.RemoteObjectMissingDownloadException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.slf4j.LoggerFactory
 
@@ -40,6 +41,8 @@ class InternxtRemoteIncompleteDownloadTest {
     private val shardUrl1 = "https://shard-host.invalid/get/shard-0"
 
     private var declaredSize = "0"
+    private var metaFileId: String? = fileId
+    private var modificationTime: String? = null
     private var shardBody: ByteArray = "0123456789A".toByteArray()
     private var shardContentLength: String? = null
     private var bridgeInfoJson = ""
@@ -85,7 +88,27 @@ class InternxtRemoteIncompleteDownloadTest {
     }
 
     private fun fileMetaJson() =
-        """{"uuid":"$fileUuid","bucket":"$bucket","fileId":"$fileId","size":"$declaredSize","status":"EXISTS"}"""
+        buildString {
+            append("""{"uuid":"$fileUuid","bucket":"$bucket",""")
+            metaFileId?.let { append(""""fileId":"$it",""") }
+            modificationTime?.let { append(""""modificationTime":"$it",""") }
+            append(""""size":"$declaredSize","status":"EXISTS"}""")
+        }
+
+    // The bridge serves [plaintext] as the account's keys encrypt it, under the size the drive declares for it.
+    private fun serving(plaintext: ByteArray) {
+        val crypto = InternxtCrypto()
+        val indexBytes = InternxtCrypto.hexToBytes(index64)
+        val bucketKey = crypto.deriveBucketKey(
+            crypto.mnemonicToSeed("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"),
+            bucket,
+        )
+        val fileKey = crypto.deriveFileKey(bucketKey, indexBytes)
+        shardBody = crypto.createContentEncryptCipher(fileKey, indexBytes.copyOfRange(0, 16)).doFinal(plaintext)
+        declaredSize = plaintext.size.toString()
+        shardContentLength = shardBody.size.toString()
+        bridgeInfoJson = bridgeInfoJsonWith(listOf(shardUrl1))
+    }
 
     private fun bridgeInfoJsonWith(shardUrls: List<String>): String =
         buildString {
@@ -124,17 +147,7 @@ class InternxtRemoteIncompleteDownloadTest {
     fun `a streamed download returns the plaintext hash and staged file stats`() =
         kotlinx.coroutines.test.runTest {
             val plaintext = "downloaded Internxt content".toByteArray()
-            val crypto = InternxtCrypto()
-            val indexBytes = InternxtCrypto.hexToBytes(index64)
-            val bucketKey = crypto.deriveBucketKey(
-                crypto.mnemonicToSeed("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"),
-                bucket,
-            )
-            val fileKey = crypto.deriveFileKey(bucketKey, indexBytes)
-            shardBody = crypto.createContentEncryptCipher(fileKey, indexBytes.copyOfRange(0, 16)).doFinal(plaintext)
-            declaredSize = plaintext.size.toString()
-            shardContentLength = shardBody.size.toString()
-            bridgeInfoJson = bridgeInfoJsonWith(listOf(shardUrl1))
+            serving(plaintext)
             val provider = newProvider()
             val targetMtimeMillis = java.time.Instant.parse("2026-06-01T12:00:00Z").toEpochMilli()
 
@@ -150,6 +163,40 @@ class InternxtRemoteIncompleteDownloadTest {
             assertEquals(Files.size(destination), receipt.stagedSize)
             assertEquals(Files.getLastModifiedTime(destination).toMillis(), receipt.stagedMtimeMillis)
             assertTrue(Files.readAllBytes(destination).contentEquals(plaintext))
+        }
+
+    // gkrost/unidrive-cli#171: the receipt names the version the read resolved as a listing of the same metadata names it (the
+    // write token, the stored object, the modified time), whatever version the file was listed as before.
+    @Test
+    fun `the receipt names the version the read resolved, as a listing of that metadata does`() =
+        kotlinx.coroutines.test.runTest {
+            val plaintext = "downloaded Internxt content".toByteArray()
+            serving(plaintext)
+            modificationTime = "2026-06-01T12:00:00.000Z"
+            val provider = newProvider()
+
+            val receipt = provider.downloadByIdWithHash(fileUuid, "/downloaded.txt", destination)
+
+            assertEquals("$fileUuid|$modificationTime|${plaintext.size}", receipt.itemHash, "the write token a listing builds")
+            assertNull(receipt.itemVersion, "Internxt's token is its hash")
+            assertEquals(java.time.Instant.parse(modificationTime), receipt.itemModified)
+            assertEquals("$fileId|${plaintext.size}", receipt.contentId)
+        }
+
+    @Test
+    fun `the receipt of an empty file names the version it read`() =
+        kotlinx.coroutines.test.runTest {
+            metaFileId = null
+            declaredSize = "0"
+            modificationTime = "2026-06-01T12:00:00.000Z"
+            val provider = newProvider()
+
+            val receipt = provider.downloadByIdWithHash(fileUuid, "/empty.txt", destination)
+
+            assertEquals(0L, receipt.bytesWritten)
+            assertEquals("$fileUuid|$modificationTime|0", receipt.itemHash)
+            assertEquals(java.time.Instant.parse(modificationTime), receipt.itemModified)
+            assertEquals("|0", receipt.contentId)
         }
 
     // The live archive#536 shape: the shard response's Content-Length (298,844,160) is smaller than the
