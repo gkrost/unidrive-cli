@@ -4681,7 +4681,18 @@ class InternxtProvider(
 
         internal const val REWIND_CURSOR_SECONDS: Long = 120
 
-        fun pathSegments(path: String): List<String> = path.removePrefix("/").split("/").filter { it.isNotEmpty() }
+        /**
+         * The segments of [path], each in the one form a listing shows ([sanitizeName]: a control character at either end of a
+         * name is gone, a space stays). Every name the provider sends, caches or compares comes from here, so a name that is
+         * created under a path is found under that path (gkrost/unidrive-cli#180). A segment of control characters alone
+         * keeps its raw form: it must not turn into an empty one and select the folder above it.
+         */
+        fun pathSegments(path: String): List<String> =
+            path
+                .removePrefix("/")
+                .split("/")
+                .filter { it.isNotEmpty() }
+                .map { sanitizeName(it).ifEmpty { it } }
 
         // Build the archive plainName for the destructive-overwrite guard.
         // Returns `${plainName}.unidrive-prev-${yyyy-MM-dd'T'HH-mm-ss}` in UTC
