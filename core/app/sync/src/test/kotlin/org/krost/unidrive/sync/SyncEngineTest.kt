@@ -7,7 +7,9 @@ import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.*
 import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.sync.audit.AuditLog
+import org.krost.unidrive.sync.model.ChangeState
 import org.krost.unidrive.sync.model.ConflictPolicy
+import org.krost.unidrive.sync.model.SyncAction
 import org.krost.unidrive.sync.model.SyncEntry
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -4260,6 +4262,18 @@ class SyncEngineTest {
     // UD-256 — persist --sync-path scope across runs; refuse bare bidirectional
     // when prior scoped runs left an effective_scope behind.
 
+    // The conflict tests drive applyConflict directly: a last-writer-wins engine whose deletes are
+    // plain deletes (no trash round-trip asserting on OS-trash state).
+    private fun conflictEngine() =
+        SyncEngine(
+            provider = provider,
+            db = db,
+            syncRoot = syncRoot,
+            conflictPolicy = ConflictPolicy.LAST_WRITER_WINS,
+            reporter = ProgressReporter.Silent,
+            useTrash = false,
+        )
+
     private fun engineForScope(
         reporter: ProgressReporter = ProgressReporter.Silent,
         syncPath: String? = null,
@@ -5187,5 +5201,142 @@ class SyncEngineTest {
                     }
                 }
             assertTrue(messages.none { it.contains("outside the standing scope") }, "no drift expected: $messages")
+        }
+
+    @Test
+    fun `a remote folder delete keeps an excluded file below it`() =
+        runTest {
+            provider.files["/dir/a.txt"] = ByteArray(3)
+            provider.deltaItems = listOf(cloudItem("/dir", isFolder = true), cloudItem("/dir/a.txt", size = 3))
+            provider.deltaCursor = "cursor-1"
+            engine.syncOnce()
+            assertTrue(Files.exists(syncRoot.resolve("dir/a.txt")))
+
+            // The scan never reports the repository metadata below the folder; deleting the folder must not take it.
+            Files.createDirectories(syncRoot.resolve("dir/.git"))
+            Files.writeString(syncRoot.resolve("dir/.git/x"), "repository metadata")
+            provider.files.remove("/dir/a.txt")
+            provider.deltaItems =
+                listOf(cloudItem("/dir", isFolder = true, deleted = true), cloudItem("/dir/a.txt", deleted = true))
+            provider.deltaCursor = "cursor-2"
+            engine.syncOnce()
+
+            assertEquals(
+                "repository metadata",
+                Files.readString(syncRoot.resolve("dir/.git/x")),
+                "the excluded file the scan never reports survives",
+            )
+            assertFalse(Files.exists(syncRoot.resolve("dir/a.txt")), "the tracked, unchanged file below the folder is still deleted")
+            assertTrue(Files.isDirectory(syncRoot.resolve("dir")), "the folder stays for the content it holds")
+            assertEquals(listOf("/dir"), provider.createdFolders.toList(), "the folder the remote deleted is created again")
+        }
+
+    @Test
+    fun `a download keeps an edit that landed between the scan and the placement as a conflict copy`() =
+        runTest {
+            provider.files["/doc.txt"] = "remote bytes v1".toByteArray()
+            provider.deltaItems = listOf(cloudItem("/doc.txt", size = 15))
+            engine.syncOnce()
+            assertEquals("remote bytes v1", Files.readString(syncRoot.resolve("doc.txt")))
+
+            // The row's baseline is what the scan recorded. The user saves an edit while the download of the
+            // remote v2 is already planned; the placement must keep it instead of replacing it silently.
+            Files.writeString(syncRoot.resolve("doc.txt"), "a local edit during the pass")
+            provider.files["/doc.txt"] = "remote bytes v2".toByteArray()
+
+            engine.applyDownload(
+                SyncAction.DownloadContent("/doc.txt", cloudItem("/doc.txt", size = 15, hash = "hash-v2")),
+            )
+
+            val local = syncRoot.resolve("doc.txt")
+            assertEquals("remote bytes v2", Files.readString(local), "the canonical path takes the remote version")
+            val kept =
+                Files.walk(syncRoot).use { s ->
+                    s.filter { Files.isRegularFile(it) && it != local }.map { it.fileName.toString() to Files.readString(it) }.toList()
+                }
+            assertEquals(1, kept.size, "the edit that landed after the scan is kept as one conflict copy: $kept")
+            assertEquals("a local edit during the pass", kept[0].second, "the conflict copy holds the local edit")
+            assertTrue(kept[0].first.startsWith("doc.") && kept[0].first.endsWith(".txt"), "the copy sits beside the canonical file: ${kept[0].first}")
+            assertEquals(listOf("/" + kept[0].first), provider.uploadedPaths, "the kept copy is uploaded like a keep-both copy")
+            assertEquals("id-/doc.txt", db.getEntry("/doc.txt")?.remoteId, "the canonical row tracks the downloaded version")
+        }
+    @Test
+    fun `last-writer-wins against a newer remote tombstone applies the delete`() =
+        runTest {
+            Files.writeString(syncRoot.resolve("doc.txt"), "local edit")
+            val local = syncRoot.resolve("doc.txt")
+            Files.setLastModifiedTime(local, java.nio.file.attribute.FileTime.from(Instant.parse("2026-01-01T00:00:00Z")))
+            db.upsertEntry(
+                SyncEntry(
+                    path = "/doc.txt",
+                    remoteId = "id-remote",
+                    remoteHash = "hash-remote",
+                    remoteVersion = null,
+                    remoteSize = 11,
+                    remoteModified = Instant.parse("2025-12-01T00:00:00Z"),
+                    localMtime = Files.getLastModifiedTime(local).toMillis(),
+                    localSize = 10,
+                    isFolder = false,
+                    isPinned = false,
+                    isHydrated = true,
+                    lastSynced = Instant.parse("2025-12-01T00:00:00Z"),
+                ),
+            )
+            val tombstone = cloudItem("/doc.txt", deleted = true, hash = "hash-remote")
+
+            conflictEngine().applyConflict(
+                SyncAction.Conflict(
+                    path = "/doc.txt",
+                    localState = ChangeState.MODIFIED,
+                    remoteState = ChangeState.DELETED,
+                    remoteItem = tombstone,
+                    policy = ConflictPolicy.LAST_WRITER_WINS,
+                ),
+            )
+
+            assertFalse(Files.exists(local), "the newer tombstone wins: the local file is deleted")
+            assertNull(db.getEntry("/doc.txt"), "the row is tombstoned, not left unchanged")
+        }
+
+    @Test
+    fun `last-writer-wins against an older remote tombstone uploads the local edit as a new item`() =
+        runTest {
+            Files.writeString(syncRoot.resolve("doc.txt"), "local edit")
+            val local = syncRoot.resolve("doc.txt")
+            Files.setLastModifiedTime(local, java.nio.file.attribute.FileTime.from(Instant.parse("2027-01-01T00:00:00Z")))
+            db.upsertEntry(
+                SyncEntry(
+                    path = "/doc.txt",
+                    remoteId = "id-remote",
+                    remoteHash = "hash-remote",
+                    remoteVersion = null,
+                    remoteSize = 11,
+                    remoteModified = Instant.parse("2025-12-01T00:00:00Z"),
+                    localMtime = Files.getLastModifiedTime(local).toMillis(),
+                    localSize = 10,
+                    isFolder = false,
+                    isPinned = false,
+                    isHydrated = true,
+                    lastSynced = Instant.parse("2025-12-01T00:00:00Z"),
+                ),
+            )
+            val tombstone = cloudItem("/doc.txt", deleted = true, hash = "hash-remote")
+
+            conflictEngine().applyConflict(
+                SyncAction.Conflict(
+                    path = "/doc.txt",
+                    localState = ChangeState.MODIFIED,
+                    remoteState = ChangeState.DELETED,
+                    remoteItem = tombstone,
+                    policy = ConflictPolicy.LAST_WRITER_WINS,
+                ),
+            )
+
+            assertEquals(listOf("/doc.txt"), provider.uploadedPaths, "the local edit wins and is uploaded")
+            assertNull(
+                provider.lastUploadExistingRemoteId,
+                "the upload must not replace in place on the deleted item's id: it goes up as a new item",
+            )
+            assertEquals("id-/doc.txt", db.getEntry("/doc.txt")?.remoteId, "the row records the upload's new remote id")
         }
 }
