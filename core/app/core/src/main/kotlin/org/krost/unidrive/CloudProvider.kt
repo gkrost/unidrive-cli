@@ -475,6 +475,13 @@ interface CloudProvider {
     val reportsItemVersions: Boolean get() = false
 
     /**
+     * gkrost/unidrive-cli#202: true when the provider's listings name a file's bytes apart from its hash ([CloudItem.contentId];
+     * Internxt). A mount then fills the content id of rows written before it kept one, from one listing of their folders, once
+     * per profile. False (the default): the provider names none, and nothing is listed for it.
+     */
+    val reportsContentIds: Boolean get() = false
+
+    /**
      * Provider-specific status fields to render in `unidrive status`
      * after the shared fields (quota, tracked files, etc.). Empty
      * list (the default) means this provider contributes no extras.

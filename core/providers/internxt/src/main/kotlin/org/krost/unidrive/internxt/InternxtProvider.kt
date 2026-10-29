@@ -44,6 +44,9 @@ class InternxtProvider(
     // (default, deterministic collation), so `a.txt` and `A.txt` are two files.
     override val caseSensitivity: CaseSensitivity get() = CaseSensitivity.SENSITIVE
 
+    // gkrost/unidrive-cli#202: every file a listing converts names its stored object (CloudItem.contentId, internxtContentId).
+    override val reportsContentIds: Boolean get() = true
+
     // archive#578: the --upload-concurrency flag's runtime override of the profile's upload_concurrency
     // key; null leaves the key in force. [effectiveUploadConcurrency] is what the part loop reads.
     private var concurrencyOverride: Int? = null

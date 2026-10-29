@@ -61,6 +61,21 @@ class InternxtVersionTokenTest {
         assertEquals("obj-1|100", InternxtProvider.fileToDeltaCloudItem(listed, "").contentId)
     }
 
+    // gkrost/unidrive-cli#202: the mount fills the content id of a row from before the column from a folder listing (fileToCloudItem) only
+    // where that listing shows the token the row took from the delta (fileToDeltaCloudItem). Both must spell the same version alike.
+    @Test
+    fun `a folder listing and the delta give one version the same token and content id, and the provider says it names content`() {
+        val listed = file().copy(fileId = "obj-1")
+        val fromFolder = InternxtProvider.fileToCloudItem(listed, "/docs")
+        val fromDelta = InternxtProvider.fileToDeltaCloudItem(listed, "/docs")
+        assertEquals(fromDelta.hash, fromFolder.hash)
+        assertEquals(fromDelta.version, fromFolder.version)
+        assertEquals(fromDelta.size, fromFolder.size)
+        assertEquals(fromDelta.contentId, fromFolder.contentId)
+        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = java.nio.file.Files.createTempFile("ud-cid-token", ".tmp")))
+        assertTrue(provider.reportsContentIds)
+    }
+
     private fun providerWithMeta(
         metaJson: String,
         startCalls: AtomicInteger,

@@ -2,6 +2,7 @@ package org.krost.unidrive.hydration
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -23,6 +24,7 @@ import org.krost.unidrive.engine.CachePaths
 import org.krost.unidrive.engine.EnumerationEntryPoint
 import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.MountWiring
+import org.krost.unidrive.engine.RemoteEnumeration
 import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.engine.RemoteOperationGuard
 import org.krost.unidrive.engine.TransferPause
@@ -274,6 +276,69 @@ class MountEngine private constructor(
      * listing throws. See [LiveFolderList].
      */
     suspend fun listFolderLive(folder: String): List<SyncEntry>? = liveFolders.rowsOrNull(folder)
+
+    // gkrost/unidrive-cli#202: the content ids of the rows from before the column, filled once per profile.
+    private val contentIds =
+        ContentIdBackfill(
+            db = db,
+            reportsContentIds = provider.reportsContentIds,
+            mount =
+                object : ContentIdBackfill.Mount {
+                    private val reapGuards = RemoteEnumeration.ReapGuards(uploadInFlight, wiring.cachePathOf)
+
+                    override fun isReadOnlyPath(path: String) = guard.isReadOnlyPath(path)
+
+                    override fun holdsUnsyncedEdit(row: SyncEntry) = reapGuards.holdsUnsyncedEdit(row.path, row)
+
+                    override fun remotePathOf(
+                        path: String,
+                        row: SyncEntry?,
+                    ) = this@MountEngine.remotePathOf(path, row)
+
+                    override suspend fun listRemote(remotePath: String) =
+                        watchingCredentials { provider.listChildren(remotePath) }.also { recordProviderContact() }
+
+                    override fun providerReachable() = wiring.enumeration.tracker.snapshot().state != EnumerationStatus.State.FAILED
+
+                    override suspend fun beforeFolder() = pause.awaitResumed()
+
+                    // The folder, as the gather names a changed folder: a client lists it again (see ContentIdBackfill).
+                    override fun folderFilled(folder: String) = gather.invalidateView(setOf(folder.ifEmpty { "/" }), false)
+                },
+            log = log,
+        )
+
+    /** One pass of the content-id backfill; see [ContentIdBackfill]. */
+    internal suspend fun backfillContentIdsOnce(): ContentIdBackfill.Outcome = contentIds.pass()
+
+    /**
+     * gkrost/unidrive-cli#202: names the bytes of the rows written before state.db kept a content id, from one listing of each folder
+     * that holds such rows, once per profile ([ContentIdBackfill]). The daemon runs it in the background: the first pass waits
+     * [startDelayMs], a pass that stops (a failed listing) or finds no completed enumeration yet is tried again after [retryMs],
+     * and it returns once a pass has reached the end, or at once for a provider that names no content. A pass that fails
+     * outright is logged and tried again like one that stopped.
+     */
+    @Suppress("TooGenericExceptionCaught") // a background pass must not end the daemon's serve scope
+    suspend fun backfillContentIds(
+        startDelayMs: Long = ContentIdBackfill.START_DELAY_MS,
+        retryMs: Long = ContentIdBackfill.RETRY_MS,
+    ) {
+        if (!provider.reportsContentIds) return
+        delay(startDelayMs)
+        while (true) {
+            val outcome =
+                try {
+                    contentIds.pass()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log.warn("content ids: a pass failed; trying again later", e)
+                    null
+                }
+            if (outcome != null && outcome !is ContentIdBackfill.Outcome.AwaitingFirstScan && outcome !is ContentIdBackfill.Outcome.Stopped) return
+            delay(retryMs)
+        }
+    }
 
     /**
      * archive#580: an upload was refused because the provider's path walk found the folder [folderPath] (a remote path) gone.
