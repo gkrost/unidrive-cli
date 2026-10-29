@@ -15,7 +15,10 @@ data class DownloadReceipt(
     val contentId: String? = null,
     // The version this download read, as a listing of the same metadata names it ([CloudItem.hash], [CloudItem.version],
     // [CloudItem.modified]): a file that moved on since it was listed, or while it was read, is the version that came down. Null
-    // where the provider names no version for a download.
+    // where the provider names no version for a download. A receipt that names a version names it as the provider's own listing
+    // of that metadata does — every field a listing fills — because the row takes the named pair verbatim: a half-named one
+    // (a hash without the version the listing carries, or the other way round) would drop that identity off the row, and with
+    // it the token an edit's If-Match is drawn from.
     val itemHash: String? = null,
     val itemVersion: String? = null,
     val itemModified: Instant? = null,
