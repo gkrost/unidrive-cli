@@ -132,6 +132,12 @@ class LauncherTemplateTest {
                 arrayOf("daemon", "run") to "gc-default.log",
                 arrayOf("daemon", "run", "y") to "gc-y.log",
                 arrayOf("-p", "x", "daemon", "run", "--poll-interval", "30", "y") to "gc-y.log",
+                // gkrost/unidrive-cli#201: the value of a valued option is not the profile, whatever option it follows.
+                arrayOf("-p", "x", "daemon", "run", "--upload-concurrency", "8") to "gc-x.log",
+                arrayOf("-p", "x", "daemon", "run", "--poll-interval", "30") to "gc-x.log",
+                arrayOf("-p", "x", "daemon", "run", "--upload-concurrency", "8", "--poll-interval", "30") to "gc-x.log",
+                arrayOf("daemon", "run", "--upload-concurrency", "8", "y") to "gc-y.log",
+                arrayOf("-p", "x", "daemon", "run", "--upload-concurrency=8") to "gc-x.log",
                 arrayOf("--provider=z", "autostart") to "gc-z.log",
                 arrayOf("--provider", "w-1", "sync", "--watch") to "gc-w-1.log",
                 arrayOf("--profile=v_2", "autostart") to "gc-v_2.log",
@@ -144,6 +150,16 @@ class LauncherTemplateTest {
             assertEquals(file, Path.of(path).fileName.toString(), "GC log file for ${pass.toList()}")
             assertTrue(gc[0].endsWith(":time,uptime:filecount=5,filesize=10m"), "the rotation bound stays: ${gc[0]}")
         }
+    }
+
+    // gkrost/unidrive-cli#201: the template names the valued options of `daemon run` in one line; every option of the
+    // command that takes a value must be on it, or its value is taken for the profile. Read from the command itself, so a
+    // new valued option fails here instead of in a diagnostics folder full of gc-8.log.
+    @Test
+    fun `the powershell launcher skips the value of every valued option of daemon run`() {
+        val line = templateFile().toFile().readLines().single { it.trimStart().startsWith("\$daemonRunValued = @(") }
+        val named = Regex("'(--[a-z-]+)'").findAll(line).map { it.groupValues[1] }.toSet()
+        assertEquals(DaemonRunValuedOptions.fromCommand(), named, "valued options of daemon run vs the template: $line")
     }
 
     // archive#859: piped-in input is the script's $input; the JVM start must receive it (ignore_rules from a file,

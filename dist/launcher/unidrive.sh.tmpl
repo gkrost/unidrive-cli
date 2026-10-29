@@ -69,9 +69,12 @@ if [[ "$gc_at" -ge 0 ]]; then
         esac
     done
     if [[ "$gc_cmd" == "daemon" ]]; then
+        # The options of `daemon run` that take a value (gkrost/unidrive-cli#201): their value is not the profile. Keep this list
+        # equal to the valued options of DaemonRunCommand; LauncherShTemplateTest compares the two.
+        daemon_run_valued=(--poll-interval --upload-concurrency)
         for ((i = gc_at + 2; i < ${#pass[@]}; i++)); do
             a="${pass[i]}"
-            if [[ "$a" == "--poll-interval" ]]; then
+            if [[ " ${daemon_run_valued[*]} " == *" $a "* ]]; then
                 i=$((i + 1))
             elif [[ "$a" != -* ]]; then
                 gc_profile="$a"

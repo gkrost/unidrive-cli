@@ -85,8 +85,11 @@ if ($gcAt -ge 0) {
         elseif ($passArgs[$i] -cmatch '^-p=?(.+)$') { $gcProfile = $Matches[1] }
     }
     if ($passArgs[$gcAt] -ceq 'daemon') {
+        # The options of `daemon run` that take a value (gkrost/unidrive-cli#201): their value is not the profile. Keep this list
+        # equal to the valued options of DaemonRunCommand; LauncherTemplateTest compares the two.
+        $daemonRunValued = @('--poll-interval', '--upload-concurrency')
         for ($i = $gcAt + 2; $i -lt $passArgs.Count; $i++) {
-            if ($passArgs[$i] -ceq '--poll-interval') { $i++ }
+            if ($daemonRunValued -ccontains $passArgs[$i]) { $i++ }
             elseif (-not $passArgs[$i].StartsWith('-')) { $gcProfile = $passArgs[$i]; break }
         }
     }
