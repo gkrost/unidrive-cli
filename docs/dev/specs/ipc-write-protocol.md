@@ -317,6 +317,12 @@ the provider's name for the bytes of the version the row records:
 - **Where.** Every entry `hydration.list` writes (a view's entries included) and the entries of `view.page`, beside
   `etag`. No other reply carries a file's `etag`: the replies to `rename`, `open_write` and `create`, and the `completed`
   event, carry neither; a client reads both from the next `hydration.list`.
+- **`open_read` too.** The same engine answers `hydration.open_read` with the `content_id` of the bytes it served at
+  `cache_path`: `{"ok":true,"cache_path":"...","content_id":"<fileId>|5"}`. That way a client knows what a placeholder it
+  fills holds without waiting for a listing, and a rename right after the read compares as one. It is absent where the
+  bytes served are not provably that version: a cache copy that holds an unsynced edit (section 3.3), a kept-local copy
+  of an excluded name, and a copy a newer cloud version outlived during the read. It is absent too wherever the list
+  entry would have none.
 - Nothing else in the entry changes: `etag` stays the base for `base_etag`, and `remote_modified_ms` stays the cloud's
   modified time.
 

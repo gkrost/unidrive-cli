@@ -26,7 +26,9 @@ import java.util.concurrent.atomic.AtomicLong
  *               system cannot hold, and every verb for a path whose cache file would not lie inside
  *               the profile's hydration cache folder.
  *   open_read   request:  {"verb":"hydration.open_read","handle_id":"...","path":"/foo"}
- *   open_read   reply ok: {"ok":true,"cache_path":"/home/.../foo.txt"}
+ *   open_read   reply ok: {"ok":true,"cache_path":"/home/.../foo.txt"[,"content_id":"..."]}
+ *                         content_id (gkrost/unidrive-cli#171): the name of the bytes served, as hydration.list hands it out, where
+ *                         they are the version the row records (no unsynced edit, not a kept-local copy); absent otherwise.
  *   open_read   reply err:{"ok":false,"error":"<message>"}
  *                         an excluded cloud item answers with the `excluded` token without a download,
  *                         even if a warm cache copy exists.
@@ -614,10 +616,12 @@ class HydrationIpcHandler(
     // on the common (non-excluded) path is byte-identical to the pre-field
     // contract, and existing corpus lines stay valid.
     // `handle_id` likewise only for an id the daemon issued: a client that named its own gets the reply it always got.
+    // `content_id` (gkrost/unidrive-cli#171) only where open_read names the bytes it served.
     private fun openOkReply(r: OpenResult.Ok, issuedHandleId: String? = null): String {
         val handle = issuedHandleId?.let { ""","handle_id":${jsonEsc(it)}""" } ?: ""
         val excluded = if (r.excluded) ""","excluded":true""" else ""
-        return """{"ok":true,"cache_path":${jsonEsc(r.cachePath.toString())}$handle$excluded}"""
+        val contentId = r.contentId?.let { ""","content_id":${jsonEsc(it)}""" } ?: ""
+        return """{"ok":true,"cache_path":${jsonEsc(r.cachePath.toString())}$handle$excluded$contentId}"""
     }
 
     // A client-named handle id with the prefix of the ids the daemon issues: refused, so no client can hold one.

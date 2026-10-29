@@ -467,7 +467,7 @@ class HydrationImpl(
         // archive#652: a cold read is a download in the history; a warm serve never starts the handle, so it leaves no row.
         val tx = history?.begin(TransferDirection.DOWNLOAD, path, bytesTotal = entry.remoteSize.takeIf { it > 0 })
 
-        val cachePath = try {
+        val (cachePath, contentId) = try {
             // Always emit Hydrating + Hydrated, even when MountEngine returns a warm cache
             // without downloading: subscribers should see a consistent event stream
             // regardless of cache state; the cache layer is an implementation detail of
@@ -505,7 +505,11 @@ class HydrationImpl(
                     ok = true,
                 ),
             )
-            p
+            // gkrost/unidrive-cli#171: the name of the bytes served, so a client knows what its copy holds without a listing. Only
+            // while they are the version the row records: a copy with an unsynced edit, a kept-local (excluded) copy and a copy a
+            // newer version has outlived since the download hold other bytes.
+            val served = !current.isFolder && current.isHydrated && current.editBase == null && !mount.isExcludedPath(path, false)
+            p to current.remoteContentId?.takeIf { served }
         } catch (e: CancellationException) {
             // The request or the daemon was stopped: a cancellation, not a failed download (gkrost/unidrive-cli#80).
             tx.endDownloadFailed(e)
@@ -533,7 +537,7 @@ class HydrationImpl(
 
         registerHandle(connectionId, handleId, path)
         touch(path)
-        return OpenResult.Ok(cachePath)
+        return OpenResult.Ok(cachePath, contentId = contentId)
     }
 
     override suspend fun openForWrite(

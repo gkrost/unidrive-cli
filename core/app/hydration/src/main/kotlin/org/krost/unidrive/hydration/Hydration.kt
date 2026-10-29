@@ -154,6 +154,9 @@ sealed class OpenResult {
         // is accepted but the content is deliberately never uploaded (the
         // keep-local rule). Only serialized on the wire when true.
         val excluded: Boolean = false,
+        // gkrost/unidrive-cli#171: open_read only. The name of the bytes served at [cachePath] (SyncEntry.remoteContentId), where
+        // they are provably the version the row records; null otherwise, and only serialized on the wire when set.
+        val contentId: String? = null,
     ) : OpenResult()
     data class Failed(val error: HydrationError) : OpenResult()
 }

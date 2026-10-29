@@ -211,6 +211,9 @@ class HydrationListContentIdTest {
 
         suspend fun hydrate(path: String) = assertEquals("""{"ok":true}""", call("""{"verb":"hydration.hydrate","path":"$path"}"""))
 
+        suspend fun openRead(path: String): String =
+            call("""{"verb":"hydration.open_read","handle_id":"r-$path","path":"$path"}""").also { assertTrue(it.startsWith("""{"ok":true,"cache_path":"""), it) }
+
         suspend fun rename(
             from: String,
             to: String,
@@ -272,6 +275,41 @@ class HydrationListContentIdTest {
             assertEquals("true", refreshed.field("hydrated"), "a rename changes no byte")
         }
 
+    // A client learns what a placeholder holds when it fills it (open_read), not only from a listing: a file opened and then
+    // renamed before any listing compares the id it was served with the one the list gives after the rename.
+    @Test
+    fun `open_read names the bytes it served, and the list gives the same content_id after a rename`() =
+        runBlocking {
+            val drive = ObjectNamingDrive()
+            drive.seed("/a.txt", "hello".toByteArray())
+            val mount = Mount(drive)
+            mount.scan()
+
+            val served = mount.openRead("/a.txt")
+
+            assertEquals("\"obj-1|5\"", served.field("content_id"), "a cold read names the bytes it downloaded: $served")
+            assertEquals("\"obj-1|5\"", mount.openRead("/a.txt").field("content_id"), "and so does a warm one")
+            mount.rename("/a.txt", "/b.txt")
+            assertEquals(served.field("content_id"), mount.entry("/b.txt").field("content_id"))
+        }
+
+    @Test
+    fun `open_read of a copy that holds an unsynced edit names no bytes`() =
+        runBlocking {
+            val drive = ObjectNamingDrive()
+            drive.seed("/a.txt", "hello".toByteArray())
+            val mount = Mount(drive)
+            mount.scan()
+            mount.hydrate("/a.txt")
+            // The client starts an edit: the cache copy is now the copy of record, and not the cloud's version.
+            assertTrue(mount.call("""{"verb":"hydration.open_write_begin","path":"/a.txt","handle_id":"w-1"}""").startsWith("""{"ok":true"""))
+
+            val served = mount.openRead("/a.txt")
+
+            assertNull(served.field("content_id"), "the served bytes are the edit's: $served")
+            assertEquals("\"obj-1|5\"", mount.entry("/a.txt").field("content_id"), "the list still names the cloud's version")
+        }
+
     @Test
     fun `a re-upload lists another content_id, also where the token stays`() =
         runBlocking {
@@ -319,12 +357,12 @@ class HydrationListContentIdTest {
             provider.seed("/b.txt", ByteArray(0))
             val mount = Mount(provider)
             mount.scan()
-            mount.hydrate("/docs/a.txt")
+            val read = mount.openRead("/docs/a.txt")
             mount.rename("/docs/a.txt", "/docs/c.txt")
 
-            val replies = listOf(mount.list("/"), mount.list("/docs"))
+            val replies = listOf(read, mount.list("/"), mount.list("/docs"))
 
-            assertTrue(replies.all { it.contains("\"etag\":") }, "the entries are there: $replies")
+            assertTrue(replies.drop(1).all { it.contains("\"etag\":") }, "the entries are there: $replies")
             assertFalse(replies.any { it.contains("content_id") }, "no key where the provider names nothing: $replies")
         }
 
