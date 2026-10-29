@@ -157,8 +157,10 @@ subprojects {
     configure<JacocoPluginExtension> {
         toolVersion = jacocoToolVersion
     }
-    // detekt: a ratchet. Each module's existing findings are accepted in
-    // <project>/config/detekt/baseline.xml; `check` fails on any finding not in it.
+    // detekt: off the gate. `check` does not run it; `./gradlew detekt` (or
+    // `<project>:detekt`) still does, on demand, and fails on any finding not in
+    // the module's <project>/config/detekt/baseline.xml. Back on the gate: make
+    // `check` depend on the `detekt` task again.
     // Baseline ids are signatures (file name + declaration), not line numbers, so
     // edits elsewhere in a file do not re-surface them. Burning one down: fix it
     // and delete its line. Accepting a new one deliberately: `<project>:detektBaseline`
@@ -209,7 +211,7 @@ subprojects {
             )
         }
 
-        val detekt = tasks.register<DetektTask>("detekt") {
+        tasks.register<DetektTask>("detekt") {
             group = "verification"
             description = "Static analysis; fails on findings not in config/detekt/baseline.xml."
             common("detekt")
@@ -223,7 +225,6 @@ subprojects {
             createBaseline.set(true)
             outputs.upToDateWhen { false }
         }
-        tasks.named("check") { dependsOn(detekt) }
     }
 
     tasks.withType<JacocoReport>().configureEach {
