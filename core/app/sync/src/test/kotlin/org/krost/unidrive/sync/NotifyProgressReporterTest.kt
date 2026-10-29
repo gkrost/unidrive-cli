@@ -58,6 +58,6 @@ class NotifyProgressReporterTest {
             Thread.sleep(50)
         }
         assertTrue(destroyed, "the child was not destroyed (no SIGTERM reached its trap) after ${elapsed} ms")
-        Files.deleteIfExists(marker.parent)
+        marker.parent.toFile().deleteRecursively()
     }
 }
