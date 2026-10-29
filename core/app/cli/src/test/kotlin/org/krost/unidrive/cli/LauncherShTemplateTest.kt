@@ -171,4 +171,27 @@ class LauncherShTemplateTest {
         assertEquals("heap-work.hprof", dumpFile(run(j25, "-p", "work", "daemon", "run")))
         assertEquals("heap-default.hprof", dumpFile(run(j25, "status")))
     }
+
+    // gkrost/unidrive-cli#201: the value of a valued option of `daemon run` is not the profile: --upload-concurrency 8
+    // made the profile `8`, so every daemon started with that concurrency shared gc-8.log and heap-8.hprof.
+    @Test
+    fun `the launcher does not take the value of a daemon run option for the profile`() {
+        val j25 = fakeJdk(dir.resolve("jvm"), "jdk-25", "25.0.4")
+        fun logAndDump(r: Run): Pair<String, String> =
+            Path.of(r.args.last { it.startsWith("-Xlog:gc*:file=") }.removePrefix("-Xlog:gc*:file=").substringBefore(":time,")).fileName.toString() to
+                Path.of(r.args.last { it.startsWith("-XX:HeapDumpPath=") }.removePrefix("-XX:HeapDumpPath=")).fileName.toString()
+        val work = "gc-work.log" to "heap-work.hprof"
+        assertEquals(work, logAndDump(run(j25, "-p", "work", "daemon", "run", "--upload-concurrency", "8")))
+        assertEquals(work, logAndDump(run(j25, "-p", "work", "daemon", "run", "--poll-interval", "30")))
+        assertEquals(work, logAndDump(run(j25, "-p", "work", "daemon", "run", "--upload-concurrency", "8", "--poll-interval", "30")))
+        assertEquals(work, logAndDump(run(j25, "-p", "work", "daemon", "run", "--upload-concurrency=8")))
+        assertEquals("gc-y.log" to "heap-y.hprof", logAndDump(run(j25, "daemon", "run", "--upload-concurrency", "8", "y")))
+    }
+
+    @Test
+    fun `the launcher skips the value of every valued option of daemon run`() {
+        val line = launcherDir().resolve("unidrive.sh.tmpl").toFile().readLines().single { it.trimStart().startsWith("daemon_run_valued=(") }
+        val named = Regex("(--[a-z-]+)").findAll(line).map { it.groupValues[1] }.toSet()
+        assertEquals(DaemonRunValuedOptions.fromCommand(), named, "valued options of daemon run vs the template: $line")
+    }
 }
