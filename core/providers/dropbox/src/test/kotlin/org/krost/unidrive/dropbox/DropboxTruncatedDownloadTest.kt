@@ -38,6 +38,7 @@ class DropboxTruncatedDownloadTest {
     @Test
     fun `a short body against a larger Content-Length fails and leaves no trace`() = runTest {
         val fake = FakeDropbox()
+        fake.json("files/get_metadata", FakeDropbox.file("/f.txt", "id:1"))
         fake.on("files/download") {
             FakeDropbox.Answer(
                 bytes = ByteArray(5),
@@ -69,6 +70,7 @@ class DropboxTruncatedDownloadTest {
     fun `a complete download still replaces the destination`() = runTest {
         val fake = FakeDropbox()
         val payload = "FRESH-BYTES".toByteArray()
+        fake.json("files/get_metadata", FakeDropbox.file("/f.txt", "id:1"))
         fake.on("files/download") {
             FakeDropbox.Answer(bytes = payload, headers = mapOf(DropboxApi.API_RESULT to FakeDropbox.file("/f.txt", "id:1")))
         }

@@ -18,6 +18,7 @@ import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.ScanProgress
+import org.krost.unidrive.http.UploadTimeoutPolicy
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -119,13 +120,18 @@ class S3Provider(
     override suspend fun download(
         remotePath: String,
         destination: Path,
-    ): Long =
-        try {
-            api.get(keyOf(remotePath), destination)
+    ): Long {
+        val key = keyOf(remotePath)
+        // The declared size sizes the request timeout (the flat 10 minute cap cut every download that needs longer);
+        // the HEAD also answers "gone" before the GET is spent on it.
+        val head = api.head(key) ?: throw PermanentDownloadFailureException("S3 has no object at '$remotePath' any more")
+        return try {
+            api.get(key, destination, timeoutMs = UploadTimeoutPolicy.computeRequestTimeoutMs(head.size))
         } catch (e: S3Exception) {
             if (e.status == 404) throw PermanentDownloadFailureException("S3 has no object at '$remotePath' any more", e, e.requestId)
             throw e
         }
+    }
 
     override suspend fun verifyItemExists(remoteId: String): CapabilityResult<Boolean> {
         val exists =

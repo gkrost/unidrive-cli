@@ -142,6 +142,7 @@ class DropboxApi(
     suspend fun download(
         path: String,
         destination: Path,
+        requestTimeoutMs: Long? = null,
     ): Pair<JsonObject, Long> {
         var refreshed = false
         var throttleAttempts = 0
@@ -154,6 +155,12 @@ class DropboxApi(
                     bearerAuth(accessToken(refreshed))
                     pathRoot?.let { header(PATH_ROOT, it) }
                     header(API_ARG, headerSafeJson(obj("path" to path)))
+                    // Ktor counts the request timeout up to the end of the `execute` block, so the client's flat 10 minute
+                    // cap cut every download that needs longer, steady transfer or not. The socket timeout stays at its
+                    // default: during a download the read-idle timer is the stall detector.
+                    if (requestTimeoutMs != null) {
+                        timeout { requestTimeoutMillis = requestTimeoutMs }
+                    }
                 }
             val outcome: Fetch =
                 statement.execute { response ->
