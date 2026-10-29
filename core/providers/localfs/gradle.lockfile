@@ -2,8 +2,8 @@
 # Manual edits can break the build and are not advised.
 # This file is expected to be part of source control.
 # To regenerate this file, run: ./gradlew :providers:localfs:dependencies --write-locks
-ch.qos.logback:logback-classic:1.6.5=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
-ch.qos.logback:logback-core:1.6.5=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+ch.qos.logback:logback-classic:1.6.6=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+ch.qos.logback:logback-core:1.6.6=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 dev.drewhamilton.poko:poko-annotations-jvm:0.17.1=detekt
 dev.drewhamilton.poko:poko-annotations:0.17.1=detekt
 io.github.davidburstrom.contester:contester-breakpoint:0.2.0=detekt
