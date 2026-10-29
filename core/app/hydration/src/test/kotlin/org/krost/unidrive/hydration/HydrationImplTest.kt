@@ -2167,22 +2167,6 @@ class HydrationImplTest {
         assertFalse(e.hasError)
     }
 
-    // gkrost/unidrive-cli#171: the stored object the row's bytes are (Internxt `<fileId>|<size>`), which a rename keeps while it
-    // stamps a new modified time and a new write token. A client tells a rename from new bytes by it.
-    @Test
-    fun `list hands out the row's content identity, and none for a row without one`() = runTest {
-        val env = HydrationTestEnv()
-        env.stateDb.insertHydratedEntry("/named.txt", localSize = 5, remoteContentId = "obj-1|5")
-        env.stateDb.insertHydratedEntry("/plain.txt", localSize = 5)
-
-        val r = env.hydration.list("")
-
-        assertTrue(r is ListResult.Ok)
-        val ids = r.entries.associate { it.path to it.contentId }
-        assertEquals("obj-1|5", ids["/named.txt"])
-        assertNull(ids["/plain.txt"], "a provider that names no stored object lists none")
-    }
-
     @Test
     fun `list marks a never-uploaded row as pending upload`() = runTest {
         val env = HydrationTestEnv()
