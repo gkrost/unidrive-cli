@@ -79,6 +79,8 @@ internal data class UploadDriveFolder(
  */
 internal class UploadDrive(
     private val bucketEntryId: String = "bucket-entry-1",
+    /** The server's own clock: when set, every answer carries it as its `Date` header, and `GET /users/usage` answers. */
+    private val serverClock: (() -> Instant)? = null,
 ) {
     val files = CopyOnWriteArrayList<UploadDriveFile>()
     val folders = CopyOnWriteArrayList<UploadDriveFolder>()
@@ -110,7 +112,14 @@ internal class UploadDrive(
     @Volatile var batchAnswerOrder: (List<UploadDriveFolder>) -> List<UploadDriveFolder> = { it }
 
     private val shardUrl = "https://shard-host.invalid/put"
-    private val jsonHeaders = headersOf("Content-Type", "application/json")
+    private val jsonHeaders
+        get() =
+            serverClock?.let {
+                headersOf(
+                    "Content-Type" to listOf("application/json"),
+                    "Date" to listOf(java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME.format(it().atZone(java.time.ZoneOffset.UTC))),
+                )
+            } ?: headersOf("Content-Type", "application/json")
 
     private fun fileJson(f: UploadDriveFile) =
         "{\"uuid\":\"${f.uuid}\",\"plainName\":${JsonPrimitive(f.plainName)},\"type\":${f.type?.let { JsonPrimitive(it).toString() } ?: "null"}," +
@@ -276,6 +285,8 @@ internal class UploadDrive(
                         }
                     respond(rows.joinToString(",", "[", "]"), HttpStatusCode.OK, jsonHeaders)
                 }
+                serverClock != null && request.method == HttpMethod.Get && path.endsWith("/users/usage") ->
+                    respond("""{"drive":0}""", HttpStatusCode.OK, jsonHeaders)
                 else -> error("unexpected request in UploadDrive: ${request.method.value} $url")
             }
         }

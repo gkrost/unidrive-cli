@@ -114,6 +114,29 @@ class InternxtApiService(
         requestMetrics.sink = sink
     }
 
+    // gkrost/unidrive-cli#181: the server's clock less the client's, in ms, from the `Date` header of the newest successful drive
+    // answer; null until one carried a time. The answer's second-resolution header and its transit are well inside the cursor's
+    // rewind window.
+    private val serverClockOffsetMs = java.util.concurrent.atomic.AtomicReference<Long?>(null)
+
+    /** The server's clock now, from the newest `Date` header seen; null when no answer has carried one yet. */
+    internal fun serverNowOrNull(): java.time.Instant? = serverClockOffsetMs.get()?.let { java.time.Instant.now().plusMillis(it) }
+
+    // An answer that names its age came from a cache and says nothing about the server's clock now.
+    private fun noteServerTime(response: HttpResponse) {
+        if (response.headers[HttpHeaders.Age] != null) return
+        val raw = response.headers[HttpHeaders.Date] ?: return
+        val server =
+            try {
+                java.time.ZonedDateTime
+                    .parse(raw, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
+                    .toInstant()
+            } catch (_: java.time.format.DateTimeParseException) {
+                return
+            }
+        serverClockOffsetMs.set(server.toEpochMilli() - java.time.Instant.now().toEpochMilli())
+    }
+
     companion object {
         /** Total backoff a connect failure inside an enumeration may wait before the call fails ([EnumerationOutageRetry]). */
         internal const val CONNECT_OUTAGE_BUDGET_MS: Long = 180_000L
@@ -1849,6 +1872,7 @@ class InternxtApiService(
                                     }
                                 }
                             checkResponse(response)
+                            noteServerTime(response)
                             driveBudget.recordSuccess()
                             GetReply(response.bodyAsText(), extractRequestId(response))
                         } catch (e: InternxtApiException) {

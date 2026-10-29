@@ -229,6 +229,8 @@ internal class DriveMock(
                     path.endsWith("/drive/files/sync") -> "files"
                     else -> null
                 }
+            // The server-time probe of gkrost/unidrive-cli#181 (one cheap GET before a full gather) is no listing.
+            if (stream == null && path.endsWith("/users/usage")) return@MockEngine respond("""{"drive":0}""", HttpStatusCode.OK, jsonHeaders)
             if (stream == null) {
                 other += request.url.toString()
                 when {
