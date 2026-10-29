@@ -70,8 +70,21 @@ class FakeCloudProvider : CloudProvider {
     // archive#123: created-folder order, captured under the bounded-concurrency
     // create-folder run. Thread-safe because createFolder runs from
     // concurrent coroutines; the synchronized list preserves completion
-    // order for the parent-before-child ordering assertion.
+    // order for the parent-before-child ordering assertion. Call history only: a later move or delete does not
+    // rewrite it, and the move checks read the live state in liveItems instead.
     val createdFolders: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+
+    // gkrost/unidrive-cli#64 review: the live state the move checks consult, kept apart from the call history
+    // (createdFolders, movedPaths, deletedPaths) and from what a test seeds (deltaItems, metadataOverride).
+    // liveItems maps path -> isFolder for what the fake itself placed: the folders createFolder made and whatever
+    // a move carried to a new path; delete drops its entries. retiredSeeds holds, by identity, the seeded listing
+    // entries a move took away from their old path, so that path is free again while an entry a test seeds
+    // afterwards still counts.
+    private val liveItems = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val retiredSeeds: MutableSet<CloudItem> =
+        java.util.Collections.synchronizedSet(
+            java.util.Collections.newSetFromMap(java.util.IdentityHashMap<CloudItem, Boolean>()),
+        )
 
     // Paths whose createFolder must throw, simulating a single provider
     // mkdir failure mid-bulk-import (the rest of the plan must still apply).
@@ -302,6 +315,7 @@ class FakeCloudProvider : CloudProvider {
             throw ProviderException("Network timeout on delete")
         }
         deletedPaths.add(remotePath)
+        liveItems.keys.removeIf { it == remotePath || it.startsWith("$remotePath/") }
     }
 
     override suspend fun createFolder(path: String): CloudItem {
@@ -313,6 +327,7 @@ class FakeCloudProvider : CloudProvider {
             throw ProviderException("Create folder failed: 409 Conflict - nameAlreadyExists")
         }
         createdFolders.add(path)
+        liveItems[path] = true
         return CloudItem(
             id = "id-$path",
             name = path.substringAfterLast("/"),
@@ -347,11 +362,42 @@ class FakeCloudProvider : CloudProvider {
                     a.substring(0, prefix.length + 1).equals("$prefix/", ignoreCase = caseSensitivity != CaseSensitivity.SENSITIVE)
             )
 
-    // Paths the fake models as alive: the files it holds, folders a test staged or the engine created, the
-    // current delta listing, the metadata overrides — minus what the fake saw deleted.
+    // The listing a test seeded, as (path, item): the delta items and the metadata overrides a move has not retired.
+    private fun liveSeeds(): List<Pair<String, CloudItem>> =
+        (deltaItems.map { it.path to it } + metadataOverride.entries.map { it.key to it.value })
+            .filter { (_, item) -> item !in retiredSeeds }
+
+    // Paths the fake models as alive: the files it holds, the folders a test staged, the seeded listing a move has
+    // not retired — minus what the fake saw deleted — and what the fake itself placed (liveItems, which a delete
+    // keeps current, so a folder created again after a delete counts).
     private fun alivePaths(): List<String> {
-        val known = files.keys + remoteFoldersExisting + createdFolders + deltaItems.map { it.path } + metadataOverride.keys
-        return known.filter { p -> deletedPaths.none { d -> p == d || p.startsWith("$d/") } }
+        val known = files.keys + remoteFoldersExisting + liveSeeds().map { it.first }
+        return known.filter { p -> deletedPaths.none { d -> p == d || p.startsWith("$d/") } } + liveItems.keys
+    }
+
+    private fun isLiveFolder(path: String): Boolean =
+        path in remoteFoldersExisting ||
+            liveItems[path] == true ||
+            liveSeeds().any { (p, item) -> p == path && item.isFolder }
+
+    // The live-state half of a move: what the fake placed at or under the source goes to the target, the seeded
+    // entries there are retired and their repathed copies become the fake's own, and a moved folder's target is
+    // recorded as a live folder. The call history (createdFolders) and the seeded listing stay as they were.
+    private fun carryLiveState(
+        fromPath: String,
+        toPath: String,
+        movedFolder: Boolean,
+    ) {
+        fun atOrUnder(p: String) = p == fromPath || p.startsWith("$fromPath/")
+
+        fun repath(p: String) = toPath + p.substring(fromPath.length)
+        val placed = liveItems.filterKeys(::atOrUnder)
+        placed.keys.forEach { liveItems.remove(it) }
+        val seeds = liveSeeds().filter { (p, _) -> atOrUnder(p) }
+        seeds.forEach { (_, item) -> retiredSeeds.add(item) }
+        placed.forEach { (p, isFolder) -> liveItems[repath(p)] = isFolder }
+        seeds.forEach { (p, item) -> liveItems[repath(p)] = item.isFolder }
+        if (movedFolder) liveItems[toPath] = true
     }
 
     private fun targetOccupied(
@@ -374,12 +420,7 @@ class FakeCloudProvider : CloudProvider {
             } else {
                 files.filterKeys { it.startsWith("$fromPath/") }
             }
-        val folderIsKnown =
-            fromPath in remoteFoldersExisting ||
-                createdFolders.contains(fromPath) ||
-                deltaItems.any { it.path == fromPath && it.isFolder } ||
-                metadataOverride[fromPath]?.isFolder == true
-        if (content == null && subtree.isEmpty() && !folderIsKnown) {
+        if (content == null && subtree.isEmpty() && !isLiveFolder(fromPath)) {
             throw ProviderException("Not found: $fromPath")
         }
         if (targetOccupied(fromPath, toPath)) {
@@ -392,6 +433,7 @@ class FakeCloudProvider : CloudProvider {
         val movedFolderMarkers = remoteFoldersExisting.filter { it == fromPath || it.startsWith("$fromPath/") }
         remoteFoldersExisting.removeAll(movedFolderMarkers.toSet())
         movedFolderMarkers.forEach { remoteFoldersExisting.add(toPath + it.substring(fromPath.length)) }
+        carryLiveState(fromPath, toPath, movedFolder = content == null)
         movedPaths.add(Pair(fromPath, toPath))
         val id = carriedId ?: "id-$fromPath"
         return if (content != null) {
