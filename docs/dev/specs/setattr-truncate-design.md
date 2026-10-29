@@ -1,6 +1,6 @@
 # setattr / truncate for the FUSE mount — Design
 
-**Status:** Proposed — design doc, not yet implemented.
+**Status:** JVM side implemented (`hydration.open_write_begin` is in `HydrationIpcHandler.VERBS`, wire shape in `ipc-write-protocol.md`); the co-daemon side lives in the sibling repository.
 **Version:** 2 — incorporates spec-review feedback (mandated `O_TRUNC` handling, directory rejection on the new verb, `set_len` failure path, synchronous-commit blocking documented, concurrent-write+truncate race test, `create`-precedent reuse, sparse-truncate follow-up).
 **Origin:** `unidrive-mount-linux/BACKLOG.md` High item "`setattr` is unimplemented — chmod/chown/utimes and especially truncate/ftruncate", surfaced by the FUSE-transparency review (`docs/dev/specs/fuse-transparency-coverage.md`).
 **Touches:**

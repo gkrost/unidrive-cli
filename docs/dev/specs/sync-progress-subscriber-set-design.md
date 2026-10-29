@@ -1,6 +1,6 @@
 # Sync-Progress Subscriber Set — Design
 
-**Status:** Proposed — design doc, not yet implemented. Revised after deep-review pass surfaced eight findings against the first draft (`479d5d0` + `3944481`); this revision is end-to-end consistent against all eight.
+**Status:** Implemented (`IpcServer.syncSubscribers`, the `sync.subscribe` verb registered in `DaemonRuntime`, `IpcSyncSubscriberSetTest`). Revised after deep-review pass surfaced eight findings against the first draft (`479d5d0` + `3944481`); this revision is end-to-end consistent against all eight.
 **Origin:** Phase 2 mount smoke-test finding, BACKLOG entry committed in `1de0cb3`, refined in `013da46`.
 **Touches:**
 - `core/app/sync/src/main/kotlin/org/krost/unidrive/sync/IpcServer.kt` (broadcast filter, new public methods, dispatchRequest extension for post-reply hook).
