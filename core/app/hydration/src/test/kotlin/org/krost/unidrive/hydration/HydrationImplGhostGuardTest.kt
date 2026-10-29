@@ -18,6 +18,7 @@ import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -48,6 +49,9 @@ class HydrationImplGhostGuardTest {
         val ghostId = "real-ghost-uuid"
         var ghostSize = GHOST_SIZE
         var ghostHash: String? = "ghost-hash"
+
+        // The name of the ghost's bytes, where the provider gives one (Internxt: its stored object and size); a move keeps it.
+        var ghostContentId: String? = null
         var algorithm: HashAlgorithm? = null
 
         // What contentMatchesLocal answers (a provider without a content hash proving from its stored object).
@@ -79,6 +83,7 @@ class HydrationImplGhostGuardTest {
                     created = null,
                     hash = ghostHash,
                     mimeType = null,
+                    contentId = ghostContentId,
                 )
             } else {
                 throw ProviderException("Item not found: $path")
@@ -108,6 +113,7 @@ class HydrationImplGhostGuardTest {
                 created = null,
                 hash = ghostHash,
                 mimeType = null,
+                contentId = ghostContentId,
             )
         }
 
@@ -178,6 +184,24 @@ class HydrationImplGhostGuardTest {
             val moved = db.getEntry("/renamed.deb")
             assertNotNull(moved, "row present at the new path")
             assertEquals(provider.ghostId, moved.remoteId, "row must adopt the real remote id (no longer a local: ghost)")
+        }
+
+    // gkrost/unidrive-cli#171: the probe proved the item holds the row's bytes, so the row names them as the item does, and a
+    // client listing it at once can tell the rename from new bytes.
+    @Test
+    fun `ghost rename records the stored object the probe found`() =
+        runTest {
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/ghost.deb")
+            provider.ghostAt = "/ghost.deb"
+            provider.ghostContentId = "obj-ghost|$GHOST_SIZE"
+
+            assertEquals(RenameResult.Ok, hydration.rename("/ghost.deb", "/renamed.deb"))
+
+            assertEquals("obj-ghost|$GHOST_SIZE", assertNotNull(db.getEntry("/renamed.deb")).remoteContentId)
+            val listed = assertIs<ListResult.Ok>(hydration.list("/")).entries.single { it.path == "/renamed.deb" }
+            assertEquals("obj-ghost|$GHOST_SIZE", listed.contentId)
         }
 
     @Test

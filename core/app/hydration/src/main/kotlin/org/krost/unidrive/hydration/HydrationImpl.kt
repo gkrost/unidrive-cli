@@ -3002,6 +3002,8 @@ class HydrationImpl(
                                 remoteVersion = null,
                                 remoteSize = ghost.size,
                                 remoteModified = ghost.modified,
+                                // gkrost/unidrive-cli#171: the probe proved these are the row's bytes, and a move keeps their name.
+                                remoteContentId = ghost.contentId,
                             ),
                         )
                     }
@@ -3077,6 +3079,7 @@ class HydrationImpl(
                         remoteVersion = ghost.version,
                         remoteSize = ghost.size,
                         remoteModified = ghost.modified,
+                        remoteContentId = ghost.contentId,
                     ),
                 )
                 log.info("rename of {}: {} had landed in the cloud before; its row adopts the item", oldFolder, child)

@@ -64,6 +64,9 @@ class HydrationRenameOvertakesUploadRetryTest {
         // gkrost/unidrive-cli#76: a real drive moves a folder together with everything in it; by default this fake keeps every
         // other item at its own path (a folder move moves only the folder item itself).
         var folderMoveCarriesChildren = false
+
+        // gkrost/unidrive-cli#171: a file item names its bytes (CloudItem.contentId), as Internxt's do; off by default.
+        var namesContent = false
         private var nextId = 0
 
         override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
@@ -113,6 +116,7 @@ class HydrationRenameOvertakesUploadRetryTest {
                 created = null,
                 hash = "h-$content",
                 mimeType = null,
+                contentId = "obj-$id|${content.length}".takeIf { namesContent },
             )
 
         override suspend fun delete(remotePath: String, ifMatchETag: String?) {
@@ -633,6 +637,30 @@ class HydrationRenameOvertakesUploadRetryTest {
             "nothing may create the child a second time at its new path: ${rig.drive.log}",
         )
         assertTrue(completed.single { it.handleId == "h0" }.ok, "the child's upload completes: $completed")
+    }
+
+    // gkrost/unidrive-cli#171: the child the rename adopts names its bytes as the item does at once, before its retry runs, so
+    // a client listing the folder meanwhile can tell the move from new bytes.
+    @Test
+    fun `a ghost child adopted by its folder's rename names the item's stored object`() = runTest {
+        val rig = Rig(this)
+        rig.seedFolder("/move")
+        rig.drive.cloudFolder("/move")
+        rig.drive.folderMoveCarriesChildren = true
+        rig.drive.namesContent = true
+        rig.drive.ghostFirst += "/move/g.txt"
+        val cache = rig.seedWritten("/move/g.txt", "content-g.txt")
+        launch { assertTrue(rig.impl.openForWrite("c", "h0", "/move/g.txt", cache, null) is OpenResult.Ok) }
+        // The first attempt lands the item and loses the answer: the child waits in its backoff (virtual time does not move).
+        runCurrent()
+
+        assertEquals(RenameResult.Ok, rig.impl.rename("/move", "/moved"), "rename of the folder")
+
+        val item = assertNotNull(rig.drive.items["/moved/g.txt"], "the drive moved the item with its folder: ${rig.drive.log}")
+        val row = assertNotNull(rig.db.getEntry("/moved/g.txt"))
+        assertEquals(item.id, row.remoteId, "the rename adopted the item: ${rig.drive.log}")
+        assertEquals(assertNotNull(item.contentId), row.remoteContentId)
+        advanceUntilIdle()
     }
 
     // gkrost/unidrive-cli#76 case 4: the slot of a child was opened under the decomposed (NFD) spelling of its path while the
