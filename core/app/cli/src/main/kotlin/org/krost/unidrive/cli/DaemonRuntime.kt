@@ -579,6 +579,21 @@ class DaemonRuntime(
                 // archive#111: a provider with a push channel (Internxt's notifications, Dropbox's longpoll) wakes the poll when
                 // something changed in the cloud. Mount-only and only while the poll is on; a mirror daemon registers nothing.
                 if (poller != null && pollIntervalMs > 0) wakePollerOnRemoteChangeHint(provider, poller)
+                // gkrost/unidrive-cli#202: the rows from before the content-id column learn their ids, once per profile, in the
+                // background (a provider that names no content returns at once). Mount-only: only the mount's lists carry the id.
+                if (mountMode) {
+                    serveScope.launch {
+                        withContext(startupIoDispatcher) {
+                            try {
+                                mount.backfillContentIds()
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                log.warn("content-id backfill failed", e)
+                            }
+                        }
+                    }
+                }
 
                 // archive#891: one health line per interval (heap, GC, threads, enumeration, upload queue) so the
                 // memory a long scan needs is visible while it happens. Cancelled with the serve scope.

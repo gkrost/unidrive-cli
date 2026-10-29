@@ -317,9 +317,14 @@ the provider's name for the bytes of the version the row records:
   another, even where the token stays the same. Compare it as an opaque string.
 - **When it is absent.** On a folder, always. On a file whose provider names no bytes this way (every provider but
   Internxt today: a OneDrive eTag or content hash changes only with the content or the metadata, as before), whose answer
-  named no stored object, or whose row predates the field (it is filled at the next listing that delivers the item;
-  nothing is backfilled). Absent on an engine without the capability, too: the capability is how a client tells "no id
-  for this row" from "an engine that sends none".
+  named no stored object, or whose row predates the field until the engine fills it. Absent on an engine without the
+  capability, too: the capability is how a client tells "no id for this row" from "an engine that sends none".
+- **Rows from before the field.** A mount daemon whose provider names bytes this way fills them once per profile, in the
+  background after its start and once an enumeration has completed: it lists each folder that holds such rows, one at a
+  time, and a row takes the `content_id` of its item only where the listing shows the version the row records (the same
+  `etag` and size); another version is left to the next refresh. Nothing else in the entry changes. For each folder in
+  which rows learned an id it sends a `view.invalidated` naming that folder, so a client lists it again and can take the
+  id of a file whose bytes it holds unchanged. A pass that is stopped resumes after the last folder it finished.
 - **Where.** Every entry `hydration.list` writes (a view's entries included) and the entries of `view.page`, beside
   `etag`. No other reply carries a file's `etag`: the replies to `rename`, `open_write` and `create`, and the `completed`
   event, carry neither; a client reads both from the next `hydration.list`.

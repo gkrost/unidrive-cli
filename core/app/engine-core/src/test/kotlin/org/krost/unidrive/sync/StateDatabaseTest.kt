@@ -1669,7 +1669,7 @@ class StateDatabaseTest {
         try {
             val row = upgraded.getEntry("/Docs/report.pdf")
             assertNotNull(row, "a row from before the column must survive the additive migration")
-            assertNull(row.remoteContentId, "no backfill: an old row names no bytes")
+            assertNull(row.remoteContentId, "the migration fills nothing: an old row names no bytes until a mount fills it")
             assertEquals("u-existing|2026-01-01T00:00:00.000Z|42", row.remoteHash)
             assertEquals(
                 StateDatabase.SCHEMA_VERSION.toString(),
@@ -1699,6 +1699,103 @@ class StateDatabaseTest {
 
         db.upsertEntry(db.getEntry("/c.txt")!!.copy(remoteContentId = null))
         assertNull(db.getEntry("/c.txt")?.remoteContentId)
+    }
+
+    @Test
+    fun `the folders of rows from before the content-id column, in order and after a bound`() {
+        // gkrost/unidrive-cli#202: the shipped shape before remote_content_id, with alive files, a folder row, a file awaiting its first
+        // upload and a deleted file. Only the folders of alive files with a remote id are named, each once.
+        val tmpDir = Files.createTempDirectory("unidrive-contentid-folders")
+        val dbFile = tmpDir.resolve("state.db")
+        DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate(
+                    "CREATE TABLE sync_entries (remote_id TEXT PRIMARY KEY, parent_uuid TEXT, path TEXT NOT NULL, remote_path TEXT, " +
+                        "remote_hash TEXT, remote_size INTEGER NOT NULL DEFAULT 0, remote_modified TEXT, local_mtime INTEGER, local_size INTEGER, " +
+                        "is_folder INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0, is_hydrated INTEGER NOT NULL DEFAULT 0, " +
+                        "last_synced TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'EXISTS' CHECK (status IN ('EXISTS','TRASHED','DELETED')), " +
+                        "download_quarantined INTEGER NOT NULL DEFAULT 0, last_error_at TEXT, local_hash TEXT, cache_backed INTEGER, " +
+                        "upload_refused TEXT, name_block TEXT, edit_base TEXT, remote_version TEXT, mount_deleted_at TEXT)",
+                )
+                stmt.executeUpdate("CREATE VIEW alive_entries AS SELECT * FROM sync_entries WHERE status='EXISTS'")
+                stmt.executeUpdate("CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                stmt.executeUpdate("INSERT INTO sync_state VALUES ('${StateDatabase.SCHEMA_VERSION_KEY}', '${StateDatabase.SCHEMA_VERSION}')")
+                // remote_id, path, is_folder, status
+                listOf(
+                    "'u-top', '/top.txt', 0, 'EXISTS'",
+                    "'u-docs', '/Docs', 1, 'EXISTS'",
+                    "'u-a', '/Docs/a.pdf', 0, 'EXISTS'",
+                    "'u-b', '/Docs/b.pdf', 0, 'EXISTS'",
+                    "'u-sub', '/Docs/Sub', 1, 'EXISTS'",
+                    "'u-c', '/Docs/Sub/c.txt', 0, 'EXISTS'",
+                    "'local:pending', '/Inbox/new.txt', 0, 'EXISTS'",
+                    "'u-gone', '/Gone/old.txt', 0, 'DELETED'",
+                ).forEach { row ->
+                    stmt.executeUpdate(
+                        "INSERT INTO sync_entries (remote_id, path, is_folder, status, remote_hash, remote_size, last_synced) VALUES " +
+                            "($row, 'token|2026-10-28T08:00:00.000Z|5', 5, '2026-10-28T08:00:00Z')",
+                    )
+                }
+            }
+        }
+
+        val upgraded = StateDatabase(dbFile)
+        upgraded.initialize()
+        try {
+            assertEquals(listOf("/", "/Docs/", "/Docs/Sub/"), upgraded.foldersWithoutContentIds(null, 10))
+            assertEquals(listOf("/", "/Docs/"), upgraded.foldersWithoutContentIds(null, 2), "a page holds at most the limit")
+            assertEquals(listOf("/Docs/Sub/"), upgraded.foldersWithoutContentIds("/Docs/", 10), "the next page starts after the bound")
+
+            // A folder whose files all name their bytes is no longer named.
+            val top = assertNotNull(upgraded.getEntry("/top.txt"))
+            assertTrue(upgraded.fillContentId(top, "obj-top|5"))
+            assertEquals(listOf("/Docs/", "/Docs/Sub/"), upgraded.foldersWithoutContentIds(null, 10))
+        } finally {
+            upgraded.close()
+        }
+    }
+
+    @Test
+    fun `fillContentId names the bytes only of the row as it was read and changes nothing else`() {
+        // gkrost/unidrive-cli#202: a hydrated, pinned row with a name mark; the fill writes the one column.
+        db.upsertEntry(entry("/f.txt").copy(isHydrated = true, isPinned = true, cacheBacked = true, localHash = "sha-f"))
+        assertTrue(db.markNameBlocked("/f.txt", "name_conflict", "F.txt"))
+        val read = assertNotNull(db.getEntry("/f.txt"))
+        assertTrue(db.fillContentId(read, "obj-1|100"))
+        assertEquals(read.copy(remoteContentId = "obj-1|100"), db.getEntry("/f.txt"), "only the content id changes")
+        assertNotNull(db.nameBlock("/f.txt"), "the marks outside the entry stay")
+        assertFalse(db.fillContentId(read, "obj-2|100"), "a row that names its bytes keeps its name")
+        assertEquals("obj-1|100", db.getEntry("/f.txt")?.remoteContentId)
+
+        // A delivery of another version after the read: the row is no longer the version that was compared.
+        db.upsertEntry(entry("/g.txt"))
+        val g = assertNotNull(db.getEntry("/g.txt"))
+        db.upsertEntry(g.copy(remoteHash = "hash-newer", remoteModified = Instant.parse("2026-10-29T09:00:00Z")))
+        assertFalse(db.fillContentId(g, "obj-g|100"))
+        assertNull(db.getEntry("/g.txt")?.remoteContentId)
+
+        // A move of the row after the read (the same item, another path).
+        db.upsertEntry(entry("/h.txt"))
+        val h = assertNotNull(db.getEntry("/h.txt"))
+        db.upsertEntry(h.copy(path = "/h-renamed.txt"))
+        assertFalse(db.fillContentId(h, "obj-h|100"))
+        assertNull(db.getEntry("/h-renamed.txt")?.remoteContentId)
+
+        // An edit noted after the read: the cache copy holds no cloud version now.
+        db.upsertEntry(entry("/e.txt"))
+        val e = assertNotNull(db.getEntry("/e.txt"))
+        assertTrue(db.markEdited("/e.txt", "hash-/e.txt"))
+        assertFalse(db.fillContentId(e, "obj-e|100"))
+        assertNull(db.getEntry("/e.txt")?.remoteContentId)
+
+        // A row deleted after the read.
+        db.upsertEntry(entry("/d.txt"))
+        val d = assertNotNull(db.getEntry("/d.txt"))
+        db.markDeleted("/d.txt")
+        assertFalse(db.fillContentId(d, "obj-d|100"))
+
+        // A row that never reached the cloud has no item to name.
+        assertFalse(db.fillContentId(entry("/p.txt").copy(remoteId = null), "obj-p|100"))
     }
 
     @Test

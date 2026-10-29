@@ -55,10 +55,17 @@ class HydrationListContentIdTest {
      * does, and its receipt names the version that came down. A replace whose write token is not the file's current one is
      * refused as a conflict, as Internxt refuses it.
      */
-    private class ObjectNamingDrive : CloudProvider {
+    private class ObjectNamingDrive(
+        // gkrost/unidrive-cli#202: whether the drive declares that its listings name the bytes (CloudProvider.reportsContentIds).
+        private val declaresContentIds: Boolean = true,
+    ) : CloudProvider {
         override val id = "fake-object-naming"
         override val displayName = "Fake (names stored objects)"
         override var isAuthenticated = true
+        override val reportsContentIds: Boolean get() = declaresContentIds
+
+        // The folder listings asked for.
+        var listings = 0
 
         val items = linkedMapOf<String, CloudItem>()
         private val content = mutableMapOf<String, ByteArray>()
@@ -148,7 +155,10 @@ class HydrationListContentIdTest {
 
         override suspend fun authenticate() {}
 
-        override suspend fun listChildren(path: String): List<CloudItem> = items.values.filter { it.path.substringBeforeLast('/') == path.trimEnd('/') }
+        override suspend fun listChildren(path: String): List<CloudItem> {
+            listings++
+            return items.values.filter { it.path.substringBeforeLast('/') == path.trimEnd('/') }
+        }
 
         override suspend fun getMetadata(path: String): CloudItem = items[path] ?: throw ProviderException("Item not found: $path")
 
@@ -240,6 +250,9 @@ class HydrationListContentIdTest {
     private inner class Mount(
         provider: CloudProvider,
     ) {
+        // The paths the engine announced as changed (view.invalidated).
+        val invalidated = mutableListOf<String>()
+
         private val engine =
             SyncEngine(
                 provider = provider,
@@ -247,6 +260,7 @@ class HydrationListContentIdTest {
                 syncRoot = Files.createDirectories(base.resolve("root")),
                 cacheRoot = base.resolve("cache"),
                 cacheKey = "profile",
+                viewInvalidationSink = { paths, _, _ -> invalidated += paths },
             )
         private val hydration = HydrationImpl(engine, db)
         private val ipc = HydrationIpcHandler(hydration)
@@ -257,6 +271,12 @@ class HydrationListContentIdTest {
         }
 
         suspend fun call(request: String): String = ipc.handle("client", request)
+
+        /** gkrost/unidrive-cli#202: one pass of the content-id backfill. */
+        suspend fun backfillOnce(): ContentIdBackfill.Outcome = MountEngine.over(engine).backfillContentIdsOnce()
+
+        /** gkrost/unidrive-cli#202: the backfill as the daemon runs it, without its waits. */
+        suspend fun backfillAsTheDaemonDoes() = MountEngine.over(engine).backfillContentIds(startDelayMs = 0, retryMs = 0)
 
         suspend fun list(prefix: String = "/"): String =
             call("""{"verb":"hydration.list","prefix":"$prefix"}""").also { assertTrue(it.startsWith("""{"ok":true,"entries":"""), it) }
@@ -638,6 +658,86 @@ class HydrationListContentIdTest {
             mount.scan()
 
             assertEquals("\"obj-1|5\"", mount.entry("/old.txt").field("content_id"), "the next listing names the bytes")
+        }
+
+    // gkrost/unidrive-cli#202: an incremental poll re-lists only the items that change, so the rows an engine wrote before the column
+    // waited for a change of their item. The backfill lists their folders once and names the bytes of each row whose item is unchanged.
+    @Test
+    fun `after the backfill hydration_list names the content_id of rows from before the column, and a rename keeps it`() =
+        runBlocking {
+            val drive = ObjectNamingDrive()
+            drive.seedFolder("/docs")
+            drive.seed("/docs/a.txt", "hello".toByteArray())
+            drive.seed("/docs/b.txt", "world!".toByteArray())
+            drive.seed("/c.txt", "x".toByteArray())
+            val mount = Mount(drive)
+            mount.scan()
+            mount.hydrate("/docs/a.txt")
+            // The rows as an engine without the column left them: the same versions, nothing that names their bytes.
+            db.getAllEntries().forEach { db.upsertEntry(it.copy(remoteContentId = null), keepMarks = true) }
+            assertNull(mount.entry("/docs/a.txt").field("content_id"), "before: ${mount.list("/docs")}")
+            val rowBefore = db.getEntry("/docs/a.txt")!!
+            val copy = mount.cacheCopy("/docs/a.txt")
+            val copyTime = Files.getLastModifiedTime(copy)
+            mount.invalidated.clear()
+
+            assertEquals(ContentIdBackfill.Outcome.Finished(folders = 2, filled = 3), mount.backfillOnce())
+
+            val a = mount.entry("/docs/a.txt")
+            assertEquals("\"${drive.items.getValue("/docs/a.txt").contentId}\"", a.field("content_id"), "after: $a")
+            assertEquals("\"${drive.items.getValue("/docs/b.txt").contentId}\"", mount.entry("/docs/b.txt").field("content_id"))
+            assertEquals("\"${drive.items.getValue("/c.txt").contentId}\"", mount.entry("/c.txt").field("content_id"))
+            assertNull(mount.entry("/docs").field("content_id"), "a folder names no bytes")
+            assertEquals("true", a.field("hydrated"))
+            assertEquals(rowBefore.copy(remoteContentId = drive.items.getValue("/docs/a.txt").contentId), db.getEntry("/docs/a.txt"), "only the id changed")
+            assertEquals("hello", String(Files.readAllBytes(copy)))
+            assertEquals(copyTime, Files.getLastModifiedTime(copy), "the cache copy is untouched")
+            assertEquals(listOf("/", "/docs"), mount.invalidated, "the folders are announced, so a client lists them again and learns the ids")
+
+            mount.rename("/docs/a.txt", "/docs/a2.txt")
+            mount.scan()
+
+            val renamed = mount.entry("/docs/a2.txt")
+            assertEquals(a.field("content_id"), renamed.field("content_id"), "a rename keeps the backfilled id: $renamed")
+            assertNotEquals(a.field("etag"), renamed.field("etag"))
+            assertEquals("true", renamed.field("hydrated"))
+        }
+
+    @Test
+    fun `the backfill as the daemon runs it ends after one pass, and costs a provider that names no content nothing`() =
+        runBlocking {
+            val naming = ObjectNamingDrive()
+            naming.seed("/a.txt", "hello".toByteArray())
+            val mount = Mount(naming)
+            mount.scan()
+            db.getAllEntries().forEach { db.upsertEntry(it.copy(remoteContentId = null), keepMarks = true) }
+            val before = naming.listings
+
+            withTimeout(TIMEOUT_MS) { mount.backfillAsTheDaemonDoes() }
+
+            assertEquals(1, naming.listings - before, "one listing of the one folder")
+            assertEquals("\"obj-1|5\"", mount.entry("/a.txt").field("content_id"))
+            assertEquals(ContentIdBackfill.DONE, db.getSyncState(ContentIdBackfill.STATE_KEY))
+            withTimeout(TIMEOUT_MS) { mount.backfillAsTheDaemonDoes() }
+            assertEquals(1, naming.listings - before, "a profile that is done lists nothing again")
+        }
+
+    @Test
+    fun `a provider that names no content gets no listing from the backfill`() =
+        runBlocking {
+            val drive = ObjectNamingDrive(declaresContentIds = false)
+            drive.seed("/a.txt", "hello".toByteArray())
+            val mount = Mount(drive)
+            mount.scan()
+            db.getAllEntries().forEach { db.upsertEntry(it.copy(remoteContentId = null), keepMarks = true) }
+            val before = drive.listings
+
+            withTimeout(TIMEOUT_MS) { mount.backfillAsTheDaemonDoes() }
+
+            assertEquals(ContentIdBackfill.Outcome.NotNeeded, mount.backfillOnce())
+            assertEquals(before, drive.listings)
+            assertNull(mount.entry("/a.txt").field("content_id"))
+            assertNull(db.getSyncState(ContentIdBackfill.STATE_KEY))
         }
 
     private companion object {

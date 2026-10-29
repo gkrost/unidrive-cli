@@ -730,8 +730,9 @@ class StateDatabase(
                 stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN mount_deleted_at TEXT")
             }
             // gkrost/unidrive-cli#164: the provider's name for the bytes of the recorded version, where remote_hash is no content
-            // hash (see SyncEntry.remoteContentId). Same additive pattern, no schema_version bump, no backfill: NULL = none known,
-            // which is every older row until its item is delivered, read or uploaded again; remote_hash then decides alone.
+            // hash (see SyncEntry.remoteContentId). Same additive pattern, no schema_version bump, nothing filled here: NULL = none
+            // known, which is every older row until its item is delivered, read or uploaded again, or a mount fills it once from a
+            // listing of its folder (gkrost/unidrive-cli#202, foldersWithoutContentIds); remote_hash decides alone meanwhile.
             if (!columnExists("sync_entries", "remote_content_id")) {
                 stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN remote_content_id TEXT")
             }
@@ -1423,6 +1424,59 @@ class StateDatabase(
                 val entries = mutableListOf<SyncEntry>()
                 while (rs.next()) entries.add(rs.toSyncEntry())
                 return entries
+            }
+        }
+
+    /**
+     * gkrost/unidrive-cli#202: the folders that hold an alive file row with a remote id and no content id (`remote_content_id`
+     * NULL: a row written before the column, or one whose item named no bytes), at most [limit] of them, in BINARY order,
+     * each after [after]. A folder is given as `PARENT_DIR_OF_PATH` gives it, with its trailing '/' (the root: `/`); null
+     * [after] starts at the first. Rows awaiting their first upload have no remote id and are not counted.
+     */
+    fun foldersWithoutContentIds(
+        after: String?,
+        limit: Int,
+    ): List<String> =
+        locked("foldersWithoutContentIds") {
+            conn.prepareStatement(FOLDERS_WITHOUT_CONTENT_IDS).use { stmt ->
+                stmt.setString(1, after.orEmpty())
+                stmt.setInt(2, limit)
+                stmt.executeQuery().use { rs ->
+                    val folders = mutableListOf<String>()
+                    while (rs.next()) folders.add(rs.getString(1))
+                    return folders
+                }
+            }
+        }
+
+    /**
+     * gkrost/unidrive-cli#202: records [contentId] as the name of the bytes of [expected]'s row, only if the row is still
+     * exactly the version [expected] read: the same remote id at the same path, alive, a file, the same hash, version and
+     * size (for a row with neither hash nor version, the same modified time too), no content id yet and no unsynced edit
+     * noted. Nothing else of the row changes (hydration, the baseline, the pin, the marks). False when the row moved on in
+     * between (a delivery, a download, an edit): the caller then leaves the row to whatever changed it.
+     */
+    fun fillContentId(
+        expected: SyncEntry,
+        contentId: String,
+    ): Boolean =
+        locked("fillContentId") {
+            val remoteId = expected.remoteId ?: return false
+            beginWrite()
+            conn.prepareStatement(
+                "UPDATE sync_entries SET remote_content_id = ? " +
+                    "WHERE remote_id = ? AND path = ? AND status = 'EXISTS' AND is_folder = 0 AND remote_content_id IS NULL " +
+                    "AND edit_base IS NULL AND remote_hash IS ? AND remote_version IS ? AND remote_size = ? " +
+                    "AND (remote_hash IS NOT NULL OR remote_version IS NOT NULL OR remote_modified IS ?)",
+            ).use { stmt ->
+                stmt.setString(1, contentId)
+                stmt.setString(2, remoteId)
+                stmt.setString(3, expected.path)
+                stmt.setString(4, expected.remoteHash)
+                stmt.setString(5, expected.remoteVersion)
+                stmt.setLong(6, expected.remoteSize)
+                stmt.setString(7, expected.remoteModified?.toString())
+                stmt.executeUpdate() == 1
             }
         }
 
@@ -3033,6 +3087,15 @@ class StateDatabase(
 
         /** The direct children of a path: one parameter, the folder with its trailing '/' (the root: `/`). */
         internal const val DIRECT_CHILDREN_BY_PATH = "SELECT * FROM alive_entries WHERE $PARENT_DIR_OF_PATH = ?"
+
+        /**
+         * gkrost/unidrive-cli#202, [foldersWithoutContentIds]: the folder expression and the alive predicate are those of
+         * `idx_sync_entries_dir_alive`, so the folders come in index order from the bound on, one seek per page.
+         */
+        private const val FOLDERS_WITHOUT_CONTENT_IDS =
+            "SELECT DISTINCT $PARENT_DIR_OF_PATH AS dir FROM sync_entries " +
+                "WHERE status='EXISTS' AND $PARENT_DIR_OF_PATH > ? AND is_folder=0 AND remote_content_id IS NULL " +
+                "AND remote_id IS NOT NULL AND remote_id NOT GLOB 'local:*' ORDER BY dir LIMIT ?"
 
         /**
          * The lookup by effective remote path. Its expression and the `alive_entries` predicate are those of
