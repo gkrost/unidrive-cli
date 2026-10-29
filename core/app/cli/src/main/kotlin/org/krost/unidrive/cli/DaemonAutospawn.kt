@@ -142,7 +142,7 @@ object DaemonAutospawn {
      * passes: the heap cap (UNIDRIVE_XMX, default 2g), the static flags from `jvm-flags.txt` beside
      * the jar (the launchers' single source; a missing file degrades to no static flags, never to a
      * failed spawn), the locale (UNIDRIVE_LOCALE, else the parent's own user.language/user.country),
-     * the Windows trust store pair on Windows ([TrustStorePolicy], gkrost/unidrive-windows#890), the pinned unix-domain temp dir, the coroutine-debug agent when armed, and the post-mortem
+     * the Windows trust store pair on Windows ([TrustStorePolicy]), the pinned unix-domain temp dir, the coroutine-debug agent when armed, and the post-mortem
      * diagnostics flags into the diagnostics dir — always daemon work here, so the bounded GC log
      * (the profile's own `gc-<profile>.log`) rides unconditioned.
      *

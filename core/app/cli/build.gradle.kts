@@ -63,7 +63,7 @@ val jdepsModuleSet =
         "jdk.jfr",
         "jdk.unsupported",
     )
-// jdk.crypto.mscapi (SunMSCAPI, the Windows-ROOT trust store the Windows launchers select, gkrost/unidrive-windows#890)
+// jdk.crypto.mscapi (SunMSCAPI, the Windows-ROOT trust store the Windows launchers select)
 // exists in a Windows JDK only: jlink on another host would fail on the unknown module.
 val extraRuntimeModules =
     listOf(

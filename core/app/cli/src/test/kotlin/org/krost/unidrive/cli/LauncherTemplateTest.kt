@@ -189,7 +189,7 @@ class LauncherTemplateTest {
         }
     }
 
-    // gkrost/unidrive-windows#890: Windows-ROOT lets the JVM trust what an antivirus that scans HTTPS installed in the Windows
+    // Windows-ROOT lets the JVM trust what an antivirus that scans HTTPS installed in the Windows
     // store. It exists on Windows only (SunMSCAPI), and jvm-flags.txt is read by the Linux launchers too, so the flag lives in
     // this template alone and in DaemonAutospawn (on Windows).
     @Test

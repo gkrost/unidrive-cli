@@ -300,7 +300,7 @@ class DaemonAutospawnTest {
         DaemonAutospawn.thisJar()?.let { assertTrue(it.toString().endsWith(".jar")) }
     }
 
-    // gkrost/unidrive-windows#890: an antivirus that scans HTTPS signs with a root only the Windows store trusts, which the JVM's
+    // An antivirus that scans HTTPS signs with a root only the Windows store trusts, which the JVM's
     // own cacerts does not hold (PKIX path building failed). The daemon a command autospawns takes the Windows store, exactly
     // as the PowerShell launcher does; the Linux and macOS launchers read jvm-flags.txt, where Windows-ROOT does not exist.
     private fun spawn(

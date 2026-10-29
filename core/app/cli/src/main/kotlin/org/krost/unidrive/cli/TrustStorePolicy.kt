@@ -1,7 +1,7 @@
 package org.krost.unidrive.cli
 
 /**
- * gkrost/unidrive-windows#890: the JVM flags that make an engine JVM on Windows trust the Windows certificate store.
+ * The JVM flags that make an engine JVM on Windows trust the Windows certificate store.
  *
  * An antivirus that scans HTTPS signs the connections with a root that only the Windows store holds; the JVM's own `cacerts` does
  * not, and every request then fails with "PKIX path building failed". `Windows-ROOT` is the keystore SunMSCAPI
