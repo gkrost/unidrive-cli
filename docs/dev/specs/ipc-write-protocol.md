@@ -319,10 +319,13 @@ the provider's name for the bytes of the version the row records:
   event, carry neither; a client reads both from the next `hydration.list`.
 - **`open_read` too.** The same engine answers `hydration.open_read` with the `content_id` of the bytes it served at
   `cache_path`: `{"ok":true,"cache_path":"...","content_id":"<fileId>|5"}`. That way a client knows what a placeholder it
-  fills holds without waiting for a listing, and a rename right after the read compares as one. It is absent where the
-  bytes served are not provably that version: a cache copy that holds an unsynced edit (section 3.3), a kept-local copy
-  of an excluded name, and a copy a newer cloud version outlived during the read. It is absent too wherever the list
-  entry would have none.
+  fills holds without waiting for a listing, and a rename right after the read compares as one. It names the bytes the
+  read served, as the provider named them when it sent them, which need not be the version the last listing gave: a file
+  replaced in the cloud since that listing comes down as the new version and is named as it, and a read that a refresh
+  overtakes while the bytes come down is named as the older bytes it served. The download records that name with the
+  row, as it records their size, so the list entry names the same bytes until the next listing brings the cloud's (which
+  drops a copy that is not that version). It is absent for a cache copy that holds an unsynced edit (section 3.3), for a
+  kept-local copy of an excluded name, and wherever the provider names no bytes.
 - Nothing else in the entry changes: `etag` stays the base for `base_etag`, and `remote_modified_ms` stays the cloud's
   modified time.
 

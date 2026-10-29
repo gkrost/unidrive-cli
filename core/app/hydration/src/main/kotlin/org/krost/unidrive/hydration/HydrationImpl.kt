@@ -505,11 +505,11 @@ class HydrationImpl(
                     ok = true,
                 ),
             )
-            // gkrost/unidrive-cli#171: the name of the bytes served, so a client knows what its copy holds without a listing. Only
-            // while they are the version the row records: a copy with an unsynced edit, a kept-local (excluded) copy and a copy a
-            // newer version has outlived since the download hold other bytes.
-            val served = !current.isFolder && current.isHydrated && current.editBase == null && !mount.isExcludedPath(path, false)
-            p to current.remoteContentId?.takeIf { served }
+            // gkrost/unidrive-cli#171: the name of the bytes served, so a client knows what its copy holds without a listing: the one
+            // the mount bound to the copy as it served it (what the download read, or the row a warm copy was served by), never a
+            // row read afterwards, which a refresh may have moved past these bytes. None for a copy with an unsynced edit and for a
+            // kept-local (excluded) copy.
+            p to hydrated.contentId?.takeUnless { mount.isExcludedPath(path, false) }
         } catch (e: CancellationException) {
             // The request or the daemon was stopped: a cancellation, not a failed download (gkrost/unidrive-cli#80).
             tx.endDownloadFailed(e)

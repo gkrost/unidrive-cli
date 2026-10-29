@@ -556,6 +556,7 @@ class InternxtProvider(
                 stagedSize = Files.size(destination),
                 stagedMtimeMillis = Files.getLastModifiedTime(destination).toMillis(),
                 mtimeAppliedBeforePlacement = false,
+                contentId = internxtContentId(fileMeta),
             )
         }
         val bucket = fileMeta.bucket ?: throw ProviderException("File has no bucket: $remotePath")
@@ -691,6 +692,8 @@ class InternxtProvider(
             stagedSize = downloaded.stagedSize,
             stagedMtimeMillis = downloaded.stagedMtimeMillis,
             mtimeAppliedBeforePlacement = downloaded.mtimeAppliedBeforePlacement,
+            // gkrost/unidrive-cli#171: the object read is the one fileMeta named when the read began, whatever the file was listed as.
+            contentId = internxtContentId(fileMeta),
         )
     }
 
