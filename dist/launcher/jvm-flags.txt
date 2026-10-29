@@ -29,7 +29,9 @@
 # A daemon that survives an OutOfMemoryError runs on with dead worker threads; exit so the supervisor restarts it.
 # The JVM exits with code 3 then, distinct from the CLI's own 0 (ok), 1 (aborted) and 2 (per-action failures).
 -XX:+ExitOnOutOfMemoryError
-# The companion -XX:HeapDumpPath (a machine path) rides the launcher templates and DaemonAutospawn; without
-# it the dump lands next to the process CWD. A dump is about as large as the heap (about 2 GB at the
-# default -Xmx2g); pruning stays manual.
+# The companion -XX:HeapDumpPath (a machine FILE path, one fixed heap-<profile>.hprof per profile) rides
+# the launcher templates and DaemonAutospawn; without it the dump lands next to the process CWD. A dump is
+# about as large as the heap (about 2 GB at the default -Xmx2g). HotSpot does not overwrite an existing
+# dump file, so an OOM restart loop writes the first dump only, and it holds decrypted tokens; pruning
+# stays manual.
 -XX:+HeapDumpOnOutOfMemoryError

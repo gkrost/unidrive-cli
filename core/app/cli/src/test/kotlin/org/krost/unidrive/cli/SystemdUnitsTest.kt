@@ -79,6 +79,23 @@ class SystemdUnitsTest {
     }
 
     @Test
+    fun every_unit_bounds_its_restart_loop_and_keeps_a_refusal_a_clean_stop() {
+        for (name in listOf("unidrive.service", "unidrive@.service", "unidrive-mount@.service")) {
+            val d = directives(unit(name))
+            // Without a start limit the default is 5 starts in 10 s, which a 30 s RestartSec can never
+            // reach: a failing start restarted at a fixed interval for ever. Five per hour, the delay
+            // growing from RestartSec up to the cap (systemd 254+), keeps a crash loop bounded.
+            assertTrue("StartLimitIntervalSec=1h" in d, "$name start-limit interval: $d")
+            assertTrue("StartLimitBurst=5" in d, "$name start-limit burst: $d")
+            assertTrue(d.any { it.startsWith("RestartSteps=") }, "$name restart backoff steps: $d")
+            assertTrue(d.any { it.startsWith("RestartMaxDelaySec=") }, "$name restart backoff cap: $d")
+            // 78: a permanent refusal (mode, missing vault passphrase, provider-refused credentials)
+            // must leave the unit cleanly inactive, not restart-loop.
+            assertTrue("SuccessExitStatus=78 143" in d, "$name treats 78 as a clean stop: $d")
+        }
+    }
+
+    @Test
     fun mount_startpre_guard_is_valid_shell() {
         assumeTrue("embedded sh script: sh -n only exists on Linux", System.getProperty("os.name").lowercase().contains("linux"))
         val line = directives(unit("unidrive-mount@.service")).first { it.startsWith("ExecStartPre=") }
