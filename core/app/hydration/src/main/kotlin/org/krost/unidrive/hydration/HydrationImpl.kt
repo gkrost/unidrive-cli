@@ -467,7 +467,7 @@ class HydrationImpl(
         // archive#652: a cold read is a download in the history; a warm serve never starts the handle, so it leaves no row.
         val tx = history?.begin(TransferDirection.DOWNLOAD, path, bytesTotal = entry.remoteSize.takeIf { it > 0 })
 
-        val cachePath = try {
+        val (cachePath, contentId) = try {
             // Always emit Hydrating + Hydrated, even when MountEngine returns a warm cache
             // without downloading: subscribers should see a consistent event stream
             // regardless of cache state; the cache layer is an implementation detail of
@@ -505,7 +505,11 @@ class HydrationImpl(
                     ok = true,
                 ),
             )
-            p
+            // gkrost/unidrive-cli#171: the name of the bytes served, so a client knows what its copy holds without a listing: the one
+            // the mount bound to the copy as it served it (what the download read, or the row a warm copy was served by), never a
+            // row read afterwards, which a refresh may have moved past these bytes. None for a copy with an unsynced edit and for a
+            // kept-local (excluded) copy.
+            p to hydrated.contentId?.takeUnless { mount.isExcludedPath(path, false) }
         } catch (e: CancellationException) {
             // The request or the daemon was stopped: a cancellation, not a failed download (gkrost/unidrive-cli#80).
             tx.endDownloadFailed(e)
@@ -533,7 +537,7 @@ class HydrationImpl(
 
         registerHandle(connectionId, handleId, path)
         touch(path)
-        return OpenResult.Ok(cachePath)
+        return OpenResult.Ok(cachePath, contentId = contentId)
     }
 
     override suspend fun openForWrite(
@@ -2324,6 +2328,8 @@ class HydrationImpl(
                 remoteId = e.remoteId,
                 // The write token (SyncEntry.writeToken): the client hands it back as the base etag of an edit.
                 etag = e.writeToken,
+                // gkrost/unidrive-cli#171: what names the bytes, beside the token a rename moves. A folder has no bytes.
+                contentId = e.remoteContentId.takeUnless { e.isFolder },
                 // toSyncEntry surfaces a `local:` synthetic remote_id as null,
                 // so a null here means "never uploaded". An edit of a file that
                 // already has a remote id is owed to the cloud from open_write until
@@ -3000,6 +3006,8 @@ class HydrationImpl(
                                 remoteVersion = null,
                                 remoteSize = ghost.size,
                                 remoteModified = ghost.modified,
+                                // gkrost/unidrive-cli#171: the probe proved these are the row's bytes, and a move keeps their name.
+                                remoteContentId = ghost.contentId,
                             ),
                         )
                     }
@@ -3075,6 +3083,7 @@ class HydrationImpl(
                         remoteVersion = ghost.version,
                         remoteSize = ghost.size,
                         remoteModified = ghost.modified,
+                        remoteContentId = ghost.contentId,
                     ),
                 )
                 log.info("rename of {}: {} had landed in the cloud before; its row adopts the item", oldFolder, child)

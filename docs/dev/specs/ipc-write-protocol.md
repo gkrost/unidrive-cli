@@ -296,6 +296,39 @@ the same entries (cloud-only rows: `hydrated:false`, `remote_id` and `remote_mod
 - A client needs no new handling: it may read the capability to know that a folder lists at once during the first scan
   (to drop a "waiting for the scan" state for folders it can open), and treats an older engine as before.
 
+**Telling a rename from new bytes (`hydration.list_content_id`).** `etag` is the write token, and `remote_modified_ms`
+the cloud's modified time. On some providers a rename or move changes both (Internxt stamps a new modification time, and
+its token carries it), so neither tells a renamed file from one with new bytes. On an engine that lists
+`hydration.list_content_id` in the `daemon.status` `capabilities`, a `hydration.list` file entry carries `content_id`,
+the provider's name for the bytes of the version the row records:
+
+```
+{"path":"/a.txt","size":5,...,"etag":"<uuid>|<modificationTime>|5","content_id":"<fileId>|5","pending_upload":false,"error":false}
+```
+
+- **What it names.** Internxt: the stored object and the size, `<fileId>|<size>`; an empty file has no stored object and
+  is `|0`. A rename or move keeps it; an upload of the file (a save, a re-upload) stores a new object and so gives
+  another, even where the token stays the same. Compare it as an opaque string.
+- **When it is absent.** On a folder, always. On a file whose provider names no bytes this way (every provider but
+  Internxt today: a OneDrive eTag or content hash changes only with the content or the metadata, as before), whose answer
+  named no stored object, or whose row predates the field (it is filled at the next listing that delivers the item;
+  nothing is backfilled). Absent on an engine without the capability, too: the capability is how a client tells "no id
+  for this row" from "an engine that sends none".
+- **Where.** Every entry `hydration.list` writes (a view's entries included) and the entries of `view.page`, beside
+  `etag`. No other reply carries a file's `etag`: the replies to `rename`, `open_write` and `create`, and the `completed`
+  event, carry neither; a client reads both from the next `hydration.list`.
+- **`open_read` too.** The same engine answers `hydration.open_read` with the `content_id` of the bytes it served at
+  `cache_path`: `{"ok":true,"cache_path":"...","content_id":"<fileId>|5"}`. That way a client knows what a placeholder it
+  fills holds without waiting for a listing, and a rename right after the read compares as one. It names the bytes the
+  read served, as the provider named them when it sent them, which need not be the version the last listing gave: a file
+  replaced in the cloud since that listing comes down as the new version and is named as it, and a read that a refresh
+  overtakes while the bytes come down is named as the older bytes it served. The download records that name with the
+  row, as it records their size, so the list entry names the same bytes until the next listing brings the cloud's (which
+  drops a copy that is not that version). It is absent for a cache copy that holds an unsynced edit (section 3.3), for a
+  kept-local copy of an excluded name, and wherever the provider names no bytes.
+- Nothing else in the entry changes: `etag` stays the base for `base_etag`, and `remote_modified_ms` stays the cloud's
+  modified time.
+
 ## 4. Events (subscription stream)
 
 | Event | Shape | Meaning |
@@ -386,7 +419,7 @@ top-level folder with that name through the mount gets `read_only` while the vie
 `mtime_ms` is the daemon's start (constant while it runs; `remote_modified_ms` is `null`). `hydration.list("/Recents")` has one
 entry per reference, in the provider's order (Recents: the newest change first), its `remote_id` the synthetic key
 `unidrive:view:recents:<id of the real item>`, never the bare id (a client must not see one id at two paths). `size`,
-`mtime_ms`, `remote_modified_ms`, `etag`, `hydrated`, `pending_upload`, `error`, `excluded` and `blocked` are the real row's, read
+`mtime_ms`, `remote_modified_ms`, `etag`, `content_id`, `hydrated`, `pending_upload`, `error`, `excluded` and `blocked` are the real row's, read
 at each listing. A view is flat except for folders (below): `hydration.list` of a path below a file entry answers an empty list.
 
 **Folder aliases.** A reference to a folder is an entry whose `folder` is `true` and which is a read-only **alias** of the real

@@ -1,7 +1,7 @@
 {"verb":"view.page","kind":"recents"}
-{"ok":true,"kind":"recents","offset":0,"entries":[{"path":"/docs/report.txt","size":42,"mtime_ms":1234567890123,"hydrated":true,"folder":false,"remote_modified_ms":1234567890000,"remote_id":"rid-report","etag":"etag-report","pending_upload":false,"error":false}],"skipped":1,"next_offset":50,"state":"ok","as_of_ms":1700000000000}
+{"ok":true,"kind":"recents","offset":0,"entries":[{"path":"/docs/report.txt","size":42,"mtime_ms":1234567890123,"hydrated":true,"folder":false,"remote_modified_ms":1234567890000,"remote_id":"rid-report","etag":"etag-report","content_id":"obj-report|42","pending_upload":false,"error":false}],"skipped":1,"next_offset":50,"state":"ok","as_of_ms":1700000000000}
 {"verb":"view.page","kind":"recents","offset":20,"limit":10}
-{"ok":true,"kind":"recents","offset":20,"entries":[{"path":"/docs/report.txt","size":42,"mtime_ms":1234567890123,"hydrated":true,"folder":false,"remote_modified_ms":1234567890000,"remote_id":"rid-report","etag":"etag-report","pending_upload":false,"error":false}],"skipped":1,"next_offset":30,"state":"ok","as_of_ms":1700000000000}
+{"ok":true,"kind":"recents","offset":20,"entries":[{"path":"/docs/report.txt","size":42,"mtime_ms":1234567890123,"hydrated":true,"folder":false,"remote_modified_ms":1234567890000,"remote_id":"rid-report","etag":"etag-report","content_id":"obj-report|42","pending_upload":false,"error":false}],"skipped":1,"next_offset":30,"state":"ok","as_of_ms":1700000000000}
 {"verb":"view.page","kind":"recents","offset":50,"limit":50}
 {"ok":true,"kind":"recents","offset":50,"entries":[],"skipped":0,"end":true,"state":"stale","as_of_ms":1700000000000}
 {"verb":"view.page","kind":"favorites"}

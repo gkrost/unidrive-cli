@@ -1344,6 +1344,8 @@ class IpcContractCorpusTest {
             // A cloud download while the daemon is paused: refused at once (archive#778).
             path.startsWith("/paused") -> OpenResult.Failed(HydrationError.Paused)
             downloadFailureFor(path) != null -> OpenResult.Failed(downloadFailureFor(path)!!)
+            // gkrost/unidrive-cli#171: the served bytes are the version the row records, which names them (as hydration.list does).
+            path == "/docs/report.txt" -> OpenResult.Ok(cachePathFor(path), contentId = "obj-report|42")
             else -> OpenResult.Ok(cachePathFor(path))
         }
 
@@ -1414,6 +1416,7 @@ class IpcContractCorpusTest {
                 ListResult.Entry(
                     "/docs/report.txt", 42, FIXED_MTIME_MS, isHydrated = true, isFolder = false,
                     remoteModifiedEpochMillis = FIXED_REMOTE_MS, remoteId = "rid-report", etag = "etag-report",
+                    contentId = "obj-report|42",
                     pendingUpload = false, hasError = false,
                 )
             return if (offset < 50) {
@@ -1430,6 +1433,8 @@ class IpcContractCorpusTest {
                         ListResult.Entry(
                             "/docs/report.txt", 42, FIXED_MTIME_MS, isHydrated = true, isFolder = false,
                             remoteModifiedEpochMillis = FIXED_REMOTE_MS, remoteId = "rid-report", etag = "etag-report",
+                            // gkrost/unidrive-cli#171: the name of the bytes, where the provider gives one (Internxt: `<fileId>|<size>`).
+                            contentId = "obj-report|42",
                             pendingUpload = false, hasError = false,
                         ),
                         ListResult.Entry(
