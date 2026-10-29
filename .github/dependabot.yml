@@ -6,7 +6,9 @@
 #     from the /core entry. The previously-imported `ui/` composite was
 #     removed in ADR-0013.
 #   - GitHub Actions ecosystem for action pin updates across
-#     .github/workflows/.
+#     .github/workflows/ and .github/actions/pinned-git (a composite action is
+#     not covered by the / entry; Dependabot only scans a directory that is
+#     listed itself, so its actions/cache pin needs its own entry).
 #
 # A Gradle PR's core/gradle/verification-metadata.xml is regenerated and
 # committed to its branch by .github/workflows/dependabot-verification-metadata.yml.
@@ -50,3 +52,20 @@ updates:
       codeql-action:
         patterns:
           - "github/codeql-action*"
+
+  # The composite action is a directory of its own: Dependabot scans only the
+  # directories listed here, so without this entry its actions/cache pin would
+  # never be bumped (the / entry above sees .github/workflows/ only).
+  - package-ecosystem: github-actions
+    directory: /.github/actions/pinned-git
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore(ci)
+      include: scope

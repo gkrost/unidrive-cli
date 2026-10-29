@@ -10,9 +10,14 @@ import java.util.concurrent.TimeUnit
 // directory-traversal). The latest shadow release still pins the vulnerable
 // versions, so a plugin bump can't fix it — force the patched releases on the
 // plugin classpath. These are build-time-only and never reach the shipped jar.
+// The classpath is dependency-locked (buildscript-gradle.lockfile beside this
+// file): lockAllConfigurations() in the root build script covers project
+// configurations only, so without this a plugin transitive drift resolves
+// unreviewed. Regenerate with `./gradlew :app:cli:help --write-locks`.
 buildscript {
     configurations.classpath {
         resolutionStrategy {
+            activateDependencyLocking()
             force("org.apache.logging.log4j:log4j-core:2.26.1")
             force("org.codehaus.plexus:plexus-utils:4.1.0")
         }
