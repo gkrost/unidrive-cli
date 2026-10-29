@@ -186,6 +186,22 @@ class LsCommandTest {
     }
 
     @Test
+    fun `an entry that names its bytes parses, and its excluded flag still reads`() {
+        // gkrost/unidrive-cli#171: content_id sits beside the etag, before pending_upload, so error and excluded stay adjacent.
+        val reply =
+            """{"ok":true,"entries":[""" +
+                """{"path":"/a.txt","size":5,"mtime_ms":2000,"hydrated":true,"folder":false,"remote_modified_ms":900,""" +
+                """"remote_id":"u-1","etag":"u-1|t|5","content_id":"obj-1|5","pending_upload":false,"error":false,"excluded":true}""" +
+                "]}"
+
+        val entry = LsCommand.parseListEntries(reply).single()
+
+        assertEquals("/a.txt", entry.path)
+        assertEquals(5L, entry.size)
+        assertTrue(entry.excluded)
+    }
+
+    @Test
     fun `an excluded marker inside a string value is not read as the flag`() {
         val reply =
             """{"ok":true,"entries":[""" +

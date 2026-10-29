@@ -877,7 +877,10 @@ private fun serialiseListEntries(entries: List<ListResult.Entry>): String {
             .append(",\"remote_modified_ms\":").append(e.remoteModifiedEpochMillis?.toString() ?: "null")
             .append(",\"remote_id\":").append(e.remoteId?.let { jsonEsc(it) } ?: "null")
             .append(",\"etag\":").append(e.etag?.let { jsonEsc(it) } ?: "null")
-            .append(",\"pending_upload\":").append(e.pendingUpload)
+        // gkrost/unidrive-cli#171: additive, beside the etag, and only where the row names its bytes (daemon.status
+        // capability `hydration.list_content_id`).
+        if (e.contentId != null) sb.append(",\"content_id\":").append(jsonEsc(e.contentId))
+        sb.append(",\"pending_upload\":").append(e.pendingUpload)
             .append(",\"error\":").append(e.hasError)
         if (e.excluded) sb.append(",\"excluded\":true")
         if (e.readOnly) sb.append(",\"read_only\":true")

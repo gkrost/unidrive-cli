@@ -300,7 +300,7 @@ class LsCommand : Callable<Int> {
 
         // hydration.list reply entry shape (serialiseListEntries in HydrationIpcHandler):
         //   {"path":"...","size":N,"mtime_ms":N,"hydrated":bool,"folder":bool[,<additive fields>]}
-        // The fields after `folder` (remote_modified_ms, remote_id, etag,
+        // The fields after `folder` (remote_modified_ms, remote_id, etag, content_id,
         // pending_upload, error, excluded, blocked) are additive and skipped by the tail group, so
         // old/new daemon replies both parse.
         private val ENTRY_REGEX =

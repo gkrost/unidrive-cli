@@ -1414,6 +1414,7 @@ class IpcContractCorpusTest {
                 ListResult.Entry(
                     "/docs/report.txt", 42, FIXED_MTIME_MS, isHydrated = true, isFolder = false,
                     remoteModifiedEpochMillis = FIXED_REMOTE_MS, remoteId = "rid-report", etag = "etag-report",
+                    contentId = "obj-report|42",
                     pendingUpload = false, hasError = false,
                 )
             return if (offset < 50) {
@@ -1430,6 +1431,8 @@ class IpcContractCorpusTest {
                         ListResult.Entry(
                             "/docs/report.txt", 42, FIXED_MTIME_MS, isHydrated = true, isFolder = false,
                             remoteModifiedEpochMillis = FIXED_REMOTE_MS, remoteId = "rid-report", etag = "etag-report",
+                            // gkrost/unidrive-cli#171: the name of the bytes, where the provider gives one (Internxt: `<fileId>|<size>`).
+                            contentId = "obj-report|42",
                             pendingUpload = false, hasError = false,
                         ),
                         ListResult.Entry(

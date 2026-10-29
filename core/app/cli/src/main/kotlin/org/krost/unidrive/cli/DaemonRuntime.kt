@@ -654,10 +654,11 @@ class DaemonRuntime(
                     // `notifications.status` (archive#111): this reply carries the `notifications` object.
                     // `hydration.refuse_name` (gkrost/unidrive-cli#24): the daemon records a client's refusal of a twin.
                     // `hydration.list_live` (gkrost/unidrive-cli#27): hydration.list reads a folder from the cloud while the first scan has not brought it in.
+                    // `hydration.list_content_id` (gkrost/unidrive-cli#171): a hydration.list file entry names its bytes (`content_id`) where the row does.
                     val capabilitiesJson = kotlinx.serialization.json.JsonArray(
                         (
                             profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-                                (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY)) +
+                                (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY)) +
                                 (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page"))
                         )
                             .map { kotlinx.serialization.json.JsonPrimitive(it) },

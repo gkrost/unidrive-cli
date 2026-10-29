@@ -164,7 +164,7 @@ type = "$type"
                 val statusObj = Json.parseToJsonElement(status) as JsonObject
                 assertEquals("mount", statusObj["mode"]!!.jsonPrimitive.content)
                 assertEquals(
-                    JsonArray((ProfileMode.MOUNT.capabilities + NOTIFICATIONS_STATUS_CAPABILITY + RUNNING_UPLOADS_CAPABILITY + MATCHES_LOCAL_CAPABILITY + REFUSE_NAME_CAPABILITY + LIST_LIVE_CAPABILITY).map { JsonPrimitive(it) }),
+                    JsonArray((ProfileMode.MOUNT.capabilities + NOTIFICATIONS_STATUS_CAPABILITY + RUNNING_UPLOADS_CAPABILITY + MATCHES_LOCAL_CAPABILITY + REFUSE_NAME_CAPABILITY + LIST_LIVE_CAPABILITY + LIST_CONTENT_ID_CAPABILITY).map { JsonPrimitive(it) }),
                     statusObj["capabilities"],
                 )
             } finally {

@@ -2324,6 +2324,8 @@ class HydrationImpl(
                 remoteId = e.remoteId,
                 // The write token (SyncEntry.writeToken): the client hands it back as the base etag of an edit.
                 etag = e.writeToken,
+                // gkrost/unidrive-cli#171: what names the bytes, beside the token a rename moves. A folder has no bytes.
+                contentId = e.remoteContentId.takeUnless { e.isFolder },
                 // toSyncEntry surfaces a `local:` synthetic remote_id as null,
                 // so a null here means "never uploaded". An edit of a file that
                 // already has a remote id is owed to the cloud from open_write until

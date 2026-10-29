@@ -51,6 +51,12 @@ internal const val REFUSE_NAME_CAPABILITY = "hydration.refuse_name"
 internal const val LIST_LIVE_CAPABILITY = "hydration.list_live"
 
 /**
+ * The `daemon.status` capability that says a `hydration.list` file entry carries `content_id` wherever the row names its bytes
+ * (gkrost/unidrive-cli#171), so a client tells "no id for this row" from "an engine that sends none".
+ */
+internal const val LIST_CONTENT_ID_CAPABILITY = "hydration.list_content_id"
+
+/**
  * `uploads.running` (archive#1200): the uploads holding a transfer permit right now, present only while there is one. `count` is all
  * of them, `items` the first [HydrationImpl.RUNNING_ITEMS_CAP] by start time, `more` the rest. Each item: `path`,
  * `started_at_ms` (epoch ms the attempt began), `bytes_done` (as the provider last reported) and `bytes_total` (null while the

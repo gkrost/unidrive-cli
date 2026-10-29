@@ -235,6 +235,11 @@ sealed class ListResult {
         // one). Null when the provider exposes none — NOT a conditional-write
         // etag; see the open_write base_etag docs.
         val etag: String? = null,
+        // gkrost/unidrive-cli#171: the provider's name for the bytes of the version the row records (SyncEntry.remoteContentId;
+        // Internxt: `<fileId>|<size>`). A rename or move keeps it where it changes [etag] and the modified time, so a client
+        // tells a rename from new bytes by it. Null for a folder, and where the provider names none or none is known yet;
+        // only serialized on the wire when set.
+        val contentId: String? = null,
         // True when the row holds local bytes whose upload has not completed —
         // created/edited through the mount, not yet on the cloud.
         val pendingUpload: Boolean = false,
