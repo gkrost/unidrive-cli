@@ -37,6 +37,13 @@ $tmp = if ($env:TEMP) { $env:TEMP } elseif ($env:TMP) { $env:TMP } else { $null 
 
 $javaArgs = @($xmx)
 @STATIC_FLAGS_PS@
+# Trust the Windows certificate store (gkrost/unidrive-windows#890): an antivirus that scans HTTPS signs with a root that only
+# that store holds, and the JVM's own cacerts then fails with "PKIX path building failed". The pair is Windows-only (the
+# Windows-ROOT keystore comes from SunMSCAPI, jdk.crypto.mscapi), so it lives here and in DaemonAutospawn, not in jvm-flags.txt,
+# which the Linux launchers read too. A trust store the user set in the JVM option variables replaces the whole pair.
+if (-not (($env:JAVA_TOOL_OPTIONS + ' ' + $env:JDK_JAVA_OPTIONS) -match 'javax\.net\.ssl\.trustStore')) {
+    $javaArgs += @('-Djavax.net.ssl.trustStoreType=Windows-ROOT', '-Djavax.net.ssl.trustStore=NONE')
+}
 $javaArgs += $localeArgs
 # Append, never concat with a possibly-null operand: it inserts an empty element when TEMP/TMP are unset.
 if ($tmp) { $javaArgs += ('-Djdk.net.unixdomain.tmpdir=' + $tmp) }

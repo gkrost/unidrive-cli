@@ -299,4 +299,47 @@ class DaemonAutospawnTest {
         // that a non-null answer is always a .jar (the spawner's -jar argument needs exactly that).
         DaemonAutospawn.thisJar()?.let { assertTrue(it.toString().endsWith(".jar")) }
     }
+
+    // gkrost/unidrive-windows#890: an antivirus that scans HTTPS signs with a root only the Windows store trusts, which the JVM's
+    // own cacerts does not hold (PKIX path building failed). The daemon a command autospawns takes the Windows store, exactly
+    // as the PowerShell launcher does; the Linux and macOS launchers read jvm-flags.txt, where Windows-ROOT does not exist.
+    private fun spawn(
+        windows: Boolean,
+        env: Map<String, String> = emptyMap(),
+    ): List<String> {
+        val diag = Files.createTempDirectory("autospawn-trust-diag")
+        return DaemonAutospawn.spawnCommand(
+            javaBin = Path.of("java"),
+            jar = Files.createTempDirectory("autospawn-trust-jar").resolve("unidrive.jar"),
+            configRoot = Files.createTempDirectory("autospawn-trust-config"),
+            profileName = "p",
+            env = { name -> (env + ("UNIDRIVE_DIAG_DIR" to diag.toString()))[name] },
+            props = { null },
+            windows = windows,
+        )
+    }
+
+    @Test
+    fun `on Windows the spawned daemon trusts the Windows certificate store, as one pair before the jar`() {
+        val command = spawn(windows = true)
+        val pair = listOf("-Djavax.net.ssl.trustStoreType=Windows-ROOT", "-Djavax.net.ssl.trustStore=NONE")
+        assertEquals(1, command.count { it == pair[0] }, command.toString())
+        assertEquals(1, command.count { it == pair[1] }, command.toString())
+        assertTrue(command.indexOf(pair[0]) < command.indexOf("-jar") && command.indexOf(pair[1]) < command.indexOf("-jar"), command.toString())
+    }
+
+    @Test
+    fun `off Windows the spawned daemon gets no trust store flag`() {
+        assertTrue(spawn(windows = false).none { it.contains("javax.net.ssl.trustStore") })
+    }
+
+    @Test
+    fun `a trust store the user set in the JVM option variables replaces the whole Windows default`() {
+        for (variable in listOf("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS")) {
+            val command = spawn(windows = true, env = mapOf(variable to "-Xshare:auto -Djavax.net.ssl.trustStore=C:/corp/roots.jks"))
+            assertTrue(command.none { it.contains("javax.net.ssl.trustStore") }, "$variable: $command")
+        }
+        val unrelated = spawn(windows = true, env = mapOf("JAVA_TOOL_OPTIONS" to "-Xshare:auto"))
+        assertTrue("-Djavax.net.ssl.trustStoreType=Windows-ROOT" in unrelated, unrelated.toString())
+    }
 }

@@ -32,7 +32,10 @@ class LauncherTemplateTest {
     }
 
     /** Renders the template, lets the real powershell.exe build the JVM argument list for [passArgs] and returns it. */
-    private fun launcherArgs(vararg passArgs: String): List<String> {
+    private fun launcherArgs(
+        vararg passArgs: String,
+        env: Map<String, String> = emptyMap(),
+    ): List<String> {
         val dir = Files.createTempDirectory("launcher-tmpl")
         try {
             val flags = templateFile().parent.resolve("jvm-flags.txt").toFile().readLines()
@@ -48,7 +51,12 @@ class LauncherTemplateTest {
             val process = ProcessBuilder(
                 listOf("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script.toString()) + passArgs,
             ).redirectErrorStream(true)
-                .also { it.environment()["UNIDRIVE_DIAG_DIR"] = dir.resolve("diag").toString() }
+                .also {
+                    it.environment().remove("JAVA_TOOL_OPTIONS")
+                    it.environment().remove("JDK_JAVA_OPTIONS")
+                    it.environment()["UNIDRIVE_DIAG_DIR"] = dir.resolve("diag").toString()
+                    it.environment().putAll(env)
+                }
                 .start()
             val output = process.inputStream.bufferedReader().readText()
             assertTrue(process.waitFor(60, TimeUnit.SECONDS), "powershell.exe did not finish")
@@ -179,5 +187,39 @@ class LauncherTemplateTest {
         } finally {
             dir.toFile().deleteRecursively()
         }
+    }
+
+    // gkrost/unidrive-windows#890: Windows-ROOT lets the JVM trust what an antivirus that scans HTTPS installed in the Windows
+    // store. It exists on Windows only (SunMSCAPI), and jvm-flags.txt is read by the Linux launchers too, so the flag lives in
+    // this template alone and in DaemonAutospawn (on Windows).
+    @Test
+    fun `the powershell launcher trusts the Windows certificate store as one pair before the jar`() {
+        assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
+        val args = launcherArgs("status")
+        assertEquals(1, args.count { it == "-Djavax.net.ssl.trustStoreType=Windows-ROOT" }, args.toString())
+        assertEquals(1, args.count { it == "-Djavax.net.ssl.trustStore=NONE" }, args.toString())
+        assertTrue(args.indexOf("-Djavax.net.ssl.trustStoreType=Windows-ROOT") < args.indexOf("-jar"), args.toString())
+    }
+
+    @Test
+    fun `a trust store set in the JVM option variables replaces the whole default of the powershell launcher`() {
+        assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
+        for (variable in listOf("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS")) {
+            val args = launcherArgs("status", env = mapOf(variable to "-Djavax.net.ssl.trustStore=C:/corp/roots.jks"))
+            assertTrue(args.none { it.contains("javax.net.ssl.trustStore") }, "$variable: $args")
+        }
+        assertTrue("-Djavax.net.ssl.trustStoreType=Windows-ROOT" in launcherArgs("status", env = mapOf("JAVA_TOOL_OPTIONS" to "-Xshare:auto")))
+    }
+
+    // Platform independent: reads the files, runs nothing.
+    @Test
+    fun `the Windows trust store flag is in the powershell template only, not in the shell template or the shared flag list`() {
+        val dir = templateFile().parent
+        assertTrue("Windows-ROOT" in dir.resolve("unidrive.ps1.tmpl").toFile().readText())
+        assertTrue("Windows-ROOT" !in dir.resolve("unidrive.sh.tmpl").toFile().readText(), "the shell template must not carry it")
+        assertTrue(
+            dir.resolve("jvm-flags.txt").toFile().readLines().none { !it.trimStart().startsWith("#") && "trustStore" in it },
+            "jvm-flags.txt is read by the Linux launchers, where Windows-ROOT does not exist",
+        )
     }
 }
