@@ -160,9 +160,9 @@ class DaemonAutospawnTest {
     // default one, as with the GC log.
     @Test
     fun `the heap dump file name is the profile's, and a name that is not file-safe gives the default one`() {
-        assertEquals("heap-work_mount-2.hprof", DaemonAutospawn.heapDumpFileName("work_mount-2"))
+        assertEquals("heap-work_mount-2.hprof", heapDumpFileName("work_mount-2"))
         for (bad in listOf("", "a b", "../x", "a:b", "a\\b")) {
-            assertEquals("heap-default.hprof", DaemonAutospawn.heapDumpFileName(bad), "'$bad' is never put into the file name")
+            assertEquals("heap-default.hprof", heapDumpFileName(bad), "'$bad' is never put into the file name")
         }
     }
 
