@@ -293,6 +293,9 @@ class MountOperationsParityTest {
             db.upsertEntry(remoteRow("/f/a.txt"))
             db.insertFolder("/f/sub", "id-/f/sub", Instant.now())
             db.upsertEntry(remoteRow("/f/sub/b.txt"))
+            // the rows above say /f exists on the cloud; the strict fake wants to see it too
+            // (gkrost/unidrive-cli#64 item 3)
+            provider.remoteFoldersExisting.addAll(listOf("/f", "/f/sub"))
 
             e.renameRemote("/f", "/g")
 

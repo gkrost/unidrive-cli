@@ -87,11 +87,17 @@ class SparseProbeTest {
     }
 
     @Test
-    fun `a file at or below one page is never flagged`() {
+    fun `a file at or below one page is flagged only when it is zeros end to end`() {
+        // gkrost/unidrive-cli#165: an all-zeros file needs no hash to be recognised, whatever its size.
         val p = stub("small.bin", 4096)
-        assertFalse(SparseProbe.isStub(p, 4096))
+        assertTrue(SparseProbe.isStub(p, 4096))
         val tiny = stub("tiny.bin", 100)
-        assertFalse(SparseProbe.isStub(tiny, 100))
+        assertTrue(SparseProbe.isStub(tiny, 100))
+
+        FileChannel.open(p, StandardOpenOption.WRITE).use { it.write(ByteBuffer.wrap(byteArrayOf(7)), 17) }
+        assertFalse(SparseProbe.isStub(p, 4096), "one real byte keeps a small file real")
+        FileChannel.open(tiny, StandardOpenOption.WRITE).use { it.write(ByteBuffer.wrap(byteArrayOf(7)), 99) }
+        assertFalse(SparseProbe.isStub(tiny, 100), "one real byte keeps a small file real")
     }
 
     @Test

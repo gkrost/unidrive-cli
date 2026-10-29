@@ -25,7 +25,7 @@ internal object SparseProbe {
     const val PAGE: Int = 4096
     private const val MAX_SAMPLED_PAGES = 64
 
-    /** Files this size or smaller are never reported as stubs (one filesystem page). */
+    /** Files of at most this size (one filesystem page) are read end to end; larger ones are sampled. */
     const val MIN_DETECTABLE_SIZE: Long = PAGE.toLong()
 
     fun isStub(
@@ -37,6 +37,10 @@ internal object SparseProbe {
             if (!Files.isRegularFile(path)) return false
             val actual = Files.size(path)
             if (actual == 0L) return expectedSize > 0L
+            // gkrost/unidrive-cli#165: a file of at most one page is read end to end, so an all-zeros
+            // file is a stub whatever its size. A longer file whose expected size is at or below one
+            // page disagrees with the remote about the length and is not a stub.
+            if (actual <= MIN_DETECTABLE_SIZE) return allSampledZero(path, actual)
             if (expectedSize <= MIN_DETECTABLE_SIZE) return false
             allSampledZero(path, actual)
         } catch (_: Exception) {

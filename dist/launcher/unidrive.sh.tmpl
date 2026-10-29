@@ -35,11 +35,10 @@ if [[ -n "${UNIDRIVE_COROUTINE_DEBUG:-}" && "${UNIDRIVE_COROUTINE_DEBUG}" != "0"
 fi
 # Post-mortem diagnostics in one directory (UNIDRIVE_DIAG_DIR overrides): fatal-crash hs_err logs, the OOM
 # heap dump (the companion -XX:+HeapDumpOnOutOfMemoryError rides jvm-flags.txt) and the daemon's bounded
-# GC log. The JVM silently skips a heap dump into a missing directory and treats a path without a trailing
-# separator as a FILE name, so: mkdir first, trailing separator always.
+# GC log. The JVM silently skips a dump into a missing directory, so: mkdir first.
 diag_dir="${UNIDRIVE_DIAG_DIR:-$HOME/.local/share/unidrive/diagnostics}"
 mkdir -p "$diag_dir" 2>/dev/null || true
-diag_args=("-XX:ErrorFile=$diag_dir/hs_err_pid%p.log" "-XX:HeapDumpPath=$diag_dir/")
+diag_args=("-XX:ErrorFile=$diag_dir/hs_err_pid%p.log")
 # The GC log is daemon-only: CLI one-shots are ~1 s JVMs that would contend for the same file. The
 # long-runners are `daemon run`, `sync --watch`, and `autostart` (which selects one by profile mode).
 # Each daemon writes its own file, gc-<profile>.log: two daemons (one per profile) sharing one file cannot
@@ -83,6 +82,14 @@ if [[ "$gc_at" -ge 0 ]]; then
     [[ "$gc_profile" =~ ^[A-Za-z0-9_-]+$ ]] || gc_profile="default"
     diag_args+=("-Xlog:gc*:file=$diag_dir/gc-$gc_profile.log:time,uptime:filecount=5,filesize=10m")
 fi
+# The OOM heap dump is one FIXED file per profile (heap-<profile>.hprof, the GC log's profile): HotSpot
+# does not overwrite an existing dump, so an OOM restart loop cannot stack a fresh ~2 GB hprof — which
+# holds decrypted tokens — on every restart; the first dump stays for the operator to prune, and deleting
+# it lets the next OOM dump again. The path has NO trailing separator on purpose: the JVM then treats it
+# as a FILE name and dumps exactly there. One-shots share heap-default.hprof.
+dump_profile="default"
+[[ -n "${gc_profile:-}" ]] && dump_profile="$gc_profile"
+diag_args+=("-XX:HeapDumpPath=$diag_dir/heap-$dump_profile.hprof")
 # Java runtime: Linux runs unidrive on the system's JDK, not a bundled one. Java 25+ is preferred: the JVM
 # runtime spike (archive#624) measured Java 21 at ~30 % more CPU to a ready daemon than Java 25. Order:
 # UNIDRIVE_JAVA; else `java` on PATH when it is 25+; else the newest 25+ JDK under UNIDRIVE_JVM_DIR

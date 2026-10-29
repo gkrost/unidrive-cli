@@ -103,7 +103,7 @@ class LauncherTemplateTest {
         assertEquals(1, errorFile.size, "one -XX:ErrorFile argument, got: $args")
         assertEquals(1, dumpPath.size, "one -XX:HeapDumpPath argument, got: $args")
         assertTrue(!errorFile[0].removePrefix("-XX:ErrorFile=").contains("-XX:"), "the ErrorFile argument swallowed another flag: ${errorFile[0]}")
-        assertTrue(dumpPath[0].endsWith(java.io.File.separator), "the heap dump path ends with a separator: ${dumpPath[0]}")
+        assertTrue(dumpPath[0].endsWith("heap-p.hprof"), "the dump is the profile's own fixed file (no trailing separator, the JVM then treats it as a file name): ${dumpPath[0]}")
         assertTrue(args.any { it.startsWith("-Xlog:gc*:file=") }, "daemon run arms the GC log: $args")
     }
 

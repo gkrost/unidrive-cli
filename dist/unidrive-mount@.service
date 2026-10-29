@@ -7,6 +7,8 @@
 Description=UniDrive FUSE mount of profile %i
 After=unidrive@%i.service network-online.target
 Wants=unidrive@%i.service network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -24,6 +26,8 @@ ExecStopPost=-/usr/bin/fusermount3 -uz ${UNIDRIVE_MOUNTPOINT}
 SuccessExitStatus=78 143
 Restart=on-failure
 RestartSec=15
+RestartSteps=5
+RestartMaxDelaySec=10min
 
 [Install]
 WantedBy=default.target

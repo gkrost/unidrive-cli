@@ -264,11 +264,50 @@ class TrackingEngineDirReapTest {
     }
 
     /**
+     * ALREADY-GONE INVARIANT: a pending reap whose directory has vanished
+     * remotely (trashed elsewhere, or an ancestor's reap cascaded) must be
+     * cleared from the persisted set — the not-found from the listing means
+     * the goal is already met, and without the branch the directory warns on
+     * every pass and stays in the set forever.
+     */
+    @Test
+    fun `a pending reap for a directory that is already gone is cleared`() {
+        seedAndDeleteLocal("/a/b/file.txt")
+        provider.lagDirsOnce += "/a/b"
+        provider.lagDirsOnce += "/a"
+
+        // Pass 1: the lagging listing defers both reaps into the pending set.
+        val t1 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val r1 = TrackingEngine(provider, t1, syncRoot, batchGuard = permissive).syncOnce()
+            assertTrue(r1.reapedDirs.isEmpty())
+            assertEquals(setOf("/a/b", "/a"), t1.pendingReaps(), "deferred directories must be persisted")
+        } finally {
+            t1.close()
+        }
+
+        // The directories then vanish remotely.
+        provider.goneListDirs += "/a/b"
+        provider.goneListDirs += "/a"
+
+        val t2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val r2 = TrackingEngine(provider, t2, syncRoot, batchGuard = permissive).syncOnce()
+            assertTrue(r2.reapedDirs.isEmpty(), "a gone directory is not reaped again")
+            assertTrue(
+                t2.pendingReaps().isEmpty(),
+                "a pending reap for an already-gone directory must be cleared, was ${t2.pendingReaps()}",
+            )
+        } finally {
+            t2.close()
+        }
+    }
+
+    /**
      * RETIREMENT INVARIANT: a persisted candidate that turns out to hold a
      * TRACKED file (legitimately populated, not lag) is dropped from the pending
      * set rather than retried forever.
-     */
-    @Test
+     */    @Test
     fun `a persisted candidate with a tracked child is retired not retried`() {
         // Sync two files in the same dir; delete one locally.
         provider.files["/dir/keep.txt"] = "keep".toByteArray()

@@ -353,6 +353,7 @@ class DropboxWriteTest {
     @Test
     fun `a download by id fetches the id and stages the bytes`() =
         runTest {
+            fake.json("files/get_metadata", file("/a.txt", "id:5"))
             fake.on("files/download") { Answer(bytes = "content".toByteArray(), headers = mapOf(DropboxApi.API_RESULT to file("/a.txt", "id:5"))) }
             val target = dir.resolve("out/a.txt")
 
@@ -366,7 +367,7 @@ class DropboxWriteTest {
     @Test
     fun `a file that is gone is a permanent download failure`() =
         runTest {
-            fake.json("files/download", """{"error_summary":"path/not_found/.."}""", status = 409)
+            fake.json("files/get_metadata", """{"error_summary":"path/not_found/.."}""", status = 409)
 
             assertFailsWith<PermanentDownloadFailureException> { provider.download("/gone.txt", dir.resolve("gone.txt")) }
         }

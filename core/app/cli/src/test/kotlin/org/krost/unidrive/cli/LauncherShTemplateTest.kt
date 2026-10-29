@@ -158,4 +158,17 @@ class LauncherShTemplateTest {
         assertTrue("-Djava.net.preferIPv6Addresses=system" in r.args, r.args.toString())
         assertTrue(r.args.indexOf("-Djava.net.preferIPv6Addresses=system") < r.args.indexOf("-jar"), r.args.toString())
     }
+
+    // One FIXED dump file per profile: HotSpot does not overwrite an existing dump, so an OOM restart loop
+    // cannot stack a fresh ~2 GB hprof — which holds decrypted tokens — on every restart. The path has no
+    // trailing separator, so the JVM treats it as a FILE name and dumps exactly there; the GC log's profile
+    // detection names it, one-shots give the default one.
+    @Test
+    fun `the launcher pins the heap dump to one file per profile`() {
+        val j25 = fakeJdk(dir.resolve("jvm"), "jdk-25", "25.0.4")
+        fun dumpFile(r: Run): String =
+            Path.of(r.args.last { it.startsWith("-XX:HeapDumpPath=") }.removePrefix("-XX:HeapDumpPath=")).fileName.toString()
+        assertEquals("heap-work.hprof", dumpFile(run(j25, "-p", "work", "daemon", "run")))
+        assertEquals("heap-default.hprof", dumpFile(run(j25, "status")))
+    }
 }

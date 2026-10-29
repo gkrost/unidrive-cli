@@ -388,6 +388,10 @@ open class SyncEngine(
         r.foldCase = caseFolds
         // archive#660: the mirror's ignore rules, applied wherever the exclude patterns are.
         if (mirrorRules != null) r.isIgnored = ::ignoredByRules
+        // archive#503: the local names the last scan refused as an NFC clash, asked by the reconciler's folder walk
+        // (a remote folder delete must not take a blocked member with it). Read at call time: the scanner rebuilds
+        // its clash set on every scan.
+        r.isBlocked = { scanner.isUnderNfcCollision(it) }
     }
 
     // Debounce state for remote-change wake hints (Internxt notifications WS).
@@ -2789,7 +2793,8 @@ open class SyncEngine(
         targetMtimeMillis: Long?,
     ): DownloadReceipt = Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, destination, targetMtimeMillis)
 
-    private suspend fun applyDownload(action: SyncAction.DownloadContent) {
+    // Internal for the download-placement test (as applyConflict for the refused-case-collision test).
+    internal suspend fun applyDownload(action: SyncAction.DownloadContent) {
         log.debug("Download: {} ({} bytes)", action.path, action.remoteItem.size)
         // archive#230: a name that cannot exist on the local filesystem (Windows
         // all-dots / trailing-dot / reserved device name, etc.) can never be
@@ -2803,6 +2808,11 @@ open class SyncEngine(
             )
         }
         val localPath = placeholder.resolveLocal(action.path)
+        // A download replaces the local bytes only when the file still has the stats the row recorded at scan
+        // time. An edit that lands between the scan and this placement (pass 2 queued, a long streaming gather)
+        // has another mtime or size, and the provider places the download over it with nothing logged. The edit
+        // is moved aside as a conflict-local copy first, the way applyKeepBoth keeps a losing local edit.
+        val keptLocalEdit = keepLocalEditAsideIfEditedSinceScan(action.path, localPath)
         if (versionManager != null && Files.isRegularFile(localPath) && Files.size(localPath) > 0) {
             versionManager.snapshot(action.path)
             versionManager.pruneByCount(action.path, maxVersions)
@@ -2844,6 +2854,8 @@ open class SyncEngine(
                 newHash = action.remoteItem.hash,
                 result = "success",
             )
+            // The kept edit goes up in this pass, not on the next one (the plan was made before the copy existed).
+            if (keptLocalEdit != null && syncDirection != SyncDirection.DOWNLOAD) uploadKeptLocalEdit(keptLocalEdit, action.remoteItem)
         } catch (e: Exception) {
             auditLog?.emit(
                 action = "Download",
@@ -2854,6 +2866,62 @@ open class SyncEngine(
             )
             throw e
         }
+    }
+
+    // Uploads the conflict-local copy [keptLocalEdit] that applyDownload moved aside, best effort, as applyKeepBoth
+    // uploads its copy: a failed upload leaves the copy local-only, and the next scan uploads it. A cancellation and
+    // an authentication failure are not swallowed: they fail the download that kept the copy.
+    private suspend fun uploadKeptLocalEdit(
+        keptLocalEdit: String,
+        remoteItem: CloudItem,
+    ) {
+        // archive#115: the copy belongs next to the canonical remote file, as the reconciler's own Upload would.
+        val canonicalCopy = remoteItem.path.substringBeforeLast('/') + "/" + keptLocalEdit.substringAfterLast('/')
+        val copyTarget = if (canonicalCopy != keptLocalEdit) canonicalCopy else null
+        try {
+            applyUpload(SyncAction.Upload(keptLocalEdit, remoteTarget = copyTarget), resolveRefusal = false)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: AuthenticationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("Conflict copy {} was kept locally but not uploaded yet: {}", keptLocalEdit, e.message)
+        }
+    }
+
+    // Moves [localPath] aside as a conflict-local copy when its current stats differ from the row's baseline
+    // (localMtime, localSize): an edit landed between the scan and the download about to replace the file.
+    // Returns the copy's path, or null when there is nothing to keep — the file is absent, untracked, or
+    // still at the baseline the scan recorded.
+    private suspend fun keepLocalEditAsideIfEditedSinceScan(
+        path: String,
+        localPath: Path,
+    ): String? {
+        if (!Files.isRegularFile(localPath)) return null
+        val row = db.getEntry(path) ?: return null
+        // A placeholder artifact (a 0-byte stub, a freed placeholder whose zeros a tool's mtime touch survived,
+        // a partial download) is not an edit: the download fills it in, as every unhydrated-row pass does.
+        if (looksLikePlaceholder(localPath, row, shorterIsPartialDownload = false)) return null
+        val baselineMtime = row.localMtime ?: return null
+        val baselineSize = row.localSize ?: return null
+        val stat = Transfers.statBeforeUpload(localPath) ?: return null
+        if (stat.first == baselineMtime && stat.second == baselineSize) return null
+        val conflictPath =
+            keepBothCopyPath(path, conflictStamp()) { candidate ->
+                Files.exists(placeholder.resolveLocal(candidate), java.nio.file.LinkOption.NOFOLLOW_LINKS) || db.getEntry(candidate) != null
+            }
+        withEchoSuppression(conflictPath) {
+            Files.move(localPath, placeholder.resolveLocal(conflictPath))
+        }
+        reporter.onWarning("Conflict: $path was edited after the scan planned its download; the edit is kept as $conflictPath")
+        conflictLog?.record(
+            path = path,
+            localState = ChangeState.MODIFIED.name,
+            remoteState = ChangeState.MODIFIED.name,
+            policy = "KEEP_BOTH",
+            loserFile = null,
+        )
+        return conflictPath
     }
 
     private suspend fun applyUpload(
@@ -3898,12 +3966,31 @@ open class SyncEngine(
                 SyncAction.CreatePlaceholder(action.path, action.remoteItem, shouldHydrate = true),
                 localBytesLost = true,
             )
+        } else if (remoteWins && action.remoteItem?.deleted == true) {
+            // A tombstone that is the newer writer IS the newer write: the delete applies (Internxt tombstones
+            // carry modificationInstant, so a delete can be the last writer). Without this branch neither side
+            // ran: the row stayed unchanged, and the next pass planned an upload against the gone item.
+            // applyDeleteLocal tombstones or drops the row, so nothing is left to re-plan.
+            if (Files.exists(localPath)) {
+                applyDeleteLocal(SyncAction.DeleteLocal(action.path))
+            } else {
+                val row = db.getEntry(action.path)
+                val remoteId = row?.remoteId
+                if (remoteId != null) db.setStatusTrashed(remoteId) else db.deleteEntry(action.path)
+            }
         } else if (!remoteWins && Files.exists(localPath)) {
             // UD-366: conflict-loser is the remote — overwrite it in place rather than
             // POSTing a duplicate. action.remoteItem is non-null on this branch because
             // remoteWins=false implies a remote modification was the conflict trigger.
             // gkrost/unidrive-cli#57: guarded by the version that lost, the conflict's, not the older one the row records.
-            applyUpload(SyncAction.Upload(action.path, remoteId = action.remoteItem?.id), replaces = action.remoteItem, resolveRefusal = false)
+            // A tombstone the local edit out-writes is not a version to replace in place (the item is gone):
+            // the upload goes up as a new item, as the keep-both branch uploads over a remote delete.
+            val replacedRemote = action.remoteItem?.takeUnless { it.deleted }
+            applyUpload(
+                SyncAction.Upload(action.path, remoteId = replacedRemote?.id),
+                replaces = replacedRemote,
+                resolveRefusal = false,
+            )
         }
     }
 

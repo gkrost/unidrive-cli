@@ -51,8 +51,7 @@ if ($env:UNIDRIVE_COROUTINE_DEBUG -and $env:UNIDRIVE_COROUTINE_DEBUG -ne '0' -an
 }
 # Post-mortem diagnostics in one directory (UNIDRIVE_DIAG_DIR overrides): fatal-crash hs_err logs, the OOM
 # heap dump (the companion -XX:+HeapDumpOnOutOfMemoryError rides jvm-flags.txt) and the daemon's bounded
-# GC log. The JVM silently skips a heap dump into a missing directory and treats a path without a trailing
-# separator as a FILE name, so: create it first, trailing separator always.
+# GC log. The JVM silently skips a dump into a missing directory, so: create it first.
 $diagDir = $env:UNIDRIVE_DIAG_DIR
 if (-not $diagDir) {
     $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $env:USERPROFILE 'AppData\Local' }
@@ -60,9 +59,9 @@ if (-not $diagDir) {
 }
 New-Item -ItemType Directory -Force -Path $diagDir -ErrorAction SilentlyContinue | Out-Null
 $diag = $diagDir.TrimEnd('\') + '\'
-# Parenthesise each element: `,` binds tighter than `+`, so unparenthesised the two flags become ONE argument with a space
+# Parenthesise each element: `,` binds tighter than `+`, so unparenthesised the flag becomes ONE argument with a space
 # in it, which Windows PowerShell 5.1 hands to java mis-quoted (java then prints its usage text).
-$javaArgs += @(('-XX:ErrorFile=' + $diag + 'hs_err_pid%p.log'), ('-XX:HeapDumpPath=' + $diag))
+$javaArgs += @(('-XX:ErrorFile=' + $diag + 'hs_err_pid%p.log'))
 # The GC log is daemon-only: CLI one-shots are ~1 s JVMs that would contend for the same file. The
 # long-runners are `daemon run`, `sync --watch`, and `autostart` (which selects one by profile mode).
 # The bound is Count, not Count - 1: `autostart` is a one-word command and usually the last argument ($passArgs[$i + 1] past the end is $null).
@@ -94,6 +93,13 @@ if ($gcAt -ge 0) {
     if (-not ($gcProfile -cmatch '^[A-Za-z0-9_-]+$')) { $gcProfile = 'default' }
     $javaArgs += ('-Xlog:gc*:file=' + $diag + 'gc-' + $gcProfile + '.log:time,uptime:filecount=5,filesize=10m')
 }
+# The OOM heap dump is one FIXED file per profile (heap-<profile>.hprof, the GC log's profile): HotSpot
+# does not overwrite an existing dump, so an OOM restart loop cannot stack a fresh ~2 GB hprof — which
+# holds decrypted tokens — on every restart; the first dump stays for the operator to prune, and deleting
+# it lets the next OOM dump again. No trailing separator: the JVM then treats the path as a FILE name and
+# dumps exactly there. One-shots share heap-default.hprof.
+$dumpProfile = if ($gcProfile) { $gcProfile } else { 'default' }
+$javaArgs += ('-XX:HeapDumpPath=' + $diag + 'heap-' + $dumpProfile + '.hprof')
 $javaArgs += @('-jar', '@JAR@')
 # Redirected standard input (profile set ignore_rules from a file, auth login --password-stdin) must reach the JVM:
 # inside a script, piped-in input is $input and the native call does not see it on its own, so pipe it in. The

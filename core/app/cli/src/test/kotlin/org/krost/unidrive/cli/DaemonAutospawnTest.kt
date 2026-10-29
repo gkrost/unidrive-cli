@@ -122,7 +122,7 @@ class DaemonAutospawnTest {
         assertTrue(command.contains("-Duser.country=LU"))
         assertTrue(command.contains("-Djdk.net.unixdomain.tmpdir=/tmp/x"))
         assertTrue(command.contains("-XX:ErrorFile=${diagPath}hs_err_pid%p.log"), "fatal-crash logs are pinned into the diagnostics dir")
-        assertTrue(command.contains("-XX:HeapDumpPath=$diagPath"), "the dump path carries the trailing separator: without it the JVM treats it as a file name")
+        assertTrue(command.contains("-XX:HeapDumpPath=${diagPath}heap-p.hprof"), "the dump is the profile's own fixed file: HotSpot does not overwrite it, so an OOM restart loop stacks no fresh ~2 GB hprof per restart")
         assertTrue(command.contains("-Xlog:gc*:file=${diagPath}gc-p.log:time,uptime:filecount=5,filesize=10m"), "the GC log is the profile's own")
         assertTrue(Files.isDirectory(diag), "the diagnostics dir exists before the child starts (the JVM skips dumps into missing dirs)")
     }
@@ -152,6 +152,17 @@ class DaemonAutospawnTest {
         assertEquals("gc-work_mount-2.log", DaemonAutospawn.gcLogFileName("work_mount-2"))
         for (bad in listOf("", "a b", "../x", "a:b", "a\\b")) {
             assertEquals("gc-default.log", DaemonAutospawn.gcLogFileName(bad), "'$bad' is never put into the file name")
+        }
+    }
+
+    // One FIXED dump file per profile: HotSpot does not overwrite an existing dump, so an OOM restart
+    // loop cannot stack a fresh ~2 GB hprof on every restart. A name that is not file-safe gives the
+    // default one, as with the GC log.
+    @Test
+    fun `the heap dump file name is the profile's, and a name that is not file-safe gives the default one`() {
+        assertEquals("heap-work_mount-2.hprof", heapDumpFileName("work_mount-2"))
+        for (bad in listOf("", "a b", "../x", "a:b", "a\\b")) {
+            assertEquals("heap-default.hprof", heapDumpFileName(bad), "'$bad' is never put into the file name")
         }
     }
 
