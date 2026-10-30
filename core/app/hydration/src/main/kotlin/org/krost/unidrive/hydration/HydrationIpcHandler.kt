@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import org.krost.unidrive.io.ndjsonString
 import org.krost.unidrive.sync.PathNormalizer
 import java.nio.file.InvalidPathException
 import java.nio.file.Paths
@@ -942,21 +943,7 @@ fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
     }
 }
 
-// JSON string literal for [s]. Quote and backslash AND control characters are escaped: a
-// provider's error message (an HTTP error body, say) routinely carries a newline, and one raw
-// newline in a reply or event line splits the NDJSON framing for the reader.
-private fun jsonEsc(s: String): String {
-    val sb = StringBuilder(s.length + 2).append('"')
-    for (c in s) {
-        when {
-            c == '\\' -> sb.append('\\').append('\\')
-            c == '"' -> sb.append('\\').append('"')
-            c == '\n' -> sb.append('\\').append('n')
-            c == '\r' -> sb.append('\\').append('r')
-            c == '\t' -> sb.append('\\').append('t')
-            c < ' ' -> sb.append('\\').append('u').append("%04x".format(c.code))
-            else -> sb.append(c)
-        }
-    }
-    return sb.append('"').toString()
-}
+// JSON string literal for [s]: the NDJSON escaper of the socket protocol. A provider's error message (an HTTP error body, say)
+// routinely carries a newline, and one raw newline (or NEL, U+2028, U+2029) in a reply or event line splits the framing for
+// the reader.
+private fun jsonEsc(s: String): String = ndjsonString(s)
