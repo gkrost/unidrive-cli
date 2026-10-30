@@ -1,8 +1,10 @@
 package org.krost.unidrive.cli
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.selects.select
@@ -222,7 +224,20 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                 )
         }
 
+    // gkrost/unidrive-cli#213: the run's shutdown sequence, set once the profile lock is held.
+    private var shutdown: SyncShutdown? = null
+
     override fun run() {
+        try {
+            runSync()
+        } finally {
+            // gkrost/unidrive-cli#213: every way out of the run (a return, a refusal, a throw) closes what the run opened
+            // and releases the profile lock last, through the sequence of its shutdown hook. Only the first release does it.
+            shutdown?.release()
+        }
+    }
+
+    private fun runSync() {
         // Positional <profile> arg (mirror MountCommand): set parent.provider
         // before any resolveCurrentProfile() call — including the one
         // acquireProfileLock() makes on contention — so both
@@ -297,7 +312,12 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
             }
         }
         val lock = parent.acquireProfileLock()
-        Runtime.getRuntime().addShutdownHook(Thread { lock.unlock() })
+        // gkrost/unidrive-cli#213: one shutdown hook for the whole run, one-shot or --watch. It stops the run, waits for
+        // the pass (at most SyncShutdown.DEADLINE_MS), closes what the run registers below and releases the lock last.
+        // The JVM starts its hooks at once and in no order, so a second hook would race it.
+        val shutdown = SyncShutdown().also { this.shutdown = it }
+        shutdown.unlockingLast { lock.unlock() }
+        Runtime.getRuntime().addShutdownHook(Thread({ shutdown.shutdownAndWait() }, "unidrive-sync-shutdown"))
 
         // Spec mount-sync-mode-mutex §3.4.1: warn-but-do-not-abort if a
         // stale unidrive FUSE mount survived a kill -9'd MountCommand.
@@ -318,6 +338,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         // a dry run skips it (see restrictProfileForSync).
         restrictProfileForSync(dryRun, parent.providerConfigDir())
         val rawProvider = parent.createProvider()
+        shutdown.closing(SyncShutdown.Step.PROVIDER) { rawProvider.close() }
         val config = parent.loadSyncConfig()
         // A sync_path in config.toml is the profile's standing scope; --sync-path
         // replaces it for this invocation. --full-tree would run unscoped against a
@@ -330,6 +351,8 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                 "Sync error: --full-tree conflicts with sync_path in config.toml for profile '${profile.name}' " +
                     "(${config.syncPaths.joinToString(", ")}). Remove sync_path from the profile to reconcile the whole drive.",
             )
+            // Released before the exit, which runs the shutdown hook: the run is over, there is nothing for it to stop.
+            shutdown.release()
             System.exit(1)
             return
         }
@@ -407,6 +430,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                 println(if (resetBackup != null) "Sync state cleared; the previous state.db is saved as $resetBackup." else "Sync state cleared.")
             }
         }
+        shutdown.closing(SyncShutdown.Step.DATABASE) { db.close() }
 
         // Apply config pin patterns to DB
         applyConfigPinRules(db, config, profile.name)
@@ -436,10 +460,11 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
             try {
                 IpcAuth.issueOrReport(parent.providerConfigDir(), profile.name, BuildInfo.versionString())
             } catch (_: IpcAuth.StartupRefused) {
-                runCatching { db.close() }
+                shutdown.release()
                 kotlin.system.exitProcess(IpcAuth.STARTUP_REFUSED_EXIT_CODE)
             }
         val ipcServer = IpcServer(socketPath, auth = ipcAuth)
+        shutdown.closing(SyncShutdown.Step.IPC_SERVER) { ipcServer.close() }
         val ipcReporter = IpcProgressReporter(ipcServer, profile.name)
         val delegates = mutableListOf<ProgressReporter>(cliReporter, ipcReporter)
         if (notifyReporter != null) delegates.add(notifyReporter)
@@ -472,6 +497,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         // In non-watch mode we still pass the callbacks (they become no-ops since
         // watcher is only started in watch mode).
         val watcher = if (watch) LocalWatcher(config.syncRoot) else null
+        watcher?.let { w -> shutdown.closing(SyncShutdown.Step.WATCHER) { w.stop() } }
 
         val dataDir =
             run {
@@ -581,7 +607,9 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         // In a dry-run the store must share the snapshot, not open the real database file.
         val subscriptionStore = SubscriptionStore(if (dryRun) db.file else dbPath)
         subscriptionStore.initialize()
+        shutdown.closing(SyncShutdown.Step.SUBSCRIPTIONS) { subscriptionStore.close() }
 
+        // What the run opened is closed by run()'s release, in the order of SyncShutdown, on every way out.
         try {
             // UD-254a: dropped MDCContext() here. Live JFR (2026-05-02) showed
             // `LogbackMDCAdapter.getPropertyMap` accounting for 80.63 % of all
@@ -601,6 +629,9 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
             // per the lessons/mdc-in-suspend.md guidance — is the wider Slice
             // B in UD-254a's body and out of scope for this single-file fix.
             runBlocking {
+                // gkrost/unidrive-cli#213: the coroutine the shutdown hook cancels and waits for. Every pass and its transfers
+                // run under it; the IPC accept loop is a child too, and the finally below closes it once the body is left.
+                shutdown.attach(coroutineContext.job)
                 try {
                     ipcServer.start(this)
 
@@ -655,6 +686,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                                     ensureSubscription(rawProvider, subscriptionStore, pn, rpConfig, renewalScheduler)
                                 },
                             )
+                        shutdown.closing(SyncShutdown.Step.RENEWALS, renewalScheduler::cancelAll)
                         ensureSubscription(rawProvider, subscriptionStore, profile.name, rpConfig, renewalScheduler)
                     }
 
@@ -687,17 +719,6 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                             remoteWakeChannel.trySend(Unit)
                         }
 
-                        Runtime.getRuntime().addShutdownHook(
-                            Thread {
-                                println("\nShutting down...")
-                                watcher!!.stop()
-                                ipcServer.close()
-                                renewalScheduler?.cancelAll()
-                                subscriptionStore.close()
-                                db.close()
-                            },
-                        )
-
                         var cycleFailures = 0
                         var idleCycles = 3 // start in NORMAL state
                         var lastState = pollStateName(idleCycles)
@@ -725,6 +746,10 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                             runExitCode = 1
                             return@runBlocking
                         } catch (e: Exception) {
+                            // gkrost/unidrive-cli#213: once the shutdown hook has cancelled the pass, its end is not a failed
+                            // pass to report or retry: the run ends and the hook closes after it. Before that, a cancellation
+                            // (a timeout that escaped the pass) is still a failed cycle.
+                            if (shutdown.stopRequested) throw e
                             ipcReporter.emitSyncError(e.message ?: "Sync failed")
                             cycleFailures++
                             System.err.println("Boot sync failed: ${e.message}")
@@ -738,7 +763,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                         // a directory that doesn't exist yet.
                         watcher!!.start()
 
-                        while (true) {
+                        while (!shutdown.stopRequested) {
                             var hadChanges = false
                             try {
                                 // Renew webhook subscription if needed
@@ -756,6 +781,8 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                                 runExitCode = 1
                                 break
                             } catch (e: Exception) {
+                                // A pass the shutdown hook cancelled (see the boot pass above).
+                                if (shutdown.stopRequested) throw e
                                 ipcReporter.emitSyncError(e.message ?: "Sync failed")
                                 cycleFailures++
                                 val backoffMs = watchFailureBackoffMs(cycleFailures)
@@ -839,7 +866,9 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                         } catch (e: Throwable) {
                             failure = e
                         }
-                        if (failure != null) {
+                        // gkrost/unidrive-cli#213: a pass the shutdown hook cancelled (Ctrl-C) did not fail; the hook said
+                        // "Shutting down..." and the exit code is the signal's.
+                        if (failure != null && !(failure is CancellationException && shutdown.stopRequested)) {
                             System.err.println(renderSyncFailure(failure))
                             // Only dump the JVM stack trace for unexpected
                             // failures, and only under -v. An operator-facing guard
@@ -852,13 +881,11 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                         }
                         System.out.flush()
                         System.err.flush()
-                        runCatching { ipcServer.close() }
-                        runCatching { rawProvider.close() }
-                        runCatching { subscriptionStore.close() }
-                        runCatching { db.close() }
-                        runCatching { lock.unlock() }
-                        // System.exit triggers JVM shutdown directly. No shutdown
-                        // hooks registered in non-watch mode → halts within
+                        // Closes the IPC server, the provider, the subscription store and state.db, then releases the
+                        // profile lock (SyncShutdown).
+                        shutdown.release()
+                        // System.exit triggers JVM shutdown directly. The one shutdown
+                        // hook finds the run released and returns at once → halts within
                         // milliseconds. Bypasses the runBlocking unwind that
                         // would otherwise park forever on the AF_UNIX accept
                         // loop the OS won't let us cancel.
@@ -875,13 +902,12 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                 }
             }
         } catch (e: AuthenticationException) {
+            // Exits the JVM; the shutdown hook finds the run's coroutine ended and closes and releases in order.
             parent.handleAuthError(e, rawProvider)
-        } finally {
-            ipcServer.close()
-            rawProvider.close()
-            subscriptionStore.close()
-            db.close()
-            lock.unlock()
+        } catch (e: CancellationException) {
+            // gkrost/unidrive-cli#213: the shutdown hook cancelled the run. It ends here without an error line; run()'s
+            // release (or the hook's) closes and releases.
+            if (!shutdown.stopRequested) throw e
         }
     }
 
