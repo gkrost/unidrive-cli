@@ -16,6 +16,21 @@ class SigV4SignerTest {
     private val host = "examplebucket.s3.amazonaws.com"
 
     @Test
+    fun `sha256Hex is lower case, two digits per byte, and empty input gives the empty-string digest`() {
+        assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", SigV4Signer.sha256Hex(ByteArray(0)))
+        assertEquals(SigV4Signer.EMPTY_SHA256, SigV4Signer.sha256Hex(ByteArray(0)))
+        assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", SigV4Signer.sha256Hex("abc".toByteArray()))
+    }
+
+    @Test
+    fun `uriEncode writes upper-case percent escapes of the UTF-8 bytes and keeps the slash only on request`() {
+        assertEquals("a%20b%2Fc%C3%A9%F0%9F%98%80%00%7F", SigV4Signer.uriEncode("a b/cé😀\u0000\u007F"))
+        assertEquals("a%20b/c%C3%A9", SigV4Signer.uriEncode("a b/cé", keepSlash = true))
+        assertEquals("AZaz09-_.~", SigV4Signer.uriEncode("AZaz09-_.~"))
+        assertEquals("", SigV4Signer.uriEncode(""))
+    }
+
+    @Test
     fun `the published GET object example`() {
         val headers = signer.sign("GET", host, "/test.txt", emptyList(), mapOf("Range" to "bytes=0-9"), SigV4Signer.EMPTY_SHA256)
 

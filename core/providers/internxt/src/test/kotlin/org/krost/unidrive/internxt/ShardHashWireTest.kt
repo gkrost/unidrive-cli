@@ -49,4 +49,18 @@ class ShardHashWireTest {
             assertEquals(odd, ShardHashWire.forFinish(odd), "for '$odd'")
         }
     }
+
+    @Test
+    fun `a 64 character value with a non-ASCII digit is not hex and is returned as it is`() {
+        val arabicIndic = "٨" + sha256OfAbc.drop(1)
+        val fullwidth = "Ａ" + sha256OfAbc.drop(1)
+        assertEquals(arabicIndic, ShardHashWire.forFinish(arabicIndic))
+        assertEquals(fullwidth, ShardHashWire.forFinish(fullwidth))
+    }
+
+    @Test
+    fun `a mixed-case digest gives the same value as its lower-case form`() {
+        val mixed = sha256OfAbc.mapIndexed { i, c -> if (i % 2 == 0) c.uppercaseChar() else c }.joinToString("")
+        assertEquals(ripemd160OfThat, ShardHashWire.forFinish(mixed))
+    }
 }

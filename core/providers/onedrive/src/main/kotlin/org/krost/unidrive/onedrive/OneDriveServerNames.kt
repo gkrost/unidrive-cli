@@ -2,6 +2,7 @@ package org.krost.unidrive.onedrive
 
 import java.security.MessageDigest
 import java.text.Normalizer
+import java.util.HexFormat
 
 /**
  * OneDrive stores a name exactly but judges the uniqueness of siblings on a key that ignores some
@@ -25,7 +26,7 @@ internal object OneDriveServerNames {
     fun disambiguate(name: String): String {
         val nfc = Normalizer.normalize(name, Normalizer.Form.NFC)
         val digest = MessageDigest.getInstance("SHA-256").digest(nfc.toByteArray(Charsets.UTF_8))
-        val tag = TAG + digest.take(DIGEST_BYTES).joinToString("") { "%02x".format(it) }
+        val tag = TAG + HexFormat.of().formatHex(digest, 0, DIGEST_BYTES)
         val dot = nfc.lastIndexOf('.')
         val hasExtension = dot > 0 && nfc.length - dot <= MAX_EXTENSION && ' ' !in nfc.substring(dot)
         val base = if (hasExtension) nfc.substring(0, dot) else nfc

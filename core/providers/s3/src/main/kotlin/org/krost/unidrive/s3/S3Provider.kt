@@ -23,6 +23,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.time.Instant
+import java.util.HexFormat
 
 /**
  * A bucket on Amazon S3 or an S3-compatible service.
@@ -272,7 +273,7 @@ class S3Provider(
         while (offset < size) {
             val length = minOf(partSize, size - offset)
             val md5 = md5Of(localPath, offset, length)
-            val md5Hex = md5.joinToString("") { "%02x".format(it) }
+            val md5Hex = HexFormat.of().formatHex(md5)
             val etag = held[number]?.takeIf { it.size == length && it.etag == md5Hex }?.etag
                 ?: api.uploadPart(key, uploadId, number, localPath, offset, length, md5)
             parts += number to etag

@@ -10,6 +10,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
+import java.util.HexFormat
 
 // The rename of [UploadTombstoneStore.write]: atomic where the file system can, a plain replace where it cannot.
 private fun moveIntoPlace(
@@ -245,7 +246,7 @@ internal class UploadTombstoneStore(
         fun pathHash(localPathString: String): String {
             val digest = MessageDigest.getInstance("SHA-256")
             val bytes = digest.digest(localPathString.toByteArray(Charsets.UTF_8))
-            return bytes.joinToString("") { "%02x".format(it) }
+            return HexFormat.of().formatHex(bytes)
         }
 
         /**
@@ -274,7 +275,7 @@ internal class UploadTombstoneStore(
                     digest.update(readWindow(channel, size - window, window))
                 }
             }
-            return digest.digest().joinToString("") { "%02x".format(it) }
+            return HexFormat.of().formatHex(digest.digest())
         }
 
         private fun readWindow(

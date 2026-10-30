@@ -4,6 +4,7 @@ import org.krost.unidrive.ContentProof
 import org.krost.unidrive.HashAlgorithm
 import java.nio.file.Path
 import java.util.Base64
+import java.util.HexFormat
 
 /**
  * The proof that a local file is the cloud copy, from the content hash the cloud row carries (archive#1219): the file is hashed
@@ -44,9 +45,7 @@ object RowHashProof {
             runCatching { Base64.getDecoder().decode(value).size == QUICKXOR_BYTES }.getOrDefault(false)
 
     private fun isSha256Hex(value: String): Boolean =
-        value.length == SHA256_HEX_LENGTH && value.all { it.code < ASCII_LIMIT && Character.digit(it, HEX_RADIX) >= 0 }
+        value.length == SHA256_HEX_LENGTH && value.all { HexFormat.isHexDigit(it.code) }
 
     private const val BASE64_QUICKXOR_LENGTH = 28
-    private const val ASCII_LIMIT = 128
-    private const val HEX_RADIX = 16
 }

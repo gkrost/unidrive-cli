@@ -5,6 +5,7 @@ import io.socket.client.Socket
 import org.slf4j.LoggerFactory
 import java.net.URI
 import java.security.MessageDigest
+import java.util.HexFormat
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -25,7 +26,7 @@ internal class SocketIoEndpoint(
 
     companion object {
         fun shortHash(text: String): String =
-            MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).take(4).joinToString("") { "%02x".format(it) }
+            HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.toByteArray()), 0, 4)
     }
 }
 

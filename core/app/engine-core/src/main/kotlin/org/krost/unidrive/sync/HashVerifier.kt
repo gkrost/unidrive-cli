@@ -5,6 +5,7 @@ import org.krost.unidrive.io.fileSha256Hex
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.util.HexFormat
 
 /**
  * Verifies file integrity after transfer using provider-specific hash algorithms.
@@ -140,7 +141,7 @@ object HashVerifier {
 
         fun digestHex(): String {
             if (inBlock > 0) closeBlock()
-            return overall.digest().joinToString("") { "%02x".format(it) }
+            return HexFormat.of().formatHex(overall.digest())
         }
 
         private fun closeBlock() {

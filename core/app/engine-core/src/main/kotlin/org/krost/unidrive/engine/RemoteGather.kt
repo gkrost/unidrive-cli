@@ -14,6 +14,7 @@ import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
 import org.slf4j.Logger
 import java.time.Instant
+import java.util.HexFormat
 
 /**
  * The remote gather of one profile (archive#560 U2b): provider delta paging into a map of
@@ -1111,7 +1112,7 @@ class RemoteGather(
             digest.update(id.toByteArray(Charsets.UTF_8))
             digest.update(0)
         }
-        return ids.size.toString() + ":" + digest.digest().joinToString("") { "%02x".format(it) }
+        return ids.size.toString() + ":" + HexFormat.of().formatHex(digest.digest())
     }
 
     /**

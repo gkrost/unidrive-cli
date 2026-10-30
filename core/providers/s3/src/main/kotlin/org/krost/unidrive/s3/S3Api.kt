@@ -45,6 +45,7 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Base64
+import java.util.HexFormat
 import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
 
@@ -515,7 +516,7 @@ class S3Api(
 
         fun md5Base64(bytes: ByteArray): String = Base64.getEncoder().encodeToString(MessageDigest.getInstance("MD5").digest(bytes))
 
-        fun md5Hex(bytes: ByteArray): String = MessageDigest.getInstance("MD5").digest(bytes).joinToString("") { "%02x".format(it) }
+        fun md5Hex(bytes: ByteArray): String = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(bytes))
 
         /** `x-amz-meta-mtime` as rclone writes it: seconds since the epoch, with a fraction. */
         fun epochText(instant: Instant): String = "${instant.epochSecond}.${"%09d".format(instant.nano)}"

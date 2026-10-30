@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.HexFormat
 
 // ── ktoml-serializable intermediates ─────────────────────────────────────────
 
@@ -95,7 +96,7 @@ private fun hasHexDigits(
     line: String,
     from: Int,
     count: Int,
-): Boolean = from + count <= line.length && (from until from + count).all { line[it].isDigit() || line[it].lowercaseChar() in 'a'..'f' }
+): Boolean = from + count <= line.length && (from until from + count).all { HexFormat.isHexDigit(line[it].code) }
 
 private fun invalidEscapeMessage(
     source: String,

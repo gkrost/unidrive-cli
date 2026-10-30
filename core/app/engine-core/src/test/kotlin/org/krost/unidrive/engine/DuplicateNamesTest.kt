@@ -64,4 +64,17 @@ class DuplicateNamesTest {
         assertNull(DuplicateNames.keyOf("/Bilder/a.jpg", "/Pictures/a.jpg"), "an alias alone is no twin")
         assertNull(DuplicateNames.keyOf("/a.txt", null))
     }
+
+    @Test
+    fun `tags of an id that is not hex are the leading hex digits of its SHA-256 (golden)`() {
+        assertEquals("82237576", DuplicateNames.tag("not-hex-id"))
+        assertEquals("822375761082a7f9", DuplicateNames.longTag("not-hex-id"))
+    }
+
+    @Test
+    fun `an id that starts with 8 hex digits keeps them in lower case, other digits do not count as hex`() {
+        assertEquals("0123abcd", DuplicateNames.tag("0123ABCD-rest"))
+        assertEquals("0123abcd", DuplicateNames.tag("0123abcd"))
+        assertEquals("64c0d995", DuplicateNames.tag("٠١٢٣٤٥٦٧-rest"))
+    }
 }

@@ -1,6 +1,7 @@
 package org.krost.unidrive.io
 
 import java.security.SecureRandom
+import java.util.HexFormat
 
 private val hexRandom = SecureRandom()
 
@@ -21,8 +22,7 @@ public fun stagingSiblingName(finalName: String, suffix: String): String {
     return if (usedBytes <= 255) {
         finalName + suffix
     } else {
-        val hex = StringBuilder(8)
-        repeat(4) { hex.append("%02x".format(hexRandom.nextInt(256))) }
+        val hex = HexFormat.of().formatHex(ByteArray(4) { hexRandom.nextInt(256).toByte() })
         ".ud-$hex$suffix"
     }
 }

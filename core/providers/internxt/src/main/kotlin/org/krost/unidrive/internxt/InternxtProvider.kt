@@ -27,6 +27,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.time.temporal.ChronoUnit
+import java.util.HexFormat
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -553,7 +554,7 @@ class InternxtProvider(
                     Files.setLastModifiedTime(destination, java.nio.file.attribute.FileTime.fromMillis(it))
                 }
             }
-            val sha256 = java.security.MessageDigest.getInstance("SHA-256").digest().joinToString("") { "%02x".format(it) }
+            val sha256 = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest())
             return DownloadReceipt(
                 bytesWritten = 0L,
                 plaintextSha256 = sha256,
@@ -1221,7 +1222,7 @@ class InternxtProvider(
             tomb?.let { InternxtCrypto.hexToBytes(it.indexBytesHex) }
                 ?: ByteArray(32).also { secureRandom.nextBytes(it) }
         val iv = indexBytes.copyOfRange(0, 16)
-        val indexHex = indexBytes.joinToString("") { "%02x".format(it) }
+        val indexHex = HexFormat.of().formatHex(indexBytes)
 
         val parentUuid = resolveUploadParent(parentPath, remotePath)
 
@@ -1293,7 +1294,7 @@ class InternxtProvider(
                     }
                 }
                 encryptedSize = withContext(Dispatchers.IO) { Files.size(tempFile) }
-                hashHex = digest.digest().joinToString("") { "%02x".format(it) }
+                hashHex = HexFormat.of().formatHex(digest.digest())
                 // The cipher is a stream cipher: the ciphertext is as long as the bytes it read. The file was sized before this
                 // pass; a source that changed length in between would be created with the old size and stored with another
                 // length, and every download of it refused as incomplete. Nothing is sent: the next attempt reads it afresh.

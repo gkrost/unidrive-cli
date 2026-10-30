@@ -11,6 +11,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import java.util.HexFormat
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
@@ -238,10 +239,7 @@ class CloudRuleFiles(
     private fun stampOf(path: String): Path = dir.resolve(key(path) + ".stamp")
 
     private fun key(path: String): String =
-        MessageDigest
-            .getInstance("SHA-256")
-            .digest(path.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(path.toByteArray(Charsets.UTF_8)))
 
     companion object {
         const val DEFAULT_MAX_BYTES = 1024L * 1024L
