@@ -1412,6 +1412,9 @@ class DaemonRuntimeTest {
 
         override suspend fun authenticate() { /* no-op: already authenticated */ }
 
+        // #211: the quota fetch goes through the credential check, never authenticate()'s browser fallback.
+        override suspend fun checkCredentials(): org.krost.unidrive.CredentialProof = org.krost.unidrive.CredentialProof("Stub")
+
         override suspend fun listChildren(path: String): List<CloudItem> = emptyList()
 
         override suspend fun getMetadata(path: String): CloudItem =

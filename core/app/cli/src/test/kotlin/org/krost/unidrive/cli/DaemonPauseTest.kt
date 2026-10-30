@@ -14,6 +14,7 @@ import kotlinx.serialization.json.long
 import org.krost.unidrive.Capability
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.CredentialProof
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.sync.IpcAuth
@@ -73,6 +74,9 @@ class DaemonPauseTest {
         override fun capabilities(): Set<Capability> = emptySet()
 
         override suspend fun authenticate() {}
+
+        // #211: the quota fetch goes through the credential check, never authenticate()'s browser fallback.
+        override suspend fun checkCredentials(): CredentialProof = CredentialProof("Stub")
 
         override suspend fun listChildren(path: String): List<CloudItem> = emptyList()
 

@@ -986,28 +986,7 @@ class DaemonRuntime(
                 retryQuotaPersist(db)
                 val provider = providerFactory()
                 try {
-                    runCatching {
-                        provider.authenticateAndLog()
-                        val quota = provider.quota()
-                        val now = System.currentTimeMillis()
-                        quotaSnapshot =
-                            QuotaSnapshot(
-                                usedBytes = quota.used,
-                                totalBytes = quota.total,
-                                remainingBytes = quota.remaining,
-                                fetchedAtMs = now,
-                                stale = false,
-                                error = null,
-                            )
-                        persistQuotaSnapshot(db, quotaSnapshot!!)
-                    }.onFailure { e ->
-                        // Keep the last values; flag them stale and name the failure.
-                        quotaSnapshot = (quotaSnapshot ?: QuotaSnapshot()).copy(
-                            stale = true,
-                            error = "${e.javaClass.simpleName}: ${e.message ?: "quota fetch failed"}",
-                        )
-                        log.warn("quota refresh failed; serving the last snapshot flagged stale: {}", e.message)
-                    }
+                    refreshQuotaSnapshotWith(provider)
                 } finally {
                     provider.close()
                 }
@@ -1017,6 +996,42 @@ class DaemonRuntime(
                 quotaRefreshInFlight.set(false)
             }
         }
+    }
+
+    /**
+     * The fetch behind a quota refresh, on the provider instance the caller hands over. It never signs in (#211):
+     * [CloudProvider.checkCredentials] refuses a profile whose credentials are not stored, where
+     * [CloudProvider.authenticate] would answer by opening a browser on the daemon host — a status poll must stay a
+     * status poll. The values land in the snapshot; a failure keeps the last ones and names itself as the stale
+     * reason. A cancelled fetch is not a quota error: cancellation goes on, the in-flight flag is cleared by the
+     * caller. Returns the snapshot it left (the fresh one, or the last one flagged stale). Internal for the tests.
+     */
+    internal suspend fun refreshQuotaSnapshotWith(provider: CloudProvider): QuotaSnapshot? {
+        try {
+            provider.checkCredentials()
+            val quota = provider.quota()
+            val now = System.currentTimeMillis()
+            quotaSnapshot =
+                QuotaSnapshot(
+                    usedBytes = quota.used,
+                    totalBytes = quota.total,
+                    remainingBytes = quota.remaining,
+                    fetchedAtMs = now,
+                    stale = false,
+                    error = null,
+                )
+            persistQuotaSnapshot(db, quotaSnapshot!!)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Keep the last values; flag them stale and name the failure.
+            quotaSnapshot = (quotaSnapshot ?: QuotaSnapshot()).copy(
+                stale = true,
+                error = "${e.javaClass.simpleName}: ${e.message ?: "quota fetch failed"}",
+            )
+            log.warn("quota refresh failed; serving the last snapshot flagged stale: {}", e.message)
+        }
+        return quotaSnapshot
     }
 
     /** Reads the cached quota tuple `quota` persists (same keys, one shared cache). */
