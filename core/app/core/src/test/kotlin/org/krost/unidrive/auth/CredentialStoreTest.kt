@@ -16,6 +16,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -208,10 +209,7 @@ class CredentialStoreTest {
     @Test
     fun `save leaves no tmp residue after a successful atomic move`() {
         store().save(Sample(accessToken = "x".repeat(64), expiresAt = 0L))
-        assertFalse(
-            Files.exists(dir.resolve("creds.json.tmp")),
-            "creds.json.tmp must not linger — atomic move should have consumed it",
-        )
+        assertEquals(emptyList(), tempFiles(), "no temp file may linger — the atomic move consumes it")
         assertTrue(Files.exists(dir.resolve("creds.json")))
     }
 
@@ -224,7 +222,7 @@ class CredentialStoreTest {
         assertNotNull(loaded)
         assertEquals("b".repeat(64), loaded.accessToken)
         assertEquals(2L, loaded.expiresAt)
-        assertFalse(Files.exists(dir.resolve("creds.json.tmp")))
+        assertEquals(emptyList(), tempFiles())
     }
 
     @Test
@@ -273,7 +271,7 @@ class CredentialStoreTest {
                 override fun serialize(encoder: Encoder, value: Sample) {
                     temporaryFilePermissions =
                         PosixFilePermissions.toString(
-                            Files.getPosixFilePermissions(dir.resolve("creds.json.tmp")),
+                            Files.getPosixFilePermissions(tempFiles().single()),
                         )
                     delegate.serialize(encoder, value)
                 }
@@ -307,4 +305,27 @@ class CredentialStoreTest {
         }
         assertEquals("x".repeat(64), s.load()?.accessToken)
     }
+
+    @Test
+    fun `a save that fails before the move keeps the previous credentials and leaves no temp file`() {
+        val delegate = Sample.serializer()
+        val failing =
+            object : KSerializer<Sample> {
+                override val descriptor: SerialDescriptor = delegate.descriptor
+
+                override fun serialize(encoder: Encoder, value: Sample): Unit = throw java.io.IOException("disk full")
+
+                override fun deserialize(decoder: Decoder): Sample = delegate.deserialize(decoder)
+            }
+        val previous = Sample(accessToken = "a".repeat(64), expiresAt = 1L)
+        store().save(previous)
+
+        assertFailsWith<Exception> { CredentialStore(dir, "creds.json", failing).save(Sample("b".repeat(64), 2L)) }
+
+        assertEquals(previous, store().load())
+        assertEquals(emptyList(), tempFiles())
+    }
+
+    private fun tempFiles(): List<java.nio.file.Path> =
+        Files.list(dir).use { s -> s.filter { it.fileName.toString().endsWith(".tmp") }.toList() }
 }

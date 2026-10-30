@@ -3,12 +3,9 @@ package org.krost.unidrive.auth
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import org.krost.unidrive.io.OwnerOnly
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.FileSystems
+import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
-import java.nio.file.attribute.PosixFilePermissions
 
 /**
  * UD-344: shared credential-file load / save / delete with the
@@ -41,7 +38,6 @@ public class CredentialStore<T>(
     private val json = Json { ignoreUnknownKeys = true }
 
     private val file: Path get() = dir.resolve(fileName)
-    private val tmpFile: Path get() = dir.resolve("$fileName.tmp")
 
     /**
      * Load and parse the credential file. Returns `null` if:
@@ -93,7 +89,8 @@ public class CredentialStore<T>(
     /**
      * Persist [value] atomically.
      *
-     * UD-312 invariant: write to a sibling `.tmp` file then
+     * UD-312 invariant: write to a sibling `.tmp` file (owner-only,
+     * synced, see [OwnerOnlyAtomicWrite]) then
      * `Files.move(... ATOMIC_MOVE)` so any concurrent reader (another
      * coroutine on the same JVM, or the MCP / tray reading the same
      * file) sees either the old contents or the new contents — never
@@ -115,26 +112,20 @@ public class CredentialStore<T>(
         Files.createDirectories(dir)
         OwnerOnly.requireDirectory(dir)
         val previousReference = if (Files.exists(file)) Files.readString(file) else null
-        createOwnerOnlyTempFile()
         val id = file.toAbsolutePath().normalize().toString()
         val backend = protector
         var onDisk: String? = null
         var committed = false
         try {
-            val serialized = serialize()
-            onDisk = protector?.protect(id, serialized) ?: serialized
-            Files.writeString(tmpFile, onDisk)
-            try {
-                Files.move(
-                    tmpFile,
-                    file,
-                    StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING,
-                )
-            } catch (_: AtomicMoveNotSupportedException) {
-                log.warn("Filesystem rejected ATOMIC_MOVE at {} — falling back to non-atomic replace", file)
-                Files.move(tmpFile, file, StandardCopyOption.REPLACE_EXISTING)
-            }
+            // The shared write (OwnerOnlyAtomicWrite) asks for the bytes only once its owner-only temp file exists, then syncs
+            // them and moves the file over [file]: a reader sees the old contents or the new ones, never a torn file, and a
+            // power loss never leaves a renamed-but-empty credential file.
+            OwnerOnlyAtomicWrite.replace(file, {
+                val serialized = serialize()
+                val written = protector?.protect(id, serialized) ?: serialized
+                onDisk = written
+                written.toByteArray(Charsets.UTF_8)
+            })
             committed = true
             OwnerOnly.requireFile(file)
             if (backend != null && previousReference != null) {
@@ -142,28 +133,10 @@ public class CredentialStore<T>(
                     .onFailure { log.warn("Could not remove the prior protected credential version for {}", file) }
             }
         } finally {
-            if (!committed) {
-                Files.deleteIfExists(tmpFile)
-                if (backend != null && onDisk != null) {
-                    val reference = onDisk
-                    runCatching { backend.discard(id, reference) }
-                }
+            if (!committed && backend != null) {
+                val reference = onDisk
+                if (reference != null) runCatching { backend.discard(id, reference) }
             }
-        }
-    }
-
-    private fun createOwnerOnlyTempFile() {
-        Files.deleteIfExists(tmpFile)
-        if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
-            Files.createFile(
-                tmpFile,
-                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")),
-            )
-        } else {
-            // The containing directory is owner-only and its Windows ACL is
-            // inheritable; explicitly restrict the new file before writing.
-            Files.createFile(tmpFile)
-            OwnerOnly.requireFile(tmpFile)
         }
     }
 

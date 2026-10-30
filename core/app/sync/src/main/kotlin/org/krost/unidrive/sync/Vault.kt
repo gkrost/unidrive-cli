@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -86,7 +87,7 @@ class Vault(
         // archive#1053: the vault is the only copy of what `vault encrypt` takes out of config.toml and of what `change-passphrase`
         // re-encrypts, so it is never truncated in place: the new bytes replace the old vault only once they decrypt.
         val blob = salt + iv + ciphertext
-        OwnerOnlyAtomicWrite.replace(vaultPath, blob, beforeCommit) { tmp ->
+        OwnerOnlyAtomicWrite.replace(vaultPath, blob, beforeCommit = beforeCommit) { tmp ->
             if (!isIntactVault(tmp, blob, key, json.toByteArray(Charsets.UTF_8))) {
                 throw IOException("The new vault is not what was written or does not decrypt; the old one was kept.")
             }
