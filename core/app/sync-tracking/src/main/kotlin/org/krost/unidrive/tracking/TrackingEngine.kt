@@ -16,6 +16,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.time.Instant
+import java.util.HexFormat
 import java.util.UUID
 
 /**
@@ -807,7 +808,7 @@ class TrackingEngine(
                 digest.update(buf, 0, n)
             }
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
+        return HexFormat.of().formatHex(digest.digest())
     }
 
     private fun stripLeadingSlash(p: String): String = if (p.startsWith("/")) p.substring(1) else p
