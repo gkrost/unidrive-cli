@@ -4,6 +4,7 @@ import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.HexFormat
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
@@ -111,13 +112,13 @@ class SigV4Signer(
                 if (c in UNRESERVED || (keepSlash && c == '/')) {
                     out.append(c)
                 } else {
-                    out.append('%').append(HEX_UPPER[(b.toInt() shr 4) and 0xF]).append(HEX_UPPER[b.toInt() and 0xF])
+                    out.append('%').append(HEX_UPPER.toHighHexDigit(b.toInt())).append(HEX_UPPER.toLowHexDigit(b.toInt()))
                 }
             }
             return out.toString()
         }
 
-        private const val HEX_UPPER = "0123456789ABCDEF"
+        private val HEX_UPPER = HexFormat.of().withUpperCase()
 
         private fun canonicalQuery(query: List<Pair<String, String>>): String =
             query.sortedWith(compareBy({ it.first }, { it.second })).joinToString("&") { "${it.first}=${it.second}" }
@@ -133,6 +134,6 @@ class SigV4Signer(
                 doFinal(data.toByteArray(Charsets.UTF_8))
             }
 
-        private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+        private fun hex(bytes: ByteArray): String = HexFormat.of().formatHex(bytes)
     }
 }
