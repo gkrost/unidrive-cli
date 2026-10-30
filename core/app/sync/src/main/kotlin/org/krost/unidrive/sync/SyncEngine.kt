@@ -4211,7 +4211,7 @@ open class SyncEngine(
     // actions, expand to `from -> to` so the operator can see what was
     // renamed where; for everything else it's just `action.path`. The
     // failures.jsonl JSON layer keeps `path` clean (destination) and adds
-    // `from_path` when relevant — see logFailure.
+    // `from_path` when relevant — see formatFailureJson.
     private fun displayPath(action: SyncAction): String =
         when (action) {
             is SyncAction.MoveRemote -> "${action.fromPath} -> ${action.path}"
@@ -4441,7 +4441,7 @@ open class SyncEngine(
     // PR archive#46 Codex P2 (2026-05-17): the prior hand-built triple-quoted
     // template broke parsing for valid Linux/cloud filenames — failures.jsonl
     // already had ~119 PARSE_ERR entries from the same bug class in
-    // logFailure (separate ticket to follow). The audit-of-record observed a
+    // logFailure (since built the same way, #216). The audit-of-record observed a
     // path like `/\ninternxt-cli.desktop` in the wild, so this is not
     // hypothetical. No-op if no log path was wired (CLI sets it; tests that
     // don't care leave it null).
@@ -4498,17 +4498,7 @@ open class SyncEngine(
         error: Exception,
     ) {
         val path = failureLogPath ?: return
-        val kind = actionLabel(action)
-        val msg = (error.message ?: error.javaClass.simpleName).replace("\"", "\\\"")
-        // UD-740: include `from_path` for move actions so post-mortem readers
-        // can see the rename source. `path` keeps its destination meaning.
-        val fromSegment =
-            when (action) {
-                is SyncAction.MoveRemote -> ""","from_path":"${action.fromPath}""""
-                is SyncAction.MoveLocal -> ""","from_path":"${action.fromPath}""""
-                else -> ""
-            }
-        val line = """{"ts":"${Instant.now()}","action":"$kind","path":"${action.path}"$fromSegment,"error":"$msg"}"""
+        val line = formatFailureJson(actionLabel(action), action, error, Instant.now())
         Files.createDirectories(path.parent)
         Files.writeString(path, line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
     }
@@ -4591,6 +4581,35 @@ open class SyncEngine(
         const val FULL_ENUMERATION_ITEMS_KEY: String = RemoteEnumeration.FULL_ENUMERATION_ITEMS_KEY
         const val FULL_ENUMERATION_FOLDERS_KEY: String = RemoteEnumeration.FULL_ENUMERATION_FOLDERS_KEY
         const val FULL_ENUMERATION_MS_KEY: String = RemoteEnumeration.FULL_ENUMERATION_MS_KEY
+
+        /**
+         * #216: one failures.jsonl line, built with kotlinx like [formatSkippedOpJson], so a path or a message with `"`,
+         * `\` or a line break stays one valid record that reads back as written. The fields and their order are the ones
+         * the hand-built template wrote: `ts`, `action`, `path`, `from_path` (moves only), `error`.
+         */
+        internal fun formatFailureJson(
+            kind: String,
+            action: SyncAction,
+            error: Throwable,
+            ts: Instant,
+        ): String {
+            // UD-740: a move also records its source, so a post-mortem reader sees what was renamed;
+            // `path` keeps its destination meaning.
+            val fromPath =
+                when (action) {
+                    is SyncAction.MoveRemote -> action.fromPath
+                    is SyncAction.MoveLocal -> action.fromPath
+                    else -> null
+                }
+            return kotlinx.serialization.json
+                .buildJsonObject {
+                    put("ts", kotlinx.serialization.json.JsonPrimitive(ts.toString()))
+                    put("action", kotlinx.serialization.json.JsonPrimitive(kind))
+                    put("path", kotlinx.serialization.json.JsonPrimitive(action.path))
+                    if (fromPath != null) put("from_path", kotlinx.serialization.json.JsonPrimitive(fromPath))
+                    put("error", kotlinx.serialization.json.JsonPrimitive(error.message ?: error.javaClass.simpleName))
+                }.toString()
+        }
 
         internal fun formatSkippedOpJson(
             action: String,
