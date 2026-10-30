@@ -16,7 +16,6 @@ import org.krost.unidrive.auth.CredentialStore
 import org.krost.unidrive.auth.Pkce
 import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.onedrive.model.*
-import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 class OAuthService(
@@ -77,17 +76,18 @@ class OAuthService(
     fun getAuthorizationUrl(state: String): Pair<String, String> {
         val verifier = generateCodeVerifier()
         val challenge = generateCodeChallenge(verifier)
-        val scopes = URLEncoder.encode(SCOPES, "UTF-8")
         val url =
-            "${config.authEndpoint}/authorize?" +
-                "client_id=${config.applicationId}" +
-                "&response_type=code" +
-                "&redirect_uri=${config.redirectUri}" +
-                "&scope=$scopes" +
-                "&state=$state" +
-                "&code_challenge=$challenge" +
-                "&code_challenge_method=S256" +
-                "&prompt=select_account"
+            URLBuilder("${config.authEndpoint}/authorize")
+                .apply {
+                    parameters.append("client_id", config.applicationId)
+                    parameters.append("response_type", "code")
+                    parameters.append("redirect_uri", config.redirectUri)
+                    parameters.append("scope", SCOPES)
+                    parameters.append("state", state)
+                    parameters.append("code_challenge", challenge)
+                    parameters.append("code_challenge_method", "S256")
+                    parameters.append("prompt", "select_account")
+                }.buildString()
         return Pair(url, verifier)
     }
 

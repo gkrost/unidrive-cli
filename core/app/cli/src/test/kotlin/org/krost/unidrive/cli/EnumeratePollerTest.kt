@@ -808,4 +808,19 @@ class EnumeratePollerTest {
         assertEquals(2, engine.enumerateCount.get(), "and keeps its normal cadence after it")
         scope.cancel()
     }
+
+    @Test
+    fun `parseIntervalMs refuses a value that overflows a long instead of wrapping`() {
+        for (raw in listOf("9999999999999999h", "9223372036854775807", "153722867280912931m", "2562047788015216h", "99999999999999999999")) {
+            val e = kotlin.test.assertFailsWith<IllegalArgumentException>(raw) { EnumeratePoller.parseIntervalMs(raw) }
+            assertTrue("--poll-interval" in e.message.orEmpty(), "the message names the option: ${e.message}")
+        }
+    }
+
+    @Test
+    fun `parseIntervalMs keeps the largest value that fits`() {
+        assertEquals(9_223_372_036_854_775L * 1_000, EnumeratePoller.parseIntervalMs("9223372036854775s"))
+        assertEquals(Long.MAX_VALUE, EnumeratePoller.parseIntervalMs(Long.MAX_VALUE.toString() + "ms"))
+        assertEquals(2_562_047_788_015L * 3_600_000, EnumeratePoller.parseIntervalMs("2562047788015h"))
+    }
 }

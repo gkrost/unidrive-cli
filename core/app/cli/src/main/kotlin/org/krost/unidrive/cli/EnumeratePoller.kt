@@ -243,13 +243,20 @@ class EnumeratePoller(
         fun parseIntervalMs(raw: String): Long {
             val m = DURATION_REGEX.matchEntire(raw.trim())
                 ?: throw IllegalArgumentException("invalid --poll-interval '$raw' (use e.g. 0, 60s, 5m)")
-            val n = m.groupValues[1].toLong()
-            return when (m.groupValues[2]) {
-                "ms" -> n
-                "", "s" -> n * 1_000
-                "m" -> n * 60_000
-                "h" -> n * 3_600_000
-                else -> throw IllegalArgumentException("invalid --poll-interval unit in '$raw'")
+            val tooLarge = { IllegalArgumentException("invalid --poll-interval '$raw' (too large)") }
+            val n = m.groupValues[1].toLongOrNull() ?: throw tooLarge()
+            val unitMs =
+                when (m.groupValues[2]) {
+                    "ms" -> 1L
+                    "", "s" -> 1_000L
+                    "m" -> 60_000L
+                    "h" -> 3_600_000L
+                    else -> throw IllegalArgumentException("invalid --poll-interval unit in '$raw'")
+                }
+            return try {
+                Math.multiplyExact(n, unitMs)
+            } catch (_: ArithmeticException) {
+                throw tooLarge()
             }
         }
     }
