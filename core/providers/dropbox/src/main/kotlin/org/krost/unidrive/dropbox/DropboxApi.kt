@@ -22,11 +22,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentLength
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
-import io.ktor.utils.io.ByteReadChannel
-import io.ktor.utils.io.readAvailable
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -45,10 +41,8 @@ import org.krost.unidrive.http.RequestMetricsTap
 import org.krost.unidrive.http.parseRetryAfterHeader
 import org.krost.unidrive.http.readBoundedErrorBody
 import org.krost.unidrive.http.truncateErrorBody
-import java.nio.file.Files
+import org.krost.unidrive.http.writeStagedDownload
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
-import java.nio.file.StandardOpenOption
 
 /**
  * A refusal of the Dropbox API. [summary] is the `error_summary` (`path/not_found/..`, `path/conflict/file/..`), the
@@ -174,7 +168,8 @@ class DropboxApi(
                             val meta =
                                 response.headers[API_RESULT]?.let { json.parseToJsonElement(it).jsonObject }
                                     ?: throw ProviderException("Dropbox download of '$path' came without its metadata")
-                            Fetch.Done(meta, writeStaged(response, response.bodyAsChannel(), destination, path))
+                            val written = writeStagedDownload(response.bodyAsChannel(), destination, response.contentLength(), "Dropbox download of '$path'")
+                            Fetch.Done(meta, written)
                         }
                     }
                 }
@@ -292,42 +287,6 @@ class DropboxApi(
             (MIN_WAIT_MS shl attempt.coerceAtMost(6)).coerceAtMost(MAX_WAIT_MS)
         }
     }
-
-    @Suppress("TooGenericExceptionCaught") // whatever fails, the staging file goes and the failure is rethrown unchanged
-    private suspend fun writeStaged(
-        response: HttpResponse,
-        channel: ByteReadChannel,
-        destination: Path,
-        what: String,
-    ): Long =
-        withContext(Dispatchers.IO) {
-            Files.createDirectories(destination.parent)
-            val staging =
-                destination.parent.resolve(org.krost.unidrive.io.stagingSiblingName(destination.fileName.toString(), ".unidrive-tmp"))
-            try {
-                val written =
-                    Files.newOutputStream(staging, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING).use { out ->
-                        val buf = ByteArray(64 * 1024)
-                        var n = 0L
-                        while (true) {
-                            val r = channel.readAvailable(buf)
-                            if (r <= 0) break
-                            out.write(buf, 0, r)
-                            n += r
-                        }
-                        n
-                    }
-                val expected = response.contentLength()
-                if (expected != null && expected >= 0L && written != expected) {
-                    throw java.io.IOException("Truncated Dropbox download of '$what': got $written of $expected bytes")
-                }
-                Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                written
-            } catch (e: Exception) {
-                Files.deleteIfExists(staging)
-                throw e
-            }
-        }
 
     companion object {
         const val API_ARG = "Dropbox-API-Arg"

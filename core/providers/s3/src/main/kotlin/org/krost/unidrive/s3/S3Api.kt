@@ -16,7 +16,6 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpMethod
 import io.ktor.http.contentLength
 import io.ktor.http.isSuccess
-import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -35,12 +34,11 @@ import org.krost.unidrive.http.parseRetryAfterHeader
 import org.krost.unidrive.http.readBoundedErrorBody
 import org.krost.unidrive.http.streamingFileBody
 import org.krost.unidrive.http.truncateErrorBody
+import org.krost.unidrive.http.writeStagedDownload
 import org.krost.unidrive.s3.SigV4Signer.Companion.uriEncode
 import org.w3c.dom.Element
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
-import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZonedDateTime
@@ -197,7 +195,7 @@ class S3Api(
                         !response.status.isSuccess() -> throw failure(response, readBoundedErrorBody(response), "GET")
                         else -> {
                             budget.recordSuccess()
-                            Fetch.Done(writeStaged(response, destination, key))
+                            Fetch.Done(writeStagedDownload(response.bodyAsChannel(), destination, response.contentLength(), "S3 download of '$key'"))
                         }
                     }
                 }
@@ -493,41 +491,6 @@ class S3Api(
             (MIN_WAIT_MS shl attempt).coerceAtMost(MAX_WAIT_MS)
         }
     }
-
-    @Suppress("TooGenericExceptionCaught") // whatever fails, the staging file goes and the failure is rethrown unchanged
-    private suspend fun writeStaged(
-        response: HttpResponse,
-        destination: Path,
-        key: String,
-    ): Long =
-        withContext(Dispatchers.IO) {
-            Files.createDirectories(destination.parent)
-            val staging = destination.parent.resolve(org.krost.unidrive.io.stagingSiblingName(destination.fileName.toString(), ".unidrive-tmp"))
-            try {
-                val channel = response.bodyAsChannel()
-                val count =
-                    Files.newOutputStream(staging, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING).use { out ->
-                        val buf = ByteArray(64 * 1024)
-                        var n = 0L
-                        while (true) {
-                            val r = channel.readAvailable(buf)
-                            if (r <= 0) break
-                            out.write(buf, 0, r)
-                            n += r
-                        }
-                        n
-                    }
-                val expected = response.contentLength()
-                if (expected != null && expected >= 0 && count != expected) {
-                    throw java.io.IOException("Truncated S3 download of '$key': got $count of $expected bytes")
-                }
-                Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                count
-            } catch (e: Exception) {
-                Files.deleteIfExists(staging)
-                throw e
-            }
-        }
 
     companion object {
         const val MTIME_HEADER = "x-amz-meta-mtime"
