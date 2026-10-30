@@ -49,9 +49,10 @@ data class CloudItem(
     // chose: [id], [path] and [name] are the copy's. The item that was to be replaced is untouched. False for every
     // other answer, a create that kept both included.
     val keptBoth: Boolean = false,
-    // gkrost/unidrive-cli#164: the provider's name for the item's bytes, for a provider whose [hash] is no content hash: it
-    // changes with the bytes and with nothing else, where Internxt's token also moves with a rename or a move (its modification
-    // time). Internxt: the stored object (`fileId`, which a new upload replaces) and the size. Null for a provider whose [hash] is
-    // the content already, or that has neither, and for an item whose answer named no stored object.
+    // gkrost/unidrive-cli#164: the provider's name for the item's bytes: it changes with the bytes and with nothing else, where a
+    // token also moves with a rename or a move (Internxt's modification time; OneDrive's eTag and modified time). Internxt: the
+    // stored object (`fileId`, which a new upload replaces) and the size. OneDrive (gkrost/unidrive-cli#233): the content hash
+    // and the size, though its [hash] is that hash already, because a client keeps no hash and compares these names instead.
+    // Null for a provider that names none, and for an item whose answer named no stored object or no hash.
     val contentId: String? = null,
 )
