@@ -70,13 +70,20 @@ class IpcLineClient(
         return true
     }
 
-    /** The next whole line, [IpcLineRead.Closed] or [IpcLineRead.TimedOut]; throws [IpcLineTooLongException]. */
+    /**
+     * The next whole line, [IpcLineRead.Closed] or [IpcLineRead.TimedOut]; throws [IpcLineTooLongException]. A line
+     * that is already buffered is returned whatever the deadline; one that is still arriving in pieces is given up at
+     * the deadline even when every piece comes in time (the deadline is checked between reads, after the first one).
+     */
     fun readLine(deadlineMs: Long = NO_DEADLINE): IpcLineRead {
+        var read = false
         while (true) {
             takeLine()?.let { return IpcLineRead.Line(it) }
             if (length > maxLineBytes) throw IpcLineTooLongException(maxLineBytes)
+            if (read && System.currentTimeMillis() >= deadlineMs) return IpcLineRead.TimedOut
             if (length == buffer.size) buffer = buffer.copyOf(buffer.size * 2)
             val n = channel.read(ByteBuffer.wrap(buffer, length, buffer.size - length))
+            read = true
             when {
                 n < 0 -> return IpcLineRead.Closed
                 n > 0 -> length += n
@@ -98,6 +105,8 @@ class IpcLineClient(
             scanned = length
             return null
         }
+        // The limit is on the line itself: bytes of later lines that the same read brought are not counted.
+        if (newline > maxLineBytes) throw IpcLineTooLongException(maxLineBytes)
         val line = String(buffer, 0, newline, Charsets.UTF_8)
         val rest = length - newline - 1
         System.arraycopy(buffer, newline + 1, buffer, 0, rest)

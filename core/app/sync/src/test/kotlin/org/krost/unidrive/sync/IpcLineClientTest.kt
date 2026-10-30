@@ -110,7 +110,55 @@ class IpcLineClientTest {
 
     @Test
     fun `a line that has arrived is returned past the deadline`() {
-        assertEquals("ready", lines("ready\n").next(deadline = 0))
+        assertEquals("ready", lines("ready\n", chunks = intArrayOf(64)).next(deadline = 0))
+    }
+
+    @Test
+    fun `a second line that came with the first is returned past the deadline`() {
+        val client = lines("one\ntwo\n", chunks = intArrayOf(64))
+
+        assertEquals("one", client.next())
+        assertEquals("two", client.next(deadline = 0))
+    }
+
+    @Test
+    fun `a line that keeps arriving in pieces is timed out at the deadline`() {
+        // One byte per read, each read taking 15 ms: every piece is in time, the whole line never is.
+        val slow =
+            object : ByteChannel {
+                private val data = ByteBuffer.wrap(ByteArray(1000) { 'a'.code.toByte() })
+
+                override fun read(dst: ByteBuffer): Int {
+                    Thread.sleep(15)
+                    dst.put(data.get())
+                    return 1
+                }
+
+                override fun write(src: ByteBuffer): Int = 0
+
+                override fun isOpen() = true
+
+                override fun close() {}
+            }
+        val start = System.currentTimeMillis()
+
+        assertEquals(IpcLineRead.TimedOut, IpcLineClient(slow).readLine(start + 100))
+        assertTrue(System.currentTimeMillis() - start < 1000, "the deadline bounds the wait")
+    }
+
+    @Test
+    fun `an oversized line is refused even when it arrives together with its newline`() {
+        assertFailsWith<IpcLineTooLongException> {
+            IpcLineClient(Trickle("123456789\n".toByteArray(), intArrayOf(64)), maxLineBytes = 4).readLine()
+        }
+    }
+
+    @Test
+    fun `later lines in the same read do not count against the limit of the first`() {
+        val client = IpcLineClient(Trickle("abcd\nefgh\n".toByteArray(), intArrayOf(64)), maxLineBytes = 4)
+
+        assertEquals("abcd", client.next())
+        assertEquals("efgh", client.next())
     }
 
     @Test
