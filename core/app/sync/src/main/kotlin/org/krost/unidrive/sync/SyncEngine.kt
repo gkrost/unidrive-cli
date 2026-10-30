@@ -31,7 +31,6 @@ import org.krost.unidrive.engine.Transfers
 import org.krost.unidrive.sync.model.*
 import org.slf4j.LoggerFactory
 import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -39,7 +38,6 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.regex.PatternSyntaxException
 
 // The constructor lists the engine's seams one by one; its baseline entry quoted the whole parameter list, so it is
 // suppressed here instead.
@@ -189,8 +187,9 @@ open class SyncEngine(
     // archive#738: the clock that stamps keep-both conflict copies. Tests pin it; production uses the system clock.
     // A property rather than a constructor parameter, so the constructor's signature stays as it is.
     internal var conflictClock: java.time.Clock = java.time.Clock.systemDefaultZone()
+    // #218: the patterns the matcher can build, as every command that reads exclude_patterns takes them.
     private val effectiveExcludePatterns =
-        validateExcludePatterns(
+        ExcludePatterns.accepted(
             (SyncConfig.DEFAULT_EXCLUDE_PATTERNS + excludePatterns).distinct(),
         )
     // archive#737: the current pass's (unscoped) remote changes, for [CloudCopyProof]: a file this pass
@@ -4501,19 +4500,6 @@ open class SyncEngine(
         val line = formatFailureJson(actionLabel(action), action, error, Instant.now())
         Files.createDirectories(path.parent)
         Files.writeString(path, line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
-    }
-
-    private fun validateExcludePatterns(patterns: List<String>): List<String> {
-        val valid = mutableListOf<String>()
-        for (pattern in patterns) {
-            try {
-                FileSystems.getDefault().getPathMatcher("glob:$pattern")
-                valid.add(pattern)
-            } catch (e: PatternSyntaxException) {
-                log.warn("Invalid exclude pattern '{}', skipping: {}", pattern, e.message)
-            }
-        }
-        return valid
     }
 
     companion object {

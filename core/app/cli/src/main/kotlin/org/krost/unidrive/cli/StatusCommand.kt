@@ -11,6 +11,7 @@ import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.engine.DuplicateNames
 import org.krost.unidrive.ProviderRegistry
 import org.krost.unidrive.authenticateAndLog
+import org.krost.unidrive.sync.ExcludePatterns
 import org.krost.unidrive.sync.NoDefaultProfileException
 import org.krost.unidrive.sync.ProfileInfo
 import org.krost.unidrive.sync.RawSyncConfig
@@ -448,7 +449,7 @@ class StatusCommand : Runnable {
             }
         scopeStatusLine(configured, persistedScope(configDir))?.let { println(it) }
         if (configured.isNotEmpty()) {
-            val excludes = SyncConfig.DEFAULT_EXCLUDE_PATTERNS + profile.rawProvider?.exclude_patterns.orEmpty()
+            val excludes = ExcludePatterns.accepted(SyncConfig.DEFAULT_EXCLUDE_PATTERNS + profile.rawProvider?.exclude_patterns.orEmpty())
             val outside =
                 SyncScope.outOfScopeLocal(profile.syncRoot, configured) { path ->
                     excludes.any { Reconciler.matchesGlob(path, it) }

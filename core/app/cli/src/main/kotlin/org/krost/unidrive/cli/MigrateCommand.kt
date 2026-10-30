@@ -10,6 +10,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.krost.unidrive.cli.LegacyInventory.PathClass
 import org.krost.unidrive.cli.StatusAudit.formatBytesBinary
+import org.krost.unidrive.sync.ExcludePatterns
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.SyncScope
@@ -77,7 +78,7 @@ class MigrateInventoryCommand : Runnable {
         // Like doctor: a wedged config must not stop a read-only report; fall back to what the raw section says.
         val excludes =
             config.map { it.effectiveExcludePatterns(profile.name) }
-                .getOrElse { SyncConfig.DEFAULT_EXCLUDE_PATTERNS + raw?.exclude_patterns.orEmpty() }
+                .getOrElse { ExcludePatterns.accepted(SyncConfig.DEFAULT_EXCLUDE_PATTERNS + raw?.exclude_patterns.orEmpty()) }
         val syncPaths = config.map { it.syncPaths }.getOrElse { runCatching { SyncScope.normalize(raw?.sync_path.orEmpty()) }.getOrDefault(emptyList()) }
         val facts =
             buildList {
