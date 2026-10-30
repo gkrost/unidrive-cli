@@ -63,6 +63,8 @@ val jdepsModuleSet =
         "jdk.jfr",
         "jdk.unsupported",
     )
+// jdk.crypto.mscapi (SunMSCAPI, the Windows-ROOT trust store the Windows launchers select)
+// exists in a Windows JDK only: jlink on another host would fail on the unknown module.
 val extraRuntimeModules =
     listOf(
         "java.net.http",
@@ -71,7 +73,7 @@ val extraRuntimeModules =
         "jdk.charsets",
         "jdk.localedata",
         "jdk.zipfs",
-    )
+    ) + (if (System.getProperty("os.name", "").lowercase().contains("win")) listOf("jdk.crypto.mscapi") else emptyList())
 
 // jlink produces a runtime of its own version, so the packaged image is
 // jlinked from the bundled runtime JDK — the current JDK release train the

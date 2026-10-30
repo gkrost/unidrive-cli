@@ -142,7 +142,7 @@ object DaemonAutospawn {
      * passes: the heap cap (UNIDRIVE_XMX, default 2g), the static flags from `jvm-flags.txt` beside
      * the jar (the launchers' single source; a missing file degrades to no static flags, never to a
      * failed spawn), the locale (UNIDRIVE_LOCALE, else the parent's own user.language/user.country),
-     * the pinned unix-domain temp dir, the coroutine-debug agent when armed, and the post-mortem
+     * the Windows trust store pair on Windows ([TrustStorePolicy]), the pinned unix-domain temp dir, the coroutine-debug agent when armed, and the post-mortem
      * diagnostics flags into the diagnostics dir — always daemon work here, so the bounded GC log
      * (the profile's own `gc-<profile>.log`) rides unconditioned.
      *
@@ -162,6 +162,7 @@ object DaemonAutospawn {
             add(javaBin.toString())
             add("-Xmx" + (env("UNIDRIVE_XMX")?.takeIf { it.isNotBlank() } ?: "2g"))
             addAll(staticJvmFlags(jar.resolveSibling("jvm-flags.txt")))
+            addAll(TrustStorePolicy.flags(windows, env))
             addAll(localeArgs(env, props))
             props("java.io.tmpdir")?.takeIf { it.isNotBlank() }?.let { add("-Djdk.net.unixdomain.tmpdir=$it") }
             if (CoroutineDebug.enabled(env)) {
