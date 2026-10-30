@@ -7,6 +7,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import java.util.HexFormat
 
 /**
  * The stable id of the user whose drive a profile's sync state describes, kept in the profile folder as [FILE_NAME]
@@ -155,11 +156,7 @@ object AccountOwner {
     }
 
     private fun shortHash(id: String): String =
-        MessageDigest
-            .getInstance("SHA-256")
-            .digest(id.toByteArray(Charsets.UTF_8))
-            .take(4)
-            .joinToString("") { "%02x".format(it) }
+        HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(id.toByteArray(Charsets.UTF_8)), 0, 4)
 }
 
 /**

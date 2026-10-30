@@ -2,6 +2,7 @@ package org.krost.unidrive.auth
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.util.HexFormat
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -129,8 +130,7 @@ class LinuxSecretServiceCredentialProtector(
         }
 
     private fun keyFor(id: String): String =
-        MessageDigest.getInstance("SHA-256").digest(id.toByteArray(StandardCharsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(id.toByteArray(StandardCharsets.UTF_8)))
 
     private companion object {
         const val STORED_PREFIX = "unidrive-secret-service-v1:"
