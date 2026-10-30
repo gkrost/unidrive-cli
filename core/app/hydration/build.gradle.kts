@@ -13,6 +13,8 @@ dependencies {
     // front-end does not depend on the mirror engine (checkModuleEdges).
     implementation(project(":app:engine-core"))
     implementation(libs.kotlinx.coroutines.core)
+    // gkrost/unidrive-cli#223: the request reader and the reply writer of HydrationIpcHandler (it hand-wrote both).
+    implementation(libs.kotlinx.serialization.json)
 
     // slf4j-api for the upload-failure WARN line (same route app:sync takes).
     implementation(libs.logback.classic)
