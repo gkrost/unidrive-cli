@@ -1,9 +1,11 @@
 package org.krost.unidrive.tracking
 
+import org.krost.unidrive.sync.JdbcStateDatabaseConnector
+import org.krost.unidrive.sync.SqliteConnections
+import org.krost.unidrive.sync.StateDatabaseConnector
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
-import java.sql.DriverManager
 import java.time.Instant
 
 /**
@@ -100,6 +102,7 @@ interface TrackingSet {
 class SqliteTrackingSet(
     private val dbPath: Path,
     private val inMemory: Boolean = false,
+    private val connector: StateDatabaseConnector = JdbcStateDatabaseConnector,
 ) : TrackingSet {
     private var conn: Connection? = null
 
@@ -112,21 +115,25 @@ class SqliteTrackingSet(
         // migrations. Mirrors the state.db guard in StateDatabase.
         internal const val SCHEMA_VERSION: Int = 1
         internal const val SCHEMA_VERSION_KEY: String = "schema_version"
+
+        private val log = org.slf4j.LoggerFactory.getLogger(SqliteTrackingSet::class.java)
+        private val SETTINGS = SqliteConnections.Settings()
     }
+
+    /** The value of a PRAGMA on the connection (a test seam). */
+    @Synchronized
+    internal fun pragma(name: String): String =
+        conn!!.createStatement().use { st -> st.executeQuery("PRAGMA $name").use { rs -> rs.next(); rs.getString(1) } }
 
     @Synchronized
     override fun initialize() {
-        val url =
-            if (inMemory) {
-                "jdbc:sqlite::memory:"
-            } else {
-                Files.createDirectories(dbPath.parent)
-                "jdbc:sqlite:$dbPath"
-            }
-        conn = DriverManager.getConnection(url)
-        conn!!.autoCommit = true
+        if (!inMemory) Files.createDirectories(dbPath.parent)
+        // The shared open (busy timeout, WAL, owner-only sidecars): a CLI command reading tracking.db no longer fails the
+        // daemon's write as SQLITE_BUSY.
+        conn = SqliteConnections.open(connector, if (inMemory) null else dbPath, SETTINGS, log)
         try {
             bootstrapSchema()
+            if (!inMemory) SqliteConnections.restrictSidecars(connector, dbPath, includeMainFile = false, log = log)
         } catch (e: Throwable) {
             // A refused open (archive#323) must not leak the connection it opened.
             runCatching { conn?.takeIf { !it.isClosed }?.close() }

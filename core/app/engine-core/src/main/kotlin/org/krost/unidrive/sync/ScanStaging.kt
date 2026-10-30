@@ -80,14 +80,10 @@ internal class ScanStaging(
     }
 
     private fun openWritable(): Connection {
-        val c = connector.open(file)
+        val c = SqliteConnections.open(connector, file, SETTINGS, log)
         var ready = false
         try {
-            c.autoCommit = true
-            c.createStatement().use { stmt ->
-                configure(stmt)
-                createSchema(stmt)
-            }
+            c.createStatement().use { stmt -> createSchema(stmt) }
             restrictFiles()
             ready = true
         } finally {
@@ -102,22 +98,7 @@ internal class ScanStaging(
     // on Android); the profile folder is restricted at engine start already.
     private fun restrictFiles() {
         val f = file ?: return
-        for (name in StateDatabase.stagingFileNames()) {
-            val path = f.resolveSibling(name)
-            if (!Files.exists(path)) continue
-            val outcome = connector.restrictToOwner(path) ?: return
-            if (!outcome.restricted) log.warn("Could not restrict {} to the current user: {}", path, outcome)
-        }
-    }
-
-    private fun configure(stmt: Statement) {
-        stmt.execute("PRAGMA busy_timeout=${StateDatabase.BUSY_TIMEOUT_MS}")
-        stmt.execute("PRAGMA cache_size=-${StateDatabase.PAGE_CACHE_KIB}")
-        if (file != null) {
-            val mode = stmt.executeQuery("PRAGMA journal_mode=WAL").use { rs -> rs.takeIf { it.next() }?.getString(1) }
-            if (!mode.equals("wal", ignoreCase = true)) log.warn("{} stays in journal mode {}: SQLite did not switch it to WAL", file, mode)
-        }
-        stmt.execute("PRAGMA synchronous=NORMAL")
+        SqliteConnections.restrictSidecars(connector, f, includeMainFile = true, log = log)
     }
 
     private fun createSchema(stmt: Statement) {
@@ -470,6 +451,13 @@ internal class ScanStaging(
 
     companion object {
         private val log = LoggerFactory.getLogger(ScanStaging::class.java)
+
+        // The data can be thrown away (a scan that finds no checkpoint starts again): synchronous=NORMAL.
+        private val SETTINGS =
+            SqliteConnections.Settings(
+                synchronous = SqliteConnections.Synchronous.NORMAL,
+                cacheKib = SqliteConnections.PAGE_CACHE_KIB,
+            )
 
         private const val STATEMENT_CACHE_LIMIT = 8
 
