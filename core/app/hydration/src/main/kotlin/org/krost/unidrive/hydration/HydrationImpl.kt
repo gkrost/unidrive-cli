@@ -121,6 +121,13 @@ class HydrationImpl(
     internal var slotReleaseWindow: () -> Unit = {}
 
     /**
+     * Test seam for the rekey window (#234): runs after a rename's re-key found the moved slot's count at zero and before
+     * it removes the slot's new entry, so a test can land a submit for the new path inside that window. Production runs
+     * nothing.
+     */
+    internal var slotRekeyWindow: () -> Unit = {}
+
+    /**
      * Test seam (archive#729): one call for every row the replay asks its containment pass for the cache copy of. A
      * replay that starts from the rows calls it once per uploaded row; one that starts from the cache calls it
      * once per cache file.
@@ -838,10 +845,12 @@ class HydrationImpl(
     // fresh slot — two uploads of one path at once, invisible to the busy guard, the cancel and the rekey.
     // The re-read sees the raised count and keeps the entry; that submitter's own release removes it at zero.
     private fun removeDyingSlot(slot: UploadSlot) {
-        for (key in uploadSlots.keys.toList()) {
-            uploadSlots.computeIfPresent(key) { _, s ->
-                if (s === slot && s.pending.get() == 0) null else s
-            }
+        for (key in uploadSlots.keys.toList()) removeDyingSlotAt(key, slot)
+    }
+
+    private fun removeDyingSlotAt(key: String, slot: UploadSlot) {
+        uploadSlots.computeIfPresent(key) { _, s ->
+            if (s === slot && s.pending.get() == 0) null else s
         }
     }
 
@@ -3159,8 +3168,13 @@ class HydrationImpl(
             uploadSlots[newKey] = slot
             // The last upload of the slot may have finished between the remove and the put: its releaseSlot then found no
             // entry to remove, and the put would keep a slot nothing owns (busy until the next start). Removed again here;
-            // a finish that comes after this check removes the entry itself.
-            if (slot.pending.get() == 0) uploadSlots.remove(newKey, slot)
+            // a finish that comes after this check removes the entry itself. gkrost/unidrive-cli#234: the removal is
+            // re-decided under the bin lock like the release's — a submit for the new path that joins the slot between the
+            // check and the removal raised the count again, and a plain remove would strand its upload outside the map.
+            if (slot.pending.get() == 0) {
+                slotRekeyWindow()
+                removeDyingSlotAt(newKey, slot)
+            }
         }
     }
 
