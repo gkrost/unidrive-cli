@@ -2,12 +2,14 @@ package org.krost.unidrive.telemetry
 
 import org.krost.unidrive.http.RequestAttempt
 import org.krost.unidrive.io.OwnerOnly
+import org.krost.unidrive.sync.JdbcStateDatabaseConnector
+import org.krost.unidrive.sync.SqliteConnections
+import org.krost.unidrive.sync.StateDatabaseConnector
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
-import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -26,6 +28,7 @@ import java.sql.SQLException
 internal class TelemetryStore private constructor(
     val dbPath: Path,
     private val afterOpen: (Connection) -> Unit,
+    private val connector: StateDatabaseConnector,
 ) {
     private var conn: Connection? = null
 
@@ -38,14 +41,9 @@ internal class TelemetryStore private constructor(
     }
 
     private fun openConnection(): Connection {
-        val c = DriverManager.getConnection("jdbc:sqlite:$dbPath")
+        val c = SqliteConnections.open(connector, dbPath, SETTINGS, log)
         var ready = false
         try {
-            c.createStatement().use { st ->
-                st.execute("PRAGMA busy_timeout = 5000")
-                st.execute("PRAGMA journal_mode = WAL")
-                st.execute("PRAGMA synchronous = NORMAL")
-            }
             createSchema(c)
             afterOpen(c)
             ready = true
@@ -55,6 +53,11 @@ internal class TelemetryStore private constructor(
         restrictSidecars()
         return c
     }
+
+    /** The value of a PRAGMA on the connection (a test seam). */
+    @Synchronized
+    internal fun pragma(name: String): String =
+        connection().createStatement().use { st -> st.executeQuery("PRAGMA $name").use { rs -> rs.next(); rs.getString(1) } }
 
     private fun createSchema(c: Connection) {
         val version = c.createStatement().use { st -> st.executeQuery("PRAGMA user_version").use { it.next(); it.getInt(1) } }
@@ -119,15 +122,7 @@ internal class TelemetryStore private constructor(
      * SQLite gives -wal and -shm the permissions of the database file, and on Windows they inherit
      * from the folder, which the engine restricts at start. Restricted explicitly as well, best effort.
      */
-    private fun restrictSidecars() {
-        for (suffix in listOf("-wal", "-shm")) {
-            val side = dbPath.resolveSibling(dbPath.fileName.toString() + suffix)
-            if (Files.exists(side)) {
-                val outcome = OwnerOnly.restrictFile(side)
-                if (!outcome.restricted) log.warn("Could not restrict {} to the current user: {}", side, outcome)
-            }
-        }
-    }
+    private fun restrictSidecars() = SqliteConnections.restrictSidecars(connector, dbPath, includeMainFile = false, log = log)
 
     /** Rows that were started and never finished (the process died) are interrupted, never successes; none waits for a next try. */
     @Synchronized
@@ -359,6 +354,9 @@ internal class TelemetryStore private constructor(
         private const val PRUNE_FRACTION = 10
         private val log = LoggerFactory.getLogger(TelemetryStore::class.java)
 
+        // History that can be rebuilt: synchronous=NORMAL.
+        private val SETTINGS = SqliteConnections.Settings(synchronous = SqliteConnections.Synchronous.NORMAL)
+
         /** Columns the transfers table gained after its first shape (see [addMissingTransferColumns]). */
         private val ADDED_TRANSFER_COLUMNS = listOf("max_attempts", "next_try_at_ms")
 
@@ -378,11 +376,12 @@ internal class TelemetryStore private constructor(
         fun open(
             dbPath: Path,
             afterOpen: (Connection) -> Unit = {},
+            connector: StateDatabaseConnector = JdbcStateDatabaseConnector,
         ): TelemetryStore {
             dbPath.parent?.let { Files.createDirectories(it) }
             if (!Files.exists(dbPath)) Files.createFile(dbPath)
             OwnerOnly.requireFile(dbPath)
-            val store = TelemetryStore(dbPath, afterOpen)
+            val store = TelemetryStore(dbPath, afterOpen, connector)
             try {
                 val interrupted = store.recoverInterrupted()
                 if (interrupted > 0) log.info("{} transfer(s) of an earlier run never finished; recorded as interrupted", interrupted)

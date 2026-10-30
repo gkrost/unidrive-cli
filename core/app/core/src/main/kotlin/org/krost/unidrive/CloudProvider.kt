@@ -475,8 +475,8 @@ interface CloudProvider {
     val reportsItemVersions: Boolean get() = false
 
     /**
-     * gkrost/unidrive-cli#202: true when the provider's listings name a file's bytes apart from its hash ([CloudItem.contentId];
-     * Internxt). A mount then fills the content id of rows written before it kept one, from one listing of their folders, once
+     * gkrost/unidrive-cli#202: true when the provider's listings name a file's bytes ([CloudItem.contentId]; Internxt, and OneDrive
+     * since gkrost/unidrive-cli#233). A mount then fills the content id of rows written before it kept one, from one listing of their folders, once
      * per profile. False (the default): the provider names none, and nothing is listed for it.
      */
     val reportsContentIds: Boolean get() = false

@@ -43,15 +43,17 @@ class VersionManager(
         val source = safeResolveLocal(syncRoot, normalized)
         if (!source.exists() || !source.isRegularFile()) return null
         val timestamp = encodeTimestamp(Instant.now().truncatedTo(ChronoUnit.SECONDS))
-        val dest = versionsDir.resolve(syncRoot.toAbsolutePath().normalize().relativize(source)).resolve(timestamp)
+        val dest = versionFolder(source).resolve(timestamp)
         dest.parent.createDirectories()
         Files.copy(source, dest)
         return dest
     }
 
+    // Every entry point that takes a path derives the version folder from the contained path, so a name
+    // with `..` segments can never list, restore or delete anything outside [versionsDir].
     fun listVersions(relativePath: String): List<VersionedItem> {
         val normalized = relativePath.replace('\\', '/').removePrefix("/")
-        val fileVersionsDir = versionsDir.resolve(normalized)
+        val fileVersionsDir = versionFolder(safeResolveLocal(syncRoot, normalized))
         if (!fileVersionsDir.exists() || !fileVersionsDir.isDirectory()) return emptyList()
         val items = mutableListOf<VersionedItem>()
         for (entry in fileVersionsDir.listDirectoryEntries()) {
@@ -85,7 +87,7 @@ class VersionManager(
         val normalized = relativePath.replace('\\', '/').removePrefix("/")
         val dest = safeResolveLocal(syncRoot, normalized)
         val tsDir = encodeTimestamp(timestamp.truncatedTo(ChronoUnit.SECONDS))
-        val versionFile = versionsDir.resolve(syncRoot.toAbsolutePath().normalize().relativize(dest)).resolve(tsDir)
+        val versionFile = versionFolder(dest).resolve(tsDir)
         if (!versionFile.exists()) return false
         dest.parent.createDirectories()
         Files.copy(versionFile, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
@@ -101,7 +103,7 @@ class VersionManager(
         for (item in versions.drop(maxVersions)) {
             item.versionPath.deleteIfExists()
         }
-        cleanEmptyDirs(versionsDir.resolve(relativePath.replace('\\', '/').removePrefix("/")))
+        cleanEmptyDirs(versions.first().versionPath.parent)
     }
 
     fun pruneByAge(retentionDays: Int) {
@@ -128,6 +130,9 @@ class VersionManager(
             versionsDir.toFile().deleteRecursively()
         }
     }
+
+    /** The folder holding the versions of [contained], a path [safeResolveLocal] returned for [syncRoot]. */
+    private fun versionFolder(contained: Path): Path = versionsDir.resolve(syncRoot.toAbsolutePath().normalize().relativize(contained))
 
     private fun cleanEmptyDirs(dir: Path) {
         var current = dir

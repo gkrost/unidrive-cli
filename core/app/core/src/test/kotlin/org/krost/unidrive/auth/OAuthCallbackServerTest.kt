@@ -183,4 +183,58 @@ class OAuthCallbackServerTest {
             assertFailsWith<AuthenticationException> { waiting.await().getOrThrow() }
         }
     }
+
+    // cli#223 item 4: the query is parsed as a query, not searched with regexes over the whole request line.
+    @Test
+    fun `an error= inside another parameter's value is not a provider error`() {
+        val requestLine = "GET /?state=expected-state&code=abc123&note=x?error=boom HTTP/1.1"
+        assertEquals("abc123", parseAndValidateCallback(requestLine, expectedState = "expected-state", providerLabel = provider))
+    }
+
+    @Test
+    fun `a state= in the path is not the state parameter`() {
+        val requestLine = "GET /cb&state=attacker?state=expected-state&code=abc123 HTTP/1.1"
+        assertEquals("abc123", parseAndValidateCallback(requestLine, expectedState = "expected-state", providerLabel = provider))
+    }
+
+    @Test
+    fun `the first of two equal parameters is the one that counts, as before`() {
+        val requestLine = "GET /?state=expected-state&state=attacker&code=first&code=second HTTP/1.1"
+        assertEquals("first", parseAndValidateCallback(requestLine, expectedState = "expected-state", providerLabel = provider))
+    }
+
+    @Test
+    fun `the provider error is URL-decoded like its description`() {
+        val requestLine = "GET /?error=access%5Fdenied&error_description=User+said%20no%2C+twice HTTP/1.1"
+        val ex =
+            assertFailsWith<AuthenticationException> {
+                parseAndValidateCallback(requestLine, expectedState = "expected-state", providerLabel = provider)
+            }
+        assertEquals("$provider returned error: access_denied User said no, twice", ex.message)
+    }
+
+    @Test
+    fun `code and state are URL-decoded, plus is a space and an encoded plus is a plus`() {
+        val requestLine = "GET /?state=a%20b+c%2Bd&code=M.C5%2B%3D%3Dx+y HTTP/1.1"
+        assertEquals("M.C5+==x y", parseAndValidateCallback(requestLine, expectedState = "a b c+d", providerLabel = provider))
+    }
+
+    @Test
+    fun `empty values count as missing`() {
+        assertFailsWith<AuthenticationException> {
+            parseAndValidateCallback("GET /?state=expected-state&code= HTTP/1.1", expectedState = "expected-state", providerLabel = provider)
+        }
+        assertFailsWith<AuthenticationException> {
+            parseAndValidateCallback("GET /?state=&code=abc HTTP/1.1", expectedState = "expected-state", providerLabel = provider)
+        }
+    }
+
+    @Test
+    fun `a request line without a query, or a broken percent escape, is an authentication error`() {
+        for (requestLine in listOf("GET / HTTP/1.1", "GET", "", "GET /?state=expected-state&code=%zz HTTP/1.1")) {
+            assertFailsWith<AuthenticationException>(requestLine) {
+                parseAndValidateCallback(requestLine, expectedState = "expected-state", providerLabel = provider)
+            }
+        }
+    }
 }

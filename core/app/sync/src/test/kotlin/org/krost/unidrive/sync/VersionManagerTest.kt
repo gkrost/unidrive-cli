@@ -214,6 +214,66 @@ class VersionManagerTest {
         }
     }
 
+    private fun plantVersionNamedFiles(
+        dir: Path,
+        count: Int,
+    ) {
+        val fmt = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC)
+        dir.createDirectories()
+        for (i in 1..count) {
+            dir.resolve(fmt.format(Instant.now().minus(i.toLong(), ChronoUnit.HOURS).truncatedTo(ChronoUnit.SECONDS))).writeText("data $i")
+        }
+    }
+
+    @Test
+    fun `listVersions refuses a path that leaves the versions folder and lists nothing from outside it`() {
+        // `.unidrive-versions/../x` is `<syncRoot>/x`: a folder the sync root holds, not a version folder.
+        val insideRoot = syncRoot.resolve("not-versions")
+        plantVersionNamedFiles(insideRoot, 2)
+        // `.unidrive-versions/../../x` is a sibling of the sync root: outside it entirely.
+        val outside = syncRoot.resolveSibling("${syncRoot.name}-outside")
+        plantVersionNamedFiles(outside, 2)
+        try {
+            val manager = VersionManager(syncRoot)
+            assertFailsWith<SecurityException> { manager.listVersions("/../not-versions") }
+            assertFailsWith<SecurityException> { manager.listVersions("/../../${outside.name}") }
+        } finally {
+            outside.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `pruneByCount refuses a path that leaves the versions folder and deletes nothing there`() {
+        val insideRoot = syncRoot.resolve("not-versions")
+        plantVersionNamedFiles(insideRoot, 3)
+        val outside = syncRoot.resolveSibling("${syncRoot.name}-outside")
+        plantVersionNamedFiles(outside, 3)
+        try {
+            val manager = VersionManager(syncRoot)
+            assertFailsWith<SecurityException> { manager.pruneByCount("/../not-versions", 1) }
+            assertFailsWith<SecurityException> { manager.pruneByCount("/../../${outside.name}", 1) }
+            assertEquals(3, insideRoot.listDirectoryEntries().size, "a prune must never delete outside the versions folder")
+            assertEquals(3, outside.listDirectoryEntries().size, "a prune must never delete outside the sync root")
+        } finally {
+            outside.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `listVersions and pruneByCount still serve a nested path in either separator style`() {
+        val file = syncRoot.resolve("docs/deep/v.txt")
+        file.parent.createDirectories()
+        file.writeText("one")
+        val manager = VersionManager(syncRoot)
+        manager.snapshot("docs/deep/v.txt")
+
+        assertEquals(1, manager.listVersions("docs\\deep\\v.txt").size)
+        assertEquals(1, manager.listVersions("/docs/deep/v.txt").size)
+        assertEquals("docs/deep/v.txt", manager.listVersions("docs\\deep\\v.txt").single().originalPath)
+        manager.pruneByCount("/docs/deep/v.txt", 0)
+        assertTrue(manager.listVersions("docs/deep/v.txt").isEmpty())
+    }
+
     @Test
     fun `snapshot handles non-existent file gracefully`() {
         val manager = VersionManager(syncRoot)

@@ -21,6 +21,7 @@ import org.krost.unidrive.internxt.model.InternxtFolder
 import org.krost.unidrive.internxt.model.MultipartPart
 import org.krost.unidrive.internxt.model.SharedByMe
 import org.krost.unidrive.internxt.model.tryParseInternxtInstant
+import org.krost.unidrive.io.fileSha256Hex
 import org.krost.unidrive.io.withLocalIoRetry
 import java.nio.file.Files
 import java.nio.file.Path
@@ -2182,7 +2183,7 @@ class InternxtProvider(
         return try {
             val receipt = downloadWithFileUuid(remote.uuid, remotePath, probe)
             val remoteSha256 = receipt.plaintextSha256 ?: return false
-            val localSha256 = withContext(Dispatchers.IO) { withLocalIoRetry { plaintextSha256(localPath) } }
+            val localSha256 = withContext(Dispatchers.IO) { withLocalIoRetry { fileSha256Hex(localPath) } }
             receipt.bytesWritten == size &&
                 remoteSha256.equals(localSha256, ignoreCase = true)
         } catch (e: ProviderException) {
@@ -2194,16 +2195,6 @@ class InternxtProvider(
         } finally {
             withContext(Dispatchers.IO + NonCancellable) { Files.deleteIfExists(probe) }
         }
-    }
-
-    private fun plaintextSha256(path: Path): String {
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(path).use { input ->
-            val buf = ByteArray(8192)
-            var n: Int
-            while (input.read(buf).also { n = it } != -1) digest.update(buf, 0, n)
-        }
-        return HexFormat.of().formatHex(digest.digest())
     }
 
     // Re-resolve a file by name within its parent folder after a createFile whose

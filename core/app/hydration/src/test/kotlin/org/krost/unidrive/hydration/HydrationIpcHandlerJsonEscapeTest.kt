@@ -411,6 +411,8 @@ class HydrationIpcHandlerJsonEscapeTest {
     }
 
     // ── malformed escapes are rejected, never guessed ──
+    // The line is no JSON then, so it has no request at all (the daemon's IpcServer answers the same missing_verb before a
+    // handler sees it); the scanner this replaced answered missing_path, as it read the one field it wanted.
 
     @Test
     fun malformed_escapes_are_rejected_instead_of_guessed() = runTest {
@@ -425,7 +427,7 @@ class HydrationIpcHandlerJsonEscapeTest {
 
             val reply = HydrationIpcHandler(fake).handle("c1", """{"verb":"hydration.mkdir","path":"$path"}""")
 
-            assertEquals("""{"ok":false,"error":"missing_path"}""", reply.trim(), "path: $path")
+            assertEquals("""{"ok":false,"error":"missing_verb"}""", reply.trim(), "path: $path")
             assertTrue(fake.calls.isEmpty(), "no Hydration call may happen for $path: ${fake.calls}")
         }
     }
@@ -436,7 +438,7 @@ class HydrationIpcHandlerJsonEscapeTest {
 
         val reply = HydrationIpcHandler(fake).handle("c1", """{"verb":"hydration.mkdir","path":"/never-closed""")
 
-        assertEquals("""{"ok":false,"error":"missing_path"}""", reply.trim())
+        assertEquals("""{"ok":false,"error":"missing_verb"}""", reply.trim())
         assertTrue(fake.calls.isEmpty())
     }
 

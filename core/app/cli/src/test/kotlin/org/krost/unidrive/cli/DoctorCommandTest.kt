@@ -710,4 +710,18 @@ class DoctorCommandTest {
             db.close()
         }
     }
+
+    // cli#222 item 6: the cache-budget line keeps the one-decimal text it had, GiB as its largest unit.
+    @Test
+    fun `formatBytes keeps its one-decimal text, stops at GiB and prints a negative count as plain bytes`() {
+        val cmd = DoctorCommand()
+        val method = cmd.javaClass.getDeclaredMethod("formatBytes", Long::class.java)
+        method.isAccessible = true
+        assertEquals("512 B", method.invoke(cmd, 512L))
+        assertEquals("1.5 KiB", method.invoke(cmd, 1536L))
+        assertEquals("1.0 MiB", method.invoke(cmd, 1024L * 1024))
+        assertEquals("1.0 GiB", method.invoke(cmd, 1024L * 1024 * 1024))
+        assertEquals("1024.0 GiB", method.invoke(cmd, 1024L * 1024 * 1024 * 1024))
+        assertEquals("-5000 B", method.invoke(cmd, -5000L))
+    }
 }

@@ -6,6 +6,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaCursorExpiredException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
+import org.krost.unidrive.io.fileSha256Hex
 import org.krost.unidrive.sync.ConflictLog
 import org.krost.unidrive.sync.HashVerifier
 import org.krost.unidrive.sync.Reconciler
@@ -14,9 +15,7 @@ import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
-import java.security.MessageDigest
 import java.time.Instant
-import java.util.HexFormat
 import java.util.UUID
 
 /**
@@ -598,7 +597,7 @@ class TrackingEngine(
     private fun makeLocalObs(p: Path): LocalObservation {
         val attrs = Files.readAttributes(p, java.nio.file.attribute.BasicFileAttributes::class.java)
         val size = attrs.size()
-        val hash = hashFile(p)
+        val hash = fileSha256Hex(p)
         return LocalObservation(
             exists = true,
             hash = hash,
@@ -797,19 +796,6 @@ class TrackingEngine(
                 serverMtime = null,
             )
         }
-
-    private fun hashFile(p: Path): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(p).use { stream ->
-            val buf = ByteArray(8192)
-            while (true) {
-                val n = stream.read(buf)
-                if (n <= 0) break
-                digest.update(buf, 0, n)
-            }
-        }
-        return HexFormat.of().formatHex(digest.digest())
-    }
 
     private fun stripLeadingSlash(p: String): String = if (p.startsWith("/")) p.substring(1) else p
 }

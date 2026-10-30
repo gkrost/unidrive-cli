@@ -2,6 +2,7 @@ package org.krost.unidrive.dropbox
 
 import io.ktor.http.HttpHeaders
 import kotlinx.coroutines.test.runTest
+import org.krost.unidrive.RemoteIncompleteDownloadException
 import java.nio.file.Files
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -54,9 +55,12 @@ class DropboxTruncatedDownloadTest {
         val good = goodBytes()
         Files.write(destination, good)
 
-        val e = assertFailsWith<java.io.IOException> { provider.download("/f.txt", destination) }
+        val e = assertFailsWith<RemoteIncompleteDownloadException> { provider.download("/f.txt", destination) }
 
         assertTrue(e.message?.contains("Truncated") == true, "the truncation guard must be what surfaces, got: ${e.message}")
+        // The typed failure hydration reports as remote_incomplete (with the numbers) and the engine quarantines, like Internxt's.
+        assertEquals(5L, e.storedBytes)
+        assertEquals(100L, e.declaredBytes)
         assertTrue(good.contentEquals(Files.readAllBytes(destination)), "the destination must still hold the previous bytes")
         Files.list(home).use { stream ->
             assertTrue(

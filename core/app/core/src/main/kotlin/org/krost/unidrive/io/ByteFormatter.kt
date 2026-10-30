@@ -29,3 +29,29 @@ fun formatSize(bytes: Long): String =
         bytes < 1024 * 1024 * 1024 -> "${bytes / (1024 * 1024)} MiB"
         else -> "${bytes / (1024 * 1024 * 1024)} GiB"
     }
+
+/** The units [formatSizePrecise] can print, smallest first. */
+enum class ByteUnit { KiB, MiB, GiB, TiB }
+
+/**
+ * Format a byte count with IEC binary prefixes and one decimal place: `1536` is `1.5 KiB`, `1000000000` is `953.7 MiB`.
+ * The precise sibling of [formatSize], for a status line or a summary where the decimal matters; a listing that only
+ * has to be scanned uses [formatSize].
+ *
+ * Below 1 KiB the count is printed as it is (`1023 B`). A unit is chosen by dividing by 1024 until the value is below
+ * 1024 or [largestUnit] is reached, so `1048575` is `1024.0 KiB` and, with the default [ByteUnit.GiB], a tebibyte is
+ * `1024.0 GiB`; pass [ByteUnit.TiB] to go one unit further. A negative count keeps its sign (`-1.5 KiB`).
+ */
+fun formatSizePrecise(
+    bytes: Long,
+    largestUnit: ByteUnit = ByteUnit.GiB,
+): String {
+    if (bytes > -1024 && bytes < 1024) return "$bytes B"
+    var value = bytes / 1024.0
+    var unit = ByteUnit.KiB
+    while (kotlin.math.abs(value) >= 1024 && unit < largestUnit) {
+        value /= 1024
+        unit = ByteUnit.entries[unit.ordinal + 1]
+    }
+    return String.format(java.util.Locale.ROOT, "%.1f %s", value, unit)
+}

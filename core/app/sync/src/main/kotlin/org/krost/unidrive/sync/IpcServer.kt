@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
 import org.krost.unidrive.http.UrlRedaction
 import org.krost.unidrive.io.OwnerOnly
+import org.krost.unidrive.io.ndjsonString
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.net.ConnectException
@@ -812,28 +813,8 @@ class IpcServer(
         private const val IDLE_RECHECK_MS = 1_000L
         private const val HANDSHAKE_RECHECK_MS = 250L
 
-        /**
-         * [s] as one JSON string literal, quotes included: the one escaper for the lines this
-         * server builds by hand. kotlinx escapes what JSON requires (quote, backslash, every
-         * control character below U+0020); NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR are escaped
-         * as well, since some line readers end a line at them although JSON allows them raw. So a
-         * value (a file name, an exception message) can never split or end an NDJSON line.
-         */
-        fun jsonString(s: String): String {
-            val quoted = JsonPrimitive(s).toString()
-            if (quoted.none { it in EXTRA_LINE_BREAKS }) return quoted
-            val sb = StringBuilder(quoted.length + 10)
-            for (c in quoted) {
-                if (c in EXTRA_LINE_BREAKS) {
-                    sb.append('\\').append('u').append(Integer.toHexString(c.code).padStart(4, '0'))
-                } else {
-                    sb.append(c)
-                }
-            }
-            return sb.toString()
-        }
-
-        private val EXTRA_LINE_BREAKS = charArrayOf(Char(0x85), Char(0x2028), Char(0x2029))
+        /** [s] as one JSON string literal, quotes included: the one NDJSON escaper, [ndjsonString]; see there. */
+        fun jsonString(s: String): String = ndjsonString(s)
 
         // No request nests deeper than a few levels. The walk below refuses deeper lines before
         // kotlinx sees them: its tree reader recurses once per array level.

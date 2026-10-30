@@ -103,4 +103,32 @@ class StaleMountDetectorTest {
             "only the unidrive FUSE mount without a live co-daemon must be flagged",
         )
     }
+
+    // cli#223 item 5: the argv of a /proc/<pid>/cmdline body. The NUL is a char code so the source holds no escape.
+    private val nul = Char(0).toString()
+
+    private fun cmdline(vararg args: String): String = args.joinToString(nul, postfix = nul)
+
+    @Test
+    fun `an empty argument keeps its place, so the next argument is not read as its value`() {
+        val argv = StaleMountDetector.parseCmdline(cmdline("/usr/bin/unidrive-mount", "--mount", "", "--ipc", "/run/u.sock"))
+
+        assertEquals(listOf("/usr/bin/unidrive-mount", "--mount", "", "--ipc", "/run/u.sock"), argv)
+        assertEquals(true, StaleMountDetector.cmdlineServesMount(argv, ""), "the mountpoint is the empty argument")
+        assertEquals(false, StaleMountDetector.cmdlineServesMount(argv, "--ipc"), "--ipc is the next option, not the mountpoint")
+        assertEquals(true, StaleMountDetector.cmdlineServesSocket(argv, "/run/u.sock"))
+    }
+
+    @Test
+    fun `a plain cmdline parses to its arguments and the closing NUL adds none`() {
+        assertEquals(listOf("a", "b"), StaleMountDetector.parseCmdline(cmdline("a", "b")))
+        assertEquals(listOf("a", "b"), StaleMountDetector.parseCmdline("a${nul}b"))
+        assertEquals(listOf(""), StaleMountDetector.parseCmdline(nul), "one empty argument")
+        assertEquals(listOf("a", ""), StaleMountDetector.parseCmdline(cmdline("a", "")))
+    }
+
+    @Test
+    fun `an empty cmdline, a zombie or a kernel thread, has no arguments`() {
+        assertEquals(emptyList(), StaleMountDetector.parseCmdline(""))
+    }
 }

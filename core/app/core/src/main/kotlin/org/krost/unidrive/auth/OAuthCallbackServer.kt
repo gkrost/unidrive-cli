@@ -1,12 +1,13 @@
 package org.krost.unidrive.auth
 
+import io.ktor.http.Parameters
+import io.ktor.http.parseQueryString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.AuthenticationException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.SocketTimeoutException
-import java.net.URLDecoder
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
@@ -137,7 +138,20 @@ private fun acceptCallback(
 
 // A request line that can be the provider's redirect: a GET whose query names code, state or error.
 private fun looksLikeCallback(requestLine: String): Boolean =
-    requestLine.startsWith("GET ") && Regex("[?&](code|state|error)=").containsMatchIn(requestLine)
+    requestLine.startsWith("GET ") &&
+        callbackQuery(requestLine).let { it.contains("code") || it.contains("state") || it.contains("error") }
+
+// The decoded query of a request line `METHOD target HTTP/x`: what follows the first `?` of the target, up to a `#`.
+// Empty when the line has no target or no query. Throws AuthenticationException on a broken percent escape.
+private fun callbackQuery(requestLine: String): Parameters {
+    val target = requestLine.split(' ').getOrNull(1) ?: return Parameters.Empty
+    val query = target.substringBefore('#').substringAfter('?', "")
+    return try {
+        parseQueryString(query)
+    } catch (e: Exception) {
+        throw AuthenticationException("Malformed OAuth callback query", e)
+    }
+}
 
 private fun escapeHtml(text: String): String =
     buildString(text.length + 16) {
@@ -172,23 +186,22 @@ public fun parseAndValidateCallback(
     expectedState: String,
     providerLabel: String,
 ): String {
-    val errorMatch = Regex("[?&]error=([^&\\s]+)").find(requestLine)
-    if (errorMatch != null) {
-        val error = errorMatch.groupValues[1]
-        val descMatch = Regex("[?&]error_description=([^&\\s]+)").find(requestLine)
-        val desc = descMatch?.groupValues?.get(1)?.let { URLDecoder.decode(it, "UTF-8") } ?: ""
-        throw AuthenticationException("$providerLabel returned error: $error $desc")
+    val query = callbackQuery(requestLine)
+
+    fun param(name: String): String? = query[name]?.takeIf { it.isNotEmpty() }
+
+    val error = param("error")
+    if (error != null) {
+        throw AuthenticationException("$providerLabel returned error: $error ${param("error_description") ?: ""}")
     }
 
-    val stateMatch = Regex("[?&]state=([^&\\s]+)").find(requestLine)
     val receivedState =
-        stateMatch?.groupValues?.get(1)?.let { URLDecoder.decode(it, "UTF-8") }
+        param("state")
             ?: throw AuthenticationException("Missing OAuth state parameter — possible CSRF attack")
     if (receivedState != expectedState) {
         throw AuthenticationException("OAuth state mismatch — possible CSRF attack")
     }
 
-    val codeMatch = Regex("[?&]code=([^&\\s]+)").find(requestLine)
-    return codeMatch?.groupValues?.get(1)?.let { URLDecoder.decode(it, "UTF-8") }
+    return param("code")
         ?: throw AuthenticationException("No authorization code in callback: $requestLine")
 }

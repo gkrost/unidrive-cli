@@ -163,6 +163,15 @@ class RelocateCommandTest {
         assertEquals("1.0 TiB", method.invoke(cmd, 1024L * 1024 * 1024 * 1024))
     }
 
+    @Test
+    fun `formatSize prints a negative count as plain bytes, as it always did`() {
+        val cmd = RelocateCommand()
+        val method = cmd.javaClass.getDeclaredMethod("formatSize", Long::class.java)
+        method.isAccessible = true
+        assertEquals("-5000 B", method.invoke(cmd, -5000L))
+        assertEquals("-1 B", method.invoke(cmd, -1L))
+    }
+
     // -- UD-294: relocate seeds profile + scan MDC ------------------------------
     //
     // Pre-fix: relocate never put `profile` or `scan` into MDC, so the
