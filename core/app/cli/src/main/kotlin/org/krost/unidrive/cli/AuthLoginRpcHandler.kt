@@ -4,7 +4,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
+import org.krost.unidrive.io.string
 import org.slf4j.LoggerFactory
 
 /**
@@ -99,8 +99,6 @@ internal class AuthLoginRpcHandler(
             }
         }
     }
-
-    private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 
     companion object {
         const val BEGIN: String = "auth.begin"
