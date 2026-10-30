@@ -23,8 +23,10 @@ private const val STAGING_SUFFIX = ".unidrive-tmp"
  * check. A body of another length is refused before the move with [RemoteIncompleteDownloadException], the typed failure
  * Internxt raises for a stored object of another size than declared: the sync engine quarantines the row instead of
  * retrying it, and hydration reports it as `remote_incomplete` with the numbers (`DownloadFailures`,
- * `RemoteIncompleteMemory`), never as `not_found`. A body that is cut off by a failing read propagates that failure
- * unchanged. The message names [what] ("Dropbox download of '/f.txt'").
+ * `RemoteIncompleteMemory`), never as `not_found`. Only a body that ENDS cleanly at another length is that: a body that
+ * is cut off by a failure (a connection reset; the channel's `closedCause`) propagates that failure unchanged, so the
+ * transfer is retried like any other failed one instead of being quarantined. The message names [what]
+ * ("Dropbox download of '/f.txt'").
  *
  * Returns the number of bytes written.
  */
@@ -52,6 +54,10 @@ suspend fun writeStagedDownload(
                     }
                     n
                 }
+            // Ktor's readAvailable answers -1 for a channel that the engine closed with a failure (a connection reset in
+            // the middle of the body), exactly as for a clean end: the failure is only in closedCause. It is rethrown
+            // as what it is, so a dropped transfer is not mistaken for a stored object of another length.
+            channel.closedCause?.let { throw it }
             if (declaredBytes != null && declaredBytes >= 0L && written != declaredBytes) {
                 throw RemoteIncompleteDownloadException(
                     "Truncated $what: got $written of $declaredBytes bytes",

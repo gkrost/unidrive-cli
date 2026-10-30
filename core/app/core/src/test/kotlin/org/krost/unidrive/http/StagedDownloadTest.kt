@@ -4,7 +4,6 @@ import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.cancel
 import io.ktor.utils.io.writeFully
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.RemoteIncompleteDownloadException
 import java.io.IOException
@@ -77,18 +76,18 @@ class StagedDownloadTest {
         }
 
     @Test
-    fun `a read that fails mid-body propagates unchanged, leaves the old file and no staging file`() =
+    fun `a body cut off by a failure propagates that failure, not the typed one, and leaves the old file and no staging file`() =
         runTest {
             Files.writeString(destination, "old")
+            // Ten bytes arrive, then the connection resets. Ktor's readAvailable then answers -1 as for a clean end (checked
+            // against the ktor-io of this build); only closedCause says it was a failure.
             val channel = ByteChannel(autoFlush = true)
-            launch {
-                channel.writeFully(ByteArray(10))
-                channel.cancel(IOException("connection reset"))
-            }
+            channel.writeFully(ByteArray(10))
+            channel.cancel(IOException("connection reset"))
 
-            val e = assertFailsWith<Exception> { writeStagedDownload(channel, destination, 100L, "test download") }
+            val e = assertFailsWith<IOException> { writeStagedDownload(channel, destination, 100L, "test download") }
 
-            assertTrue(e !is RemoteIncompleteDownloadException, "a failing read is not a short stored object: $e")
+            assertEquals("connection reset", e.message, "the read failure itself, not a short stored object")
             assertEquals("old", Files.readString(destination))
             assertEquals(listOf("f.bin"), folder())
         }
