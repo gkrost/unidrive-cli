@@ -857,35 +857,32 @@ class InternxtApiService(
     ): InternxtFile =
         retryOnTransient {
             withAuthRetry { creds ->
-                driveBudget.awaitSlot()
-                try {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("bucket", kotlinx.serialization.json.JsonPrimitive(bucket))
-                            put("folderUuid", kotlinx.serialization.json.JsonPrimitive(folderUuid))
-                            put("plainName", kotlinx.serialization.json.JsonPrimitive(plainName))
-                            put("name", kotlinx.serialization.json.JsonPrimitive(encryptedName))
-                            put("size", kotlinx.serialization.json.JsonPrimitive(size))
-                            put("encryptVersion", kotlinx.serialization.json.JsonPrimitive("03-aes"))
-                            if (type != null) put("type", kotlinx.serialization.json.JsonPrimitive(type))
-                            if (fileId != null) put("fileId", kotlinx.serialization.json.JsonPrimitive(fileId))
-                            if (modificationTime != null) {
-                                put("modificationTime", kotlinx.serialization.json.JsonPrimitive(modificationTime.toString()))
+                val answer =
+                    budgeted(driveBudget) {
+                        val requestBody =
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("bucket", kotlinx.serialization.json.JsonPrimitive(bucket))
+                                put("folderUuid", kotlinx.serialization.json.JsonPrimitive(folderUuid))
+                                put("plainName", kotlinx.serialization.json.JsonPrimitive(plainName))
+                                put("name", kotlinx.serialization.json.JsonPrimitive(encryptedName))
+                                put("size", kotlinx.serialization.json.JsonPrimitive(size))
+                                put("encryptVersion", kotlinx.serialization.json.JsonPrimitive("03-aes"))
+                                if (type != null) put("type", kotlinx.serialization.json.JsonPrimitive(type))
+                                if (fileId != null) put("fileId", kotlinx.serialization.json.JsonPrimitive(fileId))
+                                if (modificationTime != null) {
+                                    put("modificationTime", kotlinx.serialization.json.JsonPrimitive(modificationTime.toString()))
+                                }
                             }
-                        }
-                    val response =
-                        httpClient.post("$baseUrl/files") {
-                            applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
-                        }
-                    checkResponse(response)
-                    driveBudget.recordSuccess()
-                    json.decodeFromString<InternxtFile>(response.bodyAsText())
-                } catch (e: InternxtApiException) {
-                    if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                    throw e
-                }
+                        val response =
+                            httpClient.post("$baseUrl/files") {
+                                applyAuth(creds)
+                                contentType(ContentType.Application.Json)
+                                setBody(requestBody.toString())
+                            }
+                        checkResponse(response)
+                        response
+                    }
+                json.decodeFromString<InternxtFile>(answer.bodyAsText())
             }
         }
 
@@ -907,29 +904,26 @@ class InternxtApiService(
     ): InternxtFile =
         retryOnTransient {
             withAuthRetry { creds ->
-                driveBudget.awaitSlot()
-                try {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            if (fileId != null) put("fileId", kotlinx.serialization.json.JsonPrimitive(fileId))
-                            put("size", kotlinx.serialization.json.JsonPrimitive(size))
-                            if (modificationTime != null) {
-                                put("modificationTime", kotlinx.serialization.json.JsonPrimitive(modificationTime.toString()))
+                val answer =
+                    budgeted(driveBudget) {
+                        val requestBody =
+                            kotlinx.serialization.json.buildJsonObject {
+                                if (fileId != null) put("fileId", kotlinx.serialization.json.JsonPrimitive(fileId))
+                                put("size", kotlinx.serialization.json.JsonPrimitive(size))
+                                if (modificationTime != null) {
+                                    put("modificationTime", kotlinx.serialization.json.JsonPrimitive(modificationTime.toString()))
+                                }
                             }
-                        }
-                    val response =
-                        httpClient.put("$baseUrl/files/$uuid") {
-                            applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
-                        }
-                    checkResponse(response)
-                    driveBudget.recordSuccess()
-                    json.decodeFromString<InternxtFile>(response.bodyAsText())
-                } catch (e: InternxtApiException) {
-                    if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                    throw e
-                }
+                        val response =
+                            httpClient.put("$baseUrl/files/$uuid") {
+                                applyAuth(creds)
+                                contentType(ContentType.Application.Json)
+                                setBody(requestBody.toString())
+                            }
+                        checkResponse(response)
+                        response
+                    }
+                json.decodeFromString<InternxtFile>(answer.bodyAsText())
             }
         }
 
@@ -959,58 +953,55 @@ class InternxtApiService(
         require(items.size <= 5) { "POST /folders bulk form is server-capped at 5; got ${items.size}" }
         return retryOnTransient {
             withAuthRetry { creds ->
-                driveBudget.awaitSlot()
-                try {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("parentFolderUuid", kotlinx.serialization.json.JsonPrimitive(parentUuid))
-                            put(
-                                "folders",
-                                kotlinx.serialization.json.buildJsonArray {
-                                    items.forEach { (plainName, encryptedName) ->
-                                        add(
-                                            kotlinx.serialization.json.buildJsonObject {
-                                                put("plainName", kotlinx.serialization.json.JsonPrimitive(plainName))
-                                                put("name", kotlinx.serialization.json.JsonPrimitive(encryptedName))
-                                            },
-                                        )
-                                    }
-                                },
-                            )
-                        }
-                    val response =
-                        httpClient.post("$baseUrl/folders") {
-                            applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
-                        }
-                    checkResponse(response)
-                    driveBudget.recordSuccess()
-                    // Try ResultFoldersDto shape `{result: [FolderDto]}`; fall back to bare array.
-                    val text = response.bodyAsText()
-                    val rootElement = json.parseToJsonElement(text)
-                    val arr =
-                        when {
-                            rootElement is kotlinx.serialization.json.JsonObject && "result" in rootElement ->
-                                rootElement["result"]!!
-                            rootElement is kotlinx.serialization.json.JsonObject && "folders" in rootElement ->
-                                rootElement["folders"]!!
-                            rootElement is kotlinx.serialization.json.JsonArray ->
-                                rootElement
-                            else ->
-                                throw InternxtApiException(
-                                    "createFoldersBatch: unexpected response shape (no result/folders array): ${text.take(200)}",
-                                    statusCode = 0,
+                val answer =
+                    budgeted(driveBudget) {
+                        val requestBody =
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("parentFolderUuid", kotlinx.serialization.json.JsonPrimitive(parentUuid))
+                                put(
+                                    "folders",
+                                    kotlinx.serialization.json.buildJsonArray {
+                                        items.forEach { (plainName, encryptedName) ->
+                                            add(
+                                                kotlinx.serialization.json.buildJsonObject {
+                                                    put("plainName", kotlinx.serialization.json.JsonPrimitive(plainName))
+                                                    put("name", kotlinx.serialization.json.JsonPrimitive(encryptedName))
+                                                },
+                                            )
+                                        }
+                                    },
                                 )
-                        }
-                    json.decodeFromJsonElement(
-                        kotlinx.serialization.builtins.ListSerializer(InternxtFolder.serializer()),
-                        arr,
-                    )
-                } catch (e: InternxtApiException) {
-                    if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                    throw e
-                }
+                            }
+                        val response =
+                            httpClient.post("$baseUrl/folders") {
+                                applyAuth(creds)
+                                contentType(ContentType.Application.Json)
+                                setBody(requestBody.toString())
+                            }
+                        checkResponse(response)
+                        response
+                    }
+                // Try ResultFoldersDto shape `{result: [FolderDto]}`; fall back to bare array.
+                val text = answer.bodyAsText()
+                val rootElement = json.parseToJsonElement(text)
+                val arr =
+                    when {
+                        rootElement is kotlinx.serialization.json.JsonObject && "result" in rootElement ->
+                            rootElement["result"]!!
+                        rootElement is kotlinx.serialization.json.JsonObject && "folders" in rootElement ->
+                            rootElement["folders"]!!
+                        rootElement is kotlinx.serialization.json.JsonArray ->
+                            rootElement
+                        else ->
+                            throw InternxtApiException(
+                                "createFoldersBatch: unexpected answer shape (no result/folders array): ${text.take(200)}",
+                                statusCode = 0,
+                            )
+                    }
+                json.decodeFromJsonElement(
+                    kotlinx.serialization.builtins.ListSerializer(InternxtFolder.serializer()),
+                    arr,
+                )
             }
         }
     }
@@ -1022,27 +1013,24 @@ class InternxtApiService(
     ): InternxtFolder =
         retryOnTransient {
             withAuthRetry { creds ->
-                driveBudget.awaitSlot()
-                try {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("parentFolderUuid", kotlinx.serialization.json.JsonPrimitive(parentUuid))
-                            put("plainName", kotlinx.serialization.json.JsonPrimitive(plainName))
-                            put("name", kotlinx.serialization.json.JsonPrimitive(encryptedName))
-                        }
-                    val response =
-                        httpClient.post("$baseUrl/folders") {
-                            applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
-                        }
-                    checkResponse(response)
-                    driveBudget.recordSuccess()
-                    json.decodeFromString<InternxtFolder>(response.bodyAsText())
-                } catch (e: InternxtApiException) {
-                    if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                    throw e
-                }
+                val answer =
+                    budgeted(driveBudget) {
+                        val requestBody =
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("parentFolderUuid", kotlinx.serialization.json.JsonPrimitive(parentUuid))
+                                put("plainName", kotlinx.serialization.json.JsonPrimitive(plainName))
+                                put("name", kotlinx.serialization.json.JsonPrimitive(encryptedName))
+                            }
+                        val response =
+                            httpClient.post("$baseUrl/folders") {
+                                applyAuth(creds)
+                                contentType(ContentType.Application.Json)
+                                setBody(requestBody.toString())
+                            }
+                        checkResponse(response)
+                        response
+                    }
+                json.decodeFromString<InternxtFolder>(answer.bodyAsText())
             }
         }
 
@@ -1063,27 +1051,24 @@ class InternxtApiService(
     ): InternxtFile =
         retryOnTransient {
             withAuthRetry { creds ->
-                driveBudget.awaitSlot()
-                try {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("plainName", kotlinx.serialization.json.JsonPrimitive(plainName))
-                            // Spec says type is required; empty string is valid for extensionless files.
-                            put("type", kotlinx.serialization.json.JsonPrimitive(type ?: ""))
-                        }
-                    val response =
-                        httpClient.put("$baseUrl/files/$uuid/meta") {
-                            applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
-                        }
-                    checkResponse(response)
-                    driveBudget.recordSuccess()
-                    json.decodeFromString<InternxtFile>(response.bodyAsText())
-                } catch (e: InternxtApiException) {
-                    if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                    throw e
-                }
+                val answer =
+                    budgeted(driveBudget) {
+                        val requestBody =
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("plainName", kotlinx.serialization.json.JsonPrimitive(plainName))
+                                // Spec says type is required; empty string is valid for extensionless files.
+                                put("type", kotlinx.serialization.json.JsonPrimitive(type ?: ""))
+                            }
+                        val response =
+                            httpClient.put("$baseUrl/files/$uuid/meta") {
+                                applyAuth(creds)
+                                contentType(ContentType.Application.Json)
+                                setBody(requestBody.toString())
+                            }
+                        checkResponse(response)
+                        response
+                    }
+                json.decodeFromString<InternxtFile>(answer.bodyAsText())
             }
         }
 
@@ -1099,25 +1084,22 @@ class InternxtApiService(
     ): InternxtFolder =
         retryOnTransient {
             withAuthRetry { creds ->
-                driveBudget.awaitSlot()
-                try {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("plainName", kotlinx.serialization.json.JsonPrimitive(plainName))
-                        }
-                    val response =
-                        httpClient.put("$baseUrl/folders/$uuid/meta") {
-                            applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
-                        }
-                    checkResponse(response)
-                    driveBudget.recordSuccess()
-                    json.decodeFromString<InternxtFolder>(response.bodyAsText())
-                } catch (e: InternxtApiException) {
-                    if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                    throw e
-                }
+                val answer =
+                    budgeted(driveBudget) {
+                        val requestBody =
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("plainName", kotlinx.serialization.json.JsonPrimitive(plainName))
+                            }
+                        val response =
+                            httpClient.put("$baseUrl/folders/$uuid/meta") {
+                                applyAuth(creds)
+                                contentType(ContentType.Application.Json)
+                                setBody(requestBody.toString())
+                            }
+                        checkResponse(response)
+                        response
+                    }
+                json.decodeFromString<InternxtFolder>(answer.bodyAsText())
             }
         }
 
@@ -1127,25 +1109,22 @@ class InternxtApiService(
     ): InternxtFile =
         retryOnTransient {
             withAuthRetry { creds ->
-                driveBudget.awaitSlot()
-                try {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("destinationFolder", kotlinx.serialization.json.JsonPrimitive(destinationFolderUuid))
-                        }
-                    val response =
-                        httpClient.patch("$baseUrl/files/$uuid") {
-                            applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
-                        }
-                    checkResponse(response)
-                    driveBudget.recordSuccess()
-                    json.decodeFromString<InternxtFile>(response.bodyAsText())
-                } catch (e: InternxtApiException) {
-                    if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                    throw e
-                }
+                val answer =
+                    budgeted(driveBudget) {
+                        val requestBody =
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("destinationFolder", kotlinx.serialization.json.JsonPrimitive(destinationFolderUuid))
+                            }
+                        val response =
+                            httpClient.patch("$baseUrl/files/$uuid") {
+                                applyAuth(creds)
+                                contentType(ContentType.Application.Json)
+                                setBody(requestBody.toString())
+                            }
+                        checkResponse(response)
+                        response
+                    }
+                json.decodeFromString<InternxtFile>(answer.bodyAsText())
             }
         }
 
@@ -1155,25 +1134,22 @@ class InternxtApiService(
     ): InternxtFolder =
         retryOnTransient {
             withAuthRetry { creds ->
-                driveBudget.awaitSlot()
-                try {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("destinationFolder", kotlinx.serialization.json.JsonPrimitive(destinationFolderUuid))
-                        }
-                    val response =
-                        httpClient.patch("$baseUrl/folders/$uuid") {
-                            applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
-                        }
-                    checkResponse(response)
-                    driveBudget.recordSuccess()
-                    json.decodeFromString<InternxtFolder>(response.bodyAsText())
-                } catch (e: InternxtApiException) {
-                    if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                    throw e
-                }
+                val answer =
+                    budgeted(driveBudget) {
+                        val requestBody =
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("destinationFolder", kotlinx.serialization.json.JsonPrimitive(destinationFolderUuid))
+                            }
+                        val response =
+                            httpClient.patch("$baseUrl/folders/$uuid") {
+                                applyAuth(creds)
+                                contentType(ContentType.Application.Json)
+                                setBody(requestBody.toString())
+                            }
+                        checkResponse(response)
+                        response
+                    }
+                json.decodeFromString<InternxtFolder>(answer.bodyAsText())
             }
         }
 
@@ -1182,17 +1158,12 @@ class InternxtApiService(
         // before checkResponse so retryOnTransient never sees it as transient.
         retryOnTransient {
             withAuthRetry { creds ->
-                driveBudget.awaitSlot()
-                try {
+                budgeted(driveBudget) {
                     val response =
                         httpClient.delete("$baseUrl/files/$uuid") {
                             applyAuth(creds)
                         }
                     if (response.status != HttpStatusCode.NotFound) checkResponse(response)
-                    driveBudget.recordSuccess()
-                } catch (e: InternxtApiException) {
-                    if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                    throw e
                 }
             }
         }
@@ -1220,8 +1191,7 @@ class InternxtApiService(
         }
         retryOnTransient {
             withAuthRetry { creds ->
-                driveBudget.awaitSlot()
-                try {
+                budgeted(driveBudget) {
                     val requestBody =
                         kotlinx.serialization.json.buildJsonObject {
                             put(
@@ -1246,10 +1216,6 @@ class InternxtApiService(
                         }
                     // 200 OK — items moved. 400 means at least one uuid was invalid; let it surface.
                     checkResponse(response)
-                    driveBudget.recordSuccess()
-                } catch (e: InternxtApiException) {
-                    if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                    throw e
                 }
             }
         }
@@ -1260,8 +1226,7 @@ class InternxtApiService(
         // before checkResponse so retryOnTransient never sees it as transient.
         retryOnTransient {
             withAuthRetry { creds ->
-                driveBudget.awaitSlot()
-                try {
+                budgeted(driveBudget) {
                     val requestBody =
                         kotlinx.serialization.json.buildJsonObject {
                             put(
@@ -1283,10 +1248,6 @@ class InternxtApiService(
                             setBody(requestBody.toString())
                         }
                     if (response.status != HttpStatusCode.NotFound) checkResponse(response)
-                    driveBudget.recordSuccess()
-                } catch (e: InternxtApiException) {
-                    if (e.statusCode == 429 || e.statusCode == 503) driveBudget.recordThrottle(e.retryAfterMs ?: 0L)
-                    throw e
                 }
             }
         }
@@ -1446,26 +1407,23 @@ class InternxtApiService(
         path: String,
         params: Map<String, String> = emptyMap(),
     ): String {
-        bridgeBudget.awaitSlot()
-        try {
-            // Bridge auth is HTTP Basic — JWT refresh wouldn't change bridgeUser/bridgeUserId,
-            // so this stays out of withAuthRetry. Pass forceRefresh = false unconditionally.
-            val creds = credentialsProvider(false)
-            val authHeader = InternxtCrypto.bridgeAuthHeader(creds.bridgeUser, creds.bridgeUserId)
-            val response =
-                httpClient.get("$bridgeUrl$path") {
-                    header("Authorization", authHeader)
-                    header("x-api-version", "2")
-                    accept(ContentType.Application.Json)
-                    params.forEach { (k, v) -> parameter(k, v) }
-                }
-            checkResponse(response)
-            bridgeBudget.recordSuccess()
-            return response.bodyAsText()
-        } catch (e: InternxtApiException) {
-            if (e.statusCode == 429 || e.statusCode == 503) bridgeBudget.recordThrottle(e.retryAfterMs ?: 0L)
-            throw e
-        }
+        val answer =
+            budgeted(bridgeBudget) {
+                // Bridge auth is HTTP Basic — JWT refresh wouldn't change bridgeUser/bridgeUserId,
+                // so this stays out of withAuthRetry. Pass forceRefresh = false unconditionally.
+                val creds = credentialsProvider(false)
+                val authHeader = InternxtCrypto.bridgeAuthHeader(creds.bridgeUser, creds.bridgeUserId)
+                val response =
+                    httpClient.get("$bridgeUrl$path") {
+                        header("Authorization", authHeader)
+                        header("x-api-version", "2")
+                        accept(ContentType.Application.Json)
+                        params.forEach { (k, v) -> parameter(k, v) }
+                    }
+                checkResponse(response)
+                response
+            }
+        return answer.bodyAsText()
     }
 
     private suspend fun bridgePost(
@@ -1473,27 +1431,24 @@ class InternxtApiService(
         body: String,
         headers: Map<String, String> = emptyMap(),
     ): String {
-        bridgeBudget.awaitSlot()
-        try {
-            // Bridge auth is HTTP Basic — JWT refresh wouldn't change bridgeUser/bridgeUserId,
-            // so this stays out of withAuthRetry. Pass forceRefresh = false unconditionally.
-            val creds = credentialsProvider(false)
-            val authHeader = InternxtCrypto.bridgeAuthHeader(creds.bridgeUser, creds.bridgeUserId)
-            val response =
-                httpClient.post("$bridgeUrl$path") {
-                    header("Authorization", authHeader)
-                    header("x-api-version", "2")
-                    contentType(ContentType.Application.Json)
-                    headers.forEach { (k, v) -> header(k, v) }
-                    setBody(body)
-                }
-            checkResponse(response)
-            bridgeBudget.recordSuccess()
-            return response.bodyAsText()
-        } catch (e: InternxtApiException) {
-            if (e.statusCode == 429 || e.statusCode == 503) bridgeBudget.recordThrottle(e.retryAfterMs ?: 0L)
-            throw e
-        }
+        val answer =
+            budgeted(bridgeBudget) {
+                // Bridge auth is HTTP Basic — JWT refresh wouldn't change bridgeUser/bridgeUserId,
+                // so this stays out of withAuthRetry. Pass forceRefresh = false unconditionally.
+                val creds = credentialsProvider(false)
+                val authHeader = InternxtCrypto.bridgeAuthHeader(creds.bridgeUser, creds.bridgeUserId)
+                val response =
+                    httpClient.post("$bridgeUrl$path") {
+                        header("Authorization", authHeader)
+                        header("x-api-version", "2")
+                        contentType(ContentType.Application.Json)
+                        headers.forEach { (k, v) -> header(k, v) }
+                        setBody(body)
+                    }
+                checkResponse(response)
+                response
+            }
+        return answer.bodyAsText()
     }
 
     suspend fun getBridgeFileInfo(
@@ -2047,6 +2002,41 @@ class InternxtApiService(
         }
     }
 
+    /**
+     * One call against [budget]: waits for its slot, runs [call] (the request and [checkResponse]), and tells the budget how it
+     * went: a success when [call] returns, a throttle (with the server's Retry-After) when it throws an [InternxtApiException]
+     * with status 429 or 503, nothing for any other failure. The exception is rethrown unchanged. Whatever is done with the
+     * answer (parsing it) happens after this returns, so a body that does not parse still counts as a success, as it always did.
+     *
+     * This is the budget's innermost wrapper (see the composition note on [driveBudget]): each retry re-enters it for a slot of
+     * its own. Not used by the calls that need more than this (the streaming download, the shard PUTs, the multipart parts, the
+     * enumeration GETs): they tell the budget about their own outcomes, as before.
+     */
+    private suspend inline fun <T> budgeted(
+        budget: HttpRetryBudget,
+        call: () -> T,
+    ): T {
+        budget.awaitSlot()
+        val answer =
+            try {
+                call()
+            } catch (e: InternxtApiException) {
+                if (e.statusCode == 429 || e.statusCode == 503) budget.recordThrottle(e.retryAfterMs ?: 0L)
+                throw e
+            }
+        budget.recordSuccess()
+        return answer
+    }
+
+    /**
+     * The retry ladder of the calls that WRITE (create, replace, rename, move, delete, trash): it retries a refused answer
+     * ([TRANSIENT_STATUSES]) and nothing else. A network error without a status (a connection that closes before any response
+     * byte) is deliberately NOT retried here: the request may have reached the server and taken effect, and repeating a create
+     * or a move would make a second file or a collision. The error reaches the caller, which reconciles (see the create
+     * collision and keep-overwritten handling in the provider). This is the matrix row "Network error" of [HttpRetryBudget]:
+     * the send loops of Graph, Dropbox and S3 do the same. The enumeration GETs ([authenticatedGetReply]) are the exception
+     * on purpose: a read has no effect to repeat, so it retries an I/O error like a 5xx.
+     */
     internal suspend fun <T> retryOnTransient(
         maxAttempts: Int = 3,
         op: suspend () -> T,
