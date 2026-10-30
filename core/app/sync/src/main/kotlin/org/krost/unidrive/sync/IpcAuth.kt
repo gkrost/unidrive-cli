@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.io.grantProblem
+import org.krost.unidrive.io.string
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.nio.file.Files
@@ -380,8 +381,6 @@ class IpcAuth(
         private fun validClientName(name: String): Boolean = name.length in 1..MAX_CLIENT_NAME && name.all { it.code in 0x20..0x7E }
 
         private fun parseObject(line: String): JsonObject? = runCatching { Json.parseToJsonElement(line) as? JsonObject }.getOrNull()
-
-        private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 
         /**
          * The value of the one top-level `verb` member of the JSON object [line], or null when the line

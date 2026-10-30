@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.krost.unidrive.engine.RemoteEnumeration
 import org.krost.unidrive.http.UrlRedaction
+import org.krost.unidrive.io.isTrue
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
@@ -197,11 +198,6 @@ class RefreshRpcHandler(
                 val body = runCatching { Json.parseToJsonElement(jsonRequest) as? JsonObject }.getOrNull()
                     ?: return Flags(reset = false, forceDelete = false)
                 return Flags(reset = body.isTrue("reset"), forceDelete = body.isTrue("force_delete"))
-            }
-
-            private fun JsonObject.isTrue(name: String): Boolean {
-                val value = this[name] as? JsonPrimitive ?: return false
-                return !value.isString && value.content == "true"
             }
         }
     }
