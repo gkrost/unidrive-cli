@@ -2,6 +2,7 @@ package org.krost.unidrive.engine
 
 import org.krost.unidrive.sync.PathNormalizer
 import java.security.MessageDigest
+import java.util.HexFormat
 
 /**
  * The local names of duplicate remote items (archive#403). Two live remote items can share one path (Internxt allows exact
@@ -25,7 +26,7 @@ object DuplicateNames {
     /** The tag of [remoteId]: its first 8 characters when they are hex digits (a uuid), else 8 hex of its SHA-256. */
     fun tag(remoteId: String): String {
         val head = remoteId.take(TAG_HEX).lowercase()
-        if (head.length == TAG_HEX && head.all { it in '0'..'9' || it in 'a'..'f' }) return head
+        if (head.length == TAG_HEX && head.all { HexFormat.isHexDigit(it.code) }) return head
         return sha256Hex(remoteId).take(TAG_HEX)
     }
 
@@ -109,5 +110,5 @@ object DuplicateNames {
     private fun fits(name: String): Boolean = name.length <= MAX_NAME_CHARS && name.toByteArray(Charsets.UTF_8).size <= MAX_NAME_BYTES
 
     private fun sha256Hex(text: String): String =
-        MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)))
 }

@@ -3,6 +3,7 @@ package org.krost.unidrive.sync
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.util.HexFormat
 
 /**
  * Verifies file integrity after transfer using provider-specific hash algorithms.
@@ -110,7 +111,7 @@ object HashVerifier {
                 md.update(buffer, 0, read)
             }
         }
-        return md.digest().joinToString("") { "%02x".format(it) }
+        return HexFormat.of().formatHex(md.digest())
     }
 
     /** Dropbox's `content_hash` of [path] (see [org.krost.unidrive.HashAlgorithm.DropboxContentHash]). */
@@ -148,7 +149,7 @@ object HashVerifier {
 
         fun digestHex(): String {
             if (inBlock > 0) closeBlock()
-            return overall.digest().joinToString("") { "%02x".format(it) }
+            return HexFormat.of().formatHex(overall.digest())
         }
 
         private fun closeBlock() {
@@ -170,7 +171,7 @@ object HashVerifier {
                 md.update(buffer, 0, read)
             }
         }
-        return md.digest().joinToString("") { "%02x".format(it) }
+        return HexFormat.of().formatHex(md.digest())
     }
 
     fun computeQuickXorHash(path: Path): String = org.krost.unidrive.QuickXorHash.of(path)

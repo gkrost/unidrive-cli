@@ -63,4 +63,11 @@ class RowHashProofTest {
         assertNull(RowHashProof.prove(file("abc"), sha256Abc, HashAlgorithm.Sha256Hex))
         assertNull(RowHashProof.prove(file("abc"), "900150983cd24fb0d6963f7d28e17f72", HashAlgorithm.Md5Hex))
     }
+
+    @Test
+    fun `a 64 character value with a non-ASCII digit is not a SHA-256 and is not judged`() {
+        assertEquals(null, RowHashProof.prove(file("abc"), "٨" + sha256Abc.drop(1), HashAlgorithm.QuickXor))
+        assertEquals(null, RowHashProof.prove(file("abc"), "Ａ" + sha256Abc.drop(1), HashAlgorithm.QuickXor))
+        assertEquals(null, RowHashProof.prove(file("abc"), sha256Abc.dropLast(1) + "g", HashAlgorithm.QuickXor))
+    }
 }
