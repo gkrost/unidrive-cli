@@ -98,16 +98,18 @@ object StaleMountDetector {
                 if (name.isEmpty() || !name.all { it.isDigit() }) return@any false
                 val cmdline = entry.resolve("cmdline")
                 if (!Files.isReadable(cmdline)) return@any false
-                val args =
-                    runCatching {
-                        String(Files.readAllBytes(cmdline))
-                            .split(CMDLINE_SEP)
-                            .filter { it.isNotEmpty() }
-                    }.getOrDefault(emptyList())
+                val args = runCatching { parseCmdline(String(Files.readAllBytes(cmdline))) }.getOrDefault(emptyList())
                 cmdlineServesMount(args, mountpoint)
             }
         }
     }
+
+    /**
+     * The argv of a `/proc/<pid>/cmdline` body. Arguments are NUL-terminated, so an empty one (`--mount ""`) is an empty
+     * string between two NULs and keeps its place; only the NUL that ends the last argument is dropped.
+     */
+    internal fun parseCmdline(raw: String): List<String> =
+        if (raw.isEmpty()) emptyList() else raw.removeSuffix(CMDLINE_SEP.toString()).split(CMDLINE_SEP)
 
     /**
      * True when [args] is a `unidrive-mount` co-daemon invocation serving
@@ -136,12 +138,7 @@ object StaleMountDetector {
                 if (name.isEmpty() || !name.all { it.isDigit() }) return@any false
                 val cmdline = entry.resolve("cmdline")
                 if (!Files.isReadable(cmdline)) return@any false
-                val args =
-                    runCatching {
-                        String(Files.readAllBytes(cmdline))
-                            .split(CMDLINE_SEP)
-                            .filter { it.isNotEmpty() }
-                    }.getOrDefault(emptyList())
+                val args = runCatching { parseCmdline(String(Files.readAllBytes(cmdline))) }.getOrDefault(emptyList())
                 cmdlineServesSocket(args, socketPath)
             }
         }

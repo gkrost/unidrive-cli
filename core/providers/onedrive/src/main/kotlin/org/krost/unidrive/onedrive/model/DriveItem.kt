@@ -86,6 +86,7 @@ data class FileDetails(
 @Serializable
 data class FileHashes(
     @SerialName("quickXorHash") val quickXorHash: String? = null,
+    @SerialName("sha1Hash") val sha1Hash: String? = null,
     @SerialName("sha256Hash") val sha256Hash: String? = null,
     @SerialName("crc64Hash") val crc64Hash: String? = null,
 )

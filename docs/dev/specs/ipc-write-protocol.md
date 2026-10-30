@@ -304,7 +304,8 @@ the same entries (cloud-only rows: `hydrated:false`, `remote_id` and `remote_mod
 
 **Telling a rename from new bytes (`hydration.list_content_id`).** `etag` is the write token, and `remote_modified_ms`
 the cloud's modified time. On some providers a rename or move changes both (Internxt stamps a new modification time, and
-its token carries it), so neither tells a renamed file from one with new bytes. On an engine that lists
+its token carries it; OneDrive stamps a new modification time and bumps the `eTag`), so neither tells a renamed file from one
+with new bytes. On an engine that lists
 `hydration.list_content_id` in the `daemon.status` `capabilities`, a `hydration.list` file entry carries `content_id`,
 the provider's name for the bytes of the version the row records:
 
@@ -314,10 +315,14 @@ the provider's name for the bytes of the version the row records:
 
 - **What it names.** Internxt: the stored object and the size, `<fileId>|<size>`; an empty file has no stored object and
   is `|0`. A rename or move keeps it; an upload of the file (a save, a re-upload) stores a new object and so gives
-  another, even where the token stays the same. Compare it as an opaque string.
+  another, even where the token stays the same. OneDrive: the content hash Graph reports in `file.hashes`, tagged with its
+  algorithm, and the size, `<algorithm>:<hash>|<size>` (`quickxor:<base64>|49`; sha256, then sha1, when there is no
+  quickXorHash). A rename or move keeps it although the item's modified time and `eTag` move; a change of the bytes gives
+  another. Compare it as an opaque string.
 - **When it is absent.** On a folder, always. On a file whose provider names no bytes this way (every provider but
-  Internxt today: a OneDrive eTag or content hash changes only with the content or the metadata, as before), whose answer
-  named no stored object, or whose row predates the field until the engine fills it. Absent on an engine without the
+  Internxt and OneDrive today), whose answer named no stored object (Internxt) or no hash (OneDrive: a draft or unfinished
+  item, a drive that omits them; the engine never makes one up and judges that row by its `etag` and size as before), or
+  whose row predates the field until the engine fills it. Absent on an engine without the
   capability, too: the capability is how a client tells "no id for this row" from "an engine that sends none".
 - **Rows from before the field.** A mount daemon whose provider names bytes this way fills them once per profile, in the
   background after its start and once an enumeration has completed: it lists each folder that holds such rows, one at a

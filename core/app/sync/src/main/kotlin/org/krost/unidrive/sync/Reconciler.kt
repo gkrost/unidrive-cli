@@ -1816,16 +1816,22 @@ class Reconciler(
         fun matchesGlob(
             path: String,
             pattern: String,
-        ): Boolean {
-            val cleanPath = path.removePrefix("/")
-            val cleanPattern = pattern.removePrefix("/")
-            val glob =
-                globCache.computeIfAbsent(cleanPattern) {
-                    buildGlobRegexInvocations.incrementAndGet()
-                    compileGlob(it)
-                }
-            return glob.matches(cleanPath)
+        ): Boolean = compiled(pattern).matches(path.removePrefix("/"))
+
+        /**
+         * #218: builds [pattern] with the compile step [matchesGlob] uses and throws what that step throws. The one
+         * check of `exclude_patterns` ([ExcludePatterns.accepted]) stands on it, so a pattern is accepted exactly when
+         * the matcher can build it.
+         */
+        internal fun compileGlobOrThrow(pattern: String) {
+            compiled(pattern)
         }
+
+        private fun compiled(pattern: String): CompiledGlob =
+            globCache.computeIfAbsent(pattern.removePrefix("/")) {
+                buildGlobRegexInvocations.incrementAndGet()
+                compileGlob(it)
+            }
 
         /** The regex-only answer of [matchesGlob]: the reference the fast paths are tested against (archive#552). */
         internal fun matchesGlobRegex(

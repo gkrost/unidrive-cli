@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import org.krost.unidrive.engine.RemoteEnumeration
 import org.krost.unidrive.http.UrlRedaction
 import org.krost.unidrive.io.isTrue
+import org.krost.unidrive.io.ndjsonString
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
@@ -204,15 +205,12 @@ class RefreshRpcHandler(
 
     companion object {
         /**
-         * Render [s] as a fully-escaped, quote-wrapped JSON string literal.
-         * A null becomes the empty JSON string `""`. Delegates to
-         * `kotlinx.serialization`'s `JsonPrimitive`, which escapes quotes,
-         * backslashes, control characters (`\n`, `\r`, `\t`, `\b`, `\f`) and
-         * other bytes below 0x20 — everything the prior quote-only `.replace`
-         * missed. The result already includes the surrounding double-quotes, so
-         * call sites interpolate it WITHOUT adding their own (`"message":$msg`).
+         * Render [s] as a fully-escaped, quote-wrapped JSON string literal for an NDJSON line: [ndjsonString] (quote, backslash,
+         * every control character, and NEL / U+2028 / U+2029 so the line cannot be split). A null becomes the empty JSON string
+         * `""`. The result already includes the surrounding double-quotes, so call sites interpolate it WITHOUT adding their
+         * own (`"message":$msg`).
          */
-        internal fun jsonString(s: String?): String = JsonPrimitive(s ?: "").toString()
+        internal fun jsonString(s: String?): String = ndjsonString(s ?: "")
 
         /** The `message` (a JSON string literal) of the `busy` terminal event of a reset that met a running enumeration. */
         internal val RESET_BUSY_MESSAGE: String =

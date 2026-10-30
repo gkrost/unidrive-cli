@@ -53,6 +53,20 @@ class RefreshRpcHandlerJsonEscapeTest {
     }
 
     /**
+     * INVARIANT: NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR never leave the escaper raw (a line reader may end the NDJSON
+     * line at them), and the message still reads back (gkrost/unidrive-cli#222 item 1).
+     */
+    @Test
+    fun `a message with NEL and the line and paragraph separators stays one line and round-trips`() {
+        val original = "first\u0085second third fourth"
+        val msg = RefreshRpcHandler.jsonString(original)
+        assertEquals("", msg.filter { it == '\u0085' || it == ' ' || it == ' ' }, "raw separators in $msg")
+        assertEquals(original, roundTrippedMessage(original))
+        val terminal = RefreshRpcHandler.RESET_BUSY_MESSAGE
+        assertEquals("", terminal.filter { it == '\u0085' || it == ' ' || it == ' ' })
+    }
+
+    /**
      * INVARIANT: a plain message (no special chars) still round-trips
      * unchanged — the fix must not corrupt the common case.
      */

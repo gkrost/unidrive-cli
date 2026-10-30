@@ -12,7 +12,6 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
-import java.sql.Statement
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
@@ -234,8 +233,7 @@ class StateDatabase(
             if (pause > 0) Thread.sleep(pause)
             val c = connector.open(if (inMemory) null else dbPath)
             try {
-                c.autoCommit = true
-                c.createStatement().use { stmt -> configure(stmt) }
+                SqliteConnections.setUp(c, if (inMemory) null else dbPath, connectionSettings(), log)
                 return c
             } catch (e: SQLException) {
                 runCatching { c.close() }
@@ -246,52 +244,27 @@ class StateDatabase(
         throw checkNotNull(failure)
     }
 
-    private fun configure(stmt: Statement) {
-        // The JDBC driver's defaults are a 3 s busy timeout and a 2 MB page cache: a merge chunk of 1,000 rows
-        // touches far more pages than that, and a commit that meets a long read in another process waits longer.
-        stmt.execute("PRAGMA busy_timeout=$BUSY_TIMEOUT_MS")
-        stmt.execute("PRAGMA cache_size=-$PAGE_CACHE_KIB")
-        if (!isDisposable) useWal(stmt)
-    }
-
     /**
      * WAL: a reader in another connection (a CLI command reading the whole table) no longer fails this connection's
      * commits with SQLITE_BUSY, and a small commit costs a fifth of one with a rollback journal (archive#951). `synchronous=FULL`
      * keeps every commit durable across a power loss, as the rollback journal did: a pending-upload row is the only
-     * record of an edit the cloud has not seen. The mode is persistent (an older build keeps running in it). Anything
-     * but `wal` as the answer (a file system without shared memory, a reader holding the file while the switch needs it
-     * alone) leaves the file in its journal mode with one warning, and the next open tries again.
+     * record of an edit the cloud has not seen. The mode is persistent (an older build keeps running in it). A throwaway
+     * copy stays in its journal mode. [SqliteConnections] applies this, tolerating a refused switch.
      */
-    private fun useWal(stmt: Statement) {
-        val mode =
-            try {
-                stmt.executeQuery("PRAGMA journal_mode=WAL").use { rs -> rs.takeIf { it.next() }?.getString(1) }
-            } catch (e: SQLException) {
-                if (!isBusy(e)) throw e
-                "unchanged (${e.message})"
-            }
-        if (!mode.equals("wal", ignoreCase = true)) log.warn("{} stays in journal mode {}: SQLite did not switch it to WAL", dbPath, mode)
-        stmt.execute("PRAGMA synchronous=FULL")
-        stmt.execute("PRAGMA journal_size_limit=$JOURNAL_SIZE_LIMIT_BYTES")
-    }
+    private fun connectionSettings() =
+        SqliteConnections.Settings(
+            synchronous = if (isDisposable) null else SqliteConnections.Synchronous.FULL,
+            wal = !isDisposable,
+            cacheKib = SqliteConnections.PAGE_CACHE_KIB,
+            journalSizeLimitBytes = SqliteConnections.JOURNAL_SIZE_LIMIT_BYTES,
+        )
 
     /**
      * The WAL holds commits the file does not have yet, so it and its index are the current user's only, like state.db.
      * SQLite creates them at the first transaction after the open (the schema check above) and removes them at the last
-     * close; a checkpoint only truncates the WAL, so they keep these permissions while this connection is open. Best
-     * effort through the [connector] (none on Android): on POSIX SQLite already gives them the mode of the file, on
-     * Windows they inherit the profile folder's ACL, which the engine restricts at start.
+     * close; a checkpoint only truncates the WAL, so they keep these permissions while this connection is open.
      */
-    private fun restrictSidecars() {
-        for (name in sidecarNames(dbPath.fileName.toString())) {
-            val side = dbPath.resolveSibling(name)
-            if (!Files.exists(side)) continue
-            val outcome = connector.restrictToOwner(side) ?: return
-            if (!outcome.restricted) log.warn("Could not restrict {} to the current user: {}", side, outcome)
-        }
-    }
-
-    private fun isBusy(e: SQLException): Boolean = e.message.orEmpty().let { it.contains("SQLITE_BUSY") || it.contains("database is locked") }
+    private fun restrictSidecars() = SqliteConnections.restrictSidecars(connector, dbPath, includeMainFile = false, log = log)
 
     private fun initializeReadOnly() {
         check(!inMemory) { "an in-memory database cannot be read-only" }
@@ -3020,15 +2993,6 @@ class StateDatabase(
 
         /** Most prepared statements kept (see [StatementCache]); the hot calls use about eight texts. */
         private const val STATEMENT_CACHE_LIMIT = 32
-
-        /** A commit that meets a read in another process waits this long before it fails (the JDBC default is 3,000). */
-        internal const val BUSY_TIMEOUT_MS = 5_000
-
-        /** Page cache of the connection, in KiB (64 MiB, filled as pages are used; the SQLite default is 2 MiB). */
-        internal const val PAGE_CACHE_KIB = 65_536
-
-        /** What the WAL is cut back to after a checkpoint (64 MiB; a reader holding an old snapshot lets it grow past that). */
-        private const val JOURNAL_SIZE_LIMIT_BYTES = 67_108_864L
 
         /** How long [close]'s checkpoint waits for a reader of another connection. */
         private const val CLOSE_CHECKPOINT_WAIT_MS = 1_000

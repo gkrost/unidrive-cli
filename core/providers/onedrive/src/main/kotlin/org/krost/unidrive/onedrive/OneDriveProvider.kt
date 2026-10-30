@@ -169,7 +169,35 @@ class OneDriveProvider(
     override suspend fun download(
         remotePath: String,
         destination: Path,
-    ): Long =
+    ): Long = downloadReading(remotePath, destination).bytes
+
+    // gkrost/unidrive-cli#233: the receipt names the bytes the download read, as a listing of that item does: a file replaced since it
+    // was listed is named as the version that came down, and a row never loses its name to a download that named none.
+    override suspend fun downloadWithHash(
+        remotePath: String,
+        destination: Path,
+        targetMtimeMillis: Long?,
+    ): DownloadReceipt = downloadReading(remotePath, destination).receipt()
+
+    override suspend fun downloadByIdWithHash(
+        remoteId: String,
+        remotePath: String,
+        destination: Path,
+        targetMtimeMillis: Long?,
+    ): DownloadReceipt =
+        if (SharedItemId.isShared(remoteId)) {
+            downloadSharedReading(remoteId, remotePath, destination).receipt()
+        } else {
+            downloadWithHash(remotePath, destination, targetMtimeMillis)
+        }
+
+    private fun GraphApiService.DownloadedFile.receipt(): DownloadReceipt =
+        DownloadReceipt(bytesWritten = bytes, contentId = oneDriveContentId(item.file?.hashes, item.size))
+
+    private suspend fun downloadReading(
+        remotePath: String,
+        destination: Path,
+    ): GraphApiService.DownloadedFile =
         // archive#247: a 404 with Graph error code `itemNotFound` that escapes the download
         // flow (the item is gone at the first path resolve, or still gone after the
         // bounded stale-URL re-resolve below) is a permanent failure, not a transient
@@ -198,8 +226,16 @@ class OneDriveProvider(
         destination: Path,
     ): Long {
         if (!SharedItemId.isShared(remoteId)) return super.downloadById(remoteId, remotePath, destination)
-        return try {
-            graphApi.downloadFile(remoteId, destination)
+        return downloadSharedReading(remoteId, remotePath, destination).bytes
+    }
+
+    private suspend fun downloadSharedReading(
+        remoteId: String,
+        remotePath: String,
+        destination: Path,
+    ): GraphApiService.DownloadedFile =
+        try {
+            graphApi.downloadFileReading(remoteId, destination)
         } catch (e: GraphApiException) {
             if (e.isItemNotFound()) {
                 throw PermanentDownloadFailureException(
@@ -209,15 +245,14 @@ class OneDriveProvider(
             }
             throw e
         }
-    }
 
     private suspend fun downloadResolved(
         remotePath: String,
         destination: Path,
-    ): Long {
+    ): GraphApiService.DownloadedFile {
         val item = itemAt(remotePath)
         return try {
-            graphApi.downloadFile(item.id, destination)
+            graphApi.downloadFileReading(item.id, destination)
         } catch (e: GraphApiException) {
             // A 404 on the content GET means the pre-resolved download URL went
             // stale (the CDN URL expired) and/or the cached remoteId drifted off
@@ -232,7 +267,7 @@ class OneDriveProvider(
                 remotePath,
             )
             val fresh = itemAt(remotePath)
-            graphApi.downloadFile(fresh.id, destination)
+            graphApi.downloadFileReading(fresh.id, destination)
         }
     }
 
@@ -839,6 +874,7 @@ class OneDriveProvider(
             modified = modifiedSource?.let { runCatching { Instant.parse(it) }.getOrNull() },
             created = createdSource?.let { runCatching { Instant.parse(it) }.getOrNull() },
             hash = hashes?.quickXorHash ?: hashes?.sha256Hash,
+            contentId = oneDriveContentId(hashes, if (size > 0) size else remote.size ?: 0),
             mimeType = file?.mimeType ?: remote.file?.mimeType,
             // No version: the entry's own eTag is the stub's, not the shared item's. A write of the item then
             // fetches the item's current eTag by its id (see upload).
@@ -993,6 +1029,9 @@ class OneDriveProvider(
             // stored remoteHash was SHA-256 will mismatch on the next enumeration and get
             // re-stored as QuickXor — a single re-compare, not data loss.
             hash = file?.hashes?.quickXorHash ?: file?.hashes?.sha256Hash,
+            // gkrost/unidrive-cli#233: the bytes' own name, which a rename leaves alone (the eTag and the modified time below
+            // both move with it); see oneDriveContentId.
+            contentId = oneDriveContentId(file?.hashes, size),
             mimeType = file?.mimeType,
             deleted = isHardDeleted(),
             // archive#183: a `@microsoft.graph.removed` facet with state="removed" means the
@@ -1062,6 +1101,10 @@ class OneDriveProvider(
     // CloudItem.version carries the Graph eTag, and If-Match takes nothing else: the quickXor hash in CloudItem.hash
     // never matches it.
     override val reportsItemVersions: Boolean get() = true
+
+    // gkrost/unidrive-cli#233: every file a listing converts names its bytes by its content hash (CloudItem.contentId, oneDriveContentId),
+    // so the once-per-profile backfill fills the rows from before the column.
+    override val reportsContentIds: Boolean get() = true
 
     override fun statusFields(): List<StatusField> =
         listOf(

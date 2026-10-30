@@ -3,7 +3,6 @@ package org.krost.unidrive.sync
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
-import java.sql.DriverManager
 import java.time.Instant
 
 data class SubscriptionInfo(
@@ -17,6 +16,7 @@ data class SubscriptionInfo(
  */
 class SubscriptionStore(
     private val dbPath: Path,
+    private val connector: StateDatabaseConnector = JdbcStateDatabaseConnector,
 ) {
     private lateinit var conn: Connection
 
@@ -24,8 +24,9 @@ class SubscriptionStore(
     fun initialize() {
         if (::conn.isInitialized && !conn.isClosed) conn.close()
         Files.createDirectories(dbPath.parent)
-        conn = DriverManager.getConnection("jdbc:sqlite:$dbPath")
-        conn.autoCommit = true
+        // The shared open: this is a second connection to the file StateDatabase keeps in WAL, so it takes the same busy
+        // timeout and must not leave the file in another journal mode.
+        conn = SqliteConnections.open(connector, dbPath, SETTINGS, log)
         conn.createStatement().use { stmt ->
             stmt.executeUpdate(
                 """
@@ -37,7 +38,13 @@ class SubscriptionStore(
             """,
             )
         }
+        SqliteConnections.restrictSidecars(connector, dbPath, includeMainFile = false, log = log)
     }
+
+    /** The value of a PRAGMA on the connection (a test seam). */
+    @Synchronized
+    internal fun pragma(name: String): String =
+        conn.createStatement().use { st -> st.executeQuery("PRAGMA $name").use { rs -> rs.next(); rs.getString(1) } }
 
     @Synchronized
     fun close() {
@@ -83,5 +90,10 @@ class SubscriptionStore(
             stmt.setString(1, profileName)
             stmt.executeUpdate()
         }
+    }
+
+    private companion object {
+        val log: org.slf4j.Logger = org.slf4j.LoggerFactory.getLogger(SubscriptionStore::class.java)
+        val SETTINGS = SqliteConnections.Settings()
     }
 }

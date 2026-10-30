@@ -153,6 +153,7 @@ class SharedWithMeAddressingTest {
                 assertEquals(2, items.size, "${shape.name}: both entries are listed")
                 assertEquals(shape.fileSize, file.size, "${shape.name}: size comes from the entry or its remoteItem")
                 assertEquals(shape.fileHash, file.hash, "${shape.name}: the hash is on remoteItem")
+                assertEquals("quickxor:${shape.fileHash}|${shape.fileSize}", file.contentId, "${shape.name}: the bytes are named by that hash and the size")
                 assertEquals("/Shared/${file.name}", file.path)
             }
         }
@@ -188,6 +189,33 @@ class SharedWithMeAddressingTest {
                 assertEquals(5, bytes, shape.name)
                 assertEquals("hello", Files.readString(dest), shape.name)
                 assertTrue(requests.none { it.path.contains("/me/drive") }, "${shape.name}: requests were $requests")
+            }
+        }
+
+    @Test
+    fun `a shared item's download receipt names the bytes it read, as the listing of that item does`() =
+        runTest {
+            for (shape in shapes) {
+                val id = fileOf(listedBy(shape), shape).id
+                val engine =
+                    MockEngine { request ->
+                        when {
+                            decodedPath(request) == "/v1.0/drives/${shape.fileDriveId}/items/${shape.fileItemId}" ->
+                                respond(
+                                    """{"id":"${shape.fileItemId}","name":"f.bin","size":5,"file":{"mimeType":"application/octet-stream",""" +
+                                        """"hashes":{"quickXorHash":"${shape.fileHash}"}},"@microsoft.graph.downloadUrl":"https://cdn.example/dl"}""",
+                                    HttpStatusCode.OK,
+                                    jsonHeaders,
+                                )
+                            request.url.host == "cdn.example" ->
+                                respond("hello", HttpStatusCode.OK, headersOf(HttpHeaders.ContentLength, "5"))
+                            else -> respond("""{"error":{"code":"itemNotFound"}}""", HttpStatusCode.NotFound, jsonHeaders)
+                        }
+                    }
+
+                val receipt = providerWith(engine).downloadByIdWithHash(id, "/Shared/f.bin", tempDir().resolve("out.bin"))
+
+                assertEquals("quickxor:${shape.fileHash}|5", receipt.contentId, shape.name)
             }
         }
 

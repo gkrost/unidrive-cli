@@ -626,8 +626,11 @@ data class SyncConfig(
         return FavoritesSettings(p?.favoritesFolderName, p?.favoritesView ?: DEFAULT_FAVORITES_VIEW)
     }
 
+    /** The built-in, [general] and profile patterns that [ExcludePatterns] accepts: the set sync and every command match (#218). */
     fun effectiveExcludePatterns(providerId: String): List<String> =
-        DEFAULT_EXCLUDE_PATTERNS + globalExcludePatterns + (providers[providerId]?.excludePatterns ?: emptyList())
+        ExcludePatterns.accepted(
+            DEFAULT_EXCLUDE_PATTERNS + globalExcludePatterns + (providers[providerId]?.excludePatterns ?: emptyList()),
+        )
 
     data class ProviderConfig(
         val pinIncludes: List<String> = emptyList(),
