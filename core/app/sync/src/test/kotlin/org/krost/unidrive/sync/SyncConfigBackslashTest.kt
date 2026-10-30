@@ -110,4 +110,22 @@ class SyncConfigBackslashTest {
         val e = assertFailsWith<Exception> { SyncConfig.parseRaw("[general]\npoll_interval = \"not-a-number\"\n") }
         assertFalse("invalid escape" in e.message.orEmpty(), "unrelated failure must not be blamed on escapes: ${e.message}")
     }
+
+    @Test
+    fun `an escape whose digits are Arabic-Indic or fullwidth is invalid, only ASCII hex digits count`() {
+        val arabicIndic = String(CharArray(4) { '٠' })
+        val fullwidthLetters = String(CharArray(4) { 'Ａ' })
+        for (digits in listOf(arabicIndic, fullwidthLetters)) {
+            val found = findInvalidTomlEscape("name = $dq${bs}u$digits$dq")
+            assertEquals("${bs}u", found?.sequence, "digits $digits must not satisfy a four-digit unicode escape")
+        }
+    }
+
+    @Test
+    fun `an escape with ASCII hex digits of either case is valid`() {
+        assertEquals(null, findInvalidTomlEscape("name = $dq${bs}u00e9${bs}u00E9${bs}U0001F600$dq"))
+        assertEquals("${bs}u", findInvalidTomlEscape("name = $dq${bs}u00e$dq")?.sequence)
+        assertEquals("${bs}U", findInvalidTomlEscape("name = $dq${bs}U0001F60$dq")?.sequence)
+        assertEquals("${bs}u", findInvalidTomlEscape("name = $dq${bs}u00g0$dq")?.sequence)
+    }
 }

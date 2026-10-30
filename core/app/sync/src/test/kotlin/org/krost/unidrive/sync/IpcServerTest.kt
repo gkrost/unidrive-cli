@@ -846,4 +846,9 @@ class IpcServerTest {
             assertTrue(line.startsWith("{") && line.endsWith("}"), "Garbled NDJSON: '$line'")
         }
     }
+
+    @Test
+    fun `a long profile name is shortened to the first four bytes of its SHA-1, lower-case hex (golden)`() {
+        assertEquals("7f900025", IpcServer.canonicalDiskName("a".repeat(100)))
+    }
 }

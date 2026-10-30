@@ -21,6 +21,7 @@ import java.nio.channels.SocketChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.util.HexFormat
 import java.util.concurrent.CopyOnWriteArrayList
 
 class IpcServer(
@@ -958,11 +959,7 @@ class IpcServer(
 
         internal fun canonicalDiskName(profileName: String, socketDirectory: Path): String {
             if (socketDirectory.resolve("unidrive-$profileName.sock").toString().length <= MAX_SOCKET_PATH_LENGTH) return profileName
-            return MessageDigest
-                .getInstance("SHA-1")
-                .digest(profileName.toByteArray(Charsets.UTF_8))
-                .take(4)
-                .joinToString("") { "%02x".format(it) }
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(profileName.toByteArray(Charsets.UTF_8)), 0, 4)
         }
 
         private fun writeMetaFile(
