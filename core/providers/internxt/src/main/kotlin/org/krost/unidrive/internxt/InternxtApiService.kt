@@ -110,8 +110,34 @@ class InternxtApiService(
 ) : AutoCloseable {
     private val log = LoggerFactory.getLogger(InternxtApiService::class.java)
 
+    // gkrost/unidrive-cli#181: the server's clock, from the `Date` header of the newest successful drive answer.
+    private val serverClock = ServerClock()
+
     fun attachRequestMetrics(sink: RequestMetricsSink?) {
         requestMetrics.sink = sink
+    }
+
+    /**
+     * gkrost/unidrive-cli#181: the server's clock now, from the newest `Date` header seen; null when no answer has carried one
+     * yet. It advances by the monotonic clock from that answer on ([ServerClock]), so a correction of the client's wall clock
+     * since then does not move it. The header's second resolution and the answer's transit are well inside the cursor's rewind
+     * window.
+     */
+    internal fun serverNowOrNull(): java.time.Instant? = serverClock.nowOrNull()
+
+    // An answer that names its age came from a cache and says nothing about the server's clock now.
+    private fun noteServerTime(response: HttpResponse) {
+        if (response.headers[HttpHeaders.Age] != null) return
+        val raw = response.headers[HttpHeaders.Date] ?: return
+        val server =
+            try {
+                java.time.ZonedDateTime
+                    .parse(raw, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
+                    .toInstant()
+            } catch (_: java.time.format.DateTimeParseException) {
+                return
+            }
+        serverClock.observe(server)
     }
 
     companion object {
@@ -1849,6 +1875,7 @@ class InternxtApiService(
                                     }
                                 }
                             checkResponse(response)
+                            noteServerTime(response)
                             driveBudget.recordSuccess()
                             GetReply(response.bodyAsText(), extractRequestId(response))
                         } catch (e: InternxtApiException) {

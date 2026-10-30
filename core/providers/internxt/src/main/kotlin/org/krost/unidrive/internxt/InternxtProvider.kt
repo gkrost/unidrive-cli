@@ -2774,11 +2774,30 @@ class InternxtProvider(
         CapabilityResult.Success(
             DeltaPage(
                 items = emptyList(),
-                cursor = Instant.now().toString(),
+                cursor = serverNow().toString(),
                 hasMore = false,
                 complete = true,
             ),
         )
+
+    /**
+     * gkrost/unidrive-cli#181: the instant a cursor is taken at, by the server's clock. The poll compares the cursor with the
+     * server's own `updatedAt`, so a client clock more than [REWIND_CURSOR_SECONDS] ahead of it hides every change made since
+     * the gather. The server's time is the `Date` header of its answers; where none has been seen yet one cheap authenticated
+     * GET ([InternxtApiService.checkSession]) fetches it. Only a server that gives no time at all, or a probe that fails,
+     * leaves the client clock, as before.
+     */
+    private suspend fun serverNow(): Instant {
+        api.serverNowOrNull()?.let { return it }
+        try {
+            api.checkSession()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("No server time for the cursor ({}: {}), using the client clock", e.javaClass.simpleName, e.message)
+        }
+        return api.serverNowOrNull() ?: Instant.now()
+    }
 
     override suspend fun delta(
         cursor: String?,
@@ -3084,14 +3103,14 @@ class InternxtProvider(
         tracked: ((String) -> CloudItem?)?,
     ): DeltaPage {
         if (stable) {
-            return assembleFullDelta(allFiles, allFolders, advanceCursor(seenMax, cursor), onProgress = onProgress, listing = ScanProgress.LISTING_ACCOUNT, tracked = tracked, fullGather = cursor == null)
+            return assembleFullDelta(allFiles, allFolders, advanceCursor(seenMax, cursor, api.serverNowOrNull()), onProgress = onProgress, listing = ScanProgress.LISTING_ACCOUNT, tracked = tracked, fullGather = cursor == null)
         }
         if (cursor != null) {
             log.warn("The offset listing moved while the poll ran; the cursor stays at {}, the next poll re-reads the window", cursor)
             return assembleFullDelta(allFiles, allFolders, cursor, onProgress = onProgress, listing = ScanProgress.LISTING_ACCOUNT, tracked = tracked, fullGather = false)
         }
         log.warn("The offset listing moved while the full gather ran; returning DeltaPage(complete=false)")
-        return assembleFullDelta(allFiles, allFolders, advanceCursor(seenMax, null), onProgress = onProgress, listing = ScanProgress.LISTING_ACCOUNT, tracked = tracked, fullGather = true)
+        return assembleFullDelta(allFiles, allFolders, advanceCursor(seenMax, null, api.serverNowOrNull()), onProgress = onProgress, listing = ScanProgress.LISTING_ACCOUNT, tracked = tracked, fullGather = true)
             .copy(complete = false)
     }
 
@@ -3202,7 +3221,7 @@ class InternxtProvider(
             assembleFullDelta(
                 files.values.toList(),
                 folders.values.toList(),
-                advanceCursor(maxSeen, cursor),
+                advanceCursor(maxSeen, cursor, api.serverNowOrNull()),
                 onProgress = onProgress,
                 listing = ScanProgress.LISTING_CURSOR,
                 tracked = scanContext?.trackedRow,
@@ -3856,7 +3875,7 @@ class InternxtProvider(
         val rootUuid = authService.getValidCredentials().rootFolderId
         val staged = scanContext?.resumedItems.orEmpty()
         val resume = cursorResumeOf(scanContext?.resumeMarker, staged)
-        val startedAt = resume?.marker?.startedAt ?: Instant.now().toString()
+        val startedAt = resume?.marker?.startedAt ?: serverNow().toString()
         var foldersAt = resume?.marker?.folders ?: StreamPosition()
         var filesAt = resume?.marker?.files ?: StreamPosition()
         val folders = LinkedHashMap<String, InternxtFolder>()
@@ -4033,7 +4052,7 @@ class InternxtProvider(
         val resume = treeResumeOf(scanContext?.resumeMarker, scanContext?.resumedItems.orEmpty(), scopeRoots)
         // The cursor of the page is the instant the walk began; a resumed walk keeps the first attempt's instant,
         // so the next incremental delta asks for everything since the beginning, the outage included.
-        val startedAt = resume?.marker?.startedAt?.let(Instant::parse) ?: Instant.now()
+        val startedAt = resume?.marker?.startedAt?.let(Instant::parse) ?: serverNow()
         if (resume != null) {
             log.info(
                 "Resuming the folder walk begun {}: {} folders listed, {} staged rows",
@@ -5311,20 +5330,22 @@ class InternxtProvider(
         //    folder hit the 503 fallback) leaves the cursor where it was
         //    rather than regressing to `Instant.now()` and skipping past
         //    items modified before now.
-        //  - Both null (first scan, no items) falls back to `Instant.now()`
+        //  - Both null (first scan, no items) falls back to the server's time
+        //    (gkrost/unidrive-cli#181; the client's clock where none is known)
         //    so the next launch doesn't ask the gateway for "since epoch".
         // Lexicographic comparison is sound because the timestamps are
         // always ISO-8601 with the same timezone suffix (`Z` from the API).
         internal fun advanceCursor(
             seenMax: String?,
             requestCursor: String?,
+            serverNow: Instant? = null,
         ): String =
             when {
                 seenMax != null && requestCursor != null ->
                     if (seenMax > requestCursor) seenMax else requestCursor
                 seenMax != null -> seenMax
                 requestCursor != null -> requestCursor
-                else -> Instant.now().toString()
+                else -> (serverNow ?: Instant.now()).toString()
             }
 
         // Marker format used by the page-boundary persister. Two non-negative

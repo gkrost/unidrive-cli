@@ -49,6 +49,8 @@ class InternxtScopedDeltaTest {
             val engine =
                 MockEngine { request ->
                     val url = request.url.toString()
+                    // The server-time probe of gkrost/unidrive-cli#181 (one cheap GET before a full gather) is no listing.
+                    if (url.endsWith("/users/usage")) return@MockEngine respond("""{"drive":0}""", HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
                     requested += url
                     val body =
                         when {
