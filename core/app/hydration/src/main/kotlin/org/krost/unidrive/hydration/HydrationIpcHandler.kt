@@ -351,17 +351,15 @@ class HydrationIpcHandler(
         // A page holds this many references when the request names no limit, and at most the most a provider's route answers.
         private const val VIEW_PAGE_DEFAULT_LIMIT = 50
         private const val VIEW_PAGE_MAX_LIMIT = 1000
-
-        // A count longer than this cannot be an Int; read it no further.
-        private const val MAX_COUNT_DIGITS = 10
     }
     suspend fun handle(connectionId: String, jsonRequest: String): String {
-        val verb = pluck(jsonRequest, "verb") ?: return reply(ok = false, error = "missing_verb")
+        val request = HydrationRequest.parse(jsonRequest) ?: return reply(ok = false, error = "missing_verb")
+        val verb = request.string("verb") ?: return reply(ok = false, error = "missing_verb")
         // Any hydration verb on a connection marks it a live mount client (see mountConnections); a page of a view is
         // what a status UI's list asks for, not a mount.
         if (verb != VIEW_PAGE) mountConnections.add(connectionId)
         return try {
-            dispatch(connectionId, verb, jsonRequest)
+            dispatch(connectionId, verb, request)
         } catch (_: InvalidLogicalPath) {
             reply(ok = false, error = HydrationError.INVALID_PATH_TOKEN)
         }
@@ -370,13 +368,13 @@ class HydrationIpcHandler(
     private suspend fun dispatch(
         connectionId: String,
         verb: String,
-        jsonRequest: String,
+        request: HydrationRequest,
     ): String {
         return when (verb) {
             "hydration.open_read" -> {
-                val handleId = pluck(jsonRequest, "handle_id") ?: return reply(ok = false, error = "missing_handle_id")
+                val handleId = request.string("handle_id") ?: return reply(ok = false, error = "missing_handle_id")
                 if (reservedHandleId(handleId)) return reply(ok = false, error = INVALID_HANDLE_ID)
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 when (val r = hydration.openForRead(connectionId, handleId, path)) {
                     is OpenResult.Ok -> openOkReply(r)
                     is OpenResult.Failed -> reply(ok = false, error = r.error.message)
@@ -386,10 +384,10 @@ class HydrationIpcHandler(
                 // handle_id is OPTIONAL: absent, the daemon issues one and answers it (a client that saw
                 // `open_write_create_handle_ids` in daemon.status — open_write and create, not open_write_begin);
                 // present, it is the client's own name, as before.
-                val clientHandleId = pluck(jsonRequest, "handle_id")
+                val clientHandleId = request.string("handle_id")
                 if (reservedHandleId(clientHandleId)) return reply(ok = false, error = INVALID_HANDLE_ID)
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
-                val cache = pluck(jsonRequest, "cache_path") ?: return reply(ok = false, error = "missing_cache_path")
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
+                val cache = request.string("cache_path") ?: return reply(ok = false, error = "missing_cache_path")
                 if (cache.isEmpty()) return reply(ok = false, error = "missing_cache_path")
                 // A local path; Hydration accepts it only inside the profile's hydration cache folder.
                 val cachePath =
@@ -400,8 +398,8 @@ class HydrationIpcHandler(
                     }
                 // base_etag is OPTIONAL: absent (or a row with no recorded token) →
                 // unconditional upload, byte-identical to the pre-guard contract.
-                val baseEtag = pluck(jsonRequest, "base_etag")
-                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
+                val baseEtag = request.string("base_etag")
+                nameClash(rawPath(request, "path"))?.let { return it }
                 val unansweredKey = "$connectionId\u0000$path"
                 if (clientHandleId == null) {
                     val pending = unansweredOpenWrite[unansweredKey]
@@ -416,7 +414,7 @@ class HydrationIpcHandler(
                 try {
                     when (val r = hydration.openForWrite(connectionId, handleId, path, cachePath, baseEtag)) {
                         is OpenResult.Ok -> {
-                            spellings.record(rawPath(jsonRequest, "path"))
+                            spellings.record(rawPath(request, "path"))
                             openOkReply(r, issuedHandleId = handleId.takeIf { clientHandleId == null })
                         }
                         is OpenResult.Failed -> reply(ok = false, error = r.error.message)
@@ -426,34 +424,34 @@ class HydrationIpcHandler(
                 }
             }
             "hydration.open_write_begin" -> {
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 // handle_id is OPTIONAL: present → O_TRUNC live open (registers open-set entry);
                 // absent → one-shot setattr/bare-truncate (no registration).
-                val handleId = pluck(jsonRequest, "handle_id")
+                val handleId = request.string("handle_id")
                 if (reservedHandleId(handleId)) return reply(ok = false, error = INVALID_HANDLE_ID)
-                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
+                nameClash(rawPath(request, "path"))?.let { return it }
                 when (val r = hydration.openWriteBegin(connectionId, path, handleId)) {
                     is OpenResult.Ok -> {
-                        spellings.record(rawPath(jsonRequest, "path"))
+                        spellings.record(rawPath(request, "path"))
                         openOkReply(r)
                     }
                     is OpenResult.Failed -> reply(ok = false, error = r.error.message)
                 }
             }
             "hydration.close_handle" -> {
-                val handleId = pluck(jsonRequest, "handle_id") ?: return reply(ok = false, error = "missing_handle_id")
+                val handleId = request.string("handle_id") ?: return reply(ok = false, error = "missing_handle_id")
                 hydration.closeHandle(connectionId, handleId)
                 reply(ok = true)
             }
             "hydration.hydrate" -> {
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 when (val r = hydration.hydrate(path)) {
                     HydrateResult.Ok -> reply(ok = true)
                     is HydrateResult.Failed -> reply(ok = false, error = r.error.message)
                 }
             }
             "hydration.dehydrate" -> {
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 when (val r = hydration.dehydrate(path)) {
                     DehydrateResult.Ok -> reply(ok = true)
                     DehydrateResult.Busy -> reply(ok = false, error = "busy")
@@ -461,15 +459,15 @@ class HydrationIpcHandler(
                 }
             }
             "hydration.last_synced" -> {
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 when (val r = hydration.lastSynced(path)) {
                     is LastSyncedResult.Ok -> """{"ok":true,"mtime_ms":${r.mtimeEpochMillis}}"""
                     is LastSyncedResult.Unknown -> reply(ok = false, error = r.reason)
                 }
             }
             "hydration.matches_local" -> {
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
-                val local = pluck(jsonRequest, "local_path")
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
+                val local = request.string("local_path")
                 if (local.isNullOrEmpty()) return reply(ok = false, error = "missing_local_path")
                 // Whether it is an absolute path of THIS computer is the engine's to say (MountEngine.contentMatchesLocal); a string that is
                 // no path at all (a NUL, ...) stops here.
@@ -488,7 +486,7 @@ class HydrationIpcHandler(
             }
             "hydration.list" -> {
                 // Not NFC-normalised here (StateDatabase.listDirectChildren does that), but validated like every path.
-                val prefix = pluck(jsonRequest, "prefix")?.let { requireLogicalPath(it) }
+                val prefix = request.string("prefix")?.let { requireLogicalPath(it) }
                     ?: return reply(ok = false, error = "missing_prefix")
                 when (val r = hydration.list(prefix)) {
                     is ListResult.Ok -> serialiseListEntries(r.entries)
@@ -496,11 +494,11 @@ class HydrationIpcHandler(
                 }
             }
             "hydration.mkdir" -> {
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
-                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
+                nameClash(rawPath(request, "path"))?.let { return it }
                 when (val r = hydration.mkdir(path)) {
                     is MkdirResult.Ok -> {
-                        spellings.record(rawPath(jsonRequest, "path"))
+                        spellings.record(rawPath(request, "path"))
                         reply(ok = true)
                     }
                     MkdirResult.ParentNotFound -> reply(ok = false, error = "parent_not_found")
@@ -508,13 +506,13 @@ class HydrationIpcHandler(
                 }
             }
             "hydration.unlink" -> {
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 // archive#1178: "permanent":true deletes for good (rm --permanent); the provider must be able to.
-                val permanent = pluckBool(jsonRequest, "permanent") == true
-                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
+                val permanent = request.bool("permanent") == true
+                nameClash(rawPath(request, "path"))?.let { return it }
                 when (val r = hydration.unlink(path, permanent)) {
                     is UnlinkResult.Ok -> {
-                        spellings.forget(rawPath(jsonRequest, "path"))
+                        spellings.forget(rawPath(request, "path"))
                         reply(ok = true)
                     }
                     UnlinkResult.PathIsFolder -> reply(ok = false, error = "path_is_folder")
@@ -523,14 +521,14 @@ class HydrationIpcHandler(
                 }
             }
             "hydration.rmdir" -> {
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 // archive#1035: plain rmdir is strict; "recursive":true is the client meaning the whole tree.
-                val recursive = pluckBool(jsonRequest, "recursive") == true
-                val permanent = pluckBool(jsonRequest, "permanent") == true
-                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
+                val recursive = request.bool("recursive") == true
+                val permanent = request.bool("permanent") == true
+                nameClash(rawPath(request, "path"))?.let { return it }
                 when (val r = hydration.rmdir(path, recursive, permanent)) {
                     is RmdirResult.Ok -> {
-                        spellings.forget(rawPath(jsonRequest, "path"))
+                        spellings.forget(rawPath(request, "path"))
                         reply(ok = true)
                     }
                     RmdirResult.PathIsFile -> reply(ok = false, error = "path_is_file")
@@ -541,14 +539,14 @@ class HydrationIpcHandler(
             }
             "hydration.create" -> {
                 // handle_id is OPTIONAL like open_write's: absent, the reply carries the id the daemon issued.
-                val clientHandleId = pluck(jsonRequest, "handle_id")
+                val clientHandleId = request.string("handle_id")
                 if (reservedHandleId(clientHandleId)) return reply(ok = false, error = INVALID_HANDLE_ID)
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
-                nameClash(rawPath(jsonRequest, "path"))?.let { return it }
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
+                nameClash(rawPath(request, "path"))?.let { return it }
                 val handleId = clientHandleId ?: issueHandleId()
                 when (val r = hydration.create(connectionId, handleId, path)) {
                     is CreateResult.Ok -> {
-                        spellings.record(rawPath(jsonRequest, "path"))
+                        spellings.record(rawPath(request, "path"))
                         if (r.excluded) {
                             """{"ok":true,"cache_path":${jsonEsc(r.cachePath.toString())},"handle_id":${jsonEsc(r.handleId)},"excluded":true}"""
                         } else {
@@ -562,11 +560,11 @@ class HydrationIpcHandler(
             }
             REFUSE_NAME -> {
                 // Not guarded by name_clash: two spellings of one name are exactly what this verb reports.
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
-                if (pluckBool(jsonRequest, "clear") == true) {
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
+                if (request.bool("clear") == true) {
                     return """{"ok":true,"cleared":${hydration.clearNameRefusal(path)}}"""
                 }
-                when (val r = hydration.refuseName(path, pluck(jsonRequest, "sibling")?.takeIf { it.isNotEmpty() })) {
+                when (val r = hydration.refuseName(path, request.string("sibling")?.takeIf { it.isNotEmpty() })) {
                     RefuseNameResult.Ok -> reply(ok = true)
                     RefuseNameResult.InCloud -> reply(ok = false, error = "path_exists")
                     RefuseNameResult.PathIsFolder -> reply(ok = false, error = "path_is_folder")
@@ -575,15 +573,15 @@ class HydrationIpcHandler(
                 }
             }
             "hydration.rename" -> {
-                val oldPath = pluckPath(jsonRequest, "old_path") ?: return reply(ok = false, error = "missing_old_path")
-                val newPath = pluckPath(jsonRequest, "new_path") ?: return reply(ok = false, error = "missing_new_path")
+                val oldPath = pluckPath(request, "old_path") ?: return reply(ok = false, error = "missing_old_path")
+                val newPath = pluckPath(request, "new_path") ?: return reply(ok = false, error = "missing_new_path")
                 // replace is OPTIONAL (default false): POSIX overwrite-if-exists.
-                val replace = pluckBool(jsonRequest, "replace") ?: false
-                nameClash(rawPath(jsonRequest, "old_path"), rawPath(jsonRequest, "new_path"))?.let { return it }
+                val replace = request.bool("replace") ?: false
+                nameClash(rawPath(request, "old_path"), rawPath(request, "new_path"))?.let { return it }
                 when (val r = hydration.rename(oldPath, newPath, replace)) {
                     is RenameResult.Ok -> {
-                        spellings.forget(rawPath(jsonRequest, "old_path"))
-                        spellings.record(rawPath(jsonRequest, "new_path"))
+                        spellings.forget(rawPath(request, "old_path"))
+                        spellings.record(rawPath(request, "new_path"))
                         reply(ok = true)
                     }
                     RenameResult.OldPathNotFound -> reply(ok = false, error = "old_path_not_found")
@@ -593,7 +591,7 @@ class HydrationIpcHandler(
                 }
             }
             "hydration.cancel" -> {
-                val path = pluckPath(jsonRequest, "path") ?: return reply(ok = false, error = "missing_path")
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 // Idempotent: cancelled=true when a queued/running upload was
                 // aborted, false when nothing was in flight — both satisfy the
                 // caller's "no upload happens" goal, so both are ok.
@@ -604,7 +602,7 @@ class HydrationIpcHandler(
                 registerSubscriber(connectionId)
                 reply(ok = true)
             }
-            VIEW_PAGE -> viewPage(jsonRequest)
+            VIEW_PAGE -> viewPage(request)
             else -> reply(ok = false, error = "unknown_verb")
         }
     }
@@ -627,7 +625,7 @@ class HydrationIpcHandler(
     // A client-named handle id with the prefix of the ids the daemon issues: refused, so no client can hold one.
     private fun reservedHandleId(handleId: String?): Boolean = handleId != null && handleId.startsWith(ISSUED_HANDLE_PREFIX)
 
-    // Plucks a LOGICAL co-daemon path field and canonicalises it to NFC. This is the
+    // Reads a LOGICAL co-daemon path field and canonicalises it to NFC. This is the
     // single point where co-daemon paths enter the JVM; normalizing once here makes
     // every downstream op (cache resolution + provider delete/createFolder/move + the
     // StateDatabase NFC lookups) see the same NFC form as the NFC-stored data. The
@@ -640,13 +638,13 @@ class HydrationIpcHandler(
     // (StateDatabase.listDirectChildren already normalizes it). Every value is then
     // validated (requireLogicalPath): this is the one place every verb's logical path
     // passes through.
-    private fun pluckPath(line: String, key: String): String? =
-        pluck(line, key)?.let { requireLogicalPath(PathNormalizer.nfc(it)) }
+    private fun pluckPath(request: HydrationRequest, key: String): String? =
+        request.string(key)?.let { requireLogicalPath(PathNormalizer.nfc(it)) }
 
     // gkrost/unidrive-cli#24: the path field as the client spelled it, before the NFC canonicalisation; see [NameSpellings].
     private val spellings = NameSpellings()
 
-    private fun rawPath(line: String, key: String): String = pluck(line, key).orEmpty()
+    private fun rawPath(request: HydrationRequest, key: String): String = request.string(key).orEmpty()
 
     // The name_clash answer for a verb that names a name by another spelling than the one a client used for it first.
     private fun nameClash(vararg raws: String): String? =
@@ -675,179 +673,17 @@ class HydrationIpcHandler(
     // No stack trace: it is a refusal, answered on the wire.
     private class InvalidLogicalPath : RuntimeException(null, null, false, false)
 
-    // Minimal JSON pluck — returns the decoded value of a TOP-LEVEL string member of the
-    // request object. Sufficient for our verb messages; we don't accept arbitrary client
-    // JSON shapes. Walks the object's members (skipping over any non-matching value, nested
-    // objects/arrays included) rather than searching for the first `"key"` substring, so a
-    // value or nested member that merely spells the key is never mistaken for it. A missing
-    // key, a non-string value (incl. null) or malformed text yields null.
-    private fun pluck(line: String, key: String): String? {
-        var i = skipWs(line, 0)
-        if (i >= line.length || line[i] != '{') return null
-        i = skipWs(line, i + 1)
-        while (i < line.length && line[i] == '"') {
-            val (name, afterName) = readString(line, i) ?: return null
-            i = skipWs(line, afterName)
-            if (i >= line.length || line[i] != ':') return null
-            i = skipWs(line, i + 1)
-            if (i >= line.length) return null
-            if (name == key) return if (line[i] == '"') readString(line, i)?.first else null
-            val afterValue = skipValue(line, i)
-            if (afterValue < 0) return null
-            i = skipWs(line, afterValue)
-            if (i < line.length && line[i] == ',') i = skipWs(line, i + 1) else break
-        }
-        return null
-    }
-
-    // The raw JSON text of a TOP-LEVEL member's value (e.g. `50`, `"x"`, `null`), or null when the member is absent or the
-    // text is malformed. Walks the object's members with the same structure as [pluck].
-    private fun pluckRaw(line: String, key: String): String? {
-        var i = skipWs(line, 0)
-        if (i >= line.length || line[i] != '{') return null
-        i = skipWs(line, i + 1)
-        while (i < line.length && line[i] == '"') {
-            val (name, afterName) = readString(line, i) ?: return null
-            i = skipWs(line, afterName)
-            if (i >= line.length || line[i] != ':') return null
-            i = skipWs(line, i + 1)
-            if (i >= line.length) return null
-            val afterValue = skipValue(line, i)
-            if (afterValue < 0) return null
-            if (name == key) return line.substring(i, afterValue).trim()
-            i = skipWs(line, afterValue)
-            if (i < line.length && line[i] == ',') i = skipWs(line, i + 1) else break
-        }
-        return null
-    }
-
-    // An OPTIONAL whole-number member in [range]: [default] when absent, null when present and anything else.
-    private fun pluckCount(line: String, key: String, default: Int, range: IntRange): Int? {
-        val raw = pluckRaw(line, key) ?: return default
-        if (raw.isEmpty() || raw.length > MAX_COUNT_DIGITS || !raw.all { it in '0'..'9' }) return null
-        return raw.toLong().takeIf { it in range.first..range.last }?.toInt()
-    }
-
     // view.page: one page of a read-only view for a front-end's own list (ipc-write-protocol.md section 4.2).
-    private suspend fun viewPage(jsonRequest: String): String {
-        val kind = pluck(jsonRequest, "kind") ?: return reply(ok = false, error = "missing_kind")
-        val offset = pluckCount(jsonRequest, "offset", 0, 0..Int.MAX_VALUE) ?: return reply(ok = false, error = "invalid_offset")
-        val limit = pluckCount(jsonRequest, "limit", VIEW_PAGE_DEFAULT_LIMIT, 1..VIEW_PAGE_MAX_LIMIT)
+    private suspend fun viewPage(request: HydrationRequest): String {
+        val kind = request.string("kind") ?: return reply(ok = false, error = "missing_kind")
+        val offset = request.count("offset", 0, 0..Int.MAX_VALUE) ?: return reply(ok = false, error = "invalid_offset")
+        val limit = request.count("limit", VIEW_PAGE_DEFAULT_LIMIT, 1..VIEW_PAGE_MAX_LIMIT)
             ?: return reply(ok = false, error = "invalid_limit")
         return when (val r = hydration.viewPage(kind, offset, limit)) {
             is ViewPageResult.Ok -> serialiseViewPage(r)
             ViewPageResult.UnknownView -> reply(ok = false, error = "unknown_view")
             is ViewPageResult.Failed -> reply(ok = false, error = r.error.message)
         }
-    }
-
-    // Boolean pluck for OPTIONAL verb flags (e.g. rename's `replace`). Accepts the
-    // bare JSON literals true/false — what System.Text.Json and serde_json emit —
-    // and, defensively, the quoted strings "true"/"false". A missing key, a bare
-    // null, or any other value yields null so the caller applies its default.
-    // Walks the object's members with the same structure as [pluck].
-    private fun pluckBool(line: String, key: String): Boolean? {
-        var i = skipWs(line, 0)
-        if (i >= line.length || line[i] != '{') return null
-        i = skipWs(line, i + 1)
-        while (i < line.length && line[i] == '"') {
-            val (name, afterName) = readString(line, i) ?: return null
-            i = skipWs(line, afterName)
-            if (i >= line.length || line[i] != ':') return null
-            i = skipWs(line, i + 1)
-            if (i >= line.length) return null
-            if (name == key) {
-                return when {
-                    line.startsWith("true", i) -> true
-                    line.startsWith("false", i) -> false
-                    line[i] == '"' -> readString(line, i)?.first?.let {
-                        when (it.lowercase()) {
-                            "true" -> true
-                            "false" -> false
-                            else -> null
-                        }
-                    }
-                    else -> null
-                }
-            }
-            val afterValue = skipValue(line, i)
-            if (afterValue < 0) return null
-            i = skipWs(line, afterValue)
-            if (i < line.length && line[i] == ',') i = skipWs(line, i + 1) else break
-        }
-        return null
-    }
-
-    private fun skipWs(s: String, from: Int): Int {
-        var i = from
-        while (i < s.length && s[i].isWhitespace()) i++
-        return i
-    }
-
-    // Decodes the JSON string literal whose opening quote is at [start]; returns the text and
-    // the index just past the closing quote. Handles the full escape set — quote, backslash,
-    // slash, b, f, n, r, t and the four-hex-digit unicode escape (a surrogate pair is two
-    // consecutive escapes; appending each UTF-16 unit in turn reassembles it). .NET's
-    // System.Text.Json writes every non-ASCII char in that unicode form by default. A malformed
-    // escape returns null rather than a guess: silently keeping the digits is what made
-    // "K" + o-umlaut + "ln" arrive as "Ku00f6ln" (archive#416).
-    private fun readString(s: String, start: Int): Pair<String, Int>? {
-        val sb = StringBuilder()
-        var i = start + 1
-        while (i < s.length) {
-            val c = s[i]
-            if (c == '"') return sb.toString() to i + 1
-            if (c != '\\') { sb.append(c); i++; continue }
-            if (i + 1 >= s.length) return null
-            when (val e = s[i + 1]) {
-                '"', '\\', '/' -> sb.append(e)
-                'b' -> sb.append('\b')
-                'f' -> sb.append(0x0C.toChar())
-                'n' -> sb.append('\n')
-                'r' -> sb.append('\r')
-                't' -> sb.append('\t')
-                'u' -> {
-                    if (i + 6 > s.length) return null
-                    var unit = 0
-                    for (d in i + 2 until i + 6) {
-                        val h = Character.digit(s[d], 16)
-                        if (h < 0 || s[d].code > 0x7F) return null
-                        unit = unit * 16 + h
-                    }
-                    sb.append(unit.toChar())
-                    i += 4
-                }
-                else -> return null
-            }
-            i += 2
-        }
-        return null
-    }
-
-    // Index just past the JSON value starting at [start] (string, object/array, or bare
-    // literal such as a number/true/null), or -1 if malformed. Strings are skipped whole so
-    // brackets and commas inside them are never counted.
-    private fun skipValue(s: String, start: Int): Int {
-        var depth = 0
-        var i = start
-        while (i < s.length) {
-            when (s[i]) {
-                '"' -> {
-                    i = readString(s, i)?.second ?: return -1
-                    if (depth == 0) return i
-                    continue
-                }
-                '{', '[' -> depth++
-                '}', ']' -> {
-                    if (depth == 0) return i
-                    depth--
-                    if (depth == 0) return i + 1
-                }
-                ',' -> if (depth == 0) return i
-            }
-            i++
-        }
-        return if (depth == 0) i else -1
     }
 }
 

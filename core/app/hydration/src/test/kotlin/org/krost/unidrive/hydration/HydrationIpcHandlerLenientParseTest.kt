@@ -5,10 +5,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * What the handler's own request scanner accepts that a JSON parser does not (gkrost/unidrive-cli#223 item 1). In production a
- * line reaches the handler only after `IpcServer.parseVerb` has parsed it with kotlinx as one JSON object with exactly one
- * `verb`, so most of these lines never get this far; they are here because [HydrationIpcHandler.handle] is public and the scanner
- * was never tested on them. The request-field cases that a client really sends are in [HydrationIpcHandlerWireTest].
+ * Where the handler's request reader is a JSON parser's, not the hand-written scanner it replaced (gkrost/unidrive-cli#223 item 1).
+ * In production a line reaches the handler only after `IpcServer.parseVerb` has parsed it with kotlinx as one JSON object with exactly
+ * one `verb`, so most of these lines never get this far; they are here because [HydrationIpcHandler.handle] is public. The scanner
+ * kept the first of two members of one name, read `truex` as true, took NBSP for whitespace and stopped reading at the member it
+ * wanted, so it answered lines no parser accepts. The request fields a client really sends are in [HydrationIpcHandlerWireTest].
  */
 class HydrationIpcHandlerLenientParseTest {
     private suspend fun mkdirOf(line: String): Pair<String, List<String>> {
@@ -20,28 +21,34 @@ class HydrationIpcHandlerLenientParseTest {
     private val ok = """{"ok":true}"""
     private val missingVerb = """{"ok":false,"error":"missing_verb"}"""
 
-    // Duplicate member names. The client builds its requests from a dictionary, so it never sends one; the scanner keeps the first,
-    // kotlinx (and so IpcServer.parseVerb, which refuses a repeated verb for that reason) the last.
+    // The client builds its requests from a dictionary, so it never sends a member twice. kotlinx keeps the last, and so does
+    // IpcServer.parseVerb (which refuses a repeated verb so that both see the same one).
     @Test
-    fun `a member named twice keeps the first`() = runTest {
-        assertEquals(ok to listOf("/first"), mkdirOf("""{"verb":"hydration.mkdir","path":"/first","path":"/second"}"""))
+    fun `a member named twice keeps the last`() = runTest {
+        assertEquals(ok to listOf("/second"), mkdirOf("""{"verb":"hydration.mkdir","path":"/first","path":"/second"}"""))
     }
 
-    // A bare literal read by its start only: `truex` is true.
+    // kotlinx takes a bare word it does not know for a literal and keeps its text, so `truex` parses; as a flag it is not `true`
+    // (the scanner read it by its first four characters). IpcServer.parseVerb accepts the same line.
     @Test
-    fun `a flag spelled truex is true`() = runTest {
+    fun `a flag spelled truex is not true`() = runTest {
         val r = ScriptedHydration()
         HydrationIpcHandler(r).handle("c1", """{"verb":"hydration.unlink","path":"/a","permanent":truex}""")
-        assertEquals(listOf(HydrationCall("unlink", listOf("/a", true))), r.calls)
+        assertEquals(listOf(HydrationCall("unlink", listOf("/a", false))), r.calls)
+        val r2 = ScriptedHydration()
+        HydrationIpcHandler(r2).handle("c1", """{"verb":"hydration.unlink","path":"/a","permanent":True}""")
+        assertEquals(listOf(HydrationCall("unlink", listOf("/a", false))), r2.calls)
     }
 
-    // Whitespace is Char.isWhitespace(): NBSP and the other Unicode spaces count, JSON's four do not include them.
+    // JSON's whitespace is space, tab, CR and LF.
     @Test
-    fun `no-break space between tokens is whitespace`() = runTest {
-        assertEquals(ok to listOf("/a"), mkdirOf(" { \"verb\" : \"hydration.mkdir\" , \"path\":\"/a\"}"))
+    fun `no-break space between tokens is no request`() = runTest {
+        assertEquals(missingVerb to emptyList(), mkdirOf(" {\"verb\":\"hydration.mkdir\",\"path\":\"/a\"}"))
+        assertEquals(missingVerb to emptyList(), mkdirOf("{\"verb\":\"hydration.mkdir\", \"path\":\"/a\"}"))
     }
 
-    // Raw control characters in a string: JSON forbids them below U+0020, the scanner copies them.
+    // JSON forbids a raw control character below U+0020 in a string, but kotlinx reads it, and IpcServer.parseVerb is kotlinx: the
+    // line is one the daemon has always accepted, with the character kept.
     @Test
     fun `a raw control character in a string is kept`() = runTest {
         val r = ScriptedHydration()
@@ -49,30 +56,38 @@ class HydrationIpcHandlerLenientParseTest {
         assertEquals(listOf(HydrationCall("close_handle", listOf("c1", "a\tb\u0001c"))), r.calls)
     }
 
-    // The scanner stops at the member it wants; what follows it is never read.
+    // The whole line is read, not only as far as the wanted member.
     @Test
-    fun `text after the member that is read is not read`() = runTest {
-        assertEquals(ok to listOf("/a"), mkdirOf("""{"verb":"hydration.mkdir","path":"/a"} trailing"""))
-        assertEquals(ok to listOf("/a"), mkdirOf("""{"verb":"hydration.mkdir","path":"/a","bad":"\x"}"""))
-        assertEquals(ok to listOf("/a"), mkdirOf("""{"verb":"hydration.mkdir","path":"/a",}"""))
-        assertEquals(ok to listOf("/a"), mkdirOf("""{"verb":"hydration.mkdir","path":"/a""""))
+    fun `a line that is not JSON all the way is no request`() = runTest {
+        assertEquals(missingVerb to emptyList(), mkdirOf("""{"verb":"hydration.mkdir","path":"/a"} trailing"""))
+        assertEquals(missingVerb to emptyList(), mkdirOf("""{"verb":"hydration.mkdir","path":"/a","bad":"\x"}"""))
+        assertEquals(missingVerb to emptyList(), mkdirOf("""{"verb":"hydration.mkdir","path":"/a",}"""))
+        assertEquals(missingVerb to emptyList(), mkdirOf("""{"verb":"hydration.mkdir","path":"/a""""))
+        assertEquals(missingVerb to emptyList(), mkdirOf("""{"verb":"hydration.mkdir"""))
     }
 
-    // A member the scanner has to step over is read only as far as its end is found.
+    // A bare word is a literal to kotlinx, as it was a value to step over for the scanner.
     @Test
-    fun `a value that is not JSON is stepped over`() = runTest {
+    fun `a bare word as a value of a member that is not read is stepped over`() = runTest {
         assertEquals(ok to listOf("/a"), mkdirOf("""{"extra":nonsense,"verb":"hydration.mkdir","path":"/a"}"""))
     }
 
-    // A bad escape in the field itself is a missing field, today and with a parser.
+    // The parser recurses once per level; a request is never nested more than a few levels (IpcServer refuses 64 before a handler
+    // sees the line, and the handler holds the same limit for a direct caller).
     @Test
-    fun `a bad escape in a field is a missing field`() = runTest {
-        assertEquals("""{"ok":false,"error":"missing_path"}""" to emptyList(), mkdirOf("""{"verb":"hydration.mkdir","path":"/a\x"}"""))
-        assertEquals("""{"ok":false,"error":"missing_path"}""" to emptyList(), mkdirOf("""{"verb":"hydration.mkdir","path":"/a\u00zz"}"""))
+    fun `a line nested without end is no request`() = runTest {
+        assertEquals(missingVerb to emptyList(), mkdirOf("[".repeat(100_000)))
+        assertEquals(missingVerb to emptyList(), mkdirOf("""{"verb":"hydration.mkdir","path":"/a","n":""" + "[".repeat(100_000) + "}"))
+        val deepButAllowed = "[".repeat(60) + "]".repeat(60)
+        assertEquals(ok to listOf("/a"), mkdirOf("""{"verb":"hydration.mkdir","path":"/a","n":$deepButAllowed}"""))
+        // brackets in a string do not count
+        assertEquals(ok to listOf("/a["), mkdirOf("""{"verb":"hydration.mkdir","path":"/a${"["}","n":"${"[".repeat(200)}"}"""))
     }
 
+    // A bad escape in the field itself: no request (it was a missing field).
     @Test
-    fun `a line without a closing quote has no verb`() = runTest {
-        assertEquals(missingVerb to emptyList(), mkdirOf("""{"verb":"hydration.mkdir"""))
+    fun `a bad escape in a field is no request`() = runTest {
+        assertEquals(missingVerb to emptyList(), mkdirOf("""{"verb":"hydration.mkdir","path":"/a\x"}"""))
+        assertEquals(missingVerb to emptyList(), mkdirOf("""{"verb":"hydration.mkdir","path":"/a\u00zz"}"""))
     }
 }
