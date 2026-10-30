@@ -4855,7 +4855,7 @@ class SyncEngineTest {
     fun `#600 a 280-character cloud name is quarantined once while normal names sync beside it`() =
         runTest {
             // A cloud name longer than any filesystem's component limit used to keep the row
-            // alive in state while the client hid the entry on every mount (windows#196) —
+            // alive in state while the Windows client hid the entry on every mount —
             // no quarantine, no refusal, no state to explain it. The length rule in
             // localNameIssue (archive#600) makes it unrepresentable on every platform (280 ASCII
             // characters are 280 UTF-16 units and 280 UTF-8 bytes), so the download's
