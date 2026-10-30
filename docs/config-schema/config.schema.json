@@ -21,7 +21,11 @@
         "sync_direction": { "type": "string", "enum": ["bidirectional", "upload", "download"] },
         "client_location": { "type": "string" },
         "client_network": { "type": "string" },
-        "exclude_patterns": { "type": "array", "items": { "type": "string" } },
+        "exclude_patterns": {
+          "description": "Paths never synced, in either direction, for every profile. unidrive's own glob syntax (config.example.toml spells it out): * and ? stay within one name, **/ at the start and /** at the end span folders, a pattern without '/' (a leading '/' does not count) is matched against the name at any depth, and matching is case-sensitive. There is no {a,b} alternation and no [...] class: '[', ']', '{' and '}' match themselves, and such a pattern logs a warning.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "desktop_notifications": { "type": "boolean" },
         "verify_integrity": { "type": "boolean" },
         "quota_refresh_minutes": { "type": "integer", "minimum": 0 },
@@ -57,7 +61,11 @@
             }
           },
           "conflict_overrides": { "type": "object", "additionalProperties": { "type": "string" } },
-          "exclude_patterns": { "type": "array", "items": { "type": "string" } },
+          "exclude_patterns": {
+            "description": "Added to [general] exclude_patterns for this profile; the same syntax.",
+            "type": "array",
+            "items": { "type": "string" }
+          },
           "sync_path": {
             "description": "Remote subtree(s) this profile syncs. Absolute remote paths starting with '/'. Absent means the whole drive. The CLI --sync-path overrides it for one invocation; `unidrive scope set|clear` changes it and applies the scope transition.",
             "oneOf": [

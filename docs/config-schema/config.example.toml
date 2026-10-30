@@ -7,6 +7,20 @@
 # conflict_policy = "keep_both"        # keep_both | last_writer_wins
 # sync_direction = "bidirectional"     # bidirectional | upload | download
 # exclude_patterns = ["/dev/git/**"]   # ignored in both directions
+#
+# exclude_patterns (here and per profile; both lists apply) are matched against a path below the sync root, written
+# with "/" ("Docs/a.txt"). A leading "/" is optional and changes nothing. The syntax is unidrive's own, not the
+# JDK's or git's:
+#   *       any run of characters within one name, never a "/"
+#   ?       one character that is not a "/"
+#   **/     at the start: no folder or any folders, so "**/x" matches "x" and "a/b/x"
+#   /**     at the end: the folder itself and everything below it, so "a/**" matches "a" and "a/b/c"
+#   Use ** only in these two places: elsewhere it does not do what it reads like ("a/**/b" matches no path).
+#   A pattern without "/" (a leading one does not count) is matched against the name alone, at any depth:
+#   "*.log" and "/*.log" both exclude every .log file. A pattern with "/" is matched against the whole path.
+#   Every other character matches itself, case-sensitively. There is no {a,b} alternation and no [...] class:
+#   "[", "]", "{" and "}" match themselves, so "*.{tmp,bak}" excludes only names ending in ".{tmp,bak}" (write
+#   "*.tmp" and "*.bak" instead). Such a pattern is kept as written and logs a warning.
 
 [providers.internxt]
 type = "internxt"
@@ -42,7 +56,7 @@ sync_root = "~/Internxt"
 # an outbound connection renewed every 30 minutes). false = poll only. Default true; other providers ignore it.
 # remote_notifications = true
 
-# exclude_patterns = ["/dev/git/**"]
+# exclude_patterns = ["/dev/git/**"]   # added to [general] exclude_patterns; same syntax
 
 # The sync policy of this profile alone; each key overrides the same-named [general] key. A backup profile
 # (`unidrive backup add` writes these) sends changes up and never takes the cloud's deletions down.
