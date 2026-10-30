@@ -7,6 +7,8 @@ import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcAuthException
 import org.krost.unidrive.sync.IpcEndpoint
+import org.krost.unidrive.sync.IpcLineClient
+import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessFacts
 import org.krost.unidrive.sync.isLockHolder
@@ -252,23 +254,8 @@ class DaemonStatusCommand : Runnable {
         try {
             // daemon.status is a read verb: a read-scope connection (docs/dev/specs/ipc-authentication.md).
             val endpoint = IpcEndpoint(socketPath, parent.providerConfigDir(), profile.name)
-            IpcAuthClient.connect(endpoint, IpcAuth.Scope.READ).use { channel ->
-                channel.write(
-                    java.nio.ByteBuffer.wrap(
-                        ("""{"verb":"daemon.status"}""" + "\n").toByteArray(),
-                    ),
-                )
-                // The reply carries the enumeration object (up to a few hundred bytes more than the
-                // rest). The daemon newline-terminates every reply; a read may return before the
-                // whole line does, so read until the newline shows up.
-                val buf = java.nio.ByteBuffer.allocate(8192)
-                while (!buf.array().take(buf.position()).contains('\n'.code.toByte())) {
-                    if (channel.read(buf) <= 0) break
-                }
-                buf.flip()
-                val reply = String(buf.array(), 0, buf.limit()).substringBefore('\n')
-                println(reply)
-            }
+            val reply = requestDaemonStatus(endpoint)
+            if (reply != null) println(reply) else System.err.println("daemon closed the connection without a status reply")
         } catch (e: IpcAuthException) {
             System.err.println("daemon IPC authentication failed: ${e.message}")
         } catch (e: java.io.IOException) {
@@ -276,6 +263,19 @@ class DaemonStatusCommand : Runnable {
         }
     }
 }
+
+/**
+ * One `daemon.status` round trip over a read-scope connection: the reply line, or null when the daemon answers no line.
+ * The reply carries the enumeration object and the account quota, so it can run to many KiB. Throws
+ * [IpcAuthException] and [java.io.IOException].
+ */
+internal fun requestDaemonStatus(endpoint: IpcEndpoint): String? =
+    // daemon.status is a read verb: a read-scope connection (docs/dev/specs/ipc-authentication.md).
+    IpcAuthClient.connect(endpoint, IpcAuth.Scope.READ).use { channel ->
+        val lines = IpcLineClient(channel)
+        lines.writeLine("""{"verb":"daemon.status"}""")
+        (lines.readLine() as? IpcLineRead.Line)?.text
+    }
 
 // ── daemon stop ──────────────────────────────────────────────────────────────
 
@@ -463,30 +463,15 @@ internal fun requestDaemonShutdown(endpoint: IpcEndpoint, timeoutMs: Long = 3_00
     return try {
         IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).use { channel ->
             channel.configureBlocking(false)
-            val request = """{"verb":"daemon.shutdown"}""" + "\n"
-            val out = java.nio.ByteBuffer.wrap(request.toByteArray())
             val deadline = System.currentTimeMillis() + timeoutMs
-            while (out.hasRemaining()) {
-                channel.write(out)
-                if (out.hasRemaining()) {
-                    if (System.currentTimeMillis() >= deadline) return false
-                    Thread.sleep(10)
-                }
-            }
+            val lines = IpcLineClient(channel)
+            if (!lines.writeLine("""{"verb":"daemon.shutdown"}""", deadline)) return false
             written = true
-            val collected = StringBuilder()
-            while (System.currentTimeMillis() < deadline && !collected.contains('\n')) {
-                val buf = java.nio.ByteBuffer.allocate(1024)
-                val n = channel.read(buf)
-                if (n < 0) return true
-                if (n > 0) {
-                    buf.flip()
-                    collected.append(String(buf.array(), 0, buf.limit()))
-                } else {
-                    Thread.sleep(10)
-                }
+            when (val reply = lines.readLine(deadline)) {
+                is IpcLineRead.Line -> reply.text.asJsonObjectOrNull()?.isOkReply() == true
+                IpcLineRead.Closed -> true
+                IpcLineRead.TimedOut -> false
             }
-            collected.toString().substringBefore('\n').contains("\"ok\":true")
         }
     } catch (_: java.io.IOException) {
         written

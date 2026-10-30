@@ -1,17 +1,19 @@
 package org.krost.unidrive.cli
 
+import kotlinx.serialization.json.JsonPrimitive
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcAuthException
 import org.krost.unidrive.sync.IpcEndpoint
+import org.krost.unidrive.sync.IpcLineClient
+import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import picocli.CommandLine
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
-import java.nio.ByteBuffer
-import java.nio.channels.SocketChannel
+import java.nio.channels.ByteChannel
 import java.nio.file.Files
 
 /**
@@ -116,52 +118,11 @@ class RefreshCommand : Runnable, CommandLine.IExitCodeGenerator {
         try {
             // refresh.run is an admin verb: a full-scope connection (docs/dev/specs/ipc-authentication.md).
             val endpoint = IpcEndpoint(socketPath, parent.providerConfigDir(), profile.name)
-            IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).use { channel ->
-                // Subscribe to progress events
-                channel.write(ByteBuffer.wrap(("""{"verb":"sync.subscribe"}""" + "\n").toByteArray()))
-                readOneJsonReply(channel)  // discard sync.subscribe reply
-
-                // Issue refresh.run (with optional reset flag — F9 fix).
-                val refreshReq = if (reset) {
-                    """{"verb":"refresh.run","reset":true}"""
-                } else {
-                    """{"verb":"refresh.run"}"""
+            val exit =
+                IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).use { channel ->
+                    runRefresh(channel, reset, { println(it) }, { System.err.println(it) })
                 }
-                channel.write(ByteBuffer.wrap((refreshReq + "\n").toByteArray()))
-                val runReply = readOneJsonReply(channel)
-                if (!runReply.contains("\"ok\":true")) {
-                    System.err.println("unidrive refresh: daemon rejected refresh.run: $runReply")
-                    System.exit(1)
-                    return
-                }
-
-                // Stream events until refresh.done
-                val collected = StringBuilder()
-                while (!collected.contains("\"event\":\"refresh.done\"")) {
-                    val buf = ByteBuffer.allocate(4096)
-                    val n = channel.read(buf)
-                    if (n <= 0) {
-                        // EOF — daemon shut down per spec F9
-                        System.err.println("unidrive refresh: daemon shut down before refresh completed")
-                        System.exit(1)
-                        return
-                    }
-                    buf.flip()
-                    val chunk = String(buf.array(), 0, buf.limit())
-                    collected.append(chunk)
-                    // Print progress events as they arrive (one per line)
-                    chunk.lineSequence().filter { it.isNotBlank() }.forEach { println(it) }
-                }
-
-                // Check terminal event for failure
-                if (collected.contains("\"event\":\"refresh.done\"") && !collected.contains("\"ok\":true")) {
-                    // archive#1037: a reset that met a running enumeration (the daemon's own poll, say) did not run.
-                    if (collected.contains("\"error\":\"busy\"")) {
-                        System.err.println("unidrive refresh: a refresh is already running, so nothing was reset; try again when it has finished.")
-                    }
-                    System.exit(1)
-                }
-            }
+            if (exit != 0) System.exit(exit)
         } catch (e: IpcAuthException) {
             System.err.println("unidrive refresh: ${e.message}")
             System.exit(1)
@@ -172,16 +133,61 @@ class RefreshCommand : Runnable, CommandLine.IExitCodeGenerator {
         }
     }
 
-    /** Read a single JSON reply terminated by newline. Returns the line without the newline. */
-    private fun readOneJsonReply(channel: SocketChannel): String {
-        val collected = StringBuilder()
-        while (!collected.contains('\n')) {
-            val buf = ByteBuffer.allocate(1024)
-            val n = channel.read(buf)
-            if (n <= 0) return collected.toString()
-            buf.flip()
-            collected.append(String(buf.array(), 0, buf.limit()))
+}
+
+
+/**
+ * The refresh exchange on an authenticated connection: subscribe, `refresh.run`, then the events up to `refresh.done`.
+ * The event lines go to [out], whole and as the daemon wrote them, and the problems to [err]; the result is the exit
+ * code, 0 only when the `refresh.done` line says ok.
+ *
+ * The daemon may push an event in the same write as a reply, so one [IpcLineClient] reads the whole exchange: what
+ * comes after a reply line is the next line, not lost. A line with an `event` member is an event; the first line
+ * without one, after the request, is its reply.
+ */
+internal fun runRefresh(
+    channel: ByteChannel,
+    reset: Boolean,
+    out: (String) -> Unit,
+    err: (String) -> Unit,
+): Int {
+    val lines = IpcLineClient(channel)
+
+    // Subscribe to progress events. Nothing of ours runs yet, so an event before the reply is not ours to print.
+    lines.writeLine("""{"verb":"sync.subscribe"}""")
+    do {
+        val line = (lines.readLine() as? IpcLineRead.Line)?.text ?: return daemonClosed(err)
+    } while (line.asJsonObjectOrNull()?.containsKey("event") == true)
+
+    // Issue refresh.run (with optional reset flag — F9 fix).
+    lines.writeLine(if (reset) """{"verb":"refresh.run","reset":true}""" else """{"verb":"refresh.run"}""")
+    var replied = false
+    while (true) {
+        val line = (lines.readLine() as? IpcLineRead.Line)?.text ?: return daemonClosed(err)
+        val json = line.asJsonObjectOrNull()
+        if (json == null || !json.containsKey("event")) {
+            if (replied) continue
+            replied = true
+            if (json?.isOkReply() != true) {
+                err("unidrive refresh: daemon rejected refresh.run: $line")
+                return 1
+            }
+            continue
         }
-        return collected.toString().substringBefore('\n')
+        // Print progress events as they arrive (one per line)
+        out(line)
+        if ((json["event"] as? JsonPrimitive)?.content != "refresh.done") continue
+        if (json.isOkReply()) return 0
+        // archive#1037: a reset that met a running enumeration (the daemon's own poll, say) did not run.
+        if ((json["error"] as? JsonPrimitive)?.content == "busy") {
+            err("unidrive refresh: a refresh is already running, so nothing was reset; try again when it has finished.")
+        }
+        return 1
     }
+}
+
+// EOF — daemon shut down per spec F9
+private fun daemonClosed(err: (String) -> Unit): Int {
+    err("unidrive refresh: daemon shut down before refresh completed")
+    return 1
 }
