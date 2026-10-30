@@ -24,6 +24,7 @@ import org.krost.unidrive.hydration.HydrationIpcHandler
 import org.krost.unidrive.hydration.MountEngine
 import org.krost.unidrive.hydration.provesProviderReachable
 import org.krost.unidrive.hydration.serialiseHydrationEvent
+import org.krost.unidrive.io.ndjsonString
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessLock
@@ -639,14 +640,12 @@ class DaemonRuntime(
                     val jobIdJson = if (refreshJobId != null) "\"$refreshJobId\"" else "null"
                     // sync_paths: the effective scope (sync_path entries the daemon was started
                     // with; empty = whole drive). Additive field, read-only over IPC.
-                    val syncPathsJson = kotlinx.serialization.json.JsonArray(
-                        syncPaths.map { kotlinx.serialization.json.JsonPrimitive(it) },
-                    ).toString()
-                    val providerJson = kotlinx.serialization.json.JsonPrimitive(provider.id).toString()
-                    val providerNameJson = kotlinx.serialization.json.JsonPrimitive(provider.displayName).toString()
+                    val syncPathsJson = syncPaths.joinToString(",", "[", "]") { ndjsonString(it) }
+                    val providerJson = ndjsonString(provider.id)
+                    val providerNameJson = ndjsonString(provider.displayName)
                     val enumerationStatus = mount.enumerationStatus()
                     val enumerationJson = enumerationStatus.toJson().toString()
-                    val engineVersionJson = kotlinx.serialization.json.JsonPrimitive(BuildInfo.versionString()).toString()
+                    val engineVersionJson = ndjsonString(BuildInfo.versionString())
                     // engine_build_time_ms: when the build was made (epoch ms UTC; the commit time of a reproducible build); null when unknown.
                     val engineBuildTimeJson = BuildInfoReport.buildTimeMs()?.toString() ?: "null"
                     // uploads / cache / provider_health (archive#658): the engine's own account of whether everything
@@ -671,21 +670,18 @@ class DaemonRuntime(
                             .toJson(System.currentTimeMillis())
                     // mode + capabilities (archive#603 U4): what this daemon serves, so a client can check the
                     // hosting contract before it sends a verb the profile refuses (additive, read-only).
-                    val modeJson = kotlinx.serialization.json.JsonPrimitive(profileMode.wireName).toString()
+                    val modeJson = ndjsonString(profileMode.wireName)
                     // `views` is a capability only where the profile shows a view: a daemon without one answers as it always did.
                     // `view_page` with it: such a daemon answers view.page for its views.
                     // `notifications.status` (archive#111): this reply carries the `notifications` object.
                     // `hydration.refuse_name` (gkrost/unidrive-cli#24): the daemon records a client's refusal of a twin.
                     // `hydration.list_live` (gkrost/unidrive-cli#27): hydration.list reads a folder from the cloud while the first scan has not brought it in.
                     // `hydration.list_content_id` (gkrost/unidrive-cli#171): a hydration.list file entry names its bytes (`content_id`) where the row does.
-                    val capabilitiesJson = kotlinx.serialization.json.JsonArray(
-                        (
-                            profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-                                (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY)) +
-                                (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page"))
-                        )
-                            .map { kotlinx.serialization.json.JsonPrimitive(it) },
-                    ).toString()
+                    val capabilitiesJson = (
+                        profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
+                            (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY)) +
+                            (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page"))
+                    ).joinToString(",", "[", "]") { ndjsonString(it) }
                     // quota (archive#655): the account's storage plan snapshot. Absent entirely for
                     // providers without an account quota (ProviderMetadata hasQuota=false —
                     // localfs probes machine storage). A client-connected status request is
@@ -699,7 +695,7 @@ class DaemonRuntime(
                             null
                         } else {
                             val snap = quotaSnapshot ?: QuotaSnapshot()
-                            val errorJson = snap.error?.let { kotlinx.serialization.json.JsonPrimitive(it).toString() } ?: "null"
+                            val errorJson = snap.error?.let { ndjsonString(it) } ?: "null"
                             """{"used_bytes":${snap.usedBytes ?: "null"},""" +
                                 """"total_bytes":${snap.totalBytes ?: "null"},""" +
                                 """"fetched_at_ms":${snap.fetchedAtMs ?: "null"},"stale":${snap.stale},"error":$errorJson}"""
