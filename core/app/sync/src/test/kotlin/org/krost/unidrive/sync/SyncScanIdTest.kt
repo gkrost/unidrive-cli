@@ -1,6 +1,12 @@
 package org.krost.unidrive.sync
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.slf4j.MDCContext
 import kotlinx.coroutines.test.runTest
+import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.sync.model.ConflictPolicy
 import org.slf4j.MDC
 import java.nio.file.Files
@@ -9,6 +15,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
@@ -151,5 +158,52 @@ class SyncScanIdTest {
                 observed.size,
                 "each syncOnce must generate a fresh scan id; observed=$observed",
             )
+        }
+
+    // gkrost/unidrive-cli#225: a daemon's pass runs in a coroutine that carries the daemon's MDC (profile, build) in an
+    // MDCContext, which puts its map back on every resume. The scan id joins that map, so the lines after the pass first
+    // suspended still carry it, next to the profile; afterwards the map is the daemon's again.
+    @Test
+    fun `under an MDCContext the scan id stays on the lines after the pass suspended`() =
+        runBlocking(Dispatchers.IO + MDCContext(mapOf("profile" to "scan-profile", "build" to "scan-build"))) {
+            val fake = FakeCloudProvider()
+            val suspending =
+                object : CloudProvider by fake {
+                    override suspend fun delta(
+                        cursor: String?,
+                        onPageProgress: ((itemsSoFar: Int) -> Unit)?,
+                        scanContext: org.krost.unidrive.ScanContext?,
+                    ): DeltaPage {
+                        delay(5) // a real suspension: the pass resumes on another worker
+                        return fake.delta(cursor, onPageProgress, scanContext)
+                    }
+                }
+            var atEnd: Map<String, String>? = null
+            val reporter =
+                object : ProgressReporter by ProgressReporter.Silent {
+                    override fun onSyncComplete(
+                        downloaded: Int,
+                        uploaded: Int,
+                        conflicts: Int,
+                        durationMs: Long,
+                        actionCounts: Map<String, Int>,
+                        failed: Int,
+                    ) {
+                        atEnd = MDC.getCopyOfContextMap()
+                    }
+                }
+            SyncEngine(
+                provider = suspending,
+                db = db,
+                syncRoot = syncRoot,
+                conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                reporter = reporter,
+            ).syncOnce(reason = SyncReason.MANUAL)
+
+            val end = assertNotNull(atEnd, "the pass reported its end")
+            assertNotNull(end["scan"], "the scan id at the end of the pass: $end")
+            assertEquals("scan-profile", end["profile"], "the daemon's profile next to it: $end")
+            assertNull(MDC.get("scan"), "the scan id goes with the pass")
+            assertEquals("scan-profile", MDC.get("profile"), "the daemon's map stays")
         }
 }

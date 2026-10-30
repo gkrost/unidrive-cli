@@ -12,6 +12,7 @@ import org.krost.unidrive.ProviderFactory
 import org.krost.unidrive.dropbox.FakeDropbox.Companion.deleted
 import org.krost.unidrive.dropbox.FakeDropbox.Companion.file
 import org.krost.unidrive.dropbox.FakeDropbox.Companion.folder
+import org.slf4j.MDC
 import java.nio.file.Files
 import java.time.Instant
 import java.util.ServiceLoader
@@ -176,5 +177,30 @@ class DropboxDeltaTest {
             val poll = fake.callsTo("files/list_folder/longpoll").first()
             assertEquals("c9", poll.args!!["cursor"]!!.jsonPrimitive.content)
             assertNull(poll.headers["Authorization"], "the long-poll takes no token")
+        }
+
+    // gkrost/unidrive-cli#225: the long-poll runs in a scope of the provider's own, on Dispatchers.IO; it carries the MDC of
+    // the code that asked for the hints (a daemon: its profile and build), so its lines and its RequestId lines name them.
+    @Test
+    fun `the long-poll runs with the MDC of the code that asked for hints`() =
+        runBlocking {
+            fake.json("files/list_folder", """{"entries":[],"cursor":"c9","has_more":false}""")
+            fake.json("files/list_folder/longpoll", """{"changes":true}""")
+            provider.delta(null)
+            val woke = CompletableDeferred<Map<String, String>?>()
+
+            MDC.put("profile", "dbx-profile")
+            MDC.put("build", "dbx-build")
+            try {
+                provider.onRemoteChangeHint { woke.complete(MDC.getCopyOfContextMap()) }
+            } finally {
+                MDC.remove("profile")
+                MDC.remove("build")
+            }
+            val mdc = withTimeout(10_000) { woke.await() }
+            provider.close()
+
+            assertEquals("dbx-profile", mdc?.get("profile"), "the long-poll's MDC: $mdc")
+            assertEquals("dbx-build", mdc?.get("build"), "the long-poll's MDC: $mdc")
         }
 }

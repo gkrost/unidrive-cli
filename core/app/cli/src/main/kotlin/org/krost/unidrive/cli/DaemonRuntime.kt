@@ -179,7 +179,14 @@ class DaemonRuntime(
     @Volatile private var lifecycleActive = false
     private var startedAtMs: Long = 0
 
-    suspend fun start() {
+    /**
+     * Runs the lifecycle until [close]. gkrost/unidrive-cli#225: it runs in [logContext], so the serve scope and every
+     * coroutine under it (the IPC server's threads, the poller and the enumeration, the backfill, the HTTP calls made from
+     * them) logs with this daemon's profile and build on whichever thread it resumes.
+     */
+    suspend fun start() = withContext(logContext(profileName)) { lifecycle() }
+
+    private suspend fun lifecycle() {
         Files.createDirectories(lockFile.parent)
         val acquiredLock = ProcessLock(lockFile)
         if (!acquiredLock.tryLock(ProcessLock.Mode.DAEMON)) {
@@ -262,6 +269,7 @@ class DaemonRuntime(
             // children spawned by IpcServer/HydrationIpcHandler to complete —
             // they don't. Solution: launch the long-lived children under a
             // dedicated SupervisorJob that we cancel before the scope exits.
+            // The scope inherits the daemon's logContext from start() (gkrost/unidrive-cli#225).
             val serveJob = kotlinx.coroutines.SupervisorJob()
             val serveScope = kotlinx.coroutines.CoroutineScope(
                 kotlin.coroutines.coroutineContext + serveJob,
@@ -1098,15 +1106,22 @@ class DaemonRuntime(
         const val HISTORY_FILE_NAME = "telemetry.db"
 
         /**
-         * The scope the mount's hydration uploads and replays run in. It carries the `profile` MDC key
-         * (kept across suspensions and thread hops by [MDCContext]), so their log lines in the shared
-         * unidrive.log read `[<profile>]` instead of `[*]` (archive#150).
+         * The log context of everything a daemon runs: the `profile` and `build` MDC keys the log pattern prints, kept across
+         * suspensions and thread hops by [MDCContext]. Two daemons write one unidrive.log; a line without them reads `[*]` and
+         * cannot be told apart (gkrost/unidrive-cli#225). A child coroutine inherits it; a thread the daemon's code starts
+         * itself carries it with [org.krost.unidrive.MdcSnapshot].
+         */
+        internal fun logContext(profileName: String): MDCContext = MDCContext(mapOf("build" to BuildInfo.COMMIT, "profile" to profileName))
+
+        /**
+         * The scope the mount's hydration uploads and replays run in: a scope of its own (the shutdown joins it apart from
+         * the serve scope), so it carries the daemon's [logContext] itself (archive#150, gkrost/unidrive-cli#225).
          */
         internal fun hydrationUploadScope(profileName: String): kotlinx.coroutines.CoroutineScope =
             kotlinx.coroutines.CoroutineScope(
                 kotlinx.coroutines.SupervisorJob() +
                     kotlinx.coroutines.Dispatchers.IO +
-                    MDCContext(mapOf("profile" to profileName)),
+                    logContext(profileName),
             )
 
         // Cross-repo IPC wire-protocol version, surfaced as the additive

@@ -11,6 +11,8 @@ dependencies {
     implementation(project(":app:core"))
 
     implementation(libs.kotlinx.coroutines.core)
+    // gkrost/unidrive-cli#225: MDCContext, so the long-poll keeps the log context of the daemon that asked for hints.
+    implementation(libs.kotlinx.coroutines.slf4j)
     implementation(libs.kotlinx.serialization.json)
 
     implementation(libs.ktor.client.core)

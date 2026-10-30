@@ -17,6 +17,8 @@ dependencies {
     implementation(project(":app:engine-core"))
 
     implementation(libs.kotlinx.coroutines.core)
+    // gkrost/unidrive-cli#225: MDCContext, so a daemon's scan id and a rule-file download keep the daemon's log context.
+    implementation(libs.kotlinx.coroutines.slf4j)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.sqlite.jdbc)
     implementation(libs.ktoml.core)
@@ -29,9 +31,6 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
-    // UD-284: MDCContext-propagation regression test pins kotlinx-coroutines-slf4j
-    // for the calling-side wrapping pattern that RelocateCommand uses.
-    testImplementation(libs.kotlinx.coroutines.slf4j)
 }
 
 tasks.test {

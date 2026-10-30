@@ -1,5 +1,6 @@
 package org.krost.unidrive.telemetry
 
+import org.krost.unidrive.MdcSnapshot
 import org.krost.unidrive.http.RequestAttempt
 import org.krost.unidrive.http.RequestMetricsSink
 import org.slf4j.LoggerFactory
@@ -58,6 +59,9 @@ class RequestMetricsRecorder internal constructor(
     private val dropped = AtomicLong()
     private val droppedUnrecorded = AtomicBoolean()
     private val accepting = AtomicBoolean(true)
+
+    // gkrost/unidrive-cli#225: the writer's lines carry the MDC (profile, build) of the daemon that opened the metrics.
+    private val logContext = MdcSnapshot.capture()
     private val thread = Thread(::writerLoop, "request-metrics-$profile").apply { isDaemon = true }
 
     // Writer thread only.
@@ -138,6 +142,7 @@ class RequestMetricsRecorder internal constructor(
     }
 
     private fun writerLoop() {
+        logContext.applyToThisThread()
         val batch = ArrayList<Op>(config.batchSize)
         try {
             catchUp()

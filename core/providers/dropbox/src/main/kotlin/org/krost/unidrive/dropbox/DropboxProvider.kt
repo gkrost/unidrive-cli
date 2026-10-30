@@ -10,6 +10,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.slf4j.MDCContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -621,7 +622,9 @@ class DropboxProvider(
         hintCallback = callback
         synchronized(this) {
             if (hintJob != null) return
-            hintJob = hintScope.launch { longPollLoop() }
+            // gkrost/unidrive-cli#225: the long-poll runs in the provider's own scope; MDCContext() takes the caller's MDC (a
+            // daemon's profile and build) along, so its lines and the RequestId lines of its polls name the daemon.
+            hintJob = hintScope.launch(MDCContext()) { longPollLoop() }
         }
     }
 

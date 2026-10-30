@@ -1,6 +1,7 @@
 package org.krost.unidrive.sync.ignore
 
 import org.krost.unidrive.engine.RuleFileTransfers
+import org.slf4j.MDC
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -22,6 +23,9 @@ class CloudRuleFilesTest {
     private val ran = mutableListOf<String>()
     private var bodyOf: (String) -> String = { it }
 
+    // The MDC the download ran with (it runs on Dispatchers.IO, off the probing thread).
+    private val downloadMdc = mutableListOf<Map<String, String>?>()
+
     // The daemon's pause and the transfer budget (RemoteOperationGuard.ruleFileTransfers), faked.
     private val transfers =
         object : RuleFileTransfers {
@@ -40,6 +44,7 @@ class CloudRuleFilesTest {
             lookup = { path -> cloud[path]?.first },
             download = { id, _, destination ->
                 downloads += id
+                downloadMdc += MDC.getCopyOfContextMap()
                 if (pauseDuringNextDownload) {
                     pauseDuringNextDownload = false
                     paused = true
@@ -256,5 +261,23 @@ class CloudRuleFilesTest {
 
         assertIs<RuleFileProbe.Present>(files.probe("/a/.unidrive.ignore"))
         assertEquals(1, downloads.size)
+    }
+
+    // gkrost/unidrive-cli#225: the download runs on Dispatchers.IO, off the thread that probes (a daemon's upload, whose
+    // MDC names the profile and the build); its lines, and the RequestId lines of its HTTP calls, carry that MDC too.
+    @Test
+    fun theDownloadRunsWithTheMdcOfTheProbingThread() {
+        put("/a/.unidrive.ignore", "*.o\n")
+        MDC.put("profile", "rules-profile")
+        MDC.put("build", "rules-build")
+        try {
+            assertIs<RuleFileProbe.Present>(files.probe("/a/.unidrive.ignore"))
+        } finally {
+            MDC.remove("profile")
+            MDC.remove("build")
+        }
+        val mdc = downloadMdc.single()
+        assertEquals("rules-profile", mdc?.get("profile"), "the download's MDC: $mdc")
+        assertEquals("rules-build", mdc?.get("build"), "the download's MDC: $mdc")
     }
 }
