@@ -1,5 +1,8 @@
 package org.krost.unidrive.sync
 
+import org.junit.Assume.assumeTrue
+import java.nio.file.Files
+import kotlin.system.measureTimeMillis
 import kotlin.test.*
 
 class NotifyProgressReporterTest {
@@ -34,5 +37,27 @@ class NotifyProgressReporterTest {
         val body = commands.single().last()
         assertFalse("SECRET" in body, body)
         assertTrue("[url=https://x/y?<redacted>, request_timeout=600000 ms]" in body, body)
+    }
+
+    // #221: a notifier that outlives the executor's budget is destroyed, not left behind. The destroy's SIGTERM is
+    // observable as the child's own trap writing the marker; without the destroy the child keeps running and the
+    // marker never appears. The vault passphrase the executor must strip is not unit-testable (a child can only
+    // see the environment it inherits), so it rests on the executor using childProcessBuilder.
+    @Test
+    fun `the default executor destroys a notifier that outlives its budget`() {
+        assumeTrue("the trap-and-destroy oracle needs a POSIX shell", !System.getProperty("os.name").orEmpty().contains("windows", ignoreCase = true))
+        val marker = Files.createTempDirectory("unidrive-notify-destroy-").resolve("destroyed.marker")
+        val elapsed = measureTimeMillis {
+            DEFAULT_NOTIFY_EXECUTOR(listOf("sh", "-c", "trap 'touch ${marker.toAbsolutePath()}' TERM; sleep 30 & wait"))
+        }
+        assertTrue(elapsed < 20_000, "the executor waited for the 30 s child instead of its 5 s budget: ${elapsed} ms")
+        val deadline = System.currentTimeMillis() + 5_000
+        var destroyed = false
+        while (System.currentTimeMillis() < deadline) {
+            if (Files.exists(marker)) { destroyed = true; break }
+            Thread.sleep(50)
+        }
+        assertTrue(destroyed, "the child was not destroyed (no SIGTERM reached its trap) after ${elapsed} ms")
+        marker.parent.toFile().deleteRecursively()
     }
 }
