@@ -384,7 +384,8 @@ class RelocateCommand : Runnable {
         return deleted
     }
 
-    private fun formatSize(bytes: Long): String = formatSizePrecise(bytes, ByteUnit.TiB)
+    // A negative count (a quota that is over) was printed as plain bytes here, and still is; the sign-keeping format is StatusAudit's.
+    private fun formatSize(bytes: Long): String = if (bytes < 0) "$bytes B" else formatSizePrecise(bytes, ByteUnit.TiB)
 
     @Suppress("LongParameterList")
     private fun printSummaryBox(

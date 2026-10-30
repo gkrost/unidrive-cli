@@ -523,7 +523,7 @@ class DoctorCommand : Runnable {
         )
     }
 
-    private fun formatBytes(n: Long): String = formatSizePrecise(n)
+    private fun formatBytes(n: Long): String = if (n < 0) "$n B" else formatSizePrecise(n)
 
     /**
      * **Check 7 — Recent destructive activity.** Tails the last 7 days of
