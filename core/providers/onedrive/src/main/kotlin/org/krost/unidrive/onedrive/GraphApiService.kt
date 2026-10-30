@@ -227,8 +227,20 @@ class GraphApiService(
     suspend fun downloadFile(
         itemId: String,
         destPath: Path,
-    ): Long {
-        val item = getItemById(itemId)
+    ): Long = downloadFileReading(itemId, destPath).bytes
+
+    /** What a download brought: the bytes written, and the item metadata those bytes were read by. */
+    data class DownloadedFile(val bytes: Long, val item: DriveItem)
+
+    /**
+     * [downloadFile] that also answers the item it read: the metadata whose download URL served the bytes (the re-resolved one
+     * when the first URL went stale), so a caller can name the version that came down rather than the one it listed.
+     */
+    suspend fun downloadFileReading(
+        itemId: String,
+        destPath: Path,
+    ): DownloadedFile {
+        var item = getItemById(itemId)
         var downloadedBytes = 0L
         var url = item.downloadUrl ?: "${itemUrl(itemId)}/content"
         var authNeeded = item.downloadUrl == null
@@ -328,7 +340,7 @@ class GraphApiService(
                     }
 
                 when (outcome) {
-                    DownloadOutcome.Done -> return downloadedBytes
+                    DownloadOutcome.Done -> return DownloadedFile(downloadedBytes, item)
                     DownloadOutcome.RetryAuth -> {
                         log.info("Got 401 on download itemId={} — forcing token refresh and retrying once", itemId)
                         authRefreshed = true
@@ -361,6 +373,7 @@ class GraphApiService(
                             itemId,
                         )
                         val fresh = getItemById(itemId)
+                        item = fresh
                         url = fresh.downloadUrl ?: "${itemUrl(itemId)}/content"
                         authNeeded = fresh.downloadUrl == null
                         continue
@@ -404,6 +417,7 @@ class GraphApiService(
                         e.message,
                     )
                     val fresh = getItemById(itemId)
+                    item = fresh
                     url = fresh.downloadUrl ?: "${itemUrl(itemId)}/content"
                     authNeeded = fresh.downloadUrl == null
                     continue
