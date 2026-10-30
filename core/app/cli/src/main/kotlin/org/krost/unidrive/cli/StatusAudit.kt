@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.krost.unidrive.QuotaInfo
+import org.krost.unidrive.io.formatSizePrecise
 import java.util.Locale
 
 /**
@@ -80,15 +81,7 @@ object StatusAudit {
      * (KiB/MiB/GiB) so the suffix matches the math. Numbers stay identical;
      * only the label changes.
      */
-    fun formatBytesBinary(bytes: Long): String {
-        val abs = kotlin.math.abs(bytes)
-        return when {
-            abs < 1024L -> "$bytes B"
-            abs < 1024L * 1024 -> String.format(Locale.ROOT, "%.1f KiB", bytes / 1024.0)
-            abs < 1024L * 1024 * 1024 -> String.format(Locale.ROOT, "%.1f MiB", bytes / (1024.0 * 1024))
-            else -> String.format(Locale.ROOT, "%.1f GiB", bytes / (1024.0 * 1024 * 1024))
-        }
-    }
+    fun formatBytesBinary(bytes: Long): String = formatSizePrecise(bytes)
 
     fun severityFor(report: AuditReport): AuditSeverity {
         val quota = report.quota ?: return AuditSeverity.GREEN
