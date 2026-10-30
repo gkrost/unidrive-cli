@@ -1,12 +1,11 @@
 package org.krost.unidrive.cli
 
 import org.krost.unidrive.io.OwnerOnly
+import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import java.nio.channels.FileChannel
-import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermissions
 
@@ -36,28 +35,7 @@ internal object ConfigFileTransaction {
         text: String,
     ) {
         target.parent?.let(Files::createDirectories)
-        val tmp =
-            try {
-                Files.createTempFile(
-                    target.parent,
-                    target.fileName.toString() + ".",
-                    ".tmp",
-                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")),
-                )
-            } catch (_: UnsupportedOperationException) {
-                Files.createTempFile(target.parent, target.fileName.toString() + ".", ".tmp")
-            }
-        try {
-            OwnerOnly.requireFile(tmp)
-            Files.writeString(tmp, text)
-            try {
-                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-            } catch (_: AtomicMoveNotSupportedException) {
-                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
-            }
-        } finally {
-            Files.deleteIfExists(tmp)
-        }
+        OwnerOnlyAtomicWrite.replace(target, text.toByteArray(Charsets.UTF_8))
     }
 
     private fun createLockFile(lockPath: Path) {

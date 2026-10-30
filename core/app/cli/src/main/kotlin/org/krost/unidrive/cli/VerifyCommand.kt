@@ -7,7 +7,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.RemoteObjectAuditReport
 import org.krost.unidrive.RemoteObjectStatus
 import org.krost.unidrive.authenticateAndLog
-import org.krost.unidrive.io.OwnerOnly
+import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import org.krost.unidrive.sync.HashVerifier
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.Reconciler
@@ -27,7 +27,6 @@ import java.io.IOException
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.Callable
@@ -307,23 +306,15 @@ class VerifyCommand : Callable<Int> {
                     }
                 }
             }
-        val temporary = Files.createTempFile(parentDir, REPORT_TEMP_PREFIX, REPORT_TEMP_SUFFIX)
-        try {
-            // The report lists remote paths and sizes, which the engine keeps owner-only everywhere else
-            // (StoragePermissions): restrict the file before it holds anything. The move keeps the permissions.
-            val restricted = OwnerOnly.restrictFile(temporary)
-            if (!restricted.restricted) {
-                System.err.println("verify: warning: could not restrict the report to the current user ($restricted)")
-            }
-            Files.writeString(temporary, json.encodeToString(JsonObject.serializer(), body))
-            try {
-                Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-                Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING)
-            }
-        } finally {
-            Files.deleteIfExists(temporary)
-        }
+        // The report lists remote paths and sizes, which the engine keeps owner-only everywhere else
+        // (StoragePermissions), so it is restricted before it holds anything. This is the one writer that opts into the
+        // warning instead of the refusal (OwnerOnlyAtomicWrite): the destination is a path the user named, possibly on a
+        // volume with neither POSIX modes nor ACLs, and the audit that produced the report has already run.
+        OwnerOnlyAtomicWrite.replace(
+            destination,
+            json.encodeToString(JsonObject.serializer(), body).toByteArray(Charsets.UTF_8),
+            onUnrestricted = { System.err.println("verify: warning: could not restrict the report to the current user ($it)") },
+        )
     }
 
     private fun isExcluded(
