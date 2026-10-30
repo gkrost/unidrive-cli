@@ -46,6 +46,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.util.HexFormat
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
@@ -1411,7 +1412,7 @@ class InternxtApiService(
                             }
                             val stagedSize = Files.size(tmpPath)
                             val stagedMtimeMillis = Files.getLastModifiedTime(tmpPath).toMillis()
-                            val plaintextSha256 = plaintextDigest.digest().joinToString("") { "%02x".format(it) }
+                            val plaintextSha256 = HexFormat.of().formatHex(plaintextDigest.digest())
                             Files.move(tmpPath, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
                             InternxtDownloadedContent(
                                 written,

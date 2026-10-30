@@ -1,5 +1,7 @@
 package org.krost.unidrive.internxt
 
+import java.util.HexFormat
+
 /**
  * The shard hash an upload records in `POST /v2/buckets/{bucket}/files/finish` (archive#946).
  *
@@ -15,7 +17,6 @@ package org.krost.unidrive.internxt
  */
 internal object ShardHashWire {
     private const val SHA256_HEX_LENGTH = 64
-    private const val ASCII_LIMIT = 128
 
     /**
      * The value for `shards[].hash` of `files/finish`, from [ciphertextSha256Hex]: the SHA-256 of the whole ciphertext as 64
@@ -23,10 +24,7 @@ internal object ShardHashWire {
      * as it is: nothing is invented for a value this function does not understand.
      */
     fun forFinish(ciphertextSha256Hex: String): String {
-        if (ciphertextSha256Hex.length != SHA256_HEX_LENGTH || !ciphertextSha256Hex.all { it.isAsciiHex() }) return ciphertextSha256Hex
-        return Ripemd160.digest(InternxtCrypto.hexToBytes(ciphertextSha256Hex)).joinToString("") { "%02x".format(it) }
+        if (ciphertextSha256Hex.length != SHA256_HEX_LENGTH || !ciphertextSha256Hex.all { HexFormat.isHexDigit(it.code) }) return ciphertextSha256Hex
+        return HexFormat.of().formatHex(Ripemd160.digest(InternxtCrypto.hexToBytes(ciphertextSha256Hex)))
     }
-
-    // Character.digit also accepts digits of other scripts: only ASCII counts as hex here (archive#1087).
-    private fun Char.isAsciiHex(): Boolean = code < ASCII_LIMIT && Character.digit(this, 16) >= 0
 }

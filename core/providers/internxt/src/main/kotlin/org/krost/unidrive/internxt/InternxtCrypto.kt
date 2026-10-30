@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
+import java.util.HexFormat
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
@@ -28,25 +29,10 @@ open class InternxtCrypto {
         // scripts (U+0660 is 0) and the fullwidth Latin letters (U+FF21 is 10).
         fun hexToBytes(hex: String): ByteArray {
             require(hex.length % 2 == 0) { "Hex string must have an even length, got ${hex.length} characters" }
-            val data = ByteArray(hex.length / 2)
-            for (i in data.indices) {
-                val high = hexDigit(hex[i * 2])
-                val low = hexDigit(hex[i * 2 + 1])
-                require(high >= 0 && low >= 0) {
-                    "Invalid hex character at index ${if (high < 0) i * 2 else i * 2 + 1}"
-                }
-                data[i] = ((high shl 4) + low).toByte()
-            }
-            return data
+            val invalid = hex.indexOfFirst { !HexFormat.isHexDigit(it.code) }
+            require(invalid < 0) { "Invalid hex character at index $invalid" }
+            return HexFormat.of().parseHex(hex)
         }
-
-        private fun hexDigit(c: Char): Int =
-            when (c) {
-                in '0'..'9' -> c - '0'
-                in 'a'..'f' -> c - 'a' + 10
-                in 'A'..'F' -> c - 'A' + 10
-                else -> -1
-            }
 
         /**
          * Construct the HTTP Basic auth header for the Internxt bridge.
@@ -58,7 +44,7 @@ open class InternxtCrypto {
         ): String {
             val digest = MessageDigest.getInstance("SHA-256")
             val hashBytes = digest.digest(bridgeUserId.toByteArray(Charsets.UTF_8))
-            val hashHex = hashBytes.joinToString("") { "%02x".format(it) }
+            val hashHex = HexFormat.of().formatHex(hashBytes)
             val credentials = "$bridgeUser:$hashHex"
             val encoded = Base64.getEncoder().encodeToString(credentials.toByteArray(Charsets.UTF_8))
             return "Basic $encoded"
@@ -380,7 +366,7 @@ open class InternxtCrypto {
 
     private fun hexToBytes(hex: String): ByteArray = Companion.hexToBytes(hex)
 
-    private fun bytesToHex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+    private fun bytesToHex(bytes: ByteArray): String = HexFormat.of().formatHex(bytes)
 
     private fun deriveKey(
         password: String,

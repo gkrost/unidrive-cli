@@ -1,6 +1,7 @@
 package org.krost.unidrive.internxt
 
 import java.security.MessageDigest
+import java.util.HexFormat
 
 /**
  * The hash the network recorded for a stored shard (`shards[].hash` of the bridge info), parsed by its shape, and
@@ -58,7 +59,6 @@ internal sealed interface ShardHashExpectation {
     companion object {
         private const val SHA256_HEX_LENGTH = 64
         private const val RIPEMD160_HEX_LENGTH = 40
-        private const val ASCII_LIMIT = 128
 
         fun parse(recorded: String): ShardHashExpectation =
             when {
@@ -67,8 +67,8 @@ internal sealed interface ShardHashExpectation {
                 else -> Unrecognised(recorded.length, characterClassOf(recorded))
             }
 
-        // Character.digit also accepts digits of other scripts: only ASCII counts as hex here.
-        private fun String.isHex(): Boolean = isNotEmpty() && all { it.code < ASCII_LIMIT && Character.digit(it, 16) >= 0 }
+        // HexFormat.isHexDigit counts only 0-9, a-f, A-F; Character.digit also accepts digits of other scripts.
+        private fun String.isHex(): Boolean = isNotEmpty() && all { HexFormat.isHexDigit(it.code) }
 
         private fun characterClassOf(value: String): String =
             when {

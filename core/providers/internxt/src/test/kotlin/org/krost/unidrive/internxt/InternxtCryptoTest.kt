@@ -263,4 +263,25 @@ class InternxtCryptoTest {
     fun `hexToBytes empty string stays valid`() {
         assertTrue(InternxtCrypto.hexToBytes("").contentEquals(ByteArray(0)))
     }
+
+    @Test
+    fun `hexToBytes of an empty string is empty and of mixed case decodes the same bytes`() {
+        assertEquals(0, InternxtCrypto.hexToBytes("").size)
+        assertTrue(InternxtCrypto.hexToBytes("aAbBcC00ff").contentEquals(byteArrayOf(0xaa.toByte(), 0xbb.toByte(), 0xcc.toByte(), 0x00, 0xff.toByte())))
+    }
+
+    @Test
+    fun `hexToBytes names the first invalid index, the low digit of a pair included`() {
+        assertEquals("Invalid hex character at index 0", assertFailsWith<IllegalArgumentException> { InternxtCrypto.hexToBytes("g000") }.message)
+        assertEquals("Invalid hex character at index 3", assertFailsWith<IllegalArgumentException> { InternxtCrypto.hexToBytes("000g") }.message)
+        assertEquals("Invalid hex character at index 2", assertFailsWith<IllegalArgumentException> { InternxtCrypto.hexToBytes("00-0") }.message)
+    }
+
+    @Test
+    fun `the bridge auth header carries the lower-case SHA-256 of the user id (golden)`() {
+        assertEquals(
+            "Basic dXNlcjpiYTc4MTZiZjhmMDFjZmVhNDE0MTQwZGU1ZGFlMjIyM2IwMDM2MWEzOTYxNzdhOWNiNDEwZmY2MWYyMDAxNWFk",
+            InternxtCrypto.bridgeAuthHeader("user", "abc"),
+        )
+    }
 }
