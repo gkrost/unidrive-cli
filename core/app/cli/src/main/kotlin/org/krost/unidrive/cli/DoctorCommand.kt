@@ -9,6 +9,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
+import org.krost.unidrive.io.formatSizePrecise
 import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
@@ -522,13 +523,7 @@ class DoctorCommand : Runnable {
         )
     }
 
-    private fun formatBytes(n: Long): String =
-        when {
-            n >= 1L shl 30 -> String.format(java.util.Locale.ROOT, "%.1f GiB", n.toDouble() / (1L shl 30))
-            n >= 1L shl 20 -> String.format(java.util.Locale.ROOT, "%.1f MiB", n.toDouble() / (1L shl 20))
-            n >= 1L shl 10 -> String.format(java.util.Locale.ROOT, "%.1f KiB", n.toDouble() / (1L shl 10))
-            else -> "$n B"
-        }
+    private fun formatBytes(n: Long): String = if (n < 0) "$n B" else formatSizePrecise(n)
 
     /**
      * **Check 7 — Recent destructive activity.** Tails the last 7 days of

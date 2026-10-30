@@ -195,6 +195,24 @@ class HashVerifierTest {
         }
     }
 
+    // cli#223 item 6: an unreadable file fails with the IOException of the open, for the SHA-256 and the MD5 alike.
+    @Test
+    fun `a missing file or a directory fails with an IOException, not a digest`() {
+        val missing = tempDir.resolve("missing.bin")
+        assertFailsWith<java.nio.file.NoSuchFileException> { HashVerifier.computeSha256Hex(missing) }
+        assertFailsWith<java.nio.file.NoSuchFileException> { HashVerifier.computeMd5Hex(missing) }
+        assertFailsWith<java.io.IOException> { HashVerifier.computeSha256Hex(tempDir) }
+        assertFailsWith<java.io.IOException> { HashVerifier.computeMd5Hex(tempDir) }
+    }
+
+    @Test
+    fun `a file larger than the read buffer has the digest Python computes for it`() {
+        val file = tempDir.resolve("big.bin")
+        Files.write(file, ByteArray(200_003) { (it * 31 + 7).toByte() })
+        assertEquals("33428445ea70f68e46231e7e5fac8fbb40eb1809e4f93b37dd20ba8a14199ba8", HashVerifier.computeSha256Hex(file))
+        assertEquals("34e8ef7b830bdb39833868ad874e008a", HashVerifier.computeMd5Hex(file))
+    }
+
     private fun createFile(
         name: String,
         content: String,

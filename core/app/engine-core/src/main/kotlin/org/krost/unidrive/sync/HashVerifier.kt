@@ -1,5 +1,7 @@
 package org.krost.unidrive.sync
 
+import org.krost.unidrive.io.fileDigestHex
+import org.krost.unidrive.io.fileSha256Hex
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -101,17 +103,7 @@ object HashVerifier {
             null -> null
         }
 
-    fun computeSha256Hex(path: Path): String {
-        val md = java.security.MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(path).use { input ->
-            val buffer = ByteArray(8192)
-            var read: Int
-            while (input.read(buffer).also { read = it } != -1) {
-                md.update(buffer, 0, read)
-            }
-        }
-        return md.digest().joinToString("") { "%02x".format(it) }
-    }
+    fun computeSha256Hex(path: Path): String = fileSha256Hex(path)
 
     /** Dropbox's `content_hash` of [path] (see [org.krost.unidrive.HashAlgorithm.DropboxContentHash]). */
     fun computeDropboxContentHash(path: Path): String {
@@ -161,17 +153,7 @@ object HashVerifier {
         }
     }
 
-    fun computeMd5Hex(path: Path): String {
-        val md = MessageDigest.getInstance("MD5")
-        Files.newInputStream(path).use { input ->
-            val buffer = ByteArray(8192)
-            var read: Int
-            while (input.read(buffer).also { read = it } != -1) {
-                md.update(buffer, 0, read)
-            }
-        }
-        return md.digest().joinToString("") { "%02x".format(it) }
-    }
+    fun computeMd5Hex(path: Path): String = fileDigestHex(path, "MD5")
 
     fun computeQuickXorHash(path: Path): String = org.krost.unidrive.QuickXorHash.of(path)
 }

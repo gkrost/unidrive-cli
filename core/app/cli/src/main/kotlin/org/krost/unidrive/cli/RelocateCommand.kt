@@ -4,6 +4,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.slf4j.MDCContext
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.QuotaInfo
+import org.krost.unidrive.io.ByteUnit
+import org.krost.unidrive.io.formatSizePrecise
 import org.krost.unidrive.sync.CloudRelocator
 import org.krost.unidrive.sync.MigrateEvent
 import org.krost.unidrive.sync.RelocateMdc
@@ -382,17 +384,8 @@ class RelocateCommand : Runnable {
         return deleted
     }
 
-    private fun formatSize(bytes: Long): String {
-        if (bytes < 1024) return "$bytes B"
-        val units = listOf("KiB", "MiB", "GiB", "TiB")
-        var size = bytes.toDouble() / 1024
-        var idx = 0
-        while (size >= 1024 && idx < units.lastIndex) {
-            size /= 1024
-            idx++
-        }
-        return String.format(Locale.ROOT, "%.1f %s", size, units[idx])
-    }
+    // A negative count (a quota that is over) was printed as plain bytes here, and still is; the sign-keeping format is StatusAudit's.
+    private fun formatSize(bytes: Long): String = if (bytes < 0) "$bytes B" else formatSizePrecise(bytes, ByteUnit.TiB)
 
     @Suppress("LongParameterList")
     private fun printSummaryBox(
