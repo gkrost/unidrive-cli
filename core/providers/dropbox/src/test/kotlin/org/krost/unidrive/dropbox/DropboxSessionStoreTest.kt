@@ -61,7 +61,26 @@ class DropboxSessionStoreTest {
         store.put("/big.bin", "s1", 4_000, 10, 1_000)
         file.writeText(file.readText().replace(Regex("\"createdAt\":\"[^\"]+\""), "\"createdAt\":\"2020-01-01T00:00:00Z\""))
         val fresh = DropboxSessionStore(dir)
-        assertNull(fresh.get("/big.bin", 10, 1_000), "a fresh store prunes on construction")
+        assertNull(fresh.get("/big.bin", 10, 1_000), "an expired session is dropped on read")
+    }
+
+    // #219: a torn store file (a crash mid-write) must not be read as empty and then silently overwritten —
+    // the next write would wipe every resumable session of the profile. The bytes go aside for the post-mortem.
+    @Test
+    fun `a torn store file is moved aside instead of silently wiped by the next write`() {
+        val file = dir.resolve("upload_sessions.json")
+        val tornBytes = "{\"/big.bin\": {\"sessionId\""
+        file.writeText(tornBytes)
+
+        val store = DropboxSessionStore(dir)
+        assertNull(store.get("/big.bin", 10, 1_000), "a torn file holds nothing readable")
+        store.put("/big.bin", "s1", 0, 10, 1_000)
+
+        val names = Files.list(dir).use { it.map { p -> p.fileName.toString() }.toList() }
+        val aside = names.filter { it.startsWith("upload_sessions.json.torn-") }
+        assertTrue(aside.isNotEmpty(), "the torn bytes must stay for the post-mortem: $names")
+        assertEquals(tornBytes, dir.resolve(aside.single()).readText(), "the quarantined file holds the torn bytes")
+        assertEquals("s1", store.get("/big.bin", 10, 1_000)?.sessionId, "the store works on after the quarantine")
     }
 
     // Dropbox counts a session's life from its start: recording the next offset must not make an old session look new.
