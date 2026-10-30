@@ -7,7 +7,6 @@ import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.sync.IpcAuth
-import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcAuthException
 import org.krost.unidrive.sync.IpcEndpoint
 import org.krost.unidrive.sync.StateDatabase
@@ -183,15 +182,7 @@ class QuotaCommand : Runnable {
     ): String? =
         try {
             val endpoint = IpcEndpoint(socketPath, parent.providerConfigDir(), profileName)
-            IpcAuthClient.connect(endpoint, IpcAuth.Scope.READ).use { channel ->
-                channel.write(java.nio.ByteBuffer.wrap(("""{"verb":"daemon.status"}""" + "\n").toByteArray()))
-                val buf = java.nio.ByteBuffer.allocate(16 * 1024)
-                while (!buf.array().take(buf.position()).contains('\n'.code.toByte())) {
-                    if (channel.read(buf) <= 0) break
-                }
-                buf.flip()
-                if (buf.limit() == 0) null else String(buf.array(), 0, buf.limit()).substringBefore('\n')
-            }
+            requestDaemonStatus(endpoint)
         } catch (e: Exception) {
             if (e is IpcAuthException) throw e
             null

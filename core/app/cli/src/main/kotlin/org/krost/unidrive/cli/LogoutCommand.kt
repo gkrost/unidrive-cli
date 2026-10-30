@@ -21,13 +21,13 @@ import org.krost.unidrive.localfs.LocalFsProviderFactory
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcEndpoint
+import org.krost.unidrive.sync.IpcLineClient
+import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.StateDatabase
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
-import java.nio.ByteBuffer
-import java.nio.channels.SocketChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Callable
@@ -472,58 +472,20 @@ internal fun sendDaemonRequest(
         IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).use { channel ->
             channel.configureBlocking(false)
             val deadline = System.currentTimeMillis() + timeoutMs
-            if (!writeRequest(channel, ByteBuffer.wrap((request + "\n").toByteArray(Charsets.UTF_8)), deadline)) return null
-            readReplyLine(channel, deadline)
+            val lines = IpcLineClient(channel)
+            if (!lines.writeLine(request, deadline)) return null
+            readReplyObject(lines, deadline)
         }
     } catch (_: Exception) {
         null
     }
 }
 
-/** The whole [request] written by [deadline], or false when the daemon stopped taking it. */
-internal fun writeRequest(
-    channel: SocketChannel,
-    request: ByteBuffer,
+/** The next reply line of [lines] as a JSON object, read by [deadline]; null when none arrives or it is not an object. */
+internal fun readReplyObject(
+    lines: IpcLineClient,
     deadline: Long,
-): Boolean {
-    while (request.hasRemaining()) {
-        channel.write(request)
-        if (request.hasRemaining()) {
-            if (System.currentTimeMillis() >= deadline) return false
-            Thread.sleep(10)
-        }
-    }
-    return true
-}
-
-/** One JSON reply line read by [deadline], or null; what arrives past the deadline is nothing. */
-internal fun readReplyLine(
-    channel: SocketChannel,
-    deadline: Long,
-): JsonObject? {
-    // Bytes, decoded once the line is whole: a reply can carry non-ASCII text (an account name), and a read can end
-    // inside one of its UTF-8 sequences.
-    val collected = java.io.ByteArrayOutputStream()
-    val buf = ByteBuffer.allocate(4096)
-    while (System.currentTimeMillis() < deadline) {
-        val n = channel.read(buf)
-        if (n < 0) break
-        if (n > 0) {
-            buf.flip()
-            collected.write(buf.array(), 0, buf.limit())
-            buf.clear()
-            val bytes = collected.toByteArray()
-            val newline = bytes.indexOf('\n'.code.toByte())
-            if (newline >= 0) {
-                val line = String(bytes, 0, newline, Charsets.UTF_8)
-                return runCatching { Json.parseToJsonElement(line) as? JsonObject }.getOrNull()
-            }
-        } else {
-            Thread.sleep(10)
-        }
-    }
-    return null
-}
+): JsonObject? = (lines.readLine(deadline) as? IpcLineRead.Line)?.text?.asJsonObjectOrNull()
 
 /** A JSON boolean member, or null when it is absent or not a boolean literal. */
 private fun JsonObject.optBoolean(key: String): Boolean? =

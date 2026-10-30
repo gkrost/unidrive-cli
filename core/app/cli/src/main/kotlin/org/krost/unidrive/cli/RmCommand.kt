@@ -14,6 +14,7 @@ import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcEndpoint
+import org.krost.unidrive.sync.IpcLineClient
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProfileInfo
 import org.krost.unidrive.sync.ProfileMode
@@ -22,7 +23,6 @@ import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
 import java.io.IOException
-import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Callable
@@ -396,17 +396,18 @@ internal fun askDaemon(
     return channel.use {
         it.configureBlocking(false)
         val deadline = System.currentTimeMillis() + timeoutMs
+        val lines = IpcLineClient(it)
         // A request that is not written in full has no newline: the daemon never dispatches it.
         val written =
             try {
-                writeRequest(it, ByteBuffer.wrap((request + "\n").toByteArray()), deadline)
+                lines.writeLine(request, deadline)
             } catch (_: IOException) {
                 false
             }
         if (!written) return@use DaemonAnswer.NotReached
         val reply =
             try {
-                readReplyLine(it, deadline)
+                readReplyObject(lines, deadline)
             } catch (_: IOException) {
                 null
             }

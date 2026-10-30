@@ -4,10 +4,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
-import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.UnixDomainSocketAddress
-import java.nio.ByteBuffer
 import java.nio.channels.SocketChannel
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
@@ -144,37 +142,20 @@ object IpcAuthClient {
         line: String,
         deadline: Long,
     ): JsonObject {
-        val out = ByteBuffer.wrap((line + "\n").toByteArray(Charsets.UTF_8))
-        while (out.hasRemaining()) {
-            if (channel.write(out) == 0) {
-                if (System.currentTimeMillis() >= deadline) throw IpcAuthException("the daemon did not take the IPC handshake in time")
-                Thread.sleep(5)
+        val lines = IpcLineClient(channel, MAX_REPLY_BYTES)
+        if (!lines.writeLine(line, deadline)) throw IpcAuthException("the daemon did not take the IPC handshake in time")
+        val text =
+            try {
+                when (val read = lines.readLine(deadline)) {
+                    is IpcLineRead.Line -> read.text
+                    IpcLineRead.Closed -> throw IpcAuthException("the daemon closed the connection during the IPC handshake")
+                    IpcLineRead.TimedOut -> throw IpcAuthException("no reply to the IPC handshake in time")
+                }
+            } catch (_: IpcLineTooLongException) {
+                throw IpcAuthException("the reply to the IPC handshake is too long")
             }
-        }
-        val reply = ByteArrayOutputStream()
-        val buf = ByteBuffer.allocate(1024)
-        while (true) {
-            buf.clear()
-            val n = channel.read(buf)
-            if (n < 0) throw IpcAuthException("the daemon closed the connection during the IPC handshake")
-            if (n == 0) {
-                if (System.currentTimeMillis() >= deadline) throw IpcAuthException("no reply to the IPC handshake in time")
-                Thread.sleep(5)
-                continue
-            }
-            buf.flip()
-            val bytes = ByteArray(buf.remaining()).also { buf.get(it) }
-            val newline = bytes.indexOf('\n'.code.toByte())
-            if (newline < 0) {
-                reply.write(bytes)
-                if (reply.size() > MAX_REPLY_BYTES) throw IpcAuthException("the reply to the IPC handshake is too long")
-                continue
-            }
-            if (newline != bytes.size - 1) throw IpcAuthException("unexpected data after the reply to the IPC handshake")
-            reply.write(bytes, 0, newline)
-            break
-        }
-        return runCatching { Json.parseToJsonElement(reply.toString(Charsets.UTF_8)) as? JsonObject }.getOrNull()
+        if (lines.pendingBytes() > 0) throw IpcAuthException("unexpected data after the reply to the IPC handshake")
+        return runCatching { Json.parseToJsonElement(text) as? JsonObject }.getOrNull()
             ?: throw IpcAuthException("the reply to the IPC handshake is not a JSON object")
     }
 

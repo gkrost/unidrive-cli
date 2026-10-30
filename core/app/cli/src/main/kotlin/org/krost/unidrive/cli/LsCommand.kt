@@ -1,6 +1,14 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
@@ -10,14 +18,14 @@ import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcAuthException
 import org.krost.unidrive.sync.IpcEndpoint
+import org.krost.unidrive.sync.IpcLineClient
+import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.StateDatabase
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
-import java.nio.ByteBuffer
-import java.nio.channels.SocketChannel
 import java.nio.file.Files
 import java.time.Instant
 import java.util.concurrent.Callable
@@ -140,10 +148,12 @@ class LsCommand : Callable<Int> {
         return try {
             // A read-scope connection: ls only lists (docs/dev/specs/ipc-authentication.md).
             IpcAuthClient.connect(endpoint, IpcAuth.Scope.READ).use { channel ->
-                val req = """{"verb":"hydration.list","prefix":${jsonStr(prefix)}}""" + "\n"
-                channel.write(ByteBuffer.wrap(req.toByteArray()))
-                val reply = readOneJsonReply(channel)
-                if (!reply.contains("\"ok\":true")) return null
+                val lines = IpcLineClient(channel)
+                // buildJsonObject escapes what would end the request line (a newline in a path) and whatever else a
+                // JSON string must escape.
+                lines.writeLine(buildJsonObject { put("verb", "hydration.list"); put("prefix", prefix) }.toString())
+                val reply = (lines.readLine() as? IpcLineRead.Line)?.text?.asJsonObjectOrNull()
+                if (reply?.isOkReply() != true) return null
                 parseListEntries(reply)
             }
         } catch (e: IpcAuthException) {
@@ -196,21 +206,6 @@ class LsCommand : Callable<Int> {
             println("%-${nameWidth}s  %10s  %s".format(displayName, size, mtime))
         }
     }
-
-    /** Read a single JSON reply terminated by newline. Returns the line without the newline. */
-    private fun readOneJsonReply(channel: SocketChannel): String {
-        val collected = StringBuilder()
-        while (!collected.contains('\n')) {
-            val buf = ByteBuffer.allocate(4096)
-            val n = channel.read(buf)
-            if (n <= 0) return collected.toString()
-            buf.flip()
-            collected.append(String(buf.array(), 0, buf.limit()))
-        }
-        return collected.toString().substringBefore('\n')
-    }
-
-    private fun jsonStr(s: String) = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
     companion object {
         /**
@@ -300,45 +295,35 @@ class LsCommand : Callable<Int> {
 
         // hydration.list reply entry shape (serialiseListEntries in HydrationIpcHandler):
         //   {"path":"...","size":N,"mtime_ms":N,"hydrated":bool,"folder":bool[,<additive fields>]}
-        // The fields after `folder` (remote_modified_ms, remote_id, etag, content_id,
-        // pending_upload, error, excluded, blocked) are additive and skipped by the tail group, so
-        // old/new daemon replies both parse.
-        private val ENTRY_REGEX =
-            Regex(
-                """\{"path":"((?:[^"\\]|\\.)*)","size":(-?\d+),"mtime_ms":(-?\d+),"hydrated":(?:true|false),"folder":(true|false)(?:,[^}]*)?\}""",
-            )
-        private val EXCLUDED_REGEX = Regex(""""error":(?:true|false),"excluded":true(?:,|})""")
+        // The fields after `folder` (remote_modified_ms, remote_id, etag, content_id, pending_upload, error, excluded,
+        // blocked, ...) are additive and only `excluded` is read, so old and new daemon replies both parse.
 
         /**
-         * Parse the `entries` array out of a `hydration.list` ok reply. Mirrors
-         * the wire shape emitted by [org.krost.unidrive.hydration.HydrationIpcHandler]'s
-         * serialiseListEntries; kept regex-based to avoid a serialization dep on the
-         * cli module just for this read-only listing.
+         * Parse the `entries` array out of a `hydration.list` ok reply line. Mirrors the wire shape emitted by
+         * [org.krost.unidrive.hydration.HydrationIpcHandler]'s serialiseListEntries. An entry without a path, a size,
+         * an mtime and a folder flag is skipped. Throws [kotlinx.serialization.SerializationException] when [reply]
+         * is not JSON.
          */
         fun parseListEntries(reply: String): List<ViewEntryParsed> =
-            ENTRY_REGEX.findAll(reply).map { m ->
-                ViewEntryParsed(
-                    path = unescapeJson(m.groupValues[1]),
-                    size = m.groupValues[2].toLong(),
-                    mtimeMs = m.groupValues[3].toLong(),
-                    isFolder = m.groupValues[4].toBoolean(),
-                    excluded = EXCLUDED_REGEX.containsMatchIn(m.value),
-                )
-            }.toList()
+            parseListEntries(Json.parseToJsonElement(reply) as? JsonObject ?: return emptyList())
 
-        private fun unescapeJson(s: String): String {
-            val sb = StringBuilder()
-            var i = 0
-            while (i < s.length) {
-                val c = s[i]
-                if (c == '\\' && i + 1 < s.length) {
-                    sb.append(s[i + 1]); i += 2
-                } else {
-                    sb.append(c); i++
-                }
+        internal fun parseListEntries(reply: JsonObject): List<ViewEntryParsed> =
+            (reply["entries"] as? JsonArray).orEmpty().mapNotNull { element ->
+                val entry = element as? JsonObject ?: return@mapNotNull null
+                ViewEntryParsed(
+                    path = entry.string("path") ?: return@mapNotNull null,
+                    size = entry.long("size") ?: return@mapNotNull null,
+                    mtimeMs = entry.long("mtime_ms") ?: return@mapNotNull null,
+                    isFolder = entry.boolean("folder") ?: return@mapNotNull null,
+                    excluded = entry.boolean("excluded") == true,
+                )
             }
-            return sb.toString()
-        }
+
+        private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+        private fun JsonObject.long(key: String): Long? = (this[key] as? JsonPrimitive)?.takeUnless { it.isString }?.longOrNull
+
+        private fun JsonObject.boolean(key: String): Boolean? = (this[key] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
 
         /** Public parse-result type so the parser is unit-testable without an IPC round-trip. */
         data class ViewEntryParsed(
