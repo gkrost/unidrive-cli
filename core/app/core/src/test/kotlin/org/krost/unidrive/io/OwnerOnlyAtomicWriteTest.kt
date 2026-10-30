@@ -39,6 +39,28 @@ class OwnerOnlyAtomicWriteTest {
     }
 
     @Test
+    fun `a destination name at the 255 character limit is still written`() {
+        // `verify --json-report` takes any valid name: 240 letters and ".json" is 245, and name + "." + number + ".tmp" no longer fits.
+        val long = dir.resolve("a".repeat(240) + ".json")
+
+        OwnerOnlyAtomicWrite.replace(long, "report".toByteArray())
+
+        assertEquals("report", Files.readString(long))
+        assertEquals(listOf(long.fileName.toString()), folder())
+    }
+
+    @Test
+    fun `a long multi-byte name gets a prefix that fits and is not cut inside a character`() {
+        val name = "😀".repeat(60) + ".json" // 240 UTF-8 bytes of emoji: cut only between whole characters
+
+        val prefix = OwnerOnlyAtomicWrite.tempPrefix(name)
+
+        assertTrue(prefix.toByteArray(Charsets.UTF_8).size <= 101, "bounded")
+        assertTrue(prefix.endsWith("😀."), "ends on a whole character: $prefix")
+        assertEquals("secret.toml.", OwnerOnlyAtomicWrite.tempPrefix("secret.toml"))
+    }
+
+    @Test
     fun `it replaces an existing file and leaves no temp file`() {
         Files.writeString(target, "old")
 

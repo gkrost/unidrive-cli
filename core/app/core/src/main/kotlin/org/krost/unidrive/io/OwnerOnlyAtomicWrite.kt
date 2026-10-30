@@ -95,7 +95,7 @@ public object OwnerOnlyAtomicWrite {
         restrict: (Path) -> OwnerOnly.Outcome,
     ): Path {
         val folder = target.toAbsolutePath().parent ?: throw IOException("path has no parent folder: $target")
-        val prefix = target.fileName.toString() + "."
+        val prefix = tempPrefix(target.fileName.toString())
         val tmp =
             if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
                 val ownerOnly = PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))
@@ -116,4 +116,20 @@ public object OwnerOnlyAtomicWrite {
         }
         return tmp
     }
+
+    /**
+     * The temp name is the target's name, a dot, the JDK's random number and `.tmp`. The target's name is cut to
+     * [MAX_PREFIX_BYTES] bytes of UTF-8 (on a character boundary) so that a valid name close to the 255-byte limit of a
+     * path component, which a user may choose for a report, still gets a temp name that fits next to it.
+     */
+    internal fun tempPrefix(fileName: String): String {
+        var end = fileName.length
+        while (end > 0 && fileName.substring(0, end).toByteArray(Charsets.UTF_8).size > MAX_PREFIX_BYTES) {
+            end--
+            if (end > 0 && Character.isLowSurrogate(fileName[end])) end-- // never between the halves of a character
+        }
+        return fileName.substring(0, end) + "."
+    }
+
+    private const val MAX_PREFIX_BYTES = 100
 }
