@@ -4,3 +4,11 @@
 {"ok":true,"cancelled":false}
 {"verb":"hydration.cancel","path":"/docs/../open.txt"}
 {"ok":false,"error":"invalid_path"}
+{"verb":"hydration.cancel","path":"/docs/report.txt"}
+{"ok":true,"cancelled":true}
+{"verb":"hydration.cancel","path":"/docs/report.txt","handle_id":"h-1"}
+{"ok":true,"cancelled":true}
+{"verb":"hydration.cancel","path":"/docs/report.txt","handle_id":"h-9"}
+{"ok":true,"cancelled":false}
+{"verb":"hydration.cancel","path":"/docs/open.txt","handle_id":"h-1"}
+{"ok":true,"cancelled":false}

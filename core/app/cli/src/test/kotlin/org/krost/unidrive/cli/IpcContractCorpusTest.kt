@@ -625,6 +625,55 @@ class IpcContractCorpusTest {
         )
     }
 
+    /**
+     * gkrost/unidrive-cli#23: `events/failed-cancelled.ndjson` and `events/completed-download-cancelled.ndjson`, the lines a
+     * subscriber is pushed for an `open_read` whose wait for the download was cancelled (`hydration.cancel`, or its connection
+     * closed). The shapes are those of every failed download; the `error` is the `cancelled` token an upload cancel carries.
+     */
+    @Test
+    fun cancelled_download_event_lines_match_the_serialiser() {
+        assertJsonMatches(
+            expected = Json.parseToJsonElement(loadEventLine("failed-cancelled")),
+            actual = Json.parseToJsonElement(serialiseHydrationEvent(HydrationEvent.Failed("/docs/report.txt", HydrationError.Cancelled))),
+            at = "events/failed-cancelled",
+        )
+        assertJsonMatches(
+            expected = Json.parseToJsonElement(loadEventLine("completed-download-cancelled")),
+            actual =
+                Json.parseToJsonElement(
+                    serialiseHydrationEvent(
+                        HydrationEvent.Completed(
+                            path = "/docs/report.txt",
+                            handleId = "h-1",
+                            direction = HydrationEvent.Completed.Direction.DOWNLOAD,
+                            ok = false,
+                            error = HydrationError.Cancelled,
+                        ),
+                    ),
+                ),
+            at = "events/completed-download-cancelled",
+        )
+    }
+
+    /**
+     * gkrost/unidrive-cli#23: `events/downloading.ndjson` (an open_read's download, correlated by its handle) and
+     * `events/downloading-hydrate.ndjson` (a hydrate's, without handle_id): the progress lines a subscriber is pushed while a
+     * download runs.
+     */
+    @Test
+    fun downloading_event_lines_match_the_serialiser() {
+        assertJsonMatches(
+            expected = Json.parseToJsonElement(loadEventLine("downloading")),
+            actual = Json.parseToJsonElement(serialiseHydrationEvent(HydrationEvent.Downloading("/docs/big.iso", "h-1", 4096, 65536))),
+            at = "events/downloading",
+        )
+        assertJsonMatches(
+            expected = Json.parseToJsonElement(loadEventLine("downloading-hydrate")),
+            actual = Json.parseToJsonElement(serialiseHydrationEvent(HydrationEvent.Downloading("/docs/big.iso", null, 4096, 65536))),
+            at = "events/downloading-hydrate",
+        )
+    }
+
     private fun recentsRefs() =
         mapOf(
             ViewKind.RECENTS to
@@ -1336,6 +1385,8 @@ class IpcContractCorpusTest {
             path.startsWith("/unsupported") ->
                 HydrationError.UnsupportedObject("it is stored in several parts, which this client cannot read")
             path.startsWith("/truncated") -> HydrationError.RemoteIncomplete(storedBytes = 298_844_160L, declaredBytes = 360_951_317L)
+            // gkrost/unidrive-cli#23: the wait for the download was cancelled (hydration.cancel, or the connection closed).
+            path.startsWith("/cancelled") -> HydrationError.Cancelled
             else -> null
         }
 
@@ -1366,6 +1417,12 @@ class IpcContractCorpusTest {
         override suspend fun closeHandle(connectionId: String, handleId: String) {}
 
         override suspend fun cancelUpload(path: String): Boolean = path == "/docs/open.txt"
+
+        // gkrost/unidrive-cli#23: /docs/report.txt is being downloaded for the open_read of handle h-1.
+        override suspend fun cancelDownload(
+            path: String,
+            handleId: String?,
+        ): Boolean = path == "/docs/report.txt" && (handleId == null || handleId == "h-1")
 
         override suspend fun hydrate(path: String): HydrateResult = when {
             path.startsWith("/missing") -> HydrateResult.Failed(HydrationError.UnknownPath)
