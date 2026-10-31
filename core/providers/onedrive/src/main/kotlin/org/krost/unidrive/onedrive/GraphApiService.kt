@@ -14,7 +14,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.HttpDefaults
+import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.ProviderException
+import org.krost.unidrive.RemoteContentRefusedDownloadException
 import org.krost.unidrive.ShareInfo
 import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.http.RequestMetricsSink
@@ -229,6 +231,27 @@ class GraphApiService(
         destPath: Path,
     ): Long = downloadFileReading(itemId, destPath).bytes
 
+    // An item OneDrive flagged as malicious is never fetched: the refusal is permanent (the row is quarantined, not retried)
+    // and says the cloud refuses the content, not that the file is gone. Graph marks such an item with the `malware`
+    // facet; a content request for one may also answer 403 with the error code `malwareDetected` (that shape is unverified).
+    private fun refuseIfMalware(
+        item: DriveItem,
+        itemId: String,
+    ) {
+        if (item.malware != null) throw malwareRefusal(itemId)
+    }
+
+    private fun isMalwareDetected(body: String?): Boolean = body?.contains("\"code\":\"malwareDetected\"") == true
+
+    private fun malwareRefusal(
+        itemId: String,
+        cause: Throwable? = null,
+    ) = RemoteContentRefusedDownloadException(
+        "OneDrive flagged item $itemId as malware; refusing to download it",
+        reason = "flagged as malware by OneDrive",
+        cause = cause,
+    )
+
     /** What a download brought: the bytes written, and the item metadata those bytes were read by. */
     data class DownloadedFile(val bytes: Long, val item: DriveItem)
 
@@ -240,7 +263,7 @@ class GraphApiService(
         itemId: String,
         destPath: Path,
     ): DownloadedFile {
-        var item = getItemById(itemId)
+        var item = getItemById(itemId).also { refuseIfMalware(it, itemId) }
         var downloadedBytes = 0L
         var url = item.downloadUrl ?: "${itemUrl(itemId)}/content"
         var authNeeded = item.downloadUrl == null
@@ -351,6 +374,9 @@ class GraphApiService(
                         // expired — not an account-auth problem. Re-resolve the item once
                         // for a fresh URL (mirrors the HTML re-resolve arm below); only a
                         // 401/403 on the fresh URL is surfaced as an authentication failure.
+                        if (outcome.statusCode == HttpStatusCode.Forbidden.value && isMalwareDetected(outcome.body)) {
+                            throw malwareRefusal(itemId)
+                        }
                         if (authUrlReresolved) {
                             // Only a 401 is an authentication failure. A 403 that persists on a
                             // fresh URL is an access refusal (before archive#329 it surfaced as the
@@ -372,7 +398,7 @@ class GraphApiService(
                             outcome.statusCode,
                             itemId,
                         )
-                        val fresh = getItemById(itemId)
+                        val fresh = getItemById(itemId).also { refuseIfMalware(it, itemId) }
                         item = fresh
                         url = fresh.downloadUrl ?: "${itemUrl(itemId)}/content"
                         authNeeded = fresh.downloadUrl == null
@@ -396,8 +422,13 @@ class GraphApiService(
                 }
             } catch (e: AuthenticationException) {
                 throw e
+            } catch (e: PermanentDownloadFailureException) {
+                throw e
             } catch (e: GraphApiException) {
                 // HTTP-status failures (403/404/etc) aren't short-read flakes; don't retry.
+                if (e.statusCode == HttpStatusCode.Forbidden.value && isMalwareDetected(e.message)) {
+                    throw malwareRefusal(itemId, e)
+                }
                 throw e
             } catch (e: kotlinx.coroutines.CancellationException) {
                  throw e
@@ -416,7 +447,7 @@ class GraphApiService(
                         itemId,
                         e.message,
                     )
-                    val fresh = getItemById(itemId)
+                    val fresh = getItemById(itemId).also { refuseIfMalware(it, itemId) }
                     item = fresh
                     url = fresh.downloadUrl ?: "${itemUrl(itemId)}/content"
                     authNeeded = fresh.downloadUrl == null
