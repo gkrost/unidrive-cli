@@ -4069,6 +4069,7 @@ class InternxtProvider(
                     onProgress?.invoke(progress)
                 },
                 resume = resume,
+                tracked = scanContext?.trackedRow,
                 persist =
                     persist?.let { store ->
                         { rows, startsDone -> store(rows, treeMarker(startedAt.toString(), scopeRoots, startsDone)) }
@@ -4538,6 +4539,12 @@ class InternxtProvider(
         // whichever coroutine that was. A folder counts as known before the folder that holds it
         // counts as done, so known - done is the queue (listed, waiting or in flight) and is never
         // zero while the walk goes on.
+        //
+        // [tracked] is the engine's state.db (ScanContext.trackedRow): it decides between two live folders that share the
+        // name of a scope root's segment (see [scopeSegmentWinner]).
+        // The walk's collaborators and test seams are its parameters, and the walk, its resume and its persistence run in one
+        // flow (its complexity was in the detekt baseline under the signature before [tracked]).
+        @Suppress("LongParameterList", "CyclomaticComplexMethod")
         internal suspend fun collectScopedInventoryImpl(
             getContents: suspend (String) -> FolderContentResponse,
             driveRootUuid: String,
@@ -4549,6 +4556,7 @@ class InternxtProvider(
             onProgress: ((ScanProgress) -> Unit)? = null,
             resume: TreeResume? = null,
             persist: (suspend (rows: List<org.krost.unidrive.CloudItem>, startsDone: Set<String>) -> Unit)? = null,
+            tracked: ((String) -> org.krost.unidrive.CloudItem?)? = null,
         ): ScopedInventory {
             val files = java.util.Collections.synchronizedList(mutableListOf<InternxtFile>())
             val folders = java.util.Collections.synchronizedMap(linkedMapOf<String, InternxtFolder>())
@@ -4649,12 +4657,23 @@ class InternxtProvider(
 
             report()
 
+            val warnedTwins = HashSet<String>()
             for (root in scopeRoots) {
                 var current = driveRootUuid
                 for (segment in pathSegments(root)) {
+                    val matches = listing(current).children.filter { live(it) && sanitizeName(it.plainName ?: it.name ?: "") == segment }
                     val child =
-                        listing(current).children.firstOrNull { live(it) && sanitizeName(it.plainName ?: it.name ?: "") == segment }
+                        scopeSegmentWinner(matches, segment, current, driveRootUuid, tracked)
                             ?: throw ProviderException("sync_path '$root' not found on the remote: no folder '$segment'")
+                    if (matches.size > 1 && warnedTwins.add(child.uuid)) {
+                        log.warn(
+                            "sync_path '{}': {} live folders share the name of one segment ({}); walking {}, the one the gather keeps at that path",
+                            root,
+                            matches.size,
+                            matches.map { it.uuid }.sorted().joinToString(", "),
+                            child.uuid,
+                        )
+                    }
                     val stamped = if (child.parentUuid != null) child else child.copy(parentUuid = current)
                     folders[stamped.uuid] = stamped
                     current = stamped.uuid
@@ -4670,6 +4689,26 @@ class InternxtProvider(
             }
             for (start in starts) walk(start)
             return ScopedInventory(files.toList(), folders.values.toList())
+        }
+
+        // Internxt keeps two live folders of one name in one folder (archive#403). The segment of a scope root they share
+        // resolves to the folder the engine's gather keeps at that path (RemoteGather's winner rule), never to the one the
+        // listing happens to name first: the one state.db tracks at that path wins, one it keeps under another name (a
+        // twin's decorated name) loses, and otherwise the smallest id. Walking another folder than the one state.db
+        // tracks would make every row below the scope root vanish from a full listing.
+        internal fun scopeSegmentWinner(
+            matches: List<InternxtFolder>,
+            segment: String,
+            parentUuid: String,
+            driveRootUuid: String,
+            tracked: ((String) -> org.krost.unidrive.CloudItem?)?,
+        ): InternxtFolder? {
+            if (matches.size < 2) return matches.firstOrNull()
+            fun rank(folder: InternxtFolder): Int {
+                val row = tracked?.invoke(folder.uuid)?.takeIf { !it.trashed && (it.parentId ?: driveRootUuid) == parentUuid } ?: return 1
+                return if (sanitizeName(row.name) == segment) 0 else 2
+            }
+            return matches.minWith(compareBy<InternxtFolder> { rank(it) }.thenBy { it.uuid })
         }
 
         /**

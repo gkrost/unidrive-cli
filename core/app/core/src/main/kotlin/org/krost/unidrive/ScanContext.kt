@@ -49,7 +49,8 @@ package org.krost.unidrive
  * namespace). It is what the engine knew after its last pass, no more: a provider that uses it to avoid asking the remote
  * for a folder it has not changed must check it against what the pass delivers and ask the remote where they disagree.
  * The engine offers it on every gather; a full listing, which is what runs when the engine cannot believe its rows, does
- * not use it.
+ * not use it for its items. It may use it to break a tie the way the gather's winner rule does (which of two live folders
+ * of one name a scope root names).
  *
  * [stagedPage] reads the staged rows back a page at a time: up to `limit` rows whose id sorts after `afterId` (null: from
  * the first), in id order, every row [persistPage] stored for this scan (the same rows, with the same limits, as
