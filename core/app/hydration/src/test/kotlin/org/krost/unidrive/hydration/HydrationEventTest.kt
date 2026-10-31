@@ -42,6 +42,7 @@ class HydrationEventTest {
             is HydrationEvent.Queued         -> "qu"
             is HydrationEvent.Skipped        -> "sk"
             is HydrationEvent.Uploading      -> "up"
+            is HydrationEvent.Downloading    -> "dn"
             is HydrationEvent.Completed      -> "co"
             is HydrationEvent.ViewInvalidated -> "vi"
             is HydrationEvent.Paused         -> "pa"

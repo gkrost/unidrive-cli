@@ -268,7 +268,9 @@ internal class MinimalFakeProvider(
 
     // archive#778: a download that has written [partialBytes] and then suspends at [gate] (a transfer in flight
     // when the daemon is paused). [reached] completes once the partial bytes are on disk.
-    class DownloadStall(val partialBytes: Int) {
+    // [inProviderStaging]: the partial bytes go to a staging file of the provider's own next to the destination
+    // (`<name>.unidrive-tmp`), moved over it at the end, as the real providers do (gkrost/unidrive-cli#23).
+    class DownloadStall(val partialBytes: Int, val inProviderStaging: Boolean = false) {
         val gate = CompletableDeferred<Unit>()
         val reached = CompletableDeferred<Unit>()
     }
@@ -279,9 +281,19 @@ internal class MinimalFakeProvider(
         val content = remoteFiles[remotePath] ?: ByteArray(0)
         Files.createDirectories(destination.parent)
         downloadStall?.let { stall ->
-            Files.write(destination, content.copyOf(stall.partialBytes))
+            val staging =
+                if (stall.inProviderStaging) {
+                    destination.resolveSibling(org.krost.unidrive.io.stagingSiblingName(destination.fileName.toString(), ".unidrive-tmp"))
+                } else {
+                    destination
+                }
+            Files.write(staging, content.copyOf(stall.partialBytes))
             stall.reached.complete(Unit)
-            stall.gate.await()
+            try {
+                stall.gate.await()
+            } finally {
+                if (staging != destination) Files.deleteIfExists(staging)
+            }
         }
         shortDownloadBytes?.let { short ->
             Files.write(destination, content.copyOf(short))
@@ -582,6 +594,8 @@ internal class HydrationTestEnv(
     val trash: org.krost.unidrive.engine.TrashNamespace = org.krost.unidrive.engine.TrashNamespace(ignoreCase = false),
     /** The read-only views of the profile (Recents, ...); none = the mount shows none, as before. */
     viewSpecs: List<ViewSpec> = emptyList(),
+    /** gkrost/unidrive-cli#23: the gap between `downloading` events; off (0) in this harness unless a test asks for them. */
+    downloadProgressIntervalMs: Long = 0,
 ) {
     val cacheRoot: Path = Files.createTempDirectory("unidrive-hydration-cache")
     private val dbPath: Path = Files.createTempDirectory("unidrive-hydration-db").resolve("state.db")
@@ -667,6 +681,7 @@ internal class HydrationTestEnv(
             exhaustedRetryDelaysMs = exhaustedRetryDelaysMs,
             history = history,
         )
+        hydration.downloadProgressIntervalMs = downloadProgressIntervalMs
     }
 
     /**

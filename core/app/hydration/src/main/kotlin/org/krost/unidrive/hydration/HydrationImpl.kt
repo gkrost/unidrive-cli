@@ -298,6 +298,12 @@ class HydrationImpl(
 
     private val downloads = SharedDownloads<SharedRead>(recoveryUploadScope.coroutineContext[Job])
 
+    /**
+     * gkrost/unidrive-cli#23: the gap between two `downloading` events of one waiting request (about two a second, the most a
+     * client shows); 0 or less sends none. A test seam: the test harness turns it off.
+     */
+    @Volatile internal var downloadProgressIntervalMs: Long = DEFAULT_DOWNLOAD_PROGRESS_INTERVAL_MS
+
     /** Test seam (gkrost/unidrive-cli#23): how many reads and hydrates wait for the download of [path] now. */
     internal fun downloadWaiterCount(path: String): Int = downloads.waiterCount(path)
 
@@ -377,6 +383,9 @@ class HydrationImpl(
 
         /** Default coalescing gap for `uploading` progress events (see [uploadProgressMinIntervalMs]). */
         const val DEFAULT_UPLOAD_PROGRESS_MIN_INTERVAL_MS = 400L
+
+        /** gkrost/unidrive-cli#23: default gap between two `downloading` events of one request (see [downloadProgressIntervalMs]). */
+        const val DEFAULT_DOWNLOAD_PROGRESS_INTERVAL_MS = 500L
 
         /** archive#450: default hydration cache budget per profile, 20 GiB. */
         // The value of SyncConfig.DEFAULT_HYDRATION_CACHE_MAX_BYTES (:app:sync, which this module no longer
@@ -2290,14 +2299,43 @@ class HydrationImpl(
         waiter: SharedDownloads.Waiter,
         tx: TransferHandle?,
     ): SharedDownloads.Outcome<SharedRead> =
-        downloads.await(path, waiter) {
-            try {
-                SharedRead(mount.ensureHydratedReporting(path, tx), tx)
-            } catch (e: Exception) {
-                tx.endDownloadFailed(e)
-                throw e
+        reportingDownloadProgress(path, waiter.handleId) {
+            downloads.await(path, waiter) {
+                try {
+                    SharedRead(mount.ensureHydratedReporting(path, tx), tx)
+                } catch (e: Exception) {
+                    tx.endDownloadFailed(e)
+                    throw e
+                }
             }
         }
+
+    // gkrost/unidrive-cli#23: while [wait] runs, a `downloading` event every [downloadProgressIntervalMs] in which a download of
+    // [path] runs, for this request ([handleId] of an open_read, null for a hydrate). tryEmit: progress never holds up a read.
+    private suspend fun <T> reportingDownloadProgress(
+        path: String,
+        handleId: String?,
+        wait: suspend () -> T,
+    ): T {
+        val intervalMs = downloadProgressIntervalMs
+        if (intervalMs <= 0) return wait()
+        return coroutineScope {
+            val ticker =
+                launch {
+                    while (true) {
+                        delay(intervalMs)
+                        mount.downloadProgress(path)?.let {
+                            _events.tryEmit(HydrationEvent.Downloading(path, handleId, it.bytesDone, it.bytesTotal))
+                        }
+                    }
+                }
+            try {
+                wait()
+            } finally {
+                ticker.cancel()
+            }
+        }
+    }
 
     // gkrost/unidrive-cli#23: this read stopped waiting for its download (hydration.cancel, or its connection closed). Not a
     // failed download: the row keeps no error, and the handle's correlation ends with the cancelled token.
