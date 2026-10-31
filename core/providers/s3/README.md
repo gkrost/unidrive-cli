@@ -53,8 +53,13 @@ Every request takes a slot from the shared `HttpRetryBudget`. A 500, 503 (SlowDo
 - **Hash:** `HashAlgorithm.Md5Hex` on the ETag. A multipart ETag (`<hex>-<n>`) is not an MD5, and verification skips it. Neither is an SSE-KMS or SSE-C ETag, which the listing cannot tell apart.
 - **Time:** an item's `modified` is S3's `LastModified` wherever the item comes from. A listing carries no user metadata, and the engine compares the time it recorded, so the time read from a listing and the one read after an upload must be the same. The provider writes `x-amz-meta-mtime` but does not read it back yet.
 
+## Tests
+
+- `./gradlew :providers:s3:test` (part of `check`): the provider against `FakeS3`, an in-memory S3 behind Ktor's mock engine, and `SigV4Signer` against AWS's published examples.
+- `./gradlew :providers:s3:minioTest` (not part of `check`): `S3MinioContainerTest`, the provider against a real S3 server, MinIO in a Testcontainer: the listing paged and resumed, single and multipart uploads (resumed after a cut), the part-copy move above 5 GiB, a batch delete refused for one key, a presigned GET, and `If-Match` / `If-None-Match` answered by the server. It needs a Docker engine and skips every case without one. CI runs it in the Linux job `s3-minio`. The fake accepts what MinIO refuses (parts below 5 MiB, for one), so a change to what the provider sends is worth a run of both.
+
 ## Not yet
 
-- **Hermetic tests on MinIO:** a Testcontainer suite, plus opt-in runs on AWS and Scaleway. The tests here use an in-memory fake S3.
+- **Opt-in runs on AWS and Scaleway:** the same cases against a real vendor, gated on keys in the environment.
 - **Reading back `x-amz-meta-mtime`:** a HEAD per object, or an engine-side decision on which time to compare.
 - **Quota:** none (`hasQuota = false`); a bucket has no plan to report.

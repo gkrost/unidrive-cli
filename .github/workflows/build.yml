@@ -319,6 +319,34 @@ jobs:
   # and its tests (MacKeychainCredentialProtector) stay in the repo; to bring macOS back, add a `macos-latest` job running
   # `./gradlew :providers:internxt:test --tests '*MacKeychainCredentialProtectorTest'` with a `timeout-minutes` bound.
 
+  # The S3 provider against a real S3 server: MinIO in a Testcontainer (S3MinioContainerTest). Not part of `check`
+  # (it needs a Docker engine and pulls an image) and not a required check; Docker is on the Linux runners only.
+  s3-minio:
+    name: s3-minio
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Cache ~/.gradle (see the comment in the check job).
+      - name: Set up Gradle dependency cache
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: S3 provider against MinIO
+        working-directory: core
+        # A runner without Docker fails the job instead of skipping every case.
+        env:
+          UNIDRIVE_S3_MINIO_REQUIRED: "true"
+        run: ./gradlew :providers:s3:minioTest --no-daemon
+
   # The ignore matcher (org.krost.unidrive.sync.ignore) is checked against `git check-ignore` itself. The oracle
   # is a pinned git built from its release tag, never the runner's git, which moves with the runner image; the
   # other legs of this workflow skip the oracle test (CI set, UNIDRIVE_ORACLE_GIT not).
