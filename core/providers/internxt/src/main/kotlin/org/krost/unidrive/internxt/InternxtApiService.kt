@@ -588,12 +588,12 @@ class InternxtApiService(
         return if (at == null) e.javaClass.simpleName else "${e.javaClass.simpleName} at $at"
     }
 
-    // The folder uuids of the account's backup devices (`GET /backup/deviceAsFolder`, what the desktop app lists): each
-    // device is a folder without a parent. Null when the account has no backups: the server answers 400 while backups are
-    // not enabled for the user, and a gateway without the route 404. Every other failure propagates. The GET stands
-    // outside an enumeration's connect-outage budget and records no throttle: the census asks it after the listing is
-    // already assembled, and a failure must not stall the gather or open the drive storm circuit.
-    internal suspend fun listBackupDeviceFolders(): Set<String>? {
+    // The account's backup devices (`GET /backup/deviceAsFolder`, what the desktop app lists): each device is a folder
+    // without a parent. Null when the account has no backups: the server answers 400 while backups are not enabled for
+    // the user, and a gateway without the route 404. Every other failure propagates. The GET stands outside an
+    // enumeration's connect-outage budget and records no throttle: a gather asks it after the listing is in hand, and a
+    // failure must not stall the gather or open the drive storm circuit.
+    internal suspend fun getBackupDevices(): List<BackupDevice>? {
         val body =
             try {
                 withContext(coroutineContext.minusKey(EnumerationOutageRetry)) {
@@ -603,7 +603,7 @@ class InternxtApiService(
                 if (e.statusCode == 400 || e.statusCode == 404) return null
                 throw e
             }
-        return json.decodeFromString<List<BackupDeviceFolder>>(body).mapTo(LinkedHashSet()) { it.uuid }
+        return json.decodeFromString<List<BackupDevice>>(body)
     }
 
     // One attempt, and not an enumeration GET: no outage schedule, no transient-retry ladder, no throttle and no
