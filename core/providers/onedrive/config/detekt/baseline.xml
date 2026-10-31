@@ -2,20 +2,18 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>CyclomaticComplexMethod:GraphApiService.kt$GraphApiService$suspend fun downloadFile( itemId: String, destPath: Path, ): Long</ID>
+    <ID>CyclomaticComplexMethod:GraphApiService.kt$GraphApiService$suspend fun downloadFileReading( itemId: String, destPath: Path, ): DownloadedFile</ID>
     <ID>LargeClass:GraphApiService.kt$GraphApiService : AutoCloseable</ID>
-    <ID>LongMethod:GraphApiService.kt$GraphApiService$suspend fun downloadFile( itemId: String, destPath: Path, ): Long</ID>
-    <ID>NestedBlockDepth:GraphApiService.kt$GraphApiService$suspend fun downloadFile( itemId: String, destPath: Path, ): Long</ID>
+    <ID>LongMethod:GraphApiService.kt$GraphApiService$suspend fun downloadFileReading( itemId: String, destPath: Path, ): DownloadedFile</ID>
+    <ID>NestedBlockDepth:GraphApiService.kt$GraphApiService$suspend fun downloadFileReading( itemId: String, destPath: Path, ): DownloadedFile</ID>
     <ID>RethrowCaughtException:CancellationPropagationTest.kt$CancellationPropagationTest$throw e</ID>
     <ID>SwallowedException:CancellationPropagationTest.kt$CancellationPropagationTest$e: CancellationException</ID>
     <ID>SwallowedException:CancellationPropagationTest.kt$CancellationPropagationTest$e: Exception</ID>
     <ID>SwallowedException:DeltaDiagnosticTest.kt$DeltaDiagnosticTest$e: Exception</ID>
     <ID>SwallowedException:OneDriveDeltaIntegrationTest.kt$OneDriveDeltaIntegrationTest$e: Exception</ID>
     <ID>SwallowedException:OneDriveIntegrationTest.kt$OneDriveIntegrationTest$e: Exception</ID>
-    <ID>ThrowsCount:GraphApiService.kt$GraphApiService$private suspend fun resolveUploadSession( localPath: Path, target: UploadTarget, fileSize: Long, fileSystemInfo: FileSystemInfo? = null, conflictBehavior: String = "replace", ifMatchETag: String? = null, ): Pair&lt;String, Long&gt;</ID>
-    <ID>ThrowsCount:GraphApiService.kt$GraphApiService$private suspend fun uploadChunkWithRetry( uploadUrl: String, bytes: ByteArray, offset: Long, endByte: Long, fileSize: Long, ): ChunkUploadResult</ID>
     <ID>ThrowsCount:GraphApiService.kt$GraphApiService$private suspend fun uploadLargeFileOnce( localPath: Path, target: UploadTarget, fileSize: Long, onProgress: ((Long, Long) -&gt; Unit)?, fileSystemInfo: FileSystemInfo?, conflictBehavior: String = "replace", ifMatchETag: String? = null, ): DriveItem</ID>
-    <ID>ThrowsCount:GraphApiService.kt$GraphApiService$suspend fun downloadFile( itemId: String, destPath: Path, ): Long</ID>
+    <ID>ThrowsCount:GraphApiService.kt$GraphApiService$suspend fun downloadFileReading( itemId: String, destPath: Path, ): DownloadedFile</ID>
     <ID>ThrowsCount:GraphApiService.kt$GraphApiService$suspend fun getDelta( link: String? = null, fromLatest: Boolean = false, // A preview must not reset the delta-cursor age clock that recordDeltaSeen maintains. readOnly: Boolean = false, ): DeltaResult</ID>
     <ID>ThrowsCount:OAuthService.kt$OAuthService$suspend fun getDeviceCode(): DeviceCodeResponse</ID>
     <ID>ThrowsCount:OAuthService.kt$OAuthService$suspend fun pollForToken( deviceCode: String, interval: Long, ): Token</ID>
