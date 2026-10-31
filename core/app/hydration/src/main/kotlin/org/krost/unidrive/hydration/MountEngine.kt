@@ -511,11 +511,11 @@ class MountEngine private constructor(
 
     // The truncate of open_write_begin and the end of a download of the same path, one at a time. The truncate does not wait
     // for the hydrate lock (a download can run for minutes); it waits for this short end only: the download's last look at
-    // the row, the move of its bytes into the cache copy's place and the row write. A truncate in between had its edit's
+    // the row, the move, local hash and row write. A truncate in between had its edit's
     // mark wiped by the row write, or emptied a copy the move then replaced (the editor's bytes went to the old file).
     private val cacheSwapMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
 
-    internal fun cacheSwapLock(path: String): Mutex = cacheSwapMutexes.computeIfAbsent(path) { Mutex() }
+    internal fun cacheSwapLock(path: String): Mutex = cacheSwapMutexes.computeIfAbsent(PathNormalizer.nfc(path)) { Mutex() }
 
     // Cloud objects found truncated or refused for their content, remembered so a repeated read or pin is refused
     // without asking the provider (or downloading a refused object again).
