@@ -30,17 +30,7 @@ class ListChildrenRepeatedLinkTest {
         return """{"value":[$entries]$nextPart}"""
     }
 
-    private fun installMockClient(
-        service: GraphApiService,
-        engine: MockEngine,
-    ) {
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
-    }
-
-    private fun newService() = GraphApiService(config = OneDriveConfig(), tokenProvider = { _ -> "test-token" })
+    private fun newService(engine: MockEngine) = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
 
     @Test
     fun `a repeated nextLink fails the listing instead of fetching it again`() =
@@ -58,8 +48,7 @@ class ListChildrenRepeatedLinkTest {
                         }
                     respond(body, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val e = assertFailsWith<ProviderException> { service.listChildren("/") }
 
@@ -84,8 +73,7 @@ class ListChildrenRepeatedLinkTest {
                         }
                     respond(body, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val items = service.listChildren("/")
 

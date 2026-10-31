@@ -195,11 +195,7 @@ class OneDriveCommittedChunkRetryTest {
         }
 
     private fun graphWith(engine: MockEngine): GraphApiService {
-        val service = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), tokenProvider = { _ -> "test-token" })
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
+        val service = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
         return service
     }
 

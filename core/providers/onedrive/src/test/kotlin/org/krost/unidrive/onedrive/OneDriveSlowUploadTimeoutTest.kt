@@ -83,30 +83,20 @@ class OneDriveSlowUploadTimeoutTest {
             service.close()
         }
 
-    private fun graphWithShortDefaultSocketTimeout(): GraphApiService {
-        val service =
-            GraphApiService(
-                config = OneDriveConfig(tokenPath = tokenDir),
-                tokenProvider = { _ -> "test-token" },
-            )
-        val httpClientField = GraphApiService::class.java.getDeclaredField("httpClient")
-        httpClientField.isAccessible = true
-        (httpClientField.get(service) as? HttpClient)?.close()
-        httpClientField.set(
-            service,
-            HttpClient(CIO) {
-                install(HttpTimeout) {
-                    connectTimeoutMillis = 2_000
-                    socketTimeoutMillis = 100
-                    requestTimeoutMillis = 10_000
-                }
-            },
+    private fun graphWithShortDefaultSocketTimeout(): GraphApiService =
+        GraphApiService(
+            config = OneDriveConfig(tokenPath = tokenDir),
+            httpClient =
+                HttpClient(CIO) {
+                    install(HttpTimeout) {
+                        connectTimeoutMillis = 2_000
+                        socketTimeoutMillis = 100
+                        requestTimeoutMillis = 10_000
+                    }
+                },
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1.0",
+            tokenProvider = { _ -> "test-token" },
         )
-        val baseUrlField = GraphApiService::class.java.getDeclaredField("baseUrl")
-        baseUrlField.isAccessible = true
-        baseUrlField.set(service, "http://127.0.0.1:${server.localPort}/v1.0")
-        return service
-    }
 
     private fun readRequest(input: java.io.InputStream): String {
         val headerBytes = ByteArrayOutputStream()

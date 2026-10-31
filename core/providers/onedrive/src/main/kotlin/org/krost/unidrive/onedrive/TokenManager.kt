@@ -19,8 +19,9 @@ class TokenManager(
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(TokenManager::class.java)
 
+    // Tests seed it to skip a sign-in.
     @Volatile
-    private var token: Token? = null
+    internal var token: Token? = null
 
     // UD-338: shared mutex + NonCancellable wrap lifted to :app:core/auth.
     // Provider-specific force-refresh (UD-310) and RefreshFailure recording

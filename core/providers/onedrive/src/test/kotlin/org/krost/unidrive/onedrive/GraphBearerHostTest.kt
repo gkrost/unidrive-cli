@@ -47,12 +47,7 @@ class GraphBearerHostTest {
                 val body = byUrl[request.url.toString()] ?: """{"value":[]}"""
                 respond(body, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
             }
-        val service = GraphApiService(config = OneDriveConfig(tokenPath = tmp.resolve("token")), tokenProvider = { _ -> "secret-token" })
-        GraphApiService::class.java.getDeclaredField("httpClient").apply {
-            isAccessible = true
-            (get(service) as? HttpClient)?.close()
-            set(service, HttpClient(engine))
-        }
+        val service = GraphApiService(config = OneDriveConfig(tokenPath = tmp.resolve("token")), httpClient = HttpClient(engine), tokenProvider = { _ -> "secret-token" })
         return service
     }
 

@@ -44,16 +44,8 @@ class OneDriveSimilarNameTest {
     private fun providerWith(graph: SimilarNameGraph): OneDriveProvider {
         // A private token folder: a large upload keeps its session there, and the default is the user's own.
         val config = OneDriveConfig(tokenPath = tmp.resolve("token"))
-        val provider = OneDriveProvider(config)
-        val api = GraphApiService(config = config, tokenProvider = { _ -> "test-token" })
-        val httpClientField = GraphApiService::class.java.getDeclaredField("httpClient")
-        httpClientField.isAccessible = true
-        (httpClientField.get(api) as? io.ktor.client.HttpClient)?.close()
-        httpClientField.set(api, graph.client())
-        val graphApiField = OneDriveProvider::class.java.getDeclaredField("graphApi")
-        graphApiField.isAccessible = true
-        (graphApiField.get(provider) as? GraphApiService)?.close()
-        graphApiField.set(provider, api)
+        val api = GraphApiService(config = config, httpClient = graph.client(), tokenProvider = { _ -> "test-token" })
+        val provider = OneDriveProvider(config, graphApi = api)
         return provider
     }
 
