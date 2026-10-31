@@ -4,7 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import java.util.concurrent.ConcurrentMap
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertNull
@@ -38,13 +37,7 @@ class HydrationOpenSetConcurrencyTest {
             // production creates; mutate that same instance directly below.
             impl.openWriteBegin("conn1", "/victim.txt", handleId = "h-victim")
 
-            @Suppress("UNCHECKED_CAST")
-            val openSets = HydrationImpl::class.java
-                .getDeclaredField("openSets")
-                .apply { isAccessible = true }
-                .get(impl) as ConcurrentMap<String, MutableMap<String, String>>
-
-            val inner = openSets.getValue("conn1")
+            val inner = impl.openSets.getValue("conn1")
 
             val writers = 4
             val opsPerWriter = 300_000

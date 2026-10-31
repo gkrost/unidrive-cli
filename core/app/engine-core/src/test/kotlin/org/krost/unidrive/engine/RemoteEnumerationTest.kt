@@ -1353,14 +1353,11 @@ class RemoteEnumerationTest {
             provider.items = deletedFolderDelta()
             val enumeration = enumeration()
             enumeration.enumerate(reset = false)
-            val inFlightFlag =
-                RemoteEnumeration::class.java.getDeclaredField("enumerateInFlight").also { it.isAccessible = true }
-                    .get(enumeration) as java.util.concurrent.atomic.AtomicBoolean
-            inFlightFlag.set(true)
+            enumeration.enumerateInFlight.set(true)
 
             assertEquals(0, enumeration.goneFolders.tombstone(db.getEntry("/p")!!, maxWaitMs = 1_000))
             assertNotNull(db.getEntry("/p/c.txt"), "nothing changes while the pass runs")
-            assertTrue(inFlightFlag.get(), "the pass keeps its guard")
+            assertTrue(enumeration.enumerateInFlight.get(), "the pass keeps its guard")
         }
 
     @Test

@@ -105,7 +105,7 @@ class RemoteEnumeration(
     // serialize across handlers, so two passes could otherwise race delta_cursor
     // promotion and deferredMissing corroboration state. A caller that loses the
     // CAS is a no-op (skipped=true).
-    private val enumerateInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+    internal val enumerateInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
     // Paths a prior COMPLETE enumeration flagged missing-but-deferred under the
     // bulk-disappearance corroboration guard (mount-view-refresh-design.md §3.2).

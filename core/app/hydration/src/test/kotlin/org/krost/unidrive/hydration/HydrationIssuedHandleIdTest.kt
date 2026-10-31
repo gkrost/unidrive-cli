@@ -5,7 +5,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
-import java.util.concurrent.ConcurrentMap
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -31,13 +30,7 @@ class HydrationIssuedHandleIdTest {
     private fun HydrationTestEnv.openWrite(path: String) =
         """{"verb":"hydration.open_write","path":"$path","cache_path":${quoted(syncEngine.resolveCachePath(path).toString())}}"""
 
-    private fun HydrationTestEnv.openSets(): ConcurrentMap<String, Map<String, String>> {
-        @Suppress("UNCHECKED_CAST")
-        return HydrationImpl::class.java
-            .getDeclaredField("openSets")
-            .apply { isAccessible = true }
-            .get(hydration) as ConcurrentMap<String, Map<String, String>>
-    }
+    private fun HydrationTestEnv.openSets() = hydration.openSets
 
     private fun HydrationTestEnv.heldIds(): Map<String, Set<String>> =
         openSets().mapValues { it.value.keys.toSet() }
