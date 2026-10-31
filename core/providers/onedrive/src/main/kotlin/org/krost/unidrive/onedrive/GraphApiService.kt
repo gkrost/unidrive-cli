@@ -846,17 +846,19 @@ class GraphApiService(
         // If-Match guard: a stored session that could overwrite more than this upload allows must not be reused.
         // Resuming such a session would skip the createUploadSession If-Match check entirely,
         // silently overwriting a concurrent remote edit that the caller is trying to detect.
+        // It is not discarded either: it holds the progress of these same bytes. A create asks for `fail` first and,
+        // when the name is taken, goes on as a guarded replace or a keep-both; the replay of that create takes the same
+        // way and must find the session of the second step (archive#1175). A fresh session created now replaces it.
         if (!mayResume(stored, conflictBehavior, ifMatchETag)) {
             log.info(
                 "OneDrive upload session for {} was created under a different If-Match guard or conflict behaviour " +
-                    "(stored={}/{}, now={}/{}); discarding and creating a fresh session",
+                    "(stored={}/{}, now={}/{}); keeping it for an upload that asks for that and creating a fresh session",
                 remotePath,
                 stored.ifMatchETag,
                 stored.conflictBehavior,
                 ifMatchETag,
                 conflictBehavior,
             )
-            sessionStore.delete(remotePath)
             return null
         }
         if (stored.conflictBehavior != null && (stored.conflictBehavior != conflictBehavior || stored.ifMatchETag != ifMatchETag)) {
