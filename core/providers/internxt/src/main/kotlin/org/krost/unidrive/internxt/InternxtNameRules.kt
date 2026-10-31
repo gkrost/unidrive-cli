@@ -41,8 +41,8 @@ internal object InternxtNameRules {
 
     // The whitespace of a JavaScript regular expression's `\s`, the class the desktop client's rule uses.
     private fun isScriptWhitespace(c: Char): Boolean =
-        c == ' ' || c in '\t'..'\r' || c == ' ' || c == ' ' || c in ' '..' ' ||
-            c == ' ' || c == ' ' || c == ' ' || c == ' ' || c == '　' || c == '﻿'
+        c == ' ' || c in '\u0009'..'\u000D' || c == '\u00A0' || c == '\u1680' || c in '\u2000'..'\u200A' ||
+            c == '\u2028' || c == '\u2029' || c == '\u202F' || c == '\u205F' || c == '\u3000' || c == '\uFEFF'
 
     private fun utf8Bytes(s: String): Int = s.toByteArray(Charsets.UTF_8).size
 

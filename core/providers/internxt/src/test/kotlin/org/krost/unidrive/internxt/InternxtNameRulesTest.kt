@@ -38,6 +38,8 @@ class InternxtNameRulesTest {
             "a*b" to Rule.WINDOWS_CHARACTER,
             // The desktop client: whitespace at either end (any Unicode space, not only U+0020).
             " name" to Rule.LEADING_WHITESPACE,
+            "\u2002name" to Rule.LEADING_WHITESPACE,
+            "\u202Fname" to Rule.LEADING_WHITESPACE,
             " name" to Rule.LEADING_WHITESPACE,
             "name " to Rule.TRAILING_WHITESPACE,
             "name " to Rule.TRAILING_WHITESPACE,
