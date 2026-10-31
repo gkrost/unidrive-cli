@@ -36,3 +36,13 @@ tasks.register<JavaExec>("heapProbe") {
     jvmArgs("-Xmx2g")
     args = (project.findProperty("sizes") as String?)?.split(',') ?: emptyList()
 }
+
+// The reader latency harness of the state database: readers against a merge replay, opt-in so `check` is unchanged.
+// Rows via -Prows=372588 (default 200,000).
+tasks.register<JavaExec>("readerLatencyProbe") {
+    group = "verification"
+    description = "Latency of state database readers while a writer replays a merge over every row of a temp state.db."
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("org.krost.unidrive.sync.ReaderLatencyProbeKt")
+    args = listOfNotNull(project.findProperty("rows") as String?)
+}

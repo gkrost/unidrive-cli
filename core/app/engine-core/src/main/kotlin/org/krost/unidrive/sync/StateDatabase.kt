@@ -73,8 +73,9 @@ class StateDatabase(
     // The thread that opened the manual batch ([beginBatch]) holding the connection's one SQLite
     // transaction, or null when no manual batch is open. SQLite has no per-thread transactions, so every
     // other thread's write would silently join it (archive#300); [beginWrite] uses this to tell them apart.
-    // Both fields are guarded by the instance monitor.
-    private var batchOwner: Thread? = null
+    // Both fields are guarded by the instance monitor; [read] also reads [batchOwner] without it, to ask whether the
+    // calling thread owns the batch, which only that thread can make true.
+    @Volatile private var batchOwner: Thread? = null
 
     // True while another thread's write has closed the open batch's transaction (the batch is still open
     // for its owner, which reopens a transaction on its next write).
@@ -135,6 +136,16 @@ class StateDatabase(
     // The prepared statements of the hot calls, by SQL text. Guarded by the monitor, like the connection they belong to.
     private val statements = StatementCache(STATEMENT_CACHE_LIMIT)
 
+    // The read-only connections the reads of a thread without a batch run on (see [read]); null where there are none.
+    // Set and cleared under the monitor, read without it.
+    @Volatile private var readers: ReaderPool? = null
+
+    // The reader this thread has borrowed for the read it is in, for a read nested in it (see [read]).
+    private val borrowedReader = ThreadLocal<CachingConnection?>()
+
+    // How many readers [initialize] allows; a test lowers it.
+    internal var readerPoolSize: Int = READER_CONNECTIONS
+
     // Test seams: how many prepared statements are cached, and the value of a PRAGMA on the connection.
     internal fun cachedStatementCount(): Int = synchronized(this) { statements.size }
 
@@ -182,21 +193,48 @@ class StateDatabase(
     private inline fun <R> cached(
         sql: String,
         body: (PreparedStatement) -> R,
-    ): R {
-        val statement = statements.take(sql) ?: conn.prepareStatement(sql)
-        var done = false
+    ): R = writerConnection().cached(sql, body)
+
+    // The writer connection with its statements, for the reads that run on it (see [read]). Call it with the monitor held.
+    private fun writerConnection() = CachingConnection(conn, statements)
+
+    /**
+     * Runs the read [body] on a connection: one of the [readers] when the thread holds no batch, so the read neither
+     * waits for the monitor nor sees another thread's open batch (it sees the last commit); the writer connection, under
+     * the monitor ([locked]), when the thread holds the monitor (a call from within a [batch] or another locked call) or
+     * owns the open manual batch ([beginBatch]), so it reads its own writes; and the writer connection as well where
+     * there are no readers (in memory, a snapshot, read-only, a file SQLite did not switch to WAL). A read nested in a
+     * read on a reader (a lookup from a [scanAliveRows] visit) uses the same reader. The wait for a reader and the time it
+     * is kept go to [holds] like a monitor's, marked as a reader's.
+     */
+    private inline fun <T> read(
+        method: String,
+        body: (CachingConnection) -> T,
+    ): T {
+        val pool = readers?.takeUnless { Thread.holdsLock(this) || batchOwner === Thread.currentThread() }
+        val nested = borrowedReader.get()
+        val outermost = pool != null && nested == null
+        val requested = if (outermost) System.nanoTime() else 0L
+        // A pool closed meanwhile (the database is closing) lends nothing: the read then meets the closed writer.
+        val reader = if (pool == null) null else nested ?: pool.borrow()
+        if (reader == null) return locked(method) { body(writerConnection()) }
+        val acquired = if (outermost) System.nanoTime() else 0L
+        if (outermost) borrowedReader.set(reader)
         try {
-            statement.clearParameters()
-            val result = body(statement)
-            done = true
-            return result
+            return body(reader)
         } finally {
-            if (done) statements.give(sql, statement) else statements.discard(statement)
+            if (outermost) {
+                borrowedReader.remove()
+                val released = System.nanoTime()
+                pool?.giveBack(reader)
+                holds.record(method, acquired - requested, released - acquired, reader = true)
+            }
         }
     }
 
     fun initialize() {
         locked("initialize") {
+            closeReaders()
             statements.clear()
             scanStaging.close()
             _conn?.takeIf { !it.isClosed }?.close()
@@ -214,6 +252,7 @@ class StateDatabase(
                 if (!isDisposable) restrictSidecars()
                 // The one scan: from here on the writes keep the number (a read-only handle counts at its first ask).
                 recountAlive(dataVersion())
+                readers = readerPoolFor()
             } catch (e: Throwable) {
                 // A refused open (archive#323) must not leak the connection it opened.
                 runCatching { _conn?.close() }
@@ -266,6 +305,54 @@ class StateDatabase(
      */
     private fun restrictSidecars() = SqliteConnections.restrictSidecars(connector, dbPath, includeMainFile = false, log = log)
 
+    // Readers for a writable file in WAL mode only. With a rollback journal a reader would hold up the writer's commits
+    // (SQLITE_BUSY after the busy timeout) instead of reading beside them, so such a file keeps its one connection, as
+    // do a database in memory and a snapshot copy.
+    private fun readerPoolFor(): ReaderPool? {
+        if (readOnly || isDisposable) return null
+        if (!pragma("journal_mode").equals("wal", ignoreCase = true)) return null
+        return ReaderPool(readerPoolSize) { openReader() }
+    }
+
+    // A read-only connection with a small page cache that refuses every write even if the driver let one through.
+    private fun openReader(): CachingConnection {
+        val c = connector.openReadOnly(dbPath)
+        try {
+            SqliteConnections.setUp(c, dbPath, SqliteConnections.Settings(synchronous = null, wal = false, cacheKib = READER_PAGE_CACHE_KIB), log)
+            c.createStatement().use { it.execute("PRAGMA query_only=1") }
+        } catch (e: Throwable) {
+            runCatching { c.close() }
+            throw e
+        }
+        return CachingConnection(c, StatementCache(READER_STATEMENT_CACHE_LIMIT))
+    }
+
+    // No more reads on the readers: the idle ones close now, a lent one when its read is done. Called with the monitor
+    // held; it never waits for a reader, whose read may itself be waiting for the monitor.
+    private fun closeReaders() {
+        val pool = readers ?: return
+        readers = null
+        pool.close()
+    }
+
+    // Test seams: whether reads can run beside the writer, how many readers are open and the most that ever were, and a
+    // reader connection lent to [body] (null when there are none).
+    internal fun hasReaders(): Boolean = readers != null
+
+    internal fun readerCount(): Int = readers?.openCount() ?: 0
+
+    internal fun mostReaders(): Int = readers?.mostOpenedCount() ?: 0
+
+    internal fun <T> onReader(body: (Connection) -> T): T? {
+        val pool = readers ?: return null
+        val reader = pool.borrow() ?: return null
+        try {
+            return body(reader.connection)
+        } finally {
+            pool.giveBack(reader)
+        }
+    }
+
     private fun initializeReadOnly() {
         check(!inMemory) { "an in-memory database cannot be read-only" }
         check(Files.exists(dbPath)) { "state.db does not exist: $dbPath" }
@@ -288,6 +375,8 @@ class StateDatabase(
 
     fun close() {
         locked("close") {
+            // The readers first: the writer is then the last connection, and its checkpoint can empty the WAL.
+            closeReaders()
             statements.clear()
             scanStaging.close()
             _conn?.takeIf { !it.isClosed }?.let { c ->
@@ -1044,10 +1133,10 @@ class StateDatabase(
         entry.remoteId ?: pickSyntheticIdForPath(entry.path)
 
     fun getEntry(path: String): SyncEntry? =
-        locked("getEntry") {
+        read("getEntry") { c ->
             // archive#171: rows are stored NFC; normalize the query so an NFD-origin path
             // (e.g. from a co-daemon FUSE op) still matches.
-            cached(GET_ENTRY_SQL) { stmt ->
+            c.cached(GET_ENTRY_SQL) { stmt ->
                 stmt.setString(1, PathNormalizer.nfc(path))
                 stmt.executeQuery().use { rs -> if (rs.next()) rs.toSyncEntry() else null }
             }
@@ -1062,12 +1151,12 @@ class StateDatabase(
      * parameter, with SQLITE_MAX_VARIABLE_NUMBER the hard ceiling.
      */
     fun getEntriesByPaths(paths: Collection<String>): Map<String, SyncEntry> =
-        locked("getEntriesByPaths") {
+        read("getEntriesByPaths") { c ->
             if (paths.isEmpty()) return emptyMap()
             val storedToCaller = HashMap<String, String>(paths.size * 2)
             for (path in paths) storedToCaller[PathNormalizer.nfc(path)] = path
             val placeholders = storedToCaller.keys.joinToString(",") { "?" }
-            conn.prepareStatement("SELECT * FROM alive_entries WHERE path IN ($placeholders)").use { stmt ->
+            c.prepareStatement("SELECT * FROM alive_entries WHERE path IN ($placeholders)").use { stmt ->
                 storedToCaller.keys.forEachIndexed { index, stored -> stmt.setString(index + 1, stored) }
                 val rs = stmt.executeQuery()
                 val found = HashMap<String, SyncEntry>(storedToCaller.size * 2)
@@ -1080,8 +1169,8 @@ class StateDatabase(
         }
 
     fun getEntryByRemoteId(remoteId: String): SyncEntry? =
-        locked("getEntryByRemoteId") {
-            cached(GET_ENTRY_BY_REMOTE_ID_SQL) { stmt ->
+        read("getEntryByRemoteId") { c ->
+            c.cached(GET_ENTRY_BY_REMOTE_ID_SQL) { stmt ->
                 stmt.setString(1, remoteId)
                 stmt.executeQuery().use { rs -> if (rs.next()) rs.toSyncEntry() else null }
             }
@@ -1096,9 +1185,9 @@ class StateDatabase(
      * collapses to a plain `path` match — identical to [getEntry].
      */
     fun getEntryByRemotePath(remotePathRaw: String): SyncEntry? =
-        locked("getEntryByRemotePath") {
+        read("getEntryByRemotePath") { c ->
             val remotePath = PathNormalizer.nfc(remotePathRaw)
-            cached(BY_REMOTE_PATH) { stmt ->
+            c.cached(BY_REMOTE_PATH) { stmt ->
                 stmt.setString(1, remotePath)
                 stmt.executeQuery().use { rs -> if (rs.next()) rs.toSyncEntry() else null }
             } ?: spelledApartAt(remotePath)
@@ -1175,9 +1264,9 @@ class StateDatabase(
     }
 
     fun getEntryCaseInsensitive(pathRaw: String): SyncEntry? =
-        locked("getEntryCaseInsensitive") {
+        read("getEntryCaseInsensitive") { c ->
             val path = PathNormalizer.nfc(pathRaw)
-            conn.prepareStatement("SELECT * FROM alive_entries WHERE path = ? COLLATE NOCASE").use { stmt ->
+            c.prepareStatement("SELECT * FROM alive_entries WHERE path = ? COLLATE NOCASE").use { stmt ->
                 stmt.setString(1, path)
                 val rs = stmt.executeQuery()
                 return if (rs.next()) rs.toSyncEntry() else null
@@ -1190,7 +1279,8 @@ class StateDatabase(
      * 22 s in 88 minutes, archive#983). Counted again only when the number is unknown (a read-only handle's first ask, after a
      * write that cannot say how many rows it changed) or when another connection has committed to the file since the
      * last count (`PRAGMA data_version`, a lookup of one number): a CLI command that writes while the daemon runs, or a
-     * second process, cannot leave this number stale.
+     * second process, cannot leave this number stale. The number is the writer's, an open batch's rows included, so it
+     * is asked under the monitor and not on a reader: the ask is a read of a field.
      */
     fun getEntryCount(): Int =
         locked("getEntryCount") {
@@ -1251,8 +1341,8 @@ class StateDatabase(
      * everything).
      */
     fun getHydratedEntryCount(): Int =
-        locked("getHydratedEntryCount") {
-            conn.createStatement().use { stmt ->
+        read("getHydratedEntryCount") { c ->
+            c.createStatement().use { stmt ->
                 val rs = stmt.executeQuery("SELECT COUNT(*) FROM alive_entries WHERE is_hydrated = 1")
                 rs.next()
                 return rs.getInt(1)
@@ -1274,8 +1364,8 @@ class StateDatabase(
     }
 
     fun getAllEntries(): List<SyncEntry> =
-        locked("getAllEntries") {
-            conn.createStatement().use { stmt ->
+        read("getAllEntries") { c ->
+            c.createStatement().use { stmt ->
                 val rs = stmt.executeQuery("SELECT * FROM alive_entries")
                 val entries = mutableListOf<SyncEntry>()
                 while (rs.next()) entries.add(rs.toSyncEntry())
@@ -1289,7 +1379,8 @@ class StateDatabase(
      * listing). Here each step is one short read in the order of the table, the monitor is free between the steps, and a
      * row becomes a [SyncEntry] only when [AliveRow.entry] is asked for it. A row written while the scan runs may be
      * seen or not, and a row replaced meanwhile (it moves to the end of the table) twice: the callers are sweeps that
-     * judge each row on its own. [visit] runs under the monitor of its step, so it must be quick.
+     * judge each row on its own. [visit] runs inside the read of its step (see [read]: on a reader, or under the monitor
+     * on the writer), so it must be quick; a read it makes runs on the same connection.
      */
     fun scanAliveRows(
         chunkRows: Int = ALIVE_SCAN_CHUNK_ROWS,
@@ -1298,9 +1389,9 @@ class StateDatabase(
         require(chunkRows > 0)
         var after = Long.MIN_VALUE
         while (true) {
-            var read = 0
-            locked("scanAliveRows") {
-                conn
+            var count = 0
+            read("scanAliveRows") { c ->
+                c
                     .prepareStatement("SELECT rowid AS scan_rowid, * FROM sync_entries WHERE status='EXISTS' AND rowid > ? ORDER BY rowid LIMIT ?")
                     .use { stmt ->
                         stmt.setLong(1, after)
@@ -1309,13 +1400,13 @@ class StateDatabase(
                             val row = AliveRow(rs)
                             while (rs.next()) {
                                 after = rs.getLong("scan_rowid")
-                                read++
+                                count++
                                 visit(row)
                             }
                         }
                     }
             }
-            if (read < chunkRows) return
+            if (count < chunkRows) return
             aliveScanChunkGap()
         }
     }
@@ -1340,9 +1431,9 @@ class StateDatabase(
      * intent is "is this subtree known to the user", not a count.
      */
     fun hasHydratedDescendant(topLevelRaw: String): Boolean =
-        locked("hasHydratedDescendant") {
+        read("hasHydratedDescendant") { c ->
             val topLevel = PathNormalizer.nfc(topLevelRaw)
-            conn
+            c
                 .prepareStatement(
                     "SELECT 1 FROM alive_entries WHERE (path = ? OR $UNDER_PREFIX) " +
                         "AND (is_hydrated = 1 OR local_mtime IS NOT NULL) LIMIT 1",
@@ -1362,9 +1453,9 @@ class StateDatabase(
      * the deletion plan operates on.
      */
     fun countEntriesUnderTopLevel(topLevelRaw: String): Int =
-        locked("countEntriesUnderTopLevel") {
+        read("countEntriesUnderTopLevel") { c ->
             val topLevel = PathNormalizer.nfc(topLevelRaw)
-            conn
+            c
                 .prepareStatement(
                     "SELECT COUNT(*) FROM alive_entries WHERE path = ? OR $UNDER_PREFIX",
                 ).use { stmt ->
@@ -1388,10 +1479,10 @@ class StateDatabase(
      * slash, to the folder expression. The comparison is BINARY, so names that differ only in case stay apart.
      */
     fun listDirectChildren(parentPathRaw: String): List<SyncEntry> =
-        locked("listDirectChildren") {
+        read("listDirectChildren") { c ->
             val parentPath = PathNormalizer.nfc(parentPathRaw)
             val base = if (parentPath.isEmpty()) "/" else "$parentPath/"
-            conn.prepareStatement(DIRECT_CHILDREN_BY_PATH).use { stmt ->
+            c.prepareStatement(DIRECT_CHILDREN_BY_PATH).use { stmt ->
                 stmt.setString(1, base)
                 val rs = stmt.executeQuery()
                 val entries = mutableListOf<SyncEntry>()
@@ -1410,8 +1501,8 @@ class StateDatabase(
         after: String?,
         limit: Int,
     ): List<String> =
-        locked("foldersWithoutContentIds") {
-            conn.prepareStatement(FOLDERS_WITHOUT_CONTENT_IDS).use { stmt ->
+        read("foldersWithoutContentIds") { c ->
+            c.prepareStatement(FOLDERS_WITHOUT_CONTENT_IDS).use { stmt ->
                 stmt.setString(1, after.orEmpty())
                 stmt.setInt(2, limit)
                 stmt.executeQuery().use { rs ->
@@ -1463,9 +1554,9 @@ class StateDatabase(
     private fun prefixUpperBound(prefix: String): String = prefix.dropLast(1) + "0"
 
     fun getEntriesByPrefix(prefixRaw: String): List<SyncEntry> =
-        locked("getEntriesByPrefix") {
+        read("getEntriesByPrefix") { c ->
             val prefix = PathNormalizer.nfc(prefixRaw)
-            conn.prepareStatement("SELECT * FROM alive_entries WHERE $UNDER_PREFIX").use { stmt ->
+            c.prepareStatement("SELECT * FROM alive_entries WHERE $UNDER_PREFIX").use { stmt ->
                 stmt.bindPrefix(1, prefix)
                 val rs = stmt.executeQuery()
                 val entries = mutableListOf<SyncEntry>()
@@ -1480,9 +1571,9 @@ class StateDatabase(
      * (`/dir/sub/file.txt` without `/dir/sub`) looks empty to it. Stops at the first hit (`LIMIT 1`).
      */
     fun hasEntriesBelow(prefixRaw: String): Boolean =
-        locked("hasEntriesBelow") {
+        read("hasEntriesBelow") { c ->
             val prefix = PathNormalizer.nfc(prefixRaw)
-            conn.prepareStatement("SELECT 1 FROM alive_entries WHERE $UNDER_PREFIX LIMIT 1").use { stmt ->
+            c.prepareStatement("SELECT 1 FROM alive_entries WHERE $UNDER_PREFIX LIMIT 1").use { stmt ->
                 stmt.bindPrefix(1, prefix)
                 return stmt.executeQuery().next()
             }
@@ -1594,9 +1685,9 @@ class StateDatabase(
      * the alive view only, so a tombstoned row is invisible there — a tombstone check needs this.
      */
     fun statusOf(pathRaw: String): EntryStatus? =
-        locked("statusOf") {
+        read("statusOf") { c ->
             // An alive row wins over a tombstone left at the same path by an earlier delete.
-            conn.prepareStatement(
+            c.prepareStatement(
                 "SELECT status FROM sync_entries WHERE path = ? ORDER BY status = 'EXISTS' DESC LIMIT 1",
             ).use { stmt ->
                 stmt.setString(1, PathNormalizer.nfc(pathRaw))
@@ -1836,9 +1927,9 @@ class StateDatabase(
 
     /** The name block recorded by [markNameBlocked] for this alive row, or null. */
     fun nameBlock(pathRaw: String): NameBlock? =
-        locked("nameBlock") {
+        read("nameBlock") { c ->
             val path = PathNormalizer.nfc(pathRaw)
-            conn.prepareStatement("SELECT name_block FROM alive_entries WHERE path=?").use { stmt ->
+            c.prepareStatement("SELECT name_block FROM alive_entries WHERE path=?").use { stmt ->
                 stmt.setString(1, path)
                 val rs = stmt.executeQuery()
                 return if (rs.next()) rs.getString(1)?.let { parseNameBlock(it) } else null
@@ -1847,9 +1938,9 @@ class StateDatabase(
 
     /** Every alive row blocked by name, ordered by path. */
     fun blockedRows(): List<BlockedRow> =
-        locked("blockedRows") {
+        read("blockedRows") { c ->
             val out = mutableListOf<BlockedRow>()
-            conn
+            c
                 .createStatement()
                 .use { stmt ->
                     val rs = stmt.executeQuery(BLOCKED_ROWS_SQL)
@@ -1860,9 +1951,9 @@ class StateDatabase(
 
     /** The nearest proper ancestor folder of [pathRaw] that is blocked by name, or null. */
     fun blockedAncestor(pathRaw: String): String? =
-        locked("blockedAncestor") {
+        read("blockedAncestor") { c ->
             val path = PathNormalizer.nfc(pathRaw)
-            conn
+            c
                 .prepareStatement(
                     "SELECT path FROM alive_entries WHERE name_block IS NOT NULL AND is_folder=1 " +
                         "AND length(path) < length(?) AND substr(?, 1, length(path) + 1) = path || '/' " +
@@ -1884,9 +1975,9 @@ class StateDatabase(
      * a folder lives beneath its remote path.
      */
     fun remoteAncestor(pathRaw: String): Pair<String, String>? =
-        locked("remoteAncestor") {
+        read("remoteAncestor") { c ->
             val path = PathNormalizer.nfc(pathRaw)
-            conn
+            c
                 .prepareStatement(
                     "SELECT path, remote_path FROM alive_entries WHERE remote_path IS NOT NULL AND is_folder=1 AND remote_path <> path " +
                         "AND length(path) < length(?) AND substr(?, 1, length(path) + 1) = path || '/' " +
@@ -1901,9 +1992,9 @@ class StateDatabase(
 
     /** Every alive folder with a remote path of its own, as (path, remote path): see [remoteAncestor]. */
     fun foldersWithRemotePath(): List<Pair<String, String>> =
-        locked("foldersWithRemotePath") {
+        read("foldersWithRemotePath") { c ->
             val out = mutableListOf<Pair<String, String>>()
-            conn
+            c
                 .createStatement()
                 .use { stmt ->
                     val rs =
@@ -1920,9 +2011,9 @@ class StateDatabase(
      * duplicate remote item (archive#403) is kept under are among them, and they are few.
      */
     fun rowsWithRemotePath(): List<Triple<String, String, String>> =
-        locked("rowsWithRemotePath") {
+        read("rowsWithRemotePath") { c ->
             val out = mutableListOf<Triple<String, String, String>>()
-            conn
+            c
                 .createStatement()
                 .use { stmt ->
                     val rs =
@@ -1999,9 +2090,9 @@ class StateDatabase(
 
     /** archive#493: the refusal recorded by [markUploadRefused] for this alive row, or null. */
     fun uploadRefusal(pathRaw: String): String? =
-        locked("uploadRefusal") {
+        read("uploadRefusal") { c ->
             val path = PathNormalizer.nfc(pathRaw)
-            conn.prepareStatement("SELECT upload_refused FROM alive_entries WHERE path=?").use { stmt ->
+            c.prepareStatement("SELECT upload_refused FROM alive_entries WHERE path=?").use { stmt ->
                 stmt.setString(1, path)
                 val rs = stmt.executeQuery()
                 return if (rs.next()) rs.getString(1) else null
@@ -2015,8 +2106,8 @@ class StateDatabase(
      * surfaces this as a WARN so the operator knows N files exist only on disk.
      */
     fun countWriteUploadFailed(): Int =
-        locked("countWriteUploadFailed") {
-            conn.createStatement().use { stmt ->
+        read("countWriteUploadFailed") { c ->
+            c.createStatement().use { stmt ->
                 val rs = stmt.executeQuery(
                     "SELECT COUNT(*) FROM sync_entries WHERE status='EXISTS' " +
                         "AND remote_id LIKE 'local:%' AND last_error_at IS NOT NULL",
@@ -2031,9 +2122,9 @@ class StateDatabase(
      * [countWriteUploadFailed]), capped at [limit] for the doctor detail block.
      */
     fun writeUploadFailedPaths(limit: Int): List<String> =
-        locked("writeUploadFailedPaths") {
+        read("writeUploadFailedPaths") { c ->
             val out = mutableListOf<String>()
-            conn
+            c
                 .prepareStatement(
                     "SELECT path FROM sync_entries WHERE status='EXISTS' " +
                         "AND remote_id LIKE 'local:%' AND last_error_at IS NOT NULL " +
@@ -2059,9 +2150,9 @@ class StateDatabase(
      * (`HydrationImpl.replayable`). Ordered by path for deterministic replay.
      */
     fun pendingUploadPaths(): List<String> =
-        locked("pendingUploadPaths") {
+        read("pendingUploadPaths") { c ->
             val out = mutableListOf<String>()
-            conn.createStatement().use { stmt ->
+            c.createStatement().use { stmt ->
                 val rs = stmt.executeQuery("SELECT path FROM sync_entries WHERE $PENDING_UPLOAD_ROWS ORDER BY path")
                 while (rs.next()) out += rs.getString(1)
             }
@@ -2097,9 +2188,9 @@ class StateDatabase(
 
     /** [pendingUploadRows] with the remote id and the local size, for the recovery command. */
     fun pendingRowDetails(): List<PendingRowDetail> =
-        locked("pendingRowDetails") {
+        read("pendingRowDetails") { c ->
             val out = mutableListOf<PendingRowDetail>()
-            conn.createStatement().use { stmt ->
+            c.createStatement().use { stmt ->
                 val rs = stmt.executeQuery("SELECT path, remote_id, local_size, last_synced, last_error_at FROM sync_entries WHERE $PENDING_UPLOAD_ROWS")
                 while (rs.next()) {
                     out +=
@@ -2149,9 +2240,9 @@ class StateDatabase(
         }
 
     fun pendingUploadRows(): List<PendingUploadRow> =
-        locked("pendingUploadRows") {
+        read("pendingUploadRows") { c ->
             val out = mutableListOf<PendingUploadRow>()
-            conn.createStatement().use { stmt ->
+            c.createStatement().use { stmt ->
                 val rs = stmt.executeQuery("SELECT path, last_synced, last_error_at FROM sync_entries WHERE $PENDING_UPLOAD_ROWS")
                 while (rs.next()) {
                     out +=
@@ -2522,8 +2613,8 @@ class StateDatabase(
         if (key in SCAN_CHECKPOINT_KEYS) scanStaging.meta(key) else mainSyncState(key)
 
     private fun mainSyncState(key: String): String? =
-        locked("getSyncState") {
-            cached(GET_SYNC_STATE_SQL) { stmt ->
+        read("getSyncState") { c ->
+            c.cached(GET_SYNC_STATE_SQL) { stmt ->
                 stmt.setString(1, key)
                 stmt.executeQuery().use { rs -> if (rs.next()) rs.getString("value") else null }
             }
@@ -2601,8 +2692,8 @@ class StateDatabase(
     }
 
     fun getPinRules(): List<Pair<String, Boolean>> =
-        locked("getPinRules") {
-            conn.createStatement().use { stmt ->
+        read("getPinRules") { c ->
+            c.createStatement().use { stmt ->
                 val rs = stmt.executeQuery("SELECT pattern, pinned FROM pin_rules")
                 val rules = mutableListOf<Pair<String, Boolean>>()
                 while (rs.next()) rules.add(rs.getString("pattern") to (rs.getInt("pinned") == 1))
@@ -2631,8 +2722,8 @@ class StateDatabase(
 
     /** archive#1040 M4: the renames [recordRenameIntent] recorded and nothing has cleared yet. */
     fun renameIntents(): List<RenameIntent> =
-        locked("renameIntents") {
-            conn.createStatement().use { stmt ->
+        read("renameIntents") { c ->
+            c.createStatement().use { stmt ->
                 val rs = stmt.executeQuery("SELECT old_path, new_path, remote_id, ghost FROM rename_intents")
                 val intents = mutableListOf<RenameIntent>()
                 while (rs.next()) {
@@ -2874,15 +2965,15 @@ class StateDatabase(
      * grep-free Kotlin check: is the call site `db.something(...)` (alive
      * only) or `db.recovery.something(...)` (any status)?
      *
-     * Its reads use the connection like every other call, so they hold the database's monitor ([locked]), not one of
-     * this object's own: a monitor of the inner object would let them run on the connection while another thread is
-     * inside a batch, or while the connection is being closed.
+     * Its reads go through [read] like every other read, never through a monitor of this object's own: on the writer
+     * connection they hold the database's monitor ([locked]), so they never run on it while another thread is inside a
+     * batch or closing it; on a reader they need neither.
      */
     inner class Recovery {
         /** All TRASHED rows. The recovery scenario in the spec is one SELECT here + one batched PATCH. */
         fun trashedEntries(): List<SyncEntry> =
-            locked("trashedEntries") {
-                conn.createStatement().use { stmt ->
+            read("trashedEntries") { c ->
+                c.createStatement().use { stmt ->
                     stmt.executeQuery("SELECT * FROM sync_entries WHERE status='TRASHED'").use { rs ->
                         val entries = mutableListOf<SyncEntry>()
                         while (rs.next()) entries.add(rs.toSyncEntry())
@@ -2893,8 +2984,8 @@ class StateDatabase(
 
         /** All rows regardless of status, for diagnostic dumps. */
         fun allEntriesAnyStatus(): List<SyncEntry> =
-            locked("allEntriesAnyStatus") {
-                conn.createStatement().use { stmt ->
+            read("allEntriesAnyStatus") { c ->
+                c.createStatement().use { stmt ->
                     stmt.executeQuery("SELECT * FROM sync_entries").use { rs ->
                         val entries = mutableListOf<SyncEntry>()
                         while (rs.next()) entries.add(rs.toSyncEntry())
@@ -2910,9 +3001,9 @@ class StateDatabase(
          * count, never the reverse.
          */
         fun recentlyDeletedRemoteIds(since: java.time.Instant): Set<String> =
-            locked("recentlyDeletedRemoteIds") {
+            read("recentlyDeletedRemoteIds") { c ->
                 val bound = since.truncatedTo(java.time.temporal.ChronoUnit.SECONDS).minusSeconds(1).toString()
-                conn.prepareStatement(
+                c.prepareStatement(
                     "SELECT remote_id FROM sync_entries WHERE status = 'DELETED' AND remote_id IS NOT NULL AND mount_deleted_at >= ?",
                 ).use { stmt ->
                     stmt.setString(1, bound)
@@ -2926,8 +3017,8 @@ class StateDatabase(
 
         /** Lookup by remote_id across all statuses — needed for the un-trash decision path. */
         fun getEntryByRemoteIdAnyStatus(remoteId: String): SyncEntry? =
-            locked("getEntryByRemoteIdAnyStatus") {
-                conn.prepareStatement("SELECT * FROM sync_entries WHERE remote_id = ?").use { stmt ->
+            read("getEntryByRemoteIdAnyStatus") { c ->
+                c.prepareStatement("SELECT * FROM sync_entries WHERE remote_id = ?").use { stmt ->
                     stmt.setString(1, remoteId)
                     stmt.executeQuery().use { rs -> if (rs.next()) rs.toSyncEntry() else null }
                 }
@@ -2993,6 +3084,15 @@ class StateDatabase(
 
         /** Most prepared statements kept (see [StatementCache]); the hot calls use about eight texts. */
         private const val STATEMENT_CACHE_LIMIT = 32
+
+        /** Most read-only connections beside the writer (archive#951 Q5: 4 x 8 MiB of page cache beside the writer's 64 MiB). */
+        internal const val READER_CONNECTIONS = 4
+
+        /** Page cache of a reader connection, in KiB. */
+        private const val READER_PAGE_CACHE_KIB = 8_192
+
+        /** Most prepared statements a reader keeps; it runs the lookups only. */
+        private const val READER_STATEMENT_CACHE_LIMIT = 16
 
         /** How long [close]'s checkpoint waits for a reader of another connection. */
         private const val CLOSE_CHECKPOINT_WAIT_MS = 1_000
