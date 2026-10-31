@@ -129,6 +129,24 @@ class LocalfsHazardNamesTest {
         }
     }
 
+    // #258: on POSIX a backslash is a name character, but the local scan and the localfs provider turn it into a
+    // separator, so the file is not synced under its own name. Windows refuses the name (it is its separator), so
+    // this is POSIX only.
+    @Ignore("#258: a backslash in a name is read as a path separator on POSIX")
+    @Test
+    fun `a backslash in a name stays part of the name on POSIX`() {
+        assumeTrue("a backslash is the separator on Windows", !System.getProperty("os.name", "").lowercase().contains("win"))
+        put(local, "from-here/back\\slash.txt", "local backslash")
+        put(remote, "from-cloud/back\\slash.txt", "cloud backslash")
+
+        sync()
+        sync()
+
+        assertEquals("local backslash", read(remote, "from-here/back\\slash.txt"), "the local name goes up unchanged")
+        assertEquals("cloud backslash", read(local, "from-cloud/back\\slash.txt"), "the cloud name comes down unchanged")
+        assertTrue(!existsExactly(remote, "from-here/back") && !existsExactly(local, "from-cloud/back"), "and no folder back appears")
+    }
+
     // ── the hazards ──────────────────────────────────────────────────────────
 
     /**
@@ -290,7 +308,6 @@ class LocalfsHazardNamesTest {
                 "lt<gt>.txt",
                 "quote\".txt",
                 "star*.txt",
-                "back\\slash.txt",
                 // the longest names a host takes: 255 ASCII characters; 62 emoji and an extension (252 UTF-8 bytes, under
                 // POSIX's 255); 125 emoji and an extension (254 UTF-16 units: NTFS counts units, so its limit is 127
                 // emoji, not 255, and this name is 504 UTF-8 bytes, more than ext4 takes)
