@@ -20,6 +20,8 @@ data class DriveItem(
     @SerialName("@microsoft.graph.removed") val removed: Removed? = null,
     @SerialName("deleted") val deleted: Deleted? = null,
     @SerialName("root") val root: RootFacet? = null,
+    // Present when OneDrive's scan flagged the content as malicious: such an item is never downloaded.
+    @SerialName("malware") val malware: MalwareFacet? = null,
     // Optimistic-concurrency tag; changes on any metadata or content mutation. Threaded
     // back to PATCH calls via the `If-Match` header so a concurrent editor can be
     // detected (Graph returns 412 Precondition Failed instead of silently overwriting).
@@ -170,6 +172,12 @@ data class Removed(
 @Serializable
 data class Deleted(
     @SerialName("state") val state: String? = null,
+)
+
+/** The `malware` facet: OneDrive detected malicious content in the item; [description] is the scanner's verdict. */
+@Serializable
+data class MalwareFacet(
+    @SerialName("description") val description: String? = null,
 )
 
 /** The `root` facet: an empty object, present on the drive's root folder only. */
