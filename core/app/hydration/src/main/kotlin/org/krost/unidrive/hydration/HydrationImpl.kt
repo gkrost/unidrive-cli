@@ -2750,9 +2750,14 @@ class HydrationImpl(
         return try {
             // archive#1070/#1069: the truncated copy is the start of an edit the cloud has not seen, noted before the
             // truncation so that a stop in between cannot leave the bytes unnoticed (a row that was never
-            // hydrated has no baseline to tell them by).
-            if (entry.remoteId != null) stateDb.markEdited(normalised, entry.writeToken.orEmpty())
-            val cachePath = prepareEmptyCache(normalised)
+            // hydrated has no baseline to tell them by). Both wait for a download of this path that is putting its bytes in
+            // place (MountEngine.cacheSwapLock): the download either sees the mark and drops its bytes, or has finished and
+            // its copy is the one emptied here.
+            val cachePath =
+                mount.cacheSwapLock(normalised).withLock {
+                    if (entry.remoteId != null) stateDb.markEdited(normalised, entry.writeToken.orEmpty())
+                    prepareEmptyCache(normalised)
+                }
             // archive#728: a truncate of a cached copy frees its bytes; the accounting follows the file.
             accountCacheFileOnDisk(normalised)
             // When a live handle id is provided (O_TRUNC open), register it in

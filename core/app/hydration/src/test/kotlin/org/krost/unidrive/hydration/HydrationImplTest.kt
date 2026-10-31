@@ -64,7 +64,14 @@ internal class MinimalFakeProvider(
     @Volatile var contentProof: ((remoteId: String, local: Path) -> org.krost.unidrive.ContentProof?)? = null
     val proofAsks = java.util.concurrent.CopyOnWriteArrayList<String>()
 
-    override fun hashAlgorithm(): org.krost.unidrive.HashAlgorithm? = hashAlgorithmValue
+    // Runs at every hashAlgorithm() call: a test's way into the moment the mount asks (a finished download asks while it
+    // writes its row back).
+    @Volatile var onHashAlgorithm: (() -> Unit)? = null
+
+    override fun hashAlgorithm(): org.krost.unidrive.HashAlgorithm? {
+        onHashAlgorithm?.invoke()
+        return hashAlgorithmValue
+    }
 
     override suspend fun contentMatchesLocal(remoteId: String, remotePath: String, local: Path): org.krost.unidrive.ContentProof? {
         proofAsks += remoteId

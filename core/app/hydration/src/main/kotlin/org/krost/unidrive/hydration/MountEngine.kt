@@ -509,6 +509,14 @@ class MountEngine private constructor(
     // of distinct paths ever hydrated.
     private val hydrateMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
 
+    // The truncate of open_write_begin and the end of a download of the same path, one at a time. The truncate does not wait
+    // for the hydrate lock (a download can run for minutes); it waits for this short end only: the download's last look at
+    // the row, the move of its bytes into the cache copy's place and the row write. A truncate in between had its edit's
+    // mark wiped by the row write, or emptied a copy the move then replaced (the editor's bytes went to the old file).
+    private val cacheSwapMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+
+    internal fun cacheSwapLock(path: String): Mutex = cacheSwapMutexes.computeIfAbsent(path) { Mutex() }
+
     // Cloud objects found truncated or refused for their content, remembered so a repeated read or pin is refused
     // without asking the provider (or downloading a refused object again).
     internal val remoteIncomplete = RemoteIncompleteMemory()
@@ -721,45 +729,49 @@ class MountEngine private constructor(
                     throw IllegalStateException("Integrity check failed for hydration cache: $path")
                 }
             }
-            val rowNow = requireRowUnchanged(path, entry)
-            // M1 of archive#1040: open_write_begin does not take this path's lock, so an edit may have begun while the
-            // bytes came down. Its truncated copy is the start of that edit, the only copy of it: the finished download
-            // is dropped (the staging file goes in the finally below), the mark stays, and the copy is what is read.
-            if (rowNow.editBase != null && entry.editBase == null) {
-                log.info("download of {} dropped: an edit began while it ran; the cache copy is kept", path)
-                return HydratedCache(cachePath, fetched = true)
+            // The last look at the row, the move of the bytes into place and the row write are one step for a truncate
+            // ([cacheSwapLock]): a truncate before it is seen below, one after it empties the copy the download put there.
+            cacheSwapLock(path).withLock {
+                val rowNow = requireRowUnchanged(path, entry)
+                // M1 of archive#1040: open_write_begin does not take this path's hydrate lock, so an edit may have begun while
+                // the bytes came down. Its truncated copy is the start of that edit, the only copy of it: the finished download
+                // is dropped (the staging file goes in the finally below), the mark stays, and the copy is what is read.
+                if (rowNow.editBase != null && entry.editBase == null) {
+                    log.info("download of {} dropped: an edit began while it ran; the cache copy is kept", path)
+                    return HydratedCache(cachePath, fetched = true)
+                }
+                try {
+                    Files.move(staged, cachePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                } catch (_: AtomicMoveNotSupportedException) {
+                    Files.move(staged, cachePath, StandardCopyOption.REPLACE_EXISTING)
+                }
+                // Persist the freshly-downloaded size as remoteSize. The provider validated the
+                // download against the authoritative remote length (throwing on a short read), so
+                // this is the current truth. Without it a remote that changed size since the last
+                // enumeration leaves remoteSize stale, and the openForRead size guard would EIO a
+                // perfectly valid re-download.
+                // archive#560 U6: the cache copy is the row's only local file (no sync root). Its stats
+                // become the baseline: HydrationImpl.lastSynced() and the co-daemon's crash-recovery
+                // scanner use this localMtime as their watermark, so an external cache write after
+                // this point is a dirty overwrite the replay picks up.
+                val current = db.getEntry(path) ?: entry
+                val rebaselined = current.copy(
+                    isHydrated = true,
+                    remoteSize = downloadedSize,
+                    localMtime = Files.getLastModifiedTime(cachePath).toMillis(),
+                    localSize = Files.size(cachePath),
+                    lastSynced = Instant.now(),
+                    cacheBacked = true,
+                    // The cache copy is the cloud's now: a mark left by an edit whose copy is gone (see servesFromLocalCopy) ends.
+                    editBase = null,
+                ).adopting(fetched.liveItem).recordingVersionRead(fetched.receipt)
+                // The row just adopted the cache copy's stats, so the hash must describe the cache
+                // copy's bytes: keeping a hash recorded for the previous contents would pair stale
+                // bytes with a fresh mtime/size and let a later touch be absorbed as unchanged.
+                db.upsertEntry(
+                    withLocalHash(rebaselined, cachePath, rebaselined.localMtime!!, rebaselined.localSize!!),
+                )
             }
-            try {
-                Files.move(staged, cachePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: AtomicMoveNotSupportedException) {
-                Files.move(staged, cachePath, StandardCopyOption.REPLACE_EXISTING)
-            }
-            // Persist the freshly-downloaded size as remoteSize. The provider validated the
-            // download against the authoritative remote length (throwing on a short read), so
-            // this is the current truth. Without it a remote that changed size since the last
-            // enumeration leaves remoteSize stale, and the openForRead size guard would EIO a
-            // perfectly valid re-download.
-            // archive#560 U6: the cache copy is the row's only local file (no sync root). Its stats
-            // become the baseline: HydrationImpl.lastSynced() and the co-daemon's crash-recovery
-            // scanner use this localMtime as their watermark, so an external cache write after
-            // this point is a dirty overwrite the replay picks up.
-            val current = db.getEntry(path) ?: entry
-            val rebaselined = current.copy(
-                isHydrated = true,
-                remoteSize = downloadedSize,
-                localMtime = Files.getLastModifiedTime(cachePath).toMillis(),
-                localSize = Files.size(cachePath),
-                lastSynced = Instant.now(),
-                cacheBacked = true,
-                // The cache copy is the cloud's now: a mark left by an edit whose copy is gone (see servesFromLocalCopy) ends.
-                editBase = null,
-            ).adopting(fetched.liveItem).recordingVersionRead(fetched.receipt)
-            // The row just adopted the cache copy's stats, so the hash must describe the cache
-            // copy's bytes: keeping a hash recorded for the previous contents would pair stale
-            // bytes with a fresh mtime/size and let a later touch be absorbed as unchanged.
-            db.upsertEntry(
-                withLocalHash(rebaselined, cachePath, rebaselined.localMtime!!, rebaselined.localSize!!),
-            )
             recordProviderContact()
             // archive#660: a downloaded rule file is readable now; its folder is no longer held back.
             ignoreRuleFileWritten(path)
