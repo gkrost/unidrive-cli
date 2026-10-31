@@ -2813,6 +2813,9 @@ class InternxtProvider(
         // The next chunk of a full gather that hands its files over from the staging (see [GatherHandover]): not a poll,
         // whatever the cursor looks like.
         if (cursor != null && cursor.startsWith(GATHER_CURSOR_PREFIX)) return continueGather(cursor, onPageProgress, scanContext)
+        // A walk of the whole drive that cannot be resumed (its rows are gone) gives the scan back to the listing it took
+        // over from, with that listing's own marker: the cursor listing then goes on from its cursors.
+        walkHandedBack(cursor, scanContext)?.let { return deltaImpl(cursor, onPageProgress, it) }
         foldersScanned.set(0)
         foldersSkipped.set(0)
         // A full enumeration of a scoped profile lists only the scope roots. An
@@ -2837,6 +2840,14 @@ class InternxtProvider(
                 if (scopeRoots.isEmpty()) "" else " of $scopeRoots",
             )
             return scopedFullDelta(scopeRoots.ifEmpty { listOf("/") }, onPageProgress, onProgress, scanContext = scanContext)
+        }
+        // The stored scan is a walk of the whole drive (one that took over from a failed listing, or one the window above
+        // started): the walk goes on from its staged rows, in a new process too. Starting the account-wide listing
+        // instead would leave what the walk stored unused, and on a drive whose listing fails at the same page every
+        // time, pay that attempt again first. A walk that cannot be resumed was handed back above.
+        if (resumesStoredWalk(cursor, scanContext)) {
+            log.info("The stored scan is a walk of the folder tree; resuming the walk")
+            return scopedFullDelta(listOf("/"), onPageProgress, onProgress, scanContext = scanContext)
         }
         // A full enumeration of the whole drive pages through the cursor listings: the offset listing below
         // needs 25-56 s per page on a large account and the gateway cuts it at about two minutes. Only a server
@@ -3838,8 +3849,10 @@ class InternxtProvider(
     // connection that failed or was cut (surfaced as status 0 / 503) — hands the gather to the folder tree
     // walk, the one listing that still finishes on a large drive, and skips the account-wide listings for
     // the R3 TTL: on the live account the folder stream hits the same wall at the same page every time,
-    // and re-buying that attempt on every gather is minutes of load the walk replaces anyway. Both
-    // handovers leave the marker and the staged rows in place, so the next gather resumes from the cursors.
+    // and re-buying that attempt on every gather is minutes of load the walk replaces anyway. The handover to
+    // the offset listing leaves the marker and the staged rows in place, so the next gather resumes from the
+    // cursors. The walk stores its own progress under a marker that carries the cursor marker, and the next
+    // gather resumes the walk; a walk that cannot be resumed gives the scan back to the cursors.
     // A client error (a 404 on a later page, 401, 429) ends the attempt with an exception, marker intact:
     // it is a request-shape problem a walk cannot fix.
     //
@@ -3970,11 +3983,14 @@ class InternxtProvider(
                     e.message,
                     heavyListingsUnavailableUntil.get(),
                 )
+                // The walk stores its own progress, so a walk that is stopped resumes. Its marker replaces the cursor
+                // listing's and carries it as it stands, see [TreeMarker.takenOverFrom]; the cursor listing's rows stay.
                 return scopedFullDelta(
                     scanContext?.scopeRoots.orEmpty().ifEmpty { listOf("/") },
                     onPageProgress,
                     onProgress,
                     folders.size + (stream?.staged ?: files.size),
+                    scanContext = scanContext?.copy(resumeMarker = cursorMarker(startedAt, foldersAt, filesAt)),
                 )
             }
 
@@ -4032,16 +4048,43 @@ class InternxtProvider(
             api.getFolderContentsPaged(folderUuid)
         }
 
+    // A full gather of the whole drive whose stored marker is a walk's (one walkHandedBack did not hand back).
+    private fun resumesStoredWalk(
+        cursor: String?,
+        scanContext: ScanContext?,
+    ): Boolean = cursor == null && scanContext != null && scanContext.scopeRoots.isEmpty() && decodeTreeMarker(scanContext.resumeMarker) != null
+
+    // The scan context to start a full gather of the whole drive with when its stored marker is a walk's that cannot be
+    // resumed (treeResumeOf: its rows are gone): the context with the marker of the listing the walk took over from (null
+    // when it took over from none). Null when there is nothing to hand back.
+    private fun walkHandedBack(
+        cursor: String?,
+        scanContext: ScanContext?,
+    ): ScanContext? {
+        if (cursor != null || scanContext == null || scanContext.scopeRoots.isNotEmpty()) return null
+        val walk = decodeTreeMarker(scanContext.resumeMarker) ?: return null
+        if (treeResumeOf(scanContext.resumeMarker, scanContext.resumedItems, listOf("/")) != null) return null
+        log.info(
+            "The stored walk of the folder tree cannot be resumed; {}",
+            if (walk.takenOverFrom == null) "starting over" else "the listing it took over from goes on",
+        )
+        return scanContext.copy(resumeMarker = walk.takenOverFrom)
+    }
+
     private suspend fun scopedFullDelta(
         scopeRoots: List<String>,
         onPageProgress: ((itemsSoFar: Int) -> Unit)?,
         onProgress: ((ScanProgress) -> Unit)?,
         progressBaseline: Int = 0,
-        // Only a walk that is the first strategy tried gets the scan context: a walk that took over from a
-        // listing which already stored progress must leave that progress and its marker alone.
+        // With a scan context the walk stores its progress and resumes from it. A walk that takes over from a listing
+        // which already stored progress gets the context with that listing's current marker as the resume marker: the
+        // walk starts fresh (it is no walk's marker), and its own marker carries the listing's along unchanged
+        // ([TreeMarker.takenOverFrom]); the listing's staged rows are tagged as its own and stay. An incremental walk
+        // gets no context.
         scanContext: ScanContext? = null,
     ): DeltaPage {
         val resume = treeResumeOf(scanContext?.resumeMarker, scanContext?.resumedItems.orEmpty(), scopeRoots)
+        val takenOverFrom = listingMarkerToCarry(scanContext?.resumeMarker)
         // The cursor of the page is the instant the walk began; a resumed walk keeps the first attempt's instant,
         // so the next incremental delta asks for everything since the beginning, the outage included.
         val startedAt = resume?.marker?.startedAt?.let(Instant::parse) ?: serverNow()
@@ -4071,7 +4114,7 @@ class InternxtProvider(
                 resume = resume,
                 persist =
                     persist?.let { store ->
-                        { rows, startsDone -> store(rows, treeMarker(startedAt.toString(), scopeRoots, startsDone)) }
+                        { rows, startsDone -> store(rows, treeMarker(startedAt.toString(), scopeRoots, startsDone, takenOverFrom)) }
                     },
             )
         val skipped = foldersSkipped.get()
