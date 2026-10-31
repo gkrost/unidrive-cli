@@ -1828,6 +1828,9 @@ class MountEngine private constructor(
     // The OS file-name rules (org.krost.unidrive.engine.LocalNames); the hydration layer refuses a new name with them.
     internal fun localNameIssue(path: String): String? = org.krost.unidrive.engine.localNameIssue(path)
 
+    // The provider's own name rules (CloudProvider.newNameIssue); the hydration layer refuses a new name with them too.
+    internal fun providerNameIssue(path: String): String? = provider.newNameIssue(path)
+
     // Defer the absence sweep's deletion verdict for a path this process just wrote (the gather's state).
     private fun markRecentlyUploaded(path: String) = gather.markRecentlyUploaded(path)
 

@@ -432,6 +432,7 @@ open class Main : Runnable {
             "trust_all_certs" to rp.trust_all_certs?.toString(),
             "keep_overwritten" to rp.keep_overwritten?.toString(),
             "allow_unverified_shard_hash" to rp.allow_unverified_shard_hash?.toString(),
+            "internxt_strict_names" to rp.internxt_strict_names?.toString(),
             "remote_notifications" to rp.remote_notifications?.toString(),
             "upload_concurrency" to rp.upload_concurrency?.toString(),
             "upload_chunk_mb" to rp.upload_chunk_mb?.toString(),

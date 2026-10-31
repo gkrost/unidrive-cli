@@ -482,6 +482,10 @@ data class RawProvider(
     // without the integrity check. Default off: such a download is refused. Threaded into
     // InternxtConfig.allowUnverifiedShardHash by InternxtProviderFactory.
     val allow_unverified_shard_hash: Boolean? = null,
+    // Internxt: never create, upload, move or rename to a name the official Internxt clients would not accept; such a
+    // write is refused before any request (`name_incompatible: <rule>`). Default off. Threaded into
+    // InternxtConfig.strictNames by InternxtProviderFactory.
+    val internxt_strict_names: Boolean? = null,
     // The sync policy of this profile alone: each key overrides the same-named [general] key for this profile
     // (`unidrive backup add` writes them). Absent = the [general] value, then the default.
     val sync_direction: String? = null,

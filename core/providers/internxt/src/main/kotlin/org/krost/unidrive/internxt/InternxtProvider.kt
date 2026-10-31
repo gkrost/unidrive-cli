@@ -941,7 +941,7 @@ class InternxtProvider(
         val srcPlainName = meta.plainName ?: plainName
         val type = meta.type
         for (counter in 1..MAX_KEEP_OVERWRITTEN_RETRIES) {
-            val archiveName = keepOverwrittenArchiveName(srcPlainName, now, counter, type)
+            val archiveName = keepOverwrittenArchiveName(srcPlainName, now, counter, type, strict = config.strictNames)
             try {
                 api.renameFile(existingRemoteId, plainName = archiveName, type = type)
                 return true
@@ -1048,8 +1048,9 @@ class InternxtProvider(
         existingRemoteId: String?,
         ifMatchETag: String?,
         onProgress: ((Long, Long) -> Unit)?,
-    ): CloudItem =
-        try {
+    ): CloudItem {
+        refuseIncompatibleName(remotePath)
+        return try {
             uploadUnclassified(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress)
         } catch (e: InternxtApiException) {
             if (e.statusCode == PLAN_LIMIT_STATUS) {
@@ -1067,6 +1068,19 @@ class InternxtProvider(
                 requestId = e.requestId,
             )
         }
+    }
+
+    // `internxt_strict_names`: the name the official Internxt clients would not accept, refused before any request.
+    override fun newNameIssue(path: String): String? =
+        if (config.strictNames) InternxtNameRules.pathIssue(path)?.let(InternxtNameRules::refusalReason) else null
+
+    private fun refuseIncompatibleName(path: String) {
+        val reason = newNameIssue(path) ?: return
+        throw org.krost.unidrive.NameRefusedException(
+            "Refused before any request: $path is not a name the official Internxt clients accept ($reason)",
+            reason = reason,
+        )
+    }
 
     private suspend fun uploadUnclassified(
         localPath: Path,
@@ -1941,7 +1955,7 @@ class InternxtProvider(
                         // (same fileId) under a conflict-suffixed name.
                         var conflictResult: org.krost.unidrive.internxt.model.InternxtFile? = null
                         for (counter in 1..MAX_KEEP_OVERWRITTEN_RETRIES) {
-                            val conflictPlainName = conflictName(plainName, today, counter, ext)
+                            val conflictPlainName = conflictName(plainName, today, counter, ext, strict = config.strictNames)
                             val conflictEncryptedName =
                                 crypto.encryptName(conflictPlainName, "${creds.mnemonic}-$parentUuid")
                             try {
@@ -2145,7 +2159,7 @@ class InternxtProvider(
                     var copy: org.krost.unidrive.internxt.model.InternxtFile? = null
                     for (counter in 1..MAX_KEEP_OVERWRITTEN_RETRIES) {
                         try {
-                            copy = create(conflictName(plainName, today, counter, ext))
+                            copy = create(conflictName(plainName, today, counter, ext, strict = config.strictNames))
                             break
                         } catch (ce: InternxtApiException) {
                             if (ce.statusCode == 409 && counter < MAX_KEEP_OVERWRITTEN_RETRIES) continue
@@ -2346,6 +2360,7 @@ class InternxtProvider(
     private fun parentPathOf(path: String): String = "/" + pathSegments(path).dropLast(1).joinToString("/")
 
     override suspend fun createFolder(path: String): CloudItem {
+        refuseIncompatibleName(path)
         val segments = pathSegments(path)
         val parentPath = "/" + segments.dropLast(1).joinToString("/")
         val name = segments.last()
@@ -2389,6 +2404,7 @@ class InternxtProvider(
      * group, which trades round-trips for correctness.
      */
     override suspend fun createFolders(paths: List<String>): List<CloudItem> {
+        paths.forEach(::refuseIncompatibleName)
         if (paths.isEmpty()) return emptyList()
         if (paths.size == 1) return listOf(createFolder(paths.single()))
 
@@ -2452,7 +2468,10 @@ class InternxtProvider(
     override suspend fun move(
         fromPath: String,
         toPath: String,
-    ): CloudItem = moveResolved(getMetadata(fromPath), fromPath, toPath)
+    ): CloudItem {
+        refuseIncompatibleName(toPath)
+        return moveResolved(getMetadata(fromPath), fromPath, toPath)
+    }
 
     // archive#402: the engine routes here whenever the source row carries a real cloud uuid,
     // so a same-named sibling cannot redirect the move to the wrong twin via
@@ -2463,6 +2482,7 @@ class InternxtProvider(
         fromPath: String,
         toPath: String,
     ): CloudItem {
+        refuseIncompatibleName(toPath)
         val metadata = metadataById(remoteId, parentPathOf(fromPath), fromPath)
         refuseOutsideDrive(metadata, fromPath)
         return moveResolved(metadata, fromPath, toPath)
@@ -4759,6 +4779,7 @@ class InternxtProvider(
             now: java.time.Instant,
             counter: Int = 1,
             type: String? = null,
+            strict: Boolean = false,
         ): String {
             val stamp =
                 java.time.format.DateTimeFormatter
@@ -4766,7 +4787,7 @@ class InternxtProvider(
                     .withZone(java.time.ZoneOffset.UTC)
                     .format(now)
             val tail = ".unidrive-prev-$stamp" + (if (counter <= 1) "" else "-$counter")
-            return org.krost.unidrive.io.NameLimit.fitStem(plainName, tail.length + extensionUnits(type)) + tail
+            return fitGeneratedStem(plainName, tail, type, strict) + tail
         }
 
         // The units `.type` adds to a plainName in the name a user sees.
@@ -4783,9 +4804,22 @@ class InternxtProvider(
             date: String,
             counter: Int = 1,
             type: String? = null,
+            strict: Boolean = false,
         ): String {
             val tail = " (conflict $date)" + (if (counter <= 1) "" else " ($counter)")
-            return org.krost.unidrive.io.NameLimit.fitStem(plainName, tail.length + extensionUnits(type)) + tail
+            return fitGeneratedStem(plainName, tail, type, strict) + tail
+        }
+
+        // The stem of a generated name, cut for the whole name (stem, [tail], `.type`) to fit 255 UTF-16 units, and with
+        // `internxt_strict_names` ([strict]) 255 UTF-8 bytes too.
+        private fun fitGeneratedStem(
+            plainName: String,
+            tail: String,
+            type: String?,
+            strict: Boolean,
+        ): String {
+            val stem = org.krost.unidrive.io.NameLimit.fitStem(plainName, tail.length + extensionUnits(type))
+            return if (strict) InternxtNameRules.fitStem(stem, tail + if (type.isNullOrEmpty()) "" else ".$type") else stem
         }
 
         /**
