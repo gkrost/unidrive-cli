@@ -532,6 +532,19 @@ point, so a provider that commits a partial object before suspending can
 still leave a remote item; the caller follows with the row-level verb
 (`unlink`/`rename`) for the path itself.
 
+**Downloads.** Every `open_read` and `hydrate` of a path that is not in the cache waits for one
+shared download of that path; a second request for it joins the running download instead of starting another.
+`hydration.cancel {path}` also ends every one of those waits, and `hydration.cancel {path, handle_id}` ends only the wait
+of the `open_read` opened under that handle id (no upload is touched then). `cancelled` in the reply is true when a wait
+(or an upload) was ended. Each ended wait answers `{"ok":false,"error":"cancelled"}`; an `open_read` also sends `failed`
+and `completed ok:false` with the `cancelled` token, a `hydrate` sends `failed` with it. The download itself stops when
+nobody waits for it any more: its partial bytes are removed, the entry stays not hydrated and shows no `error`, and its
+history row ends `interrupted`. While another request still waits, the download goes on for it.
+
+A connection that closes while it waits ends its own waits the same way: the daemon watches the connection of a request
+that runs longer than a moment, so a client that goes away (or shuts down its sending side) during a long download is
+noticed at once, not when the download ends. Requests the client sends while one runs are answered after it, in order.
+
 ## 6. Ordering, budget, and durability
 
 - **Per-path FIFO:** same-path uploads run strictly in submission order; a
@@ -620,7 +633,7 @@ still leave a remote item; the caller follows with the row-level verb
 | `busy` | dehydrate, replace-rename, unlink, rmdir | an upload is in flight on that path (unlink, dehydrate), below it (rmdir), or on the source or destination of a replace-rename; nothing was touched, retry once the upload's `completed` event has arrived |
 | `name_clash` | create, mkdir, open_write, open_write_begin, rename, unlink, rmdir | the path names a name, or a folder above it, by another Unicode spelling (composed / decomposed) than the one a client used for it first in this daemon run; both are one row and one cloud path, so the second would overwrite or delete the first. Nothing was touched or queued. Section 3.9 |
 | `excluded` | completed event, rename | keep-local name, never uploaded; a rename of a row that has a cloud copy onto such a name is refused with it (the row and the remote are untouched, `HydrationImpl.rename`) |
-| `cancelled` | completed event | upload aborted by hydration.cancel |
+| `cancelled` | completed event; open_read, hydrate (and their `failed` / `completed` events) | upload aborted by hydration.cancel; a wait for a download ended by hydration.cancel or by the connection closing (section 5): not a failure, the entry shows no `error`. Pinned by `events/failed-cancelled.ndjson` and `events/completed-download-cancelled.ndjson` |
 | `similar_name[: <sibling>]` | failed and completed events, `hydration.list` (`blocked`) | the drive compares the entry's name as equal to a sibling's and refused it under its own name and under a server name; the local file is kept, nothing is retried. `: <sibling>` names the conflicting sibling when known |
 | `name_incompatible: <rule>` | create, mkdir, rename (the new name); failed and completed events of an upload, `hydration.list` (`blocked`) | the profile asks for names the provider's official clients accept (Internxt: `internxt_strict_names = true`) and this name, or a folder above it, breaks one of their rules. `<rule>` is one of `empty`, `separator`, `control_character`, `windows_character`, `leading_whitespace`, `trailing_whitespace`, `trailing_dot`, `device_name`, `too_long_utf16`, `too_long_utf8`. The verbs answer it before anything is changed or asked of the drive, and before the host's file-system rules of a new name, so the answer is the same on every platform (the request checks of `invalid_path`, a control character or a segment over 255 UTF-16 units, still come first); an upload that reaches the provider with such a name is refused before any request, not retried, and its row is blocked like `similar_name`. A client matches the token up to `": "`. Absent with the key off |
 | `name_collides_after_normalisation` | `hydration.list` (`blocked`), `daemon.status` (`uploads.blocked`) | a client refused to upload the file because another file of its folder is the same name after NFC (`hydration.refuse_name`, section 3.9); the file stays local, nothing is retried until the client clears it |

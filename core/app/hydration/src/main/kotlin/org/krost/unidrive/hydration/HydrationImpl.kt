@@ -289,6 +289,18 @@ class HydrationImpl(
     }
     private val uploadSlots = ConcurrentHashMap<String, UploadSlot>()
 
+    // gkrost/unidrive-cli#23: the running downloads of open_read and hydrate, one per path, each stopped when the last caller
+    // waiting for it is cancelled. [SharedRead.tx] is the history handle of the caller that started it.
+    private data class SharedRead(
+        val cache: MountEngine.HydratedCache,
+        val tx: TransferHandle?,
+    )
+
+    private val downloads = SharedDownloads<SharedRead>(recoveryUploadScope.coroutineContext[Job])
+
+    /** Test seam (gkrost/unidrive-cli#23): how many reads and hydrates wait for the download of [path] now. */
+    internal fun downloadWaiterCount(path: String): Int = downloads.waiterCount(path)
+
     // archive#658: transfer attempts that hold a transfer permit right now (the rest of the slots wait for
     // their path's turn, the daemon-wide budget, or a retry backoff).
     private val uploadsInFlight = AtomicInteger(0)
@@ -487,6 +499,9 @@ class HydrationImpl(
         touch(path)
         // archive#652: a cold read is a download in the history; a warm serve never starts the handle, so it leaves no row.
         val tx = history?.begin(TransferDirection.DOWNLOAD, path, bytesTotal = entry.remoteSize.takeIf { it > 0 })
+        // The history handle of the download this read got its bytes from (another read's when it joined that one); null until
+        // then: a download that fails or is cancelled finishes its handle itself (see awaitDownload).
+        var served: TransferHandle? = null
 
         val (cachePath, contentId) = try {
             // Always emit Hydrating + Hydrated, even when MountEngine returns a warm cache
@@ -494,7 +509,11 @@ class HydrationImpl(
             // regardless of cache state; the cache layer is an implementation detail of
             // MountEngine, not part of the Hydration SPI contract.
             _events.emit(HydrationEvent.Hydrating(path))
-            val hydrated = mount.ensureHydratedReporting(path, tx)
+            val hydrated =
+                when (val outcome = awaitDownload(path, SharedDownloads.Waiter(connectionId, handleId), tx)) {
+                    is SharedDownloads.Outcome.Done -> outcome.value.also { served = it.tx }.cache
+                    SharedDownloads.Outcome.Cancelled -> return cancelledRead(path, handleId)
+                }
             val p = hydrated.path
             val bytes = java.nio.file.Files.size(p)
             accountCacheFile(path, bytes)
@@ -516,7 +535,7 @@ class HydrationImpl(
                     "incomplete hydration for $path: cached $bytes of ${current.remoteSize} bytes",
                 )
             }
-            tx.endDownload(bytes)
+            served.endDownload(bytes)
             _events.emit(HydrationEvent.Hydrated(path, bytes, fetched = hydrated.fetched))
             _events.emit(
                 HydrationEvent.Completed(
@@ -533,7 +552,7 @@ class HydrationImpl(
             p to hydrated.contentId?.takeUnless { mount.isExcludedPath(path, false) }
         } catch (e: CancellationException) {
             // The request or the daemon was stopped: a cancellation, not a failed download (gkrost/unidrive-cli#80).
-            tx.endDownloadFailed(e)
+            served.endDownloadFailed(e)
             throw e
         } catch (e: Exception) {
             // A genuinely-gone read (provider download still not-found after the
@@ -542,7 +561,7 @@ class HydrationImpl(
             // size than the drive reports (archive#536) is not a gone file: its own
             // token carries the numbers. Any other failure stays Generic (→ EIO).
             val err: HydrationError = downloadFailureOf(e, fallback = "download failed")
-            tx.endDownloadFailed(e)
+            served.endDownloadFailed(e)
             _events.emit(HydrationEvent.Failed(path, err))
             _events.emit(
                 HydrationEvent.Completed(
@@ -2205,35 +2224,99 @@ class HydrationImpl(
     /** The state of every read-only view for `daemon.status` (empty when the profile shows none); never asks the provider. */
     fun viewStatuses(): List<org.krost.unidrive.engine.ViewStatus> = views.status()
 
-    override suspend fun hydrate(path: String): HydrateResult =
+    override suspend fun hydrate(path: String): HydrateResult = hydrateFor(path, connectionId = null)
+
+    override suspend fun hydrate(
+        path: String,
+        connectionId: String,
+    ): HydrateResult = hydrateFor(path, connectionId)
+
+    private suspend fun hydrateFor(
+        path: String,
+        connectionId: String?,
+    ): HydrateResult =
         when (val target = views.readTarget(path)) {
-            is HydrationViews.ReadTarget.Real -> hydrateAt(target.path)
+            is HydrationViews.ReadTarget.Real -> hydrateAt(target.path, connectionId)
             HydrationViews.ReadTarget.Missing -> HydrateResult.Failed(HydrationError.UnknownPath)
         }
 
-    private suspend fun hydrateAt(path: String): HydrateResult {
+    private suspend fun hydrateAt(
+        path: String,
+        connectionId: String?,
+    ): HydrateResult {
         if (!resolvesInsideCache(path)) return HydrateResult.Failed(HydrationError.InvalidPath)
         if (renames.blocks(path)) return HydrateResult.Failed(HydrationError.Generic(BUSY_TOKEN)) // archive#1040 M4, see openForReadAt
         touch(path)
         val tx = history?.begin(TransferDirection.DOWNLOAD, path, bytesTotal = stateDb.getEntry(path)?.remoteSize?.takeIf { it > 0 })
+        var served: TransferHandle? = null // as in openForReadAt
         return try {
             _events.emit(HydrationEvent.Hydrating(path))
-            val hydrated = mount.ensureHydratedReporting(path, tx)
+            val hydrated =
+                when (val outcome = awaitDownload(path, SharedDownloads.Waiter(connectionId, handleId = null), tx)) {
+                    is SharedDownloads.Outcome.Done -> outcome.value.also { served = it.tx }.cache
+                    SharedDownloads.Outcome.Cancelled -> {
+                        _events.emit(HydrationEvent.Failed(path, HydrationError.Cancelled))
+                        return HydrateResult.Failed(HydrationError.Cancelled)
+                    }
+                }
             val cachePath = hydrated.path
             val bytes = java.nio.file.Files.size(cachePath)
-            tx.endDownload(bytes)
+            served.endDownload(bytes)
             accountCacheFile(path, bytes)
             _events.emit(HydrationEvent.Hydrated(path, bytes, fetched = hydrated.fetched))
             HydrateResult.Ok
         } catch (e: CancellationException) {
-            tx.endDownloadFailed(e) // gkrost/unidrive-cli#80: a cancellation, not a failed hydrate
+            served.endDownloadFailed(e) // gkrost/unidrive-cli#80: a cancellation, not a failed hydrate
             throw e
         } catch (e: Exception) {
             val err = downloadFailureOf(e, fallback = "hydrate failed")
-            tx.endDownloadFailed(e)
+            served.endDownloadFailed(e)
             _events.emit(HydrationEvent.Failed(path, err))
             HydrateResult.Failed(err)
         }
+    }
+
+    override suspend fun cancelDownload(
+        path: String,
+        handleId: String?,
+    ): Boolean = downloads.cancel(path, handleId)
+
+    // gkrost/unidrive-cli#23: the download of [path] through [downloads]: joined when one runs, started otherwise. [tx] is this
+    // caller's history handle; it is used only when this caller starts the download, and the download finishes it itself when
+    // it fails or is cancelled (whoever started it may have stopped waiting while others still wait). A success is finished
+    // by the callers, after their own checks, through the handle [SharedRead.tx] carries.
+    private suspend fun awaitDownload(
+        path: String,
+        waiter: SharedDownloads.Waiter,
+        tx: TransferHandle?,
+    ): SharedDownloads.Outcome<SharedRead> =
+        downloads.await(path, waiter) {
+            try {
+                SharedRead(mount.ensureHydratedReporting(path, tx), tx)
+            } catch (e: Exception) {
+                tx.endDownloadFailed(e)
+                throw e
+            }
+        }
+
+    // gkrost/unidrive-cli#23: this read stopped waiting for its download (hydration.cancel, or its connection closed). Not a
+    // failed download: the row keeps no error, and the handle's correlation ends with the cancelled token.
+    private suspend fun cancelledRead(
+        path: String,
+        handleId: String,
+    ): OpenResult {
+        val error = HydrationError.Cancelled
+        _events.emit(HydrationEvent.Failed(path, error))
+        _events.emit(
+            HydrationEvent.Completed(
+                path = path,
+                handleId = handleId,
+                direction = HydrationEvent.Completed.Direction.DOWNLOAD,
+                ok = false,
+                error = error,
+            ),
+        )
+        return OpenResult.Failed(error)
     }
     override suspend fun dehydrate(path: String): DehydrateResult =
         when (val target = views.readTarget(path)) {
@@ -3310,6 +3393,8 @@ class HydrationImpl(
     }
 
     override fun onConnectionClosed(connectionId: String) {
+        // gkrost/unidrive-cli#23: its reads and hydrates stop waiting; a download nobody else waits for stops.
+        downloads.cancelConnection(connectionId)
         // archive#728: a client that wrote through the mount and died without closing its handles never
         // reaches closeHandle: pick the sizes up here, while the paths are still known.
         val handles = openSets.remove(connectionId) ?: return

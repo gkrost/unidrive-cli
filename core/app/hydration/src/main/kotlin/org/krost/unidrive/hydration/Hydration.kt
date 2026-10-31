@@ -65,7 +65,28 @@ interface Hydration {
      */
     suspend fun cancelUpload(path: String): Boolean
 
+    /**
+     * gkrost/unidrive-cli#23: stop waiting for the download of [path]. Without [handleId] every `open_read` and `hydrate`
+     * waiting for it gives up; with it, only the `open_read` opened under that handle id. Each one that gives up answers
+     * [HydrationError.Cancelled]. The download itself stops once nobody waits for it any more: its partial bytes are
+     * removed and the row stays as it was (not hydrated, no error). True when at least one wait was ended.
+     * The default (a front-end that does not share its downloads) has nothing to stop.
+     */
+    suspend fun cancelDownload(
+        path: String,
+        handleId: String? = null,
+    ): Boolean = false
+
     suspend fun hydrate(path: String): HydrateResult
+
+    /**
+     * [hydrate] on behalf of the IPC connection [connectionId]: when that connection closes while the download runs, the
+     * wait ends as a [cancelDownload] would end it. The default ignores the connection.
+     */
+    suspend fun hydrate(
+        path: String,
+        connectionId: String,
+    ): HydrateResult = hydrate(path)
     suspend fun dehydrate(path: String): DehydrateResult
     suspend fun lastSynced(path: String): LastSyncedResult
     suspend fun list(prefix: String): ListResult
@@ -143,7 +164,10 @@ interface Hydration {
 
     val events: Flow<HydrationEvent>
 
-    /** Called by IpcServer when an IPC connection closes. Clears that connection's open-set. */
+    /**
+     * Called by IpcServer when an IPC connection closes. Clears that connection's open-set and ends its waits for a download
+     * ([cancelDownload]); it may come while a request of that connection still runs.
+     */
     fun onConnectionClosed(connectionId: String)
 }
 
