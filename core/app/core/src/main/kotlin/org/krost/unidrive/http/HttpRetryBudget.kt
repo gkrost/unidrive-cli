@@ -113,8 +113,8 @@ class HttpRetryBudget(
      * it waits, so cancelling it releases nothing it does not own. The wait keeps the lanes of [awaitSlot]: while a
      * [Priority.Foreground] caller waits for a permit, no [Priority.Background] caller takes one, so a user-driven call
      * is not queued behind a scan's listings; the lane is read again on every poll, so a [Priority.Promotable] waiter
-     * moves up the moment it is promoted. As in [awaitSlot] the priority is strict: background callers wait for as long
-     * as foreground callers keep waiting. A throttle storm that halves the concurrency
+     * moves up the moment it is promoted. As in [awaitSlot], background callers wait while foreground callers
+     * are counted as waiting. A throttle storm that halves the concurrency
      * lowers the bound at once: permits already held run to completion and new callers wait until fewer than the new
      * bound are held, so shrinking never deadlocks or starves anyone. Only callers that go through here are counted;
      * [awaitSlot] alone (pacing and the circuit breaker) takes no permit, so cheap calls on the same budget stay
