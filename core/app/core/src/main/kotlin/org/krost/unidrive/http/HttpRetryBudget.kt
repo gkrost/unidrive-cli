@@ -101,13 +101,20 @@ class HttpRetryBudget(
     // The permits [withPermit] has handed out and not yet taken back.
     private val permitsHeld = AtomicInteger(0)
 
+    // The [Priority.Foreground] callers waiting in [withPermit]; while there is one, background callers take no permit.
+    private val foregroundPermitWaiters = AtomicInteger(0)
+
     /** Current target concurrency: the number of permits [withPermit] hands out. */
     fun currentConcurrency(): Int = concurrency.get()
 
     /**
      * Runs [block] holding one of the [currentConcurrency] permits, and gives it back when [block] ends, however it ends.
      * A caller that finds every permit taken waits (suspended, polling every [PERMIT_POLL_MS]) and holds nothing while
-     * it waits, so cancelling it releases nothing it does not own. A throttle storm that halves the concurrency
+     * it waits, so cancelling it releases nothing it does not own. The wait keeps the lanes of [awaitSlot]: while a
+     * [Priority.Foreground] caller waits for a permit, no [Priority.Background] caller takes one, so a user-driven call
+     * is not queued behind a scan's listings; the lane is read again on every poll, so a [Priority.Promotable] waiter
+     * moves up the moment it is promoted. As in [awaitSlot], background callers wait while foreground callers
+     * are counted as waiting. A throttle storm that halves the concurrency
      * lowers the bound at once: permits already held run to completion and new callers wait until fewer than the new
      * bound are held, so shrinking never deadlocks or starves anyone. Only callers that go through here are counted;
      * [awaitSlot] alone (pacing and the circuit breaker) takes no permit, so cheap calls on the same budget stay
@@ -115,16 +122,39 @@ class HttpRetryBudget(
      * while holding one.
      */
     suspend fun <T> withPermit(block: suspend () -> T): T {
-        while (true) {
-            val held = permitsHeld.get()
-            if (held < concurrency.get() && permitsHeld.compareAndSet(held, held + 1)) break
-            delay(PERMIT_POLL_MS)
+        var countedAsForeground = false
+        try {
+            while (true) {
+                countedAsForeground = countPermitWaiter(countedAsForeground, currentPriority() == Priority.Foreground)
+                if (tryTakePermit(countedAsForeground)) break
+                delay(PERMIT_POLL_MS)
+            }
+        } finally {
+            if (countedAsForeground) foregroundPermitWaiters.decrementAndGet()
         }
         try {
             return block()
         } finally {
             permitsHeld.decrementAndGet()
         }
+    }
+
+    // Moves a waiter of [withPermit] into the foreground count or out of it when its lane changed; returns its lane now.
+    private fun countPermitWaiter(
+        countedAsForeground: Boolean,
+        foreground: Boolean,
+    ): Boolean {
+        if (foreground != countedAsForeground) {
+            if (foreground) foregroundPermitWaiters.incrementAndGet() else foregroundPermitWaiters.decrementAndGet()
+        }
+        return foreground
+    }
+
+    // Takes a permit if one is free and no foreground caller waits ahead of a background one.
+    private fun tryTakePermit(foreground: Boolean): Boolean {
+        if (!foreground && foregroundPermitWaiters.get() > 0) return false
+        val held = permitsHeld.get()
+        return held < concurrency.get() && permitsHeld.compareAndSet(held, held + 1)
     }
 
     /** Timestamp (epoch ms) until which all new request starts should pause.

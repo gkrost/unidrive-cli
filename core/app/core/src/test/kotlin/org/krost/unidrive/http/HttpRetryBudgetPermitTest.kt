@@ -8,7 +8,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -153,6 +156,102 @@ class HttpRetryBudgetPermitTest {
             newGates.forEach { it.complete(Unit) }
             holders.forEach { it.await() }
             newcomers.forEach { it.await() }
+        }
+
+    @Test
+    fun `a foreground waiter gets the next free permit before background waiters that came first`() =
+        runTest {
+            val budget = budget(maxConcurrency = 1)
+            val holderGate = CompletableDeferred<Unit>()
+            val holder = async { budget.withPermit { holderGate.await() } }
+            runCurrent()
+            val order = Collections.synchronizedList(mutableListOf<String>())
+            val gates = List(3) { CompletableDeferred<Unit>() }
+            val background =
+                (0 until 2).map { i ->
+                    launch {
+                        budget.withPermit {
+                            order.add("background-$i")
+                            gates[i].await()
+                        }
+                    }
+                }
+            runCurrent()
+            val foreground =
+                launch {
+                    withContext(Priority.Foreground) {
+                        budget.withPermit {
+                            order.add("foreground")
+                            gates[2].await()
+                        }
+                    }
+                }
+            runCurrent()
+
+            holderGate.complete(Unit)
+            holder.await()
+            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
+            runCurrent()
+            assertEquals(listOf("foreground"), order.toList(), "the user-driven call is not queued behind the scan")
+
+            gates[2].complete(Unit)
+            foreground.join()
+            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
+            runCurrent()
+            assertEquals(2, order.size, "with no foreground waiter left the background lane gets the permit back")
+            gates.forEach { it.complete(Unit) }
+            background.forEach { it.join() }
+            assertEquals(3, order.size)
+        }
+
+    @Test
+    fun `a background waiter promoted to foreground while it waits goes ahead of the other background waiters`() =
+        runTest {
+            val budget = budget(maxConcurrency = 1)
+            val holderGate = CompletableDeferred<Unit>()
+            val holder = async { budget.withPermit { holderGate.await() } }
+            runCurrent()
+            val order = Collections.synchronizedList(mutableListOf<String>())
+            val plain = launch { budget.withPermit { order.add("plain") } }
+            runCurrent()
+            val lane = AtomicReference<Priority>(Priority.Background)
+            val promoted = launch { withContext(Priority.Promotable(lane)) { budget.withPermit { order.add("promoted") } } }
+            runCurrent()
+
+            lane.set(Priority.Foreground)
+            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 2)
+            runCurrent()
+            holderGate.complete(Unit)
+            holder.await()
+            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
+            runCurrent()
+            plain.join()
+            promoted.join()
+
+            assertEquals(listOf("promoted", "plain"), order.toList())
+        }
+
+    @Test
+    fun `a foreground waiter that is cancelled does not keep the background lane waiting`() =
+        runTest {
+            val budget = budget(maxConcurrency = 1)
+            val holderGate = CompletableDeferred<Unit>()
+            val holder = async { budget.withPermit { holderGate.await() } }
+            runCurrent()
+            val foreground = launch { withContext(Priority.Foreground) { budget.withPermit { error("must not run") } } }
+            runCurrent()
+            val backgroundRan = AtomicInteger(0)
+            val background = launch { budget.withPermit { backgroundRan.incrementAndGet() } }
+            runCurrent()
+
+            foreground.cancelAndJoin()
+            holderGate.complete(Unit)
+            holder.await()
+            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
+            runCurrent()
+            background.join()
+
+            assertEquals(1, backgroundRan.get())
         }
 
     @Test

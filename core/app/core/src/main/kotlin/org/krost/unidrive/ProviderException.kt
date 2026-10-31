@@ -184,7 +184,7 @@ open class PermanentUploadFailureException(
  * [PermanentUploadFailureException]: no retry ladder. It is raised only after the provider's own way round
  * (landing the entry under a disambiguated server name, [CloudItem.nameOverridden]) was refused too.
  *
- * [reason] is a stable token ([SIMILAR_NAME]); [sibling] is the name of the conflicting sibling when the
+ * [reason] is a stable token ([SIMILAR_NAME], or [NAME_INCOMPATIBLE] with its rule); [sibling] is the name of the conflicting sibling when the
  * provider could tell which one it is, else null.
  */
 open class NameRefusedException(
@@ -197,6 +197,12 @@ open class NameRefusedException(
     companion object {
         /** The drive compares this name as equal to a sibling's. */
         const val SIMILAR_NAME = "similar_name"
+
+        /**
+         * The profile asks for names the provider's official clients accept, and this one is not (Internxt's
+         * `internxt_strict_names`). The reason is this token, `: `, and the rule the name broke.
+         */
+        const val NAME_INCOMPATIBLE = "name_incompatible"
     }
 }
 

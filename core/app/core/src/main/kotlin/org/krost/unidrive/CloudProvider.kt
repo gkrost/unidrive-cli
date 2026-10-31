@@ -247,6 +247,15 @@ interface CloudProvider {
      */
     suspend fun createFolders(paths: List<String>): List<CloudItem> = paths.map { createFolder(it) }
 
+    /**
+     * The reason this provider refuses to create, upload or move an item to [path] by its name alone, decided without a
+     * request; null when it does not. The reason is the one the provider's own write would raise as
+     * [NameRefusedException.reason] (Internxt with `internxt_strict_names`: `name_incompatible: <rule>`). The mount's
+     * verbs that make a new name (mkdir, create, rename) ask here first, since a created file reaches the provider only
+     * at its upload. Default: no such rules.
+     */
+    fun newNameIssue(path: String): String? = null
+
     suspend fun move(
         fromPath: String,
         toPath: String,

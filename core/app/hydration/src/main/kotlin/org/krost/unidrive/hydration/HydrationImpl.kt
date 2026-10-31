@@ -462,6 +462,11 @@ class HydrationImpl(
     // that name; on Windows the Win32 rules), or one whose cache file would lie outside the cache folder.
     private fun refusedNewName(path: String): Boolean = mount.localNameIssue(path) != null || !resolvesInsideCache(path)
 
+    // A new name the provider refuses by its own rules before any request (Internxt's `internxt_strict_names`), answered
+    // with the provider's typed reason (`name_incompatible: <rule>`). Asked before the host's rules, so the answer is the
+    // same on every platform; a provider without such rules answers nothing.
+    private fun providerRefusal(path: String): HydrationError? = mount.providerNameIssue(path)?.let { HydrationError.NameRefused(it, null) }
+
     override suspend fun openForRead(connectionId: String, handleId: String, path: String): OpenResult =
         when (val target = views.readTarget(path)) {
             is HydrationViews.ReadTarget.Real -> openForReadAt(connectionId, handleId, target.path)
@@ -2487,6 +2492,7 @@ class HydrationImpl(
 
     override suspend fun mkdir(path: String): MkdirResult {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
+        providerRefusal(normalised)?.let { return MkdirResult.Failed(it) }
         if (refusedNewName(normalised)) return MkdirResult.Failed(HydrationError.InvalidPath)
         // Scope guard: a folder created outside the profile's sync_path set
         // would land in the cloud but never show in the mounted view (the view
@@ -2833,9 +2839,14 @@ class HydrationImpl(
         return try {
             // archive#1070/#1069: the truncated copy is the start of an edit the cloud has not seen, noted before the
             // truncation so that a stop in between cannot leave the bytes unnoticed (a row that was never
-            // hydrated has no baseline to tell them by).
-            if (entry.remoteId != null) stateDb.markEdited(normalised, entry.writeToken.orEmpty())
-            val cachePath = prepareEmptyCache(normalised)
+            // hydrated has no baseline to tell them by). Both wait for a download of this path that is putting its bytes in
+            // place (MountEngine.cacheSwapLock): the download either sees the mark and drops its bytes, or has finished and
+            // its copy is the one emptied here.
+            val cachePath =
+                mount.cacheSwapLock(normalised).withLock {
+                    if (entry.remoteId != null) stateDb.markEdited(normalised, entry.writeToken.orEmpty())
+                    prepareEmptyCache(normalised)
+                }
             // archive#728: a truncate of a cached copy frees its bytes; the accounting follows the file.
             accountCacheFileOnDisk(normalised)
             // When a live handle id is provided (O_TRUNC open), register it in
@@ -2853,6 +2864,7 @@ class HydrationImpl(
 
     override suspend fun create(connectionId: String, handleId: String, path: String): CreateResult {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
+        providerRefusal(normalised)?.let { return CreateResult.Failed(it) }
         if (refusedNewName(normalised)) return CreateResult.Failed(HydrationError.InvalidPath)
         // archive#1040 M4: a file created at the old name of a rename whose cache copy is still there would truncate it.
         if (renames.blocks(normalised)) return CreateResult.Failed(HydrationError.Generic(BUSY_TOKEN))
@@ -2978,6 +2990,7 @@ class HydrationImpl(
 
         // Both cache files must lie inside the cache folder, and the destination is a name this engine creates.
         // Decided before anything is moved, in the cloud or locally.
+        if (oldNorm != newNorm) providerRefusal(newNorm)?.let { return RenameResult.Failed(it) }
         if (!resolvesInsideCache(oldNorm) || refusedNewName(newNorm)) {
             return RenameResult.Failed(HydrationError.InvalidPath)
         }

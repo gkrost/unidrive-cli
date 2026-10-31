@@ -98,3 +98,9 @@ sync_root = "~/Internxt"
 # is the folder's name (one folder name, no path; default: Favorites).
 # favorites_view = true
 # favorites_folder_name = "Favorites"
+
+# Internxt only: never create, upload, move or rename to a name the official Internxt apps would not accept (a
+# character Windows reserves, a control character, whitespace at either end, a trailing dot, a Windows device name such
+# as CON.txt, more than 255 characters or 255 UTF-8 bytes). Such a write is refused before anything reaches the cloud,
+# with the reason name_incompatible. For accounts that also run the official apps. Default false.
+# internxt_strict_names = false

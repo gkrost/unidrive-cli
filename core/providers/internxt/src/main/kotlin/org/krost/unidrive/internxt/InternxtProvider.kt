@@ -941,7 +941,7 @@ class InternxtProvider(
         val srcPlainName = meta.plainName ?: plainName
         val type = meta.type
         for (counter in 1..MAX_KEEP_OVERWRITTEN_RETRIES) {
-            val archiveName = keepOverwrittenArchiveName(srcPlainName, now, counter, type)
+            val archiveName = keepOverwrittenArchiveName(srcPlainName, now, counter, type, strict = config.strictNames)
             try {
                 api.renameFile(existingRemoteId, plainName = archiveName, type = type)
                 return true
@@ -1048,8 +1048,9 @@ class InternxtProvider(
         existingRemoteId: String?,
         ifMatchETag: String?,
         onProgress: ((Long, Long) -> Unit)?,
-    ): CloudItem =
-        try {
+    ): CloudItem {
+        refuseIncompatibleName(remotePath)
+        return try {
             uploadUnclassified(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress)
         } catch (e: InternxtApiException) {
             if (e.statusCode == PLAN_LIMIT_STATUS) {
@@ -1067,6 +1068,19 @@ class InternxtProvider(
                 requestId = e.requestId,
             )
         }
+    }
+
+    // `internxt_strict_names`: the name the official Internxt clients would not accept, refused before any request.
+    override fun newNameIssue(path: String): String? =
+        if (config.strictNames) InternxtNameRules.pathIssue(path)?.let(InternxtNameRules::refusalReason) else null
+
+    private fun refuseIncompatibleName(path: String) {
+        val reason = newNameIssue(path) ?: return
+        throw org.krost.unidrive.NameRefusedException(
+            "Refused before any request: $path is not a name the official Internxt clients accept ($reason)",
+            reason = reason,
+        )
+    }
 
     private suspend fun uploadUnclassified(
         localPath: Path,
@@ -1941,7 +1955,7 @@ class InternxtProvider(
                         // (same fileId) under a conflict-suffixed name.
                         var conflictResult: org.krost.unidrive.internxt.model.InternxtFile? = null
                         for (counter in 1..MAX_KEEP_OVERWRITTEN_RETRIES) {
-                            val conflictPlainName = conflictName(plainName, today, counter, ext)
+                            val conflictPlainName = conflictName(plainName, today, counter, ext, strict = config.strictNames)
                             val conflictEncryptedName =
                                 crypto.encryptName(conflictPlainName, "${creds.mnemonic}-$parentUuid")
                             try {
@@ -2145,7 +2159,7 @@ class InternxtProvider(
                     var copy: org.krost.unidrive.internxt.model.InternxtFile? = null
                     for (counter in 1..MAX_KEEP_OVERWRITTEN_RETRIES) {
                         try {
-                            copy = create(conflictName(plainName, today, counter, ext))
+                            copy = create(conflictName(plainName, today, counter, ext, strict = config.strictNames))
                             break
                         } catch (ce: InternxtApiException) {
                             if (ce.statusCode == 409 && counter < MAX_KEEP_OVERWRITTEN_RETRIES) continue
@@ -2346,6 +2360,7 @@ class InternxtProvider(
     private fun parentPathOf(path: String): String = "/" + pathSegments(path).dropLast(1).joinToString("/")
 
     override suspend fun createFolder(path: String): CloudItem {
+        refuseIncompatibleName(path)
         val segments = pathSegments(path)
         val parentPath = "/" + segments.dropLast(1).joinToString("/")
         val name = segments.last()
@@ -2389,6 +2404,7 @@ class InternxtProvider(
      * group, which trades round-trips for correctness.
      */
     override suspend fun createFolders(paths: List<String>): List<CloudItem> {
+        paths.forEach(::refuseIncompatibleName)
         if (paths.isEmpty()) return emptyList()
         if (paths.size == 1) return listOf(createFolder(paths.single()))
 
@@ -2452,7 +2468,10 @@ class InternxtProvider(
     override suspend fun move(
         fromPath: String,
         toPath: String,
-    ): CloudItem = moveResolved(getMetadata(fromPath), fromPath, toPath)
+    ): CloudItem {
+        refuseIncompatibleName(toPath)
+        return moveResolved(getMetadata(fromPath), fromPath, toPath)
+    }
 
     // archive#402: the engine routes here whenever the source row carries a real cloud uuid,
     // so a same-named sibling cannot redirect the move to the wrong twin via
@@ -2463,6 +2482,7 @@ class InternxtProvider(
         fromPath: String,
         toPath: String,
     ): CloudItem {
+        refuseIncompatibleName(toPath)
         val metadata = metadataById(remoteId, parentPathOf(fromPath), fromPath)
         refuseOutsideDrive(metadata, fromPath)
         return moveResolved(metadata, fromPath, toPath)
@@ -2813,6 +2833,9 @@ class InternxtProvider(
         // The next chunk of a full gather that hands its files over from the staging (see [GatherHandover]): not a poll,
         // whatever the cursor looks like.
         if (cursor != null && cursor.startsWith(GATHER_CURSOR_PREFIX)) return continueGather(cursor, onPageProgress, scanContext)
+        // A walk of the whole drive that cannot be resumed (its rows are gone) gives the scan back to the listing it took
+        // over from, with that listing's own marker: the cursor listing then goes on from its cursors.
+        walkHandedBack(cursor, scanContext)?.let { return deltaImpl(cursor, onPageProgress, it) }
         foldersScanned.set(0)
         foldersSkipped.set(0)
         // A full enumeration of a scoped profile lists only the scope roots. An
@@ -2837,6 +2860,14 @@ class InternxtProvider(
                 if (scopeRoots.isEmpty()) "" else " of $scopeRoots",
             )
             return scopedFullDelta(scopeRoots.ifEmpty { listOf("/") }, onPageProgress, onProgress, scanContext = scanContext)
+        }
+        // The stored scan is a walk of the whole drive (one that took over from a failed listing, or one the window above
+        // started): the walk goes on from its staged rows, in a new process too. Starting the account-wide listing
+        // instead would leave what the walk stored unused, and on a drive whose listing fails at the same page every
+        // time, pay that attempt again first. A walk that cannot be resumed was handed back above.
+        if (resumesStoredWalk(cursor, scanContext)) {
+            log.info("The stored scan is a walk of the folder tree; resuming the walk")
+            return scopedFullDelta(listOf("/"), onPageProgress, onProgress, scanContext = scanContext)
         }
         // A full enumeration of the whole drive pages through the cursor listings: the offset listing below
         // needs 25-56 s per page on a large account and the gateway cuts it at about two minutes. Only a server
@@ -3838,8 +3869,10 @@ class InternxtProvider(
     // connection that failed or was cut (surfaced as status 0 / 503) — hands the gather to the folder tree
     // walk, the one listing that still finishes on a large drive, and skips the account-wide listings for
     // the R3 TTL: on the live account the folder stream hits the same wall at the same page every time,
-    // and re-buying that attempt on every gather is minutes of load the walk replaces anyway. Both
-    // handovers leave the marker and the staged rows in place, so the next gather resumes from the cursors.
+    // and re-buying that attempt on every gather is minutes of load the walk replaces anyway. The handover to
+    // the offset listing leaves the marker and the staged rows in place, so the next gather resumes from the
+    // cursors. The walk stores its own progress under a marker that carries the cursor marker, and the next
+    // gather resumes the walk; a walk that cannot be resumed gives the scan back to the cursors.
     // A client error (a 404 on a later page, 401, 429) ends the attempt with an exception, marker intact:
     // it is a request-shape problem a walk cannot fix.
     //
@@ -3970,11 +4003,14 @@ class InternxtProvider(
                     e.message,
                     heavyListingsUnavailableUntil.get(),
                 )
+                // The walk stores its own progress, so a walk that is stopped resumes. Its marker replaces the cursor
+                // listing's and carries it as it stands, see [TreeMarker.takenOverFrom]; the cursor listing's rows stay.
                 return scopedFullDelta(
                     scanContext?.scopeRoots.orEmpty().ifEmpty { listOf("/") },
                     onPageProgress,
                     onProgress,
                     folders.size + (stream?.staged ?: files.size),
+                    scanContext = scanContext?.copy(resumeMarker = cursorMarker(startedAt, foldersAt, filesAt)),
                 )
             }
 
@@ -3999,7 +4035,7 @@ class InternxtProvider(
     // Cursor = the walk's start time, not the newest in-scope updatedAt: the next
     // incremental delta then asks for changes since the walk began. The newest
     // in-scope timestamp can be years old, which would make that first delta list
-    // the whole account. No resume marker is kept; an interrupted walk restarts.
+    // the whole account.
     //
     // [progressBaseline] seeds the heartbeat with the items the account-wide
     // listings had already counted before the walk took over, so the reported
@@ -4032,16 +4068,43 @@ class InternxtProvider(
             api.getFolderContentsPaged(folderUuid)
         }
 
+    // A full gather of the whole drive whose stored marker is a walk's (one walkHandedBack did not hand back).
+    private fun resumesStoredWalk(
+        cursor: String?,
+        scanContext: ScanContext?,
+    ): Boolean = cursor == null && scanContext != null && scanContext.scopeRoots.isEmpty() && decodeTreeMarker(scanContext.resumeMarker) != null
+
+    // The scan context to start a full gather of the whole drive with when its stored marker is a walk's that cannot be
+    // resumed (treeResumeOf: its rows are gone): the context with the marker of the listing the walk took over from (null
+    // when it took over from none). Null when there is nothing to hand back.
+    private fun walkHandedBack(
+        cursor: String?,
+        scanContext: ScanContext?,
+    ): ScanContext? {
+        if (cursor != null || scanContext == null || scanContext.scopeRoots.isNotEmpty()) return null
+        val walk = decodeTreeMarker(scanContext.resumeMarker) ?: return null
+        if (treeResumeOf(scanContext.resumeMarker, scanContext.resumedItems, listOf("/")) != null) return null
+        log.info(
+            "The stored walk of the folder tree cannot be resumed; {}",
+            if (walk.takenOverFrom == null) "starting over" else "the listing it took over from goes on",
+        )
+        return scanContext.copy(resumeMarker = walk.takenOverFrom)
+    }
+
     private suspend fun scopedFullDelta(
         scopeRoots: List<String>,
         onPageProgress: ((itemsSoFar: Int) -> Unit)?,
         onProgress: ((ScanProgress) -> Unit)?,
         progressBaseline: Int = 0,
-        // Only a walk that is the first strategy tried gets the scan context: a walk that took over from a
-        // listing which already stored progress must leave that progress and its marker alone.
+        // With a scan context the walk stores its progress and resumes from it. A walk that takes over from a listing
+        // which already stored progress gets the context with that listing's current marker as the resume marker: the
+        // walk starts fresh (it is no walk's marker), and its own marker carries the listing's along unchanged
+        // ([TreeMarker.takenOverFrom]); the listing's staged rows are tagged as its own and stay. An incremental walk
+        // gets no context.
         scanContext: ScanContext? = null,
     ): DeltaPage {
         val resume = treeResumeOf(scanContext?.resumeMarker, scanContext?.resumedItems.orEmpty(), scopeRoots)
+        val takenOverFrom = listingMarkerToCarry(scanContext?.resumeMarker)
         // The cursor of the page is the instant the walk began; a resumed walk keeps the first attempt's instant,
         // so the next incremental delta asks for everything since the beginning, the outage included.
         val startedAt = resume?.marker?.startedAt?.let(Instant::parse) ?: serverNow()
@@ -4069,9 +4132,10 @@ class InternxtProvider(
                     onProgress?.invoke(progress)
                 },
                 resume = resume,
+                tracked = scanContext?.trackedRow,
                 persist =
                     persist?.let { store ->
-                        { rows, startsDone -> store(rows, treeMarker(startedAt.toString(), scopeRoots, startsDone)) }
+                        { rows, startsDone -> store(rows, treeMarker(startedAt.toString(), scopeRoots, startsDone, takenOverFrom)) }
                     },
             )
         val skipped = foldersSkipped.get()
@@ -4538,6 +4602,12 @@ class InternxtProvider(
         // whichever coroutine that was. A folder counts as known before the folder that holds it
         // counts as done, so known - done is the queue (listed, waiting or in flight) and is never
         // zero while the walk goes on.
+        //
+        // [tracked] is the engine's state.db (ScanContext.trackedRow): it decides between two live folders that share the
+        // name of a scope root's segment (see [scopeSegmentWinner]).
+        // The walk's collaborators and test seams are its parameters, and the walk, its resume and its persistence run in one
+        // flow (its complexity was in the detekt baseline under the signature before [tracked]).
+        @Suppress("LongParameterList", "CyclomaticComplexMethod")
         internal suspend fun collectScopedInventoryImpl(
             getContents: suspend (String) -> FolderContentResponse,
             driveRootUuid: String,
@@ -4549,6 +4619,7 @@ class InternxtProvider(
             onProgress: ((ScanProgress) -> Unit)? = null,
             resume: TreeResume? = null,
             persist: (suspend (rows: List<org.krost.unidrive.CloudItem>, startsDone: Set<String>) -> Unit)? = null,
+            tracked: ((String) -> org.krost.unidrive.CloudItem?)? = null,
         ): ScopedInventory {
             val files = java.util.Collections.synchronizedList(mutableListOf<InternxtFile>())
             val folders = java.util.Collections.synchronizedMap(linkedMapOf<String, InternxtFolder>())
@@ -4649,12 +4720,23 @@ class InternxtProvider(
 
             report()
 
+            val warnedTwins = HashSet<String>()
             for (root in scopeRoots) {
                 var current = driveRootUuid
                 for (segment in pathSegments(root)) {
+                    val matches = listing(current).children.filter { live(it) && sanitizeName(it.plainName ?: it.name ?: "") == segment }
                     val child =
-                        listing(current).children.firstOrNull { live(it) && sanitizeName(it.plainName ?: it.name ?: "") == segment }
+                        scopeSegmentWinner(matches, segment, current, driveRootUuid, tracked)
                             ?: throw ProviderException("sync_path '$root' not found on the remote: no folder '$segment'")
+                    if (matches.size > 1 && warnedTwins.add(child.uuid)) {
+                        log.warn(
+                            "sync_path '{}': {} live folders share the name of one segment ({}); walking {}, the one the gather keeps at that path",
+                            root,
+                            matches.size,
+                            matches.map { it.uuid }.sorted().joinToString(", "),
+                            child.uuid,
+                        )
+                    }
                     val stamped = if (child.parentUuid != null) child else child.copy(parentUuid = current)
                     folders[stamped.uuid] = stamped
                     current = stamped.uuid
@@ -4670,6 +4752,26 @@ class InternxtProvider(
             }
             for (start in starts) walk(start)
             return ScopedInventory(files.toList(), folders.values.toList())
+        }
+
+        // Internxt keeps two live folders of one name in one folder (archive#403). The segment of a scope root they share
+        // resolves to the folder the engine's gather keeps at that path (RemoteGather's winner rule), never to the one the
+        // listing happens to name first: the one state.db tracks at that path wins, one it keeps under another name (a
+        // twin's decorated name) loses, and otherwise the smallest id. Walking another folder than the one state.db
+        // tracks would make every row below the scope root vanish from a full listing.
+        internal fun scopeSegmentWinner(
+            matches: List<InternxtFolder>,
+            segment: String,
+            parentUuid: String,
+            driveRootUuid: String,
+            tracked: ((String) -> org.krost.unidrive.CloudItem?)?,
+        ): InternxtFolder? {
+            if (matches.size < 2) return matches.firstOrNull()
+            fun rank(folder: InternxtFolder): Int {
+                val row = tracked?.invoke(folder.uuid)?.takeIf { !it.trashed && (it.parentId ?: driveRootUuid) == parentUuid } ?: return 1
+                return if (sanitizeName(row.name) == segment) 0 else 2
+            }
+            return matches.minWith(compareBy<InternxtFolder> { rank(it) }.thenBy { it.uuid })
         }
 
         /**
@@ -4720,6 +4822,7 @@ class InternxtProvider(
             now: java.time.Instant,
             counter: Int = 1,
             type: String? = null,
+            strict: Boolean = false,
         ): String {
             val stamp =
                 java.time.format.DateTimeFormatter
@@ -4727,7 +4830,7 @@ class InternxtProvider(
                     .withZone(java.time.ZoneOffset.UTC)
                     .format(now)
             val tail = ".unidrive-prev-$stamp" + (if (counter <= 1) "" else "-$counter")
-            return org.krost.unidrive.io.NameLimit.fitStem(plainName, tail.length + extensionUnits(type)) + tail
+            return fitGeneratedStem(plainName, tail, type, strict) + tail
         }
 
         // The units `.type` adds to a plainName in the name a user sees.
@@ -4744,9 +4847,22 @@ class InternxtProvider(
             date: String,
             counter: Int = 1,
             type: String? = null,
+            strict: Boolean = false,
         ): String {
             val tail = " (conflict $date)" + (if (counter <= 1) "" else " ($counter)")
-            return org.krost.unidrive.io.NameLimit.fitStem(plainName, tail.length + extensionUnits(type)) + tail
+            return fitGeneratedStem(plainName, tail, type, strict) + tail
+        }
+
+        // The stem of a generated name, cut for the whole name (stem, [tail], `.type`) to fit 255 UTF-16 units, and with
+        // `internxt_strict_names` ([strict]) 255 UTF-8 bytes too.
+        private fun fitGeneratedStem(
+            plainName: String,
+            tail: String,
+            type: String?,
+            strict: Boolean,
+        ): String {
+            val stem = org.krost.unidrive.io.NameLimit.fitStem(plainName, tail.length + extensionUnits(type))
+            return if (strict) InternxtNameRules.fitStem(stem, tail + if (type.isNullOrEmpty()) "" else ".$type") else stem
         }
 
         /**

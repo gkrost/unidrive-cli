@@ -10,10 +10,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * A polling listing that the server never answers must not hold back another Drive call. The Drive REST budget
- * (`maxConcurrency = 2`) spaces request starts; it is not a count of calls in flight, so two hung listings leave every
- * other call free to go out. A call issued while two listings (files and folders) hang completes at once, long before
- * the listing socket timeout, on a real CIO client against a loopback TLS socket.
+ * A polling listing that the server never answers must not hold back another Drive call. The two hung listings (files
+ * and folders) hold both of the Drive REST budget's permits (`maxConcurrency = 2`), but only the heavy listings take a
+ * permit: a cheap call is paced, not counted, so it goes out at once. A call issued while the two listings hang completes
+ * long before the listing socket timeout, on a real CIO client against a loopback TLS socket.
  */
 class InternxtHungListingDoesNotBlockCallsTest {
     private val fileMeta = """{"uuid":"f1","plainName":"f1","type":"txt","size":"1","status":"EXISTS"}"""
