@@ -809,6 +809,111 @@ class EnumeratePollerTest {
         scope.cancel()
     }
 
+    // `daemon run` of a profile whose sync_path root does not exist in the cloud: every gather fails with the provider's
+    // one-line error. The poll reports it, backs off, and keeps running; nothing escapes the loop, no restart.
+    @Test
+    fun `a sync_path root that is missing remotely fails the poll, which reports it and backs off`() = pollTest { scope ->
+        val provider = MissingRootProvider("/zz_missing_in_cloud")
+        val tmp = java.nio.file.Files.createTempDirectory("ud-missing-root")
+        val db = org.krost.unidrive.sync.StateDatabase(tmp.resolve("state.db")).also { it.initialize() }
+        try {
+            val engine =
+                org.krost.unidrive.sync.SyncEngine(
+                    provider = provider,
+                    db = db,
+                    syncRoot = java.nio.file.Files.createDirectories(tmp.resolve("root")),
+                    cacheRoot = tmp.resolve("cache"),
+                    standingScope = listOf("/zz_missing_in_cloud"),
+                )
+            val handler = EnumerateRpcHandler(engine, scope, emit = {})
+            val reported = mutableListOf<Long?>()
+            val poller =
+                EnumeratePoller(
+                    handler = handler,
+                    intervalMs = intervalMs,
+                    scope = scope,
+                    jitter = { it },
+                    clock = { testScheduler.currentTime },
+                    onNextAttempt = {
+                        reported += it
+                        engine.enumerationTracker.nextAttemptAt(it)
+                    },
+                )
+            poller.start()
+            runCurrent()
+
+            assertEquals(1, provider.deltaCalls.get(), "the catch-up poll ran the gather")
+            assertEquals(listOf(listOf("/zz_missing_in_cloud")), provider.scopes, "a full gather of the scope root")
+            val status = engine.enumerationTracker.snapshot()
+            assertEquals(org.krost.unidrive.sync.EnumerationStatus.State.FAILED, status.state)
+            val lastError = status.lastError.orEmpty()
+            assertTrue(lastError.startsWith("sync_path ") && "not found on the remote" in lastError, "the provider's one-line error: $lastError")
+            assertEquals(4 * intervalMs, status.nextAttemptAtMs, "the next attempt is the back-off, not the plain interval")
+            assertEquals("1", db.getSyncState(org.krost.unidrive.sync.SyncEngine.ENUMERATE_FAILURE_STREAK_KEY), "a restart starts from the streak")
+
+            advanceTimeBy(stepOneInterval())
+            runCurrent()
+            assertEquals(1, provider.deltaCalls.get(), "no poll one plain interval later")
+
+            advanceTimeBy(3 * intervalMs)
+            runCurrent()
+            assertEquals(2, provider.deltaCalls.get(), "the backed-off poll tries again and fails the same way")
+            assertEquals(listOf(null, 4 * intervalMs, null, 4 * intervalMs + 10 * intervalMs), reported, "the back-off escalates, up to its cap")
+            assertTrue(scope.coroutineContext[kotlinx.coroutines.Job]!!.isActive, "the failure did not end the daemon's serve scope")
+        } finally {
+            db.close()
+            tmp.toFile().deleteRecursively()
+        }
+    }
+
+    private class MissingRootProvider(
+        root: String,
+    ) : org.krost.unidrive.CloudProvider {
+        val message = "sync_path '$root' not found on the remote: no folder '${root.trimStart('/')}'"
+        val deltaCalls = java.util.concurrent.atomic.AtomicInteger(0)
+        val scopes = java.util.Collections.synchronizedList(mutableListOf<List<String>>())
+
+        override val id = "missing-root"
+        override val displayName = "Missing root"
+        override var isAuthenticated = true
+
+        override fun capabilities() = emptySet<org.krost.unidrive.Capability>()
+
+        override suspend fun authenticate() {}
+
+        override suspend fun listChildren(path: String) = emptyList<org.krost.unidrive.CloudItem>()
+
+        override suspend fun getMetadata(path: String): org.krost.unidrive.CloudItem = error("not used")
+
+        override suspend fun download(remotePath: String, destination: java.nio.file.Path): Long = error("not used")
+
+        override suspend fun upload(
+            localPath: java.nio.file.Path,
+            remotePath: String,
+            existingRemoteId: String?,
+            ifMatchETag: String?,
+            onProgress: ((Long, Long) -> Unit)?,
+        ): org.krost.unidrive.CloudItem = error("not used")
+
+        override suspend fun delete(remotePath: String, ifMatchETag: String?) = error("not used")
+
+        override suspend fun createFolder(path: String): org.krost.unidrive.CloudItem = error("not used")
+
+        override suspend fun move(fromPath: String, toPath: String): org.krost.unidrive.CloudItem = error("not used")
+
+        override suspend fun delta(
+            cursor: String?,
+            onPageProgress: ((Int) -> Unit)?,
+            scanContext: org.krost.unidrive.ScanContext?,
+        ): org.krost.unidrive.DeltaPage {
+            deltaCalls.incrementAndGet()
+            scopes += scanContext?.scopeRoots.orEmpty()
+            throw org.krost.unidrive.ProviderException(message)
+        }
+
+        override suspend fun quota() = org.krost.unidrive.QuotaInfo(0, 0, 0)
+    }
+
     @Test
     fun `parseIntervalMs refuses a value that overflows a long instead of wrapping`() {
         for (raw in listOf("9999999999999999h", "9223372036854775807", "153722867280912931m", "2562047788015216h", "99999999999999999999")) {

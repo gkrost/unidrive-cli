@@ -1,6 +1,11 @@
 package org.krost.unidrive.internxt
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import kotlinx.coroutines.test.runTest
+import org.krost.unidrive.CloudItem
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.ScanProgress
 import org.krost.unidrive.internxt.model.FolderContentResponse
@@ -48,6 +53,7 @@ class InternxtScopedInventoryTest {
         skipped: AtomicInteger = AtomicInteger(0),
         scanned: AtomicInteger = AtomicInteger(0),
         onProgress: ((ScanProgress) -> Unit)? = null,
+        tracked: ((String) -> CloudItem?)? = null,
     ) = InternxtProvider.collectScopedInventoryImpl(
         getContents = { uuid ->
             synchronized(listed) { listed += uuid }
@@ -59,6 +65,7 @@ class InternxtScopedInventoryTest {
         skipped = skipped,
         log = log,
         onProgress = onProgress,
+        tracked = tracked,
     )
 
     private fun paths(inv: ScopedInventory): Set<String> {
@@ -128,6 +135,78 @@ class InternxtScopedInventoryTest {
 
             assertTrue(inv.folders.none { it.uuid == "old" })
             assertTrue("/_INBOX/a.txt" in paths(inv))
+        }
+
+    // ---- two live folders share the scope root's name (Internxt keeps duplicates) ---------------------------------------
+
+    // drive: two live folders named _INBOX, "inbox-a" (a.txt) and "inbox-b" (b.txt), in the listing order given.
+    private fun twins(vararg order: String): Map<String, FolderContentResponse> =
+        mapOf(
+            "root" to FolderContentResponse(order.map { folder(it, "_INBOX") }, emptyList()),
+            "inbox-a" to FolderContentResponse(emptyList(), listOf(file("fa", "a.txt"))),
+            "inbox-b" to FolderContentResponse(emptyList(), listOf(file("fb", "b.txt"))),
+        )
+
+    private fun trackedFolder(
+        id: String,
+        name: String,
+    ) = CloudItem(id = id, name = name, path = "/$name", size = 0, isFolder = true, modified = null, created = null, hash = null, mimeType = null)
+
+    private suspend fun <T> warnings(block: suspend () -> T): Pair<T, List<String>> {
+        val logger = log as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        val before = logger.level
+        logger.level = Level.INFO
+        logger.addAppender(appender)
+        val result =
+            try {
+                block()
+            } finally {
+                logger.detachAppender(appender)
+                logger.level = before
+            }
+        return result to appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage }
+    }
+
+    @Test
+    fun `of two live folders with the scope root's name, every listing order walks the same one and warns once`() =
+        runTest {
+            for (order in listOf(arrayOf("inbox-b", "inbox-a"), arrayOf("inbox-a", "inbox-b"))) {
+                val listed = mutableListOf<String>()
+
+                val (inv, warned) = warnings { run(listOf("/_INBOX"), listed, contents = twins(*order)) }
+
+                assertEquals(setOf("/_INBOX", "/_INBOX/a.txt"), paths(inv), "the smallest id wins, whatever the order ${order.toList()}")
+                assertTrue("inbox-b" !in listed, "the other folder is not walked: $listed")
+                assertEquals(1, warned.size, "one warning: $warned")
+                assertTrue("inbox-a" in warned.single() && "inbox-b" in warned.single(), "the warning names both ids: $warned")
+            }
+        }
+
+    @Test
+    fun `of two live folders with the scope root's name, the one state db tracks at that path wins`() =
+        runTest {
+            // The engine keeps syncing the twin it has been syncing (the gather's winner rule); walking the other one would
+            // make every tracked row below the scope root vanish from a full listing.
+            val tracked = mapOf("inbox-b" to trackedFolder("inbox-b", "_INBOX"))
+            for (order in listOf(arrayOf("inbox-a", "inbox-b"), arrayOf("inbox-b", "inbox-a"))) {
+                val inv = run(listOf("/_INBOX"), contents = twins(*order), tracked = { tracked[it] })
+
+                assertEquals(setOf("/_INBOX", "/_INBOX/b.txt"), paths(inv), "order ${order.toList()}")
+            }
+        }
+
+    @Test
+    fun `a twin state db keeps under its decorated name loses the scope root`() =
+        runTest {
+            // The engine keeps the twin that lost under a decorated name (the gather's winner rule: a kept twin keeps its
+            // decorated name); the path, and the walk, belong to the other one, even with the smaller id.
+            val tracked = mapOf("inbox-a" to trackedFolder("inbox-a", "_INBOX (dup-0123abcd)"))
+            for (order in listOf(arrayOf("inbox-a", "inbox-b"), arrayOf("inbox-b", "inbox-a"))) {
+                val inv = run(listOf("/_INBOX"), contents = twins(*order), tracked = { tracked[it] })
+
+                assertEquals(setOf("/_INBOX", "/_INBOX/b.txt"), paths(inv), "order ${order.toList()}")
+            }
         }
 
     @Test
