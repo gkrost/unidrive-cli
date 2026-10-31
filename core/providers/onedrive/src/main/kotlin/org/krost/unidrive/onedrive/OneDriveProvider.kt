@@ -17,9 +17,11 @@ private const val CHUNKED_UPLOAD_THRESHOLD = 4L * 1024 * 1024
 private const val MAX_FOLDER_CHAIN = 256
 
 class OneDriveProvider(
-    private val config: OneDriveConfig = OneDriveConfig(),
+    internal val config: OneDriveConfig = OneDriveConfig(),
     // Tests hand in a MockEngine for the Graph calls; production lets Ktor pick the engine.
     engine: io.ktor.client.engine.HttpClientEngine? = null,
+    // Tests hand in a GraphApiService with a fixed token; production builds one over the token manager.
+    graphApi: GraphApiService? = null,
 ) : CloudProvider {
     override val id = "onedrive"
     override val displayName = "Microsoft OneDrive"
@@ -29,12 +31,12 @@ class OneDriveProvider(
 
     private val log = LoggerFactory.getLogger(OneDriveProvider::class.java)
     private val oauthService = OAuthService(config)
-    private val tokenManager = TokenManager(config, oauthService)
+    internal val tokenManager = TokenManager(config, oauthService)
 
     private val loggedVaultThisSession = AtomicBoolean(false)
 
     private val graphApi =
-        GraphApiService(config, engine = engine) { forceRefresh ->
+        graphApi ?: GraphApiService(config, engine = engine) { forceRefresh ->
             tokenManager.getValidToken(forceRefresh).accessToken
         }
 

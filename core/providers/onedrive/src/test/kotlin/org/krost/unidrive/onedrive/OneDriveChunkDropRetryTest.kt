@@ -181,11 +181,7 @@ class OneDriveChunkDropRetryTest {
         limits: UploadWatchdogLimits = UploadWatchdogLimits.DEFAULT,
     ): GraphApiService {
         val service =
-            GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), uploadWatchdog = limits, tokenProvider = { _ -> "test-token" })
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
+            GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), uploadWatchdog = limits, httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
         return service
     }
 

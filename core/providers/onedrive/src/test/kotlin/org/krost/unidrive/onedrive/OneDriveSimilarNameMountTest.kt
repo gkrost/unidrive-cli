@@ -52,18 +52,8 @@ class OneDriveSimilarNameMountTest {
         tmp = Files.createTempDirectory("ud-similar-mount")
         graph = SimilarNameGraph()
         val config = OneDriveConfig(tokenPath = tmp.resolve("token"))
-        provider = OneDriveProvider(config)
-        val api = GraphApiService(config = config, tokenProvider = { _ -> "test-token" })
-        GraphApiService::class.java.getDeclaredField("httpClient").apply {
-            isAccessible = true
-            (get(api) as? io.ktor.client.HttpClient)?.close()
-            set(api, graph.client())
-        }
-        OneDriveProvider::class.java.getDeclaredField("graphApi").apply {
-            isAccessible = true
-            (get(provider) as? GraphApiService)?.close()
-            set(provider, api)
-        }
+        val api = GraphApiService(config = config, httpClient = graph.client(), tokenProvider = { _ -> "test-token" })
+        provider = OneDriveProvider(config, graphApi = api)
         db = StateDatabase(dbPath = tmp.resolve("state.db"), inMemory = true).also { it.initialize() }
         engine = SyncEngine(provider = provider, db = db, syncRoot = tmp.resolve("sync"), cacheRoot = tmp.resolve("cache"))
         hydration = HydrationImpl(syncEngine = engine, stateDb = db, recoveryUploadScope = CoroutineScope(Dispatchers.IO), uploadRetryDelaysMs = listOf(10L, 10L), failedReplayDelayMs = 0L)

@@ -33,20 +33,13 @@ class OneDriveHashAlignmentTest {
                 headers = headersOf(HttpHeaders.ContentType, "application/json"),
             )
         }
-        val provider = OneDriveProvider()
         val freshGraphApi = GraphApiService(
             config = OneDriveConfig(),
+            httpClient = HttpClient(engine),
             tokenProvider = { _ -> "test-token" },
         )
-        val httpClientField = GraphApiService::class.java.getDeclaredField("httpClient")
-        httpClientField.isAccessible = true
-        (httpClientField.get(freshGraphApi) as? HttpClient)?.close()
-        httpClientField.set(freshGraphApi, HttpClient(engine))
 
-        val graphApiField = OneDriveProvider::class.java.getDeclaredField("graphApi")
-        graphApiField.isAccessible = true
-        (graphApiField.get(provider) as? GraphApiService)?.close()
-        graphApiField.set(provider, freshGraphApi)
+        val provider = OneDriveProvider(graphApi = freshGraphApi)
         return provider
     }
 

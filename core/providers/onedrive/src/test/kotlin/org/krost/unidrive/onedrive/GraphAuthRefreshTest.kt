@@ -36,16 +36,6 @@ import kotlin.test.assertTrue
  * call sites once this baseline is in place.
  */
 class GraphAuthRefreshTest {
-    private fun installMockClient(
-        service: GraphApiService,
-        engine: MockEngine,
-    ) {
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
-    }
-
     @Test
     fun `401 then 200 surfaces refreshed token on retry and returns refreshed response`() =
         runTest {
@@ -75,12 +65,12 @@ class GraphAuthRefreshTest {
             val service =
                 GraphApiService(
                     config = OneDriveConfig(),
+                    httpClient = HttpClient(engine),
                     tokenProvider = { refreshed ->
                         tokenCalls += refreshed
                         if (refreshed) "refreshed-token" else "stale-token"
                     },
                 )
-            installMockClient(service, engine)
 
             // getDrive() goes through authenticatedRequest; the success branch returns its parsed body.
             val drive = service.getDrive()
@@ -115,12 +105,12 @@ class GraphAuthRefreshTest {
             val service =
                 GraphApiService(
                     config = OneDriveConfig(),
+                    httpClient = HttpClient(engine),
                     tokenProvider = { refreshed ->
                         tokenCalls += refreshed
                         if (refreshed) "still-bad" else "bad"
                     },
                 )
-            installMockClient(service, engine)
 
             val ex =
                 assertFailsWith<AuthenticationException> {
@@ -153,12 +143,12 @@ class GraphAuthRefreshTest {
             val service =
                 GraphApiService(
                     config = OneDriveConfig(),
+                    httpClient = HttpClient(engine),
                     tokenProvider = { refreshed ->
                         tokenCalls += refreshed
                         "ok-token"
                     },
                 )
-            installMockClient(service, engine)
 
             service.getDrive()
 

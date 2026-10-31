@@ -18,19 +18,10 @@ import kotlin.test.assertTrue
  * capability-declaring providers) is covered in `SyncEngineTest`.
  */
 class DeltaFromLatestTest {
-    private fun installMockClient(
-        service: GraphApiService,
-        engine: MockEngine,
-    ) {
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
-    }
-
-    private fun newService(): GraphApiService =
+    private fun newService(engine: MockEngine): GraphApiService =
         GraphApiService(
             config = OneDriveConfig(),
+            httpClient = HttpClient(engine),
             tokenProvider = { _ -> "test-token" },
         )
 
@@ -50,8 +41,7 @@ class DeltaFromLatestTest {
                     )
                 }
 
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val result = service.getDelta(fromLatest = true)
 
@@ -85,8 +75,7 @@ class DeltaFromLatestTest {
                     )
                 }
 
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             service.getDelta()
 

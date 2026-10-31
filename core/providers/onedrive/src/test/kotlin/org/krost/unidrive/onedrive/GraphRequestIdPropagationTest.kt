@@ -36,19 +36,10 @@ import kotlin.test.assertNull
  *    don't get a fake correlation id.
  */
 class GraphRequestIdPropagationTest {
-    private fun installMockClient(
-        service: GraphApiService,
-        engine: MockEngine,
-    ) {
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
-    }
-
-    private fun newService(): GraphApiService =
+    private fun newService(engine: MockEngine): GraphApiService =
         GraphApiService(
             config = OneDriveConfig(),
+            httpClient = HttpClient(engine),
             tokenProvider = { _ -> "test-token" },
         )
 
@@ -68,8 +59,7 @@ class GraphRequestIdPropagationTest {
                             ),
                     )
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val ex = assertFailsWith<AuthenticationException> { service.getDrive() }
 
@@ -96,8 +86,7 @@ class GraphRequestIdPropagationTest {
                             ),
                     )
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val ex = assertFailsWith<GraphApiException> { service.getDrive() }
 
@@ -126,8 +115,7 @@ class GraphRequestIdPropagationTest {
                             ),
                     )
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val ex = assertFailsWith<GraphApiException> { service.getDrive() }
 
@@ -151,8 +139,7 @@ class GraphRequestIdPropagationTest {
                         headers = headersOf("Content-Type", "text/html"),
                     )
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val ex = assertFailsWith<GraphApiException> { service.getDrive() }
 

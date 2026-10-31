@@ -51,11 +51,7 @@ class OneDriveResumableStaleSessionTest {
 
     /** Build a GraphApiService whose token dir (= session store dir) is [tokenDir] and whose transport is [engine]. */
     private fun graphWith(engine: MockEngine): GraphApiService {
-        val svc = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), tokenProvider = { _ -> "test-token" })
-        val httpClientField = GraphApiService::class.java.getDeclaredField("httpClient")
-        httpClientField.isAccessible = true
-        (httpClientField.get(svc) as? HttpClient)?.close()
-        httpClientField.set(svc, HttpClient(engine))
+        val svc = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
         return svc
     }
 
