@@ -34,8 +34,11 @@ import java.util.concurrent.atomic.AtomicInteger
 // staging stands beside it as a test double.
 
 /** A provider over [engine], signed in with test credentials, as the provider tests build it. */
-internal fun internxtProviderOn(engine: MockEngine): InternxtProvider {
-    val provider = InternxtProvider()
+internal fun internxtProviderOn(
+    engine: MockEngine,
+    config: InternxtConfig = InternxtConfig(),
+): InternxtProvider {
+    val provider = InternxtProvider(config)
     val auth = InternxtProvider::class.java.getDeclaredField("authService").also { it.isAccessible = true }.get(provider)
     val credsField = auth.javaClass.getDeclaredField("credentials").also { it.isAccessible = true }
     val payload = Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())

@@ -18,6 +18,9 @@ data class InternxtConfig(
     // whose recorded hash is in no shape this client can check (blank, another length, not hex) is refused unless this
     // is set, per profile (`allow_unverified_shard_hash = true`); it is then read without the check and a WARN says so.
     val allowUnverifiedShardHash: Boolean = false,
+    // `internxt_strict_names = true`, per profile: a create, upload, move or rename to a name the official Internxt clients
+    // would not accept ([InternxtNameRules]) is refused before any request, with the reason `name_incompatible: <rule>`.
+    val strictNames: Boolean = false,
     // archive#578: the multipart upload policy, per profile. Files whose ciphertext is at or
     // below [uploadCutoffMb] keep the single PUT; above it they go out in
     // [uploadChunkMb] parts, [uploadConcurrency] at a time. Validated by the factory.

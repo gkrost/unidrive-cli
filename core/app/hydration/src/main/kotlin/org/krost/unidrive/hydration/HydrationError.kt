@@ -158,6 +158,10 @@ sealed interface HydrationError {
      * refused too. Not transient and not about the content: the upload is not retried, the local file is kept, and the
      * entry is reported as blocked. The wire form is the STABLE token [reason] (`similar_name`), followed by
      * `: <sibling>` when the conflicting sibling is known. A client matches the prefix up to ": ".
+     *
+     * Also the answer of mkdir, create and rename to a new name the provider refuses by its own rules before any request
+     * (Internxt's `internxt_strict_names`): [reason] is then `name_incompatible: <rule>` and [sibling] is null; nothing
+     * was changed or asked of the drive.
      */
     data class NameRefused(
         val reason: String,

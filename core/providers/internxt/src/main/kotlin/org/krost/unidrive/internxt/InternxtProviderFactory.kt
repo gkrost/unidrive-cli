@@ -69,6 +69,7 @@ class InternxtProviderFactory(
                 tokenPath = tokenPath,
                 keepOverwritten = keepOverwritten,
                 allowUnverifiedShardHash = properties["allow_unverified_shard_hash"]?.toBooleanStrictOrNull() ?: false,
+                strictNames = properties["internxt_strict_names"]?.toBooleanStrictOrNull() ?: false,
                 uploadConcurrency =
                     intKey("upload_concurrency", InternxtConfig.DEFAULT_UPLOAD_CONCURRENCY) {
                         if (it !in 1..InternxtConfig.MAX_UPLOAD_CONCURRENCY) {
