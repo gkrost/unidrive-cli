@@ -3999,7 +3999,7 @@ class InternxtProvider(
     // Cursor = the walk's start time, not the newest in-scope updatedAt: the next
     // incremental delta then asks for changes since the walk began. The newest
     // in-scope timestamp can be years old, which would make that first delta list
-    // the whole account. No resume marker is kept; an interrupted walk restarts.
+    // the whole account.
     //
     // [progressBaseline] seeds the heartbeat with the items the account-wide
     // listings had already counted before the walk took over, so the reported
