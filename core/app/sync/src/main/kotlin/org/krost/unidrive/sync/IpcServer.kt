@@ -333,6 +333,9 @@ class IpcServer(
                             // archive#1054 S2: bytes, decoded one whole line at a time. A read can end inside a multi-byte
                             // character; decoding each read on its own turned that character into U+FFFD.
                             val pending = java.io.ByteArrayOutputStream()
+                            // gkrost/unidrive-cli#23: what the peer sent while a request of it ran (see watchPeer); it follows
+                            // the lines already read, in order.
+                            val readAhead = java.io.ByteArrayOutputStream()
                             try {
                                 while (isActive) {
                                     // IPC authentication: a connection still unauthenticated after the timeout is closed.
@@ -361,15 +364,20 @@ class IpcServer(
                                     }
                                     pending.write(bytes)
                                     // Split on \n (a byte no multi-byte UTF-8 sequence contains); dispatch each complete line.
-                                    val data = pending.toByteArray()
+                                    var data = pending.toByteArray()
                                     var start = 0
                                     var idx = data.indexOfNewline(0)
                                     while (idx >= 0) {
                                         val line = String(data, start, idx - start, Charsets.UTF_8)
                                         start = idx + 1
-                                        dispatchRequest(sc, connId, line)
+                                        dispatchRequest(sc, connId, line, readAhead)
                                         if (!sc.isOpen) break // closed by the request (failed handshakes)
                                         entry.lastRequestAtMs = clock()
+                                        if (readAhead.size() > 0) {
+                                            data = data.copyOfRange(start, data.size) + readAhead.toByteArray()
+                                            readAhead.reset()
+                                            start = 0
+                                        }
                                         idx = data.indexOfNewline(start)
                                     }
                                     pending.reset()
@@ -566,7 +574,12 @@ class IpcServer(
         return sb.toString()
     }
 
-    private suspend fun dispatchRequest(client: SocketChannel, connId: String, line: String) {
+    private suspend fun dispatchRequest(
+        client: SocketChannel,
+        connId: String,
+        line: String,
+        readAhead: java.io.ByteArrayOutputStream = java.io.ByteArrayOutputStream(),
+    ) {
         // R8: defensive clear at the top — any stale entry from a prior request
         // that errored on this connection is removed before this request runs.
         // No-op on the happy path (the entry was already consumed at the end
@@ -602,7 +615,7 @@ class IpcServer(
                 """{"ok":false,"error":"unknown_verb"}"""
             }
             else -> try {
-                kotlinx.coroutines.withContext(handlerDispatcher) { handler(connId, line) }
+                watchingPeer(client, connId, readAhead) { kotlinx.coroutines.withContext(handlerDispatcher) { handler(connId, line) } }
             } catch (e: Exception) {
                 handlerThrew = true
                 log.error("IPC: handler '$verb' threw", e)
@@ -634,6 +647,58 @@ class IpcServer(
                 log.warn("IPC: post-reply hook for connId={} threw: {}", connId, e.message)
             }
         }
+    }
+
+    // gkrost/unidrive-cli#23: runs a handler while watching its connection. The reader waits for the handler, so without this
+    // a client that goes away during a long request (a download) is noticed only when the request ends. A handler that
+    // has run for PEER_WATCH_AFTER_MS gets a watch that reads on: the bytes go to [readAhead], dispatched after the handler
+    // in their order; an end of stream (or a reset) fires the close listeners at once, which end that connection's waits.
+    // The reader fires them again when it ends; every listener is idempotent.
+    private suspend fun <T> watchingPeer(
+        client: SocketChannel,
+        connId: String,
+        readAhead: java.io.ByteArrayOutputStream,
+        handler: suspend () -> T,
+    ): T {
+        val selector = readSelector ?: return handler()
+        return coroutineScope {
+            val watch =
+                launch {
+                    delay(PEER_WATCH_AFTER_MS)
+                    watchPeer(client, connId, readAhead, selector)
+                }
+            try {
+                handler()
+            } finally {
+                watch.cancelAndJoin()
+            }
+        }
+    }
+
+    private suspend fun watchPeer(
+        client: SocketChannel,
+        connId: String,
+        readAhead: java.io.ByteArrayOutputStream,
+        selector: IpcReadSelector,
+    ) {
+        val buf = ByteBuffer.allocate(PEER_WATCH_CHUNK)
+        try {
+            // A peer that sends more than one request's worth meanwhile is left in the socket for the reader.
+            while (readAhead.size() < MAX_REQUEST_BYTES) {
+                buf.clear()
+                val n = client.read(buf)
+                when {
+                    n < 0 -> break
+                    n == 0 -> selector.awaitReadable(client)
+                    else -> readAhead.write(buf.array(), 0, n)
+                }
+            }
+            if (readAhead.size() >= MAX_REQUEST_BYTES) return
+        } catch (e: IOException) {
+            log.debug("IPC: connection id={} failed while a request ran: {}", connId, e.message)
+        }
+        log.debug("IPC: client id={} went away while a request ran", connId)
+        closeListeners.forEach { it(connId) }
     }
 
     // Closed for being idle: no request line for idleTimeoutMs (0 = never), and neither a sync
@@ -810,6 +875,10 @@ class IpcServer(
         private const val MAX_SOCKET_PATH_LENGTH = 90
         private const val MAX_REQUEST_BYTES = 64 * 1024
         private const val TRANSPORT_POOL_SIZE = 4
+
+        // gkrost/unidrive-cli#23: a request that runs this long has its connection watched for the client going away.
+        private const val PEER_WATCH_AFTER_MS = 100L
+        private const val PEER_WATCH_CHUNK = 4096
         private const val IDLE_RECHECK_MS = 1_000L
         private const val HANDSHAKE_RECHECK_MS = 250L
 

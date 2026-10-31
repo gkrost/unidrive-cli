@@ -847,6 +847,75 @@ class IpcServerTest {
         }
     }
 
+    // gkrost/unidrive-cli#23: the reader waits for a running handler, so a client that went away during a long request (a
+    // download) was noticed only after it: its close listeners, which end its waits for a download, came too late to stop one.
+    @Test
+    fun `a client that goes away while its request runs fires the close listeners before the handler returns`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                // waitForSocket's probe connection closes too: the listeners are told apart by connection id.
+                val closed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+                val handlerSawClose = kotlinx.coroutines.CompletableDeferred<Boolean>()
+                server!!.registerConnectionCloseListener { closed += it }
+                server!!.registerHandler("slow") { connId, _ ->
+                    // Returns once the close listeners fired for this connection, or after 10 s without them.
+                    val seen = withTimeoutOrNull(10_000) { while (connId !in closed) delay(10) } != null
+                    handlerSawClose.complete(seen)
+                    """{"ok":true}"""
+                }
+                server!!.start(serverScope)
+                waitForSocket(socketPath)
+
+                val client = connectClient()
+                val w = ByteBuffer.wrap("{\"verb\":\"slow\"}\n".toByteArray(Charsets.UTF_8))
+                while (w.hasRemaining()) client.write(w)
+                client.close()
+
+                assertEquals(true, withTimeoutOrNull(30_000) { handlerSawClose.await() }, "the handler saw the close listeners fire")
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    // The watch of a running request reads what the client sends meanwhile: those requests are still answered, after it, in order.
+    @Test
+    fun `requests sent while a long request runs are answered after it, in order`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.registerHandler("slow") { _, _ ->
+                    delay(600)
+                    """{"reply":"slow"}"""
+                }
+                server!!.registerHandler("echo") { _, json -> """{"reply":"echo","request":$json}""" }
+                server!!.start(serverScope)
+                waitForSocket(socketPath)
+
+                val client = connectClient()
+                val first = ByteBuffer.wrap("{\"verb\":\"slow\"}\n".toByteArray(Charsets.UTF_8))
+                while (first.hasRemaining()) client.write(first)
+                delay(300) // the slow request is running and its connection is watched
+                val more = ByteBuffer.wrap("{\"verb\":\"echo\",\"n\":1}\n{\"verb\":\"echo\",\"n\":2}\n".toByteArray(Charsets.UTF_8))
+                while (more.hasRemaining()) client.write(more)
+
+                val lines = readFromClient(client, timeoutMs = 30_000, minLines = 3).trim().lines()
+                assertEquals(
+                    listOf(
+                        """{"reply":"slow"}""",
+                        """{"reply":"echo","request":{"verb":"echo","n":1}}""",
+                        """{"reply":"echo","request":{"verb":"echo","n":2}}""",
+                    ),
+                    lines,
+                )
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
     @Test
     fun `a long profile name is shortened to the first four bytes of its SHA-1, lower-case hex (golden)`() {
         assertEquals("7f900025", IpcServer.canonicalDiskName("a".repeat(100)))
