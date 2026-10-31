@@ -27,6 +27,11 @@ internal fun isTreeStaged(row: CloudItem): Boolean = row.hash == TREE_STAGED_TAG
  * What the tree walk persists as the scan marker: the instant the walk began (the cursor of the final page, kept
  * across a resume), the scope roots it was started for, and the start folders whose listing is stored (a start
  * folder has no staged row of its own: the drive root has none, and the others are resolved again on resume).
+ *
+ * [takenOverFrom] is the marker of the listing the walk took over from (the cursor listing that failed server-side),
+ * as that listing last stored it. The scan has one marker; the walk's replaces the listing's, so the walk carries it
+ * along unchanged: a walk that cannot be resumed hands the scan back to that listing, which goes on from its own
+ * marker and its own staged rows. Null for a walk that took over from nothing.
  */
 @Serializable
 internal data class TreeMarker(
@@ -34,15 +39,36 @@ internal data class TreeMarker(
     val startedAt: String,
     val roots: List<String>,
     val startsDone: List<String> = emptyList(),
+    val takenOverFrom: String? = null,
 )
 
-private val treeMarkerJson = Json { encodeDefaults = true }
+// A walk that took over from nothing writes the marker it always wrote: no takenOverFrom key.
+private val treeMarkerJson =
+    Json {
+        encodeDefaults = true
+        explicitNulls = false
+    }
 
 internal fun treeMarker(
     startedAt: String,
     roots: List<String>,
     startsDone: Collection<String>,
-): String = treeMarkerJson.encodeToString(TreeMarker.serializer(), TreeMarker(TREE_MARKER_STRATEGY, startedAt, roots, startsDone.toList()))
+    takenOverFrom: String? = null,
+): String =
+    treeMarkerJson.encodeToString(
+        TreeMarker.serializer(),
+        TreeMarker(TREE_MARKER_STRATEGY, startedAt, roots, startsDone.toList(), takenOverFrom),
+    )
+
+/**
+ * The marker of another listing that a walk starting on the stored scan carries along ([TreeMarker.takenOverFrom]):
+ * the one a walk's marker already carries, or [previous] itself when it is another listing's. Never a walk's marker.
+ */
+internal fun listingMarkerToCarry(previous: String?): String? {
+    if (previous.isNullOrBlank()) return null
+    val walk = decodeTreeMarker(previous)
+    return if (walk != null) walk.takenOverFrom else previous
+}
 
 internal fun decodeTreeMarker(raw: String?): TreeMarker? {
     if (raw.isNullOrBlank()) return null

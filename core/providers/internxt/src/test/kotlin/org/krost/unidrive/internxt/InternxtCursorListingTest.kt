@@ -383,9 +383,12 @@ class InternxtCursorListingTest {
             assertTrue(walledPage.complete)
             assertTrue(walled.other.any { it.contains("/folders/content/") }, "the walk listed the tree: ${walled.other}")
             assertTrue(walled.other.none { it.contains("offset=") }, "the walk, not the offset listing: ${walled.other}")
-            val marker = assertNotNull(decodeCursorMarker(staging.markers.last()))
+            // The walk stores its own progress and carries the cursor listing's marker as it stood: neither is lost.
+            val walkMarker = assertNotNull(decodeTreeMarker(staging.markers.last()), "the walk stored its progress: ${staging.markers.last()}")
+            val marker = assertNotNull(decodeCursorMarker(walkMarker.takenOverFrom), "and kept the cursor marker it took over from")
             assertEquals(walled.cursorOf("files", 2), marker.files.cursor, "the files stream stands after its last stored page")
             assertTrue(!marker.files.done)
+            assertTrue(staging.rows.values.any(::isCursorStaged), "the rows the cursor listing staged stay")
 
             // The same handover for an overloaded first page (503 after the ladder of three attempts) and
             // for a connection cut part way (surfaced as a 503 of its own).
