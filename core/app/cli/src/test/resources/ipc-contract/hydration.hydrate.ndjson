@@ -14,3 +14,5 @@
 {"ok":false,"error":"unsupported_object: it is stored in several parts, which this client cannot read"}
 {"verb":"hydration.hydrate","path":"/truncated/report.txt"}
 {"ok":false,"error":"remote_incomplete: got 298844160 of 360951317 bytes"}
+{"verb":"hydration.hydrate","path":"/cancelled/report.txt"}
+{"ok":false,"error":"cancelled"}

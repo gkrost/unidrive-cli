@@ -137,13 +137,19 @@ import java.util.concurrent.atomic.AtomicLong
  *
  *   open_write_begin request: {"verb":"hydration.open_write_begin","path":"/foo"}  [,"handle_id":"wh-N"]  reply ok: {"ok":true,"cache_path":"..."}  errs: unknown_path / path_is_folder / outside_scope
  *
- *   cancel      request:  {"verb":"hydration.cancel","path":"/foo"}
- *               reply:    {"ok":true,"cancelled":true}    a queued/running upload was aborted
+ *   cancel      request:  {"verb":"hydration.cancel","path":"/foo"[,"handle_id":"h1"]}
+ *               reply:    {"ok":true,"cancelled":true}    a queued/running upload, or a wait for a download, was aborted
  *                         {"ok":false,"error":"cancelled"} → the aborted upload's Completed carries this token
  *                         {"ok":true,"cancelled":false}    nothing in flight (idempotent)
  *                         Aborts every in-flight submission for the path (waiting, running,
  *                         or in retry backoff); the caller follows with the row-level verb
  *                         (unlink/rename) for the path itself.
+ *                         (gkrost/unidrive-cli#23) It also ends every open_read and hydrate waiting for the path's
+ *                         download; with handle_id only the open_read of that handle id, and no upload. Each one answers
+ *                         {"ok":false,"error":"cancelled"} (open_read also with failed and completed events carrying the
+ *                         token, hydrate with the failed event). The download stops when nobody waits for it any more: its
+ *                         partial bytes go, the row stays not hydrated and without an error. A connection that closes
+ *                         ends its own waits the same way.
  *
  *   Upload progress: while a client-written file uploads, the stream carries
  *   {"event":"uploading","path":"...","handle_id":"...","bytes_done":N,"bytes_total":M}
@@ -446,7 +452,8 @@ class HydrationIpcHandler(
             }
             "hydration.hydrate" -> {
                 val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
-                when (val r = hydration.hydrate(path)) {
+                // gkrost/unidrive-cli#23: on behalf of this connection, so that its close ends the wait.
+                when (val r = hydration.hydrate(path, connectionId)) {
                     HydrateResult.Ok -> reply(ok = true)
                     is HydrateResult.Failed -> reply(ok = false, error = r.error.message)
                 }
@@ -593,10 +600,18 @@ class HydrationIpcHandler(
             }
             "hydration.cancel" -> {
                 val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
-                // Idempotent: cancelled=true when a queued/running upload was
+                // Idempotent: cancelled=true when a queued/running upload or a wait for a download was
                 // aborted, false when nothing was in flight — both satisfy the
-                // caller's "no upload happens" goal, so both are ok.
-                val cancelled = hydration.cancelUpload(path)
+                // caller's "nothing more happens" goal, so both are ok.
+                // gkrost/unidrive-cli#23: with handle_id, only the open_read of that handle stops waiting (uploads untouched).
+                val handleId = request.string("handle_id")
+                val cancelled =
+                    if (handleId != null) {
+                        hydration.cancelDownload(path, handleId)
+                    } else {
+                        val upload = hydration.cancelUpload(path)
+                        hydration.cancelDownload(path) || upload
+                    }
                 """{"ok":true,"cancelled":$cancelled}"""
             }
             "hydration.subscribe" -> {
