@@ -327,16 +327,6 @@ class DedupeCommandTest {
     }
 
     @Test
-    fun `there is no apply yet - an --apply flag is refused before anything is read`() {
-        seedTwins()
-        val rowsBefore = aliveRows()
-
-        assertEquals(CommandLine.ExitCode.USAGE, dedupe("--keep", "newest", "--apply"))
-
-        assertEquals(rowsBefore, aliveRows())
-    }
-
-    @Test
     fun `the console form says it is a dry run and what the keep rule would do`() {
         seedTwins()
 
