@@ -128,11 +128,7 @@ class GraphWriteThrottleTest {
         budget: HttpRetryBudget,
         tokenProvider: suspend (Boolean) -> String = { "token" },
     ): GraphApiService {
-        val service = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), throttleBudget = budget, tokenProvider = tokenProvider)
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
+        val service = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), throttleBudget = budget, httpClient = HttpClient(engine), tokenProvider = tokenProvider)
         return service
     }
 

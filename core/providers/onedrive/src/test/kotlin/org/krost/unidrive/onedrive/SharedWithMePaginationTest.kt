@@ -38,21 +38,14 @@ class SharedWithMePaginationTest {
         val service =
             GraphApiService(
                 config = OneDriveConfig(),
+                httpClient = HttpClient(engine),
                 tokenProvider = { _ -> "test-token" },
             )
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
         return service
     }
 
     private fun providerWith(engine: MockEngine): OneDriveProvider {
-        val provider = OneDriveProvider(OneDriveConfig(includeShared = true))
-        val graphApiField = OneDriveProvider::class.java.getDeclaredField("graphApi")
-        graphApiField.isAccessible = true
-        (graphApiField.get(provider) as? GraphApiService)?.close()
-        graphApiField.set(provider, serviceWith(engine))
+        val provider = OneDriveProvider(OneDriveConfig(includeShared = true), graphApi = serviceWith(engine))
         return provider
     }
 

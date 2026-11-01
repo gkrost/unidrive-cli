@@ -35,37 +35,22 @@ import kotlin.test.assertTrue
  *    no infinite loop.
  */
 class OneDriveDownloadReresolveTest {
-    private fun installMockClient(
-        service: GraphApiService,
-        engine: MockEngine,
-    ) {
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
-    }
-
     /**
-     * Replace the provider's real `graphApi` (which is wired to a live
-     * TokenManager that throws "Not authenticated" without a token file) with
+     * A provider whose `graphApi` is not the real one (wired to a live
+     * TokenManager that throws "Not authenticated" without a token file) but
      * a GraphApiService backed by the mock engine and a passthrough token
      * provider, so the provider's download path can be exercised offline.
      */
-    private fun installGraphApi(
-        provider: OneDriveProvider,
-        engine: MockEngine,
-    ): GraphApiService {
-        val service =
-            GraphApiService(
-                config = OneDriveConfig(),
-                tokenProvider = { "tok" },
-            )
-        installMockClient(service, engine)
-        val field = OneDriveProvider::class.java.getDeclaredField("graphApi")
-        field.isAccessible = true
-        field.set(provider, service)
-        return service
-    }
+    private fun providerWith(engine: MockEngine): OneDriveProvider =
+        OneDriveProvider(
+            OneDriveConfig(),
+            graphApi =
+                GraphApiService(
+                    config = OneDriveConfig(),
+                    httpClient = HttpClient(engine),
+                    tokenProvider = { "tok" },
+                ),
+        )
 
     private fun jsonItem(
         id: String,
@@ -130,8 +115,7 @@ class OneDriveDownloadReresolveTest {
                     }
                 }
 
-            val provider = OneDriveProvider(OneDriveConfig())
-            installGraphApi(provider, engine)
+            val provider = providerWith(engine)
 
             val dest = Files.createTempFile("od-stale", ".bin")
             val size = provider.download("/f.bin", dest)
@@ -188,9 +172,9 @@ class OneDriveDownloadReresolveTest {
             val service =
                 GraphApiService(
                     config = OneDriveConfig(),
+                    httpClient = HttpClient(engine),
                     tokenProvider = { "tok" },
                 )
-            installMockClient(service, engine)
 
             val dest = Files.createTempFile("od-html", ".bin")
             service.downloadFile("item-9", dest)
@@ -238,8 +222,7 @@ class OneDriveDownloadReresolveTest {
                     }
                 }
 
-            val provider = OneDriveProvider(OneDriveConfig())
-            installGraphApi(provider, engine)
+            val provider = providerWith(engine)
 
             val dest = Files.createTempFile("od-gone", ".bin")
             val ex =
@@ -298,8 +281,7 @@ class OneDriveDownloadReresolveTest {
                     }
                 }
 
-            val service = GraphApiService(config = OneDriveConfig(), tokenProvider = { "tok" })
-            installMockClient(service, engine)
+            val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { "tok" })
 
             val dest = Files.createTempFile("od-329", ".bin")
             service.downloadFile("item-401", dest)
@@ -341,8 +323,7 @@ class OneDriveDownloadReresolveTest {
                     }
                 }
 
-            val service = GraphApiService(config = OneDriveConfig(), tokenProvider = { "tok" })
-            installMockClient(service, engine)
+            val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { "tok" })
 
             val dest = Files.createTempFile("od-329b", ".bin")
             assertFailsWith<AuthenticationException> {
@@ -386,8 +367,7 @@ class OneDriveDownloadReresolveTest {
                     }
                 }
 
-            val service = GraphApiService(config = OneDriveConfig(), tokenProvider = { "tok" })
-            installMockClient(service, engine)
+            val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { "tok" })
 
             val dest = Files.createTempFile("od-329c", ".bin")
             val ex = assertFailsWith<GraphApiException> { service.downloadFile("item-403", dest) }
@@ -417,8 +397,7 @@ class OneDriveDownloadReresolveTest {
                     }
                 }
 
-            val provider = OneDriveProvider(OneDriveConfig())
-            installGraphApi(provider, engine)
+            val provider = providerWith(engine)
 
             val dest = Files.createTempFile("od-247", ".bin")
             assertFailsWith<PermanentDownloadFailureException> {
@@ -458,8 +437,7 @@ class OneDriveDownloadReresolveTest {
                     }
                 }
 
-            val provider = OneDriveProvider(OneDriveConfig())
-            installGraphApi(provider, engine)
+            val provider = providerWith(engine)
 
             val dest = Files.createTempFile("od-247b", ".bin")
             assertFailsWith<GraphApiException> {
