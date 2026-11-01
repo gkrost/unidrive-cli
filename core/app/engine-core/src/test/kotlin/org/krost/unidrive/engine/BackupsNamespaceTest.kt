@@ -1,6 +1,10 @@
 package org.krost.unidrive.engine
 
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.model.SyncEntry
+import java.nio.file.Files
+import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -137,5 +141,35 @@ class BackupsNamespaceTest {
         assertTrue(PlacedNamespace.isAnyOwnKey(BackupsNamespace.ROOT_ID))
         assertFalse(PlacedNamespace.isAnyOwnKey("unidrive:backupsX"))
         assertFalse(PlacedNamespace.isAnyOwnKey("dev1"))
+    }
+
+    @Test
+    fun `a root an earlier run left stays read-only and moves aside for a live item of its name while the namespace is off`() {
+        val dir = Files.createTempDirectory("backups-namespace-db")
+        val db = StateDatabase(dir.resolve("state.db"))
+        db.initialize()
+        try {
+            db.upsertEntry(
+                SyncEntry(
+                    path = "/Backups", remoteId = BackupsNamespace.ROOT_ID, remoteHash = null, remoteSize = 0, remoteModified = null,
+                    localMtime = null, localSize = null, isFolder = true, isPinned = false, isHydrated = false, lastSynced = Instant.now(),
+                ),
+            )
+            val backups = BackupsNamespace(enabled = false, ignoreCase = false)
+            backups.refresh(db)
+            assertEquals("/Backups", backups.rootPath(), "the leftover row is the root, switch or not")
+
+            // The engine strips the backup items before placing while the switch is off; a live item of the root's name is on the page.
+            val placed = backups.place(listOf(item("mine", "/Backups", isFolder = true))) { emptyList() }
+
+            assertEquals("/Backups (2)", backups.rootPath(), "the leftover root moves aside")
+            assertEquals("/Backups", placed.single { it.id == "mine" }.path, "the live item keeps its name")
+            assertTrue(placed.any { it.id == BackupsNamespace.ROOT_ID && it.path == "/Backups (2)" }, "the moved root is on the page")
+            assertTrue(backups.contains("/Backups (2)") && backups.contains("/Backups"), "both places stay read-only until the move lands")
+            assertTrue(backups.holdsId(BackupsNamespace.ROOT_ID))
+        } finally {
+            db.close()
+            dir.toFile().deleteRecursively()
+        }
     }
 }
