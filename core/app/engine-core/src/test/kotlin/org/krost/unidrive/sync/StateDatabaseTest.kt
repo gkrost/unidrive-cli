@@ -562,56 +562,19 @@ class StateDatabaseTest {
     }
 
     @Test
-    fun `EXPLAIN QUERY PLAN for alive children of parent_uuid is an index seek`() {
-        // Acceptance criterion: the composite (parent_uuid, status) index is
-        // structurally present AND the planner will reach for it on the
-        // canonical "alive children of X" query. We assert both: the index
-        // appears in sqlite_master, and EXPLAIN QUERY PLAN on the canonical
-        // query reports `USING INDEX` (an index seek) rather than `SCAN
-        // sync_entries` (a tombstone-skipping table scan).
-        //
-        // Note: do NOT run ANALYZE here. After ANALYZE on a tiny table the
-        // planner correctly decides a full scan is cheaper than an index
-        // seek, which is fine in production (the index doesn't bloat much)
-        // but defeats the structural assertion this test is making.
-        db.upsertEntry(entry("/p", isFolder = true).copy(remoteId = "uuid-P"))
-        for (i in 0 until 20) {
-            db.upsertEntry(
-                entry("/p/file$i.txt").copy(remoteId = "uuid-PC-$i", parentUuid = "uuid-P"),
-            )
-        }
-
+    fun `no index on parent_uuid or on the effective remote path expression`() {
+        // archive#951: no query asks for the children of a parent_uuid, and the index of COALESCE(remote_path, path) held the
+        // keys of the path index again; both cost every upsert a write. The lookup by remote path is two seeks now.
         val dbPath = db.file
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
-            // Index existence.
             val indexNames = mutableListOf<String>()
             conn.createStatement().use { stmt ->
-                val rs = stmt.executeQuery(
-                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sync_entries'",
-                )
+                val rs = stmt.executeQuery("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sync_entries'")
                 while (rs.next()) indexNames.add(rs.getString(1))
             }
-            assertTrue(
-                "idx_sync_entries_parent_alive" in indexNames,
-                "composite (parent_uuid, status) index must exist; got: $indexNames",
-            )
-            // Plan check.
-            val plan = StringBuilder()
-            conn.prepareStatement(
-                "EXPLAIN QUERY PLAN " +
-                    "SELECT * FROM sync_entries WHERE parent_uuid=? AND status='EXISTS'",
-            ).use { stmt ->
-                stmt.setString(1, "uuid-P")
-                val rs = stmt.executeQuery()
-                while (rs.next()) {
-                    plan.append(rs.getString("detail")).append("\n")
-                }
-            }
-            val planText = plan.toString()
-            assertTrue(
-                "USING INDEX" in planText && "SCAN sync_entries" !in planText,
-                "expected index seek for (parent_uuid, status); got plan:\n$planText",
-            )
+            assertTrue("idx_sync_entries_parent_alive" !in indexNames, "got: $indexNames")
+            assertTrue("idx_sync_entries_remote_path_alive" !in indexNames, "got: $indexNames")
+            assertTrue("idx_sync_entries_path_alive" in indexNames && "idx_sync_entries_remote_path_set" in indexNames, "got: $indexNames")
         }
     }
 
@@ -641,11 +604,11 @@ class StateDatabaseTest {
         // reason given in the parent_uuid test above.
         for (i in 0 until 20) db.upsertEntry(entry("/p/file$i.txt").copy(remoteId = "uuid-$i"))
 
-        val plan = queryPlan(db, StateDatabase.BY_REMOTE_PATH, "/p/file3.txt")
+        val plan = queryPlan(db, StateDatabase.BY_REMOTE_PATH, "/p/file3.txt", "/p/file3.txt")
 
         assertTrue(
-            "SEARCH" in plan && "idx_sync_entries_remote_path_alive" in plan && "SCAN" !in plan,
-            "expected an index search on the effective remote path; got plan:\n$plan",
+            "idx_sync_entries_remote_path_set" in plan && "idx_sync_entries_path_alive" in plan && "SCAN sync_entries" !in plan,
+            "expected two index searches for the effective remote path; got plan:\n$plan",
         )
         assertEquals("/p/file3.txt", db.getEntryByRemotePath("/p/file3.txt")?.path)
     }
@@ -1207,9 +1170,9 @@ class StateDatabaseTest {
             // getEntryByRemotePath collapses to a plain path match for null rows.
             assertEquals("/Docs/report.pdf", upgraded.getEntryByRemotePath("/Docs/report.pdf")?.path)
             // The index of that lookup needs the column, so the migrated database has it too.
-            val plan = queryPlan(upgraded, StateDatabase.BY_REMOTE_PATH, "/Docs/report.pdf")
+            val plan = queryPlan(upgraded, StateDatabase.BY_REMOTE_PATH, "/Docs/report.pdf", "/Docs/report.pdf")
             assertTrue(
-                "idx_sync_entries_remote_path_alive" in plan && "SCAN" !in plan,
+                "idx_sync_entries_remote_path_set" in plan && "SCAN sync_entries" !in plan,
                 "a migrated database must search the effective remote path by index; got plan:\n$plan",
             )
             // schema_version is unchanged (additive column, no bump).

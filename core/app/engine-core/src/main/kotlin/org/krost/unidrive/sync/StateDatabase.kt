@@ -652,15 +652,10 @@ class StateDatabase(
                     ON sync_entries(path) WHERE status='EXISTS'
             """,
             )
-            // Composite index so "alive children of X" is an index seek
-            // (acceptance criterion: EXPLAIN QUERY PLAN reports USING INDEX,
-            // not SCAN sync_entries).
-            stmt.executeUpdate(
-                """
-                CREATE INDEX IF NOT EXISTS idx_sync_entries_parent_alive
-                    ON sync_entries(parent_uuid, status)
-            """,
-            )
+            // No query asks for the children of a parent_uuid (listings go by path, see listDirectChildren), and the
+            // column is NULL on the alive rows of a large drive: the (parent_uuid, status) index cost every upsert a
+            // write and 7 MB on a 372,000-row file for nothing (archive#951). An older file loses it at its next open.
+            stmt.executeUpdate("DROP INDEX IF EXISTS idx_sync_entries_parent_alive")
             stmt.executeUpdate(
                 """
                 CREATE INDEX IF NOT EXISTS idx_sync_entries_path_lower_alive
@@ -817,16 +812,12 @@ class StateDatabase(
                     ON sync_entries(name_block) WHERE status='EXISTS' AND name_block IS NOT NULL
             """,
             )
-            // Every item a gather brings is looked up by its effective remote path (getEntryByRemotePath), and no
-            // other index covers that expression: each lookup scanned the whole table, so saving the first
-            // enumeration of a large drive took time quadratic in its size (hours for a few hundred thousand
-            // items). Created here, after the migrations, because older databases get remote_path above.
-            stmt.executeUpdate(
-                """
-                CREATE INDEX IF NOT EXISTS idx_sync_entries_remote_path_alive
-                    ON sync_entries(COALESCE(remote_path, path)) WHERE status='EXISTS'
-            """,
-            )
+            // Every item a gather brings is looked up by its effective remote path (getEntryByRemotePath), as two seeks
+            // ([BY_REMOTE_PATH]): the few rows with a remote path of their own by idx_sync_entries_remote_path_set, the
+            // rest by idx_sync_entries_path_alive. The index of the expression COALESCE(remote_path, path) it replaces
+            // held the same keys as the path index while remote_path is NULL (48 MB on a 372,000-row file, written by
+            // every upsert, archive#951); an older file loses it at its next open.
+            stmt.executeUpdate("DROP INDEX IF EXISTS idx_sync_entries_remote_path_alive")
             // The folder of each alive row (its path up to and including the last '/': rtrim strips the trailing
             // characters that are not '/'), so a listing seeks its children instead of walking every row under the
             // folder: the root of a 372,000-row drive took 147 ms under the monitor, 0.6 ms with this index (archive#951,
@@ -1189,6 +1180,7 @@ class StateDatabase(
             val remotePath = PathNormalizer.nfc(remotePathRaw)
             c.cached(BY_REMOTE_PATH) { stmt ->
                 stmt.setString(1, remotePath)
+                stmt.setString(2, remotePath)
                 stmt.executeQuery().use { rs -> if (rs.next()) rs.toSyncEntry() else null }
             } ?: spelledApartAt(remotePath)
         }
@@ -1433,10 +1425,12 @@ class StateDatabase(
     fun hasHydratedDescendant(topLevelRaw: String): Boolean =
         read("hasHydratedDescendant") { c ->
             val topLevel = PathNormalizer.nfc(topLevelRaw)
+            // Two seeks, not `path = ? OR <range>`: an OR around the range made SQLite read every alive row.
+            val known = "(is_hydrated = 1 OR local_mtime IS NOT NULL)"
             c
                 .prepareStatement(
-                    "SELECT 1 FROM alive_entries WHERE (path = ? OR $UNDER_PREFIX) " +
-                        "AND (is_hydrated = 1 OR local_mtime IS NOT NULL) LIMIT 1",
+                    "SELECT 1 FROM alive_entries WHERE path = ? AND $known " +
+                        "UNION ALL SELECT 1 FROM alive_entries WHERE ${underPrefix("$topLevel/")} AND $known LIMIT 1",
                 ).use { stmt ->
                     stmt.setString(1, topLevel)
                     stmt.bindPrefix(2, "$topLevel/")
@@ -1457,7 +1451,10 @@ class StateDatabase(
             val topLevel = PathNormalizer.nfc(topLevelRaw)
             c
                 .prepareStatement(
-                    "SELECT COUNT(*) FROM alive_entries WHERE path = ? OR $UNDER_PREFIX",
+                    // Two counts, each a seek: `path = ? OR <range>` read every alive row (143 ms on 372,000 rows, 6 ms as
+                    // two counts, archive#951).
+                    "SELECT (SELECT COUNT(*) FROM alive_entries WHERE path = ?) + " +
+                        "(SELECT COUNT(*) FROM alive_entries WHERE ${underPrefix("$topLevel/")})",
                 ).use { stmt ->
                     stmt.setString(1, topLevel)
                     stmt.bindPrefix(2, "$topLevel/")
@@ -1556,7 +1553,7 @@ class StateDatabase(
     fun getEntriesByPrefix(prefixRaw: String): List<SyncEntry> =
         read("getEntriesByPrefix") { c ->
             val prefix = PathNormalizer.nfc(prefixRaw)
-            c.prepareStatement("SELECT * FROM alive_entries WHERE $UNDER_PREFIX").use { stmt ->
+            c.prepareStatement("SELECT * FROM alive_entries WHERE ${underPrefix(prefix)}").use { stmt ->
                 stmt.bindPrefix(1, prefix)
                 val rs = stmt.executeQuery()
                 val entries = mutableListOf<SyncEntry>()
@@ -1573,7 +1570,7 @@ class StateDatabase(
     fun hasEntriesBelow(prefixRaw: String): Boolean =
         read("hasEntriesBelow") { c ->
             val prefix = PathNormalizer.nfc(prefixRaw)
-            c.prepareStatement("SELECT 1 FROM alive_entries WHERE $UNDER_PREFIX LIMIT 1").use { stmt ->
+            c.prepareStatement("SELECT 1 FROM alive_entries WHERE ${underPrefix(prefix)} LIMIT 1").use { stmt ->
                 stmt.bindPrefix(1, prefix)
                 return stmt.executeQuery().next()
             }
@@ -2042,14 +2039,17 @@ class StateDatabase(
             batch {
                 conn
                     .prepareStatement(
-                        "UPDATE sync_entries SET remote_path = ? || substr(remote_path, length(?) + 1) " +
-                            "WHERE status='EXISTS' AND remote_path IS NOT NULL AND (remote_path = ? OR substr(remote_path, 1, length(?) + 1) = ? || '/')",
+                        // The row at the old remote path and the range of those beneath it (see [prefixUpperBound]),
+                        // each a seek of idx_sync_entries_remote_path_set.
+                        "UPDATE sync_entries SET remote_path = ? || substr(remote_path, length(?) + 1) WHERE rowid IN (" +
+                            "SELECT rowid FROM sync_entries WHERE status='EXISTS' AND remote_path = ? " +
+                            "UNION ALL SELECT rowid FROM sync_entries WHERE status='EXISTS' AND remote_path >= ? AND remote_path < ?)",
                     ).use { stmt ->
                         stmt.setString(1, newRemote)
                         stmt.setString(2, oldRemote)
                         stmt.setString(3, oldRemote)
-                        stmt.setString(4, oldRemote)
-                        stmt.setString(5, oldRemote)
+                        stmt.setString(4, "$oldRemote/")
+                        stmt.setString(5, prefixUpperBound("$oldRemote/"))
                         stmt.executeUpdate()
                     }
                 conn.createStatement().use { stmt ->
@@ -2075,14 +2075,16 @@ class StateDatabase(
             beginWrite()
             conn
                 .prepareStatement(
-                    "UPDATE sync_entries SET remote_path = ? || substr(path, length(?) + 1) " +
-                        "WHERE status='EXISTS' AND remote_path IS NULL AND (path = ? OR substr(path, 1, length(?) + 1) = ? || '/')",
+                    // The row at the path and the range of those beneath it, each a seek of idx_sync_entries_path_alive.
+                    "UPDATE sync_entries SET remote_path = ? || substr(path, length(?) + 1) WHERE rowid IN (" +
+                        "SELECT rowid FROM sync_entries WHERE status='EXISTS' AND path = ? AND remote_path IS NULL " +
+                        "UNION ALL SELECT rowid FROM sync_entries WHERE status='EXISTS' AND path >= ? AND path < ? AND remote_path IS NULL)",
                 ).use { stmt ->
                     stmt.setString(1, remote)
                     stmt.setString(2, path)
                     stmt.setString(3, path)
-                    stmt.setString(4, path)
-                    stmt.setString(5, path)
+                    stmt.setString(4, "$path/")
+                    stmt.setString(5, prefixUpperBound("$path/"))
                     stmt.executeUpdate()
                 }
         }
@@ -2917,14 +2919,34 @@ class StateDatabase(
     }
 
     // archive#490: a path prefix is matched exactly, by code points. SQLite's LIKE folds ASCII case (so `/docs/%` also
-    // matched every row under `/Docs/`: a case-only folder rename deleted the folder's whole subtree), and substr and
-    // length both count characters, so the two sides agree for names outside the BMP too (archive#489). Binds two parameters.
+    // matched every row under `/Docs/`: a case-only folder rename deleted the folder's whole subtree). Binds the two
+    // parameters of [underPrefix] for the same [prefix].
     private fun java.sql.PreparedStatement.bindPrefix(
         index: Int,
         prefix: String,
     ) {
         setString(index, prefix)
-        setString(index + 1, prefix)
+        setString(index + 1, prefixRangeEnd(prefix) ?: prefix)
+    }
+
+    /**
+     * `path` starts with [prefix]: the range `path >= prefix AND path < end` (see [prefixRangeEnd]), a seek of
+     * `idx_sync_entries_path_alive`, where `substr(path, 1, length(?)) = ?` read every alive row (a 134,876-row subtree:
+     * 1,007 ms as substr, 687 ms as range; archive#951). [UNDER_PREFIX] is left for a prefix whose last character has no
+     * successor; the engine's prefixes end with '/'. Two parameters, bound by [bindPrefix].
+     */
+    private fun underPrefix(prefix: String): String = if (prefixRangeEnd(prefix) == null) UNDER_PREFIX else PATH_IN_RANGE
+
+    /**
+     * The exclusive upper bound of the strings that start with [prefix] in BINARY order: its last character advanced by
+     * one ([prefixUpperBound] for a prefix that ends with '/'). SQLite compares the UTF-8 bytes, which sort as the code
+     * points do, so every string that starts with the prefix sorts in the range and every other one outside it. Null for
+     * an empty prefix and for a last character whose successor is no character of its own (a surrogate, U+FFFF).
+     */
+    private fun prefixRangeEnd(prefix: String): String? {
+        val last = prefix.lastOrNull() ?: return null
+        if (last in '\uD7FF'..'\uDFFF' || last == '\uFFFF') return null
+        return prefix.dropLast(1) + (last + 1)
     }
 
     private fun ResultSet.toSyncEntry(): SyncEntry {
@@ -3138,8 +3160,11 @@ class StateDatabase(
                 "(SELECT upload_refused FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT name_block FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'))"
 
-        /** `path` starts with the bound prefix, exactly (see [bindPrefix]): two parameters, both the prefix. */
+        /** `path` starts with the bound prefix, exactly (see [bindPrefix]): two parameters, both the prefix. A scan. */
         private const val UNDER_PREFIX = "substr(path, 1, length(?)) = ?"
+
+        /** `path` starts with the bound prefix, as a range (see [underPrefix]): the prefix and its range end. */
+        private const val PATH_IN_RANGE = "path >= ? AND path < ?"
 
         /**
          * The folder part of `path`, up to and including its last '/' (`/a/b.txt` -> `/a/`, `/x` -> `/`): rtrim strips
@@ -3162,13 +3187,17 @@ class StateDatabase(
                 "AND remote_id IS NOT NULL AND remote_id NOT GLOB 'local:*' ORDER BY dir LIMIT ?"
 
         /**
-         * The lookup by effective remote path. Its expression and the `alive_entries` predicate are those of
-         * `idx_sync_entries_remote_path_alive`; SQLite uses that index only for exactly this expression. Two rows
-         * match one remote path only for duplicate remote items (archive#403): the twin's row keeps the canonical path in
-         * `remote_path` under a longer, decorated local path, so the shortest path is the row that holds the name.
+         * The lookup by effective remote path (`COALESCE(remote_path, path) = ?`) as two seeks, both parameters the remote
+         * path: the rows with a remote path of their own (`idx_sync_entries_remote_path_set`) and the rows without one at
+         * that path (`idx_sync_entries_path_alive`). Two rows match one remote path only for duplicate remote items
+         * (archive#403): the twin's row keeps the canonical path in `remote_path` under a longer, decorated local path, so
+         * the shortest path is the row that holds the name.
          */
         internal const val BY_REMOTE_PATH =
-            "SELECT * FROM alive_entries WHERE COALESCE(remote_path, path) = ? ORDER BY length(path) LIMIT 1"
+            "SELECT * FROM (" +
+                "SELECT * FROM alive_entries WHERE remote_path = ? " +
+                "UNION ALL SELECT * FROM alive_entries WHERE path = ? AND remote_path IS NULL" +
+                ") ORDER BY length(path) LIMIT 1"
 
         /** Extra room required beyond the source size before a snapshot is attempted. */
         private const val SNAPSHOT_SPACE_FACTOR = 1.2
