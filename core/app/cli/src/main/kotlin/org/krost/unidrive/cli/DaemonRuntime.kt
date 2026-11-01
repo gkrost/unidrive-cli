@@ -14,6 +14,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.engine.ReadOnlyTrashProvider
+import org.krost.unidrive.engine.StrictNameBlocks
 import org.krost.unidrive.engine.TrashNamespace
 import org.krost.unidrive.engine.ViewCache
 import org.krost.unidrive.engine.ViewNamespaces
@@ -360,6 +361,15 @@ class DaemonRuntime(
                 // archive#652: a mount profile records its transfers; a failure to open the history is logged once and the daemon
                 // runs without it. Mirror mode records none (its transfers are the sync pass's).
                 transferHistory = if (mountMode) openTransferHistory() else null
+                // gkrost/unidrive-cli#29: the strict-name blocks follow the provider's mode at every start, not only when an item is next delivered.
+                db?.let { d ->
+                    try {
+                        val changed = StrictNameBlocks.reconcileAll(d, provider)
+                        if (changed > 0) log.info("Strict-name mode: {} row(s) marked or cleared at start", changed)
+                    } catch (e: java.sql.SQLException) {
+                        log.warn("Strict-name blocks could not be reconciled at start: {}", e.message)
+                    }
+                }
                 // archive#560 U6 (cutover): the hydration runtime exists only on a mount profile. A mirror
                 // daemon constructs no hydration layer and keeps no cache — its local bytes live in
                 // the sync root its reconcile owns, and every hydration verb gets wrong_mode below.
