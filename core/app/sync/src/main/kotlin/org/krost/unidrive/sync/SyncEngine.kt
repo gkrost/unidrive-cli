@@ -3364,6 +3364,9 @@ open class SyncEngine(
                 )
             },
         )
+        // The upsert above settles a name block (a new name does), and the merge marked this row by its new name just before: a remote
+        // rename into a name the provider's clients refuse is marked again, so it is reported on this pass and not on a later delivery.
+        provider.existingNameIssue(action.path)?.let { db.markNameBlocked(action.path, it, null) }
     }
 
     /**
