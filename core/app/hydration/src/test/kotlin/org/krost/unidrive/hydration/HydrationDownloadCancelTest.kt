@@ -4,6 +4,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
+import org.krost.unidrive.CapabilityResult
+import org.krost.unidrive.ViewKind
+import org.krost.unidrive.ViewRef
+import org.krost.unidrive.engine.ViewSpec
 import java.nio.file.Files
 import kotlin.io.path.listDirectoryEntries
 import kotlin.test.Test
@@ -149,6 +153,47 @@ class HydrationDownloadCancelTest {
             },
             "completed for the handle with the token: $events",
         )
+    }
+
+    // A read through a view alias downloads the real item; a cancel by the alias, as the client opened it, reaches that download.
+    private fun envWithStalledAliasDownload(scope: kotlinx.coroutines.CoroutineScope): Pair<HydrationTestEnv, MinimalFakeProvider.DownloadStall> {
+        val kind = ViewKind.FAVORITES
+        val env = HydrationTestEnv(recoveryUploadScope = scope, viewSpecs = listOf(ViewSpec(kind, limit = 10)))
+        env.stateDb.insertFolderEntry("/q", remoteId = "id-q")
+        env.stateDb.insertUnhydratedEntry(path, remoteSize = 5, remoteId = "id-f")
+        env.syncEngine.seedRemoteContent(path, "hello")
+        env.providerForTest.viewAnswers[kind] =
+            CapabilityResult.Success(listOf(ViewRef("id-q", true)))
+        val stall = MinimalFakeProvider.DownloadStall(partialBytes = 2)
+        env.providerForTest.downloadStall = stall
+        return env to stall
+    }
+
+    @Test
+    fun `a cancel by the view alias the read was opened through stops the download of the real item`() = runTest {
+        val (env, stall) = envWithStalledAliasDownload(this)
+        val read = async { env.hydration.openForRead("conn1", "h1", "/Favorites/q/f.txt") }
+        stall.reached.await()
+        awaitWaiters(env, 1)
+
+        assertTrue(env.hydration.cancelDownload("/Favorites/q/f.txt", handleId = "h1"), "the alias names the running download")
+
+        assertEquals(HydrationError.CANCELLED_TOKEN, (read.await() as OpenResult.Failed).error.message)
+        assertNothingLeft(env)
+        assertFalse(env.hydration.cancelDownload("/Favorites/q/nothing.txt"), "an alias that names no item cancels nothing")
+    }
+
+    @Test
+    fun `a cancel by the real path stops a download a read through the alias started`() = runTest {
+        val (env, stall) = envWithStalledAliasDownload(this)
+        val read = async { env.hydration.openForRead("conn1", "h1", "/Favorites/q/f.txt") }
+        stall.reached.await()
+        awaitWaiters(env, 1)
+
+        assertTrue(env.hydration.cancelDownload(path, handleId = "h1"))
+
+        assertEquals(HydrationError.CANCELLED_TOKEN, (read.await() as OpenResult.Failed).error.message)
+        assertNothingLeft(env)
     }
 
     private fun kotlinx.coroutines.test.TestScope.launchCollecting(

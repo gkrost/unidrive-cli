@@ -15,6 +15,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -89,6 +90,25 @@ class StateDatabaseHoldTest {
     }
 
     @Test
+    fun `a read on a reader connection is an event marked as a reader's, a write is not`() {
+        assertTrue(db.hasReaders(), "a file in WAL mode reads on reader connections")
+        db.holds.eventThresholdNanos = 0
+        val jfr = dir.resolve("reader.jfr")
+        Recording().use { recording ->
+            recording.enable(StateDatabaseHold::class.java)
+            recording.start()
+            db.getEntry("/x")
+            db.setSyncState("k", "v")
+            recording.stop()
+            recording.dump(jfr)
+        }
+
+        val byMethod = holdEvents(jfr).associateBy { it.getString("method") }
+        assertTrue(byMethod.getValue("getEntry").getBoolean("reader"), "the read held a reader, not the monitor")
+        assertFalse(byMethod.getValue("setSyncState").getBoolean("reader"), "the write held the monitor")
+    }
+
+    @Test
     fun `the default threshold is 20 ms`() {
         assertEquals(20, TimeUnit.NANOSECONDS.toMillis(MonitorHolds.EVENT_THRESHOLD_NANOS))
         assertEquals(MonitorHolds.EVENT_THRESHOLD_NANOS, MonitorHolds().eventThresholdNanos)
@@ -101,25 +121,26 @@ class StateDatabaseHoldTest {
         val holder = thread(name = "hold-test-holder") { db.batch { entered.countDown(); release.await() } }
         assertTrue(entered.await(10, TimeUnit.SECONDS), "the holder owns the monitor")
 
-        val waiter = thread(name = "hold-test-waiter") { db.getEntry("/waits") }
+        // A write: a read from a thread without a batch runs on a reader connection and does not wait for the monitor.
+        val waiter = thread(name = "hold-test-waiter") { db.setSyncState("waits", "yes") }
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
         while (waiter.state != Thread.State.BLOCKED) {
             if (System.nanoTime() > deadline) fail("the second thread never blocked on the monitor: ${waiter.state}")
             Thread.onSpinWait()
         }
-        parkFor(120) // the waiter has waited at least this long when the holder lets go
+        parkFor(1000) // the waiter has waited at least this long when the holder lets go; a write on a loaded runner can take a few hundred ms
         release.countDown()
         holder.join(10_000)
         waiter.join(10_000)
 
         val byMethod = db.holds.snapshot().associateBy { it.method }
         val batch = assertNotNull(byMethod["batch"])
-        val getEntry = assertNotNull(byMethod["getEntry"])
-        val minimum = TimeUnit.MILLISECONDS.toNanos(120)
+        val write = assertNotNull(byMethod["setSyncState"])
+        val minimum = TimeUnit.MILLISECONDS.toNanos(1000)
         assertTrue(batch.maxHeldNanos >= minimum, "the holder kept the monitor: $batch")
         assertTrue(batch.maxWaitedNanos < batch.maxHeldNanos, "the holder did not wait for it: $batch")
-        assertTrue(getEntry.maxWaitedNanos >= minimum, "the second call waited for the holder: $getEntry")
-        assertTrue(getEntry.maxHeldNanos < getEntry.maxWaitedNanos, "and then held it only briefly: $getEntry")
+        assertTrue(write.maxWaitedNanos >= minimum, "the second call waited for the holder: $write")
+        assertTrue(write.maxHeldNanos < write.maxWaitedNanos, "and then held it only briefly: $write")
     }
 
     @Test

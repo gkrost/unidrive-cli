@@ -154,6 +154,14 @@ class InternxtProvider(
     private val outsideDriveFolders: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val insideDriveFolders: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+    // The account's backup devices that the last full gather confirmed as tops of a tree of their own (see [BackupTrees]).
+    // A write addressed to one of them, or to an item directly below one, is refused from this set alone; a poll tells
+    // backup items apart by it and asks for no device list. [backupFolders]: the folders a climb found below a device,
+    // remembered like [outsideDriveFolders].
+    @Volatile
+    private var backupDevices: Set<String> = emptySet()
+    private val backupFolders: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     // UD-364: process-lifetime cache of /files/limits.maxUploadFileSize.
     // Lazy single-flight: first maxFileSizeBytes() call fetches + caches;
     // subsequent calls return cached. Server returns null for "no cap",
@@ -1016,11 +1024,30 @@ class InternxtProvider(
                 throw e
             }
         compareWriteToken(current, ifMatchETag, remotePath)
-        if (isOutsideDrive(current.folderUuid)) throw outsideDriveRefusal(remotePath)
+        val refusal = replaceRefusal(current.folderUuid, remotePath) ?: return
+        throw org.krost.unidrive.PermanentUploadFailureException(refusal)
     }
 
-    private fun outsideDriveRefusal(remotePath: String) =
-        org.krost.unidrive.PermanentUploadFailureException("Not part of the drive (a tree of its own, such as a device backup); not written to: $remotePath")
+    // Why a replace of a file in [folderUuid] is refused, null when it is not: a file directly in a backup device is told
+    // by the device set alone, any other by climbing its folder chain.
+    private suspend fun replaceRefusal(
+        folderUuid: String?,
+        remotePath: String,
+    ): String? =
+        when {
+            folderUuid != null && folderUuid in backupDevices -> backupRefusal(remotePath)
+            !isOutsideDrive(folderUuid) -> null
+            inBackupFolder(folderUuid) -> backupRefusal(remotePath)
+            else -> outsideDriveRefusal(remotePath)
+        }
+
+    private fun outsideDriveRefusal(remotePath: String) = "Not part of the drive (a tree of its own, such as a device backup); not written to: $remotePath"
+
+    private fun inBackupFolder(folderUuid: String?) = folderUuid != null && folderUuid in backupFolders
+
+    private fun inBackupTree(folderUuid: String?) = folderUuid != null && (folderUuid in backupDevices || folderUuid in backupFolders)
+
+    private fun backupRefusal(remotePath: String) = "Part of a backup device's tree, which only the desktop app's backups write; not written to: $remotePath"
 
     // archive#578: the multipart policy surface — the effective parallelism for status, and the
     // daemon flag's override of it (validated at the flag's parse site; re-bounded here so
@@ -2284,7 +2311,8 @@ class InternxtProvider(
 
     // True when [folderUuid] is the top of a tree of its own or lies below one (see [outsideDriveFolders]): climbed through
     // the folders' meta up to the drive root, each folder asked for once per process. A folder that is gone, or a chain
-    // that comes back to itself, proves nothing and is not remembered.
+    // that comes back to itself, proves nothing and is not remembered. A chain that ends at a backup device, or at a
+    // folder known to lie below one, puts the folders climbed into [backupFolders].
     private suspend fun isOutsideDrive(folderUuid: String?): Boolean {
         if (folderUuid == null) return false
         val rootUuid = authService.getValidCredentials().rootFolderId
@@ -2304,29 +2332,35 @@ class InternxtProvider(
         }
         val outside = uuid == null || uuid in outsideDriveFolders
         (if (outside) outsideDriveFolders else insideDriveFolders).addAll(climbed)
+        val top = uuid ?: climbed.lastOrNull()
+        if (outside && inBackupTree(top)) backupFolders.addAll(climbed)
         return outside
     }
 
     // A write by id to an item of a tree of its own never reaches the server. [item] is the item as its meta answered: a
-    // folder with no parent is such a tree's top, anything else is judged by its parent. A file whose meta names no
-    // folder says nothing, and passes.
+    // backup device or an item directly below one is told by the device set alone, a folder with no parent is the top of
+    // a tree of its own, anything else is judged by its parent. A file whose meta names no folder says nothing, and passes.
     private suspend fun refuseOutsideDrive(
         item: CloudItem,
         remotePath: String,
     ) {
         val rootUuid = authService.getValidCredentials().rootFolderId
+        if (item.id == rootUuid) return
+        val devices = backupDevices
+        if (item.id in devices || (item.parentId != null && item.parentId in devices)) throw ProviderException(backupRefusal(remotePath))
         val outside =
             when {
-                item.id == rootUuid -> false
                 item.isFolder && item.parentId == null -> true.also { outsideDriveFolders.add(item.id) }
                 else -> isOutsideDrive(item.parentId)
             }
-        if (outside) throw ProviderException("Not part of the drive (a tree of its own, such as a device backup); not written to: $remotePath")
+        if (!outside) return
+        throw ProviderException(if (inBackupFolder(item.parentId)) backupRefusal(remotePath) else outsideDriveRefusal(remotePath))
     }
 
     override suspend fun deleteById(remoteId: String, remotePath: String) {
         // The trash endpoint needs file-vs-folder; resolve it by uuid (see metadataById)
         // so same-name siblings can't redirect the delete to the wrong twin.
+        refuseBackupDevice(remoteId, remotePath)
         val metadata = metadataById(remoteId, parentPathOf(remotePath), remotePath)
         refuseOutsideDrive(metadata, remotePath)
         val type = if (metadata.isFolder) "folder" else "file"
@@ -2341,7 +2375,18 @@ class InternxtProvider(
     override suspend fun deletePermanentlyById(
         remoteId: String,
         remotePath: String,
-    ) = purge(metadataById(remoteId, parentPathOf(remotePath), remotePath), remotePath)
+    ) {
+        refuseBackupDevice(remoteId, remotePath)
+        purge(metadataById(remoteId, parentPathOf(remotePath), remotePath), remotePath)
+    }
+
+    // A backup device's own folder, addressed by its id, is refused before any request (see [backupDevices]).
+    private fun refuseBackupDevice(
+        remoteId: String,
+        remotePath: String,
+    ) {
+        if (remoteId in backupDevices) throw ProviderException(backupRefusal(remotePath))
+    }
 
     private suspend fun purge(
         metadata: CloudItem,
@@ -2483,6 +2528,7 @@ class InternxtProvider(
         toPath: String,
     ): CloudItem {
         refuseIncompatibleName(toPath)
+        refuseBackupDevice(remoteId, fromPath)
         val metadata = metadataById(remoteId, parentPathOf(fromPath), fromPath)
         refuseOutsideDrive(metadata, fromPath)
         return moveResolved(metadata, fromPath, toPath)
@@ -3392,6 +3438,12 @@ class InternxtProvider(
         private var filesDropped = 0
         private var foldersDropped = 0
         private val outsideIds = HashSet<String>()
+
+        // The items outside the drive that belong to a backup device, and those devices. The device list is asked once per
+        // full gather, and only once a tree of its own is met ([devices]).
+        private val backupIds = HashSet<String>()
+        private val backupDevicesMet = HashSet<String>()
+        private var deviceListing: DeviceListing? = null
         private val censusFiles = HashMap<String, Int>()
         private val censusFolders = HashMap<String, Int>()
         private var inTrash = 0
@@ -3454,6 +3506,23 @@ class InternxtProvider(
             return keepInDrive(files.zip(raw).mapNotNull { (file, item) -> item?.markIfTrashed(trashed, file.folderUuid) })
         }
 
+        // What the account says of its backup devices: a full gather asks once, a poll takes the devices the last full
+        // gather confirmed ([backupDevices]) and asks nothing.
+        private suspend fun devices(): DeviceListing =
+            deviceListing ?: (if (fullGather) readBackupDevices() else DeviceListing.Listed(backupDevices)).also { deviceListing = it }
+
+        // The devices of this pass whose trees the items hang below: listed and met as the top of a tree of its own. A list
+        // that could not be read leaves the devices the last full gather confirmed.
+        private suspend fun confirmedDevices(): Set<String> {
+            val listed =
+                when (val listing = devices()) {
+                    is DeviceListing.Listed -> listing.uuids
+                    DeviceListing.NotEnabled -> emptySet()
+                    is DeviceListing.Failed -> backupDevices
+                }
+            return listed.filterTo(HashSet()) { it in treeTops }
+        }
+
         // One more item below a tree of its own, counted under the top of that tree.
         private fun count(item: CloudItem) {
             val top = if (item.id in treeTops) item.id else treeTopOf(item.parentId, folderMap, rootUuid, treeTops) ?: return
@@ -3477,13 +3546,23 @@ class InternxtProvider(
             val items = keepInDrive(placed)
             if (treeTops.isNotEmpty()) {
                 log.info(
-                    "Internxt delta gather: {} item(s) sit below {} folder(s) outside the drive (trees of their own, such as device backups); " +
-                        "they are left out and never written to",
+                    "Internxt delta gather: {} item(s) sit below {} folder(s) outside the drive (trees of their own, such as device backups), " +
+                        "{} of them in {} backup device(s); they are left out and never written to",
                     outsideIds.size,
                     treeTops.size,
+                    backupIds.size,
+                    backupDevicesMet.size,
                 )
             }
-            if (fullGather) logTreeTops(censusFiles, censusFolders, treeTops)
+            if (fullGather) {
+                logTreeTops(censusFiles, censusFolders, treeTops, if (treeTops.isEmpty()) null else devices())
+                // What the next writes and polls go by. A list that could not be read leaves the last one.
+                if (treeTops.isEmpty()) {
+                    backupDevices = emptySet()
+                } else if (deviceListing !is DeviceListing.Failed) {
+                    backupDevices = confirmedDevices()
+                }
+            }
             if (inTrash > 0) {
                 log.info("{} items sit in the trash ({} of them trashed folders); they are reported as trashed", inTrash, foldersInTrash)
             }
@@ -3530,12 +3609,20 @@ class InternxtProvider(
 
         // The items of a tree of its own got a path at the sync root (`/<device>/...`), where they would be ordinary
         // writable rows and merge by name into a real top-level folder. They are left out and named unreachable: the
-        // engine keeps the rows it has, deletes nothing locally, and creates none.
-        private fun keepInDrive(placed: List<CloudItem>): List<CloudItem> {
+        // engine keeps the rows it has, deletes nothing locally, and creates none. Those of a backup device are marked as
+        // backup items ([BackupTrees]) and counted; they are left out all the same.
+        private suspend fun keepInDrive(placed: List<CloudItem>): List<CloudItem> {
             val outside = outsideDriveItems(placed, treeTops, folderMap, rootUuid)
             if (outside.isNotEmpty()) {
                 outsideIds.addAll(outside)
-                if (fullGather) placed.filter { it.id in outside }.forEach(::count)
+                val outsideItems = placed.filter { it.id in outside }
+                if (fullGather) outsideItems.forEach(::count)
+                val trees = BackupTrees(confirmedDevices(), folderMap, rootUuid)
+                for (item in trees.mark(outsideItems)) {
+                    if (!item.backup) continue
+                    backupIds.add(item.id)
+                    trees.deviceOf(item)?.let(backupDevicesMet::add)
+                }
             }
             val items = if (outside.isEmpty()) placed else placed.filter { it.id !in outside }
             for (item in items) {
@@ -3564,10 +3651,11 @@ class InternxtProvider(
     // those tops are backup devices of the account (those uuids, the count, and how many devices the account lists).
     // Measured only: what the listing returns does not change. The device list is asked once, and only when there is a top
     // to compare; a failure to read it is reported in the line and never fails the gather.
-    private suspend fun logTreeTops(
+    private fun logTreeTops(
         files: Map<String, Int>,
         folders: Map<String, Int>,
         treeTops: Set<String>,
+        listing: DeviceListing?,
     ) {
         if (treeTops.isEmpty()) {
             log.info("Internxt full gather: no item hangs below a folder without a parent other than the drive root")
@@ -3577,20 +3665,15 @@ class InternxtProvider(
             treeTops.sortedWith(compareByDescending<String> { (files[it] ?: 0) + (folders[it] ?: 0) }.thenBy { it })
         val tops = ordered.joinToString(", ") { "$it: ${files[it] ?: 0} files, ${folders[it] ?: 0} folders" }
         val devices =
-            try {
-                val deviceFolders = api.listBackupDeviceFolders()
-                if (deviceFolders == null) {
-                    "backups are not enabled for the account"
-                } else {
-                    val matched = ordered.filter { it in deviceFolders }
+            when (listing) {
+                null, DeviceListing.NotEnabled -> "backups are not enabled for the account"
+                is DeviceListing.Failed -> "the backup devices could not be listed (${listing.reason})"
+                is DeviceListing.Listed -> {
+                    val matched = ordered.filter { it in listing.uuids }
                     val summary =
-                        "${matched.size} of the tops are among the ${deviceFolders.size} backup device folder(s) the account lists"
+                        "${matched.size} of the tops are among the ${listing.uuids.size} backup device folder(s) the account lists"
                     if (matched.isEmpty()) summary else "$summary: ${matched.joinToString(", ")}"
                 }
-            } catch (ce: kotlinx.coroutines.CancellationException) {
-                throw ce
-            } catch (e: Exception) {
-                "the backup devices could not be listed (${(e as? InternxtApiException)?.statusCode?.let { "HTTP $it" } ?: e.javaClass.simpleName})"
             }
         log.info(
             "Internxt full gather: {} file(s) and {} folder(s) hang below {} folder(s) without a parent other than the drive root " +
@@ -3602,6 +3685,30 @@ class InternxtProvider(
             devices,
         )
     }
+
+    // The account's backup devices as `GET /backup/deviceAsFolder` answered them: the device folders' uuids (never a
+    // name), no backups (HTTP 400 / 404), or a failure, by its HTTP status or exception class only.
+    private sealed interface DeviceListing {
+        data class Listed(
+            val uuids: Set<String>,
+        ) : DeviceListing
+
+        data object NotEnabled : DeviceListing
+
+        data class Failed(
+            val reason: String,
+        ) : DeviceListing
+    }
+
+    // One read of the device list; a failure is no failure of the gather.
+    private suspend fun readBackupDevices(): DeviceListing =
+        try {
+            api.getBackupDevices()?.let { list -> DeviceListing.Listed(list.mapTo(LinkedHashSet()) { it.uuid }) } ?: DeviceListing.NotEnabled
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            DeviceListing.Failed((e as? InternxtApiException)?.statusCode?.let { "HTTP $it" } ?: e.javaClass.simpleName)
+        }
 
     // The items of a pass that sit below a folder which is gone for good: their remote ids, how many of them are files
     // and folders, and the distinct gone folders they hang below.

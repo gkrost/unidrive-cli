@@ -55,4 +55,8 @@ data class CloudItem(
     // and the size, though its [hash] is that hash already, because a client keeps no hash and compares these names instead.
     // Null for a provider that names none, and for an item whose answer named no stored object or no hash.
     val contentId: String? = null,
+    // The item belongs to one of the account's backup devices: a tree the provider's own backup clients write and own,
+    // outside the drive (Internxt: a device folder with no parent, in a bucket of its own). [path] is where it sits below
+    // its device, `/<device>/...`. Never to be written to. False for every provider that does not report it.
+    val backup: Boolean = false,
 )

@@ -146,9 +146,15 @@ one, wherever the scan and the plan ask the `exclude_patterns`.
 - Rule files are read from the sync root, and the rules are probed again at the start of every pass, so a rule file
   edited, added or removed applies to the next pass. Removing one makes its paths eligible again; nothing is deleted.
 - A rule file the cloud holds that is not downloaded yet (its row waits for its download, or this pass's listing
-  reports it and there is no local file) holds its folder back for that pass. The rule file itself is not held back by
-  its own folder: the pass downloads it, and the next pass applies it. An unreadable or oversized local rule file holds
-  its folder back the same way, and is itself synced like any file.
+  reports it and there is no local file) is downloaded once the pass's listing is in, before its scan and its plan,
+  so its rules apply in that pass, as on the mount. It is the download the plan would make, made earlier: into the
+  sync root, the row recorded as hydrated with the cloud's hash, so the plan has nothing left to do for it. It is
+  not downloaded early in a dry run, a refresh, an upload-only pass, while transfers are paused, when it is larger than
+  1 MiB or of no known size in the cloud, when a local file is in its place, or when the rules above its folder ignore
+  that folder; one whose download fails or does not match the cloud's hash is not kept. Each of these holds its folder
+  back for that pass, as before: the rule file itself is not held back by its own folder, the pass downloads it, and
+  the next pass applies it. An unreadable or oversized local rule file holds its folder back the same way, and is
+  itself synced like any file.
 
 **Never silent.** A held-back folder is logged as a WARN (at most once per rule file every 15 minutes), counted in
 `daemon.status` (`ignore.held_back`), and `ignore.explain` names its rule file and the reason.

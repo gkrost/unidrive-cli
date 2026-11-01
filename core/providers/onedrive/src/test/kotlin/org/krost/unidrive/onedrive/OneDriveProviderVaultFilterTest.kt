@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
  * UD-315: verifies that `OneDriveProvider.listChildren` and `.delta` filter out OneDrive's
  * Personal Vault stub.
  *
- * We build a real `OneDriveProvider`, then swap its private `graphApi`'s `httpClient` for one
+ * We build a real `OneDriveProvider` whose `graphApi` has an `httpClient`
  * backed by a Ktor `MockEngine` that returns canned JSON (same pattern as
  * `ListChildrenPaginationTest`). The filter pipeline runs end-to-end; only the transport is
  * faked.
@@ -31,26 +31,17 @@ class OneDriveProviderVaultFilterTest {
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
             }
-        val provider = OneDriveProvider()
 
-        // Build a fresh GraphApiService with a non-refreshing token provider, then swap its
-        // internal httpClient for the MockEngine. Install that service into the provider via
-        // reflection (same pattern as ListChildrenPaginationTest).
+        // A fresh GraphApiService with a non-refreshing token provider over the MockEngine,
+        // handed to the provider (same pattern as ListChildrenPaginationTest).
         val freshGraphApi =
             GraphApiService(
                 config = OneDriveConfig(),
+                httpClient = HttpClient(engine),
                 tokenProvider = { _ -> "test-token" },
             )
-        val httpClientField = GraphApiService::class.java.getDeclaredField("httpClient")
-        httpClientField.isAccessible = true
-        (httpClientField.get(freshGraphApi) as? HttpClient)?.close()
-        httpClientField.set(freshGraphApi, HttpClient(engine))
 
-        // Replace the provider's private `graphApi` with our mocked instance.
-        val graphApiField = OneDriveProvider::class.java.getDeclaredField("graphApi")
-        graphApiField.isAccessible = true
-        (graphApiField.get(provider) as? GraphApiService)?.close()
-        graphApiField.set(provider, freshGraphApi)
+        val provider = OneDriveProvider(graphApi = freshGraphApi)
         return provider
     }
 

@@ -511,8 +511,7 @@ class OneDriveChangeChannelTest {
         try {
             fun configOf(props: Map<String, String?>) =
                 (OneDriveProviderFactory().create(props, dir) as OneDriveProvider).let { p ->
-                    val field = OneDriveProvider::class.java.getDeclaredField("config").apply { isAccessible = true }
-                    (field.get(p) as OneDriveConfig).also { p.close() }
+                    p.config.also { p.close() }
                 }
             assertTrue(configOf(emptyMap()).remoteNotifications)
             assertTrue(configOf(mapOf("remote_notifications" to "true")).remoteNotifications)

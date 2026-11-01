@@ -19,8 +19,8 @@ import kotlin.test.assertTrue
  * self-heal into a full re-enumeration instead of looping forever on an
  * incomplete pass. Any other status stays a generic GraphApiException.
  *
- * Same MockEngine-swap idiom as OneDriveProviderVaultFilterTest: build a
- * real provider, replace its private `graphApi`'s httpClient with a mock.
+ * Same MockEngine idiom as OneDriveProviderVaultFilterTest: build a real
+ * provider over a GraphApiService whose httpClient is a mock.
  */
 class DeltaCursorExpiredTest {
     private fun mockedProvider(
@@ -36,22 +36,15 @@ class DeltaCursorExpiredTest {
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
             }
-        val provider = OneDriveProvider(OneDriveConfig(includeShared = includeShared))
 
         val freshGraphApi =
             GraphApiService(
                 config = OneDriveConfig(),
+                httpClient = HttpClient(engine),
                 tokenProvider = { _ -> "test-token" },
             )
-        val httpClientField = GraphApiService::class.java.getDeclaredField("httpClient")
-        httpClientField.isAccessible = true
-        (httpClientField.get(freshGraphApi) as? HttpClient)?.close()
-        httpClientField.set(freshGraphApi, HttpClient(engine))
 
-        val graphApiField = OneDriveProvider::class.java.getDeclaredField("graphApi")
-        graphApiField.isAccessible = true
-        (graphApiField.get(provider) as? GraphApiService)?.close()
-        graphApiField.set(provider, freshGraphApi)
+        val provider = OneDriveProvider(OneDriveConfig(includeShared = includeShared), graphApi = freshGraphApi)
         return provider
     }
 

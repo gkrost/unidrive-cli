@@ -1,6 +1,5 @@
 package org.krost.unidrive.onedrive
 
-import io.ktor.client.HttpClient
 import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
 import java.nio.file.Path
@@ -30,18 +29,8 @@ class OneDriveByIdWriteTest {
         tmp = Files.createTempDirectory("ud-by-id-write")
         graph = SimilarNameGraph()
         val config = OneDriveConfig(tokenPath = tmp.resolve("token"))
-        provider = OneDriveProvider(config)
-        val api = GraphApiService(config = config, tokenProvider = { _ -> "test-token" })
-        GraphApiService::class.java.getDeclaredField("httpClient").apply {
-            isAccessible = true
-            (get(api) as? HttpClient)?.close()
-            set(api, graph.client())
-        }
-        OneDriveProvider::class.java.getDeclaredField("graphApi").apply {
-            isAccessible = true
-            (get(provider) as? GraphApiService)?.close()
-            set(provider, api)
-        }
+        val api = GraphApiService(config = config, httpClient = graph.client(), tokenProvider = { _ -> "test-token" })
+        provider = OneDriveProvider(config, graphApi = api)
     }
 
     @AfterTest

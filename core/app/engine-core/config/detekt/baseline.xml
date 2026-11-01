@@ -4,7 +4,6 @@
   <CurrentIssues>
     <ID>ComplexCondition:IsoInstants.kt$IsoInstants$s[4] != '-' || s[7] != '-' || s[10] != 'T' || s[13] != ':' || s[16] != ':'</ID>
     <ID>ComplexCondition:IsoInstants.kt$IsoInstants$year &lt; 0 || month !in 1..12 || day &lt; 1 || hour !in 0..23 || minute !in 0..59 || second !in 0..59</ID>
-    <ID>CyclomaticComplexMethod:RemoteGather.kt$RemoteGather$fun updateRemoteEntries(remoteChanges: Map&lt;String, CloudItem&gt;): RemoteMerge</ID>
     <ID>CyclomaticComplexMethod:RemoteGather.kt$RemoteGather$suspend fun gather( readOnly: Boolean = false, progress: EnumerationTracker? = null, ): Map&lt;String, CloudItem&gt;</ID>
     <ID>LargeClass:RemoteGather.kt$RemoteGather</ID>
     <ID>LargeClass:StateDatabase.kt$StateDatabase</ID>
@@ -19,6 +18,7 @@
     <ID>SwallowedException:CachePaths.kt$CachePaths$e: SecurityException</ID>
     <ID>SwallowedException:Transfers.kt$Transfers$e: java.io.IOException</ID>
     <ID>TooGenericExceptionCaught:RemoteEnumeration.kt$RemoteEnumeration$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:SqliteConnections.kt$SqliteConnections$e: Throwable</ID>
     <ID>TooGenericExceptionCaught:StateDatabase.kt$StateDatabase$e: Exception</ID>
     <ID>TooGenericExceptionCaught:StateDatabase.kt$StateDatabase$e: Throwable</ID>
     <ID>TooGenericExceptionCaught:StateDatabase.kt$StateDatabase.Companion$e: Exception</ID>

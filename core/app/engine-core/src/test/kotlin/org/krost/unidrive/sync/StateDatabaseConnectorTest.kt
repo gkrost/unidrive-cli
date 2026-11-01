@@ -44,7 +44,8 @@ class StateDatabaseConnectorTest {
         } finally {
             ro.close()
         }
-        assertEquals(listOf("open:state.db", "openReadOnly:state.db"), connector.opened)
+        // The writer, the reader the writable database read on, and the read-only database's one connection.
+        assertEquals(listOf("open:state.db", "openReadOnly:state.db", "openReadOnly:state.db"), connector.opened)
     }
 
     @Test

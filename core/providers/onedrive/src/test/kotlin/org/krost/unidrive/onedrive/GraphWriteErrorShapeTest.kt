@@ -92,11 +92,7 @@ class GraphWriteErrorShapeTest {
                     success(request)
                 }
             }
-        val service = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), tokenProvider = { _ -> "token" })
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
+        val service = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), httpClient = HttpClient(engine), tokenProvider = { _ -> "token" })
         return service
     }
 

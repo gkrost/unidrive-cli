@@ -5,8 +5,12 @@
     <ID>InstanceOfCheckForException:UploadProgressWatchdog.kt$e !is CancellationException</ID>
     <ID>LongParameterList:HttpRetryBudget.kt$HttpRetryBudget$( private val maxConcurrency: Int, private val stormThreshold: Int = 4, private val stormWindowMs: Long = 20_000L, private val stormBackoffFactor: Double = 1.2, private val minSpacingMs: Long = 200L, private val stormSpacingMs: Long = 500L, private val noThrottleWindowMs: Long = 60_000L, private val postStormRecoveryMs: Long = 30_000L, private val recoveryCleanIntervalMs: Long = 5L * 60 * 1000, private val clock: () -&gt; Long = { System.currentTimeMillis() }, )</ID>
     <ID>ThrowsCount:OAuthCallbackServer.kt$public fun parseAndValidateCallback( requestLine: String, expectedState: String, providerLabel: String, ): String</ID>
+    <ID>ThrowsCount:OwnerOnlyAtomicWrite.kt$OwnerOnlyAtomicWrite$private fun createTempFile( target: Path, onUnrestricted: ((OwnerOnly.Outcome) -&gt; Unit)?, restrict: (Path) -&gt; OwnerOnly.Outcome, ): Path</ID>
+    <ID>ThrowsCount:OwnerOnlyAtomicWriteTest.kt$OwnerOnlyAtomicWriteTest$@Test fun `a failure before the move leaves the old file as it was and no temp file`()</ID>
     <ID>TooGenericExceptionCaught:CredentialStore.kt$CredentialStore$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:OAuthCallbackServer.kt$e: Exception</ID>
     <ID>TooGenericExceptionCaught:OwnerOnly.kt$OwnerOnly$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:OwnerOnlyAtomicWrite.kt$OwnerOnlyAtomicWrite$e: Exception</ID>
     <ID>TooGenericExceptionCaught:OwnerOnlyGrants.kt$e: Exception</ID>
     <ID>TooGenericExceptionCaught:UploadProgressWatchdog.kt$e: Throwable</ID>
     <ID>TooGenericExceptionThrown:InFlightDedupTest.kt$InFlightDedupTest$throw RuntimeException("boom")</ID>
