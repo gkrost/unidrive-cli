@@ -32,6 +32,7 @@ import org.krost.unidrive.sync.model.*
 import org.slf4j.LoggerFactory
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
@@ -474,6 +475,7 @@ open class SyncEngine(
             localTopAliases = { buildCanonicalToLocalTopMap(it) },
             log = log,
             foldGatherKeys = caseFolds,
+            localFolderExists = ::isLocalFolderAt,
         )
 
     private val enumeration =
@@ -2360,6 +2362,7 @@ open class SyncEngine(
                 resumedItems = resumedItems,
                 persistPage = { items, marker -> db.persistScanPage(scanId, items, marker) },
                 scopeRoots = trackScope,
+                creatableRoots = remoteGather.creatableScopeRoots(),
                 stagedPage = { after, limit -> db.loadStagedPage(scanId, after, limit) },
                 backups = backupsNamespace.enabled,
             )
@@ -3372,6 +3375,9 @@ open class SyncEngine(
                 )
             },
         )
+        // The upsert above settles a name block (a new name does), and the merge marked this row by its new name just before: a remote
+        // rename into a name the provider's clients refuse is marked again, so it is reported on this pass and not on a later delivery.
+        provider.existingNameIssue(action.path)?.let { db.markNameBlocked(action.path, it, null) }
     }
 
     /**
@@ -4215,6 +4221,15 @@ open class SyncEngine(
         local: Path,
         sent: Pair<Long, Long>?,
     ): SyncEntry = Transfers.withSentHash(entry, local, sent, provider.hashAlgorithm(), log)
+
+    // #22: whether the sync root holds a folder at [remotePath], spelled exactly so: a file system that folds case answers
+    // for any spelling, and a scope root spelled otherwise than the local folder is the typo case, not a folder to create.
+    private fun isLocalFolderAt(remotePath: String): Boolean {
+        val local = safeResolveLocalOrNull(syncRoot, remotePath) ?: return false
+        if (!Files.isDirectory(local, LinkOption.NOFOLLOW_LINKS)) return false
+        val real = runCatching { local.toRealPath(LinkOption.NOFOLLOW_LINKS) }.getOrNull() ?: return false
+        return PathNormalizer.nfc(real.toString().replace(real.fileSystem.separator, "/")).endsWith(PathNormalizer.nfc(remotePath))
+    }
 
     private fun buildCanonicalToLocalTopMap(remoteChanges: Map<String, CloudItem>): Map<String, String> {
         val topLevelNames = remoteChanges.keys

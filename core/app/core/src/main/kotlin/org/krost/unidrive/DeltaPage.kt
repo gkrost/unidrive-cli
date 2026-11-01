@@ -25,6 +25,8 @@ package org.krost.unidrive
  * The same set names the items of a tree that is not part of the drive at all (Internxt: a device folder of the
  * desktop app's backups, which has no parent): the provider leaves them out of [items] and keeps them out of
  * writes, and the engine treats their rows as it does those above.
+ * It also names the items a listing returned but could not read (OneDrive: an item whose JSON does not decode): they
+ * are left out of [items] and their rows are held the same way.
  * Providers that always place every item leave the default empty set.
  *
  * [skippedPaths] name, in the provider's own path spelling, the entries the listing could not *read* —

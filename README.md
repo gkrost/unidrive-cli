@@ -104,7 +104,7 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 - `status` — show alignment, transfers, exceptions
 - `pending` — `list` and `drop` the uploads waiting in a profile's queue
 - `rm` — remove a remote path ([spec](docs/dev/specs/cli-rm-command.md))
-- `dedupe` — list the duplicate remote items a profile keeps as `name (dup-xxxxxxxx).ext` and what a keep rule (`--keep newest|largest|id:<id>`) would do with each set; a dry run that changes nothing ([spec](docs/dev/specs/cli-dedupe-command.md))
+- `dedupe` — list the duplicate remote items a profile keeps as `name (dup-xxxxxxxx).ext` and what a keep rule (`--keep newest|largest|id:<id>`) would do with each set; a dry run that changes nothing, and with `--apply` the twins the rule does not keep go to the provider's trash by their ids ([spec](docs/dev/specs/cli-dedupe-command.md))
 - `autostart` — what the installed systemd unit runs: `sync --watch` for a mirror profile, `daemon run` for a mount profile
 - `scope` — show or change the sync scope (`sync_path`) of a profile: `show`, `set <paths...>`, `clear`. `set` and `clear` edit config.toml, apply the scope transition to `state.db` (rows outside the new scope stop being tracked; files stay), replace the scoped history with the new scope, and print what the next run does; after `clear` the next bidirectional sync reconciles the whole drive without `--full-tree`. Refused while a daemon or sync holds the profile; `--json` for front-ends
 - `conflicts` — show recent conflicts; restore or clear conflict backups (`list`, `restore`, `clear`)

@@ -365,6 +365,10 @@ class HydrationImpl(
         // dehydrate's Busy reply puts on the wire.
         private const val BUSY_TOKEN = "busy"
 
+        // gkrost/unidrive-cli#182: the name a replaced file has while the source takes its name ([parkingPathFor]).
+        private const val REPLACE_PARKING_SUFFIX = ".unidrive-replaced"
+        private const val REPLACE_PARKING_ATTEMPTS = 100
+
         /** Default bound on uploads waiting to run (see [uploadQueueDepth]). */
         const val DEFAULT_UPLOAD_QUEUE_DEPTH = 256
 
@@ -3122,9 +3126,107 @@ class HydrationImpl(
             if (uploadSlots.containsKey(oldNorm) || uploadSlots.containsKey(newNorm)) {
                 return RenameResult.Failed(HydrationError.Generic(BUSY_TOKEN))
             }
-            deleteReplaceDestination(destEntry, newNorm)?.let { return it }
+            return replaceOver(oldNorm, newNorm, sourceEntry, destEntry)
         }
+        return moveEntry(oldNorm, newNorm, sourceEntry)
+    }
 
+    /**
+     * gkrost/unidrive-cli#182 (the owner's decision of 2026-11-01, option 1): the replace-rename of [oldNorm] over the file [destEntry]
+     * at [newNorm] deletes the old destination only after the source's move succeeded. The cloud refuses a move onto a name another
+     * item holds (Internxt answers 409, OneDrive's move fails without a conflict behaviour), so the destination first leaves the
+     * name: it is renamed aside in its own folder ([parkingPathFor]) by its id, as any rename moves an item, its row and its cache
+     * copy. Nothing is deleted by that step. The source then moves onto the free name; once it is there the parked destination goes
+     * through the delete path `unlink` takes (the cloud's trash, so its undo stays), and when the move failed the parked
+     * destination moves back to its name and the rename answers the move's failure.
+     *
+     * A daemon stopped between the steps leaves the parked destination in the cloud and in the view under its parking name, never
+     * deleted: each of its renames is recorded like any other ([RenameRollForward]), but nothing ties it to the replace, so it is
+     * neither moved back nor deleted at the next start.
+     */
+    private suspend fun replaceOver(
+        oldNorm: String,
+        newNorm: String,
+        sourceEntry: org.krost.unidrive.sync.model.SyncEntry,
+        destEntry: org.krost.unidrive.sync.model.SyncEntry,
+    ): RenameResult {
+        val parking = parkingPathFor(newNorm)
+            ?: return RenameResult.Failed(HydrationError.Generic("rename replace failed: no free name to move the destination aside"))
+        val parked = moveEntry(newNorm, parking, destEntry)
+        if (parked != RenameResult.Ok) return parked
+        // The cache copy of the destination could not follow it (something holds it open): the source's copy would land on it.
+        // The destination goes back to its name, its copy never left it.
+        renames.owedByOldPath[newNorm]?.let { owedPark ->
+            restoreParked(parking, newNorm, owedPark)
+            return RenameResult.Failed(HydrationError.Generic(BUSY_TOKEN))
+        }
+        val moved = moveEntry(oldNorm, newNorm, sourceEntry)
+        if (moved != RenameResult.Ok) {
+            // A rename stopped after its cloud move keeps its record and stands (archive#1040 M4): the name is the source's now.
+            if (renames.owedByOldPath[oldNorm] != null) {
+                log.warn("replace of {}: the source moved but did not finish; the old file stays at {}", CachePaths.forLog(newNorm), CachePaths.forLog(parking))
+            } else {
+                restoreParked(parking, newNorm, owedPark = null)
+            }
+            return moved
+        }
+        dropParked(parking)
+        return RenameResult.Ok
+    }
+
+    // gkrost/unidrive-cli#182: a free name beside [path] for the replaced file while the source takes its name. It says what it is,
+    // as a leftover after a stopped daemon is a file the user sees.
+    private fun parkingPathFor(path: String): String? =
+        (0 until REPLACE_PARKING_ATTEMPTS)
+            .map { n -> if (n == 0) "$path$REPLACE_PARKING_SUFFIX" else "$path$REPLACE_PARKING_SUFFIX.$n" }
+            .firstOrNull { stateDb.getEntry(it) == null && !Files.exists(mount.resolveCachePath(it)) }
+
+    // gkrost/unidrive-cli#182: the source's move failed, so the replaced file at [parking] moves back to [path]. [owedPark]: the record
+    // of the move aside that still owes the move of its cache copy, which never left [path]; once the file is back it goes. A move
+    // back that fails leaves the file at [parking] (and such a record in place, which brings the copy to it): nothing is deleted,
+    // the log names where it is.
+    private suspend fun restoreParked(
+        parking: String,
+        path: String,
+        owedPark: RenameIntent?,
+    ) {
+        val row = stateDb.getEntry(parking)
+        val back = if (row == null) null else moveEntry(parking, path, row)
+        if (back != RenameResult.Ok) {
+            log.warn("replace of {} failed and the old file could not move back; it stays at {} ({})", CachePaths.forLog(path), CachePaths.forLog(parking), back)
+            return
+        }
+        owedPark?.let { renames.abandon(it) }
+    }
+
+    // gkrost/unidrive-cli#182: the source holds the name now; the replaced file at [parking] goes as `unlink` deletes a file: a cloud
+    // copy to the cloud's trash (by its id), a genuinely local one with its row. A delete that fails leaves it there, named in the
+    // log; the rename stands.
+    @Suppress("TooGenericExceptionCaught") // whatever the delete meets, the source's move stands and the old file stays parked
+    private suspend fun dropParked(parking: String) {
+        val row = stateDb.getEntry(parking) ?: return
+        try {
+            if (row.remoteId != null) {
+                mount.deleteRemote(parking)
+                evictCacheFile(parking)
+            } else {
+                evictCacheFile(parking)
+                stateDb.deleteEntry(parking)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("replace: the old file could not be deleted and stays at {} ({})", CachePaths.forLog(parking), e.message)
+        }
+    }
+
+    // The move of the file or folder [sourceEntry] from [oldNorm] to the free name [newNorm]: in the cloud where it is there, its row
+    // and its cache copy. The checks before it are the caller's.
+    private suspend fun moveEntry(
+        oldNorm: String,
+        newNorm: String,
+        sourceEntry: org.krost.unidrive.sync.model.SyncEntry,
+    ): RenameResult {
         // Never-uploaded file (remoteId == null): the file only ever existed
         // locally — created through the mount, upload not yet done. Calling
         // provider.move would 404 (nothing exists cloud-side) and surface as
@@ -3389,56 +3491,6 @@ class HydrationImpl(
         slot: UploadSlot,
         path: String,
     ): String? = uploadSlots.entries.firstOrNull { it.value === slot }?.key?.takeIf { PathNormalizer.nfc(it) != PathNormalizer.nfc(path) }
-
-    // Deletes the existing destination before a replace-rename, through the same
-    // path `unlink` takes — the destination gets the delete's trash/undo
-    // semantics, not a silent destroy. Ghost-aware (mirrors unlink): a `local:`
-    // row whose content actually landed on the cloud must be deleted remotely,
-    // not just dropped locally. Returns null when the destination is gone and
-    // the caller may proceed with the move, or the RenameResult to fail with
-    // (the source row is untouched in every failure case).
-    private suspend fun deleteReplaceDestination(
-        destEntry: org.krost.unidrive.sync.model.SyncEntry,
-        destNorm: String,
-    ): RenameResult? {
-        if (destEntry.remoteId != null) {
-            return try {
-                mount.deleteRemote(destNorm)
-                evictCacheFile(destNorm)
-                null
-            } catch (e: Exception) {
-                RenameResult.Failed(HydrationError.Generic(e.message ?: "rename replace failed"))
-            }
-        }
-        // archive#1040 M7: only an item holding the destination row's bytes is its ghost; another device's file stays.
-        val ghost = try {
-            mount.ghostItemOrNull(destNorm)
-        } catch (e: Exception) {
-            // Transient remote-probe failure: fail the rename rather than
-            // hard-delete the row and orphan a ghost's cloud copy.
-            return RenameResult.Failed(HydrationError.Generic(e.message ?: "remote probe failed"))
-        }
-        if (ghost != null && !ghost.isFolder) {
-            return try {
-                mount.deleteRemote(destNorm)
-                evictCacheFile(destNorm)
-                null
-            } catch (e: Exception) {
-                RenameResult.Failed(HydrationError.Generic(e.message ?: "rename replace failed"))
-            }
-        }
-        // Genuinely-local destination (nothing cloud-side): hard-delete the row —
-        // a tombstone carries no reconciliation value for a never-uploaded file —
-        // and evict its cache copy. Cache eviction failure is non-fatal (the row
-        // is the truth); the row delete is not.
-        return try {
-            evictCacheFile(destNorm)
-            stateDb.deleteEntry(destNorm)
-            null
-        } catch (e: Exception) {
-            RenameResult.Failed(HydrationError.Generic(e.message ?: "rename replace failed"))
-        }
-    }
 
     override fun onConnectionClosed(connectionId: String) {
         // gkrost/unidrive-cli#23: its reads and hydrates stop waiting; a download nobody else waits for stops.
