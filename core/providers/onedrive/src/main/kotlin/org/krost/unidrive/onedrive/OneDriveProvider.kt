@@ -755,8 +755,16 @@ class OneDriveProvider(
             items = items,
             cursor = result.deltaLink ?: result.nextLink ?: "",
             hasMore = result.nextLink != null,
-        )
+        ).withSkipped(result)
     }
+
+    // The items Graph sent but the page could not decode (see GraphApiService.getDelta): one with an id is held like an
+    // unreachable item (the absence sweep keeps its tracked row, the status counts it); one without makes the page incomplete.
+    private fun DeltaPage.withSkipped(result: DeltaResult): DeltaPage =
+        copy(
+            complete = complete && result.skippedWithoutId == 0,
+            unreachableIds = unreachableIds + result.skippedIds,
+        )
 
     private fun logDeletionStateSummary(items: List<DriveItem>) {
         // Graph's two deletion signals on a delta page mean different things; surface the
@@ -794,7 +802,7 @@ class OneDriveProvider(
                 items = items,
                 cursor = result.deltaLink ?: result.nextLink ?: "",
                 hasMore = result.nextLink != null,
-            ),
+            ).withSkipped(result),
         )
     }
 
@@ -826,7 +834,7 @@ class OneDriveProvider(
                 items = mainItems + sharedItems,
                 cursor = result.deltaLink ?: result.nextLink ?: "",
                 hasMore = result.nextLink != null,
-            ),
+            ).withSkipped(result),
         )
     }
 
