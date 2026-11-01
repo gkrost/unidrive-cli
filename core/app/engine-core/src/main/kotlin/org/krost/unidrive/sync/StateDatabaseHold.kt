@@ -39,6 +39,11 @@ internal class StateDatabaseHold : Event() {
     @field:Timespan(Timespan.NANOSECONDS)
     @JvmField
     var waitedNanos: Long = 0
+
+    @field:Label("Reader")
+    @field:Description("The call was a read on a read-only connection: the hold and the wait are of that connection, not of the monitor")
+    @JvmField
+    var reader: Boolean = false
 }
 
 internal const val STATE_DATABASE_HOLD_EVENT = "org.krost.unidrive.StateDatabaseHold"
@@ -93,11 +98,15 @@ internal class MonitorHolds(
     /** The shortest hold that becomes a flight-recorder event; a test lowers or raises it. */
     @Volatile internal var eventThresholdNanos: Long = EVENT_THRESHOLD_NANOS
 
-    /** Called once per outermost call, after the monitor is given back. Never throws. */
+    /**
+     * Called once per outermost call, after the monitor is given back. Never throws. [reader]: the call was a read on a
+     * read-only connection, held and waited for instead of the monitor; it counts under its method like the others.
+     */
     fun record(
         method: String,
         waitedNanos: Long,
         heldNanos: Long,
+        reader: Boolean = false,
     ) {
         val counter = counters[method] ?: counters.computeIfAbsent(method, ::Counter)
         counter.calls.incrementAndGet()
@@ -105,7 +114,7 @@ internal class MonitorHolds(
         counter.maxHeld.raiseTo(heldNanos)
         counter.waited.addAndGet(waitedNanos)
         counter.maxWaited.raiseTo(waitedNanos)
-        if (heldNanos >= eventThresholdNanos) emit(method, waitedNanos, heldNanos)
+        if (heldNanos >= eventThresholdNanos) emit(method, waitedNanos, heldNanos, reader)
         if (heldNanos >= SLOW_HOLD_NANOS) {
             counter.slow.incrementAndGet()
             reportSlowHolds()
@@ -127,6 +136,7 @@ internal class MonitorHolds(
         method: String,
         waitedNanos: Long,
         heldNanos: Long,
+        reader: Boolean,
     ) {
         if (!eventsAvailable) return
         try {
@@ -135,6 +145,7 @@ internal class MonitorHolds(
                 event.method = method
                 event.heldNanos = heldNanos
                 event.waitedNanos = waitedNanos
+                event.reader = reader
                 event.commit()
             }
         } catch (_: LinkageError) {
