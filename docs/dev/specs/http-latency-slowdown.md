@@ -27,7 +27,8 @@ The prototype is `LatencyController` in the test sources of `core/app/core`.
   up to `maxConcurrency`, and only when no throttle was recorded in the last 60 s. A window between the two ratios
   restarts that count.
 - **Step check (optional):** the window after a step down must show a median at least `stepCheckDrop` lower than the
-  one that caused the step; if not, the step is taken back and that median becomes the whole baseline.
+  one that caused the step; if not, the limit goes back to what it was before the step (all of it, and also while a
+  throttle is recent: a rollback is not growth) and that median becomes the whole baseline.
 - A slowdown the client causes falls once it sends less, so the low baseline stays and the step holds. A slowdown it
   does not cause (the provider is slower for everyone) becomes the baseline once the fast windows have left the
   history, and the permits come back; that delay is what the slowdown costs.

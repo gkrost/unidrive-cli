@@ -133,6 +133,30 @@ class LatencyControllerTest {
     }
 
     @Test
+    fun `a failed step check restores the limit even while a throttle is recent`() {
+        val clock = FakeClock()
+        val controller = controller(control = control.copy(stepCheckDrop = 0.2), clock = clock)
+        controller.window(100)
+        controller.window(300)
+        assertEquals(3, controller.limit)
+
+        controller.recordThrottle() // a 429 inside the window that checks the step
+        controller.window(290)
+        assertEquals(4, controller.limit, "the step is rolled back; the throttle only gates growth beyond it")
+    }
+
+    @Test
+    fun `a failed step check restores a step of several permits in full`() {
+        val controller = controller(control = control.copy(stepCheckDrop = 0.2, stepDown = 2))
+        controller.window(100)
+        controller.window(300)
+        assertEquals(2, controller.limit)
+
+        controller.window(290)
+        assertEquals(4, controller.limit, "both permits of the step come back")
+    }
+
+    @Test
     fun `a step that lowers the latency holds`() {
         val controller = controller(control = control.copy(stepCheckDrop = 0.2))
         controller.window(100)
