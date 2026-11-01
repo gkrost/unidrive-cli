@@ -49,7 +49,10 @@ internal data class SimScenario(
 internal data class SimResult(
     val ok: Int,
     val refused: Int,
-    val meanConcurrency: Double,
+    /** The bound the client ran under, sampled once a second: the budget's permits, or the controller's limit when lower. */
+    val meanCap: Double,
+    /** This client's requests actually on the wire, weighted by time (refused ones count for their 50 ms). */
+    val meanInFlight: Double,
     val p50Ms: Long,
     val p95Ms: Long,
     /** Successful requests in the window in which the other traffic or the slowdown is at its peak. */
@@ -80,12 +83,22 @@ internal object LatencySimulation {
         var okInPeak = 0
         var refusedInPeak = 0
         val latencies = ArrayList<Long>()
-        var concurrencySum = 0L // the effective bound: the budget's permits, or the controller's limit when lower
-        var concurrencySamples = 0
+        var capSum = 0L
+        var capSamples = 0
+        // The time integral of inFlight, advanced at every change.
+        var inFlightMs = 0L
+        var inFlightSince = clock()
+
+        fun advanceInFlight() {
+            val now = clock()
+            inFlightMs += inFlight * (now - inFlightSince)
+            inFlightSince = now
+        }
         val end = clock() + scenario.durationMs
         val start = clock()
 
         suspend fun request(): Long? {
+            advanceInFlight()
             inFlight++
             try {
                 val now = clock() - start
@@ -102,6 +115,7 @@ internal object LatencySimulation {
                 delay(ms)
                 return ms
             } finally {
+                advanceInFlight()
                 inFlight--
             }
         }
@@ -141,19 +155,22 @@ internal object LatencySimulation {
         val sampler =
             scope.launch {
                 while (isActive) {
-                    concurrencySum += minOf(budget.currentConcurrency(), controller?.limit ?: Int.MAX_VALUE)
-                    concurrencySamples++
+                    capSum += minOf(budget.currentConcurrency(), controller?.limit ?: Int.MAX_VALUE)
+                    capSamples++
                     delay(1_000)
                 }
             }
         delay(scenario.durationMs)
+        advanceInFlight()
+        val meanInFlight = inFlightMs.toDouble() / scenario.durationMs
         callers.forEach { it.cancelAndJoin() }
         sampler.cancelAndJoin()
         latencies.sort()
         return SimResult(
             ok = ok,
             refused = refused,
-            meanConcurrency = concurrencySum.toDouble() / concurrencySamples.coerceAtLeast(1),
+            meanCap = capSum.toDouble() / capSamples.coerceAtLeast(1),
+            meanInFlight = meanInFlight,
             p50Ms = latencies.getOrElse(latencies.size / 2) { 0 },
             p95Ms = latencies.getOrElse(latencies.size * 95 / 100) { 0 },
             okInPeak = okInPeak,

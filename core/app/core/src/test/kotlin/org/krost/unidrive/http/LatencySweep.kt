@@ -32,7 +32,7 @@ class LatencySweep {
         val storm = env("STORM", "4").single().toInt()
         val only = System.getenv("UNIDRIVE_LATENCY_SCENARIOS")?.split(',')?.toSet()
         val file = File("build/latency-sweep-$grid.tsv")
-        val header = listOf("seed", "ceiling", "scenario", "control", "ok", "refused", "meanConc", "p50", "p95", "okPeak", "refusedPeak", "wallMs")
+        val header = listOf("seed", "ceiling", "scenario", "control", "ok", "refused", "meanCap", "meanInFlight", "p50", "p95", "okPeak", "refusedPeak", "wallMs")
         file.writeText(header.joinToString("\t", postfix = "\n"))
         val jobs =
             seeds.flatMap { seed ->
@@ -56,7 +56,8 @@ class LatencySweep {
                             job.label,
                             r.ok,
                             r.refused,
-                            "%.2f".format(r.meanConcurrency),
+                            "%.2f".format(r.meanCap),
+                            "%.2f".format(r.meanInFlight),
                             r.p50Ms,
                             r.p95Ms,
                             r.okInPeak,

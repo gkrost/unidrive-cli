@@ -102,7 +102,8 @@ What this says:
 
 - **Today's budget at 2 permits does not stop a refusing provider.** Its storm breaker needs four refusals within
   20 s; with 2 permits and a long Retry-After they never come that fast, so in crowded-30s the breaker never opened
-  and the client was refused 54 times per run. That is the Internxt Drive case: 2 permits and waits of up to 60 s.
+  (the cap stayed at 2.00 permits all run, while only 1.55 requests were on the wire on average: the rest of the time
+  the callers sat out Retry-After) and the client was refused 54 times per run. That is the Internxt Drive case: 2 permits and waits of up to 60 s.
 - **The slowdown ends those refusals** in every crowded run with a history of 10, and in two seeds of three with 5.
 - **Throughput is not the gain.** Where the provider is crowded the client moves about as much as today; it moves it
   without refusals and their retries.
@@ -139,7 +140,9 @@ UNIDRIVE_LATENCY_SEEDS=1,2,3 ./gradlew --no-daemon :app:core:test --tests 'org.k
 ```
 
 The table lands in `core/app/core/build/latency-sweep-<grid>.tsv`, one row per seed, permits, scenario and parameter
-set. The grid: `UNIDRIVE_LATENCY_W`, `_H`, `_Q`, `_RISE`, `_REC`, `_X`, `_CHECK` (`none` for no step check), and
+set. `meanCap` is the bound the client ran under (the budget's permits, or the controller's limit when lower, sampled
+each second); `meanInFlight` is the time-weighted mean of the client's requests actually on the wire. They part where
+callers wait out a refusal or a permit. The grid: `UNIDRIVE_LATENCY_W`, `_H`, `_Q`, `_RISE`, `_REC`, `_X`, `_CHECK` (`none` for no step check), and
 `_CEILINGS`, `_SCENARIOS`, `_SEEDS`, `_THREADS` (default 3); each takes a comma-separated list, defaulting to the
 proposal. `UNIDRIVE_LATENCY_STORM` sets the budget's storm threshold for the whole run (the cheaper-lever table:
 `UNIDRIVE_LATENCY_STORM=2 UNIDRIVE_LATENCY_W= UNIDRIVE_LATENCY_CEILINGS=2`, an empty list leaving only today's
