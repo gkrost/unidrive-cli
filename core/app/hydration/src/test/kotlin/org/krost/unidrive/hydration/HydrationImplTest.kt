@@ -273,6 +273,9 @@ internal class MinimalFakeProvider(
     class DownloadStall(val partialBytes: Int, val inProviderStaging: Boolean = false) {
         val gate = CompletableDeferred<Unit>()
         val reached = CompletableDeferred<Unit>()
+
+        // The file the partial bytes were written to, once [reached]: a test may shrink it, as a provider's retry does.
+        @Volatile var stagingFile: Path? = null
     }
 
     @Volatile var downloadStall: DownloadStall? = null
@@ -288,6 +291,7 @@ internal class MinimalFakeProvider(
                     destination
                 }
             Files.write(staging, content.copyOf(stall.partialBytes))
+            stall.stagingFile = staging
             stall.reached.complete(Unit)
             try {
                 stall.gate.await()
