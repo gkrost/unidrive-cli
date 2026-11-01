@@ -10,16 +10,21 @@ class TrashReadOnlyException(
     val path: String,
 ) : ProviderException("The trash is read-only: $path")
 
+/** A write was addressed to the backups namespace, which the engine never writes to. */
+class BackupsReadOnlyException(
+    val path: String,
+) : ProviderException("The backups are read-only: $path")
+
 /** A write was addressed to a view (Recents, ...), which the engine never writes to. */
 class ViewReadOnlyException(
     val path: String,
 ) : ProviderException("A view is read-only: $path")
 
 /**
- * The last line of the read-only rule of the trash namespace ([TrashNamespace]) and of the views ([ViewNamespaces]):
- * whichever part of the engine starts a write, an upload, a delete, a move or a rename, or a folder, it does not reach
- * the provider when it names a path in either, or an item that was placed in the trash, or the key of a view or of an
- * entry in one. Everything that only reads passes through untouched. A view path never names an item of the provider,
+ * The last line of the read-only rule of the trash namespace ([TrashNamespace]), the backups namespace
+ * ([BackupsNamespace]) and the views ([ViewNamespaces]): whichever part of the engine starts a write, an upload, a delete,
+ * a move or a rename, or a folder, it does not reach the provider when it names a path in any of them, or an item that was
+ * placed in the trash or the backups, or the key of a view or of an entry in one. Everything that only reads passes through untouched. A view path never names an item of the provider,
  * so nothing legitimate is refused by the views' half.
  *
  * The planner and the mount verbs refuse before they get here; this decorator is what makes "never" true for a call
@@ -29,6 +34,7 @@ class ReadOnlyTrashProvider(
     private val inner: CloudProvider,
     private val trash: TrashNamespace,
     private val views: ViewNamespaces = ViewNamespaces.NONE,
+    private val backups: BackupsNamespace = BackupsNamespace(),
 ) : CloudProvider by inner {
     override fun newNameIssue(path: String): String? = inner.newNameIssue(path)
 
@@ -37,16 +43,28 @@ class ReadOnlyTrashProvider(
     override val strictNameMode: Boolean? get() = inner.strictNameMode
 
     private fun refuse(path: String) {
-        if (trash.contains(path)) throw TrashReadOnlyException(path)
-        if (views.contains(path)) throw ViewReadOnlyException(path)
+        val refusal =
+            when {
+                trash.contains(path) -> TrashReadOnlyException(path)
+                backups.contains(path) -> BackupsReadOnlyException(path)
+                views.contains(path) -> ViewReadOnlyException(path)
+                else -> null
+            }
+        if (refusal != null) throw refusal
     }
 
     private fun refuseId(
         remoteId: String?,
         path: String,
     ) {
-        if (trash.holdsId(remoteId)) throw TrashReadOnlyException(path)
-        if (views.holdsId(remoteId)) throw ViewReadOnlyException(path)
+        val refusal =
+            when {
+                trash.holdsId(remoteId) -> TrashReadOnlyException(path)
+                backups.holdsId(remoteId) -> BackupsReadOnlyException(path)
+                views.holdsId(remoteId) -> ViewReadOnlyException(path)
+                else -> null
+            }
+        if (refusal != null) throw refusal
     }
 
     override suspend fun upload(

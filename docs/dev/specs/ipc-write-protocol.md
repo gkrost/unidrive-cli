@@ -411,6 +411,16 @@ engine uploads nothing for it. `daemon.status` carries a `trash` object while so
 An item that was shown among the live items by an earlier version arrives under the root with the same `remote_id`: it is a
 rename (`view.invalidated` carries it in `moved`), never a delete and a create, and its cache copy follows the row.
 
+**The backups folder.** A second root works the same way for the account's backup devices (Internxt: the folders the
+desktop app backs up, one tree per device, outside the drive): a virtual top-level folder (default name `Backups`) whose
+children are the devices and, below them, what each device backs up. It is shown only on a mount whose profile shows the
+backups and whose provider declares them; it exists only while a device is in it. Everything at and below its root is
+read-only exactly as above (`read_only:true`, the same `read_only` answer from every verb that would write). Its root
+entry carries `"backups_root":true` (absent otherwise) and the stable `remote_id` `unidrive:backups`; a device's entry
+carries the device folder's own `remote_id`. A live top-level item or the trash folder that has the name keeps it, and the
+root takes `Backups (2)`, ... . `daemon.status` carries a `backups` object while the folder exists
+([unidrive-daemon-design.md](unidrive-daemon-design.md) section 4.3).
+
 ### 4.2 Read-only views
 
 A provider can list **views**: ordered references to items that already live in its tree. The engine shows each view the
@@ -630,7 +640,7 @@ noticed at once, not when the download ends. Requests the client sends while one
 | `conflict` | open_write | base_etag no longer matches the row |
 | `invalid_path` | open_write (`cache_path`) | the cache path lies outside the profile's hydration cache folder, or is not a valid local path; refused before anything is queued |
 | `outside_scope` | create, mkdir, rename (both ends), open_write_begin | path outside the profile's sync_path set |
-| `read_only` | create, mkdir, unlink, rmdir, rename (either end), open_write_begin, open_write | the path is the trash root or lies below it (section 4.1), or is the root of a view or lies below it (section 4.2); nothing was touched or queued |
+| `read_only` | create, mkdir, unlink, rmdir, rename (either end), open_write_begin, open_write | the path is the trash or the backups root or lies below it (section 4.1), or is the root of a view or lies below it (section 4.2); nothing was touched or queued |
 | `busy` | dehydrate, replace-rename, unlink, rmdir | an upload is in flight on that path (unlink, dehydrate), below it (rmdir), or on the source or destination of a replace-rename; nothing was touched, retry once the upload's `completed` event has arrived |
 | `name_clash` | create, mkdir, open_write, open_write_begin, rename, unlink, rmdir | the path names a name, or a folder above it, by another Unicode spelling (composed / decomposed) than the one a client used for it first (kept in state.db across restarts, section 3.9); both are one row and one cloud path, so the second would overwrite or delete the first. Nothing was touched or queued. Section 3.9 |
 | `excluded` | completed event, rename | keep-local name, never uploaded; a rename of a row that has a cloud copy onto such a name is refused with it (the row and the remote are untouched, `HydrationImpl.rename`) |

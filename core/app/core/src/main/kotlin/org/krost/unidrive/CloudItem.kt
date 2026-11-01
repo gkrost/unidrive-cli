@@ -56,7 +56,8 @@ data class CloudItem(
     // Null for a provider that names none, and for an item whose answer named no stored object or no hash.
     val contentId: String? = null,
     // The item belongs to one of the account's backup devices: a tree the provider's own backup clients write and own,
-    // outside the drive (Internxt: a device folder with no parent, in a bucket of its own). [path] is where it sits below
-    // its device, `/<device>/...`. Never to be written to. False for every provider that does not report it.
+    // outside the drive (Internxt: a device folder with no parent, in a bucket of its own), or such a device folder. [path]
+    // is where it sits below its device, `/<device>/...`; the engine shows these items apart, under the backups namespace
+    // (see `BackupsNamespace`), and never writes to them. False for every provider that does not report it.
     val backup: Boolean = false,
 )

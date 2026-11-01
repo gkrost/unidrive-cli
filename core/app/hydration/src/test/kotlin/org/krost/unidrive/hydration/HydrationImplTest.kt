@@ -596,6 +596,8 @@ internal class HydrationTestEnv(
     ignore: org.krost.unidrive.sync.ignore.IgnoreSettings? = null,
     /** The trash namespace of the profile: the read-only folder that shows what the provider keeps in its trash. */
     val trash: org.krost.unidrive.engine.TrashNamespace = org.krost.unidrive.engine.TrashNamespace(ignoreCase = false),
+    /** The backups namespace of the profile: the read-only folder that shows the account's backup devices. */
+    val backups: org.krost.unidrive.engine.BackupsNamespace = org.krost.unidrive.engine.BackupsNamespace(ignoreCase = false),
     /** The read-only views of the profile (Recents, ...); none = the mount shows none, as before. */
     viewSpecs: List<ViewSpec> = emptyList(),
     /** gkrost/unidrive-cli#23: the gap between `downloading` events; off (0) in this harness unless a test asks for them. */
@@ -653,6 +655,7 @@ internal class HydrationTestEnv(
             mountIgnore = ignore,
             trashNamespace = trash,
             viewNamespaces = viewNamespaces,
+            backupsNamespace = backups,
             viewInvalidationSink = { paths, _, _ -> viewInvalidations += paths },
         )
 

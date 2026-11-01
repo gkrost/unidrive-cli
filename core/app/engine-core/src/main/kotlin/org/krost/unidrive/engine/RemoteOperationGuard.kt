@@ -18,6 +18,8 @@ import org.krost.unidrive.sync.SyncScope
  *   the hydration upload path (UD-263).
  * - **Trash namespace**: the virtual folder that shows what the provider keeps in its trash, which is read-only
  *   ([isReadOnlyPath], see [TrashNamespace]).
+ * - **Backups namespace**: the virtual folder that shows the account's backup devices, read-only too ([isReadOnlyPath],
+ *   see [BackupsNamespace]).
  * - **Views**: the virtual folders that list items living elsewhere in the drive (Recents, ...), read-only too
  *   ([isReadOnlyPath], see [ViewNamespaces]).
  *
@@ -41,10 +43,16 @@ class RemoteOperationGuard(
     // The trash namespace of the profile: its name (profile key trash_folder_name) and, once something is in the trash,
     // where its root is. One per guard, so the sync pass, the mount verbs and the provider decorator all ask the same one.
     val trash: TrashNamespace = TrashNamespace(),
+    // The backups namespace of the profile: off unless the host shows the backups (see BackupsNamespace.enabled). One per
+    // guard, like the trash.
+    val backups: BackupsNamespace = BackupsNamespace(),
     // The views of the profile (see ViewNamespaces): none unless the host passes some, then the question
     // isReadOnlyPath asks of them costs nothing.
     val views: ViewNamespaces = ViewNamespaces.NONE,
 ) {
+    /** The namespaces whose items are rows placed under a root of their own: the trash, then the backups (which yield to it). */
+    val placedNamespaces: List<PlacedNamespace> get() = listOf(trash, backups)
+
     /** The normalised tracked scope; empty means the whole drive. */
     val trackScope: List<String> =
         if (standingScope.isEmpty()) emptyList() else SyncScope.normalize(standingScope + syncPaths)
@@ -62,12 +70,12 @@ class RemoteOperationGuard(
     fun isOutOfScope(path: String): Boolean = !SyncScope.contains(path, trackScope)
 
     /**
-     * True when [path] is in the trash namespace or in a view: a root folder or anything below it. The engine never sends
+     * True when [path] is in the trash namespace, the backups namespace or a view: a root folder or anything below it. The engine never sends
      * a write for such a path to the cloud and ignores local changes there; the mount verbs that would write refuse it
      * with `read_only`, and the sync pass drops the actions that would. Reading and copying out are not writes and stay
      * allowed (on a view path they resolve to the real item).
      */
-    fun isReadOnlyPath(path: String): Boolean = trash.contains(path) || views.contains(path)
+    fun isReadOnlyPath(path: String): Boolean = trash.contains(path) || backups.contains(path) || views.contains(path)
 
     /**
      * True when [path] matches the effective exclude patterns (configured

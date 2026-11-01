@@ -28,6 +28,12 @@ sealed class Capability {
     /** The provider can delete an item for good, bypassing its trash ([CloudProvider.deletePermanently]). */
     object PermanentDelete : Capability()
 
+    /**
+     * The provider tells the items of the account's backup devices apart ([CloudItem.backup]) and lists them, marked, when
+     * the engine asks for them ([ScanContext.backups]); without the question it leaves them out of every listing.
+     */
+    object Backups : Capability()
+
     /** The provider can list the view [kind] ([CloudProvider.listView]); one entry per kind it has. */
     data class View(
         val kind: ViewKind,

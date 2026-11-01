@@ -747,6 +747,7 @@ private fun serialiseListEntries(entries: List<ListResult.Entry>): String {
         if (e.excluded) sb.append(",\"excluded\":true")
         if (e.readOnly) sb.append(",\"read_only\":true")
         if (e.trashRoot) sb.append(",\"trash_root\":true")
+        if (e.backupsRoot) sb.append(",\"backups_root\":true")
         if (e.blocked != null) sb.append(",\"blocked\":").append(jsonEsc(e.blocked))
         if (e.view != null) sb.append(",\"view\":").append(jsonEsc(e.view))
         if (e.viewTarget != null) sb.append(",\"view_target\":").append(jsonEsc(e.viewTarget))

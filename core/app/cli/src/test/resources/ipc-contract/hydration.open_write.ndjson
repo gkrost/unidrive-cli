@@ -14,6 +14,8 @@
 {"ok":false,"error":"invalid_path"}
 {"verb":"hydration.open_write","handle_id":"h-1","path":"/Papierkorb/Old/a.txt","cache_path":"/cache/unidrive/hydration/Papierkorb/Old/a.txt"}
 {"ok":false,"error":"read_only"}
+{"verb":"hydration.open_write","handle_id":"h-1","path":"/Backups/Laptop/a.txt","cache_path":"/cache/unidrive/hydration/Backups/Laptop/a.txt"}
+{"ok":false,"error":"read_only"}
 {"verb":"hydration.open_write","handle_id":"h-1","path":"/Recents/todo.txt","cache_path":"/cache/unidrive/hydration/Notes/todo.txt"}
 {"ok":false,"error":"read_only"}
 {"verb":"hydration.open_write","path":"/docs/report.txt","cache_path":"/cache/unidrive/hydration/docs/report.txt"}

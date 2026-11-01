@@ -14,5 +14,7 @@
 {"ok":false,"error":"invalid_path"}
 {"verb":"hydration.open_write_begin","path":"/Papierkorb/Old/a.txt"}
 {"ok":false,"error":"read_only"}
+{"verb":"hydration.open_write_begin","path":"/Backups/Laptop/a.txt"}
+{"ok":false,"error":"read_only"}
 {"verb":"hydration.open_write_begin","path":"/Recents/todo.txt"}
 {"ok":false,"error":"read_only"}

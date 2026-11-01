@@ -10,5 +10,7 @@
 {"ok":false,"error":"invalid_path"}
 {"verb":"hydration.rmdir","path":"/Papierkorb/Old"}
 {"ok":false,"error":"read_only"}
+{"verb":"hydration.rmdir","path":"/Backups/Laptop"}
+{"ok":false,"error":"read_only"}
 {"verb":"hydration.rmdir","path":"/Recents"}
 {"ok":false,"error":"read_only"}

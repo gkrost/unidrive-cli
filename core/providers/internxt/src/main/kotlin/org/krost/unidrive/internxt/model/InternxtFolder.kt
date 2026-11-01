@@ -37,12 +37,21 @@ data class InternxtFolder(
 
 // One entry of `GET /backup/deviceAsFolder`: a folder row of the backups bucket and a few device fields. [uuid] is the
 // device's folder, the top of its tree. [plainName] is the device's name (a host name, never logged); a device folder
-// made by an old desktop app has none, only an encrypted `name`.
+// made by an old desktop app has none, only an encrypted `name`. [status], [removed], [deleted] and [hasBackups] say
+// whether the account still shows the device (see [shown]).
 @Serializable
 data class BackupDevice(
     val uuid: String,
     val plainName: String? = null,
-)
+    val status: String? = null,
+    val removed: Boolean = false,
+    val deleted: Boolean = false,
+    val hasBackups: Boolean? = null,
+) {
+    // A device the account shows, as the desktop app keeps it: live, neither removed nor deleted, and with something backed
+    // up. A field the answer leaves out does not hide it.
+    val shown: Boolean get() = !removed && !deleted && (status == null || status == "EXISTS") && hasBackups != false
+}
 
 @Serializable
 data class FolderListResponse(
