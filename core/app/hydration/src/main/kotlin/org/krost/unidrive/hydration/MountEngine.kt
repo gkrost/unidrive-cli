@@ -1867,8 +1867,7 @@ class MountEngine private constructor(
     internal fun providerNameIssue(path: String): String? = provider.newNameIssue(path)
 
     /** The rows the provider's strict-name mode currently blocks ([CloudProvider.existingNameIssue] marks them): the writes the provider refused and the cloud items the gather quarantined, one count for `daemon.status`. */
-    fun strictNameBlockedCount(): Int =
-        db.blockedRows().count { it.block.reason.startsWith(org.krost.unidrive.NameRefusedException.NAME_INCOMPATIBLE) }
+    fun strictNameBlockedCount(): Int = db.countNameBlocked(org.krost.unidrive.NameRefusedException.NAME_INCOMPATIBLE)
 
     // Defer the absence sweep's deletion verdict for a path this process just wrote (the gather's state).
     private fun markRecentlyUploaded(path: String) = gather.markRecentlyUploaded(path)

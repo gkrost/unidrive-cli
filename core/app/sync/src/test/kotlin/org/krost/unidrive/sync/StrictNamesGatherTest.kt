@@ -34,7 +34,7 @@ class StrictNamesGatherTest {
         syncRoot = Files.createTempDirectory("unidrive-strict-gather")
         db = StateDatabase(Files.createTempDirectory("unidrive-strict-db").resolve("state.db"))
         db.initialize()
-        provider = FakeCloudProvider()
+        provider = FakeCloudProvider().also { it.strictNameMode = true }
         engine =
             SyncEngine(
                 provider = provider,
@@ -123,6 +123,7 @@ class StrictNamesGatherTest {
     @Test
     fun `with the mode off the same items materialise as today`() =
         runTest {
+            provider.strictNameMode = false
             seed("/skipme.txt")
             provider.deltaItems = listOf(cloudItem("/skipme.txt"), cloudItem("/skipdir", isFolder = true))
 
@@ -187,6 +188,24 @@ class StrictNamesGatherTest {
             assertTrue(Files.exists(syncRoot.resolve("skipme.txt")), "the local copy stays where it is")
             assertTrue(provider.deletedPaths.isEmpty(), "the cloud item is not deleted")
             assertTrue(provider.uploadAttempts.isEmpty(), "nothing is uploaded over it")
+        }
+
+    @Test
+    fun `a block of another kind is neither overwritten nor lifted by the strict-name reconcile`() =
+        runTest {
+            seed("/twin.txt")
+            provider.deltaItems = listOf(cloudItem("/twin.txt"))
+            engine.syncOnce()
+            db.markNameBlocked("/twin.txt", "similar_name", "Twin.txt")
+
+            provider.existingNameIssues["/twin.txt"] = "name_incompatible: windows_character"
+            engine.syncOnce()
+            assertEquals("similar_name", db.nameBlock("/twin.txt")?.reason, "the sibling block stays while the name is refused")
+            assertEquals("Twin.txt", db.nameBlock("/twin.txt")?.sibling)
+
+            provider.existingNameIssues.clear()
+            engine.syncOnce()
+            assertEquals("similar_name", db.nameBlock("/twin.txt")?.reason, "and stays when the strict-name answer is gone")
         }
 
     @Test

@@ -1645,12 +1645,16 @@ class RemoteGather(
         rowPath: String,
         item: CloudItem,
     ) {
+        // A provider without a strict-name mode never writes such a block: no answer to ask for, and no row read per delivered item
+        // (a full gather delivers every item of the drive).
+        if (provider.strictNameMode == null) return
         val issue = provider.existingNameIssue(item.path)
         val current = db.nameBlock(rowPath)?.reason
+        val ours = current == null || current.startsWith(org.krost.unidrive.NameRefusedException.NAME_INCOMPATIBLE)
         when {
-            issue == null && current?.startsWith(org.krost.unidrive.NameRefusedException.NAME_INCOMPATIBLE) == true ->
-                db.clearNameBlock(rowPath)
-            issue != null && issue != current -> db.markNameBlocked(rowPath, issue, null)
+            issue == null && current != null && ours -> db.clearNameBlock(rowPath)
+            // A block of another kind (a too-similar sibling, with the sibling's name) is not ours to overwrite or to lift.
+            issue != null && ours && issue != current -> db.markNameBlocked(rowPath, issue, null)
         }
     }
 
