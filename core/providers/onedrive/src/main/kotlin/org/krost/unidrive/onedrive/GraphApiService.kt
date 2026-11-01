@@ -204,12 +204,16 @@ class GraphApiService(
             try {
                 val response = authenticatedRequest(url)
                 val body = response.bodyAsText()
-                val parsed = json.decodeFromString<DriveItemCollectionResponse>(body)
+                // The envelope must decode (else the page is retried and fails); the items are read one by one.
+                val parsed = json.decodeFromString<DeltaPageEnvelope>(body)
+                val decoded = decodeDeltaItems(parsed.value)
                 if (!readOnly) recordDeltaSeen()
                 return DeltaResult(
-                    items = parsed.value,
+                    items = decoded.items,
                     nextLink = parsed.nextLink,
                     deltaLink = parsed.deltaLink,
+                    skippedIds = decoded.skippedIds,
+                    skippedWithoutId = decoded.skippedWithoutId,
                 )
             } catch (e: AuthenticationException) {
                 throw e // token failures aren't retryable
@@ -232,6 +236,27 @@ class GraphApiService(
                 delay(backoff)
             }
         }
+    }
+
+    // One delta item that does not decode is skipped instead of failing the whole page (Graph has sent such shapes). It
+    // is never silent: its id goes to the caller, which holds the item's tracked row; an item without a readable id is
+    // counted. The log names the id and the decoder's error type only: the error message quotes the JSON, names included.
+    private fun decodeDeltaItems(elements: List<JsonElement>): DecodedDeltaItems {
+        val items = ArrayList<DriveItem>(elements.size)
+        val skippedIds = LinkedHashSet<String>()
+        var skippedWithoutId = 0
+        for (element in elements) {
+            try {
+                items += json.decodeFromJsonElement(DriveItem.serializer(), element)
+            } catch (e: kotlinx.serialization.SerializationException) {
+                val id = ((element as? JsonObject)?.get("id") as? JsonPrimitive)?.takeIf { it.isString }?.content
+                if (id != null) skippedIds += id else skippedWithoutId++
+                log.warn("Graph delta item {} does not decode ({}); it is skipped", id ?: "(no id)", e.javaClass.simpleName)
+            }
+        }
+        val skipped = skippedIds.size + skippedWithoutId
+        if (skipped > 0) log.warn("Graph delta page: {} of {} items did not decode and were skipped", skipped, elements.size)
+        return DecodedDeltaItems(items, skippedIds, skippedWithoutId)
     }
 
     suspend fun downloadFile(
@@ -1596,6 +1621,23 @@ data class DeltaResult(
     val items: List<DriveItem>,
     val nextLink: String?,
     val deltaLink: String?,
+    // The items of the page that did not decode and were left out: by id, and those without a readable id.
+    val skippedIds: Set<String> = emptySet(),
+    val skippedWithoutId: Int = 0,
+)
+
+// A delta page as it came: the items stay raw so one that does not decode can be skipped on its own.
+@kotlinx.serialization.Serializable
+private class DeltaPageEnvelope(
+    @kotlinx.serialization.SerialName("value") val value: List<JsonElement> = emptyList(),
+    @kotlinx.serialization.SerialName("@odata.nextLink") val nextLink: String? = null,
+    @kotlinx.serialization.SerialName("@odata.deltaLink") val deltaLink: String? = null,
+)
+
+private class DecodedDeltaItems(
+    val items: List<DriveItem>,
+    val skippedIds: Set<String>,
+    val skippedWithoutId: Int,
 )
 
 class GraphApiException(
