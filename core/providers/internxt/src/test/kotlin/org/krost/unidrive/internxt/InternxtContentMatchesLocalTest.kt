@@ -40,27 +40,21 @@ class InternxtContentMatchesLocalTest {
     private val shardHash = Ripemd160.digest(MessageDigest.getInstance("SHA-256").digest(ciphertext)).joinToString("") { "%02x".format(it) }
 
     private fun provider(): InternxtProvider {
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-proof-token", ".tmp")))
-        val authService = InternxtProvider::class.java.getDeclaredField("authService").also { it.isAccessible = true }.get(provider)
-        val credsField = authService.javaClass.getDeclaredField("credentials").also { it.isAccessible = true }
         val payloadB64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
-        credsField.set(
-            authService,
-            org.krost.unidrive.internxt.model.InternxtCredentials(
-                jwt = "header.$payloadB64.signature",
-                mnemonic = mnemonic,
-                rootFolderId = "root-folder-uuid",
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = "another-bucket-of-the-account",
-            ),
+        return InternxtProvider(
+            InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-proof-token", ".tmp")),
+            httpClient = HttpClient(MockEngine { request -> handle(request) }),
+            credentials =
+                org.krost.unidrive.internxt.model.InternxtCredentials(
+                    jwt = "header.$payloadB64.signature",
+                    mnemonic = mnemonic,
+                    rootFolderId = "root-folder-uuid",
+                    email = "test@example.invalid",
+                    bridgeUser = "bridge-user",
+                    bridgeUserId = "bridge-secret",
+                    bucket = "another-bucket-of-the-account",
+                ),
         )
-        val api = InternxtProvider::class.java.getDeclaredField("api").also { it.isAccessible = true }.get(provider) as InternxtApiService
-        val clientField = InternxtApiService::class.java.getDeclaredField("httpClient").also { it.isAccessible = true }
-        (clientField.get(api) as? HttpClient)?.close()
-        clientField.set(api, HttpClient(MockEngine { request -> handle(request) }))
-        return provider
     }
 
     private fun MockRequestHandleScope.handle(request: HttpRequestData): HttpResponseData {

@@ -90,7 +90,8 @@ class InternxtApiService(
     // replay reuses the current `retryOnTransient` attempt's delay budget
     // rather than restarting the 3-iteration ladder. Bridge calls use HTTP
     // Basic auth and do not 401 on JWT expiry, so they remain unwrapped.
-    private val driveBudget: HttpRetryBudget =
+    // internal so a test can read the budget of a provider's service; nothing else outside this class uses it.
+    internal val driveBudget: HttpRetryBudget =
         HttpRetryBudget(maxConcurrency = 2, minSpacingMs = 500, stormSpacingMs = 1_000),
     private val bridgeBudget: HttpRetryBudget =
         HttpRetryBudget(maxConcurrency = 4, minSpacingMs = 0, stormSpacingMs = 0),
@@ -112,7 +113,8 @@ class InternxtApiService(
     private val log = LoggerFactory.getLogger(InternxtApiService::class.java)
 
     // gkrost/unidrive-cli#181: the server's clock, from the `Date` header of the newest successful drive answer.
-    private val serverClock = ServerClock()
+    // internal var only so a test can put it on a monotonic clock it drives; nothing else assigns it.
+    internal var serverClock = ServerClock()
 
     fun attachRequestMetrics(sink: RequestMetricsSink?) {
         requestMetrics.sink = sink

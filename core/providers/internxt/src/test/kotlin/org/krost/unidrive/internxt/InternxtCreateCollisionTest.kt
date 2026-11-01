@@ -49,13 +49,10 @@ class InternxtCreateCollisionTest {
     // InternxtApiServiceTest)
     // -------------------------------------------------------------------------
 
-    private fun newProviderRooted(tokenPath: java.nio.file.Path): InternxtProvider {
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tokenPath))
-        val authField = InternxtProvider::class.java.getDeclaredField("authService")
-        authField.isAccessible = true
-        val authService = authField.get(provider)
-        val credsField = authService.javaClass.getDeclaredField("credentials")
-        credsField.isAccessible = true
+    private fun newProviderRooted(
+        tokenPath: java.nio.file.Path,
+        engine: io.ktor.client.engine.mock.MockEngine,
+    ): InternxtProvider {
         val payload = """{"exp":9999999999}"""
         val payloadB64 =
             java.util.Base64
@@ -63,34 +60,22 @@ class InternxtCreateCollisionTest {
                 .withoutPadding()
                 .encodeToString(payload.toByteArray())
         val fakeJwt = "header.$payloadB64.signature"
-        credsField.set(
-            authService,
-            org.krost.unidrive.internxt.model.InternxtCredentials(
-                jwt = fakeJwt,
-                mnemonic =
-                    "abandon abandon abandon abandon abandon abandon " +
-                        "abandon abandon abandon abandon abandon about",
-                rootFolderId = "root-folder-uuid",
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = "6928426c1a2316b856c9ab81",
-            ),
+        return InternxtProvider(
+            InternxtConfig(credentialProtector = null, tokenPath = tokenPath),
+            credentials =
+                org.krost.unidrive.internxt.model.InternxtCredentials(
+                    jwt = fakeJwt,
+                    mnemonic =
+                        "abandon abandon abandon abandon abandon abandon " +
+                            "abandon abandon abandon abandon abandon about",
+                    rootFolderId = "root-folder-uuid",
+                    email = "test@example.invalid",
+                    bridgeUser = "bridge-user",
+                    bridgeUserId = "bridge-secret",
+                    bucket = "6928426c1a2316b856c9ab81",
+                ),
+            httpClient = io.ktor.client.HttpClient(engine),
         )
-        return provider
-    }
-
-    private fun installMockClientOnProvider(
-        provider: InternxtProvider,
-        engine: io.ktor.client.engine.mock.MockEngine,
-    ) {
-        val apiField = InternxtProvider::class.java.getDeclaredField("api")
-        apiField.isAccessible = true
-        val api = apiField.get(provider) as InternxtApiService
-        val field = InternxtApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(api) as? io.ktor.client.HttpClient)?.close()
-        field.set(api, io.ktor.client.HttpClient(engine))
     }
 
     /**
@@ -232,9 +217,8 @@ class InternxtCreateCollisionTest {
                         }
                     }
 
-                val provider = newProviderRooted(tmp)
+                val provider = newProviderRooted(tmp, engine)
                 try {
-                    installMockClientOnProvider(provider, engine)
                     provider.upload(local, "/AGENTS.md", existingRemoteId = null, onProgress = null)
 
                     // THE non-negotiable assertion: the 31 KB remote MUST NOT be overwritten.
@@ -373,9 +357,8 @@ class InternxtCreateCollisionTest {
                         }
                     }
 
-                val provider = newProviderRooted(tmp)
+                val provider = newProviderRooted(tmp, engine)
                 try {
-                    installMockClientOnProvider(provider, engine)
                     provider.upload(local, "/notes.txt", existingRemoteId = null, onProgress = null)
 
                     assertEquals(
@@ -481,9 +464,8 @@ class InternxtCreateCollisionTest {
                         }
                     }
 
-                val provider = newProviderRooted(tmp)
+                val provider = newProviderRooted(tmp, engine)
                 try {
-                    installMockClientOnProvider(provider, engine)
                     kotlin.test.assertFailsWith<InternxtApiException> {
                         provider.upload(local, "/thing.bin", existingRemoteId = null, onProgress = null)
                     }
@@ -593,9 +575,8 @@ class InternxtCreateCollisionTest {
             }
         val tmp = java.nio.file.Files.createTempDirectory("ud-coll-same-size-")
         val local = tmp.resolve("report.pdf").also { java.nio.file.Files.write(it, case.localBytes) }
-        val provider = newProviderRooted(tmp)
+        val provider = newProviderRooted(tmp, engine)
         try {
-            installMockClientOnProvider(provider, engine)
             case.compareCapBytes?.let { provider.collisionCompareMaxBytes = it }
             return provider.upload(local, "/report.pdf", existingRemoteId = null, onProgress = null)
         } finally {
@@ -829,9 +810,8 @@ class InternxtCreateCollisionTest {
             }
         val tmp = java.nio.file.Files.createTempDirectory("ud-coll-makefile-")
         val local = tmp.resolve("Makefile").also { java.nio.file.Files.write(it, localBytes) }
-        val provider = newProviderRooted(tmp)
+        val provider = newProviderRooted(tmp, engine)
         try {
-            installMockClientOnProvider(provider, engine)
             val item = provider.upload(local, "/Makefile", existingRemoteId = null, onProgress = null)
             return MakefileBesideAm(createPlainNames, replaceFileCalls, item)
         } finally {

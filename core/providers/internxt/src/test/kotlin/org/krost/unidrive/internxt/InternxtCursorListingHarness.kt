@@ -127,27 +127,20 @@ internal fun essence(item: CloudItem) = listOf(item.id, item.path, item.name, it
 
 /** A provider over [engine], signed in with test credentials, as the listing tests build it. */
 internal fun provider(engine: MockEngine): InternxtProvider {
-    val provider = InternxtProvider()
-    val auth = InternxtProvider::class.java.getDeclaredField("authService").also { it.isAccessible = true }.get(provider)
-    val credsField = auth.javaClass.getDeclaredField("credentials").also { it.isAccessible = true }
     val payload = Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
-    credsField.set(
-        auth,
-        InternxtCredentials(
-            jwt = "header.$payload.signature",
-            mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-            rootFolderId = "root",
-            email = "test@example.invalid",
-            bridgeUser = "bridge-user",
-            bridgeUserId = "bridge-secret",
-            bucket = "6928426c1a2316b856c9ab81",
-        ),
+    return InternxtProvider(
+        httpClient = HttpClient(engine),
+        credentials =
+            InternxtCredentials(
+                jwt = "header.$payload.signature",
+                mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                rootFolderId = "root",
+                email = "test@example.invalid",
+                bridgeUser = "bridge-user",
+                bridgeUserId = "bridge-secret",
+                bucket = "6928426c1a2316b856c9ab81",
+            ),
     )
-    val api = InternxtProvider::class.java.getDeclaredField("api").also { it.isAccessible = true }.get(provider)
-    val clientField = InternxtApiService::class.java.getDeclaredField("httpClient").also { it.isAccessible = true }
-    (clientField.get(api) as? HttpClient)?.close()
-    clientField.set(api, HttpClient(engine))
-    return provider
 }
 
 /**

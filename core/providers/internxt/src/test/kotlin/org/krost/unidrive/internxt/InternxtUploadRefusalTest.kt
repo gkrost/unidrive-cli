@@ -66,38 +66,13 @@ class InternxtUploadRefusalTest {
         createStatus: HttpStatusCode,
         scenario: UploadScenario = UploadScenario(),
     ): InternxtProvider {
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmp))
-        provider.parentRelistDelayMs = 0
-        val authField = InternxtProvider::class.java.getDeclaredField("authService")
-        authField.isAccessible = true
-        val authService = authField.get(provider)
-        val credsField = authService.javaClass.getDeclaredField("credentials")
-        credsField.isAccessible = true
         val payloadB64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
-        credsField.set(
-            authService,
-            org.krost.unidrive.internxt.model.InternxtCredentials(
-                jwt = "header.$payloadB64.signature",
-                mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-                rootFolderId = "root-folder-uuid",
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = bucket,
-            ),
-        )
-        val apiField = InternxtProvider::class.java.getDeclaredField("api")
-        apiField.isAccessible = true
-        val api = apiField.get(provider) as InternxtApiService
-        val httpField = InternxtApiService::class.java.getDeclaredField("httpClient")
-        httpField.isAccessible = true
-        (httpField.get(api) as? HttpClient)?.close()
         val json = headersOf("Content-Type", "application/json")
         val startCount = AtomicInteger()
         val finishCount = AtomicInteger()
-        httpField.set(
-            api,
-            HttpClient(
+        return InternxtProvider(
+            InternxtConfig(credentialProtector = null, tokenPath = tmp),
+            httpClient = HttpClient(
                 MockEngine { request ->
                     val url = request.url.toString()
                     val listedFolder = url.substringAfter("/folders/content/", "").substringBefore('?').substringBefore('/')
@@ -143,8 +118,17 @@ class InternxtUploadRefusalTest {
                     }
                 },
             ),
-        )
-        return provider
+            credentials =
+                org.krost.unidrive.internxt.model.InternxtCredentials(
+                    jwt = "header.$payloadB64.signature",
+                    mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                    rootFolderId = "root-folder-uuid",
+                    email = "test@example.invalid",
+                    bridgeUser = "bridge-user",
+                    bridgeUserId = "bridge-secret",
+                    bucket = bucket,
+                ),
+        ).also { it.parentRelistDelayMs = 0 }
     }
 
     private fun local(): Path = tmp.resolve("f.txt").also { Files.write(it, ByteArray(10) { 0x41 }) }

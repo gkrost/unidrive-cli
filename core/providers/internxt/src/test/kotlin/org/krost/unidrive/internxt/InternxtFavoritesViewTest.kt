@@ -123,7 +123,7 @@ class InternxtFavoritesViewTest {
         runTest {
             val fake = Fake(files = listOf(file("a")), folders = listOf(folder("d"), folder("x", deleted = true)))
 
-            val listed = apiOf(providerOn(fake)).listFavorites(includeFolders = true)!!
+            val listed = providerOn(fake).api.listFavorites(includeFolders = true)!!
 
             assertEquals(listOf(ViewRef("d", true), ViewRef("a", false)), listed.refs)
             assertEquals(listOf("folder", "file"), fake.requests.map { Regex("type=(\\w+)").find(it)!!.groupValues[1] })
@@ -145,7 +145,7 @@ class InternxtFavoritesViewTest {
         runTest {
             val fake = Fake(files = listOf(file("a")), folders = uuids(InternxtApiService.MAX_FAVORITE_REFS + 1).map { folder(it) })
 
-            val listed = apiOf(providerOn(fake)).listFavorites(includeFolders = true)!!
+            val listed = providerOn(fake).api.listFavorites(includeFolders = true)!!
 
             assertTrue(listed.truncated)
             assertEquals(InternxtApiService.MAX_FAVORITE_REFS, listed.refs.count { it.isFolder })
@@ -175,7 +175,4 @@ class InternxtFavoritesViewTest {
         runTest {
             assertFailsWith<InternxtApiException> { providerOn(Fake(status = HttpStatusCode.BadRequest)).listView(favorites, 10) }
         }
-
-    private fun apiOf(provider: InternxtProvider): InternxtApiService =
-        InternxtProvider::class.java.getDeclaredField("api").also { it.isAccessible = true }.get(provider) as InternxtApiService
 }

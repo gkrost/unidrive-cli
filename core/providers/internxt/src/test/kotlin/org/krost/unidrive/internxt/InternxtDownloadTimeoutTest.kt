@@ -115,29 +115,11 @@ class InternxtDownloadTimeoutTest {
         val index64 = "11".repeat(32)
         val requestLog = mutableListOf<String>()
         val destination = tempDestination()
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-dl-timeout-token", ".tmp")))
-        val authField = InternxtProvider::class.java.getDeclaredField("authService")
-        authField.isAccessible = true
-        val authService = authField.get(provider)
-        val credsField = authService.javaClass.getDeclaredField("credentials")
-        credsField.isAccessible = true
         val payloadB64 =
             java.util.Base64
                 .getUrlEncoder()
                 .withoutPadding()
                 .encodeToString("""{"exp":9999999999}""".toByteArray())
-        credsField.set(
-            authService,
-            InternxtCredentials(
-                jwt = "header.$payloadB64.signature",
-                mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-                rootFolderId = "root-folder-uuid",
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = bucket,
-            ),
-        )
         val engine =
             MockEngine { request: HttpRequestData ->
                 requestLog += "${request.method} ${request.url.host}${request.url.encodedPath}"
@@ -156,13 +138,21 @@ class InternxtDownloadTimeoutTest {
                     else -> respond("{}", HttpStatusCode.NotFound, json)
                 }
             }
-        val apiField = InternxtProvider::class.java.getDeclaredField("api")
-        apiField.isAccessible = true
-        val api = apiField.get(provider) as InternxtApiService
-        val httpClientField = InternxtApiService::class.java.getDeclaredField("httpClient")
-        httpClientField.isAccessible = true
-        (httpClientField.get(api) as? HttpClient)?.close()
-        httpClientField.set(api, HttpClient(engine))
+        val provider =
+            InternxtProvider(
+                InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-dl-timeout-token", ".tmp")),
+                httpClient = HttpClient(engine),
+                credentials =
+                    InternxtCredentials(
+                        jwt = "header.$payloadB64.signature",
+                        mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                        rootFolderId = "root-folder-uuid",
+                        email = "test@example.invalid",
+                        bridgeUser = "bridge-user",
+                        bridgeUserId = "bridge-secret",
+                        bucket = bucket,
+                    ),
+            )
 
         assertFailsWith<java.io.IOException> {
             kotlinx.coroutines.test.runTest {

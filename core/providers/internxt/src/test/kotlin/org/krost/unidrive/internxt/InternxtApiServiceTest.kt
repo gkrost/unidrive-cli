@@ -515,6 +515,15 @@ class InternxtApiServiceTest {
                     stormSpacingMs = 1_000,
                     clock = { virtualMs },
                 )
+            // A MockEngine that always returns 503.
+            val engine =
+                io.ktor.client.engine.mock.MockEngine {
+                    respond(
+                        content = """{"detail":"service unavailable"}""",
+                        status = io.ktor.http.HttpStatusCode.ServiceUnavailable,
+                        headers = io.ktor.http.headersOf("Content-Type", "application/json"),
+                    )
+                }
             val service =
                 InternxtApiService(
                     InternxtConfig(credentialProtector = null, ),
@@ -527,20 +536,8 @@ class InternxtApiServiceTest {
                         )
                     },
                     driveBudget = budget,
+                    httpClient = io.ktor.client.HttpClient(engine),
                 )
-            // Swap the httpClient with a MockEngine that always returns 503.
-            val engine =
-                io.ktor.client.engine.mock.MockEngine {
-                    respond(
-                        content = """{"detail":"service unavailable"}""",
-                        status = io.ktor.http.HttpStatusCode.ServiceUnavailable,
-                        headers = io.ktor.http.headersOf("Content-Type", "application/json"),
-                    )
-                }
-            val field = InternxtApiService::class.java.getDeclaredField("httpClient")
-            field.isAccessible = true
-            (field.get(service) as? io.ktor.client.HttpClient)?.close()
-            field.set(service, io.ktor.client.HttpClient(engine))
 
             assertEquals(0L, budget.currentSpacingMs(), "pre-call: steady-state fast path")
             try {
@@ -607,11 +604,8 @@ class InternxtApiServiceTest {
                         bucket = "test-bucket",
                     )
                 },
+                httpClient = io.ktor.client.HttpClient(engine),
             )
-        val field = InternxtApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? io.ktor.client.HttpClient)?.close()
-        field.set(service, io.ktor.client.HttpClient(engine))
         return service
     }
 
@@ -1049,11 +1043,8 @@ class InternxtApiServiceTest {
                             email = "test@example.invalid",
                         )
                     },
+                    httpClient = io.ktor.client.HttpClient(engine),
                 )
-            val field = InternxtApiService::class.java.getDeclaredField("httpClient")
-            field.isAccessible = true
-            (field.get(service) as? io.ktor.client.HttpClient)?.close()
-            field.set(service, io.ktor.client.HttpClient(engine))
 
             val folder = service.createFolder("parent-uuid", "name", "encrypted-name")
 
@@ -1204,7 +1195,7 @@ class InternxtApiServiceTest {
             // Tombstone-isolated tempDir so this test can't trip over a
             // sidecar from a prior failed run (or leak one to the next).
             val tmpRoot = java.nio.file.Files.createTempDirectory("ud-iv-pin-")
-            val provider = newProviderRooted(tmpRoot)
+            val provider = newProviderRooted(tmpRoot, engine)
             val tempLocal =
                 java.nio.file.Files
                     .createTempFile(tmpRoot, "iv-pin-test-", ".bin")
@@ -1212,7 +1203,6 @@ class InternxtApiServiceTest {
                         java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
                     }
             try {
-                installMockClientOnProvider(provider, engine)
                 provider.upload(tempLocal, "/iv-pin-test.bin", existingRemoteId = null, onProgress = null)
 
                 assertEquals(1, startCalls.get(),
@@ -1254,19 +1244,6 @@ class InternxtApiServiceTest {
             }
         }
 
-    private fun installMockClientOnProvider(
-        provider: InternxtProvider,
-        engine: io.ktor.client.engine.mock.MockEngine,
-    ) {
-        val apiField = InternxtProvider::class.java.getDeclaredField("api")
-        apiField.isAccessible = true
-        val api = apiField.get(provider) as InternxtApiService
-        val field = InternxtApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(api) as? io.ktor.client.HttpClient)?.close()
-        field.set(api, io.ktor.client.HttpClient(engine))
-    }
-
     private suspend fun drainOutgoingContent(content: io.ktor.http.content.OutgoingContent): ByteArray =
         when (content) {
             is io.ktor.http.content.ByteArrayContent -> content.bytes()
@@ -1305,13 +1282,10 @@ class InternxtApiServiceTest {
      * dir is test-local), pre-populated with bucket-carrying credentials and a
      * far-future JWT exp so getValidCredentials never triggers a real refresh.
      */
-    private fun newProviderRooted(tokenPath: java.nio.file.Path): InternxtProvider {
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tokenPath))
-        val authField = InternxtProvider::class.java.getDeclaredField("authService")
-        authField.isAccessible = true
-        val authService = authField.get(provider)
-        val credsField = authService.javaClass.getDeclaredField("credentials")
-        credsField.isAccessible = true
+    private fun newProviderRooted(
+        tokenPath: java.nio.file.Path,
+        engine: io.ktor.client.engine.mock.MockEngine? = null,
+    ): InternxtProvider {
         val payload = """{"exp":9999999999}"""
         val payloadB64 =
             java.util.Base64
@@ -1319,21 +1293,22 @@ class InternxtApiServiceTest {
                 .withoutPadding()
                 .encodeToString(payload.toByteArray())
         val fakeJwt = "header.$payloadB64.signature"
-        credsField.set(
-            authService,
-            org.krost.unidrive.internxt.model.InternxtCredentials(
-                jwt = fakeJwt,
-                mnemonic =
-                    "abandon abandon abandon abandon abandon abandon " +
-                        "abandon abandon abandon abandon abandon about",
-                rootFolderId = "root-folder-uuid",
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = "6928426c1a2316b856c9ab81",
-            ),
+        return InternxtProvider(
+            InternxtConfig(credentialProtector = null, tokenPath = tokenPath),
+            credentials =
+                org.krost.unidrive.internxt.model.InternxtCredentials(
+                    jwt = fakeJwt,
+                    mnemonic =
+                        "abandon abandon abandon abandon abandon abandon " +
+                            "abandon abandon abandon abandon abandon about",
+                    rootFolderId = "root-folder-uuid",
+                    email = "test@example.invalid",
+                    bridgeUser = "bridge-user",
+                    bridgeUserId = "bridge-secret",
+                    bucket = "6928426c1a2316b856c9ab81",
+                ),
+            httpClient = engine?.let { io.ktor.client.HttpClient(it) },
         )
-        return provider
     }
 
     /**
@@ -1510,7 +1485,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val mtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
@@ -1536,7 +1510,7 @@ class InternxtApiServiceTest {
                 )
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 assertEquals(1, counters.startCalls.get(), "fresh startUpload on resume from ENCRYPTING (no cached URL)")
@@ -1559,7 +1533,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val mtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
@@ -1592,7 +1565,7 @@ class InternxtApiServiceTest {
                 seedEnc(store, pathHash, 48L)
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 assertEquals(0, counters.startCalls.get(), "startUpload SKIPPED — cached URL still within TTL")
@@ -1614,7 +1587,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val mtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
@@ -1644,7 +1616,7 @@ class InternxtApiServiceTest {
                 seedEnc(store, pathHash, 48L)
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 assertEquals(0, counters.startCalls.get(), "startUpload SKIPPED on PUT_DONE resume")
@@ -1667,7 +1639,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val pinnedSha256Hex = "cc".repeat(32)
@@ -1696,7 +1667,7 @@ class InternxtApiServiceTest {
                 seedEnc(store, pathHash, 48L)
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 val sent = counters.capturedFinishShardHash.single()
@@ -1716,7 +1687,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val mtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
@@ -1746,7 +1716,7 @@ class InternxtApiServiceTest {
                 seedEnc(store, pathHash, 48L)
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 assertEquals(0, counters.startCalls.get(), "startUpload SKIPPED on FINISH_DONE resume")
@@ -1772,7 +1742,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val realMtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
@@ -1803,7 +1772,7 @@ class InternxtApiServiceTest {
                 )
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 assertEquals(1, counters.startCalls.get(), "startUpload re-issued on cold restart")
@@ -1826,7 +1795,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val mtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
@@ -1855,7 +1823,7 @@ class InternxtApiServiceTest {
                 )
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 val freshIndex = counters.capturedFinishIndexHex.single()
@@ -1888,7 +1856,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val mtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
@@ -1921,7 +1888,7 @@ class InternxtApiServiceTest {
                 // Mock returns a FRESH startUpload URL — verifies the resume
                 // re-issued startUpload even though shardUuid+URL were on the
                 // tombstone. The OLD URL hostname doesn't appear in routing.
-                installMockClientOnProvider(provider, tombMockEngine(counters, startUuid = "shard-uuid-fresh-after-ttl"))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters, startUuid = "shard-uuid-fresh-after-ttl"))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 assertEquals(1, counters.startCalls.get(), "URL TTL exceeded → fresh startUpload")
@@ -1954,7 +1921,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val mtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
@@ -1986,7 +1952,7 @@ class InternxtApiServiceTest {
                 )
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 // Pass existingRemoteId=null — mismatch with the tombstone.
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
@@ -2019,7 +1985,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val pinnedIndex = "ab".repeat(32)
@@ -2055,7 +2020,7 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.setLastModifiedTime(local, originalMtime)
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 assertEquals(1, counters.startCalls.get(), "content drift → cold restart (fresh startUpload)")
@@ -2088,7 +2053,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val pinnedIndex = "ba".repeat(32)
@@ -2121,7 +2085,7 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.setLastModifiedTime(local, originalMtime)
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 assertEquals(
@@ -2153,7 +2117,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val pinnedIndex = "ef".repeat(32)
@@ -2182,7 +2145,7 @@ class InternxtApiServiceTest {
                 // NOTE: no seedEnc — the .enc is deliberately missing.
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 assertEquals(1, counters.startCalls.get(), "unverifiable .enc beyond ENCRYPTING → fresh startUpload")
@@ -2207,7 +2170,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val mtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
@@ -2297,7 +2259,7 @@ class InternxtApiServiceTest {
                             else -> error("unexpected URL: $url ($request.method)")
                         }
                     }
-                installMockClientOnProvider(provider, engine)
+                val provider = newProviderRooted(tmp, engine)
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 assertEquals(1, finishCalls.get(), "finishUpload returns 409 once")
@@ -2322,7 +2284,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val mtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
@@ -2352,7 +2313,7 @@ class InternxtApiServiceTest {
                 seedEnc(store, pathHash, 48L)
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
 
                 assertEquals(1, counters.startCalls.get(), "a fresh shard session of this account, not the recorded one")
@@ -2418,7 +2379,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
                 val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
                 val mtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
@@ -2450,7 +2410,7 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.delete(local)
 
                 val counters = TombMockCounters()
-                installMockClientOnProvider(provider, tombMockEngine(counters))
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
                 try {
                     provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
                     kotlin.test.fail("expected NoSuchFileException — local file was deleted")
@@ -2476,13 +2436,10 @@ class InternxtApiServiceTest {
     // -----------------------------------------------------------------
 
     /** Mirror of [newProviderRooted] but with `keepOverwritten = true`. */
-    private fun newKeepOverwrittenProviderRooted(tokenPath: java.nio.file.Path): InternxtProvider {
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tokenPath, keepOverwritten = true))
-        val authField = InternxtProvider::class.java.getDeclaredField("authService")
-        authField.isAccessible = true
-        val authService = authField.get(provider)
-        val credsField = authService.javaClass.getDeclaredField("credentials")
-        credsField.isAccessible = true
+    private fun newKeepOverwrittenProviderRooted(
+        tokenPath: java.nio.file.Path,
+        engine: io.ktor.client.engine.mock.MockEngine,
+    ): InternxtProvider {
         val payload = """{"exp":9999999999}"""
         val payloadB64 =
             java.util.Base64
@@ -2490,21 +2447,22 @@ class InternxtApiServiceTest {
                 .withoutPadding()
                 .encodeToString(payload.toByteArray())
         val fakeJwt = "header.$payloadB64.signature"
-        credsField.set(
-            authService,
-            org.krost.unidrive.internxt.model.InternxtCredentials(
-                jwt = fakeJwt,
-                mnemonic =
-                    "abandon abandon abandon abandon abandon abandon " +
-                        "abandon abandon abandon abandon abandon about",
-                rootFolderId = "root-folder-uuid",
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = "6928426c1a2316b856c9ab81",
-            ),
+        return InternxtProvider(
+            InternxtConfig(credentialProtector = null, tokenPath = tokenPath, keepOverwritten = true),
+            credentials =
+                org.krost.unidrive.internxt.model.InternxtCredentials(
+                    jwt = fakeJwt,
+                    mnemonic =
+                        "abandon abandon abandon abandon abandon abandon " +
+                            "abandon abandon abandon abandon abandon about",
+                    rootFolderId = "root-folder-uuid",
+                    email = "test@example.invalid",
+                    bridgeUser = "bridge-user",
+                    bridgeUserId = "bridge-secret",
+                    bucket = "6928426c1a2316b856c9ab81",
+                ),
+            httpClient = io.ktor.client.HttpClient(engine),
         )
-        return provider
     }
 
     @Test
@@ -2516,7 +2474,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newProviderRooted(tmp)
                 val renameMetaCalls = AtomicInteger(0)
                 val replaceCalls = AtomicInteger(0)
                 val createCalls = AtomicInteger(0)
@@ -2571,7 +2528,7 @@ class InternxtApiServiceTest {
                             else -> error("unexpected URL: $url (${request.method})")
                         }
                     }
-                installMockClientOnProvider(provider, engine)
+                val provider = newProviderRooted(tmp, engine)
                 provider.upload(local, "/foo.txt", existingRemoteId = "remote-uuid-existing", onProgress = null)
                 assertEquals(0, renameMetaCalls.get(), "keepOverwritten=false MUST NOT rename the prior file")
                 assertEquals(1, replaceCalls.get(), "keepOverwritten=false routes through PUT /files/{uuid}")
@@ -2590,7 +2547,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newKeepOverwrittenProviderRooted(tmp)
                 val getMetaCalls = AtomicInteger(0)
                 val renameMetaCalls = AtomicInteger(0)
                 val replaceCalls = AtomicInteger(0)
@@ -2665,7 +2621,7 @@ class InternxtApiServiceTest {
                             else -> error("unexpected URL: $url (${request.method})")
                         }
                     }
-                installMockClientOnProvider(provider, engine)
+                val provider = newKeepOverwrittenProviderRooted(tmp, engine)
                 provider.upload(local, "/foo.txt", existingRemoteId = "remote-uuid-existing", onProgress = null)
 
                 assertEquals(2, getMetaCalls.get(), "one read checks where the file is, one learns plainName + type for the rename")
@@ -2694,7 +2650,6 @@ class InternxtApiServiceTest {
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
-                val provider = newKeepOverwrittenProviderRooted(tmp)
                 val renameAttempts = AtomicInteger(0)
                 val capturedRenamePlainName = java.util.Collections.synchronizedList(mutableListOf<String>())
                 val engine =
@@ -2758,7 +2713,7 @@ class InternxtApiServiceTest {
                             else -> error("unexpected URL: $url (${request.method})")
                         }
                     }
-                installMockClientOnProvider(provider, engine)
+                val provider = newKeepOverwrittenProviderRooted(tmp, engine)
                 provider.upload(local, "/foo.txt", existingRemoteId = "remote-uuid-existing", onProgress = null)
 
                 assertEquals(2, renameAttempts.get(), "expected one collision then a counter-suffixed retry")
@@ -2788,7 +2743,6 @@ class InternxtApiServiceTest {
                 ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().also { it.start() }
             providerLogger.addAppender(appender)
             try {
-                val provider = newKeepOverwrittenProviderRooted(tmp)
                 val replaceCalls = AtomicInteger(0)
                 val engine =
                     io.ktor.client.engine.mock.MockEngine { request ->
@@ -2836,7 +2790,7 @@ class InternxtApiServiceTest {
                             else -> error("unexpected URL: $url (${request.method})")
                         }
                     }
-                installMockClientOnProvider(provider, engine)
+                val provider = newKeepOverwrittenProviderRooted(tmp, engine)
                 provider.upload(local, "/foo.txt", existingRemoteId = "remote-uuid-existing", onProgress = null)
 
                 assertEquals(1, replaceCalls.get(),

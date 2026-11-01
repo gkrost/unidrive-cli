@@ -81,28 +81,10 @@ class InternxtVersionTokenTest {
         startCalls: AtomicInteger,
         metaCalls: AtomicInteger,
     ): InternxtProvider {
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = java.nio.file.Files.createTempDirectory("ud-token-")))
-        val authService = InternxtProvider::class.java.getDeclaredField("authService").also { it.isAccessible = true }.get(provider)
-        val creds = authService.javaClass.getDeclaredField("credentials").also { it.isAccessible = true }
         val payload = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
-        creds.set(
-            authService,
-            org.krost.unidrive.internxt.model.InternxtCredentials(
-                jwt = "header.$payload.signature",
-                mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-                rootFolderId = "root-folder-uuid",
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = "6928426c1a2316b856c9ab81",
-            ),
-        )
-        val api = InternxtProvider::class.java.getDeclaredField("api").also { it.isAccessible = true }.get(provider) as InternxtApiService
-        val client = InternxtApiService::class.java.getDeclaredField("httpClient").also { it.isAccessible = true }
-        (client.get(api) as? io.ktor.client.HttpClient)?.close()
-        client.set(
-            api,
-            io.ktor.client.HttpClient(
+        return InternxtProvider(
+            InternxtConfig(credentialProtector = null, tokenPath = java.nio.file.Files.createTempDirectory("ud-token-")),
+            httpClient = io.ktor.client.HttpClient(
                 io.ktor.client.engine.mock.MockEngine { request ->
                     val url = request.url.toString()
                     when {
@@ -118,8 +100,17 @@ class InternxtVersionTokenTest {
                     }
                 },
             ),
+            credentials =
+                org.krost.unidrive.internxt.model.InternxtCredentials(
+                    jwt = "header.$payload.signature",
+                    mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                    rootFolderId = "root-folder-uuid",
+                    email = "test@example.invalid",
+                    bridgeUser = "bridge-user",
+                    bridgeUserId = "bridge-secret",
+                    bucket = "6928426c1a2316b856c9ab81",
+                ),
         )
-        return provider
     }
 
     @Test

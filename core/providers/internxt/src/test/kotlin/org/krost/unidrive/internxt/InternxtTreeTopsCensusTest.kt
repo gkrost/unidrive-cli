@@ -6,7 +6,6 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.DeltaPage
-import org.krost.unidrive.http.HttpRetryBudget
 import org.slf4j.LoggerFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -65,11 +64,6 @@ class InternxtTreeTopsCensusTest {
         }
     }
 
-    private fun driveBudgetOf(provider: InternxtProvider): HttpRetryBudget {
-        val api = InternxtProvider::class.java.getDeclaredField("api").apply { isAccessible = true }.get(provider)
-        return InternxtApiService::class.java.getDeclaredField("driveBudget").apply { isAccessible = true }.get(api) as HttpRetryBudget
-    }
-
     @Test
     fun `a full gather counts what hangs below each parentless top and how many tops are backup devices`() {
         val drive = drive()
@@ -100,7 +94,7 @@ class InternxtTreeTopsCensusTest {
         for (status in listOf(0, 429)) {
             val drive = drive(deviceStatus = status)
             val provider = internxtProviderOn(drive.engine)
-            val budget = driveBudgetOf(provider)
+            val budget = provider.api.driveBudget
 
             val (page, lines, elapsed) = censusTimed { provider.delta(null, null, FakeStaging().context()) }
 

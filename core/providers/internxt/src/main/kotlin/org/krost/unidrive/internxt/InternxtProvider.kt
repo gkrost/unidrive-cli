@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.*
 import org.krost.unidrive.internxt.model.FolderContentResponse
+import org.krost.unidrive.internxt.model.InternxtCredentials
 import org.krost.unidrive.internxt.model.InternxtFile
 import org.krost.unidrive.internxt.model.InternxtFolder
 import org.krost.unidrive.internxt.model.MultipartPart
@@ -35,6 +36,10 @@ class InternxtProvider(
     private val config: InternxtConfig = InternxtConfig(),
     // Tests hand in a client on a MockEngine; production builds the default one.
     httpClient: io.ktor.client.HttpClient? = null,
+    // Tests hand in signed-in credentials; production loads or obtains them in authenticate().
+    credentials: InternxtCredentials? = null,
+    // Tests hand in a crypto that counts its seed derivations; production uses the default one.
+    private val crypto: InternxtCrypto = InternxtCrypto(),
 ) : CloudProvider {
     override val id = "internxt"
     override val displayName = "Internxt Drive"
@@ -55,8 +60,8 @@ class InternxtProvider(
     val effectiveUploadConcurrency: Int get() = concurrencyOverride ?: config.uploadConcurrency
 
     private val log = org.slf4j.LoggerFactory.getLogger(InternxtProvider::class.java)
-    private val crypto = InternxtCrypto()
-    private val authService = AuthService(config)
+    // internal so a test can store the credentials of a re-auth; nothing else outside this class uses it.
+    internal val authService = AuthService(config, initialCredentials = credentials)
 
     // archive#730: mnemonicToSeed is PBKDF2-HMAC-SHA512 (2048 iterations) and used to run once per
     // download and upload — 8.2 % of the Java execution samples in the live JFR. The seed is
@@ -66,9 +71,12 @@ class InternxtProvider(
     // logged.
     private val seedLock = Any()
 
-    private var cachedSeed: CachedSeed? = null
+    // Readable in the module so a test can check the held bytes are zeroed; only [seedFor] and [clearCachedSeed] write it.
+    internal var cachedSeed: CachedSeed? = null
+        private set
 
-    private val api =
+    // internal so tests can call the API service of a provider they built; nothing else outside this class uses it.
+    internal val api =
         if (httpClient == null) {
             InternxtApiService(config, credentialsProvider = { forceRefresh -> authService.getValidCredentials(forceRefresh) })
         } else {
@@ -114,8 +122,10 @@ class InternxtProvider(
     // `status` / `ls` / `sync` has no use for it and must not reach the endpoint.
     // Started by whichever comes second, authenticate() success (we need a JWT for
     // the handshake) or onRemoteChangeHint(); disposed in close() / logout().
+    // Readable in the module so a test can see whether a client was built.
     @Volatile
-    private var notificationsClient: NotificationsClient? = null
+    internal var notificationsClient: NotificationsClient? = null
+        private set
 
     // INTERNXT_NOTIFICATIONS=off: say so once per provider, not on every authenticate().
     @Volatile
@@ -144,8 +154,8 @@ class InternxtProvider(
     // Eviction: none. Process-lifetime cache. A folder created via this
     // cache then deleted out-of-band (web UI, another sync session) leaves
     // a stale entry whose UUID will 404 on the next operation; acceptable
-    // trade for the in-process scope.
-    private val folderCache = FolderUuidCache()
+    // trade for the in-process scope. internal so a test can seed and read it; nothing else outside this class uses it.
+    internal val folderCache = FolderUuidCache()
 
     // A folder with no parent that is not the drive root is the top of a tree of its own (the desktop app's backups keep
     // one per device). Nothing below one is part of the drive: the listing leaves it out, and a write addressed to it by
@@ -349,7 +359,7 @@ class InternxtProvider(
         api.close()
     }
 
-    private class CachedSeed(
+    internal class CachedSeed(
         val mnemonic: String,
         val seed: ByteArray,
     )

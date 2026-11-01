@@ -235,7 +235,7 @@ class InternxtBackupTreesTest {
                     respond(answer.second, HttpStatusCode.fromValue(answer.first), headersOf(HttpHeaders.ContentType, "application/json"))
                 }
             val provider = internxtProviderOn(engine)
-            val api = InternxtProvider::class.java.getDeclaredField("api").apply { isAccessible = true }.get(provider) as InternxtApiService
+            val api = provider.api
 
             val devices = api.getBackupDevices()!!
             assertEquals(listOf("DEV1", "DEV2"), devices.map { it.uuid })

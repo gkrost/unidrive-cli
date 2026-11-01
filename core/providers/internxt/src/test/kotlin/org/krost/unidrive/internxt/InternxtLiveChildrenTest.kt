@@ -71,37 +71,25 @@ class InternxtLiveChildrenTest {
     private val deletedFlag = ""","status":"EXISTS","deleted":true"""
 
     private fun newProvider(): InternxtProvider {
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = java.nio.file.Files.createTempFile("ud-live-token", ".tmp")))
-        val authField = InternxtProvider::class.java.getDeclaredField("authService")
-        authField.isAccessible = true
-        val authService = authField.get(provider)
-        val credsField = authService.javaClass.getDeclaredField("credentials")
-        credsField.isAccessible = true
         val payloadB64 =
             java.util.Base64
                 .getUrlEncoder()
                 .withoutPadding()
                 .encodeToString("""{"exp":9999999999}""".toByteArray())
-        credsField.set(
-            authService,
-            org.krost.unidrive.internxt.model.InternxtCredentials(
-                jwt = "header.$payloadB64.signature",
-                mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-                rootFolderId = rootUuid,
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = "6928426c1a2316b856c9ab81",
-            ),
+        return InternxtProvider(
+            InternxtConfig(credentialProtector = null, tokenPath = java.nio.file.Files.createTempFile("ud-live-token", ".tmp")),
+            httpClient = HttpClient(MockEngine { request -> handle(request) }),
+            credentials =
+                org.krost.unidrive.internxt.model.InternxtCredentials(
+                    jwt = "header.$payloadB64.signature",
+                    mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                    rootFolderId = rootUuid,
+                    email = "test@example.invalid",
+                    bridgeUser = "bridge-user",
+                    bridgeUserId = "bridge-secret",
+                    bucket = "6928426c1a2316b856c9ab81",
+                ),
         )
-        val apiField = InternxtProvider::class.java.getDeclaredField("api")
-        apiField.isAccessible = true
-        val api = apiField.get(provider) as InternxtApiService
-        val httpClientField = InternxtApiService::class.java.getDeclaredField("httpClient")
-        httpClientField.isAccessible = true
-        (httpClientField.get(api) as? HttpClient)?.close()
-        httpClientField.set(api, HttpClient(MockEngine { request -> handle(request) }))
-        return provider
     }
 
     private fun MockRequestHandleScope.handle(request: HttpRequestData): HttpResponseData {

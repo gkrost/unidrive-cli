@@ -27,17 +27,7 @@ import kotlin.test.assertNull
  * `versioning` is ignored via `ignoreUnknownKeys` in [UnidriveJson].
  */
 class InternxtFileLimitsTest {
-    private fun installMockClient(
-        service: InternxtApiService,
-        engine: MockEngine,
-    ) {
-        val field = InternxtApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
-    }
-
-    private fun newService(): InternxtApiService =
+    private fun newService(engine: MockEngine): InternxtApiService =
         InternxtApiService(
             InternxtConfig(credentialProtector = null, ),
             credentialsProvider = { _ ->
@@ -48,6 +38,7 @@ class InternxtFileLimitsTest {
                     email = "test@example.invalid",
                 )
             },
+            httpClient = HttpClient(engine),
         )
 
     /**
@@ -56,13 +47,7 @@ class InternxtFileLimitsTest {
      * [InternxtApiService.authenticatedGet] proceeds without triggering
      * AuthService.refreshToken() (which would attempt a real HTTP call).
      */
-    private fun newProviderWithCredentials(): InternxtProvider {
-        val provider = InternxtProvider()
-        val authField = InternxtProvider::class.java.getDeclaredField("authService")
-        authField.isAccessible = true
-        val authService = authField.get(provider)
-        val credsField = authService.javaClass.getDeclaredField("credentials")
-        credsField.isAccessible = true
+    private fun newProviderWithCredentials(engine: MockEngine): InternxtProvider {
         // Build a JWT with header.payload.signature where payload encodes
         // {"exp": 9999999999} (a far-future Unix epoch). isJwtExpired()
         // base64url-decodes parts[1] and reads exp.
@@ -73,16 +58,16 @@ class InternxtFileLimitsTest {
                 .withoutPadding()
                 .encodeToString(payload.toByteArray())
         val fakeJwt = "header.$payloadB64.signature"
-        credsField.set(
-            authService,
-            InternxtCredentials(
-                jwt = fakeJwt,
-                mnemonic = "test-mnemonic",
-                rootFolderId = "test-root",
-                email = "test@example.invalid",
-            ),
+        return InternxtProvider(
+            credentials =
+                InternxtCredentials(
+                    jwt = fakeJwt,
+                    mnemonic = "test-mnemonic",
+                    rootFolderId = "test-root",
+                    email = "test@example.invalid",
+                ),
+            httpClient = HttpClient(engine),
         )
-        return provider
     }
 
     @Test
@@ -108,8 +93,7 @@ class InternxtFileLimitsTest {
                         headers = headersOf("Content-Type", "application/json"),
                     )
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val limits = service.getFileLimits()
             assertEquals(21_474_836_480L, limits.maxUploadFileSize, "20 GiB cap should round-trip")
@@ -128,8 +112,7 @@ class InternxtFileLimitsTest {
                         headers = headersOf("Content-Type", "application/json"),
                     )
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val limits = service.getFileLimits()
             assertNull(limits.maxUploadFileSize, "server-reported null cap must round-trip")
@@ -149,13 +132,7 @@ class InternxtFileLimitsTest {
                     headers = headersOf("Content-Type", "application/json"),
                 )
             }
-        val provider = newProviderWithCredentials()
-        // Reach the api field and swap its httpClient. Mirrors the pattern
-        // used in InternxtRequestIdPropagationTest.
-        val apiField = InternxtProvider::class.java.getDeclaredField("api")
-        apiField.isAccessible = true
-        val api = apiField.get(provider) as InternxtApiService
-        installMockClient(api, engine)
+        val provider = newProviderWithCredentials(engine)
 
         val first = provider.maxFileSizeBytes()
         val second = provider.maxFileSizeBytes()
@@ -180,11 +157,7 @@ class InternxtFileLimitsTest {
                     headers = headersOf("Content-Type", "text/html"),
                 )
             }
-        val provider = newProviderWithCredentials()
-        val apiField = InternxtProvider::class.java.getDeclaredField("api")
-        apiField.isAccessible = true
-        val api = apiField.get(provider) as InternxtApiService
-        installMockClient(api, engine)
+        val provider = newProviderWithCredentials(engine)
 
         val first = provider.maxFileSizeBytes()
         assertNull(first, "failed fetch returns null without poisoning the cache")

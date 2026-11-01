@@ -28,27 +28,21 @@ internal fun rootedInternxtProvider(
     engine: MockEngine,
     keepOverwritten: Boolean = false,
 ): InternxtProvider {
-    val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = stateDir, keepOverwritten = keepOverwritten))
-    val auth = InternxtProvider::class.java.getDeclaredField("authService").also { it.isAccessible = true }.get(provider)
-    val credsField = auth.javaClass.getDeclaredField("credentials").also { it.isAccessible = true }
     val payload = Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
-    credsField.set(
-        auth,
-        InternxtCredentials(
-            jwt = "header.$payload.signature",
-            mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-            rootFolderId = "root-folder-uuid",
-            email = "test@example.invalid",
-            bridgeUser = "bridge-user",
-            bridgeUserId = "bridge-secret",
-            bucket = "6928426c1a2316b856c9ab81",
-        ),
+    return InternxtProvider(
+        InternxtConfig(credentialProtector = null, tokenPath = stateDir, keepOverwritten = keepOverwritten),
+        httpClient = HttpClient(engine),
+        credentials =
+            InternxtCredentials(
+                jwt = "header.$payload.signature",
+                mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                rootFolderId = "root-folder-uuid",
+                email = "test@example.invalid",
+                bridgeUser = "bridge-user",
+                bridgeUserId = "bridge-secret",
+                bucket = "6928426c1a2316b856c9ab81",
+            ),
     )
-    val api = InternxtProvider::class.java.getDeclaredField("api").also { it.isAccessible = true }.get(provider)
-    val clientField = InternxtApiService::class.java.getDeclaredField("httpClient").also { it.isAccessible = true }
-    (clientField.get(api) as? HttpClient)?.close()
-    clientField.set(api, HttpClient(engine))
-    return provider
 }
 
 /** One file of an [UploadDrive]. */
