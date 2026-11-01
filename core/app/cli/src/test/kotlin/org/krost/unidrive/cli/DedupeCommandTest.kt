@@ -300,6 +300,23 @@ class DedupeCommandTest {
     }
 
     @Test
+    fun `--path in decomposed spelling finds the group the database keeps composed`() {
+        // state.db keys its paths in NFC; a name from a filesystem or provider that keeps the decomposed spelling is the same.
+        seed(
+            row("/caf\u00e9/a.txt", "aaaaaaaa-0001"),
+            row("/caf\u00e9/a (dup-bbbbbbbb).txt", "bbbbbbbb-0002", remotePath = "/caf\u00e9/a.txt"),
+        )
+
+        assertEquals(0, dedupe("--path", "/cafe\u0301", "--json"))
+        assertEquals(listOf("/caf\u00e9/a.txt"), jsonReply().groups().map { it.str("path") }, "the parent folder")
+
+        captured.reset()
+        assertEquals(0, dedupe("--path", "/cafe\u0301/a.txt", "--keep", "id:aaaaaaaa-0001", "--json"))
+        val group = jsonReply().groups().single()
+        assertEquals("aaaaaaaa-0001", group.str("keep_id"), "the exact file, and its member's id is known in that scope")
+    }
+
+    @Test
     fun `a profile without state has no duplicates`() {
         assertEquals(0, dedupe("--json"))
 

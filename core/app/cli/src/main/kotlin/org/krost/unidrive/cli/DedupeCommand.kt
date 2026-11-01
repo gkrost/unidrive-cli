@@ -6,6 +6,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
 import picocli.CommandLine.Command
@@ -143,7 +144,8 @@ internal fun dedupeReport(
 ): DedupeReport {
     val rule = keepText?.let { KeepRule.parse(it) }
     val target = resolveProfileTarget(main, null)
-    val scope = pathText?.let { LsCommand.normalizeLsPath(it) }
+    // NFC, the spelling state.db keys its paths in: a decomposed `--path` names the same items.
+    val scope = pathText?.let { PathNormalizer.nfc(LsCommand.normalizeLsPath(it)) }
     val groups = DuplicateSets.find(readAliveRows(target.profileDir.resolve("state.db"))).filter { inScope(it, scope) }
     if (rule is KeepRule.ById && groups.none { g -> g.members.any { it.id == rule.id } }) {
         throw LifecycleError("unknown_id", "no duplicate set${scope?.let { " at or below $it" } ?: ""} has a member with the id '${rule.id}'")
