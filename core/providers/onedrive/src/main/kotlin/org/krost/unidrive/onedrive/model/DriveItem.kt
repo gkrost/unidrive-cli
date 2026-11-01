@@ -22,6 +22,8 @@ data class DriveItem(
     @SerialName("root") val root: RootFacet? = null,
     // Present when OneDrive's scan flagged the content as malicious: such an item is never downloaded.
     @SerialName("malware") val malware: MalwareFacet? = null,
+    // Present on a package, an item that is neither a file nor a folder (a OneNote notebook): it is never synced or downloaded.
+    @SerialName("package") val packageFacet: PackageFacet? = null,
     // Optimistic-concurrency tag; changes on any metadata or content mutation. Threaded
     // back to PATCH calls via the `If-Match` header so a concurrent editor can be
     // detected (Graph returns 412 Precondition Failed instead of silently overwriting).
@@ -178,6 +180,12 @@ data class Deleted(
 @Serializable
 data class MalwareFacet(
     @SerialName("description") val description: String? = null,
+)
+
+/** The `package` facet: [type] names the kind of package (`oneNote` for a OneNote notebook). */
+@Serializable
+data class PackageFacet(
+    @SerialName("type") val type: String? = null,
 )
 
 /** The `root` facet: an empty object, present on the drive's root folder only. */

@@ -34,6 +34,7 @@ class OneDriveProvider(
     internal val tokenManager = TokenManager(config, oauthService)
 
     private val loggedVaultThisSession = AtomicBoolean(false)
+    private val loggedPackageIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     private val graphApi =
         graphApi ?: GraphApiService(config, engine = engine) { forceRefresh ->
@@ -163,7 +164,7 @@ class OneDriveProvider(
     }
 
     override suspend fun listChildren(path: String): List<CloudItem> {
-            return graphApi.listChildren(path).filterNot { noteAndSkipVault(it) }.map { it.toCloudItem() }
+            return graphApi.listChildren(path).filterNot { noteAndSkipVault(it) || noteAndSkipPackage(it) }.map { it.toCloudItem() }
     }
 
     override suspend fun getMetadata(path: String): CloudItem = itemAt(path).toCloudItem()
@@ -747,7 +748,7 @@ class OneDriveProvider(
         val visibleItems =
             result.items
                 .filterNot { it.isRootItem() }
-                .filterNot { noteAndSkipVault(it) }
+                .filterNot { noteAndSkipVault(it) || noteAndSkipPackage(it) }
         logDeletionStateSummary(visibleItems)
         val items = placed(visibleItems, known = result.items)
 
@@ -788,7 +789,7 @@ class OneDriveProvider(
     override suspend fun deltaFromLatest(scanContext: org.krost.unidrive.ScanContext?): CapabilityResult<DeltaPage> {
         // A preview's bootstrap must not stamp delta_last_seen — same readOnly contract as delta().
         val result = graphApi.getDelta(fromLatest = true, readOnly = scanContext?.readOnly == true)
-        val items = placed(result.items.filterNot { it.isRootItem() }, known = result.items)
+        val items = placed(result.items.filterNot { it.isRootItem() || noteAndSkipPackage(it) }, known = result.items)
         return CapabilityResult.Success(
             DeltaPage(
                 items = items,
@@ -814,7 +815,7 @@ class OneDriveProvider(
             placed(
                 result.items
                     .filterNot { it.isRootItem() }
-                    .filterNot { noteAndSkipVault(it) },
+                    .filterNot { noteAndSkipVault(it) || noteAndSkipPackage(it) },
                 known = result.items,
             )
 
@@ -986,6 +987,19 @@ class OneDriveProvider(
             log.info("Skipping Personal Vault entry (protected): {}", displayName)
         } else {
             log.debug("Skipping Personal Vault entry (protected): {}", displayName)
+        }
+        return true
+    }
+
+    // A package (a OneNote notebook) is neither a file nor a folder: it is left out of the listings, so the engine never
+    // tries to download it. A tombstone stays in: a notebook tracked before as a file must still be removable. One INFO
+    // line per item and session, DEBUG after that.
+    private fun noteAndSkipPackage(item: DriveItem): Boolean {
+        if (item.packageFacet == null || item.isTombstone()) return false
+        if (loggedPackageIds.add(item.id)) {
+            log.info("Skipping OneDrive package {} ({}): not a file or a folder", item.id, item.packageFacet.type ?: "unknown type")
+        } else {
+            log.debug("Skipping OneDrive package {} ({})", item.id, item.packageFacet.type ?: "unknown type")
         }
         return true
     }

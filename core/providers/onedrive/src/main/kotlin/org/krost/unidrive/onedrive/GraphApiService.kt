@@ -18,6 +18,7 @@ import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteContentRefusedDownloadException
 import org.krost.unidrive.ShareInfo
+import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.http.RequestMetricsSink
 import org.krost.unidrive.http.RequestMetricsTap
@@ -245,6 +246,19 @@ class GraphApiService(
         if (item.malware != null) throw malwareRefusal(itemId)
     }
 
+    // A package (a OneNote notebook) is not a file: its content endpoint does not serve the notebook. The listings leave
+    // it out; a row tracked before that, asked for by id, is refused here as permanent, before any content request.
+    private fun refuseIfPackage(
+        item: DriveItem,
+        itemId: String,
+    ) {
+        val type = item.packageFacet?.type ?: if (item.packageFacet != null) "unknown" else return
+        throw UnsupportedRemoteObjectDownloadException(
+            "OneDrive item $itemId is a package ($type), not a file; refusing to download it",
+            reason = if (type.equals("oneNote", ignoreCase = true)) "a OneNote notebook, not a file" else "a OneDrive package, not a file",
+        )
+    }
+
     private fun isMalwareDetected(body: String?): Boolean = body?.contains("\"code\":\"malwareDetected\"") == true
 
     private fun malwareRefusal(
@@ -267,7 +281,7 @@ class GraphApiService(
         itemId: String,
         destPath: Path,
     ): DownloadedFile {
-        var item = getItemById(itemId).also { refuseIfMalware(it, itemId) }
+        var item = getItemById(itemId).also { refuseIfMalware(it, itemId) }.also { refuseIfPackage(it, itemId) }
         var downloadedBytes = 0L
         var url = item.downloadUrl ?: "${itemUrl(itemId)}/content"
         var authNeeded = item.downloadUrl == null
