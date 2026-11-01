@@ -2513,6 +2513,7 @@ class HydrationImpl(
                 excluded = mount.isExcludedPath(e.path, e.isFolder),
                 readOnly = mount.isReadOnlyPath(e.path),
                 trashRoot = mount.isTrashRoot(e.path),
+                backupsRoot = mount.isBackupsRoot(e.path),
                 blocked =
                     blockedByPath[PathNormalizer.nfc(e.path)]
                         ?: BLOCKED_BY_PARENT.takeIf { e.remoteId == null && blockedFolders.any { f -> e.path.startsWith(f) } },

@@ -148,11 +148,15 @@ class ViewDirectory(
         return ViewPageListing(kind, page, rows, skipped)
     }
 
-    // A row the mount can show for the reference: of the kind it says, inside the tracked scope, outside the trash.
+    // A row the mount can show for the reference: of the kind it says, inside the tracked scope, outside the trash and the backups.
     private fun shows(
         row: SyncEntry,
         ref: ViewRef,
-    ): Boolean = row.isFolder == ref.isFolder && !guard.trash.contains(row.path) && !guard.isOutOfScope(row.path)
+    ): Boolean =
+        row.isFolder == ref.isFolder &&
+            !guard.trash.contains(row.path) &&
+            !guard.backups.contains(row.path) &&
+            !guard.isOutOfScope(row.path)
 
     /** What [path] is in the views. A path that lies in none is [ViewResolution.NotFound]. */
     suspend fun resolve(path: String): ViewResolution {

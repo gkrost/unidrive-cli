@@ -13,6 +13,7 @@ import org.krost.unidrive.Capability
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.authenticateAndLog
+import org.krost.unidrive.engine.BackupsNamespace
 import org.krost.unidrive.engine.ReadOnlyTrashProvider
 import org.krost.unidrive.engine.TrashNamespace
 import org.krost.unidrive.engine.ViewCache
@@ -119,6 +120,11 @@ class DaemonRuntime(
     // The read-only views of the profile (Recents, ...): the virtual folders that list items living elsewhere in the drive.
     // Only a mount daemon shows them; none (the default) leaves every reply as it was.
     private val views: List<ViewSpec> = emptyList(),
+    // Whether the profile shows the account's backups in a read-only folder of their own (BackupsNamespace), and that folder's
+    // name (null = the default, "Backups"). Only a mount daemon whose provider declares Capability.Backups shows them; off
+    // (the default) leaves every listing and reply as it was.
+    private val showBackups: Boolean = false,
+    private val backupsFolderName: String? = null,
     // How long the references of a view are answered as they are before the next listing starts a refresh (a seam for tests).
     private val viewTtlMs: Long = ViewCache.DEFAULT_TTL_MS,
     // How a start that loses the profile lock ends the process (a seam for tests, which cannot exit).
@@ -237,7 +243,8 @@ class DaemonRuntime(
                     specs = if (profileMode == ProfileMode.MOUNT) viewsTheProviderHas(cloud) else emptyList(),
                     topLevelNames = { db?.listDirectChildren("")?.map { it.path.removePrefix("/") } ?: emptyList() },
                 )
-            val provider = ReadOnlyTrashProvider(cloud, trash, viewNamespaces)
+            val backups = BackupsNamespace(backupsFolderName, enabled = showBackups && providerShowsBackups(cloud))
+            val provider = ReadOnlyTrashProvider(cloud, trash, viewNamespaces, backups)
             // archive#578: the flag wins over the profile key, same shape as --poll-interval.
             uploadConcurrencyOverride?.let { n ->
                 if (!provider.overrideUploadConcurrency(n)) {
@@ -309,6 +316,7 @@ class DaemonRuntime(
                 val engine = SyncEngine(
                     provider, db!!, syncRoot = syncRoot, cacheKey = profileName, syncPaths = syncPaths,
                     standingScope = syncPaths, excludePatterns = excludePatterns, trashNamespace = trash, viewNamespaces = viewNamespaces,
+                    backupsNamespace = backups,
                     mountIgnore = ignoreSettings.takeIf { profileMode == ProfileMode.MOUNT },
                     mirrorIgnore = ignoreSettings.takeIf { profileMode != ProfileMode.MOUNT },
                     uploadInFlight = hydrationLink::hasUploadSlot,
@@ -730,6 +738,14 @@ class DaemonRuntime(
                         // by the path it has now, the name it has on disk (suffixed when a live top-level item holds the
                         // configured name) and the name the profile asks for (trash_folder_name).
                         (trash.rootPath()?.let { ",\"trash\":${trashStatusJson(it, trash.configuredName)}" } ?: "") +
+                        // backups: present only while the backups folder exists (the profile shows them and the account has a
+                        // backup device), as trash, with the number of devices listed in it.
+                        (
+                            backups.rootPath()?.let { root ->
+                                val devices = db?.listDirectChildren(root)?.count { it.isFolder } ?: 0
+                                ",\"backups\":${backupsStatusJson(root, backups.configuredName, devices)}"
+                            } ?: ""
+                        ) +
                         // views: present only while the profile shows a read-only view (Recents, ...), one object per view; the
                         // state of each is the last answer the provider gave (nothing here asks it).
                         (hydration?.viewStatuses()?.takeIf { it.isNotEmpty() }?.let { ",\"views\":${viewsStatusJson(it)}" } ?: "") +
@@ -926,6 +942,15 @@ class DaemonRuntime(
         } catch (e: Exception) {
             log.warn("remote change hints are off: the provider's channel did not start ({}); the poll stays", e.javaClass.simpleName)
         }
+    }
+
+    // Whether the backups folder is shown: only on a mount, and only where the provider declares the backups; one INFO line
+    // when the profile asks for it and the provider has none.
+    private fun providerShowsBackups(cloud: CloudProvider): Boolean {
+        if (profileMode != ProfileMode.MOUNT) return false
+        if (Capability.Backups in cloud.capabilities()) return true
+        log.info("The backups folder is not shown: the provider '{}' has no backups", cloud.id)
+        return false
     }
 
     // The views the profile asks for that the provider declares; each one it does not is left out with one INFO line. A provider

@@ -8,6 +8,8 @@
 {"ok":false,"error":"invalid_path"}
 {"verb":"hydration.mkdir","path":"/Papierkorb/Old/newdir"}
 {"ok":false,"error":"read_only"}
+{"verb":"hydration.mkdir","path":"/Backups/Laptop/newdir"}
+{"ok":false,"error":"read_only"}
 {"verb":"hydration.mkdir","path":"/Recents/newdir"}
 {"ok":false,"error":"read_only"}
 {"verb":"hydration.mkdir","path":"/Recents"}

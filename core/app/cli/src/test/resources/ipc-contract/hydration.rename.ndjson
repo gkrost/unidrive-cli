@@ -26,6 +26,10 @@
 {"ok":false,"error":"read_only"}
 {"verb":"hydration.rename","old_path":"/docs/report.txt","new_path":"/Papierkorb/report.txt"}
 {"ok":false,"error":"read_only"}
+{"verb":"hydration.rename","old_path":"/Backups/Laptop/a.txt","new_path":"/docs/renamed.txt"}
+{"ok":false,"error":"read_only"}
+{"verb":"hydration.rename","old_path":"/docs/report.txt","new_path":"/Backups/Laptop/report.txt"}
+{"ok":false,"error":"read_only"}
 {"verb":"hydration.rename","old_path":"/Recents/todo.txt","new_path":"/docs/renamed.txt"}
 {"ok":false,"error":"read_only"}
 {"verb":"hydration.rename","old_path":"/docs/report.txt","new_path":"/Recents/report.txt"}

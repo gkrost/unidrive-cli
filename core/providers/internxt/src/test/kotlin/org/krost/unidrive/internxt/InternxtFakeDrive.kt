@@ -130,6 +130,8 @@ internal class FakeDrive(
     // connect failure with no response).
     val devices: List<String>? = null,
     val deviceStatus: Int? = null,
+    // Of [devices], those the list answers as removed (a device the account no longer shows).
+    val removedDevices: Set<String> = emptySet(),
     // Answers both sync listings with this HTTP status on every request (404: the server does not serve
     // them, and a gather — a poll included, archive#312 — falls back to the offset listing).
     val syncStatus: Int? = null,
@@ -204,7 +206,11 @@ internal class FakeDrive(
                     }
                     if (devices == null) return@MockEngine respond("""{"statusCode":400,"message":"Backups is not enabled for this user"}""", HttpStatusCode.BadRequest, fakeJsonHeaders)
                     val rows = devices.map { uuid -> (folders + metaOnly).last { it.uuid == uuid } }
-                    respondJson(rows.joinToString(",", "[", "]") { fakeFolderJson(it) })
+                    respondJson(
+                        rows.joinToString(",", "[", "]") { row ->
+                            fakeFolderJson(row).let { if (row.uuid in removedDevices) it.replace("\"removed\":false", "\"removed\":true") else it }
+                        },
+                    )
                 }
                 path.endsWith("/drive/folders/sync") -> {
                     syncStatus?.let { return@MockEngine respond("""{"statusCode":$it}""", HttpStatusCode.fromValue(it), fakeJsonHeaders) }

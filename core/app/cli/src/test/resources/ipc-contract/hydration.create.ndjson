@@ -12,6 +12,8 @@
 {"ok":false,"error":"invalid_path"}
 {"verb":"hydration.create","handle_id":"h-2","path":"/Papierkorb/Old/new.txt"}
 {"ok":false,"error":"read_only"}
+{"verb":"hydration.create","handle_id":"h-2","path":"/Backups/Laptop/new.txt"}
+{"ok":false,"error":"read_only"}
 {"verb":"hydration.create","handle_id":"h-3","path":"/Recents/new.txt"}
 {"ok":false,"error":"read_only"}
 {"verb":"hydration.create","path":"/docs/new.txt"}

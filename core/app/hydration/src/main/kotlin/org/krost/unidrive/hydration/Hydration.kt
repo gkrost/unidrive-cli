@@ -281,12 +281,17 @@ sealed class ListResult {
         // it refuses (`blocked_by_parent`). Null for every other row; only serialized on the wire when set.
         val blocked: String? = null,
         // True for the trash namespace's root folder and everything below it: items the provider keeps in its trash, shown
-        // apart from the live tree. They can be read, hydrated and copied out; every write is refused with `read_only`
+        // apart from the live tree; the same for the backups namespace (the account's backup devices) and for a view. They
+        // can be read, hydrated and copied out; every write is refused with `read_only`
         // (see HydrationError.ReadOnly), so a client refuses the action before it asks. Only serialized on the wire when true.
         val readOnly: Boolean = false,
         // True for the root folder of the trash namespace itself (the row with the stable remote id `unidrive:trash`),
         // for a client that labels it and gives it an icon of its own. Only serialized on the wire when true.
         val trashRoot: Boolean = false,
+        // True for the root folder of the backups namespace itself (the row with the stable remote id `unidrive:backups`): the
+        // account's backup devices, read-only like the trash (every entry below it is `readOnly`). Only serialized on the
+        // wire when true.
+        val backupsRoot: Boolean = false,
         // The wire name of the view this entry belongs to (`recents`, ...): the root folder of a read-only view and every entry
         // listed in one. Such an entry is `readOnly` too; its `remoteId` is the view's synthetic key, never the real item's id.
         // Null for every other row; only serialized on the wire when set.

@@ -162,6 +162,15 @@ class InternxtProvider(
     private var backupDevices: Set<String> = emptySet()
     private val backupFolders: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+    // Of [backupDevices], those the account shows (BackupDevice.shown): the devices whose items a listing hands the engine
+    // when it asks for them. [listsBackups]: whether the delta call running now asks (ScanContext.backups); a gather's
+    // assembly takes it when it starts, so every chunk of the gather answers alike.
+    @Volatile
+    private var shownBackupDevices: Set<String> = emptySet()
+
+    @Volatile
+    private var listsBackups: Boolean = false
+
     // UD-364: process-lifetime cache of /files/limits.maxUploadFileSize.
     // Lazy single-flight: first maxFileSizeBytes() call fetches + caches;
     // subsequent calls return cached. Server returns null for "no cap",
@@ -190,6 +199,7 @@ class InternxtProvider(
             Capability.QuotaExact,
             Capability.FastBootstrap,
             Capability.PermanentDelete,
+            Capability.Backups,
             Capability.View(ViewKind.RECENTS),
             Capability.View(ViewKind.FAVORITES),
             Capability.View(ViewKind.SHARED_BY_ME),
@@ -2882,6 +2892,7 @@ class InternxtProvider(
         onPageProgress: ((itemsSoFar: Int) -> Unit)?,
         scanContext: org.krost.unidrive.ScanContext?,
     ): DeltaPage {
+        listsBackups = scanContext?.backups == true
         // The next chunk of a full gather that hands its files over from the staging (see [GatherHandover]): not a poll,
         // whatever the cursor looks like.
         if (cursor != null && cursor.startsWith(GATHER_CURSOR_PREFIX)) return continueGather(cursor, onPageProgress, scanContext)
@@ -3509,6 +3520,12 @@ class InternxtProvider(
         // full gather, and only once a tree of its own is met ([devices]).
         private val backupIds = HashSet<String>()
         private val backupDevicesMet = HashSet<String>()
+
+        // Whether this pass lists the items of the shown devices ([listsBackups] when it started), the ids it listed, and the
+        // devices whose folder it listed with them.
+        private val listBackups = listsBackups
+        private val listedIds = HashSet<String>()
+        private val devicesListed = HashSet<String>()
         private var deviceListing: DeviceListing? = null
         private val censusFiles = HashMap<String, Int>()
         private val censusFolders = HashMap<String, Int>()
@@ -3575,7 +3592,8 @@ class InternxtProvider(
         // What the account says of its backup devices: a full gather asks once, a poll takes the devices the last full
         // gather confirmed ([backupDevices]) and asks nothing.
         private suspend fun devices(): DeviceListing =
-            deviceListing ?: (if (fullGather) readBackupDevices() else DeviceListing.Listed(backupDevices)).also { deviceListing = it }
+            deviceListing
+                ?: (if (fullGather) readBackupDevices() else DeviceListing.Listed(backupDevices, shownBackupDevices)).also { deviceListing = it }
 
         // The devices of this pass whose trees the items hang below: listed and met as the top of a tree of its own. A list
         // that could not be read leaves the devices the last full gather confirmed.
@@ -3587,6 +3605,17 @@ class InternxtProvider(
                     is DeviceListing.Failed -> backupDevices
                 }
             return listed.filterTo(HashSet()) { it in treeTops }
+        }
+
+        // Of the confirmed devices, those the account shows: their items are the ones a pass that lists backups hands over.
+        private suspend fun shownDevices(): Set<String> {
+            val shown =
+                when (val listing = devices()) {
+                    is DeviceListing.Listed -> listing.shown
+                    DeviceListing.NotEnabled -> emptySet()
+                    is DeviceListing.Failed -> shownBackupDevices
+                }
+            return shown.filterTo(HashSet()) { it in treeTops }
         }
 
         // One more item below a tree of its own, counted under the top of that tree.
@@ -3613,11 +3642,12 @@ class InternxtProvider(
             if (treeTops.isNotEmpty()) {
                 log.info(
                     "Internxt delta gather: {} item(s) sit below {} folder(s) outside the drive (trees of their own, such as device backups), " +
-                        "{} of them in {} backup device(s); they are left out and never written to",
+                        "{} of them in {} backup device(s); {} are listed as read-only backups, the rest are left out, and none is written to",
                     outsideIds.size,
                     treeTops.size,
                     backupIds.size,
                     backupDevicesMet.size,
+                    listedIds.size,
                 )
             }
             if (fullGather) {
@@ -3625,8 +3655,10 @@ class InternxtProvider(
                 // What the next writes and polls go by. A list that could not be read leaves the last one.
                 if (treeTops.isEmpty()) {
                     backupDevices = emptySet()
+                    shownBackupDevices = emptySet()
                 } else if (deviceListing !is DeviceListing.Failed) {
                     backupDevices = confirmedDevices()
+                    shownBackupDevices = shownDevices()
                 }
             }
             if (inTrash > 0) {
@@ -3669,28 +3701,37 @@ class InternxtProvider(
                 cursor = cursor,
                 hasMore = false,
                 complete = skipped == 0 && ancestorDrops == 0,
-                unreachableIds = if (outsideIds.isEmpty()) unreachable.ids else unreachable.ids + outsideIds,
+                unreachableIds = if (outsideIds.isEmpty()) unreachable.ids else unreachable.ids + (outsideIds - listedIds),
             )
         }
 
         // The items of a tree of its own got a path at the sync root (`/<device>/...`), where they would be ordinary
         // writable rows and merge by name into a real top-level folder. They are left out and named unreachable: the
         // engine keeps the rows it has, deletes nothing locally, and creates none. Those of a backup device are marked as
-        // backup items ([BackupTrees]) and counted; they are left out all the same.
+        // backup items ([BackupTrees]) and counted. A pass that lists backups ([listBackups]) hands over, marked, those of
+        // a device the account shows, and that device's folder with the first of them; the engine places them apart.
         private suspend fun keepInDrive(placed: List<CloudItem>): List<CloudItem> {
             val outside = outsideDriveItems(placed, treeTops, folderMap, rootUuid)
+            val listed = ArrayList<CloudItem>()
             if (outside.isNotEmpty()) {
                 outsideIds.addAll(outside)
                 val outsideItems = placed.filter { it.id in outside }
                 if (fullGather) outsideItems.forEach(::count)
                 val trees = BackupTrees(confirmedDevices(), folderMap, rootUuid)
+                val shown = if (listBackups) shownDevices() else emptySet()
                 for (item in trees.mark(outsideItems)) {
                     if (!item.backup) continue
                     backupIds.add(item.id)
-                    trees.deviceOf(item)?.let(backupDevicesMet::add)
+                    val device = trees.deviceOf(item) ?: continue
+                    backupDevicesMet.add(device)
+                    if (device !in shown) continue
+                    listed += item
+                    if (item.id == device) devicesListed.add(device)
                 }
+                listed += deviceFolders(listed.mapNotNull(trees::deviceOf))
+                listed.mapTo(listedIds) { it.id }
             }
-            val items = if (outside.isEmpty()) placed else placed.filter { it.id !in outside }
+            val items = if (outside.isEmpty()) placed else placed.filter { it.id !in outside } + listed
             for (item in items) {
                 if (!item.trashed) continue
                 inTrash++
@@ -3698,6 +3739,15 @@ class InternxtProvider(
             }
             return items
         }
+
+        // The folders of [devices] this pass has not listed yet, each a backup item at `/<device>`: the folder the items
+        // below it hang from, which no listing stream returns (it has no parent).
+        private suspend fun deviceFolders(devices: Collection<String>): List<CloudItem> =
+            devices.distinct().filter { devicesListed.add(it) }.mapNotNull { uuid ->
+                folderMap[uuid]
+                    ?.toDeltaCloudItem(folderMap, rootUuid, unfetchableAncestors, fetchAncestor, rowsSeen, nameDecryptor)
+                    ?.copy(backup = true, parentId = null)
+            }
     }
 
     // The ids of the [items] that are the top of a tree of its own ([treeTops]) or hang below one.
@@ -3755,8 +3805,10 @@ class InternxtProvider(
     // The account's backup devices as `GET /backup/deviceAsFolder` answered them: the device folders' uuids (never a
     // name), no backups (HTTP 400 / 404), or a failure, by its HTTP status or exception class only.
     private sealed interface DeviceListing {
+        // [shown]: the devices the account shows (BackupDevice.shown), a subset of [uuids].
         data class Listed(
             val uuids: Set<String>,
+            val shown: Set<String> = uuids,
         ) : DeviceListing
 
         data object NotEnabled : DeviceListing
@@ -3769,7 +3821,9 @@ class InternxtProvider(
     // One read of the device list; a failure is no failure of the gather.
     private suspend fun readBackupDevices(): DeviceListing =
         try {
-            api.getBackupDevices()?.let { list -> DeviceListing.Listed(list.mapTo(LinkedHashSet()) { it.uuid }) } ?: DeviceListing.NotEnabled
+            api.getBackupDevices()?.let { list ->
+                DeviceListing.Listed(list.mapTo(LinkedHashSet()) { it.uuid }, list.filter { it.shown }.mapTo(LinkedHashSet()) { it.uuid })
+            } ?: DeviceListing.NotEnabled
         } catch (ce: kotlinx.coroutines.CancellationException) {
             throw ce
         } catch (e: Exception) {

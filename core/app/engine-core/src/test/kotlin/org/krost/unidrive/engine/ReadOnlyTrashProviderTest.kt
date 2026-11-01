@@ -132,6 +132,43 @@ class ReadOnlyTrashProviderTest {
             )
         }
 
+    // The backups namespace (a second root, the account's backup devices) is refused alike, by path and by id: the device
+    // folder, an item below it, and the root's own key.
+    @Test
+    fun `every write to the backups namespace is refused by path and by id, and reading passes`() =
+        runTest {
+            val backups = BackupsNamespace(enabled = true, ignoreCase = false)
+            val withBackups = ReadOnlyTrashProvider(inner, trash, backups = backups)
+            backups.place(
+                listOf(
+                    CloudItem("dev", "Laptop", "/Laptop", 0, true, null, null, null, null, backup = true),
+                    CloudItem("b1", "a.txt", "/Laptop/a.txt", 1, false, null, null, null, null, parentId = "dev", backup = true),
+                    item("live", "/Live.txt"),
+                ),
+            ) { emptyList() }
+
+            assertFailsWith<BackupsReadOnlyException> { withBackups.upload(local, "/Backups/Laptop/a.txt", existingRemoteId = "b1") }
+            assertFailsWith<BackupsReadOnlyException> { withBackups.upload(local, "/Backups/Laptop/new.txt", existingRemoteId = null) }
+            assertFailsWith<BackupsReadOnlyException> { withBackups.delete("/Backups/Laptop") }
+            assertFailsWith<BackupsReadOnlyException> { withBackups.deletePermanently("/Backups/Laptop/a.txt") }
+            assertFailsWith<BackupsReadOnlyException> { withBackups.createFolder("/Backups/Laptop/sub") }
+            assertFailsWith<BackupsReadOnlyException> { withBackups.createFolders(listOf("/Fine", "/Backups/x")) }
+            assertFailsWith<BackupsReadOnlyException> { withBackups.move("/Live.txt", "/Backups/Live.txt") }
+            assertFailsWith<BackupsReadOnlyException> { withBackups.move("/Backups/Laptop/a.txt", "/a.txt") }
+            // By id, whatever path the call carries: a row not moved yet still names the item by its old place.
+            assertFailsWith<BackupsReadOnlyException> { withBackups.upload(local, "/Laptop/a.txt", existingRemoteId = "b1") }
+            assertFailsWith<BackupsReadOnlyException> { withBackups.deleteById("dev", "/Laptop") }
+            assertFailsWith<BackupsReadOnlyException> { withBackups.deletePermanentlyById("b1", "/Laptop/a.txt") }
+            assertFailsWith<BackupsReadOnlyException> { withBackups.moveById("b1", "/Laptop/a.txt", "/a.txt") }
+            assertFailsWith<BackupsReadOnlyException> { withBackups.deleteById(BackupsNamespace.ROOT_ID, "/anything") }
+            assertEquals(emptyList(), inner.calls, "nothing reached the provider")
+
+            val target = Files.createTempFile("backups-readonly-read", ".bin")
+            withBackups.downloadById("b1", "/Backups/Laptop/a.txt", target)
+            withBackups.upload(local, "/Live.txt", existingRemoteId = "live")
+            assertEquals(listOf("downloadById b1 /Backups/Laptop/a.txt", "upload /Live.txt live"), inner.calls)
+        }
+
     @Test
     fun `while nothing is in the trash the name is free and nothing is refused`() =
         runTest {

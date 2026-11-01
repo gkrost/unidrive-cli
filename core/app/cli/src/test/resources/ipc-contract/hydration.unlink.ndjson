@@ -10,5 +10,7 @@
 {"ok":false,"error":"invalid_path"}
 {"verb":"hydration.unlink","path":"/Papierkorb/Old/a.txt"}
 {"ok":false,"error":"read_only"}
+{"verb":"hydration.unlink","path":"/Backups/Laptop/a.txt"}
+{"ok":false,"error":"read_only"}
 {"verb":"hydration.unlink","path":"/Recents/todo.txt"}
 {"ok":false,"error":"read_only"}
