@@ -6,6 +6,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
+import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -59,6 +60,27 @@ class HydrationDownloadProgressTest {
         assertTrue(events.drop(end).none { it is HydrationEvent.Downloading }, "nothing after the end: $events")
         val done = events.filterIsInstance<HydrationEvent.Downloading>().map { it.bytesDone }
         assertEquals(done.sorted(), done, "the bytes never go back")
+    }
+
+    @Test
+    fun `a provider that restarts its stream does not send the progress back`() = runTest {
+        val (env, stall) = env(this)
+        val events = collect(env)
+        val read = async { env.hydration.openForRead("conn1", "h1", path) }
+        stall.reached.await()
+
+        advanceTimeBy(600)
+        // A retry opens the provider's staging file anew (TRUNCATE_EXISTING): its first byte arrives, then a pause with none.
+        Files.write(stall.stagingFile!!, byteArrayOf(0))
+        advanceTimeBy(500)
+        Files.write(stall.stagingFile!!, ByteArray(0))
+        advanceTimeBy(500)
+        stall.gate.complete(Unit)
+        assertIs<OpenResult.Ok>(read.await())
+
+        val done = events.filterIsInstance<HydrationEvent.Downloading>().map { it.bytesDone }
+        assertTrue(done.size >= 3, "a tick before and two during the retry: $events")
+        assertEquals(done.sorted(), done, "the bytes never go back: $done")
     }
 
     @Test

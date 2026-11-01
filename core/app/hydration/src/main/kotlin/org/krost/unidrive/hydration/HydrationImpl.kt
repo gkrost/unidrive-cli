@@ -2317,6 +2317,8 @@ class HydrationImpl(
 
     // gkrost/unidrive-cli#23: while [wait] runs, a `downloading` event every [downloadProgressIntervalMs] in which a download of
     // [path] runs, for this request ([handleId] of an open_read, null for a hydrate). tryEmit: progress never holds up a read.
+    // The bytes reported are the most this request has seen: a provider that retries opens its staging file anew
+    // (TRUNCATE_EXISTING), and the progress of one request never goes back.
     private suspend fun <T> reportingDownloadProgress(
         path: String,
         handleId: String?,
@@ -2327,10 +2329,12 @@ class HydrationImpl(
         return coroutineScope {
             val ticker =
                 launch {
+                    var bytesDone = 0L
                     while (true) {
                         delay(intervalMs)
                         mount.downloadProgress(path)?.let {
-                            _events.tryEmit(HydrationEvent.Downloading(path, handleId, it.bytesDone, it.bytesTotal))
+                            bytesDone = maxOf(bytesDone, it.bytesDone)
+                            _events.tryEmit(HydrationEvent.Downloading(path, handleId, bytesDone, it.bytesTotal))
                         }
                     }
                 }
