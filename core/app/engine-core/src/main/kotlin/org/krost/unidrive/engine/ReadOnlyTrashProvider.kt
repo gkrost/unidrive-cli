@@ -32,6 +32,10 @@ class ReadOnlyTrashProvider(
 ) : CloudProvider by inner {
     override fun newNameIssue(path: String): String? = inner.newNameIssue(path)
 
+    override fun existingNameIssue(path: String): String? = inner.existingNameIssue(path)
+
+    override val strictNameMode: Boolean? get() = inner.strictNameMode
+
     private fun refuse(path: String) {
         if (trash.contains(path)) throw TrashReadOnlyException(path)
         if (views.contains(path)) throw ViewReadOnlyException(path)

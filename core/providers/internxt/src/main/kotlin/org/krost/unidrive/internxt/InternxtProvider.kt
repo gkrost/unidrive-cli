@@ -1101,6 +1101,12 @@ class InternxtProvider(
     override fun newNameIssue(path: String): String? =
         if (config.strictNames) InternxtNameRules.pathIssue(path)?.let(InternxtNameRules::refusalReason) else null
 
+    // The same rules answer for an item already in the cloud: the whole path is checked, so the children of a folder
+    // the clients would skip are hidden with it.
+    override fun existingNameIssue(path: String): String? = newNameIssue(path)
+
+    override val strictNameMode: Boolean? get() = config.strictNames
+
     private fun refuseIncompatibleName(path: String) {
         val reason = newNameIssue(path) ?: return
         throw org.krost.unidrive.NameRefusedException(

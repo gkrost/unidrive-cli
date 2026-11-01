@@ -72,6 +72,19 @@ class InternxtStrictNamesTest {
     }
 
     @Test
+    fun `an existing cloud name is answered by the same rules, and a folder above it counts`() {
+        val p = provider(strict = true)
+
+        assertEquals("name_incompatible: windows_character", p.existingNameIssue("/a:b"))
+        assertEquals("name_incompatible: trailing_whitespace", p.existingNameIssue("/keep/x "))
+        assertEquals("name_incompatible: windows_character", p.existingNameIssue("/a:b/kid.txt"))
+        assertNull(p.existingNameIssue("/Documents/report.pdf"))
+        assertNull(provider(strict = false).existingNameIssue("/a:b"))
+        assertEquals(true, p.strictNameMode)
+        assertEquals(false, provider(strict = false).strictNameMode)
+    }
+
+    @Test
     fun `with the mode off the same calls reach the drive as before`() =
         runTest {
             val p = provider(strict = false)

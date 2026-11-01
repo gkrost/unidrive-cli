@@ -256,6 +256,20 @@ interface CloudProvider {
      */
     fun newNameIssue(path: String): String? = null
 
+    /**
+     * The reason this provider's own clients would not accept an item that is already in the cloud at [path], decided
+     * without a request; null when they would accept it or when the strict-name mode is off. The gather asks this
+     * before a cloud item is materialised locally: a refused item is quarantined instead — never materialised, never
+     * uploaded over, reported as blocked by name — the way the official client skips it. Default: no such check.
+     */
+    fun existingNameIssue(path: String): String? = null
+
+    /**
+     * Whether this provider runs a strict-name mode (Internxt's `internxt_strict_names`), and whether it is on; null
+     * when the provider has no such mode. `daemon.status` reports it under `provider_health.strict_names`.
+     */
+    val strictNameMode: Boolean? get() = null
+
     suspend fun move(
         fromPath: String,
         toPath: String,
