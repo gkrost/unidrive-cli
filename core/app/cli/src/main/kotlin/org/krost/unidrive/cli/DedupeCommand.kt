@@ -9,6 +9,7 @@ import kotlinx.serialization.json.putJsonObject
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import picocli.CommandLine
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
@@ -17,17 +18,19 @@ import java.nio.file.Path
 import java.util.concurrent.Callable
 
 /**
- * `unidrive [-p <profile>] dedupe [--path P] [--keep newest|largest|id:<id>] [--json]` — lists the duplicate remote
- * items of a profile (two live items of one name in one folder, kept locally under `name (dup-xxxxxxxx).ext`) and what
- * a keep rule would do with each set. A dry run: it reads state.db read-only, calls no provider and changes nothing,
- * whether a daemon runs or not. Removing the other twins is a separate, explicit step that is not part of this command
- * yet.
+ * `unidrive [-p <profile>] dedupe [--path P] [--keep newest|largest|id:<id>] [--apply] [--json]` — lists the duplicate
+ * remote items of a profile (two live items of one name in one folder, kept locally under `name (dup-xxxxxxxx).ext`) and
+ * what a keep rule would do with each set. Without `--apply` a dry run: it reads state.db read-only, calls no provider
+ * and changes nothing, whether a daemon runs or not. With `--apply` (and `--keep`) the members the rule does not keep
+ * go to the provider's trash by their ids ([applyDedupe]).
  */
 @Command(
     name = "dedupe",
     description = [
         "List duplicate remote items (twins kept as 'name (dup-xxxxxxxx).ext') and what a keep rule would do. " +
-            "A dry run: nothing is changed.",
+            "Without --apply a dry run: nothing is changed. With --apply and --keep, the twins the rule does not keep " +
+            "go to the provider's trash by their ids (Internxt, OneDrive, Dropbox; never a permanent delete). " +
+            "--apply needs a mount profile whose daemon is stopped; folder twins are always skipped.",
     ],
     mixinStandardHelpOptions = true,
 )
@@ -45,18 +48,43 @@ class DedupeCommand : Callable<Int> {
     )
     var keep: String? = null
 
+    @Option(
+        names = ["--apply"],
+        description = [
+            "Move the twins the --keep rule does not keep to the provider's trash, by their ids. Needs --keep; " +
+                "refused while a daemon holds the profile, for a mirror profile, and for a provider whose delete is permanent",
+        ],
+    )
+    var apply: Boolean = false
+
     @Option(names = ["--json"], description = ["Print the result (or the refusal) as one JSON object on stdout"])
     var json: Boolean = false
 
-    override fun call(): Int =
-        try {
-            val report = dedupeReport(parent, path, keep)
-            if (json) emitJson(report.json()) else report.consoleLines().forEach(::println)
-            0
-        } catch (e: LifecycleError) {
-            if (json) emitJson(lifecycleErrorJson(e)) else System.err.println("dedupe: ${e.message}")
-            1
+    override fun call(): Int {
+        val keepText = keep
+        if (apply && keepText == null) {
+            refuse(LifecycleError("keep_required", "--apply needs --keep newest|largest|id:<id>: which twin stays is never guessed"))
+            return CommandLine.ExitCode.USAGE
         }
+        return try {
+            if (apply && keepText != null) {
+                val report = applyDedupe(parent, path, keepText)
+                if (json) emitJson(report.json()) else report.consoleLines().forEach(::println)
+                report.exitCode
+            } else {
+                val report = dedupeReport(parent, path, keepText)
+                if (json) emitJson(report.json()) else report.consoleLines().forEach(::println)
+                0
+            }
+        } catch (e: LifecycleError) {
+            refuse(e)
+            dedupeExitCode(e)
+        }
+    }
+
+    private fun refuse(e: LifecycleError) {
+        if (json) emitJson(lifecycleErrorJson(e)) else System.err.println("dedupe: ${e.message}")
+    }
 }
 
 /** The dry run's result: the plan of every duplicate set in scope. */
@@ -72,32 +100,7 @@ internal class DedupeReport(
             put("dry_run", true)
             put("keep", rule?.token)
             put("count", plans.size)
-            putJsonArray("groups") { plans.forEach { add(planJson(it)) } }
-        }
-
-    private fun planJson(plan: DedupePlan): JsonObject =
-        buildJsonObject {
-            put("path", plan.group.path)
-            put("kind", plan.group.kind)
-            put("content", plan.group.content.token)
-            put("action", plan.action)
-            plan.reason?.let { put("reason", it) }
-            plan.keep?.let { put("keep_id", it.id) }
-            if (plan.action == "trash") putJsonArray("trash_ids") { plan.trash.forEach { add(JsonPrimitive(it.id)) } }
-            putJsonArray("members") {
-                for (m in plan.group.members) {
-                    add(
-                        buildJsonObject {
-                            put("id", m.id)
-                            put("local_path", m.localPath)
-                            put("canonical", m.canonical)
-                            put("folder", m.isFolder)
-                            put("size", m.size)
-                            put("modified", m.modified?.toString())
-                        },
-                    )
-                }
-            }
+            putJsonArray("groups") { plans.forEach { add(dedupePlanJson(it)) } }
         }
 
     fun consoleLines(): List<String> {
@@ -115,7 +118,7 @@ internal class DedupeReport(
                     }
                 out += "  $role  ${m.id}  ${m.localPath}  ${m.size} B  ${m.modified ?: "?"}"
             }
-            if (plan.action == "skip") out += "  skipped: ${skipText(plan.reason)}"
+            if (plan.action == "skip") out += "  skipped: ${dedupeSkipText(plan.reason)}"
         }
         out += ""
         out +=
@@ -126,15 +129,42 @@ internal class DedupeReport(
             }
         return out
     }
-
-    private fun skipText(reason: String?): String =
-        when (reason) {
-            "folder" -> "a folder twin holds a tree of its own; merge it by hand"
-            "tie" -> "the keep rule names no single member"
-            "modified_unknown" -> "a member has no modification time"
-            else -> reason ?: "unknown"
-        }
 }
+
+/** One set of a dedupe reply: its path, kind, content, planned action and members. */
+internal fun dedupePlanJson(plan: DedupePlan): JsonObject =
+    buildJsonObject {
+        put("path", plan.group.path)
+        put("kind", plan.group.kind)
+        put("content", plan.group.content.token)
+        put("action", plan.action)
+        plan.reason?.let { put("reason", it) }
+        plan.keep?.let { put("keep_id", it.id) }
+        if (plan.action == "trash") putJsonArray("trash_ids") { plan.trash.forEach { add(JsonPrimitive(it.id)) } }
+        putJsonArray("members") {
+            for (m in plan.group.members) {
+                add(
+                    buildJsonObject {
+                        put("id", m.id)
+                        put("local_path", m.localPath)
+                        put("canonical", m.canonical)
+                        put("folder", m.isFolder)
+                        put("size", m.size)
+                        put("modified", m.modified?.toString())
+                    },
+                )
+            }
+        }
+    }
+
+/** Why a set is skipped, in words. */
+internal fun dedupeSkipText(reason: String?): String =
+    when (reason) {
+        "folder" -> "a folder twin holds a tree of its own; merge it by hand"
+        "tie" -> "the keep rule names no single member"
+        "modified_unknown" -> "a member has no modification time"
+        else -> reason ?: "unknown"
+    }
 
 /** Reads the duplicate sets of the `-p` (else default) profile and plans them under [keepText]. Never writes. */
 internal fun dedupeReport(
@@ -144,13 +174,22 @@ internal fun dedupeReport(
 ): DedupeReport {
     val rule = keepText?.let { KeepRule.parse(it) }
     val target = resolveProfileTarget(main, null)
+    return DedupeReport(target.name, rule, planSets(target, pathText, rule))
+}
+
+/** The plan of every duplicate set of [target] at or below [pathText] under [rule]; reads state.db read-only. */
+internal fun planSets(
+    target: ProfileTarget,
+    pathText: String?,
+    rule: KeepRule?,
+): List<DedupePlan> {
     // NFC, the spelling state.db keys its paths in: a decomposed `--path` names the same items.
     val scope = pathText?.let { PathNormalizer.nfc(LsCommand.normalizeLsPath(it)) }
     val groups = DuplicateSets.find(readAliveRows(target.profileDir.resolve("state.db"))).filter { inScope(it, scope) }
     if (rule is KeepRule.ById && groups.none { g -> g.members.any { it.id == rule.id } }) {
         throw LifecycleError("unknown_id", "no duplicate set${scope?.let { " at or below $it" } ?: ""} has a member with the id '${rule.id}'")
     }
-    return DedupeReport(target.name, rule, groups.map { DedupePlan.of(it, rule) })
+    return groups.map { DedupePlan.of(it, rule) }
 }
 
 private fun inScope(
