@@ -517,6 +517,36 @@ class MountEngine private constructor(
 
     internal fun cacheSwapLock(path: String): Mutex = cacheSwapMutexes.computeIfAbsent(PathNormalizer.nfc(path)) { Mutex() }
 
+    // gkrost/unidrive-cli#23: the transfer of the download running for each path (at most one: the hydrate lock), read by
+    // [downloadProgress].
+    private val runningDownloads = java.util.concurrent.ConcurrentHashMap<String, PauseGate.Transfer>()
+
+    /** Bytes done and expected of a running download. */
+    data class DownloadProgress(
+        val bytesDone: Long,
+        val bytesTotal: Long,
+    )
+
+    /**
+     * gkrost/unidrive-cli#23: how far the download of [path] has come, measured from its staging file; null when none runs
+     * (a warm read, a download that has not begun or has ended). [DownloadProgress.bytesTotal] is the size the row holds
+     * (0: unknown).
+     */
+    fun downloadProgress(path: String): DownloadProgress? =
+        runningDownloads[path]?.let { DownloadProgress(it.bytesDone(), it.bytesTotal) }
+
+    // The bytes a download has written so far. The providers stream into a staging file of their own next to the file they
+    // were given (`<name>.unidrive-tmp`, stagingSiblingName) and move it over that file only at the end, so the mount's
+    // staging file stays empty until then: the larger of the two is what has arrived.
+    private fun stagedBytes(staged: Path): Long {
+        val own = runCatching { Files.size(staged) }.getOrDefault(0L)
+        val providers =
+            runCatching {
+                Files.size(staged.resolveSibling(org.krost.unidrive.io.stagingSiblingName(staged.fileName.toString(), PROVIDER_STAGING_SUFFIX)))
+            }.getOrDefault(0L)
+        return maxOf(own, providers)
+    }
+
     // Cloud objects found truncated or refused for their content, remembered so a repeated read or pin is refused
     // without asking the provider (or downloading a refused object again).
     internal val remoteIncomplete = RemoteIncompleteMemory()
@@ -711,8 +741,13 @@ class MountEngine private constructor(
                         transfer.begin()
                         // archive#652: a cold download is a transfer from here on (a warm serve and a refusal for a pause never get here).
                         history?.started()
-                        transfer.measuredBy(entry.remoteSize) { runCatching { Files.size(staged) }.getOrDefault(0L) }
-                        watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged) }
+                        transfer.measuredBy(entry.remoteSize) { stagedBytes(staged) }
+                        runningDownloads[path] = transfer
+                        try {
+                            watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged) }
+                        } finally {
+                            runningDownloads.remove(path, transfer)
+                        }
                     }
                 }
             val downloadedSize = confirmedDownloadSize(path, entry, fetched)
@@ -1852,6 +1887,10 @@ class MountEngine private constructor(
         const val LOCAL_FILE_UNREADABLE = "local_file_unreadable"
         const val METHOD_SIZE = "size"
         const val METHOD_RECORDED_SHA256 = "recorded-sha256"
+
+        // The suffix of a provider's own staging file of a download (StagedDownload and the Internxt, OneDrive and local
+        // providers), see stagedBytes.
+        private const val PROVIDER_STAGING_SUFFIX = ".unidrive-tmp"
     }
 }
 

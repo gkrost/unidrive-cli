@@ -155,6 +155,9 @@ import java.util.concurrent.atomic.AtomicLong
  *   {"event":"uploading","path":"...","handle_id":"...","bytes_done":N,"bytes_total":M}
  *   coalesced to a few per second per file, correlated by the open_write
  *   handle like `completed`.
+ *   Download progress (gkrost/unidrive-cli#23): while a download runs, every open_read and hydrate waiting for it gets
+ *   {"event":"downloading","path":"...","handle_id":"...","bytes_done":N,"bytes_total":M} about twice a second
+ *   (handle_id absent for hydrate; bytes_total 0 when unknown).
  *                            handle_id is OPTIONAL: present → registers a JVM open-set entry (O_TRUNC live open);
  *                            absent → no registration (one-shot setattr/bare-truncate, backward-compatible).
  *
@@ -759,6 +762,10 @@ fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
     is HydrationEvent.Uploading -> {
         """{"event":"uploading","path":${jsonEsc(e.path)},"handle_id":${jsonEsc(e.handleId)},""" +
             """"bytes_done":${e.bytesDone},"bytes_total":${e.bytesTotal}}"""
+    }
+    is HydrationEvent.Downloading -> {
+        val handle = e.handleId?.let { ""","handle_id":${jsonEsc(it)}""" } ?: ""
+        """{"event":"downloading","path":${jsonEsc(e.path)}$handle,"bytes_done":${e.bytesDone},"bytes_total":${e.bytesTotal}}"""
     }
     is HydrationEvent.Failed -> {
         val base = """{"event":"failed","path":${jsonEsc(e.path)},"error":${jsonEsc(e.error.message)}"""

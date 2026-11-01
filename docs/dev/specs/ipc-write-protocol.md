@@ -355,6 +355,7 @@ the provider's name for the bytes of the version the row records:
 | `queued` | `{"event":"queued","path":…}` | upload accepted, waiting for its turn (column: Waiting) |
 | `hydrating` | `{"event":"hydrating","path":…}` | transfer started (upload or download) |
 | `uploading` | `{"event":"uploading","path":…,"handle_id":…,"bytes_done":N,"bytes_total":M}` | upload byte progress, coalesced to a few per second, correlated by handle |
+| `downloading` | `{"event":"downloading","path":…[,"handle_id":…],"bytes_done":N,"bytes_total":M}` | download byte progress, about twice a second for each request waiting for the download (also when no byte arrived since the last one), correlated by the `open_read` handle; no `handle_id` for a `hydrate`; `bytes_total` 0 when the size is unknown. None for a read served from the cache. The request ends with `completed` (open_read) or `hydrated` / `failed`. Pinned by `events/downloading.ndjson` and `events/downloading-hydrate.ndjson` |
 | `hydrated` | `{"event":"hydrated","path":…,"bytes":N}` | the cache copy is complete |
 | `skipped` | `{"event":"skipped","path":…}` | excluded name: accepted, deliberately never uploaded |
 | `dehydrated` | `{"event":"dehydrated","path":…}` | cache copy freed |

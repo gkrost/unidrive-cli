@@ -144,13 +144,19 @@ class PauseGate(
             this.probe = bytesDone
         }
 
+        /** The bytes moved so far: the provider's report, or what [measuredBy] measures now. */
+        fun bytesDone(): Long = probe?.invoke() ?: done
+
+        /** The bytes expected in all; 0 when unknown. */
+        val bytesTotal: Long get() = total
+
         /**
          * Estimated time remaining in ms at the rate so far, or null when it cannot be told (nothing moved yet,
          * or the size is unknown).
          */
         fun etaMs(): Long? {
             val expected = total
-            val moved = probe?.invoke() ?: done
+            val moved = bytesDone()
             if (expected <= 0 || moved <= 0) return null
             if (moved >= expected) return 0
             val elapsedNs = nanoTime() - startedNanos
