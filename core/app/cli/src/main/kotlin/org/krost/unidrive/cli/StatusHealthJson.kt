@@ -228,6 +228,23 @@ internal fun trashStatusJson(
     }
 
 /**
+ * `backups` in `daemon.status` (docs/dev/specs/unidrive-daemon-design.md section 4.3): present only while the read-only backups
+ * folder exists. As `trash`: `root_path`, `folder_name` (suffixed with ` (2)`, ... when a live top-level item or the trash
+ * holds the configured name) and `configured_name`; [devices] is how many backup devices are listed in it.
+ */
+internal fun backupsStatusJson(
+    rootPath: String,
+    configuredName: String,
+    devices: Int,
+): JsonObject =
+    buildJsonObject {
+        put("root_path", rootPath)
+        put("folder_name", rootPath.substringAfterLast('/'))
+        put("configured_name", configuredName)
+        put("devices", devices)
+    }
+
+/**
  * `views` in `daemon.status`: present only while the profile shows at least one read-only view (Recents, ...), one object
  * per view in kind order. `root_path` is where its folder is now, `folder_name` its name on disk (suffixed with ` (2)`, ...
  * when a live top-level item already has the configured name), `configured_name` the name the profile asks for. `entries` and

@@ -71,6 +71,11 @@ class DaemonStatusHealthTest {
         // `internxt_strict_names` stand-in: what daemon.status reports under provider_health.strict_names.
         override var strictNameMode: Boolean? = null
 
+        // The mode's verdict on a name already in the cloud, as the daemon's startup sweep (StrictNameBlocks) asks for it:
+        // while the mode is on, /skipme.txt stays refused, so the seeded name_incompatible block survives the sweep.
+        override fun existingNameIssue(path: String): String? =
+            if (strictNameMode == true && path == "/skipme.txt") "name_incompatible: windows_character" else null
+
         override fun capabilities(): Set<Capability> = emptySet()
 
         override suspend fun authenticate() {}

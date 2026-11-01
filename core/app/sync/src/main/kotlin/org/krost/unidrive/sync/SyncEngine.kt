@@ -177,6 +177,9 @@ open class SyncEngine(
     // The read-only views of the profile (Recents, ...): the virtual folders that list items living elsewhere. The caller that
     // wraps the provider in a ReadOnlyTrashProvider hands the same instance in here, so the wrapper and the guard ask one.
     private val viewNamespaces: org.krost.unidrive.engine.ViewNamespaces = org.krost.unidrive.engine.ViewNamespaces.NONE,
+    // The backups namespace of the profile: the virtual folder that shows the account's backup devices, off unless the host
+    // shows them. The caller that wraps the provider in a ReadOnlyTrashProvider hands the same instance in here.
+    private val backupsNamespace: org.krost.unidrive.engine.BackupsNamespace = org.krost.unidrive.engine.BackupsNamespace(),
     // archive#309: whether the file system of the sync root folds case: asked of it by default, a parameter so a test runs the case
     // policy of either file system on any host. Together with the provider's declaration it makes the profile's case
     // policy (caseFolds).
@@ -212,8 +215,9 @@ open class SyncEngine(
         // are in the cloud. Otherwise PlaceholderManager keeps it as a conflict copy, recorded here.
         placeholder.fileInTheWayGuard = CloudCopyProof(db, provider.hashAlgorithm()) { passRemoteChanges }
         placeholder.onFileKeptAside = { path, copy -> recordFileKeptAside(path, copy) }
-        // The trash namespace exists as a row in state.db from an earlier pass: its root is known from the start.
+        // The trash and backups namespaces exist as rows in state.db from an earlier pass: their roots are known from the start.
         trashNamespace.refresh(db)
+        backupsNamespace.refresh(db)
     }
 
     /**
@@ -354,6 +358,7 @@ open class SyncEngine(
             matchesGlob = { path, pattern -> Reconciler.matchesGlob(path, pattern) },
             ignore = uploadIgnore,
             trash = trashNamespace,
+            backups = backupsNamespace,
             views = viewNamespaces,
         )
 
@@ -538,7 +543,7 @@ open class SyncEngine(
     ): Set<String> = remoteGather.reportCollisions(collisions, dryRun)
 
     /**
-     * The trash namespace is read-only: an action that would send a write for one of its items to the cloud is dropped
+     * The trash and backups namespaces are read-only: an action that would send a write for one of their items to the cloud is dropped
      * (an upload, a delete, a folder, a move), whatever its source: a local edit, a local delete, a file created there.
      * The item is matched by its path, which the namespace owns, and by its id, so that an item whose row still sits at
      * its old place while it moves into the trash does not slip through (a modified file is then moved along by the
@@ -546,12 +551,12 @@ open class SyncEngine(
      * cloud no longer has and local moves are not writes to the cloud and stay.
      */
     private fun dropWritesToTrash(actions: List<SyncAction>): List<SyncAction> {
-        val trash = guard.trash
-        if (trash.rootPath() == null) return actions
+        val namespaces = guard.placedNamespaces
+        if (namespaces.all { it.rootPath() == null }) return actions
         fun held(
             path: String?,
             remoteId: String?,
-        ) = (path != null && guard.isReadOnlyPath(path)) || trash.holdsId(remoteId)
+        ) = (path != null && guard.isReadOnlyPath(path)) || namespaces.any { it.holdsId(remoteId) }
         // The folders around an item that moves into the namespace, which no row tracks: the shell the engine made around a
         // file it downloaded below a trashed folder. The scan found them as new folders of the user's; they are not.
         val shells =
@@ -583,7 +588,7 @@ open class SyncEngine(
                 hit
             }
         if (dropped > 0) {
-            log.info("{} planned write(s) to the read-only trash dropped, e.g. {}", dropped, first)
+            log.info("{} planned write(s) to the read-only trash or backups dropped, e.g. {}", dropped, first)
         }
         return kept
     }
@@ -814,6 +819,7 @@ open class SyncEngine(
         // The last pass's apply may have moved rows out of the trash namespace (a restored folder takes the rows below
         // it along): read it again before this pass plans, or their ids stay refused for one more pass.
         trashNamespace.refresh(db)
+        backupsNamespace.refresh(db)
         // archive#660: a rule file edited, added or removed since the last pass applies to this one.
         mirrorRules?.revalidate()
         val downloaded = AtomicInteger(0)
@@ -2358,6 +2364,7 @@ open class SyncEngine(
                 scopeRoots = trackScope,
                 creatableRoots = remoteGather.creatableScopeRoots(),
                 stagedPage = { after, limit -> db.loadStagedPage(scanId, after, limit) },
+                backups = backupsNamespace.enabled,
             )
 
         suspend fun nextPage(c: String?): DeltaPage {
@@ -2374,9 +2381,10 @@ open class SyncEngine(
             if (!page.complete) {
                 allComplete = false
             }
-            unreachable.addAll(page.unreachableIds)
+            val placed = remoteGather.placeTrashed(page)
+            unreachable.addAll(placed.unreachableIds)
             skippedPaths.addAll(page.skippedPaths)
-            return remoteGather.placeTrashed(page)
+            return placed
         }
 
         fun persistPendingCursor(cursor: String) {
@@ -3335,9 +3343,9 @@ open class SyncEngine(
         }
 
         if (guard.isReadOnlyPath(action.path)) pruneUntrackedShell(action.fromPath)
-        // The trash root moved aside: the merge moved its rows, all of them, and what is at its old place now is the live
-        // folder that took its name.
-        val rowsMoved = action.remoteItem.id == org.krost.unidrive.engine.TrashNamespace.ROOT_ID
+        // A namespace root (the trash's, the backups') moved aside: the merge moved its rows, all of them, and what is at its
+        // old place now is the live folder that took its name.
+        val rowsMoved = org.krost.unidrive.engine.PlacedNamespace.isRootId(action.remoteItem.id)
         if (rowsMoved && db.getEntry(action.fromPath)?.isFolder == true && !Files.exists(oldLocal)) {
             withEchoSuppression(action.fromPath) { Files.createDirectories(oldLocal) }
         }

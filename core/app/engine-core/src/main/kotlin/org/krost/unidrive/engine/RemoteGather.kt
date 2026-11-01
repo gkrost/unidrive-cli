@@ -109,29 +109,47 @@ class RemoteGather(
     val deltaIsFullListing: Boolean get() = provider.deltaIsFullListing
 
     /**
-     * The trash namespace of this profile's guard: the items a provider marks [CloudItem.trashed] are given their place
-     * under it, the root folder is added, and the page goes on as any other. A page without a trashed item is returned as
-     * it is. Every path that gathers pages calls this on each page before it resolves paths and admits items.
+     * The namespaces of this profile's guard: the items a provider marks [CloudItem.trashed] are given their place under
+     * the trash's root, those it marks [CloudItem.backup] under the backups' root, the root folders are added, and the page
+     * goes on as any other. A page without such an item is returned as it is. While the backups are off, a backup item a
+     * provider lists all the same is left out and named unreachable, its row kept. Every path that gathers pages calls this
+     * on each page before it resolves paths, admits items and counts the unreachable ones.
      */
     fun placeTrashed(page: DeltaPage): DeltaPage {
-        val placed = guard.trash.place(page.items, { db.getEntry(it)?.remoteId }) { liveTopLevelNames() }
-        return if (placed === page.items) page else page.copy(items = placed)
+        val from = if (guard.backups.enabled) page else withoutBackups(page)
+        val trackedIdAt: (String) -> String? = { db.getEntry(it)?.remoteId }
+        val trash = guard.trash
+        val inTrash = trash.place(from.items, trackedIdAt) { liveTopLevelNames(TrashNamespace.ROOT_ID, BackupsNamespace.ROOT_ID) }
+        // The backups yield to the trash: its root, placed on this page or kept from an earlier one, holds its name first.
+        val placed =
+            guard.backups.place(inTrash, trackedIdAt, { listOfNotNull(trash.rootPath()?.removePrefix("/")) }) {
+                liveTopLevelNames(BackupsNamespace.ROOT_ID)
+            }
+        return if (placed === page.items) page else from.copy(items = placed)
     }
 
-    // The names of the top-level items state.db holds alive, except the trash root: a collision with one of them is
+    // The page without its backup items, which are named unreachable instead: the engine neither shows nor reaps them.
+    private fun withoutBackups(page: DeltaPage): DeltaPage {
+        if (page.items.none { it.backup }) return page
+        val (backups, rest) = page.items.partition { it.backup }
+        return page.copy(items = rest, unreachableIds = page.unreachableIds + backups.map { it.id })
+    }
+
+    // The names of the top-level items state.db holds alive, except the roots of [except]: a collision with one of them is
     // decided against what the page does not carry too.
-    private fun liveTopLevelNames(): List<String> =
-        db.listDirectChildren("").filter { it.remoteId != TrashNamespace.ROOT_ID }.map { it.path.removePrefix("/") }
+    private fun liveTopLevelNames(vararg except: String): List<String> =
+        db.listDirectChildren("").filter { it.remoteId !in except }.map { it.path.removePrefix("/") }
 
     /**
      * What state.db tracks for [remoteId], for a provider that would otherwise ask the remote for a folder this pass did
      * not change (ScanContext.trackedRow). The parent is the row the folder above holds at the path the row is kept
      * under, not the `parent_uuid` column: the gather does not write that column, and a rename moves the path. Null
      * parent: the top of the drive. No row at all for what the engine cannot vouch for: the folder above is not tracked,
-     * or is the root of the trash namespace, which has no counterpart at the provider.
+     * or is a folder of the trash or the backups namespace of its own, which has no counterpart at the provider (a backup
+     * device's row is never vouched for: the provider must learn from its meta that it is the top of a tree of its own).
      */
     internal fun trackedRow(remoteId: String): CloudItem? {
-        if (TrashNamespace.isOwnKey(remoteId)) return null
+        if (PlacedNamespace.isAnyOwnKey(remoteId)) return null
         val entry = db.getEntryByRemoteId(remoteId) ?: return null
         // archive#491: the gather's key space is NFC; a row may keep its item's own spelling in remote_path.
         val path = PathNormalizer.nfc(entry.remotePath ?: entry.path)
@@ -141,7 +159,7 @@ class RemoteGather(
                 null
             } else {
                 val parent = db.getEntryByRemotePath(parentPath)?.takeIf { it.isFolder } ?: return null
-                parent.remoteId?.takeIf { !TrashNamespace.isOwnKey(it) } ?: return null
+                parent.remoteId?.takeIf { !PlacedNamespace.isAnyOwnKey(it) } ?: return null
             }
         return CloudItem(
             id = remoteId,
@@ -167,8 +185,8 @@ class RemoteGather(
     fun creatableScopeRoots(): Set<String> =
         guard.trackScope.filterTo(LinkedHashSet()) { root -> localFolderExists(root) && !db.hasRemoteRowAtOrBelow(root) }
 
-    /** Reads the place of the trash root from state.db again: its row has appeared, moved or been reaped. */
-    fun refreshTrash() = guard.trash.refresh(db)
+    /** Reads the place of the trash and the backups roots from state.db again: a row has appeared, moved or been reaped. */
+    fun refreshTrash() = guard.placedNamespaces.forEach { it.refresh(db) }
 
     /** archive#115: see the constructor's `localTopAliases`. */
     fun canonicalToLocalTop(remoteChanges: Map<String, CloudItem>): Map<String, String> = localTopAliases(remoteChanges)
@@ -782,6 +800,7 @@ class RemoteGather(
                 onProgress = providerProgress,
                 trackedRow = ::trackedRow,
                 stagedPage = { after, limit -> db.loadStagedPage(scanId, after, limit) },
+                backups = guard.backups.enabled,
             )
 
         suspend fun nextPage(c: String?): DeltaPage {
@@ -800,9 +819,10 @@ class RemoteGather(
             if (!page.complete) {
                 allComplete = false
             }
-            unreachable.addAll(page.unreachableIds)
+            val placed = placeTrashed(page)
+            unreachable.addAll(placed.unreachableIds)
             skippedPaths.addAll(page.skippedPaths)
-            return placeTrashed(page)
+            return placed
         }
 
         // Persist the running completeness flag alongside the cursor.
@@ -885,6 +905,7 @@ class RemoteGather(
                     onProgress = providerProgress,
                     trackedRow = ::trackedRow,
                     stagedPage = { after, limit -> db.loadStagedPage(recoveryScanId, after, limit) },
+                    backups = guard.backups.enabled,
                 )
             suspend fun nextPageRecovery(c: String?): DeltaPage {
                 val p =
@@ -898,9 +919,10 @@ class RemoteGather(
                     }
                 log.debug("Delta (recovery): {} items, hasMore={}", p.items.size, p.hasMore)
                 if (!p.complete) allComplete = false
-                unreachable.addAll(p.unreachableIds)
+                val placed = placeTrashed(p)
+                unreachable.addAll(placed.unreachableIds)
                 skippedPaths.addAll(p.skippedPaths)
-                return placeTrashed(p)
+                return placed
             }
             // Reset all mutable accumulation state for the recovery pass.
             changes = mutableMapOf()
@@ -1433,7 +1455,7 @@ class RemoteGather(
         val changed = java.util.LinkedHashSet<String>()
         val moved = mutableListOf<RemoteMerge.Move>()
         val replaced = mutableListOf<SyncEntry>()
-        moveTrashRoot(guardContext)?.let { move ->
+        for (move in moveNamespaceRoots(guardContext)) {
             moved += move
             changed += move.from
             changed += move.to
@@ -1515,9 +1537,9 @@ class RemoteGather(
                         remotePath = mergedRemotePath(existing, item, renamedFrom != null, remoteOf.takeIf { isAliased }, ownSpelling, twinKey),
                     )
                 }
-            // The root's row never moves alone (see moveTrashRoot): before the upsert, whose row the rename's clean-up at
+            // A root's row never moves alone (see moveNamespaceRoots): before the upsert, whose row the rename's clean-up at
             // the destination would otherwise take.
-            if (renamedFrom != null && item.id == TrashNamespace.ROOT_ID) db.renamePrefix(renamedFrom, realLocalPath)
+            if (renamedFrom != null && PlacedNamespace.isRootId(item.id)) db.renamePrefix(renamedFrom, realLocalPath)
             db.upsertEntry(merged, keepMarks = true)
             clearQuarantineOf(existing)
             reconcileNameBlockOf(merged.path, item)
@@ -1750,17 +1772,18 @@ class RemoteGather(
         return if (byId != null && byId.path != realLocalPath) byId to byId.path else null to null
     }
 
-    // The trash root moved aside: a live item took its name, on this page or an earlier one. Its row and the rows below
-    // it move first, as one rename, whichever chunk carries the root: no page carries all of them, and a live item at the
-    // old path must not merge into the root's row.
-    private fun moveTrashRoot(changes: Map<String, CloudItem>): RemoteMerge.Move? {
-        val to = guard.trash.rootPath() ?: return null
-        if (changes[to]?.id != TrashNamespace.ROOT_ID) return null
-        val from = db.getEntryByRemoteId(TrashNamespace.ROOT_ID)?.path ?: return null
-        if (from == to) return null
-        db.renamePrefix(from, to)
-        return RemoteMerge.Move(from = from, to = to)
-    }
+    // A namespace root (the trash's, the backups') moved aside: a live item took its name, on this page or an earlier one.
+    // Its row and the rows below it move first, as one rename, whichever chunk carries the root: no page carries all of
+    // them, and a live item at the old path must not merge into the root's row.
+    private fun moveNamespaceRoots(changes: Map<String, CloudItem>): List<RemoteMerge.Move> =
+        guard.placedNamespaces.mapNotNull { namespace ->
+            val to = namespace.rootPath() ?: return@mapNotNull null
+            if (changes[to]?.id != namespace.rootId) return@mapNotNull null
+            val from = db.getEntryByRemoteId(namespace.rootId)?.path ?: return@mapNotNull null
+            if (from == to) return@mapNotNull null
+            db.renamePrefix(from, to)
+            RemoteMerge.Move(from = from, to = to)
+        }
 
     /**
      * Folders the cloud renamed or moved take the rows below them along, before the merge. A delta names the folder
@@ -1771,8 +1794,8 @@ class RemoteGather(
      * the mirror moves the files on disk and their rows with them (SyncEngine.applyMoveLocal).
      *
      * Two renames in one delta are not one prefix rewrite. A folder is applied only once the tree it would land in
-     * has left; a tree this pass already moved is not rewritten again. The trash root is one of those renames
-     * ([moveTrashRoot] finds it already gone).
+     * has left; a tree this pass already moved is not rewritten again. A namespace root is one of those renames
+     * ([moveNamespaceRoots] finds it already gone).
      */
     fun moveRenamedFolders(
         remoteChanges: Map<String, CloudItem>,
@@ -1836,8 +1859,8 @@ class RemoteGather(
         val folderOverrides = serverNamedFolders()
         val pending = mutableListOf<PendingFolder>()
         for ((path, item) in remoteChanges) {
-            // The trash root is added below from its own path (moveTrashRoot), not from this map's aliasing.
-            if (!item.isFolder || item.deleted || item.id == TrashNamespace.ROOT_ID) continue
+            // A namespace root is added below from its own path (moveNamespaceRoots), not from this map's aliasing.
+            if (!item.isFolder || item.deleted || PlacedNamespace.isRootId(item.id)) continue
             if (staleDeltaItem(path, item, remoteChanges)) continue
             // A row already at this remote path is this item, already placed. A different row there is an occupant
             // (it may be leaving in this same delta); the id lookup below is still this item's rename.
@@ -1850,18 +1873,21 @@ class RemoteGather(
             val cloudPath = if (path != item.path && DuplicateNames.keyOf(path, item.path) != null) item.path else path
             pending += PendingFolder(item.id, to, cloudPath, row.path)
         }
-        trashLeaving(remoteChanges)?.let { pending += it }
+        for (namespace in guard.placedNamespaces) rootLeaving(namespace, remoteChanges)?.let { pending += it }
         return pending
     }
 
-    // The root moves aside for a live item in this delta. Same condition as moveTrashRoot, so the merge finds it done.
-    private fun trashLeaving(remoteChanges: Map<String, CloudItem>): PendingFolder? {
-        val to = guard.trash.rootPath() ?: return null
+    // A root moves aside for a live item in this delta. Same condition as moveNamespaceRoots, so the merge finds it done.
+    private fun rootLeaving(
+        namespace: PlacedNamespace,
+        remoteChanges: Map<String, CloudItem>,
+    ): PendingFolder? {
+        val to = namespace.rootPath() ?: return null
         val item = remoteChanges[to] ?: return null
-        if (item.id != TrashNamespace.ROOT_ID || item.deleted || !item.isFolder) return null
-        val row = db.getEntryByRemoteId(TrashNamespace.ROOT_ID) ?: return null
+        if (item.id != namespace.rootId || item.deleted || !item.isFolder) return null
+        val row = db.getEntryByRemoteId(namespace.rootId) ?: return null
         if (!row.isFolder || row.path == to) return null
-        return PendingFolder(TrashNamespace.ROOT_ID, to, to, row.path)
+        return PendingFolder(namespace.rootId, to, to, row.path)
     }
 
     // Drops renames whose row is already at the destination (a parent's move put it there) or is gone.
@@ -1925,7 +1951,7 @@ class RemoteGather(
         // Any alive row under the destination, not only a direct child: a nested row can exist with no folder between.
         val kept = db.getEntriesByPrefix("${move.to}/").filter { it.remoteId != null }
         db.renamePrefix(from, move.to, skips)
-        if (move.remoteId != TrashNamespace.ROOT_ID) {
+        if (!PlacedNamespace.isRootId(move.remoteId)) {
             db.rebaseRemotePaths(row.remotePath ?: row.path, move.cloudPath)
             if (move.to != move.cloudPath) db.assignRemotePaths(move.to, move.cloudPath)
         }

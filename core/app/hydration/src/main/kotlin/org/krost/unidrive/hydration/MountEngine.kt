@@ -216,6 +216,9 @@ class MountEngine private constructor(
     /** True when [path] is the root folder of the trash namespace itself. */
     fun isTrashRoot(path: String): Boolean = guard.trash.isRoot(path)
 
+    /** True when [path] is the root folder of the backups namespace itself. */
+    fun isBackupsRoot(path: String): Boolean = guard.backups.isRoot(path)
+
     /** See [RemoteOperationGuard.isExcludedPath]. */
     fun isExcludedPath(
         path: String,

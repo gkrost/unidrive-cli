@@ -33,8 +33,10 @@ import kotlin.test.assertTrue
 class InternxtBackupTreesTest {
     // /Docs (a1) with readme. Two devices that only their metas know: DEV1 with the backed-up folder Documents (B1) and a
     // file in each, DEV2 with one file. PH is a tree of its own the device list does not name, with one file.
-    private fun drive(devices: List<String>? = listOf("DEV1", "DEV2")) =
-        FakeDrive(
+    private fun drive(
+        devices: List<String>? = listOf("DEV1", "DEV2"),
+        removedDevices: Set<String> = emptySet(),
+    ) = FakeDrive(
             listOf(FakeFolder("a1", "Docs", "root", fakeAt("19:30:00")), FakeFolder("B1", "Documents", "DEV1", fakeAt("19:35:00"))),
             listOf(
                 FakeFile("f1", "readme", "a1", fakeAt("19:10:00")),
@@ -51,6 +53,7 @@ class InternxtBackupTreesTest {
                     FakeFolder("PH", "Camera", null, fakeAt("19:02:00")),
                 ),
             devices = devices,
+            removedDevices = removedDevices,
         )
 
     private fun paths(page: DeltaPage) = page.items.map { it.path }.toSet()
@@ -246,4 +249,129 @@ class InternxtBackupTreesTest {
                 assertEquals(null, api.getBackupDevices(), "HTTP $status")
             }
         }
+
+    // ---- the engine asks for the backups (ScanContext.backups): S2 ------------------------------------------------------
+
+    private val backupPaths =
+        setOf("/Laptop", "/Laptop/top.txt", "/Laptop/Documents", "/Laptop/Documents/report.txt", "/Tower", "/Tower/notes.txt")
+
+    @Test
+    fun `a gather asked for the backups hands over the items of each shown device with the device folder, marked`() {
+        val drive = drive()
+        var page: DeltaPage? = null
+
+        val lines = outsideLines { page = internxtProviderOn(drive.engine).delta(null, null, FakeStaging().context().copy(backups = true)) }
+
+        assertEquals(setOf("/Docs", "/Docs/readme.txt") + backupPaths, paths(page!!))
+        val byPath = page!!.items.associateBy { it.path }
+        for (path in backupPaths) assertTrue(byPath.getValue(path).backup, "$path is a backup item")
+        assertFalse(byPath.getValue("/Docs/readme.txt").backup)
+        for ((path, id) in mapOf("/Laptop" to "DEV1", "/Tower" to "DEV2")) {
+            val device = byPath.getValue(path)
+            assertEquals(id, device.id)
+            assertTrue(device.isFolder)
+            assertEquals(null, device.parentId, "a device folder has no parent")
+        }
+        assertEquals("B1", byPath.getValue("/Laptop/Documents/report.txt").parentId)
+        assertEquals(1, page!!.items.count { it.id == "DEV1" }, "each device folder once")
+        assertEquals(setOf("p1"), page!!.unreachableIds, "a tree of its own that is no device stays out")
+        assertTrue(page!!.complete)
+        assertTrue("4 of them in 2 backup device(s); 6 are listed" in lines.single(), lines.single())
+    }
+
+    @Test
+    fun `asking for the backups costs no request more`() =
+        runTest {
+            val drive = drive()
+
+            internxtProviderOn(drive.engine).delta(null, null, FakeStaging().context().copy(backups = true))
+
+            assertEquals(1, drive.deviceRequests.get())
+            assertEquals(listOf("DEV1", "DEV2", "PH"), drive.metaRequests.sorted(), "the device folders come from the metas already asked")
+        }
+
+    // A device the account no longer shows (removed) is not handed over; its tree stays out, and is still never written to.
+    @Test
+    fun `a removed device is not handed over and stays refused`() =
+        runTest {
+            val drive = drive(removedDevices = setOf("DEV2"))
+            val provider = internxtProviderOn(drive.engine)
+
+            val page = provider.delta(null, null, FakeStaging().context().copy(backups = true))
+
+            assertEquals(setOf("/Docs", "/Docs/readme.txt", "/Laptop", "/Laptop/top.txt", "/Laptop/Documents", "/Laptop/Documents/report.txt"), paths(page))
+            assertEquals(setOf("b2", "p1"), page.unreachableIds)
+            val refused = assertFailsWith<ProviderException> { provider.deleteById("b2", "/Tower/notes.txt") }
+            assertTrue("backup device" in refused.message.orEmpty(), refused.message)
+            assertEquals(emptyList(), drive.writes.toList())
+        }
+
+    // A poll asked for the backups hands over the changed items of the devices the last full gather confirmed and shown,
+    // without a device list.
+    @Test
+    fun `a poll asked for the backups hands them over from the devices of the last full gather`() =
+        runTest {
+            val drive = drive(removedDevices = setOf("DEV2"))
+            val provider = internxtProviderOn(drive.engine)
+            provider.delta(null, null, FakeStaging().context().copy(backups = true))
+
+            val poll = provider.delta("2026-07-28T18:00:00.000Z", null, FakeStaging().context().copy(backups = true))
+
+            assertEquals(1, drive.deviceRequests.get(), "the poll asked for no device list")
+            assertTrue(paths(poll).containsAll(setOf("/Laptop", "/Laptop/Documents/report.txt")), paths(poll).toString())
+            assertTrue(poll.items.filter { it.path.startsWith("/Laptop") }.all { it.backup })
+            assertFalse(paths(poll).any { it.startsWith("/Tower") || it.startsWith("/Camera") }, paths(poll).toString())
+        }
+
+    @Test
+    fun `a device the list answers removed, deleted, not live or without backups is not shown`() {
+        assertTrue(org.krost.unidrive.internxt.model.BackupDevice("d").shown, "a field the answer leaves out hides nothing")
+        assertTrue(org.krost.unidrive.internxt.model.BackupDevice("d", status = "EXISTS", hasBackups = true).shown)
+        for (device in listOf(
+            org.krost.unidrive.internxt.model.BackupDevice("d", removed = true),
+            org.krost.unidrive.internxt.model.BackupDevice("d", deleted = true),
+            org.krost.unidrive.internxt.model.BackupDevice("d", status = "TRASHED"),
+            org.krost.unidrive.internxt.model.BackupDevice("d", hasBackups = false),
+        )) {
+            assertFalse(device.shown, device.toString())
+        }
+    }
+
+    // A gather that hands its files over in chunks (a staging it can read back): each device folder comes once, with the
+    // first chunk that carries an item of its device, and every backup item comes marked.
+    @Test
+    fun `a gather handed over in chunks lists each device folder once, with the first of its items`() =
+        runTest {
+            val drive = drive()
+            val provider = internxtProviderOn(drive.engine)
+            provider.gatherChunkRows = 2
+            val staging = FakeStaging()
+            val readBack: (String?, Int) -> List<CloudItem> = { after, limit ->
+                staging.rows.values
+                    .sortedBy { it.id }
+                    .filter { after == null || it.id > after }
+                    .take(limit)
+                    .map { it.copy(path = "/${it.name}", created = null, mimeType = null) }
+            }
+            val context = staging.context().copy(stagedPage = readBack, backups = true)
+
+            val pages = mutableListOf(provider.delta(null, null, context))
+            while (pages.last().hasMore) pages += provider.delta(pages.last().cursor, null, context)
+
+            assertTrue(pages.size > 1, "the files came in chunks: ${pages.size} page(s)")
+            val items = pages.flatMap { it.items }
+            assertEquals(setOf("/Docs", "/Docs/readme.txt") + backupPaths, items.map { it.path }.toSet())
+            for (device in listOf("DEV1", "DEV2")) {
+                assertEquals(1, items.count { it.id == device }, "$device once")
+                val first = pages.indexOfFirst { page -> page.items.any { it.parentId == device || it.id == device } }
+                assertTrue(pages[first].items.any { it.id == device }, "$device comes with the first page that has an item of it")
+            }
+            assertTrue(items.filter { it.path in backupPaths }.all { it.backup })
+            assertEquals(setOf("p1"), pages.last().unreachableIds)
+        }
+
+    @Test
+    fun `the provider declares the backups`() {
+        assertTrue(org.krost.unidrive.Capability.Backups in internxtProviderOn(drive().engine).capabilities())
+    }
 }

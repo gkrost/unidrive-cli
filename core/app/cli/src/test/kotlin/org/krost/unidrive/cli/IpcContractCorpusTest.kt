@@ -338,6 +338,8 @@ class IpcContractCorpusTest {
      * live mount daemon whose provider lists one trashed item. In the second one a live top-level folder already has the
      * default name, so the root takes `Papierkorb (2)` while `configured_name` stays what the profile asks for.
      * The status is asked until the enumeration has landed; run-dependent instants stand in as in the history event.
+     * `sessions/backups-status*.ndjson` are the same for the `backups` object, on a daemon that shows the backups and whose
+     * provider declares them and lists one backup device with one file (and a live `Backups` folder in the second).
      */
     @Test
     fun daemon_status_with_a_trash_matches_corpus_over_live_socket() {
@@ -347,11 +349,17 @@ class IpcContractCorpusTest {
             "trash-status-renamed",
             listOf(CloudItem("live-pk", "Papierkorb", "/Papierkorb", 0, true, null, null, null, null), trashed),
         )
+        val device = listOf(BACKUP_DEVICE, BACKUP_FILE)
+        replayTrashStatus("backups-status", device, section = "backups")
+        replayTrashStatus("backups-status-renamed", listOf(CloudItem("live-b", "Backups", "/Backups", 0, true, null, null, null, null)) + device, "backups")
     }
 
+    // [section]: the object of daemon.status the enumeration must have placed (`trash`, or `backups`, which the daemon then
+    // shows and the stub provider declares).
     private fun replayTrashStatus(
         session: String,
         listing: List<CloudItem>,
+        section: String = "trash",
     ) = runBlocking {
         val pairs = loadSession(session)
         assertEquals(2, pairs.size, "$session: one enumerate and one status")
@@ -364,8 +372,9 @@ class IpcContractCorpusTest {
             dbPath = tempDir.resolve("state.db"),
             syncRoot = tempDir,
             socketPath = socketPath,
-            providerFactory = { StubProvider(listing) },
+            providerFactory = { StubProvider(listing, backups = section == "backups") },
             providerHasQuota = false,
+            showBackups = section == "backups",
         )
         val daemonJob = launch { runtime.start() }
         try {
@@ -388,10 +397,10 @@ class IpcContractCorpusTest {
 
             val (statusRequest, expectedStatus) = pairs[1]
             val expected = Json.parseToJsonElement(expectedStatus) as JsonObject
-            // The enumeration runs after its reply: ask until it has landed (idle, a success instant, the trash placed).
+            // The enumeration runs after its reply: ask until it has landed (idle, a success instant, the folder placed).
             fun JsonObject.section(key: String): JsonObject = getValue(key) as JsonObject
             fun landed(reply: JsonObject): Boolean =
-                "trash" in reply &&
+                section in reply &&
                     (reply.section("enumeration")["state"] as? JsonPrimitive)?.content == "idle" &&
                     reply.section("enumeration")["last_success_at_ms"].let { it != null && it !is JsonNull } &&
                     reply.section("provider_health")["last_contact_ms"].let { it != null && it !is JsonNull }
@@ -1291,46 +1300,6 @@ class IpcContractCorpusTest {
         return lines.chunked(2).map { it[0] to it[1] }
     }
 
-    // ── parse-and-compare ────────────────────────────────────────────────────
-
-    private fun assertJsonMatches(expected: JsonElement, actual: JsonElement, at: String) {
-        when (expected) {
-            is JsonNull -> assertEquals(expected, actual, "$at: expected null")
-            is JsonObject -> {
-                assertTrue(actual is JsonObject, "$at: expected an object, got $actual")
-                assertEquals(expected.keys, actual.keys, "$at: key set mismatch")
-                for ((key, value) in expected) {
-                    val actualValue = actual.getValue(key)
-                    if (key in VOLATILE_FIELDS) {
-                        assertVolatileShape(value, actualValue, "$at.$key")
-                    } else {
-                        assertJsonMatches(value, actualValue, "$at.$key")
-                    }
-                }
-            }
-            is JsonArray -> {
-                assertTrue(actual is JsonArray, "$at: expected an array, got $actual")
-                assertEquals(expected.size, actual.size, "$at: array size mismatch")
-                expected.forEachIndexed { i, element ->
-                    assertJsonMatches(element, actual[i], "$at[$i]")
-                }
-            }
-            is JsonPrimitive -> {
-                assertTrue(actual is JsonPrimitive, "$at: expected a primitive, got $actual")
-                assertEquals(expected.isString, actual.isString, "$at: string-vs-literal mismatch")
-                assertEquals(expected.content, actual.content, "$at: value mismatch")
-            }
-        }
-    }
-
-    // Volatile fields carry run- or machine-dependent values (uuids, uptimes,
-    // local cache paths): the corpus value is representative, so pin only
-    // presence + JSON type, never the exact bytes.
-    private fun assertVolatileShape(expected: JsonElement, actual: JsonElement, at: String) {
-        assertTrue(expected is JsonPrimitive && actual is JsonPrimitive, "$at: volatile field must be a primitive")
-        assertEquals(expected.isString, actual.isString, "$at: volatile field type mismatch")
-    }
-
     private suspend fun readFirstLine(channel: SocketChannel, timeoutMs: Long): String {
         val collected = StringBuilder()
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -1373,8 +1342,8 @@ class IpcContractCorpusTest {
      * the it's-a-folder family, `/docs/open.txt` → busy, `/docs/nonempty` →
      * not_empty, `/docs/report.txt` → an existing file, `/outside...` →
      * outside_scope (sync_path guard), `/excluded/...` → accepted with
-     * excluded:true (keep-local rule), `/Papierkorb...` and `/Recents...` → the read-only trash
-     * namespace and the Recents view (every write answers read_only), an open_write cache path outside
+     * excluded:true (keep-local rule), `/Papierkorb...`, `/Backups...` and `/Recents...` → the read-only trash
+     * namespace, the read-only backups namespace and the Recents view (every write answers read_only), an open_write cache path outside
      * `/cache/unidrive/hydration` → invalid_path.
      */
     private class ScriptedHydration : Hydration {
@@ -1522,7 +1491,8 @@ class IpcContractCorpusTest {
                     ),
                 )
             } else if (prefix == "/") {
-                // The top level of a mount with a trash: a live file, and the trash root (its remote_id is the stable key).
+                // The top level of a mount with a trash and backups: a live file, the trash root and the backups root (their
+                // remote_ids are the stable keys).
                 ListResult.Ok(
                     listOf(
                         ListResult.Entry(
@@ -1534,6 +1504,11 @@ class IpcContractCorpusTest {
                             "/Papierkorb", 0, FIXED_MTIME_MS, isHydrated = false, isFolder = true,
                             remoteModifiedEpochMillis = FIXED_REMOTE_MS, remoteId = "unidrive:trash", etag = null,
                             pendingUpload = false, hasError = false, readOnly = true, trashRoot = true,
+                        ),
+                        ListResult.Entry(
+                            "/Backups", 0, FIXED_MTIME_MS, isHydrated = false, isFolder = true,
+                            remoteModifiedEpochMillis = null, remoteId = "unidrive:backups", etag = null,
+                            pendingUpload = false, hasError = false, readOnly = true, backupsRoot = true,
                         ),
                     ),
                 )
@@ -1550,6 +1525,17 @@ class IpcContractCorpusTest {
                         viewed("todo.txt", "22222222-todo", "etag-todo", "/Notes/todo.txt"),
                         viewed("todo (dup-33333333).txt", "33333333-todo", "etag-todo-2", "/Work/todo.txt"),
                         viewed("q3.pdf", "11111111-q3", "etag-q3", "/Work/Reports/q3.pdf", size = 2048, hydrated = true),
+                    ),
+                )
+            } else if (prefix == "/Backups") {
+                // Below the backups root: one device folder, read_only, its remote_id the device's own; only the root is the root.
+                ListResult.Ok(
+                    listOf(
+                        ListResult.Entry(
+                            "/Backups/Laptop", 0, FIXED_MTIME_MS, isHydrated = false, isFolder = true,
+                            remoteModifiedEpochMillis = FIXED_REMOTE_MS, remoteId = "rid-device", etag = null,
+                            pendingUpload = false, hasError = false, readOnly = true,
+                        ),
                     ),
                 )
             } else if (prefix == "/Papierkorb") {
@@ -1637,9 +1623,9 @@ class IpcContractCorpusTest {
 
         private fun cachePathFor(path: String): Path = Paths.get("/cache/unidrive/hydration$path")
 
-        // The trash namespace and the Recents view: the root folder and everything below it.
+        // The trash namespace, the backups namespace and the Recents view: the root folder and everything below it.
         private fun readOnly(path: String): Boolean =
-            path == "/Papierkorb" || path.startsWith("/Papierkorb/") || path == "/Recents" || path.startsWith("/Recents/")
+            listOf("/Papierkorb", "/Backups", "/Recents").any { root -> path == root || path.startsWith("$root/") }
 
         private val cacheDir: Path = Paths.get("/cache/unidrive/hydration")
     }
@@ -1650,12 +1636,14 @@ class IpcContractCorpusTest {
      * sync.enumerate are exercised here.
      */
     private class StubProvider(
-        // What the listing reports (empty unless a test puts a trashed item here).
+        // What the listing reports (empty unless a test puts a trashed or a backup item here).
         private val listing: List<CloudItem> = emptyList(),
         // What listView answers per kind; a kind with no entry is one the provider does not have (Unsupported).
         private val viewRefs: Map<ViewKind, List<ViewRef>> = emptyMap(),
         // The kinds the provider declares (Capability.View): those it lists, unless a test declares one it answers Unsupported.
         private val declared: Set<ViewKind> = viewRefs.keys,
+        // Whether it declares the backups (Capability.Backups): the listing's backup items are then its own.
+        private val backups: Boolean = false,
     ) : CloudProvider {
         override val id: String = "stub"
         override val displayName: String = "Stub"
@@ -1665,7 +1653,8 @@ class IpcContractCorpusTest {
         @Volatile
         var viewFailure: Exception? = null
 
-        override fun capabilities(): Set<Capability> = declared.map { Capability.View(it) }.toSet()
+        override fun capabilities(): Set<Capability> =
+            declared.map { Capability.View(it) }.toSet() + if (backups) setOf(Capability.Backups) else emptySet()
 
         // A list longer than the limit is cut, and the answer says so, as a provider does.
         override suspend fun listView(kind: ViewKind, limit: Int): CapabilityResult<List<ViewRef>> {
@@ -1710,11 +1699,55 @@ class IpcContractCorpusTest {
     }
 
     companion object {
-        // cache.bytes: the cache size is measured off the request path, so right after the start it is
-        // either not measured yet (null) or already measured (0 for the empty corpus daemon); the corpus
-        // pins that it is a number-or-null literal, not which of the two a fresh daemon shows.
-        private val VOLATILE_FIELDS = setOf("cache_path", "uptime_ms", "clients_connected", "job_id", "engine_version", "engine_build_time_ms", "bytes", "since_ms", "as_of_ms")
+        // One backup device with one file, as a provider that declares the backups lists them.
+        private val BACKUP_DEVICE = CloudItem("dev-1", "Laptop", "/Laptop", 0, true, null, null, null, null, backup = true)
+        private val BACKUP_FILE = CloudItem("b-1", "a.txt", "/Laptop/a.txt", 1, false, null, null, null, null, parentId = "dev-1", backup = true)
         private const val FIXED_MTIME_MS = 1234567890123L
         private const val FIXED_REMOTE_MS = 1234567890000L
     }
 }
+
+// ── parse-and-compare (outside the test class, which it would make too large) ──
+
+private fun assertJsonMatches(expected: JsonElement, actual: JsonElement, at: String) {
+    when (expected) {
+        is JsonNull -> assertEquals(expected, actual, "$at: expected null")
+        is JsonObject -> {
+            assertTrue(actual is JsonObject, "$at: expected an object, got $actual")
+            assertEquals(expected.keys, actual.keys, "$at: key set mismatch")
+            for ((key, value) in expected) {
+                val actualValue = actual.getValue(key)
+                if (key in VOLATILE_FIELDS) {
+                    assertVolatileShape(value, actualValue, "$at.$key")
+                } else {
+                    assertJsonMatches(value, actualValue, "$at.$key")
+                }
+            }
+        }
+        is JsonArray -> {
+            assertTrue(actual is JsonArray, "$at: expected an array, got $actual")
+            assertEquals(expected.size, actual.size, "$at: array size mismatch")
+            expected.forEachIndexed { i, element ->
+                assertJsonMatches(element, actual[i], "$at[$i]")
+            }
+        }
+        is JsonPrimitive -> {
+            assertTrue(actual is JsonPrimitive, "$at: expected a primitive, got $actual")
+            assertEquals(expected.isString, actual.isString, "$at: string-vs-literal mismatch")
+            assertEquals(expected.content, actual.content, "$at: value mismatch")
+        }
+    }
+}
+
+// Volatile fields carry run- or machine-dependent values (uuids, uptimes,
+// local cache paths): the corpus value is representative, so pin only
+// presence + JSON type, never the exact bytes.
+private fun assertVolatileShape(expected: JsonElement, actual: JsonElement, at: String) {
+    assertTrue(expected is JsonPrimitive && actual is JsonPrimitive, "$at: volatile field must be a primitive")
+    assertEquals(expected.isString, actual.isString, "$at: volatile field type mismatch")
+}
+
+// cache.bytes: the cache size is measured off the request path, so right after the start it is
+// either not measured yet (null) or already measured (0 for the empty corpus daemon); the corpus
+// pins that it is a number-or-null literal, not which of the two a fresh daemon shows.
+private val VOLATILE_FIELDS = setOf("cache_path", "uptime_ms", "clients_connected", "job_id", "engine_version", "engine_build_time_ms", "bytes", "since_ms", "as_of_ms")

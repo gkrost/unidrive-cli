@@ -351,6 +351,19 @@ means there is none.
 | `folder_name` | its name on disk. It differs from `configured_name` (`Papierkorb (2)`, `(3)`, ...) while a live top-level item already has that name: the live item keeps it, and the engine logs the collision once |
 | `configured_name` | the name the profile asks for (`trash_folder_name`, set from the client's language with `profile set`; `Papierkorb` when unset) |
 
+**The `backups` object** (additive; the protocol version does not change) is present only while the read-only backups folder
+exists: the profile shows the account's backups, the provider declares them, and a backup device is in it
+(ipc-write-protocol.md section 4.1). Absent means there is none.
+
+```json
+{"backups": {"root_path": "/Backups", "folder_name": "Backups", "configured_name": "Backups", "devices": 1}}
+```
+
+| field | meaning |
+|---|---|
+| `root_path`, `folder_name`, `configured_name` | as for `trash`; the root's `hydration.list` entry carries `backups_root:true`, and the name differs from `configured_name` while a live top-level item or the trash folder has it. `Backups` when unset |
+| `devices` | how many backup devices the folder lists |
+
 **The `views` array** (additive; the protocol version does not change) is present only while the profile shows at least one
 read-only view (ipc-write-protocol.md section 4.2), and `capabilities` lists `views` then (and `view_page`: the daemon answers
 `view.page`, the pages past the folder's list for a front-end's own list); a daemon that shows none answers as

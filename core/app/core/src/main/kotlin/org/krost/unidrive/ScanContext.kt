@@ -65,6 +65,11 @@ package org.krost.unidrive
  * engine keeps no staging for the pass (a preview, a scan context a test builds): the provider then holds what it needs,
  * as it did before.
  *
+ * [backups] is true when the engine shows the account's backups under a read-only folder of its own: a provider that
+ * declares [Capability.Backups] then lists the items of the backup devices it shows, each marked [CloudItem.backup] with the
+ * path it has below its device (`/<device>/...`), and the device folders themselves. False (the default): it leaves them
+ * out, as every listing without the question does.
+ *
  * Providers that don't have a resume story (snapshot-once APIs, all-in-one
  * recursive listings) leave [ScanContext] unset on `delta()` and continue
  * accumulating in memory as before.
@@ -79,6 +84,7 @@ data class ScanContext(
     val onProgress: ((ScanProgress) -> Unit)? = null,
     val trackedRow: ((remoteId: String) -> CloudItem?)? = null,
     val stagedPage: ((afterId: String?, limit: Int) -> List<CloudItem>)? = null,
+    val backups: Boolean = false,
 )
 
 /**
