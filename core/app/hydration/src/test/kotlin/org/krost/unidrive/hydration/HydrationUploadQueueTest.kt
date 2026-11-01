@@ -640,8 +640,13 @@ class HydrationUploadQueueTest {
         assertIs<RenameResult.Ok>(env.hydration.rename("/docs/.save-tmp", "/docs/target.txt", replace = true))
         advanceUntilIdle()
 
-        assertEquals(listOf("/docs/target.txt"), env.syncEngine.deletedPaths(), "the replace destination is deleted")
-        assertEquals(listOf("/docs/.save-tmp" to "/docs/target.txt"), env.syncEngine.movedPairs(), "the source is moved")
+        // #182: the old target moves aside, the source takes its name, and only then the old target is deleted.
+        assertEquals(listOf("/docs/target.txt.unidrive-replaced"), env.syncEngine.deletedPaths(), "the replace destination is deleted")
+        assertEquals(
+            listOf("/docs/target.txt" to "/docs/target.txt.unidrive-replaced", "/docs/.save-tmp" to "/docs/target.txt"),
+            env.syncEngine.movedPairs(),
+            "the destination moves aside, then the source is moved onto its name",
+        )
         assertEquals("new version", env.syncEngine.remoteContent("/docs/target.txt"))
         collector.cancel()
     }

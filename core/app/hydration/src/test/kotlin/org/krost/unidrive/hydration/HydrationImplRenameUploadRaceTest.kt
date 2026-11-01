@@ -167,9 +167,14 @@ class HydrationImplRenameUploadRaceTest {
         assertEquals(RenameResult.Ok, rig.impl.rename("/tmp.txt", "/target.txt", replace = true))
 
         assertEquals(
-            listOf("upload:/tmp.txt=NEW", "delete:/target.txt", "move:/tmp.txt->/target.txt"),
+            listOf(
+                "upload:/tmp.txt=NEW",
+                "move:/target.txt->/target.txt.unidrive-replaced",
+                "move:/tmp.txt->/target.txt",
+                "delete:/target.txt.unidrive-replaced",
+            ),
             rig.provider.log,
-            "upload, then delete the destination, then move the uploaded temp over it",
+            "upload, then move the destination aside, move the uploaded temp onto its name, and only then delete it (#182)",
         )
         assertTrue(events.filterIsInstance<HydrationEvent.Completed>().single { it.handleId == "h1" }.ok)
         assertNull(rig.db.getEntry("/tmp.txt"), "no row may be left at the temp path")
@@ -196,7 +201,12 @@ class HydrationImplRenameUploadRaceTest {
         advanceUntilIdle()
         assertEquals(RenameResult.Ok, rig.impl.rename("/src.txt", "/target.txt", replace = true))
         assertEquals(
-            listOf("upload:/target.txt=EDITED", "delete:/target.txt", "move:/src.txt->/target.txt"),
+            listOf(
+                "upload:/target.txt=EDITED",
+                "move:/target.txt->/target.txt.unidrive-replaced",
+                "move:/src.txt->/target.txt",
+                "delete:/target.txt.unidrive-replaced",
+            ),
             rig.provider.log,
         )
     }

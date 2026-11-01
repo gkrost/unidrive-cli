@@ -36,8 +36,9 @@ class HydrationImplRenameTest {
         // simulates a ghost: a row that looks never-uploaded but whose content
         // actually landed on the cloud.
         var ghostItem: CloudItem? = null
-        // Operation order across delete/move — the replace sequence must delete
-        // the destination BEFORE moving the source over it.
+        // Operation order across delete/move — the replace sequence moves the
+        // destination aside, moves the source onto its name, and only then
+        // deletes the old destination (#182).
         val callLog = mutableListOf<String>()
 
         override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
@@ -269,15 +270,17 @@ class HydrationImplRenameTest {
         val result = impl.rename("/a.txt", "/b.txt", replace = true)
 
         assertEquals(RenameResult.Ok, result)
-        assertEquals("/b.txt", provider.lastDeletePath, "the old destination must go through the delete path")
+        assertEquals("/b.txt.unidrive-replaced", provider.lastDeletePath, "the old destination must go through the delete path")
         assertEquals("/a.txt", provider.lastMoveFrom)
         assertEquals("/b.txt", provider.lastMoveTo)
         assertNull(db.getEntry("/a.txt"))
         assertNotNull(db.getEntry("/b.txt"), "the source row now lives at the destination")
     }
 
+    // #182: nothing is deleted before the source's move succeeded; the destination
+    // leaves its name by a rename, which the move back undoes.
     @Test
-    fun `replace deletes the destination before moving the source over it`() = runTest {
+    fun `replace deletes the destination only after moving the source over it`() = runTest {
         val (impl, provider, db) = freshEnv()
         seedFile(db, "/a.txt")
         seedFile(db, "/b.txt")
@@ -286,10 +289,11 @@ class HydrationImplRenameTest {
 
         assertEquals(RenameResult.Ok, result)
         assertEquals(
-            listOf("delete:/b.txt", "move:/a.txt->/b.txt"),
+            listOf("move:/b.txt->/b.txt.unidrive-replaced", "move:/a.txt->/b.txt", "delete:/b.txt.unidrive-replaced"),
             provider.callLog,
-            "delete-then-move: the destination must be gone from the cloud before the source takes its place",
+            "aside-move-delete: the old destination is deleted only once the source holds its name",
         )
+        assertNull(db.getEntry("/b.txt.unidrive-replaced"), "no row is left at the parking name")
     }
 
     @Test
@@ -321,7 +325,7 @@ class HydrationImplRenameTest {
     }
 
     @Test
-    fun `replace over a ghost destination deletes the cloud copy first`() = runTest {
+    fun `replace over a ghost destination deletes the cloud copy after the move`() = runTest {
         val (impl, provider, db) = freshEnv()
         seedFile(db, "/a.txt")
         seedNeverUploadedFile(db, "/b.txt")
@@ -343,9 +347,9 @@ class HydrationImplRenameTest {
         val result = impl.rename("/a.txt", "/b.txt", replace = true)
 
         assertEquals(RenameResult.Ok, result)
-        assertEquals("/b.txt", provider.lastDeletePath, "the ghost's cloud copy must be deleted")
+        assertEquals("/b.txt.unidrive-replaced", provider.lastDeletePath, "the ghost's cloud copy must be deleted")
         assertEquals(
-            listOf("delete:/b.txt", "move:/a.txt->/b.txt"),
+            listOf("move:/b.txt->/b.txt.unidrive-replaced", "move:/a.txt->/b.txt", "delete:/b.txt.unidrive-replaced"),
             provider.callLog,
         )
         assertNull(db.getEntry("/a.txt"))
@@ -353,7 +357,28 @@ class HydrationImplRenameTest {
     }
 
     @Test
-    fun `replace fails cleanly when the destination delete fails`() = runTest {
+    fun `replace fails cleanly when the destination cannot be moved aside`() = runTest {
+        val (impl, provider, db) = freshEnv()
+        seedFile(db, "/a.txt")
+        seedFile(db, "/b.txt")
+        provider.throwOnMove = RuntimeException("cloud refused")
+
+        val result = impl.rename("/a.txt", "/b.txt", replace = true)
+
+        assertTrue(result is RenameResult.Failed, "the rename must fail when the old destination cannot leave its name")
+        assertEquals(listOf("move:/b.txt->/b.txt.unidrive-replaced"), provider.callLog, "the source move must not run")
+        assertNull(provider.lastDeletePath, "nothing may be deleted")
+        // Recoverable state: the destination is untouched (its move failed before
+        // any cloud mutation), the source row is intact at its old path.
+        assertEquals("rid-/b.txt", db.getEntry("/b.txt")?.remoteId)
+        assertNotNull(db.getEntry("/a.txt"))
+    }
+
+    // #182: the source holds the name once its move succeeded; a delete of the
+    // old destination that fails after it leaves that file parked, never lost,
+    // and the replace stands.
+    @Test
+    fun `replace stands when the old destination cannot be deleted after the move`() = runTest {
         val (impl, provider, db) = freshEnv()
         seedFile(db, "/a.txt")
         seedFile(db, "/b.txt")
@@ -361,12 +386,11 @@ class HydrationImplRenameTest {
 
         val result = impl.rename("/a.txt", "/b.txt", replace = true)
 
-        assertTrue(result is RenameResult.Failed, "the rename must fail when the old destination cannot be deleted")
-        assertNull(provider.lastMoveFrom, "the source move must not run after a failed destination delete")
-        // Recoverable state: the destination is untouched (delete failed before
-        // any cloud mutation), the source row is intact at its old path.
-        assertNotNull(db.getEntry("/b.txt"))
-        assertNotNull(db.getEntry("/a.txt"))
+        assertEquals(RenameResult.Ok, result)
+        assertEquals("/a.txt", provider.lastMoveFrom)
+        assertNull(db.getEntry("/a.txt"))
+        assertNotNull(db.getEntry("/b.txt"), "the source row now lives at the destination")
+        assertNotNull(db.getEntry("/b.txt.unidrive-replaced"), "the old destination stays under its parking name")
     }
 
     // POSIX rename(2) onto itself is a no-op success — decided BEFORE any
