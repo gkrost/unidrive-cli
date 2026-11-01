@@ -90,6 +90,38 @@ class InternxtScopedDeltaTest {
             assertTrue(requested.none { it.contains("/sync") }, "no cursor listing either: it always walks the whole account")
         }
 
+    // #22: the engine names the scope roots it may create (a local folder, nothing tracked below it); the full delta lists
+    // such a root as an empty folder and the page stays complete.
+    @Test
+    fun `a scoped full delta lists a scope root the engine may create as empty instead of failing`() =
+        runTest {
+            val engine =
+                MockEngine { request ->
+                    val url = request.url.toString()
+                    if (url.endsWith("/users/usage")) return@MockEngine respond("""{"drive":0}""", HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                    val body =
+                        when {
+                            url.endsWith("/folders/content/root") ->
+                                """{"children":[{"uuid":"inbox","plainName":"_INBOX","status":"EXISTS"}],"files":[]}"""
+                            url.endsWith("/folders/content/inbox") ->
+                                """{"children":[],"files":[{"uuid":"a","plainName":"a","type":"txt","size":"3","status":"EXISTS"}]}"""
+                            else -> error("unexpected request: $url")
+                        }
+                    respond(body, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                }
+
+            val page =
+                provider(engine).delta(
+                    cursor = null,
+                    onPageProgress = null,
+                    scanContext =
+                        ScanContext(null, emptyList(), { _, _ -> }, scopeRoots = listOf("/_INBOX", "/new"), creatableRoots = setOf("/new")),
+                )
+
+            assertEquals(setOf("/_INBOX", "/_INBOX/a.txt"), page.items.map { it.path }.toSet())
+            assertTrue(page.complete)
+        }
+
     // ---- the account-wide listings cut: the tree walk takes over ---------------------------------------------------------
     //
     // /files and /folders page through the whole account with an offset, and on a large account they are slow server-side

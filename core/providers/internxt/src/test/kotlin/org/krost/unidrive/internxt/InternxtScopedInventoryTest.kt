@@ -68,6 +68,24 @@ class InternxtScopedInventoryTest {
         tracked = tracked,
     )
 
+    // #22: the walk given the scope roots the engine may create.
+    private suspend fun runCreatable(
+        roots: List<String>,
+        creatable: Set<String>,
+        listed: MutableList<String> = mutableListOf(),
+    ) = InternxtProvider.collectScopedInventoryImpl(
+        getContents = { uuid ->
+            synchronized(listed) { listed += uuid }
+            tree[uuid] ?: error("unexpected uuid $uuid")
+        },
+        driveRootUuid = "root",
+        scopeRoots = roots,
+        scanned = AtomicInteger(0),
+        skipped = AtomicInteger(0),
+        log = log,
+        creatable = creatable,
+    )
+
     private fun paths(inv: ScopedInventory): Set<String> {
         val folderMap = inv.folders.associateBy { it.uuid }
         val folderPaths = inv.folders.map { InternxtProvider.buildFolderPath(it.uuid, folderMap, "root")!! }
@@ -123,6 +141,40 @@ class InternxtScopedInventoryTest {
         runTest {
             val e = assertFailsWith<ProviderException> { run(listOf("/_INBOX/nope")) }
             assertTrue("/_INBOX/nope" in e.message!! && "nope" in e.message!!)
+        }
+
+    @Test
+    fun `a missing scope root the engine may create is an empty folder and the other roots are walked`() =
+        runTest {
+            val listed = mutableListOf<String>()
+
+            val inv = runCreatable(listOf("/_INBOX", "/new"), setOf("/new"), listed)
+
+            assertEquals(setOf("/_INBOX", "/_INBOX/sub", "/_INBOX/a.txt", "/_INBOX/sub/deep.txt"), paths(inv))
+            assertEquals(setOf("root", "inbox", "sub"), listed.toSet(), "nothing else is listed for the missing root")
+        }
+
+    @Test
+    fun `a nested scope root the engine may create keeps the folders leading to it that exist`() =
+        runTest {
+            val inv = runCreatable(listOf("/_INBOX/nope/deeper"), setOf("/_INBOX/nope/deeper"))
+
+            assertEquals(setOf("/_INBOX"), paths(inv))
+        }
+
+    @Test
+    fun `a missing scope root the engine may not create still fails beside one it may`() =
+        runTest {
+            val e = assertFailsWith<ProviderException> { runCreatable(listOf("/new", "/typo"), setOf("/new")) }
+            assertEquals("sync_path '/typo' not found on the remote: no folder 'typo'", e.message)
+        }
+
+    @Test
+    fun `a scope root the engine may create that the remote has is walked as before`() =
+        runTest {
+            val inv = runCreatable(listOf("/_INBOX"), setOf("/_INBOX"))
+
+            assertEquals(setOf("/_INBOX", "/_INBOX/sub", "/_INBOX/a.txt", "/_INBOX/sub/deep.txt"), paths(inv))
         }
 
     @Test

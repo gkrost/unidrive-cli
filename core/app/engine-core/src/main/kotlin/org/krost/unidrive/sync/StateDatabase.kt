@@ -1588,6 +1588,24 @@ class StateDatabase(
         }
 
     /**
+     * Whether the alive row at [pathRaw] or one below it carries the id of a remote item, not the `local:` synthetic of a
+     * row that awaits its upload: the remote had something there when the engine last looked. Stops at the first hit.
+     */
+    fun hasRemoteRowAtOrBelow(pathRaw: String): Boolean {
+        if (getEntry(pathRaw)?.remoteId != null) return true
+        return read("hasRemoteRowAtOrBelow") { c ->
+            val prefix = PathNormalizer.nfc(pathRaw).trimEnd('/') + "/"
+            c
+                .prepareStatement(
+                    "SELECT 1 FROM alive_entries WHERE ${underPrefix(prefix)} AND remote_id IS NOT NULL AND remote_id NOT GLOB 'local:*' LIMIT 1",
+                ).use { stmt ->
+                    stmt.bindPrefix(1, prefix)
+                    return stmt.executeQuery().next()
+                }
+        }
+    }
+
+    /**
      * Insert a folder row representing a freshly-created cloud folder.
      * No-op (idempotent) if a row at [path] already exists. Defaults:
      * is_folder = true, is_hydrated = false, local_mtime / local_size = null,

@@ -3082,7 +3082,7 @@ class InternxtProvider(
             }
         } catch (e: InternxtApiException) {
             if (e.statusCode !in SERVER_UNAVAILABLE_STATUSES) throw e
-            return unavailableListingFallback(e, cursor, scopeRoots, onPageProgress, onProgress, combinedTotal())
+            return unavailableListingFallback(e, cursor, scopeRoots, onPageProgress, onProgress, combinedTotal(), scanContext?.creatableRoots.orEmpty())
         }
         // The cheap listing answered: an earlier run of failures is over (archive#463).
         if (cursor != null) incrementalUnavailableSince.set(null)
@@ -3123,6 +3123,7 @@ class InternxtProvider(
         onPageProgress: ((itemsSoFar: Int) -> Unit)?,
         onProgress: ((ScanProgress) -> Unit)?,
         itemsSoFar: Int,
+        creatableRoots: Set<String>,
     ): DeltaPage {
         if (cursor != null) {
             // archive#463: an incremental delta is the daemon's poll, and the daemon polls by default. Its
@@ -3146,7 +3147,7 @@ class InternxtProvider(
                 if (scopeRoots.isEmpty()) "" else " of $scopeRoots",
             )
             // An incremental walk does not open the full-gather window (archive#517 R3).
-            return scopedFullDelta(scopeRoots.ifEmpty { listOf("/") }, onPageProgress, onProgress, itemsSoFar)
+            return scopedFullDelta(scopeRoots.ifEmpty { listOf("/") }, onPageProgress, onProgress, itemsSoFar, creatableRoots = creatableRoots)
         }
         // Only a full gather opens the window.
         heavyListingsUnavailableUntil.set(Instant.now().plus(LISTING_UNAVAILABLE_TTL))
@@ -3158,7 +3159,7 @@ class InternxtProvider(
             if (scopeRoots.isEmpty()) "" else " of $scopeRoots",
             heavyListingsUnavailableUntil.get(),
         )
-        return scopedFullDelta(scopeRoots.ifEmpty { listOf("/") }, onPageProgress, onProgress, itemsSoFar)
+        return scopedFullDelta(scopeRoots.ifEmpty { listOf("/") }, onPageProgress, onProgress, itemsSoFar, creatableRoots = creatableRoots)
     }
 
     // The offset gather's DeltaPage: paths for every item, the cursor promoted to the newest
@@ -4275,6 +4276,9 @@ class InternxtProvider(
         // ([TreeMarker.takenOverFrom]); the listing's staged rows are tagged as its own and stay. An incremental walk
         // gets no context.
         scanContext: ScanContext? = null,
+        // The scope roots that may be missing on the remote (ScanContext.creatableRoots); an incremental walk, which gets
+        // no context, is handed them on their own.
+        creatableRoots: Set<String> = scanContext?.creatableRoots.orEmpty(),
     ): DeltaPage {
         val resume = treeResumeOf(scanContext?.resumeMarker, scanContext?.resumedItems.orEmpty(), scopeRoots)
         val takenOverFrom = listingMarkerToCarry(scanContext?.resumeMarker)
@@ -4306,6 +4310,7 @@ class InternxtProvider(
                 },
                 resume = resume,
                 tracked = scanContext?.trackedRow,
+                creatable = creatableRoots,
                 persist =
                     persist?.let { store ->
                         { rows, startsDone -> store(rows, treeMarker(startedAt.toString(), scopeRoots, startsDone, takenOverFrom)) }
@@ -4796,6 +4801,7 @@ class InternxtProvider(
             resume: TreeResume? = null,
             persist: (suspend (rows: List<org.krost.unidrive.CloudItem>, startsDone: Set<String>) -> Unit)? = null,
             tracked: ((String) -> org.krost.unidrive.CloudItem?)? = null,
+            creatable: Set<String> = emptySet(),
         ): ScopedInventory {
             val files = java.util.Collections.synchronizedList(mutableListOf<InternxtFile>())
             val folders = java.util.Collections.synchronizedMap(linkedMapOf<String, InternxtFolder>())
@@ -4897,13 +4903,13 @@ class InternxtProvider(
             report()
 
             val warnedTwins = HashSet<String>()
-            for (root in scopeRoots) {
+            roots@ for (root in scopeRoots) {
                 var current = driveRootUuid
                 for (segment in pathSegments(root)) {
                     val matches = listing(current).children.filter { live(it) && sanitizeName(it.plainName ?: it.name ?: "") == segment }
-                    val child =
-                        scopeSegmentWinner(matches, segment, current, driveRootUuid, tracked)
-                            ?: throw ProviderException("sync_path '$root' not found on the remote: no folder '$segment'")
+                    val child = scopeSegmentWinner(matches, segment, current, driveRootUuid, tracked)
+                    if (child == null) missingScopeRoot(root, segment, creatable, log)
+                    if (child == null) continue@roots
                     if (matches.size > 1 && warnedTwins.add(child.uuid)) {
                         log.warn(
                             "sync_path '{}': {} live folders share the name of one segment ({}); walking {}, the one the gather keeps at that path",
@@ -4928,6 +4934,19 @@ class InternxtProvider(
             }
             for (start in starts) walk(start)
             return ScopedInventory(files.toList(), folders.values.toList())
+        }
+
+        // #22: a scope root the remote lacks. One the engine may create (a local folder, and nothing below it that a remote
+        // item backs) is an empty folder: nothing below it is listed, and the sync creates it from the local side. Any
+        // other is the typo case and fails the gather.
+        private fun missingScopeRoot(
+            root: String,
+            segment: String,
+            creatable: Set<String>,
+            log: org.slf4j.Logger,
+        ) {
+            if (root !in creatable) throw ProviderException("sync_path '$root' not found on the remote: no folder '$segment'")
+            log.info("sync_path '{}' is not on the remote (no folder '{}'); listing it as empty, the sync creates it", root, segment)
         }
 
         // Internxt keeps two live folders of one name in one folder (archive#403). The segment of a scope root they share
