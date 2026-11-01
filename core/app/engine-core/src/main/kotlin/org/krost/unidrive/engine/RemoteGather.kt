@@ -1506,6 +1506,7 @@ class RemoteGather(
             if (renamedFrom != null && item.id == TrashNamespace.ROOT_ID) db.renamePrefix(renamedFrom, realLocalPath)
             db.upsertEntry(merged, keepMarks = true)
             clearQuarantineOf(existing)
+            reconcileNameBlockOf(merged.path, item)
             if (isNewsForTheView(existing, item, merged)) changed += realLocalPath
             if (renamedFrom != null) {
                 moved += RemoteMerge.Move(from = renamedFrom, to = realLocalPath)
@@ -1633,6 +1634,27 @@ class RemoteGather(
     private fun clearQuarantineOf(existing: SyncEntry?) {
         if (existing != null && existing.downloadQuarantined && existing.remoteId != null) {
             db.clearDownloadQuarantine(existing.remoteId)
+        }
+    }
+
+    // gkrost/unidrive-cli#29: the strict-name block follows the provider's live answer. A delivery of an item the
+    // official clients accept again (the mode went off, the item was renamed) takes a stale `name_incompatible`
+    // block off the row; one whose name they refuse puts it on, so a settled row is counted and reported too, and
+    // its uploads stay held for as long as the mode keeps the name refused.
+    private fun reconcileNameBlockOf(
+        rowPath: String,
+        item: CloudItem,
+    ) {
+        // A provider without a strict-name mode never writes such a block: no answer to ask for, and no row read per delivered item
+        // (a full gather delivers every item of the drive).
+        if (provider.strictNameMode == null) return
+        val issue = provider.existingNameIssue(item.path)
+        val current = db.nameBlock(rowPath)?.reason
+        val ours = current == null || current.startsWith(org.krost.unidrive.NameRefusedException.NAME_INCOMPATIBLE)
+        when {
+            issue == null && current != null && ours -> db.clearNameBlock(rowPath)
+            // A block of another kind (a too-similar sibling, with the sibling's name) is not ours to overwrite or to lift.
+            issue != null && ours && issue != current -> db.markNameBlocked(rowPath, issue, null)
         }
     }
 

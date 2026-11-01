@@ -665,7 +665,13 @@ class DaemonRuntime(
                         (uploads?.let { ",\"uploads\":${it.toJson()}" } ?: "") + ",\"cache\":${h.cacheHealth().toJson()}"
                     } ?: ""
                     val lastContactMs = lastProviderContactMs(enumerationStatus.lastSuccessAtMs, mount.lastProviderContactAtMs)
-                    val providerHealth = providerHealthJson(lastContactMs)
+                    // strict_names (issue 29): present only for a provider with a strict-name mode; the count reads the rows
+                    // (the same ones `uploads.blocked` lists), so a busy state.db can hold the reply briefly, like any reader.
+                    val providerHealth =
+                        providerHealthJson(
+                            lastContactMs,
+                            provider.strictNameMode?.let { on -> strictNamesStatusJson(on, mount.strictNameBlockedCount()) },
+                        )
                     // credential_health (archive#586): the last offline check, or `expired` at once when the provider rejected the
                     // credentials after the check (a transfer or an enumeration failed authentication and nothing worked since).
                     val credentialHealthJson =

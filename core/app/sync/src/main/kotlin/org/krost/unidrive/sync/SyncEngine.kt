@@ -2793,6 +2793,7 @@ open class SyncEngine(
             }
             return
         }
+        if (quarantineForCloudName(action.path, action.remoteItem.id)) return
         // UD-222: under the new routing (Reconciler), CreatePlaceholder is only emitted for
         //   - folders (mkdir)
         //   - "both new" adopt (local file already matches remote size)
@@ -2920,6 +2921,9 @@ open class SyncEngine(
                 reason = "its name cannot exist in the local file system",
             )
         }
+        // The strict-name quarantine returns, it does not throw: handlePermanentDownloadFailure would restore a
+        // placeholder — materialising the very name the mode refuses to materialise.
+        if (quarantineForCloudName(action.path, action.remoteItem.id)) return
         val localPath = placeholder.resolveLocal(action.path)
         // A download replaces the local bytes only when the file still has the stats the row recorded at scan
         // time. An edit that lands between the scan and this placement (pass 2 queued, a long streaming gather)
@@ -4487,6 +4491,25 @@ open class SyncEngine(
         }
     }
 
+    // `internxt_strict_names`: a cloud item whose name the provider's official clients would not accept is not
+    // materialised — the way their own client skips it. The row is quarantined (the recovery loop and the
+    // unhydrated-row plan skip it thereafter) and marked blocked by name, so `uploads.blocked` and the folder list
+    // report it and its siblings list on. It is not renamed, not deleted, not uploaded over; the flag clears when
+    // the mode goes off and a write settles the row. True when the item was quarantined.
+    private fun quarantineForCloudName(
+        path: String,
+        remoteId: String?,
+    ): Boolean {
+        val reason = provider.existingNameIssue(path) ?: return false
+        log.warn("Not materialising '{}': the official clients would not accept the name ({}) — quarantining row", path, reason)
+        reporter.onWarning("Quarantined: ${path} - ${reason}")
+        if (!remoteId.isNullOrEmpty()) {
+            db.setDownloadQuarantine(remoteId, Instant.now())
+        }
+        db.markNameBlocked(path, reason, null)
+        return true
+    }
+
     private fun handlePermanentUploadFailure(
         action: SyncAction.Upload,
         e: PermanentUploadFailureException,
@@ -4497,6 +4520,11 @@ open class SyncEngine(
         val reason = if (planLimit) "${System.currentTimeMillis() + PLAN_REFUSAL_DELAY_MS}|$PLAN_REFUSAL_TOKEN" else e.message.orEmpty()
         val stamp = "${attrs?.lastModifiedTime()?.toMillis()}|${attrs?.size()}|$reason"
         val recorded = db.markUploadRefused(action.path, stamp, keepCloudBaseline = planLimit && db.getEntry(action.path)?.remoteId != null)
+        // A refusal by the name itself (strict names, a too-similar sibling) is also a name block: the folder list
+        // and `uploads.blocked` report the row, and the local file is not sent again until its name or the mode changes.
+        if (e is org.krost.unidrive.NameRefusedException) {
+            db.markNameBlocked(action.path, e.reason, e.sibling)
+        }
         log.warn(
             "Permanent upload refusal for {}: {}{}",
             action.path,

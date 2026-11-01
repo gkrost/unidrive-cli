@@ -126,10 +126,29 @@ internal fun notificationsStatusJson(status: RemoteChangeChannelStatus?): JsonOb
         put("rotations", status?.rotations ?: 0L)
     }
 
-/** `provider_health`: `last_contact_ms` is null until the provider has answered once since the daemon started. */
-internal fun providerHealthJson(lastContactMs: Long?): JsonObject =
+/** `provider_health`: `last_contact_ms` is null until the provider has answered once since the daemon started. `strict_names` is present only for a provider that runs a strict-name mode (Internxt's `internxt_strict_names`). */
+internal fun providerHealthJson(
+    lastContactMs: Long?,
+    strictNames: JsonObject? = null,
+): JsonObject =
     buildJsonObject {
         put("last_contact_ms", lastContactMs)
+        if (strictNames != null) put("strict_names", strictNames)
+    }
+
+/**
+ * `provider_health.strict_names` (issue 29): the provider's strict-name mode (`on`) and how many names it currently
+ * blocks (`blocked`) — the writes it refused and the cloud items the gather quarantined, the rows behind
+ * `uploads.blocked` whose reason is `name_incompatible`. Zero is a reading, not a default: the mode is on and
+ * nothing is blocked now.
+ */
+internal fun strictNamesStatusJson(
+    on: Boolean,
+    blocked: Int,
+): JsonObject =
+    buildJsonObject {
+        put("on", on)
+        put("blocked", blocked)
     }
 
 /**

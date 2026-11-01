@@ -574,4 +574,11 @@ class FakeCloudProvider : CloudProvider {
     override fun onRemoteChangeHint(callback: () -> Unit) {
         registeredRemoteChangeCallback = callback
     }
+
+    // `internxt_strict_names` stand-ins: the mode `daemon.status` reports, and the paths whose name the provider's
+    // own clients would not accept (CloudProvider.existingNameIssue) — answered before anything is materialised.
+    override var strictNameMode: Boolean? = null
+    val existingNameIssues = mutableMapOf<String, String>()
+
+    override fun existingNameIssue(path: String): String? = existingNameIssues[path]
 }

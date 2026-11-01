@@ -7,6 +7,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -66,6 +67,9 @@ class DaemonStatusHealthTest {
         override val id: String = "stub"
         override val displayName: String = "Stub"
         override var isAuthenticated: Boolean = true
+
+        // `internxt_strict_names` stand-in: what daemon.status reports under provider_health.strict_names.
+        override var strictNameMode: Boolean? = null
 
         override fun capabilities(): Set<Capability> = emptySet()
 
@@ -481,6 +485,53 @@ class DaemonStatusHealthTest {
             val item = status().getValue("uploads").jsonObject.getValue("blocked").jsonObject.getValue("items").jsonArray.single().jsonObject
 
             assertEquals(JsonNull, item.getValue("sibling"))
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    @Test
+    fun `strict_names reports the mode and only the names the mode blocks`() = runBlocking {
+        val provider = FlakyProvider().also { it.strictNameMode = true }
+        StateDatabase(tempDir.resolve("state.db")).also { db ->
+            db.initialize()
+            db.upsertEntry(localRow("/skipme.txt", Instant.now()))
+            db.markNameBlocked("/skipme.txt", "name_incompatible: windows_character", null)
+            db.upsertEntry(localRow("/z.txt", Instant.now()))
+            db.markNameBlocked("/z.txt", "similar_name", null)
+            db.close()
+        }
+        val runtime = runtime(provider)
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath, daemonJob)
+        try {
+            val strictNames = status().getValue("provider_health").jsonObject.getValue("strict_names").jsonObject
+
+            assertEquals(setOf("on", "blocked"), strictNames.keys)
+            assertEquals(true, strictNames.getValue("on").jsonPrimitive.boolean)
+            assertEquals(1L, strictNames.getValue("blocked").jsonPrimitive.long, "only the name_incompatible rows count")
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    @Test
+    fun `a provider without a strict-name mode leaves strict_names out`() = runBlocking {
+        StateDatabase(tempDir.resolve("state.db")).also { db ->
+            db.initialize()
+            db.upsertEntry(localRow("/skipme.txt", Instant.now()))
+            db.markNameBlocked("/skipme.txt", "name_incompatible: windows_character", null)
+            db.close()
+        }
+        val runtime = runtime(FlakyProvider())
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath, daemonJob)
+        try {
+            val providerHealth = status().getValue("provider_health").jsonObject
+
+            assertEquals(setOf("last_contact_ms"), providerHealth.keys)
         } finally {
             runtime.close()
             daemonJob.join()

@@ -2023,6 +2023,20 @@ class StateDatabase(
             return out
         }
 
+    /**
+     * How many alive rows carry a name block whose reason starts with [reasonPrefix]: one counted query, for a status reply that is
+     * asked every few seconds, instead of reading every blocked row. The prefix is compared as text, not as a LIKE pattern.
+     */
+    fun countNameBlocked(reasonPrefix: String): Int =
+        read("countNameBlocked") { c ->
+            c.prepareStatement("SELECT COUNT(*) FROM alive_entries WHERE name_block IS NOT NULL AND substr(name_block, 1, length(?)) = ?").use { stmt ->
+                stmt.setString(1, reasonPrefix)
+                stmt.setString(2, reasonPrefix)
+                val rs = stmt.executeQuery()
+                return if (rs.next()) rs.getInt(1) else 0
+            }
+        }
+
     /** The nearest proper ancestor folder of [pathRaw] that is blocked by name, or null. */
     fun blockedAncestor(pathRaw: String): String? =
         read("blockedAncestor") { c ->
