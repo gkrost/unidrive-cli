@@ -71,6 +71,9 @@ internal class RenameRollForward(
         }
     }
 
+    /** gkrost/unidrive-cli#182: the recorded renames that still owe something (they ran, their cache copy has not followed), by old path. */
+    val owedByOldPath: Map<String, RenameIntent> get() = owed
+
     /**
      * Whether a recorded rename still owes something at [path] after one more try to finish it: the verb on [path] then answers
      * busy. A rename that runs right now owes it until it ends.
