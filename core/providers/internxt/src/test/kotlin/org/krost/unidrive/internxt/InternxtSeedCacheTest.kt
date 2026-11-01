@@ -14,6 +14,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import org.krost.unidrive.internxt.model.InternxtCredentials
 import java.nio.file.Files
 import java.nio.file.Path
@@ -90,30 +91,17 @@ class InternxtSeedCacheTest {
             bucket = bucket,
         )
 
-    private fun authServiceOf(provider: InternxtProvider): AuthService {
-        val authField = InternxtProvider::class.java.getDeclaredField("authService")
-        authField.isAccessible = true
-        return authField.get(provider) as AuthService
-    }
-
-    private fun setCredentials(
+    // A re-auth as the provider sees one: the stored credentials change and the auth service loads them.
+    private suspend fun storeCredentials(
         provider: InternxtProvider,
         creds: InternxtCredentials,
     ) {
-        val credsField = AuthService::class.java.getDeclaredField("credentials")
-        credsField.isAccessible = true
-        credsField.set(authServiceOf(provider), creds)
+        Files.writeString(tmp.resolve("credentials.json"), Json.encodeToString(InternxtCredentials.serializer(), creds))
+        provider.authService.initialize()
     }
 
     /** The bytes the provider currently holds — the array a replacement or close/logout zeroes. */
-    private fun heldSeed(provider: InternxtProvider): ByteArray {
-        val cachedField = InternxtProvider::class.java.getDeclaredField("cachedSeed")
-        cachedField.isAccessible = true
-        val holder = cachedField.get(provider) ?: throw AssertionError("no seed is held")
-        val seedField = holder.javaClass.getDeclaredField("seed")
-        seedField.isAccessible = true
-        return seedField.get(holder) as ByteArray
-    }
+    private fun heldSeed(provider: InternxtProvider): ByteArray = provider.cachedSeed?.seed ?: throw AssertionError("no seed is held")
 
     /** The seed exactly as the transfer paths receive it: `seedFor` is the single method they call. */
     private fun seedFor(
@@ -125,21 +113,13 @@ class InternxtSeedCacheTest {
         return method.invoke(provider, mnemonic) as ByteArray
     }
 
-    private fun newProvider(): InternxtProvider {
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmp))
-        setCredentials(provider, credentials(mnemonic))
-        val cryptoField = InternxtProvider::class.java.getDeclaredField("crypto")
-        cryptoField.isAccessible = true
-        cryptoField.set(provider, counting)
-        val apiField = InternxtProvider::class.java.getDeclaredField("api")
-        apiField.isAccessible = true
-        val api = apiField.get(provider) as InternxtApiService
-        val httpField = InternxtApiService::class.java.getDeclaredField("httpClient")
-        httpField.isAccessible = true
-        (httpField.get(api) as? HttpClient)?.close()
-        httpField.set(api, HttpClient(MockEngine { request -> handle(request) }))
-        return provider
-    }
+    private fun newProvider(): InternxtProvider =
+        InternxtProvider(
+            InternxtConfig(credentialProtector = null, tokenPath = tmp),
+            httpClient = HttpClient(MockEngine { request -> handle(request) }),
+            credentials = credentials(mnemonic),
+            crypto = counting,
+        )
 
     private fun MockRequestHandleScope.handle(request: HttpRequestData): HttpResponseData {
         val json = headersOf(HttpHeaders.ContentType, "application/json")
@@ -232,7 +212,7 @@ class InternxtSeedCacheTest {
                 val replaced = heldSeed(provider)
                 assertTrue(replaced.any { it != 0.toByte() }, "sanity: a real seed was derived")
 
-                setCredentials(provider, credentials(otherMnemonic))
+                storeCredentials(provider, credentials(otherMnemonic))
                 provider.downloadById(fileUuid, "/two.bin", tmp.resolve("two.bin"))
 
                 assertEquals(2, counting.calls, "the new mnemonic must derive a fresh seed")

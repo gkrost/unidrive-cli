@@ -43,9 +43,6 @@ class InternxtNotificationsSwitchTest {
         Files.writeString(dir.resolve("credentials.json"), Json.encodeToString(InternxtCredentials.serializer(), creds))
     }
 
-    private fun notificationsClientOf(provider: InternxtProvider): Any? =
-        InternxtProvider::class.java.getDeclaredField("notificationsClient").also { it.isAccessible = true }.get(provider)
-
     // A one-shot command (`status`, `ls`, `quota`, one-shot `sync`) registers no remote-change
     // listener, so it must never reach the notifications endpoint: 2026-10-09 every `unidrive status`
     // opened the websocket and printed the endpoint's certificate WARN.
@@ -59,7 +56,7 @@ class InternxtNotificationsSwitchTest {
                 try {
                     provider.authenticate()
                     provider.authenticate()
-                    assertNull(notificationsClientOf(provider), "no listener, no websocket")
+                    assertNull(provider.notificationsClient, "no listener, no websocket")
                 } finally {
                     provider.close()
                 }
@@ -80,7 +77,7 @@ class InternxtNotificationsSwitchTest {
                         if (registerFirst) provider.onRemoteChangeHint { }
                         provider.authenticate()
                         if (!registerFirst) provider.onRemoteChangeHint { }
-                        assertTrue(notificationsClientOf(provider) != null, "registerFirst=$registerFirst: listener present, client started")
+                        assertTrue(provider.notificationsClient != null, "registerFirst=$registerFirst: listener present, client started")
                     } finally {
                         provider.close()
                     }
@@ -113,9 +110,7 @@ class InternxtNotificationsSwitchTest {
                     provider.authenticate()
                     provider.authenticate()
 
-                    val field = InternxtProvider::class.java.getDeclaredField("notificationsClient")
-                    field.isAccessible = true
-                    assertNull(field.get(provider), "no NotificationsClient may be built while switched off")
+                    assertNull(provider.notificationsClient, "no NotificationsClient may be built while switched off")
                     val infos =
                         appender.list.filter { it.level == Level.INFO && it.formattedMessage.contains("Internxt notifications disabled") }
                     assertEquals(1, infos.size, "one INFO line, not one per authenticate(): ${appender.list.map { it.formattedMessage }}")

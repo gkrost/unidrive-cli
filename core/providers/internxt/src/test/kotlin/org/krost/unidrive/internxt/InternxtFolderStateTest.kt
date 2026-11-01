@@ -40,9 +40,6 @@ class InternxtFolderStateTest {
             },
         )
 
-    private fun InternxtProvider.cache(): FolderUuidCache =
-        InternxtProvider::class.java.getDeclaredField("folderCache").also { it.isAccessible = true }.get(this) as FolderUuidCache
-
     // The folder by its name under the root, a folder below it, and an unrelated folder.
     private fun FolderUuidCache.seed() {
         put("root", "Trashed", FOLDER)
@@ -54,12 +51,12 @@ class InternxtFolderStateTest {
     fun `a trashed folder is TRASHED and leaves the folder cache`() =
         runTest {
             val provider = providerAnswering(HttpStatusCode.OK, meta(status = "TRASHED", removed = true))
-            provider.cache().seed()
+            provider.folderCache.seed()
 
             assertEquals(FolderState.TRASHED, provider.folderStateById(FOLDER))
-            assertEquals(null, provider.cache().get("root", "Trashed"), "the walk must not reach the trashed folder by its uuid")
-            assertEquals(null, provider.cache().get(FOLDER, "Sub"), "nor a folder below it")
-            assertEquals("other-uuid", provider.cache().get("root", "Other"), "an unrelated folder stays cached")
+            assertEquals(null, provider.folderCache.get("root", "Trashed"), "the walk must not reach the trashed folder by its uuid")
+            assertEquals(null, provider.folderCache.get(FOLDER, "Sub"), "nor a folder below it")
+            assertEquals("other-uuid", provider.folderCache.get("root", "Other"), "an unrelated folder stays cached")
         }
 
     @Test
@@ -79,10 +76,10 @@ class InternxtFolderStateTest {
     fun `a live folder is LIVE and stays cached`() =
         runTest {
             val provider = providerAnswering(HttpStatusCode.OK, meta())
-            provider.cache().seed()
+            provider.folderCache.seed()
 
             assertEquals(FolderState.LIVE, provider.folderStateById(FOLDER))
-            assertEquals(FOLDER, provider.cache().get("root", "Trashed"))
+            assertEquals(FOLDER, provider.folderCache.get("root", "Trashed"))
         }
 
     // A degraded gateway (archive#387) answers the meta with a 503: that proves nothing, so it is no answer at all.
@@ -90,10 +87,10 @@ class InternxtFolderStateTest {
     fun `a 503 is not an answer and leaves the cache as it is`() =
         runTest {
             val provider = providerAnswering(HttpStatusCode.ServiceUnavailable, """{"error":"gateway"}""")
-            provider.cache().seed()
+            provider.folderCache.seed()
 
             assertFails { provider.folderStateById(FOLDER) }
-            assertEquals(FOLDER, provider.cache().get("root", "Trashed"))
+            assertEquals(FOLDER, provider.folderCache.get("root", "Trashed"))
         }
 
     private companion object {

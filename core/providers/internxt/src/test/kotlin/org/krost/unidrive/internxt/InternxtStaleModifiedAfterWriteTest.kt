@@ -62,49 +62,35 @@ class InternxtStaleModifiedAfterWriteTest {
         }
     }
 
-    private fun newProviderRooted(tokenPath: java.nio.file.Path): InternxtProvider {
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tokenPath))
-        // No real sleeping between the bounded re-reads of a lagging meta read.
-        provider.modifiedRereadDelaysMs = listOf(0L, 0L, 0L)
-        val authField = InternxtProvider::class.java.getDeclaredField("authService")
-        authField.isAccessible = true
-        val authService = authField.get(provider)
-        val credsField = authService.javaClass.getDeclaredField("credentials")
-        credsField.isAccessible = true
+    private fun newProviderRooted(
+        tokenPath: java.nio.file.Path,
+        engine: io.ktor.client.engine.mock.MockEngine,
+    ): InternxtProvider {
         val payload = """{"exp":9999999999}"""
         val payloadB64 =
             java.util.Base64
                 .getUrlEncoder()
                 .withoutPadding()
                 .encodeToString(payload.toByteArray())
-        credsField.set(
-            authService,
-            org.krost.unidrive.internxt.model.InternxtCredentials(
-                jwt = "header.$payloadB64.signature",
-                mnemonic =
-                    "abandon abandon abandon abandon abandon abandon " +
-                        "abandon abandon abandon abandon abandon about",
-                rootFolderId = "root-folder-uuid",
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = bucket,
-            ),
-        )
-        return provider
-    }
-
-    private fun installMockClientOnProvider(
-        provider: InternxtProvider,
-        engine: MockEngine,
-    ) {
-        val apiField = InternxtProvider::class.java.getDeclaredField("api")
-        apiField.isAccessible = true
-        val api = apiField.get(provider) as InternxtApiService
-        val field = InternxtApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(api) as? io.ktor.client.HttpClient)?.close()
-        field.set(api, io.ktor.client.HttpClient(engine))
+        return InternxtProvider(
+            InternxtConfig(credentialProtector = null, tokenPath = tokenPath),
+            credentials =
+                org.krost.unidrive.internxt.model.InternxtCredentials(
+                    jwt = "header.$payloadB64.signature",
+                    mnemonic =
+                        "abandon abandon abandon abandon abandon abandon " +
+                            "abandon abandon abandon abandon abandon about",
+                    rootFolderId = "root-folder-uuid",
+                    email = "test@example.invalid",
+                    bridgeUser = "bridge-user",
+                    bridgeUserId = "bridge-secret",
+                    bucket = bucket,
+                ),
+            httpClient = io.ktor.client.HttpClient(engine),
+        ).also {
+            // No real sleeping between the bounded re-reads of a lagging meta read.
+            it.modifiedRereadDelaysMs = listOf(0L, 0L, 0L)
+        }
     }
 
     private fun fileJson(
@@ -183,9 +169,8 @@ class InternxtStaleModifiedAfterWriteTest {
     ): org.krost.unidrive.CloudItem {
         var result: org.krost.unidrive.CloudItem? = null
         withTempFile("a.txt", 510, mtime = mtime) { tmp, local ->
-            val provider = newProviderRooted(tmp)
+            val provider = newProviderRooted(tmp, engine)
             try {
-                installMockClientOnProvider(provider, engine)
                 result = provider.upload(local, "/a.txt", existingRemoteId = "file-uuid", onProgress = null)
             } finally {
                 provider.close()
@@ -307,9 +292,8 @@ class InternxtStaleModifiedAfterWriteTest {
             val clock = ServerClock()
             var result: org.krost.unidrive.CloudItem? = null
             withTempFile("a.txt", 510, mtime = Instant.parse(pre)) { tmp, local ->
-                val provider = newProviderRooted(tmp)
+                val provider = newProviderRooted(tmp, replaceEngine(clock) { it.modified(pre, pre) })
                 try {
-                    installMockClientOnProvider(provider, replaceEngine(clock) { it.modified(pre, pre) })
                     result = provider.upload(local, "/a.txt", existingRemoteId = "file-uuid", onProgress = null)
                 } finally {
                     provider.close()
@@ -375,9 +359,8 @@ class InternxtStaleModifiedAfterWriteTest {
                                 else -> error("unexpected URL in adopt test: $url (${request.method})")
                             }
                     }
-                val provider = newProviderRooted(tmp)
+                val provider = newProviderRooted(tmp, engine)
                 try {
-                    installMockClientOnProvider(provider, engine)
                     val result = provider.upload(local, "/notes.txt", existingRemoteId = null, onProgress = null)
 
                     assertEquals("existing-uuid", result.id)
@@ -414,9 +397,8 @@ class InternxtStaleModifiedAfterWriteTest {
         to: String,
     ): org.krost.unidrive.CloudItem {
         val tmp = java.nio.file.Files.createTempDirectory("ud-417-mv-")
-        val provider = newProviderRooted(tmp)
+        val provider = newProviderRooted(tmp, engine)
         try {
-            installMockClientOnProvider(provider, engine)
             return provider.move(from, to)
         } finally {
             provider.close()

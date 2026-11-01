@@ -30,47 +30,32 @@ class InternxtGetMetadataExactMatchTest {
         """{"uuid":"$makefileAmUuid","plainName":"Makefile","type":"am","size":"200",
             "folderUuid":"$folderUuid","status":"EXISTS"}"""
 
-    private fun newProviderRooted(tokenPath: java.nio.file.Path): InternxtProvider {
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tokenPath))
-        val authField = InternxtProvider::class.java.getDeclaredField("authService")
-        authField.isAccessible = true
-        val authService = authField.get(provider)
-        val credsField = authService.javaClass.getDeclaredField("credentials")
-        credsField.isAccessible = true
+    private fun newProviderRooted(
+        tokenPath: java.nio.file.Path,
+        engine: io.ktor.client.engine.mock.MockEngine,
+    ): InternxtProvider {
         val payload = """{"exp":9999999999}"""
         val payloadB64 =
             java.util.Base64
                 .getUrlEncoder()
                 .withoutPadding()
                 .encodeToString(payload.toByteArray())
-        credsField.set(
-            authService,
-            org.krost.unidrive.internxt.model.InternxtCredentials(
-                jwt = "header.$payloadB64.signature",
-                mnemonic =
-                    "abandon abandon abandon abandon abandon abandon " +
-                        "abandon abandon abandon abandon abandon about",
-                rootFolderId = "root-folder-uuid",
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = "6928426c1a2316b856c9ab81",
-            ),
+        return InternxtProvider(
+            InternxtConfig(credentialProtector = null, tokenPath = tokenPath),
+            credentials =
+                org.krost.unidrive.internxt.model.InternxtCredentials(
+                    jwt = "header.$payloadB64.signature",
+                    mnemonic =
+                        "abandon abandon abandon abandon abandon abandon " +
+                            "abandon abandon abandon abandon abandon about",
+                    rootFolderId = "root-folder-uuid",
+                    email = "test@example.invalid",
+                    bridgeUser = "bridge-user",
+                    bridgeUserId = "bridge-secret",
+                    bucket = "6928426c1a2316b856c9ab81",
+                ),
+            httpClient = io.ktor.client.HttpClient(engine),
         )
-        return provider
-    }
-
-    private fun installMockClientOnProvider(
-        provider: InternxtProvider,
-        engine: io.ktor.client.engine.mock.MockEngine,
-    ) {
-        val apiField = InternxtProvider::class.java.getDeclaredField("api")
-        apiField.isAccessible = true
-        val api = apiField.get(provider) as InternxtApiService
-        val field = InternxtApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(api) as? io.ktor.client.HttpClient)?.close()
-        field.set(api, io.ktor.client.HttpClient(engine))
     }
 
     private val requests = mutableListOf<String>()
@@ -109,9 +94,8 @@ class InternxtGetMetadataExactMatchTest {
     ): org.krost.unidrive.CloudItem {
         val tmp = java.nio.file.Files.createTempDirectory("ud-exact-")
         try {
-            val provider = newProviderRooted(tmp)
+            val provider = newProviderRooted(tmp, engineWithSiblings(*filesJson))
             try {
-                installMockClientOnProvider(provider, engineWithSiblings(*filesJson))
                 return provider.getMetadata(path)
             } finally {
                 provider.close()
@@ -195,9 +179,8 @@ class InternxtGetMetadataExactMatchTest {
     ) {
         val tmp = java.nio.file.Files.createTempDirectory("ud-exact-")
         try {
-            val provider = newProviderRooted(tmp)
+            val provider = newProviderRooted(tmp, engineWithSiblings(*filesJson))
             try {
-                installMockClientOnProvider(provider, engineWithSiblings(*filesJson))
                 call(provider)
             } finally {
                 provider.close()

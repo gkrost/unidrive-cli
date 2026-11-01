@@ -72,15 +72,6 @@ class InternxtCursorSkewTest {
         }
     }
 
-    // The provider's server clock on a monotonic clock the test drives.
-    private fun runOn(
-        provider: InternxtProvider,
-        monotonicNanos: () -> Long,
-    ) {
-        val api = InternxtProvider::class.java.getDeclaredField("api").also { it.isAccessible = true }.get(provider)
-        InternxtApiService::class.java.getDeclaredField("serverClock").also { it.isAccessible = true }.set(api, ServerClock(monotonicNanos))
-    }
-
     // A full gather over the cursor listings takes its cursor before it asks anything, so no answer of its own corrects that
     // cursor. Between the last answer and the gather, 90 s pass on the server's clock and on the monotonic one while the client's
     // wall clock moves by milliseconds: the cursor follows the server, whatever the wall clock did in between.
@@ -101,9 +92,9 @@ class InternxtCursorSkewTest {
                         else -> error("unexpected request: ${request.url}")
                     }
                 }
-            val provider = provider(engine)
+            // The provider's server clock on a monotonic clock the test drives.
+            val provider = provider(engine).also { it.api.serverClock = ServerClock { nanos.get() } }
             try {
-                runOn(provider) { nanos.get() }
                 provider.deltaFromLatest(null)
                 nanos.addAndGet(Duration.ofSeconds(90).toNanos())
                 val cursor = provider.delta(null, null, quiet()).cursor

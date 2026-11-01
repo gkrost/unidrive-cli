@@ -34,47 +34,32 @@ class InternxtUploadWritebackTest {
     private val shardUrl = "https://shard-host.invalid/writeback-put"
     private val localFileId = "local-bucket-entry-id" // fileId of what we just uploaded
 
-    private fun newProviderRooted(tokenPath: java.nio.file.Path): InternxtProvider {
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tokenPath))
-        val authField = InternxtProvider::class.java.getDeclaredField("authService")
-        authField.isAccessible = true
-        val authService = authField.get(provider)
-        val credsField = authService.javaClass.getDeclaredField("credentials")
-        credsField.isAccessible = true
+    private fun newProviderRooted(
+        tokenPath: java.nio.file.Path,
+        engine: io.ktor.client.engine.mock.MockEngine,
+    ): InternxtProvider {
         val payload = """{"exp":9999999999}"""
         val payloadB64 =
             java.util.Base64
                 .getUrlEncoder()
                 .withoutPadding()
                 .encodeToString(payload.toByteArray())
-        credsField.set(
-            authService,
-            org.krost.unidrive.internxt.model.InternxtCredentials(
-                jwt = "header.$payloadB64.signature",
-                mnemonic =
-                    "abandon abandon abandon abandon abandon abandon " +
-                        "abandon abandon abandon abandon abandon about",
-                rootFolderId = "root-folder-uuid",
-                email = "test@example.invalid",
-                bridgeUser = "bridge-user",
-                bridgeUserId = "bridge-secret",
-                bucket = "6928426c1a2316b856c9ab81",
-            ),
+        return InternxtProvider(
+            InternxtConfig(credentialProtector = null, tokenPath = tokenPath),
+            credentials =
+                org.krost.unidrive.internxt.model.InternxtCredentials(
+                    jwt = "header.$payloadB64.signature",
+                    mnemonic =
+                        "abandon abandon abandon abandon abandon abandon " +
+                            "abandon abandon abandon abandon abandon about",
+                    rootFolderId = "root-folder-uuid",
+                    email = "test@example.invalid",
+                    bridgeUser = "bridge-user",
+                    bridgeUserId = "bridge-secret",
+                    bucket = "6928426c1a2316b856c9ab81",
+                ),
+            httpClient = io.ktor.client.HttpClient(engine),
         )
-        return provider
-    }
-
-    private fun installMockClientOnProvider(
-        provider: InternxtProvider,
-        engine: io.ktor.client.engine.mock.MockEngine,
-    ) {
-        val apiField = InternxtProvider::class.java.getDeclaredField("api")
-        apiField.isAccessible = true
-        val api = apiField.get(provider) as InternxtApiService
-        val field = InternxtApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(api) as? io.ktor.client.HttpClient)?.close()
-        field.set(api, io.ktor.client.HttpClient(engine))
     }
 
     // Builds a MockEngine whose upload pre-amble succeeds, whose createFile POST
@@ -148,12 +133,8 @@ class InternxtUploadWritebackTest {
                         "bucket":"6928426c1a2316b856c9ab81",
                         "folderUuid":"root-folder-uuid","status":"EXISTS"
                     }]}"""
-                val provider = newProviderRooted(tmp)
+                val provider = newProviderRooted(tmp, engineWithLostCreate(createPosts, folderGets, replacePuts, landed))
                 try {
-                    installMockClientOnProvider(
-                        provider,
-                        engineWithLostCreate(createPosts, folderGets, replacePuts, landed),
-                    )
                     // Upload to the exact name the landed listing reports (deb-x.deb).
                     val result = provider.upload(local, "/deb-x.deb", existingRemoteId = null, onProgress = null)
 
@@ -183,12 +164,8 @@ class InternxtUploadWritebackTest {
                 val folderGets = AtomicInteger(0)
                 val replacePuts = AtomicInteger(0)
                 val empty = """{"children":[],"files":[]}"""
-                val provider = newProviderRooted(tmp)
+                val provider = newProviderRooted(tmp, engineWithLostCreate(createPosts, folderGets, replacePuts, empty))
                 try {
-                    installMockClientOnProvider(
-                        provider,
-                        engineWithLostCreate(createPosts, folderGets, replacePuts, empty),
-                    )
                     assertFailsWith<java.io.IOException> {
                         provider.upload(local, "/deb-x.deb", existingRemoteId = null, onProgress = null)
                     }
@@ -225,12 +202,8 @@ class InternxtUploadWritebackTest {
                         "bucket":"6928426c1a2316b856c9ab81",
                         "folderUuid":"root-folder-uuid","status":"EXISTS"
                     }]}"""
-                val provider = newProviderRooted(tmp)
+                val provider = newProviderRooted(tmp, engineWithLostCreate(createPosts, folderGets, replacePuts, different))
                 try {
-                    installMockClientOnProvider(
-                        provider,
-                        engineWithLostCreate(createPosts, folderGets, replacePuts, different),
-                    )
                     assertFailsWith<java.io.IOException> {
                         provider.upload(local, "/deb-x.deb", existingRemoteId = null, onProgress = null)
                     }
@@ -344,12 +317,8 @@ class InternxtUploadWritebackTest {
                         "folderUuid":"root-folder-uuid","status":"EXISTS",
                         "creationTime":"${java.time.Instant.now()}"
                     }]}"""
-                val provider = newProviderRooted(tmp)
+                val provider = newProviderRooted(tmp, engineWithLostFinish(finishPosts, folderGets, createPosts, landed, "real-drive-uuid"))
                 try {
-                    installMockClientOnProvider(
-                        provider,
-                        engineWithLostFinish(finishPosts, folderGets, createPosts, landed, "real-drive-uuid"),
-                    )
                     val result = provider.upload(local, "/deb-x.deb", existingRemoteId = null, onProgress = null)
 
                     assertEquals("real-drive-uuid", result.id, "writeback CloudItem must carry the real drive UUID, not a local: ghost")
@@ -380,12 +349,8 @@ class InternxtUploadWritebackTest {
                 val folderGets = AtomicInteger(0)
                 val createPosts = AtomicInteger(0)
                 val empty = """{"children":[],"files":[]}"""
-                val provider = newProviderRooted(tmp)
+                val provider = newProviderRooted(tmp, engineWithLostFinish(finishPosts, folderGets, createPosts, empty, "real-drive-uuid"))
                 try {
-                    installMockClientOnProvider(
-                        provider,
-                        engineWithLostFinish(finishPosts, folderGets, createPosts, empty, "real-drive-uuid"),
-                    )
                     assertFailsWith<java.io.IOException> {
                         provider.upload(local, "/deb-x.deb", existingRemoteId = null, onProgress = null)
                     }
@@ -428,19 +393,15 @@ class InternxtUploadWritebackTest {
                         "folderUuid":"root-folder-uuid","status":"EXISTS",
                         "creationTime":"${java.time.Instant.now()}"
                     }]}"""
-                val provider = newProviderRooted(tmp)
+                val provider = newProviderRooted(tmp, engineWithLostFinish(
+                        finishPosts,
+                        folderGets,
+                        createPosts,
+                        coincidental,
+                        "real-drive-uuid",
+                        finishIoMessage = preCommitConnectMsg,
+                    ))
                 try {
-                    installMockClientOnProvider(
-                        provider,
-                        engineWithLostFinish(
-                            finishPosts,
-                            folderGets,
-                            createPosts,
-                            coincidental,
-                            "real-drive-uuid",
-                            finishIoMessage = preCommitConnectMsg,
-                        ),
-                    )
                     assertFailsWith<java.io.IOException> {
                         provider.upload(local, "/deb-x.deb", existingRemoteId = null, onProgress = null)
                     }
@@ -493,17 +454,13 @@ class InternxtUploadWritebackTest {
                     "folderUuid":"root-folder-uuid","status":"EXISTS",
                     "creationTime":"${java.time.Instant.now()}"
                 }]}"""
-            val provider = newProviderRooted(tmp)
+            val provider = newProviderRooted(tmp, engineWithLostFinish(finishPosts, folderGets, createPosts, landed, "real-drive-uuid"))
             val releaser =
                 Thread {
                     Thread.sleep(300)
                     channel.close()
                 }
             try {
-                installMockClientOnProvider(
-                    provider,
-                    engineWithLostFinish(finishPosts, folderGets, createPosts, landed, "real-drive-uuid"),
-                )
                 releaser.start()
                 val result = provider.upload(local, "/deb-x.deb", existingRemoteId = null, onProgress = null)
 
@@ -519,12 +476,8 @@ class InternxtUploadWritebackTest {
     fun `upload of a source file that stays locked fails with the lock named instead of hanging`() =
         lockedSourceFixture { tmp, local, _ ->
             val finishPosts = AtomicInteger(0)
-            val provider = newProviderRooted(tmp)
+            val provider = newProviderRooted(tmp, engineWithLostFinish(finishPosts, AtomicInteger(0), AtomicInteger(0), """{"children":[],"files":[]}""", "x"))
             try {
-                installMockClientOnProvider(
-                    provider,
-                    engineWithLostFinish(finishPosts, AtomicInteger(0), AtomicInteger(0), """{"children":[],"files":[]}""", "x"),
-                )
                 val e =
                     assertFailsWith<FileSystemException> {
                         provider.upload(local, "/deb-x.deb", existingRemoteId = null, onProgress = null)
@@ -555,15 +508,12 @@ class InternxtUploadWritebackTest {
                     "folderUuid":"root-folder-uuid","status":"EXISTS",
                     "creationTime":"${java.time.Instant.now()}"
                 }]}"""
-            val provider = newProviderRooted(tmp)
+            val provider =
+                newProviderRooted(tmp, engineWithLostFinish(finishPosts, AtomicInteger(0), AtomicInteger(0), landed, "real-drive-uuid"))
             val locked = AtomicInteger(0)
             var channel: FileChannel? = null
             var releaser: Thread? = null
             try {
-                installMockClientOnProvider(
-                    provider,
-                    engineWithLostFinish(finishPosts, AtomicInteger(0), AtomicInteger(0), landed, "real-drive-uuid"),
-                )
                 val result =
                     provider.upload(local, "/deb-x.deb", existingRemoteId = null) { _, _ ->
                         if (locked.getAndIncrement() == 0) {

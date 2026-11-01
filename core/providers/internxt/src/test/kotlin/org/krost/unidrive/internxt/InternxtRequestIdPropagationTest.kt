@@ -34,17 +34,7 @@ import kotlin.test.assertNull
  * propagates immediately.
  */
 class InternxtRequestIdPropagationTest {
-    private fun installMockClient(
-        service: InternxtApiService,
-        engine: MockEngine,
-    ) {
-        val field = InternxtApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
-    }
-
-    private fun newService(): InternxtApiService =
+    private fun newService(engine: MockEngine): InternxtApiService =
         InternxtApiService(
             InternxtConfig(credentialProtector = null, ),
             credentialsProvider = { _ ->
@@ -55,6 +45,7 @@ class InternxtRequestIdPropagationTest {
                     email = "test@example.invalid",
                 )
             },
+            httpClient = HttpClient(engine),
         )
 
     @Test
@@ -72,8 +63,7 @@ class InternxtRequestIdPropagationTest {
                             ),
                     )
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val ex = assertFailsWith<AuthenticationException> { service.listFiles() }
 
@@ -100,8 +90,7 @@ class InternxtRequestIdPropagationTest {
                             ),
                     )
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val ex = assertFailsWith<InternxtApiException> { service.listFiles() }
 
@@ -125,8 +114,7 @@ class InternxtRequestIdPropagationTest {
                         headers = headersOf("Content-Type", "text/html"),
                     )
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val ex = assertFailsWith<InternxtApiException> { service.listFiles() }
 

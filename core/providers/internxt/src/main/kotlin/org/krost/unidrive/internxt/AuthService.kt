@@ -49,11 +49,13 @@ open class AuthService(
                 requestTimeoutMillis = HttpDefaults.REQUEST_TIMEOUT_MS
             }
         },
+    // Tests hand in signed-in credentials; production starts without any and loads or obtains them.
+    initialCredentials: InternxtCredentials? = null,
 ) : AutoCloseable {
     private val log = LoggerFactory.getLogger(AuthService::class.java)
     private val json = InternxtJson
     @Volatile
-    private var credentials: InternxtCredentials? = null
+    private var credentials: InternxtCredentials? = initialCredentials
 
     // archive#1066: set while the proactive refresh keeps failing transiently, so the fallback is logged once per outage.
     @Volatile private var transientRefreshFailureLogged = false
