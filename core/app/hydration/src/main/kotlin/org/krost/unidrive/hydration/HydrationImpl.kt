@@ -38,6 +38,7 @@ import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.PendingUploads
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.RenameIntent
+import org.krost.unidrive.sync.model.ReplaceIntent
 import org.krost.unidrive.telemetry.TransferDirection
 import org.krost.unidrive.telemetry.TransferHandle
 import org.krost.unidrive.telemetry.TransferHistory
@@ -1347,6 +1348,9 @@ class HydrationImpl(
         // archive#1040 M4: renames that still owe their cache copy's move (or their row's) are finished first: the replay looks
         // for each copy at its row's path, and #86 drops a pending row whose copy it does not find there.
         renames.settleAll()
+        // gkrost/unidrive-cli#311: then the replace-renames a stopped daemon left half done, before the replay could upload a
+        // parked never-uploaded file under its parking name.
+        settleReplaces()
         // Folders the drive refused by name are asked again before their files: one that is accepted now unblocks the
         // files below it, whose uploads are replayed below.
         try {
@@ -3140,9 +3144,9 @@ class HydrationImpl(
      * through the delete path `unlink` takes (the cloud's trash, so its undo stays), and when the move failed the parked
      * destination moves back to its name and the rename answers the move's failure.
      *
-     * A daemon stopped between the steps leaves the parked destination in the cloud and in the view under its parking name, never
-     * deleted: each of its renames is recorded like any other ([RenameRollForward]), but nothing ties it to the replace, so it is
-     * neither moved back nor deleted at the next start.
+     * gkrost/unidrive-cli#311: the replace is recorded in state.db before the destination is parked ([ReplaceIntent]), and the
+     * record goes once the parked file is deleted or back at its name. A daemon stopped between the steps finishes the replace or
+     * undoes it from the record at its next start ([settleReplaces]).
      */
     private suspend fun replaceOver(
         oldNorm: String,
@@ -3152,25 +3156,32 @@ class HydrationImpl(
     ): RenameResult {
         val parking = parkingPathFor(newNorm)
             ?: return RenameResult.Failed(HydrationError.Generic("rename replace failed: no free name to move the destination aside"))
+        stateDb.recordReplaceIntent(ReplaceIntent(oldNorm, newNorm, parking, sourceEntry.remoteId, destEntry.remoteId))
         val parked = moveEntry(newNorm, parking, destEntry)
-        if (parked != RenameResult.Ok) return parked
+        if (parked != RenameResult.Ok) {
+            // Nothing moved aside. (A move aside stopped after its cloud move keeps its rename record: the next start finishes
+            // that move and then moves the file back from this record.)
+            if (renames.owedByOldPath[newNorm] == null) stateDb.clearReplaceIntent(parking)
+            return parked
+        }
         // The cache copy of the destination could not follow it (something holds it open): the source's copy would land on it.
         // The destination goes back to its name, its copy never left it.
         renames.owedByOldPath[newNorm]?.let { owedPark ->
-            restoreParked(parking, newNorm, owedPark)
+            if (restoreParked(parking, newNorm, owedPark)) stateDb.clearReplaceIntent(parking)
             return RenameResult.Failed(HydrationError.Generic(BUSY_TOKEN))
         }
         val moved = moveEntry(oldNorm, newNorm, sourceEntry)
         if (moved != RenameResult.Ok) {
-            // A rename stopped after its cloud move keeps its record and stands (archive#1040 M4): the name is the source's now.
+            // A rename stopped after its cloud move keeps its record and stands (archive#1040 M4): the name is the source's now,
+            // and the next start deletes the parked file once that rename is finished.
             if (renames.owedByOldPath[oldNorm] != null) {
                 log.warn("replace of {}: the source moved but did not finish; the old file stays at {}", CachePaths.forLog(newNorm), CachePaths.forLog(parking))
-            } else {
-                restoreParked(parking, newNorm, owedPark = null)
+            } else if (restoreParked(parking, newNorm, owedPark = null)) {
+                stateDb.clearReplaceIntent(parking)
             }
             return moved
         }
-        dropParked(parking)
+        if (dropParked(parking)) stateDb.clearReplaceIntent(parking)
         return RenameResult.Ok
     }
 
@@ -3184,27 +3195,28 @@ class HydrationImpl(
     // gkrost/unidrive-cli#182: the source's move failed, so the replaced file at [parking] moves back to [path]. [owedPark]: the record
     // of the move aside that still owes the move of its cache copy, which never left [path]; once the file is back it goes. A move
     // back that fails leaves the file at [parking] (and such a record in place, which brings the copy to it): nothing is deleted,
-    // the log names where it is.
+    // the log names where it is, and the replace's record keeps it for the next start. Returns whether the file is back.
     private suspend fun restoreParked(
         parking: String,
         path: String,
         owedPark: RenameIntent?,
-    ) {
+    ): Boolean {
         val row = stateDb.getEntry(parking)
         val back = if (row == null) null else moveEntry(parking, path, row)
         if (back != RenameResult.Ok) {
             log.warn("replace of {} failed and the old file could not move back; it stays at {} ({})", CachePaths.forLog(path), CachePaths.forLog(parking), back)
-            return
+            return false
         }
         owedPark?.let { renames.abandon(it) }
+        return true
     }
 
     // gkrost/unidrive-cli#182: the source holds the name now; the replaced file at [parking] goes as `unlink` deletes a file: a cloud
     // copy to the cloud's trash (by its id), a genuinely local one with its row. A delete that fails leaves it there, named in the
-    // log; the rename stands.
+    // log, and the replace's record keeps it for the next start; the rename stands. Returns whether it is gone.
     @Suppress("TooGenericExceptionCaught") // whatever the delete meets, the source's move stands and the old file stays parked
-    private suspend fun dropParked(parking: String) {
-        val row = stateDb.getEntry(parking) ?: return
+    private suspend fun dropParked(parking: String): Boolean {
+        val row = stateDb.getEntry(parking) ?: return true
         try {
             if (row.remoteId != null) {
                 mount.deleteRemote(parking)
@@ -3217,6 +3229,63 @@ class HydrationImpl(
             throw e
         } catch (e: Exception) {
             log.warn("replace: the old file could not be deleted and stays at {} ({})", CachePaths.forLog(parking), e.message)
+            return false
+        }
+        return true
+    }
+
+    /**
+     * gkrost/unidrive-cli#311: finishes or undoes, at the daemon's start, every replace-rename a stopped daemon left recorded
+     * ([replaceOver]). Runs after the recorded renames were settled ([RenameRollForward.settleAll]), so each file is at the end of
+     * its last move. A replace that cannot be settled yet keeps its record for the next start.
+     */
+    @Suppress("TooGenericExceptionCaught") // whatever stops one, its record stays and the next start tries again
+    private suspend fun settleReplaces() {
+        val records =
+            try {
+                stateDb.replaceIntents()
+            } catch (e: Exception) {
+                log.warn("the recorded replaces could not be read: {}", e.message)
+                return
+            }
+        for (record in records) {
+            coroutineContext.ensureActive()
+            try {
+                if (settleReplace(record)) stateDb.clearReplaceIntent(record.parkingPath)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn("replace of {} could not be settled yet ({}): {}", CachePaths.forLog(record.destPath), e.javaClass.simpleName, e.message)
+            }
+        }
+    }
+
+    // One recorded replace; returns whether its record can go.
+    // - nothing (or another file) at the parking name: the destination was never parked, or the parked file is gone already;
+    // - the source at the destination's name: the replace is finished, and the parked file goes through the delete path (trash);
+    // - the source still at its own name and the destination's name free: the replace is undone, the parked file moves back;
+    // - anything else (the names changed hands since): the parked file stays where it is, nothing is deleted.
+    private suspend fun settleReplace(record: ReplaceIntent): Boolean {
+        val paths = listOf(record.sourcePath, record.destPath, record.parkingPath)
+        if (paths.any { renames.blocks(it) }) return false // a rename of one of them is still owed: the next start tries again
+        val parked = stateDb.getEntry(record.parkingPath)
+        if (parked == null || (record.destRemoteId != null && parked.remoteId != record.destRemoteId)) return true
+        val atSource = stateDb.getEntry(record.sourcePath)
+        val atDest = stateDb.getEntry(record.destPath)
+        val sourceMoved = atSource == null && atDest != null && (record.sourceRemoteId == null || atDest.remoteId == record.sourceRemoteId)
+        return when {
+            sourceMoved -> {
+                log.info("replace of {}: the source had moved before the daemon stopped; the old file is deleted", CachePaths.forLog(record.destPath))
+                dropParked(record.parkingPath)
+            }
+            atSource != null && atDest == null -> {
+                log.info("replace of {}: the source had not moved before the daemon stopped; the old file moves back", CachePaths.forLog(record.destPath))
+                moveEntry(record.parkingPath, record.destPath, parked) == RenameResult.Ok
+            }
+            else -> {
+                log.warn("replace of {}: neither finished nor undone; the old file stays at {}", CachePaths.forLog(record.destPath), CachePaths.forLog(record.parkingPath))
+                true
+            }
         }
     }
 
