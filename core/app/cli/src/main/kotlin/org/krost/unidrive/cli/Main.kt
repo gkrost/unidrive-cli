@@ -61,6 +61,7 @@ import java.nio.file.Paths
         ShareCommand::class,
         TrashCommand::class,
         RmCommand::class,
+        DedupeCommand::class,
         VersionsCommand::class,
         MigrateCommand::class,
     ],
