@@ -118,9 +118,13 @@ class GraphApiService(
         )
     }
 
+    // A drive answer without a quota object, or with total, used and remaining all zero, says nothing about the storage:
+    // the quota is unknown, and answering zeros would report an empty, full drive as exact. The call fails instead, so
+    // a caller keeps the values it last knew.
     suspend fun getQuota(): org.krost.unidrive.QuotaInfo {
         val drive = getDrive()
-        val quota = drive.quota ?: return org.krost.unidrive.QuotaInfo(0, 0, 0)
+        val quota = drive.quota?.takeUnless { it.isEmpty }
+            ?: throw ProviderException("OneDrive answered no quota for this drive; the quota is unknown")
         return org.krost.unidrive.QuotaInfo(
             total = quota.total,
             used = quota.used,

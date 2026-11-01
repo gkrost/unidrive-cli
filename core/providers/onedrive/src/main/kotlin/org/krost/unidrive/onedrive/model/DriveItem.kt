@@ -224,4 +224,7 @@ data class Quota(
     @SerialName("used") val used: Long = 0,
     @SerialName("remaining") val remaining: Long = 0,
     @SerialName("deleted") val deleted: Long = 0,
-)
+) {
+    // Total, used and remaining all zero (or left out): the answer says nothing about the storage.
+    val isEmpty: Boolean get() = total == 0L && used == 0L && remaining == 0L
+}
