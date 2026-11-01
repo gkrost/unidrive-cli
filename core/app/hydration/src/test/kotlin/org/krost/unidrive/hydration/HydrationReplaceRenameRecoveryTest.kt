@@ -11,9 +11,11 @@ import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.sync.model.ReplaceIntent
 import org.krost.unidrive.sync.model.SyncEntry
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -38,6 +40,9 @@ class HydrationReplaceRenameRecoveryTest {
 
         val items = linkedMapOf<String, Item>()
         val trashed = mutableListOf<String>()
+
+        // A transient failure of getMetadata for this path (the review of #313: the undo's ghost probe fails).
+        var failMetadataFor: String? = null
 
         // The daemon stops at the call that moves or deletes this id, before or after the drive carried it out.
         var stopBeforeMoveOf: String? = null
@@ -89,7 +94,10 @@ class HydrationReplaceRenameRecoveryTest {
 
         override suspend fun listChildren(path: String): List<CloudItem> = emptyList()
 
-        override suspend fun getMetadata(path: String): CloudItem = at(path)?.toCloudItem() ?: throw ProviderException("Item not found: $path")
+        override suspend fun getMetadata(path: String): CloudItem {
+            if (path == failMetadataFor) throw ProviderException("metadata failed for $path (503)")
+            return at(path)?.toCloudItem() ?: throw ProviderException("Item not found: $path")
+        }
 
         override suspend fun download(remotePath: String, destination: Path): Long = 0L
 
@@ -144,11 +152,15 @@ class HydrationReplaceRenameRecoveryTest {
 
         fun cached(path: String): String? = cache(path).takeIf { Files.isRegularFile(it) }?.let { Files.readString(it) }
 
+        // What the start's replay queued; read by the tests that hold a reserved file out of it.
+        var replayQueued = 0
+            private set
+
         // The daemon's next start: the drive answers again, and the start's replay runs.
         suspend fun restart(): Rig {
             drive.running()
             db.close()
-            return Rig(scope, drive, dbFile, cacheRoot).also { it.impl.replayPendingUploads() }
+            return Rig(scope, drive, dbFile, cacheRoot).also { it.replayQueued = it.impl.replayPendingUploads() }
         }
 
         // A file with its cache copy; [remoteId] null: never uploaded.
@@ -297,6 +309,72 @@ class HydrationReplaceRenameRecoveryTest {
         rig.replaceStopped()
 
         rig.restart().assertReplaced(destRemoteId = null)
+    }
+
+    // The review of #313 (P1): a never-uploaded source's local rename moves its cache copy onto the destination's name
+    // before its row's repath, and no rename record covers that half of it. A daemon stopped between the two leaves the
+    // source's row at its own name with its only copy already at the destination: undoing the replace over it (the cache
+    // move replaces) would erase the source, and the pending-row cleanup would drop its row for its empty old path.
+    @Test
+    fun `a local source whose copy moved before its row keeps its only copy at the next start`() = runTest {
+        val rig = Rig(this)
+        rig.seed("/a.txt", null, "new content") // the source never uploaded
+        rig.seed("/b.txt", "id-b", "old content")
+        rig.db.recordReplaceIntent(ReplaceIntent("/a.txt", "/b.txt", "/b.txt.unidrive-replaced", null, "id-b"))
+        assertEquals(RenameResult.Ok, rig.impl.rename("/b.txt", "/b.txt.unidrive-replaced"))
+        // The stop fell between the source's cache move and its row's repath.
+        Files.move(rig.cache("/a.txt"), rig.cache("/b.txt"), StandardCopyOption.REPLACE_EXISTING)
+
+        val next = rig.restart()
+
+        assertEquals("new content", next.cached("/b.txt"), "the source's only copy survived")
+        assertNull(next.cached("/a.txt"))
+        assertNull(next.db.getEntry("/a.txt"), "the source row followed its copy")
+        assertNull(next.db.getEntry("/b.txt")?.remoteId, "the source row lives at the destination, still local")
+        assertEquals(listOf("id-b"), next.drive.trashed, "the parked file went to the cloud's trash")
+        next.assertNothingParked()
+    }
+
+    // The review of #313 (P1): a cache copy at the destination's name that neither the parked file's owed move nor a
+    // half-moved local source explains is not overwritten; the parked file stays parked and the record stays.
+    @Test
+    fun `a copy at the destination's name that nothing explains is preserved and the parked file stays`() = runTest {
+        val rig = Rig(this)
+        rig.seedReplace(destRemoteId = "id-b")
+        rig.db.recordReplaceIntent(ReplaceIntent("/a.txt", "/b.txt", "/b.txt.unidrive-replaced", "id-a", "id-b"))
+        assertEquals(RenameResult.Ok, rig.impl.rename("/b.txt", "/b.txt.unidrive-replaced"))
+        Files.writeString(rig.cache("/b.txt"), "someone else's bytes") // no row explains this copy
+
+        val next = rig.restart()
+
+        assertEquals("someone else's bytes", next.cached("/b.txt"), "the unexplained copy is not overwritten")
+        assertEquals("old content", next.cached("/b.txt.unidrive-replaced"), "the parked file stays parked")
+        assertEquals("id-b", next.db.getEntry("/b.txt.unidrive-replaced")?.remoteId)
+        assertEquals(1, next.db.replaceIntents().size, "the record stays for the next start")
+        assertEquals(emptyList<String>(), next.drive.trashed, "nothing was deleted")
+    }
+
+    // The review of #313 (P2): a never-uploaded destination is parked, the daemon stops before the source moved, and the
+    // undo's ghost probe of the parked name fails on the next start. The parked file must not enter the upload replay under
+    // its parking name while its record is unresolved; the start after that settles it.
+    @Test
+    fun `a parked file whose undo fails on the first start stays out of the upload replay`() = runTest {
+        val rig = Rig(this)
+        rig.seed("/a.txt", "id-a", "new content")
+        rig.seed("/b.txt", null, "old content") // the destination never uploaded
+        rig.db.recordReplaceIntent(ReplaceIntent("/a.txt", "/b.txt", "/b.txt.unidrive-replaced", "id-a", null))
+        assertEquals(RenameResult.Ok, rig.impl.rename("/b.txt", "/b.txt.unidrive-replaced"))
+        rig.drive.failMetadataFor = "/b.txt.unidrive-replaced"
+
+        val next = rig.restart()
+
+        assertEquals(0, next.replayQueued, "the parked file was not queued under its parking name")
+        assertEquals(1, next.db.replaceIntents().size, "the record stays")
+        assertEquals("old content", next.cached("/b.txt.unidrive-replaced"), "the parked file stays parked")
+        assertEquals(emptyList<String>(), next.drive.trashed)
+
+        next.drive.failMetadataFor = null
+        next.restart().assertUntouched(destRemoteId = null)
     }
 
     @Test

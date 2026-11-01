@@ -1349,8 +1349,10 @@ class HydrationImpl(
         // for each copy at its row's path, and #86 drops a pending row whose copy it does not find there.
         renames.settleAll()
         // gkrost/unidrive-cli#311: then the replace-renames a stopped daemon left half done, before the replay could upload a
-        // parked never-uploaded file under its parking name.
-        settleReplaces()
+        // parked never-uploaded file under its parking name. The records that stay unsettled reserve their three paths: the
+        // parked file is not uploaded under its parking name (nor the names it still owns) until its record is settled or cleared
+        // (the review of #313) — settlement failing once, on a start, must not publish the old content under the parking name.
+        val reservedByReplace = settleReplaces().flatMap { listOf(it.sourcePath, it.destPath, it.parkingPath) }.toHashSet()
         // Folders the drive refused by name are asked again before their files: one that is accepted now unblocks the
         // files below it, whose uploads are replayed below.
         try {
@@ -1367,6 +1369,7 @@ class HydrationImpl(
             // point, so a stop is only honoured if the loop itself checks for it.
             coroutineContext.ensureActive()
             val cachePath = cacheCopy(pass, path) ?: continue
+            if (path in reservedByReplace) continue // gkrost/unidrive-cli#311: a replace still owes this name; its file is reserved
             if (refusedForTwin(path)) continue // gkrost/unidrive-cli#24: one spelling's bytes under the name both share
             if (refusedEarlier(path, cachePath) != null) { refused++; continue } // archive#493: not replayed at every start
             if (failedReplayDelayMs > 0 && stateDb.getEntry(path)?.lastErrorAt != null) {
@@ -1377,6 +1380,7 @@ class HydrationImpl(
                     val entry = stateDb.getEntry(path)
                     if (entry == null || entry.remoteId != null || !entry.isHydrated) return@launch // gone or uploaded
                     if (uploadSlots.containsKey(path) || !replayable(path)) return@launch
+                    if (replaceReserves(path)) return@launch // gkrost/unidrive-cli#311: a replace still owes this name
                     if (refusedEarlier(path, mount.resolveCachePath(path)) != null) return@launch // refused meanwhile
                     launchSerializedUpload(path, mount.resolveCachePath(path), handleId, baseEtag = null)
                 }
@@ -1415,6 +1419,7 @@ class HydrationImpl(
             // (editBase) qualifies hydrated or not; a cloud-only row has no baseline to drift from.
             if (!isDirtyReplayCandidate(entry)) continue
             if (uploadSlots.containsKey(path)) continue
+            if (path in reservedByReplace) continue // gkrost/unidrive-cli#311: a replace still owes this name; its file is reserved
             val cachePath = cacheCopy(pass, path) ?: continue
             val stamp = refusalStamp(cachePath) ?: continue
             if (entry.editBase == null) {
@@ -1431,6 +1436,7 @@ class HydrationImpl(
                     val now = stateDb.getEntry(path) ?: return@launch
                     if (!isDirtyReplayCandidate(now)) return@launch
                     if (uploadSlots.containsKey(path) || !replayable(path)) return@launch
+                    if (replaceReserves(path)) return@launch // gkrost/unidrive-cli#311: a replace still owes this name
                     val cp = mount.resolveCachePath(path)
                     if (refusedEarlier(path, cp) != null) return@launch
                     launchDirtyReplay(now, cp, handleId)
@@ -3237,27 +3243,31 @@ class HydrationImpl(
     /**
      * gkrost/unidrive-cli#311: finishes or undoes, at the daemon's start, every replace-rename a stopped daemon left recorded
      * ([replaceOver]). Runs after the recorded renames were settled ([RenameRollForward.settleAll]), so each file is at the end of
-     * its last move. A replace that cannot be settled yet keeps its record for the next start.
+     * its last move. A replace that cannot be settled yet keeps its record for the next start; the paths of those records come
+     * back, so the replay that runs next holds its parked file (and the names it still owns) reserved.
      */
     @Suppress("TooGenericExceptionCaught") // whatever stops one, its record stays and the next start tries again
-    private suspend fun settleReplaces() {
+    private suspend fun settleReplaces(): List<ReplaceIntent> {
         val records =
             try {
                 stateDb.replaceIntents()
             } catch (e: Exception) {
                 log.warn("the recorded replaces could not be read: {}", e.message)
-                return
+                return emptyList()
             }
+        val unsettled = mutableListOf<ReplaceIntent>()
         for (record in records) {
             coroutineContext.ensureActive()
             try {
-                if (settleReplace(record)) stateDb.clearReplaceIntent(record.parkingPath)
+                if (settleReplace(record)) stateDb.clearReplaceIntent(record.parkingPath) else unsettled += record
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 log.warn("replace of {} could not be settled yet ({}): {}", CachePaths.forLog(record.destPath), e.javaClass.simpleName, e.message)
+                unsettled += record
             }
         }
+        return unsettled
     }
 
     // One recorded replace; returns whether its record can go.
@@ -3278,16 +3288,62 @@ class HydrationImpl(
                 log.info("replace of {}: the source had moved before the daemon stopped; the old file is deleted", CachePaths.forLog(record.destPath))
                 dropParked(record.parkingPath)
             }
-            atSource != null && atDest == null -> {
-                log.info("replace of {}: the source had not moved before the daemon stopped; the old file moves back", CachePaths.forLog(record.destPath))
-                moveEntry(record.parkingPath, record.destPath, parked) == RenameResult.Ok
-            }
+            atSource != null && atDest == null -> undoReplace(record, atSource, parked)
             else -> {
                 log.warn("replace of {}: neither finished nor undone; the old file stays at {}", CachePaths.forLog(record.destPath), CachePaths.forLog(record.parkingPath))
                 true
             }
         }
     }
+
+    // The undo half of a settled replace: the source had not moved when the daemon stopped, so the parked file moves back to its
+    // name. Returns whether the record can go; false keeps it for the next start.
+    // - a never-uploaded source (no cloud id) may have moved its cache copy onto the destination's name before the stop, between
+    //   the cache move and the row's repath of its local rename — a step no rename record covers (the review of #313): those bytes
+    //   are the source's only copy, so the repath is finished and the replace stands, never undone over them;
+    // - a cache copy at the destination's name that nothing explains is not overwritten either: it stays until the next start
+    //   (or a hand) resolves whose it is, and the parked file stays parked.
+    private suspend fun undoReplace(
+        record: ReplaceIntent,
+        atSource: org.krost.unidrive.sync.model.SyncEntry,
+        parked: org.krost.unidrive.sync.model.SyncEntry,
+    ): Boolean {
+        // The half of a local rename no record covers: the source's copy went, its row did not follow.
+        val sourceCopyMovedOn = record.sourceRemoteId == null && atSource.remoteId == null &&
+            !cacheCopyPresent(record.sourcePath) && cacheCopyPresent(record.destPath)
+        if (sourceCopyMovedOn) {
+            log.info(
+                "replace of {}: the local source's copy had moved onto the name before the daemon stopped; its row follows and the old file is deleted",
+                CachePaths.forLog(record.destPath),
+            )
+            rekeyUploadSlot(record.sourcePath, record.destPath)
+            stateDb.renamePrefix(record.sourcePath, record.destPath)
+            return dropParked(record.parkingPath)
+        }
+        if (cacheCopyPresent(record.destPath)) {
+            log.warn(
+                "replace of {}: a copy the record does not explain is at the name; the parked file stays at {} until it is resolved",
+                CachePaths.forLog(record.destPath),
+                CachePaths.forLog(record.parkingPath),
+            )
+            return false
+        }
+        log.info("replace of {}: the source had not moved before the daemon stopped; the old file moves back", CachePaths.forLog(record.destPath))
+        return moveEntry(record.parkingPath, record.destPath, parked) == RenameResult.Ok
+    }
+
+    // Whether the row's cache copy is at [path] (the local half of a move looks for it where it went, not where it was).
+    private fun cacheCopyPresent(path: String): Boolean = java.nio.file.Files.isRegularFile(mount.resolveCachePath(path))
+
+    // Whether an unresolved recorded replace reserves [path] (one of its three names): asked at the moment a deferred replay
+    // fires, when the records may differ from the start's reading (gkrost/unidrive-cli#311, the review of #313). A record that
+    // cannot be read reserves nothing: settlement, which clears what it can, has run before the replay.
+    private fun replaceReserves(path: String): Boolean =
+        try {
+            stateDb.replaceIntents().any { it.sourcePath == path || it.destPath == path || it.parkingPath == path }
+        } catch (_: Exception) {
+            false
+        }
 
     // The move of the file or folder [sourceEntry] from [oldNorm] to the free name [newNorm]: in the cloud where it is there, its row
     // and its cache copy. The checks before it are the caller's.
