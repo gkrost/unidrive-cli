@@ -2276,10 +2276,15 @@ class HydrationImpl(
         }
     }
 
+    // A read through a view alias waits under the real path (see [openForRead]), so the cancel resolves the alias the same way.
     override suspend fun cancelDownload(
         path: String,
         handleId: String?,
-    ): Boolean = downloads.cancel(path, handleId)
+    ): Boolean =
+        when (val target = views.readTarget(path)) {
+            is HydrationViews.ReadTarget.Real -> downloads.cancel(target.path, handleId)
+            HydrationViews.ReadTarget.Missing -> false
+        }
 
     // gkrost/unidrive-cli#23: the download of [path] through [downloads]: joined when one runs, started otherwise. [tx] is this
     // caller's history handle; it is used only when this caller starts the download, and the download finishes it itself when
