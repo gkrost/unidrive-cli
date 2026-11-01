@@ -3,6 +3,7 @@ package org.krost.unidrive.sync
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.model.EntryStatus
 import org.krost.unidrive.sync.model.RenameIntent
+import org.krost.unidrive.sync.model.ReplaceIntent
 import org.krost.unidrive.sync.model.SyncEntry
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -698,6 +699,20 @@ class StateDatabase(
                     ghost     INTEGER NOT NULL DEFAULT 0
                 )
             """,
+            )
+            // gkrost/unidrive-cli#311: the mount's replace-renames between parking the old destination and deleting it
+            // ([recordReplaceIntent]). A table of its own, additive like rename_intents: no schema_version bump, an older file
+            // simply has no record.
+            stmt.executeUpdate(
+                """
+                CREATE TABLE IF NOT EXISTS replace_intents (
+                    parking_path     TEXT PRIMARY KEY,
+                    source_path      TEXT NOT NULL,
+                    dest_path        TEXT NOT NULL,
+                    source_remote_id TEXT,
+                    dest_remote_id   TEXT
+                )
+                """,
             )
             // gkrost/unidrive-cli#24: the spelling a client used first for a name, so the hydration verbs' name_clash
             // guard survives a daemon restart. A table of its own, additive like rename_intents: no schema_version bump,
@@ -2865,6 +2880,59 @@ class StateDatabase(
             beginWrite()
             conn.prepareStatement("DELETE FROM rename_intents WHERE old_path = ?").use { stmt ->
                 stmt.setString(1, oldPath)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    /**
+     * gkrost/unidrive-cli#311: records, before the mount parks [ReplaceIntent.destPath] at [ReplaceIntent.parkingPath], that a
+     * replace-rename of [ReplaceIntent.sourcePath] over it is under way. The record stays until the replace is finished (the parked
+     * file deleted) or undone (the parked file back at its name) ([clearReplaceIntent]); a daemon stopped in between does either
+     * at its next start. One record per parking path.
+     */
+    fun recordReplaceIntent(intent: ReplaceIntent) {
+        locked("recordReplaceIntent") {
+            beginWrite()
+            conn.prepareStatement(
+                "INSERT OR REPLACE INTO replace_intents (parking_path, source_path, dest_path, source_remote_id, dest_remote_id) VALUES (?, ?, ?, ?, ?)",
+            ).use { stmt ->
+                stmt.setString(1, intent.parkingPath)
+                stmt.setString(2, intent.sourcePath)
+                stmt.setString(3, intent.destPath)
+                stmt.setString(4, intent.sourceRemoteId)
+                stmt.setString(5, intent.destRemoteId)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    /** gkrost/unidrive-cli#311: the replaces [recordReplaceIntent] recorded and nothing has cleared yet. */
+    fun replaceIntents(): List<ReplaceIntent> =
+        read("replaceIntents") { c ->
+            c.createStatement().use { stmt ->
+                val rs = stmt.executeQuery("SELECT parking_path, source_path, dest_path, source_remote_id, dest_remote_id FROM replace_intents")
+                val intents = mutableListOf<ReplaceIntent>()
+                while (rs.next()) {
+                    intents +=
+                        ReplaceIntent(
+                            sourcePath = rs.getString("source_path"),
+                            destPath = rs.getString("dest_path"),
+                            parkingPath = rs.getString("parking_path"),
+                            sourceRemoteId = rs.getString("source_remote_id"),
+                            destRemoteId = rs.getString("dest_remote_id"),
+                        )
+                }
+                return intents
+            }
+        }
+
+    /** gkrost/unidrive-cli#311: the replace that parked a file at [parkingPath] is finished or undone. */
+    fun clearReplaceIntent(parkingPath: String) {
+        locked("clearReplaceIntent") {
+            beginWrite()
+            conn.prepareStatement("DELETE FROM replace_intents WHERE parking_path = ?").use { stmt ->
+                stmt.setString(1, parkingPath)
                 stmt.executeUpdate()
             }
         }
