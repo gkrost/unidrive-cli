@@ -581,8 +581,7 @@ class StateDatabaseTest {
             )
         }
 
-        val dbPath = db.javaClass.getDeclaredField("dbPath")
-            .apply { isAccessible = true }.get(db) as java.nio.file.Path
+        val dbPath = db.file
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
             // Index existence.
             val indexNames = mutableListOf<String>()
@@ -622,8 +621,7 @@ class StateDatabaseTest {
         sql: String,
         vararg params: String,
     ): String {
-        val dbPath = database.javaClass.getDeclaredField("dbPath")
-            .apply { isAccessible = true }.get(database) as java.nio.file.Path
+        val dbPath = database.file
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
             conn.prepareStatement("EXPLAIN QUERY PLAN $sql").use { stmt ->
                 params.forEachIndexed { i, p -> stmt.setString(i + 1, p) }
@@ -860,7 +858,7 @@ class StateDatabaseTest {
         // Re-initialize an already-current DB. Schema and rows survive.
         db.upsertEntry(entry("/keep.txt").copy(remoteId = "uuid-keep"))
         db.close()
-        val dbPath = (db.javaClass.getDeclaredField("dbPath").apply { isAccessible = true }.get(db) as java.nio.file.Path)
+        val dbPath = db.file
         val reopened = StateDatabase(dbPath)
         reopened.initialize()
         try {
