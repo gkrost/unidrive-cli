@@ -128,7 +128,7 @@ class StateDatabaseHoldTest {
             if (System.nanoTime() > deadline) fail("the second thread never blocked on the monitor: ${waiter.state}")
             Thread.onSpinWait()
         }
-        parkFor(120) // the waiter has waited at least this long when the holder lets go
+        parkFor(1000) // the waiter has waited at least this long when the holder lets go; a write on a loaded runner can take a few hundred ms
         release.countDown()
         holder.join(10_000)
         waiter.join(10_000)
@@ -136,7 +136,7 @@ class StateDatabaseHoldTest {
         val byMethod = db.holds.snapshot().associateBy { it.method }
         val batch = assertNotNull(byMethod["batch"])
         val write = assertNotNull(byMethod["setSyncState"])
-        val minimum = TimeUnit.MILLISECONDS.toNanos(120)
+        val minimum = TimeUnit.MILLISECONDS.toNanos(1000)
         assertTrue(batch.maxHeldNanos >= minimum, "the holder kept the monitor: $batch")
         assertTrue(batch.maxWaitedNanos < batch.maxHeldNanos, "the holder did not wait for it: $batch")
         assertTrue(write.maxWaitedNanos >= minimum, "the second call waited for the holder: $write")

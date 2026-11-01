@@ -655,6 +655,25 @@ class IpcContractCorpusTest {
         )
     }
 
+    /**
+     * gkrost/unidrive-cli#23: `events/downloading.ndjson` (an open_read's download, correlated by its handle) and
+     * `events/downloading-hydrate.ndjson` (a hydrate's, without handle_id): the progress lines a subscriber is pushed while a
+     * download runs.
+     */
+    @Test
+    fun downloading_event_lines_match_the_serialiser() {
+        assertJsonMatches(
+            expected = Json.parseToJsonElement(loadEventLine("downloading")),
+            actual = Json.parseToJsonElement(serialiseHydrationEvent(HydrationEvent.Downloading("/docs/big.iso", "h-1", 4096, 65536))),
+            at = "events/downloading",
+        )
+        assertJsonMatches(
+            expected = Json.parseToJsonElement(loadEventLine("downloading-hydrate")),
+            actual = Json.parseToJsonElement(serialiseHydrationEvent(HydrationEvent.Downloading("/docs/big.iso", null, 4096, 65536))),
+            at = "events/downloading-hydrate",
+        )
+    }
+
     private fun recentsRefs() =
         mapOf(
             ViewKind.RECENTS to

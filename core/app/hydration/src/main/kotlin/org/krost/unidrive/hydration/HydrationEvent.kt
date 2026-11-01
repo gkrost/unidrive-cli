@@ -98,6 +98,22 @@ sealed class HydrationEvent {
     ) : HydrationEvent()
 
     /**
+     * gkrost/unidrive-cli#23: byte progress of a running download of `open_read` (correlated to its handle like [Completed])
+     * or `hydrate` ([handleId] null, absent on the wire). Sent about twice a second per waiting request while bytes come
+     * down, also when none arrived since the last one; [bytesTotal] is 0 when the size is unknown. A read served from the
+     * cache sends none. The download ends with [Completed] (open_read) or [Hydrated] / [Failed].
+     *
+     * Wire shape (NDJSON line on `hydration.subscribe` stream):
+     *   `{"event":"downloading","path":"/a/big.iso","handle_id":"h1","bytes_done":4096,"bytes_total":65536}`
+     */
+    data class Downloading(
+        override val path: String,
+        val handleId: String?,
+        val bytesDone: Long,
+        val bytesTotal: Long,
+    ) : HydrationEvent()
+
+    /**
      * Emitted after [org.krost.unidrive.sync.SyncEngine.enumerateRemoteIntoState] mutates
      * `state.db` (upserts and/or reaps rows). Signals subscribed FUSE co-daemons to drop
      * stale `readdir`/`getattr` cache entries.
