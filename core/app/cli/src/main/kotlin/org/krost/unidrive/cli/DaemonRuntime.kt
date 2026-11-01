@@ -22,6 +22,7 @@ import org.krost.unidrive.hydration.HydrationEvent
 import org.krost.unidrive.hydration.HydrationImpl
 import org.krost.unidrive.hydration.HydrationIpcHandler
 import org.krost.unidrive.hydration.MountEngine
+import org.krost.unidrive.hydration.StateDbNameSpellingStore
 import org.krost.unidrive.hydration.provesProviderReachable
 import org.krost.unidrive.hydration.serialiseHydrationEvent
 import org.krost.unidrive.io.ndjsonString
@@ -377,7 +378,10 @@ class DaemonRuntime(
                         null
                     }
                 val hydrationIpc: HydrationIpcHandler? =
-                    hydration?.let { h -> HydrationIpcHandler(h).also { hydrationLink.bind(h, it) } }
+                    // gkrost/unidrive-cli#24: the name_clash guard's first spellings persist in state.db, so a restart keeps them.
+                    hydration?.let { h ->
+                        HydrationIpcHandler(h, spellingsStore = db?.let { StateDbNameSpellingStore(it) }).also { hydrationLink.bind(h, it) }
+                    }
 
                 // The construction order from here on is explicit: every handler and the poller exist
                 // before anything is launched on serveScope, so the launches below (the cache sweep, the

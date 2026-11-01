@@ -93,8 +93,9 @@ import java.util.concurrent.atomic.AtomicLong
  *
  *   name_clash  (gkrost/unidrive-cli#24) create, mkdir, open_write, open_write_begin, rename, unlink and rmdir answer
  *               {"ok":false,"error":"name_clash"} when the path names a name, or a folder above it, by another Unicode
- *               spelling (composed / decomposed) than the one a client used for it first in this daemon run: both are one
- *               row and one cloud path, so the second would overwrite or delete the first. Rename one of them.
+ *               spelling (composed / decomposed) than the one a client used for it first — recorded in state.db, so a
+ *               daemon restart keeps it: both are one row and one cloud path, so the second would overwrite or delete
+ *               the first. Rename one of them.
  *
  *   refuse_name (gkrost/unidrive-cli#24) request: {"verb":"hydration.refuse_name","path":"/café.txt"[,"sibling":"café.txt"]}
  *               the client does not upload this file: another file of its folder (sibling, its name as spelled on disk) is the
@@ -180,6 +181,8 @@ class HydrationIpcHandler(
     private val hydration: Hydration,
     // The random part of the write-handle ids this daemon run issues; a seam for the contract corpus.
     handleIdRun: String = randomHandleIdRun(),
+    // gkrost/unidrive-cli#24: where the first spellings persist across a daemon restart; null = in memory only (tests).
+    spellingsStore: NameSpellingStore? = null,
 ) {
     // Write-handle ids the daemon issues (open_write or create without handle_id): this run's prefix and a counter.
     // No client can name one (see reservedHandleId), so a close from one client never releases another's handle.
@@ -661,7 +664,7 @@ class HydrationIpcHandler(
         request.string(key)?.let { requireLogicalPath(PathNormalizer.nfc(it)) }
 
     // gkrost/unidrive-cli#24: the path field as the client spelled it, before the NFC canonicalisation; see [NameSpellings].
-    private val spellings = NameSpellings()
+    private val spellings = NameSpellings(spellingsStore)
 
     private fun rawPath(request: HydrationRequest, key: String): String = request.string(key).orEmpty()
 

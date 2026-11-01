@@ -699,6 +699,17 @@ class StateDatabase(
                 )
             """,
             )
+            // gkrost/unidrive-cli#24: the spelling a client used first for a name, so the hydration verbs' name_clash
+            // guard survives a daemon restart. A table of its own, additive like rename_intents: no schema_version bump,
+            // an older file simply has no record and the first spelling a client names wins once more.
+            stmt.executeUpdate(
+                """
+                CREATE TABLE IF NOT EXISTS name_spellings (
+                    nfc_path TEXT PRIMARY KEY,
+                    raw_path TEXT NOT NULL
+                )
+                """,
+            )
             // Permanent-failure quarantine columns on `sync_entries`: an additive
             // column with no schema_version bump because the columns carry safe
             // defaults (0 / NULL) so any pre-quarantine row reads as
@@ -1921,6 +1932,72 @@ class StateDatabase(
                     return stmt.executeUpdate() == 1
                 }
         }
+
+    /**
+     * gkrost/unidrive-cli#24: every first spelling a daemon run recorded (see [recordNameSpelling]). Loaded once when the
+     * hydration layer starts, so the name_clash guard of the IPC verbs answers the same after a restart as before.
+     */
+    fun loadNameSpellings(): Map<String, String> =
+        locked("loadNameSpellings") {
+            conn.prepareStatement("SELECT nfc_path, raw_path FROM name_spellings").use { stmt ->
+                stmt.executeQuery().use { rs ->
+                    buildMap {
+                        while (rs.next()) put(rs.getString(1), rs.getString(2))
+                    }
+                }
+            }
+        }
+
+    /**
+     * gkrost/unidrive-cli#24: drops the spellings of names that have no alive row any more. A name that left by other means than the
+     * hydration verbs (deleted in the cloud, reaped by a sync) is not forgotten by them, and a persisted record would refuse its
+     * other spelling for ever. Returns how many records went.
+     */
+    fun pruneNameSpellings(): Int =
+        locked("pruneNameSpellings") {
+            beginWrite()
+            conn
+                .prepareStatement(
+                    "DELETE FROM name_spellings WHERE NOT EXISTS (SELECT 1 FROM alive_entries e WHERE e.path = name_spellings.nfc_path)",
+                ).use { it.executeUpdate() }
+        }
+
+    /**
+     * gkrost/unidrive-cli#24: the spelling [rawPath] of the name whose NFC form is [nfcPath], as a client named it first.
+     * INSERT OR IGNORE: the first spelling wins, exactly as the in-memory guard's putIfAbsent.
+     */
+    fun recordNameSpelling(
+        nfcPath: String,
+        rawPath: String,
+    ) {
+        locked("recordNameSpelling") {
+            beginWrite()
+            conn.prepareStatement("INSERT OR IGNORE INTO name_spellings (nfc_path, raw_path) VALUES (?, ?)").use { stmt ->
+                stmt.setString(1, nfcPath)
+                stmt.setString(2, rawPath)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    /**
+     * gkrost/unidrive-cli#24: the name at [nfcPath] and everything below it is gone (or has moved away): its spellings
+     * are free again. The range `>= nfc || '/' and < nfc || '0'` is the subtree ('0' is '/' + 1), no LIKE wildcards.
+     */
+    fun forgetNameSpellings(nfcPath: String) {
+        locked("forgetNameSpellings") {
+            beginWrite()
+            conn
+                .prepareStatement(
+                    "DELETE FROM name_spellings WHERE nfc_path=? OR (nfc_path>=?||'/' AND nfc_path<?||'0')",
+                ).use { stmt ->
+                    stmt.setString(1, nfcPath)
+                    stmt.setString(2, nfcPath)
+                    stmt.setString(3, nfcPath)
+                    stmt.executeUpdate()
+                }
+        }
+    }
 
     /** The name block recorded by [markNameBlocked] for this alive row, or null. */
     fun nameBlock(pathRaw: String): NameBlock? =
