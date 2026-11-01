@@ -249,9 +249,9 @@ that holds both as two files would have the second one's bytes replace the first
 - Only names with a non-ASCII character are tracked (a plain ASCII name cannot have a twin). A successful `unlink`,
   `rmdir` or the old end of a `rename` frees the spellings of the name and of everything below it.
 - Reads are not guarded: a read verb resolves an NFD request to the NFC row (archive#171).
-- **Limit:** the record is in memory, per daemon run. After a restart the first spelling a client names wins again; a
-  persisted spelling needs a state.db column and is not built (#24 stays open for it). `HydrationIpcHandler` and
-  `NameSpellings` hold the rule.
+- The record persists in state.db (the `name_spellings` table): a daemon restart loads it back, so a pair whose first
+  mutation after the restart is the other member still clashes. `HydrationIpcHandler` and `NameSpellings` hold the rule;
+  the table is additive, an older state.db gains it at its next open.
 
 **A refusal that shows (`hydration.refuse_name`).** A client that sees both spellings on disk uploads neither, so no
 mutating verb ever reaches the daemon and nothing above applies; without more, the files are in no count, listing or
@@ -631,7 +631,7 @@ noticed at once, not when the download ends. Requests the client sends while one
 | `outside_scope` | create, mkdir, rename (both ends), open_write_begin | path outside the profile's sync_path set |
 | `read_only` | create, mkdir, unlink, rmdir, rename (either end), open_write_begin, open_write | the path is the trash root or lies below it (section 4.1), or is the root of a view or lies below it (section 4.2); nothing was touched or queued |
 | `busy` | dehydrate, replace-rename, unlink, rmdir | an upload is in flight on that path (unlink, dehydrate), below it (rmdir), or on the source or destination of a replace-rename; nothing was touched, retry once the upload's `completed` event has arrived |
-| `name_clash` | create, mkdir, open_write, open_write_begin, rename, unlink, rmdir | the path names a name, or a folder above it, by another Unicode spelling (composed / decomposed) than the one a client used for it first in this daemon run; both are one row and one cloud path, so the second would overwrite or delete the first. Nothing was touched or queued. Section 3.9 |
+| `name_clash` | create, mkdir, open_write, open_write_begin, rename, unlink, rmdir | the path names a name, or a folder above it, by another Unicode spelling (composed / decomposed) than the one a client used for it first (kept in state.db across restarts, section 3.9); both are one row and one cloud path, so the second would overwrite or delete the first. Nothing was touched or queued. Section 3.9 |
 | `excluded` | completed event, rename | keep-local name, never uploaded; a rename of a row that has a cloud copy onto such a name is refused with it (the row and the remote are untouched, `HydrationImpl.rename`) |
 | `cancelled` | completed event; open_read, hydrate (and their `failed` / `completed` events) | upload aborted by hydration.cancel; a wait for a download ended by hydration.cancel or by the connection closing (section 5): not a failure, the entry shows no `error`. Pinned by `events/failed-cancelled.ndjson` and `events/completed-download-cancelled.ndjson` |
 | `similar_name[: <sibling>]` | failed and completed events, `hydration.list` (`blocked`) | the drive compares the entry's name as equal to a sibling's and refused it under its own name and under a server name; the local file is kept, nothing is retried. `: <sibling>` names the conflicting sibling when known |

@@ -683,6 +683,9 @@ internal class HydrationTestEnv(
     }
 
     internal inner class StateDatabaseFacade(private val db: StateDatabase) {
+        /** gkrost/unidrive-cli#24: the persisted name spellings, as the daemon wires them to the IPC handler. */
+        fun nameSpellingStore(): NameSpellingStore = StateDbNameSpellingStore(db)
+
         /** A row exactly as the test spells it (archive#1219 tests spell the hash, the baseline and the status themselves). */
         fun upsert(entry: SyncEntry) = db.upsertEntry(entry)
 

@@ -1,6 +1,7 @@
 package org.krost.unidrive.hydration
 
 import org.krost.unidrive.sync.PathNormalizer
+import org.krost.unidrive.sync.StateDatabase
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -9,16 +10,21 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * The engine keys every path in NFC (archive#171): `caf` + U+00E9 and `cafe` + U+0301 are one row and one cloud path, and a
  * client that holds both as two files would otherwise have the second one's bytes replace the first one's content in the
- * cloud. Owner decision (2026-10-03): refuse such pairs. This remembers, per name below the root and per daemon run, the
- * spelling of the first mutating verb that named it; a later verb that names it by a different spelling clashes. Names
- * that are plain ASCII cannot have a twin and are not tracked.
+ * cloud. Owner decision (2026-10-03): refuse such pairs. This remembers, per name below the root, the spelling of the
+ * first mutating verb that named it; a later verb that names it by a different spelling clashes. Names that are plain
+ * ASCII cannot have a twin and are not tracked.
  *
- * The record is in memory: after a restart the first spelling a client names wins again. A persisted spelling would
- * close that gap; it needs a state.db column and is not part of this guard.
+ * The record lives in state.db ([StateDbNameSpellingStore]): a daemon restart loads it back, so a pair whose first
+ * mutation after the restart is the other member still clashes. A [store] of null is the in-memory guard alone (the
+ * test harness; the daemon always passes one).
  */
-internal class NameSpellings {
+internal class NameSpellings(private val store: NameSpellingStore? = null) {
     // NFC path (a name and the folders above it, one entry each) -> the raw path as first named.
     private val seen = ConcurrentHashMap<String, String>()
+
+    init {
+        store?.load()?.let { seen.putAll(it) }
+    }
 
     /** True when [rawPath] names a name or a folder above it by another spelling than the one recorded for it. */
     fun clashes(rawPath: String): Boolean = walk(rawPath) { nfc, raw -> seen[nfc]?.let { it != raw } == true }
@@ -26,7 +32,7 @@ internal class NameSpellings {
     /** Remembers the spelling [rawPath] uses for every name in it that could have a twin. */
     fun record(rawPath: String) {
         walk(rawPath) { nfc, raw ->
-            seen.putIfAbsent(nfc, raw)
+            if (seen.putIfAbsent(nfc, raw) == null) store?.record(nfc, raw)
             false
         }
     }
@@ -36,6 +42,7 @@ internal class NameSpellings {
         val nfc = PathNormalizer.nfc(rawPath.trimEnd('/'))
         if (nfc.isEmpty()) return
         seen.keys.removeIf { it == nfc || it.startsWith("$nfc/") }
+        store?.forgetUnder(nfc)
     }
 
     // Calls [visit] with (NFC prefix, raw prefix) for every prefix of the path whose last name is not plain ASCII;
@@ -58,5 +65,36 @@ internal class NameSpellings {
 
     private companion object {
         const val ASCII_LIMIT = 128
+    }
+}
+
+/** The persisted half of [NameSpellings]: what a daemon run records and the next one loads back. */
+interface NameSpellingStore {
+    /** Every recorded spelling, as [NameSpellings] loads them at start. */
+    fun load(): Map<String, String>
+
+    /** The first spelling [rawPath] of the name whose NFC form is [nfcPath]; the first one wins. */
+    fun record(
+        nfcPath: String,
+        rawPath: String,
+    )
+
+    /** The name at [nfcPath] and everything below it is gone: its spellings are free again. */
+    fun forgetUnder(nfcPath: String)
+}
+
+/** [NameSpellingStore] on the profile's state.db (the `name_spellings` table, gkrost/unidrive-cli#24). */
+class StateDbNameSpellingStore(private val db: StateDatabase) : NameSpellingStore {
+    override fun load(): Map<String, String> = db.loadNameSpellings()
+
+    override fun record(
+        nfcPath: String,
+        rawPath: String,
+    ) {
+        db.recordNameSpelling(nfcPath, rawPath)
+    }
+
+    override fun forgetUnder(nfcPath: String) {
+        db.forgetNameSpellings(nfcPath)
     }
 }
