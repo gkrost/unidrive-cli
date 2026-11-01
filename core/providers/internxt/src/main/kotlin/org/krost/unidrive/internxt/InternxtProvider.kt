@@ -3328,13 +3328,26 @@ class InternxtProvider(
         for (file in liveFiles) byParent.getOrPut(file.folderUuid ?: rootUuid) { mutableListOf() }.add(file.uuid)
         for (folder in liveFolders) byParent.getOrPut(folder.parentUuid ?: rootUuid) { mutableListOf() }.add(folder.uuid)
         val gone = HashSet<String>()
-        for ((parent, uuids) in byParent) {
+        // The combined content call returns a whole folder in one body (a 29k-file folder needs ~105 s), so a poll that touches many
+        // folders must not turn into a walk of them: the first parents are verified, the rest keep the stream's answer until a later poll.
+        if (byParent.size > MAX_LAGGED_DELETION_PARENTS) {
+            log.info(
+                "The poll changed rows in {} folders; {} of them are checked for a lagging trash, the rest stay as the stream reported them",
+                byParent.size,
+                MAX_LAGGED_DELETION_PARENTS,
+            )
+        }
+        for ((parent, uuids) in byParent.entries.take(MAX_LAGGED_DELETION_PARENTS)) {
             val content =
-                runCatching { api.getFolderContents(parent) }.getOrElse {
+                try {
+                    api.getFolderContents(parent)
+                } catch (e: CancellationException) {
+                    throw e // a cancelled poll ends; it must not read as "could not be read" and go on
+                } catch (e: Exception) {
                     log.info(
                         "The content of folder {} could not be read for the trash check ({}); its changed rows stay as the stream reported them",
                         parent,
-                        it.javaClass.simpleName,
+                        e.javaClass.simpleName,
                     )
                     continue
                 }
@@ -4575,6 +4588,9 @@ class InternxtProvider(
     }
 
     companion object {
+        /** How many parent folders one poll verifies against their contents (see [reapLaggedDeletions]). */
+        internal const val MAX_LAGGED_DELETION_PARENTS = 25
+
         // Upper bound of objects remembered by shardHashReported (archive#940).
         private const val MAX_SHARD_HASH_REPORTS = 4096
 

@@ -87,6 +87,29 @@ class InternxtTrashReapTest {
         }
 
     @Test
+    fun `a poll that changed rows in many folders verifies only the first parents`() =
+        runTest {
+            val extra = 10
+            val parents = InternxtProvider.MAX_LAGGED_DELETION_PARENTS + extra
+            fun rowIn(
+                parent: String,
+                uuid: String,
+            ) = """{"uuid":"$uuid","plainName":"$uuid","type":"txt","size":"1","folderUuid":"$parent",""" +
+                """"status":"EXISTS","modificationTime":"2026-09-01T10:00:00.123Z","updatedAt":"2026-10-01T10:05:00Z"}"""
+            val drive =
+                DriveMock(
+                    folderPages = listOf((0 until parents).map { folder("d$it", "D$it", ROOT) }),
+                    filePages = listOf((0 until parents).map { rowIn("d$it", "f$it") }),
+                )
+
+            val page = provider(drive.engine).delta("2026-10-01T10:00:00Z", null, quiet())
+
+            val contentCalls = drive.other.count { it.contains("/drive/folders/content/") }
+            assertEquals(InternxtProvider.MAX_LAGGED_DELETION_PARENTS, contentCalls, "the verification is bounded: ${drive.other.size} calls")
+            assertTrue(page.items.none { it.deleted }, "everything the folders hold stays live")
+        }
+
+    @Test
     fun `rows below one parent are verified with one content call and the parent is the row's own`() =
         runTest {
             // Two changed files in d1, one in root, one already tombstoned by the stream (no check needed).
