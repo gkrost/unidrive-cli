@@ -2042,6 +2042,21 @@ class StateDatabase(
         }
 
     /**
+     * Every alive row as (its path, the remote path the provider knows it by, its name block or null), for the sweep that brings the
+     * strict-name blocks in line with the provider's answer at start. The remote path is the row's own path unless an alias moved it.
+     */
+    fun aliveNameBlockRows(): List<Triple<String, String, String?>> =
+        read("aliveNameBlockRows") { c ->
+            val out = mutableListOf<Triple<String, String, String?>>()
+            c.createStatement().use { stmt ->
+                stmt.executeQuery("SELECT path, COALESCE(remote_path, path), name_block FROM alive_entries").use { rs ->
+                    while (rs.next()) out += Triple(rs.getString(1), rs.getString(2), rs.getString(3))
+                }
+            }
+            return out
+        }
+
+    /**
      * How many alive rows carry a name block whose reason starts with [reasonPrefix]: one counted query, for a status reply that is
      * asked every few seconds, instead of reading every blocked row. The prefix is compared as text, not as a LIKE pattern.
      */
