@@ -1949,6 +1949,20 @@ class StateDatabase(
         }
 
     /**
+     * gkrost/unidrive-cli#24: drops the spellings of names that have no alive row any more. A name that left by other means than the
+     * hydration verbs (deleted in the cloud, reaped by a sync) is not forgotten by them, and a persisted record would refuse its
+     * other spelling for ever. Returns how many records went.
+     */
+    fun pruneNameSpellings(): Int =
+        locked("pruneNameSpellings") {
+            beginWrite()
+            conn
+                .prepareStatement(
+                    "DELETE FROM name_spellings WHERE NOT EXISTS (SELECT 1 FROM alive_entries e WHERE e.path = name_spellings.nfc_path)",
+                ).use { it.executeUpdate() }
+        }
+
+    /**
      * gkrost/unidrive-cli#24: the spelling [rawPath] of the name whose NFC form is [nfcPath], as a client named it first.
      * INSERT OR IGNORE: the first spelling wins, exactly as the in-memory guard's putIfAbsent.
      */

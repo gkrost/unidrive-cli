@@ -2,6 +2,7 @@ package org.krost.unidrive.sync
 
 import java.nio.file.Files
 import java.nio.file.Path
+import org.krost.unidrive.sync.model.SyncEntry
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -19,6 +20,21 @@ class NameSpellingsStateDbTest {
 
     private val nfc = "caf" + String(intArrayOf(0xE9), 0, 1) + ".txt"
     private val nfd = "cafe" + String(intArrayOf(0x301), 0, 1) + ".txt"
+
+    private fun entry(path: String) =
+        SyncEntry(
+            path = path,
+            remoteId = "id-$path",
+            remoteHash = "hash-$path",
+            remoteSize = 1,
+            remoteModified = java.time.Instant.parse("2026-03-28T12:00:00Z"),
+            localMtime = 1711627200000,
+            localSize = 1,
+            isFolder = false,
+            isPinned = false,
+            isHydrated = false,
+            lastSynced = java.time.Instant.now(),
+        )
 
     @BeforeTest
     fun setUp() {
@@ -53,6 +69,20 @@ class NameSpellingsStateDbTest {
         db.forgetNameSpellings("/$folder")
 
         assertEquals(mapOf("/other/$nfc" to "/other-raw"), db.loadNameSpellings())
+    }
+
+    @Test
+    fun `pruning drops the spellings of names without an alive row and keeps the others`() {
+        db.upsertEntry(entry("/$nfc"))
+        db.recordNameSpelling("/$nfc", "/$nfd")
+        db.recordNameSpelling("/gone-$nfc", "/gone-$nfd") // no row: deleted in the cloud, the verbs never saw it
+        db.recordNameSpelling("/trashed-$nfc", "/trashed-$nfd")
+        db.upsertEntry(entry("/trashed-$nfc"))
+        db.setStatusTrashed("id-/trashed-$nfc")
+
+        assertEquals(2, db.pruneNameSpellings())
+
+        assertEquals(mapOf("/$nfc" to "/$nfd"), db.loadNameSpellings())
     }
 
     @Test

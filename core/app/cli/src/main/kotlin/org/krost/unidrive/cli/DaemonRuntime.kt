@@ -379,7 +379,9 @@ class DaemonRuntime(
                     }
                 val hydrationIpc: HydrationIpcHandler? =
                     // gkrost/unidrive-cli#24: the name_clash guard's first spellings persist in state.db, so a restart keeps them.
-hydration?.let { h -> HydrationIpcHandler(h, spellingsStore = StateDbNameSpellingStore(db!!)).also { hydrationLink.bind(h, it) } }
+                    hydration?.let { h ->
+                        HydrationIpcHandler(h, spellingsStore = db?.let { StateDbNameSpellingStore(it) }).also { hydrationLink.bind(h, it) }
+                    }
 
                 // The construction order from here on is explicit: every handler and the poller exist
                 // before anything is launched on serveScope, so the launches below (the cache sweep, the

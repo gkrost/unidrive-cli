@@ -41,8 +41,9 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
     fun forget(rawPath: String) {
         val nfc = PathNormalizer.nfc(rawPath.trimEnd('/'))
         if (nfc.isEmpty()) return
-        seen.keys.removeIf { it == nfc || it.startsWith("$nfc/") }
-        store?.forgetUnder(nfc)
+        // The in-memory record mirrors the store (loaded whole at start, every new spelling written), so the store is asked only when
+        // something was dropped here: an unlink, rmdir or rename of an ASCII name must not cost a database write.
+        if (seen.keys.removeIf { it == nfc || it.startsWith("$nfc/") }) store?.forgetUnder(nfc)
     }
 
     // Calls [visit] with (NFC prefix, raw prefix) for every prefix of the path whose last name is not plain ASCII;
@@ -70,7 +71,11 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
 
 /** The persisted half of [NameSpellings]: what a daemon run records and the next one loads back. */
 interface NameSpellingStore {
-    /** Every recorded spelling, as [NameSpellings] loads them at start. */
+    /**
+     * Every recorded spelling, as [NameSpellings] loads them at start. A store drops the records of names that no longer exist
+     * first: a name removed by other means than the IPC verbs (deleted in the cloud, reaped by a sync) must not refuse its
+     * other spelling for ever, as a restart used to clear it.
+     */
     fun load(): Map<String, String>
 
     /** The first spelling [rawPath] of the name whose NFC form is [nfcPath]; the first one wins. */
@@ -85,7 +90,10 @@ interface NameSpellingStore {
 
 /** [NameSpellingStore] on the profile's state.db (the `name_spellings` table, gkrost/unidrive-cli#24). */
 class StateDbNameSpellingStore(private val db: StateDatabase) : NameSpellingStore {
-    override fun load(): Map<String, String> = db.loadNameSpellings()
+    override fun load(): Map<String, String> {
+        db.pruneNameSpellings()
+        return db.loadNameSpellings()
+    }
 
     override fun record(
         nfcPath: String,
