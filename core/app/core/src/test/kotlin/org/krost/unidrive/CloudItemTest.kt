@@ -54,6 +54,12 @@ class CloudItemTest {
     // to true`) remain below — those pin business invariants.
 
     @Test
+    fun `backup defaults to false`() {
+        val item = CloudItem("1", "test.txt", "/test.txt", 1, false, null, null, null, null)
+        assertFalse(item.backup)
+    }
+
+    @Test
     fun `hydrated defaults to true`() {
         val item =
             CloudItem(

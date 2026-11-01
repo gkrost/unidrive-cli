@@ -4,6 +4,7 @@
   <CurrentIssues>
     <ID>CyclomaticComplexMethod:TrackingReconciler.kt$TrackingReconciler$fun reconcile( path: String, local: LocalObservation, remote: RemoteObservation, track: TrackingRecord?, ): ReconcileAction</ID>
     <ID>NestedBlockDepth:SqliteTrackingSetSchemaTest.kt$SqliteTrackingSetSchemaTest$private fun schemaVersionOf(dbPath: Path): Int?</ID>
+    <ID>NestedBlockDepth:SqliteTrackingSetWalTest.kt$SqliteTrackingSetWalTest$@Test fun `the file runs in WAL and the mode stays with the file`()</ID>
     <ID>NestedBlockDepth:TrackingEngine.kt$TrackingEngine$private suspend fun reapEmptyDirs(deletedFilePaths: List&lt;String&gt;): List&lt;String&gt;</ID>
     <ID>NestedBlockDepth:TrackingEngine.kt$TrackingEngine$private suspend fun walkDelta( cursor: String?, incremental: Boolean, ): RemoteEnumResult</ID>
     <ID>TooGenericExceptionCaught:TrackingEngine.kt$TrackingEngine$e: Exception</ID>

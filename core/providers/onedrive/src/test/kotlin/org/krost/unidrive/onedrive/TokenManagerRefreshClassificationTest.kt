@@ -49,9 +49,7 @@ class TokenManagerRefreshClassificationTest {
         val oauth = OAuthService(OneDriveConfig(), httpClient = HttpClient(engine))
         val manager = TokenManager(OneDriveConfig(), oauth)
         // Seed the in-memory token without going through a real auth flow.
-        val tokenField = TokenManager::class.java.getDeclaredField("token")
-        tokenField.isAccessible = true
-        tokenField.set(manager, nearExpiryTokenWithRefresh())
+        manager.token = nearExpiryTokenWithRefresh()
         return manager
     }
 

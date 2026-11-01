@@ -35,11 +35,13 @@ data class InternxtFolder(
     val modificationInstant: Instant? = tryParseInternxtInstant(modificationTime)
 }
 
-// One entry of `GET /backup/deviceAsFolder`: a folder row of the backups bucket and a few device fields, of which only
-// the uuid is read.
+// One entry of `GET /backup/deviceAsFolder`: a folder row of the backups bucket and a few device fields. [uuid] is the
+// device's folder, the top of its tree. [plainName] is the device's name (a host name, never logged); a device folder
+// made by an old desktop app has none, only an encrypted `name`.
 @Serializable
-data class BackupDeviceFolder(
+data class BackupDevice(
     val uuid: String,
+    val plainName: String? = null,
 )
 
 @Serializable

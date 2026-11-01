@@ -213,7 +213,7 @@ class HydrationImpl(
     // handlers concurrently put/remove their own handles. A plain HashMap there
     // would corrupt under that race (torn read missing a live handle, or worker
     // crash), letting dehydrate delete the cache of a path open for write.
-    private val openSets =
+    internal val openSets =
         ConcurrentHashMap<String, ConcurrentMap<String, String>>()
 
     // Handle ids that two connections held at the same time: two clients that both number their handles

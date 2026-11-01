@@ -30,24 +30,15 @@ import kotlin.test.assertTrue
  * HTML-on-200 must never write a destination file, and the download must FAIL after a bounded
  * number of attempts (no infinite loop).
  *
- * Swaps the private `httpClient` field (same trick as `ListChildrenPaginationTest`) so the
+ * Hands the service a MockEngine client (same as `ListChildrenPaginationTest`) so the
  *  real `authenticatedRequest` / `HttpRetryBudget` / flake-loop code paths run and only the
  * transport is faked.
  */
 class DownloadContentTypeGuardTest {
-    private fun installMockClient(
-        service: GraphApiService,
-        engine: MockEngine,
-    ) {
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
-    }
-
-    private fun newService(): GraphApiService =
+    private fun newService(engine: MockEngine): GraphApiService =
         GraphApiService(
             config = OneDriveConfig(),
+            httpClient = HttpClient(engine),
             tokenProvider = { _ -> "test-token" },
         )
 
@@ -91,8 +82,7 @@ class DownloadContentTypeGuardTest {
                     }
                 }
 
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val tempDir = Files.createTempDirectory("ud231-guard-")
             val destPath = tempDir.resolve("photo.jpg")
@@ -149,8 +139,7 @@ class DownloadContentTypeGuardTest {
                     }
                 }
 
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val tempDir = Files.createTempDirectory("ud231-positive-")
             val destPath = tempDir.resolve("photo.bin")
@@ -196,8 +185,7 @@ class DownloadContentTypeGuardTest {
                     }
                 }
 
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
             val tempDir = Files.createTempDirectory("od-trunc-")
             val destPath = tempDir.resolve("f.bin")
 
@@ -238,8 +226,7 @@ class DownloadContentTypeGuardTest {
                     }
                 }
 
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
             val tempDir = Files.createTempDirectory("od354-guard-")
             val destPath = tempDir.resolve("f.bin")
             val goodBytes = "GOOD-BYTES-V1".toByteArray()
@@ -295,8 +282,7 @@ class DownloadContentTypeGuardTest {
                     }
                 }
 
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
             val tempDir = Files.createTempDirectory("od354-ok-")
             val destPath = tempDir.resolve("f.bin")
             Files.write(destPath, "OLD-CONTENT".toByteArray())

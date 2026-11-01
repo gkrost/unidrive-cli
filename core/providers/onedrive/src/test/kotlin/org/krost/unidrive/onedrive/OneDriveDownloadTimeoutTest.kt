@@ -43,21 +43,20 @@ class OneDriveDownloadTimeoutTest {
                         )
                     }
                 }
-            val service = GraphApiService(config = OneDriveConfig(), tokenProvider = { "tok" })
-            val field = GraphApiService::class.java.getDeclaredField("httpClient")
-            field.isAccessible = true
-            (field.get(service) as? HttpClient)?.close()
-            // The same timeout plugin as graphHttpClient: the flat defaults, nothing per request.
-            field.set(
-                service,
-                HttpClient(engine) {
-                    install(HttpTimeout) {
-                        connectTimeoutMillis = HttpDefaults.CONNECT_TIMEOUT_MS
-                        socketTimeoutMillis = HttpDefaults.SOCKET_TIMEOUT_MS
-                        requestTimeoutMillis = HttpDefaults.REQUEST_TIMEOUT_MS
-                    }
-                },
-            )
+            val service =
+                GraphApiService(
+                    config = OneDriveConfig(),
+                    // The same timeout plugin as graphHttpClient: the flat defaults, nothing per request.
+                    httpClient =
+                        HttpClient(engine) {
+                            install(HttpTimeout) {
+                                connectTimeoutMillis = HttpDefaults.CONNECT_TIMEOUT_MS
+                                socketTimeoutMillis = HttpDefaults.SOCKET_TIMEOUT_MS
+                                requestTimeoutMillis = HttpDefaults.REQUEST_TIMEOUT_MS
+                            }
+                        },
+                    tokenProvider = { "tok" },
+                )
 
             // The 4-byte answer is shorter than the declared size: the outcome does not matter, the request's timeout does.
             runCatching { service.downloadFile("item-1", Files.createTempFile("od-timeout", ".bin")) }

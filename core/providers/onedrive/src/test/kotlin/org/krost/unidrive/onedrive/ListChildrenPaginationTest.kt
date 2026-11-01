@@ -20,8 +20,8 @@ import kotlin.test.assertTrue
  * UD-314: verifies that `GraphApiService.listChildren` follows `@odata.nextLink` to the end,
  * so folders with more than the Graph page size (~200) are not silently truncated.
  *
- * The test swaps the service's private `httpClient` for one backed by a Ktor `MockEngine`
- * that returns canned paginated JSON. We touch only the field — the service's internal call
+ * The test hands the service an `httpClient` backed by a Ktor `MockEngine`
+ * that returns canned paginated JSON. We replace only the client — the service's internal call
  *  paths (`authenticatedRequest`, `HttpRetryBudget`, `tokenProvider`) exercise their real code,
  * only the transport is faked.
  */
@@ -43,29 +43,23 @@ class ListChildrenPaginationTest {
         return """{"value":[$items]$nextPart}"""
     }
 
-    private fun installMockClient(
-        service: GraphApiService,
-        engine: MockEngine,
-    ) {
-        val field = GraphApiService::class.java.getDeclaredField("httpClient")
-        field.isAccessible = true
-        // Close the real client we replace, so we don't leak its background threads.
-        (field.get(service) as? HttpClient)?.close()
-        field.set(service, HttpClient(engine))
-    }
-
-    private fun newService(): GraphApiService {
+    private fun newService(engine: MockEngine): GraphApiService {
         // tokenProvider is invoked by authenticatedRequest; we never actually hit Graph, so
         // any non-empty token will do.
         return GraphApiService(
             config = OneDriveConfig(),
+            httpClient = HttpClient(engine),
             tokenProvider = { _ -> "test-token" },
         )
     }
 
-    private fun newServiceWithStore(tokenPath: java.nio.file.Path): GraphApiService =
+    private fun newServiceWithStore(
+        tokenPath: java.nio.file.Path,
+        engine: MockEngine,
+    ): GraphApiService =
         GraphApiService(
             config = OneDriveConfig(tokenPath = tokenPath),
+            httpClient = HttpClient(engine),
             tokenProvider = { _ -> "test-token" },
         )
 
@@ -106,8 +100,7 @@ class ListChildrenPaginationTest {
                     )
                 }
 
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val items = service.listChildren("/")
 
@@ -146,8 +139,7 @@ class ListChildrenPaginationTest {
                     )
                 }
 
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val items = service.listChildren("/some/folder")
 
@@ -186,8 +178,7 @@ class ListChildrenPaginationTest {
                         else -> error("Unexpected method ${request.method}")
                     }
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val result =
                 service.uploadSimple(
@@ -232,8 +223,7 @@ class ListChildrenPaginationTest {
                         }
                     }
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             service.uploadSimple("/plain.txt", "abc".toByteArray(), fileSystemInfo = null)
 
@@ -263,8 +253,7 @@ class ListChildrenPaginationTest {
                         else -> error("Unexpected URL: $url")
                     }
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             service.uploadLargeFile(
                 localPath = tempFile,
@@ -307,8 +296,7 @@ class ListChildrenPaginationTest {
                         else -> error("Unexpected URL: $url")
                     }
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             service.uploadLargeFile(localPath = tempFile, remotePath = "/x.bin", onProgress = null, fileSystemInfo = null)
 
@@ -328,8 +316,7 @@ class ListChildrenPaginationTest {
                     ifMatchSeen = request.headers[HttpHeaders.IfMatch]
                     respond(driveItemBody, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             service.moveItem(itemId = "item-mv", newPath = "/renamed.txt", oldPath = "/old.txt", ifMatchETag = """"opaque-etag,7"""")
 
@@ -347,8 +334,7 @@ class ListChildrenPaginationTest {
                     ifMatchSeen = request.headers[HttpHeaders.IfMatch]
                     respond(driveItemBody, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             service.moveItem(itemId = "item-mv2", newPath = "/renamed.txt", oldPath = "/old.txt", ifMatchETag = null)
 
@@ -363,8 +349,7 @@ class ListChildrenPaginationTest {
                 MockEngine { _ ->
                     respond("eTag mismatch", HttpStatusCode.PreconditionFailed)
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val ex =
                 kotlin.test.assertFailsWith<GraphApiException> {
@@ -395,8 +380,7 @@ class ListChildrenPaginationTest {
                         else -> error("Unexpected URL: $url")
                     }
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             service.uploadLargeFile(
                 localPath = tempFile,
@@ -432,8 +416,7 @@ class ListChildrenPaginationTest {
                         else -> error("Unexpected URL: $url")
                     }
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             service.uploadLargeFile(
                 localPath = tempFile,
@@ -462,8 +445,7 @@ class ListChildrenPaginationTest {
                         else -> error("Unexpected URL: $url")
                     }
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val ex =
                 kotlin.test.assertFailsWith<GraphApiException> {
@@ -490,8 +472,7 @@ class ListChildrenPaginationTest {
                     seenUrl = request.url.toString()
                     respond(driveItemBody, HttpStatusCode.Created, headersOf(HttpHeaders.ContentType, "application/json"))
                 }
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             service.uploadSimple("/hello.txt", "abc".toByteArray(), fileSystemInfo = null)
 
@@ -525,8 +506,7 @@ class ListChildrenPaginationTest {
             val previousLevel = graphLogger.level
 
             try {
-                val service = newServiceWithStore(tokenDir)
-                installMockClient(service, engine)
+                val service = newServiceWithStore(tokenDir, engine)
 
                 // Two consecutive resume-style calls: the warning must fire exactly once
                 // (per-instance latch), not on every page.
@@ -570,8 +550,7 @@ class ListChildrenPaginationTest {
             graphLogger.addAppender(appender)
 
             try {
-                val service = newServiceWithStore(tokenDir)
-                installMockClient(service, engine)
+                val service = newServiceWithStore(tokenDir, engine)
                 service.getDelta(link = "https://graph.microsoft.com/v1.0/me/drive/root/delta?token=PRIOR")
 
                 val warns =
@@ -624,8 +603,7 @@ class ListChildrenPaginationTest {
                         else -> error("Unexpected: ${request.method} $url")
                     }
                 }
-            val service = newServiceWithStore(storeDir)
-            installMockClient(service, engine)
+            val service = newServiceWithStore(storeDir, engine)
 
             service.uploadLargeFile(localPath = tempFile, remotePath = "/refresh.bin", onProgress = null, fileSystemInfo = null)
 
@@ -674,8 +652,7 @@ class ListChildrenPaginationTest {
                         else -> error("Unexpected URL: $url")
                     }
                 }
-            val service = newServiceWithStore(storeDir)
-            installMockClient(service, engine)
+            val service = newServiceWithStore(storeDir, engine)
 
             val result =
                 service.uploadLargeFile(localPath = tempFile, remotePath = "/retry.bin", onProgress = null, fileSystemInfo = null)
@@ -727,8 +704,7 @@ class ListChildrenPaginationTest {
                         else -> error("Unexpected URL: $url")
                     }
                 }
-            val service = newServiceWithStore(storeDir)
-            installMockClient(service, engine)
+            val service = newServiceWithStore(storeDir, engine)
 
             kotlin.test.assertFailsWith<java.io.IOException> {
                 service.uploadLargeFile(localPath = tempFile, remotePath = "/probe.bin", onProgress = null, fileSystemInfo = null)
@@ -784,8 +760,7 @@ class ListChildrenPaginationTest {
                     )
                 }
 
-            val service = newService()
-            installMockClient(service, engine)
+            val service = newService(engine)
 
             val items = service.listChildren("/empty")
 
@@ -843,8 +818,7 @@ class ListChildrenPaginationTest {
                         else -> respond("{}", HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
                     }
                 }
-            val service = newServiceWithStore(storeDir)
-            installMockClient(service, engine)
+            val service = newServiceWithStore(storeDir, engine)
 
             service.uploadLargeFile(
                 localPath = tempFile,
@@ -916,8 +890,7 @@ class ListChildrenPaginationTest {
                         else -> respond("{}", HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
                     }
                 }
-            val service = newServiceWithStore(storeDir)
-            installMockClient(service, engine)
+            val service = newServiceWithStore(storeDir, engine)
 
             service.uploadLargeFile(
                 localPath = tempFile,

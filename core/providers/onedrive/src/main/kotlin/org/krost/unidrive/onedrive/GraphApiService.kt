@@ -47,6 +47,10 @@ class GraphApiService(
     engine: HttpClientEngine? = null,
     // The limits of the chunk PUT watchdog; tests run it on a scale of milliseconds.
     private val uploadWatchdog: UploadWatchdogLimits = UploadWatchdogLimits.DEFAULT,
+    // Tests hand in a whole client (a bare MockEngine client, or one with their own timeouts); production builds its own.
+    httpClient: HttpClient? = null,
+    // Tests point the requests at a loopback server; production talks to Graph.
+    private val baseUrl: String = "${OneDriveConfig.GRAPH_BASE_URL}/${OneDriveConfig.GRAPH_VERSION}",
     private val tokenProvider: suspend (forceRefresh: Boolean) -> String,
 ) : AutoCloseable {
     private val log = LoggerFactory.getLogger(GraphApiService::class.java)
@@ -55,7 +59,8 @@ class GraphApiService(
     private val requestMetrics = RequestMetricsTap()
 
     // archive#644: the token path's leaf is the profile name, so the request log lines carry the account.
-    private val httpClient = graphHttpClient(requestMetrics, config.userAgent, engine, profile = config.tokenPath.fileName.toString())
+    private val httpClient =
+        httpClient ?: graphHttpClient(requestMetrics, config.userAgent, engine, profile = config.tokenPath.fileName.toString())
 
     fun attachRequestMetrics(sink: RequestMetricsSink?) {
         requestMetrics.sink = sink
@@ -63,7 +68,6 @@ class GraphApiService(
 
     private val json = org.krost.unidrive.UnidriveJson
     private val sessionStore = UploadSessionStore(config.tokenPath)
-    private val baseUrl = "${OneDriveConfig.GRAPH_BASE_URL}/${OneDriveConfig.GRAPH_VERSION}"
 
     private val deltaSafetyFile: Path get() = config.tokenPath.resolve("delta_last_seen")
     private val cursorAgeWarned = java.util.concurrent.atomic.AtomicBoolean(false)

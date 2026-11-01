@@ -136,6 +136,9 @@ internal class FakeDrive(
 ) {
     val metaRequests = CopyOnWriteArrayList<String>()
     val deviceRequests = AtomicInteger()
+
+    // Every request the drive was sent, as `METHOD path`, in order.
+    val requests = CopyOnWriteArrayList<String>()
     val writes = CopyOnWriteArrayList<String>()
     private val inFlight = AtomicInteger()
     val maxInFlight = AtomicInteger()
@@ -182,6 +185,7 @@ internal class FakeDrive(
     val engine =
         MockEngine { request ->
             val path = request.url.encodedPath
+            requests += "${request.method.value} $path"
             val params = request.url.parameters
             val status = params["status"]
             val token = params["cursor"]

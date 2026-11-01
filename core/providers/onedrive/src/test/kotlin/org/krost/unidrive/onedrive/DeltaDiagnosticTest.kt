@@ -113,13 +113,7 @@ class DeltaDiagnosticTest {
             println("DIAG: deleted $remotePath")
 
             // Make raw HTTP call to see exact JSON the Graph API returns
-            val tokenManager =
-                OneDriveProvider::class.java
-                    .getDeclaredField(
-                        "tokenManager",
-                    ).apply { isAccessible = true }
-                    .get(provider) as TokenManager
-            val token = tokenManager.getValidToken().accessToken
+            val token = provider.tokenManager.getValidToken().accessToken
             val httpClient = HttpClient()
 
             for (attempt in 1..10) {

@@ -565,8 +565,7 @@ class StateDatabaseTest {
     fun `no index on parent_uuid or on the effective remote path expression`() {
         // archive#951: no query asks for the children of a parent_uuid, and the index of COALESCE(remote_path, path) held the
         // keys of the path index again; both cost every upsert a write. The lookup by remote path is two seeks now.
-        val dbPath = db.javaClass.getDeclaredField("dbPath")
-            .apply { isAccessible = true }.get(db) as java.nio.file.Path
+        val dbPath = db.file
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
             val indexNames = mutableListOf<String>()
             conn.createStatement().use { stmt ->
@@ -585,8 +584,7 @@ class StateDatabaseTest {
         sql: String,
         vararg params: String,
     ): String {
-        val dbPath = database.javaClass.getDeclaredField("dbPath")
-            .apply { isAccessible = true }.get(database) as java.nio.file.Path
+        val dbPath = database.file
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
             conn.prepareStatement("EXPLAIN QUERY PLAN $sql").use { stmt ->
                 params.forEachIndexed { i, p -> stmt.setString(i + 1, p) }
@@ -823,7 +821,7 @@ class StateDatabaseTest {
         // Re-initialize an already-current DB. Schema and rows survive.
         db.upsertEntry(entry("/keep.txt").copy(remoteId = "uuid-keep"))
         db.close()
-        val dbPath = (db.javaClass.getDeclaredField("dbPath").apply { isAccessible = true }.get(db) as java.nio.file.Path)
+        val dbPath = db.file
         val reopened = StateDatabase(dbPath)
         reopened.initialize()
         try {

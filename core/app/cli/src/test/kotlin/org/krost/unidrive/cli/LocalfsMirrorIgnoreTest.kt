@@ -5,6 +5,7 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.ScanContext
+import org.krost.unidrive.engine.TransferPause
 import org.krost.unidrive.localfs.LocalFsProvider
 import org.krost.unidrive.sync.ProgressReporter
 import org.krost.unidrive.sync.StateDatabase
@@ -24,8 +25,9 @@ import kotlin.test.assertTrue
 /**
  * The mirror applies the ignore rules (`.unidrive.ignore`, the account's rules, the content defaults) the way it
  * applies `exclude_patterns`: an ignored path is not uploaded, not downloaded and not deleted on either side. A rule
- * file that cannot be read, or that the cloud holds and this computer does not yet, holds its folder back (fail
- * closed). The "cloud" is a plain directory (`localfs`), and the real mirror engine runs against it in-process.
+ * file that cannot be read holds its folder back (fail closed); one only the cloud holds is downloaded before the plan,
+ * so it applies in the same pass. The "cloud" is a plain directory (`localfs`), and the real mirror engine runs against it
+ * in-process.
  */
 class LocalfsMirrorIgnoreTest {
     private lateinit var base: Path
@@ -123,7 +125,7 @@ class LocalfsMirrorIgnoreTest {
     }
 
     @Test
-    fun `a rule file only the cloud holds holds its folder back until it is downloaded`() {
+    fun `a rule file only the cloud holds keeps the local file it names local`() {
         start()
         // Another computer added the rule; this one has a file the rule names, not yet synced.
         put(remote, "notes/.unidrive.ignore", "draft.txt\n")
@@ -196,7 +198,7 @@ class LocalfsMirrorIgnoreTest {
     }
 
     @Test
-    fun `a cloud-only rule file holds its folder back on the streaming pass that first lists it`() {
+    fun `a cloud-only rule file keeps the local file it names local on the streaming pass that first lists it`() {
         // The ignored file is not uploaded on the same streaming pass that first sees the rule file.
         start(streaming = true)
         put(remote, "notes/.unidrive.ignore", "draft.txt\n")
@@ -206,6 +208,110 @@ class LocalfsMirrorIgnoreTest {
 
         assertFalse(Files.exists(remote.resolve("notes/draft.txt")))
         assertEquals("draft.txt\n", Files.readString(local.resolve("notes/.unidrive.ignore")))
+        assertQuiet()
+    }
+
+    @Test
+    fun `a rule file only the cloud holds applies on the pass that lists it`() {
+        start()
+        // Another computer added the folder with its rule; this one has files there too.
+        put(remote, "notes/.unidrive.ignore", "*.log\ndraft.txt\n")
+        put(remote, "notes/debug.log", "a cloud log")
+        put(remote, "notes/plan.txt", "the cloud's plan")
+        put(local, "notes/draft.txt", "a private draft")
+        put(local, "notes/todo.txt", "goes up")
+
+        sync()
+
+        assertEquals("*.log\ndraft.txt\n", Files.readString(local.resolve("notes/.unidrive.ignore")), "the rule file is downloaded")
+        assertFalse(Files.exists(local.resolve("notes/debug.log")), "the rule applies in this pass: the log stays in the cloud")
+        assertEquals("the cloud's plan", Files.readString(local.resolve("notes/plan.txt")), "the folder is not held back")
+        assertEquals("goes up", Files.readString(remote.resolve("notes/todo.txt")), "nor are its uploads")
+        assertFalse(Files.exists(remote.resolve("notes/draft.txt")), "the rule keeps the draft local")
+        assertQuiet()
+    }
+
+    @Test
+    fun `a rule file only the cloud holds applies on the streaming pass that lists it`() {
+        start(streaming = true)
+        put(remote, "notes/.unidrive.ignore", "*.log\ndraft.txt\n")
+        put(remote, "notes/debug.log", "a cloud log")
+        put(remote, "notes/plan.txt", "the cloud's plan")
+        put(local, "notes/draft.txt", "a private draft")
+        put(local, "notes/todo.txt", "goes up")
+
+        sync()
+
+        assertEquals("*.log\ndraft.txt\n", Files.readString(local.resolve("notes/.unidrive.ignore")))
+        assertFalse(Files.exists(local.resolve("notes/debug.log")))
+        assertEquals("the cloud's plan", Files.readString(local.resolve("notes/plan.txt")))
+        assertEquals("goes up", Files.readString(remote.resolve("notes/todo.txt")))
+        assertFalse(Files.exists(remote.resolve("notes/draft.txt")))
+        assertQuiet()
+    }
+
+    @Test
+    fun `a rule file in a folder only the cloud holds applies on the pass that lists it`() {
+        start()
+        put(remote, "shared/.unidrive.ignore", "*.log\n")
+        put(remote, "shared/debug.log", "a cloud log")
+        put(remote, "shared/plan.txt", "the cloud's plan")
+
+        sync()
+
+        assertEquals("*.log\n", Files.readString(local.resolve("shared/.unidrive.ignore")))
+        assertFalse(Files.exists(local.resolve("shared/debug.log")))
+        assertEquals("the cloud's plan", Files.readString(local.resolve("shared/plan.txt")))
+        assertQuiet()
+    }
+
+    @Test
+    fun `a cloud-only rule file in a folder the rules above ignore is not downloaded`() {
+        start()
+        put(local, ".unidrive.ignore", "private/\n")
+        put(remote, "private/.unidrive.ignore", "*.log\n")
+        put(remote, "private/plan.txt", "the cloud's plan")
+
+        sync()
+
+        assertFalse(Files.exists(local.resolve("private")), "nothing of an ignored folder comes down, its rule file neither")
+        assertQuiet()
+    }
+
+    @Test
+    fun `a cloud-only rule file over the cap still holds its folder back`() {
+        start(UploadIgnore.settingsFor(honorGitignore = false, accountRules = emptyList()).copy(maxRuleFileBytes = 16))
+        put(remote, "notes/.unidrive.ignore", "# longer than sixteen bytes\n*.log\n")
+        put(remote, "notes/debug.log", "a cloud log")
+        put(remote, "notes/plan.txt", "the cloud's plan")
+
+        sync()
+
+        assertFalse(Files.exists(local.resolve("notes/debug.log")), "fail closed: nothing below the folder is downloaded")
+        assertFalse(Files.exists(local.resolve("notes/plan.txt")))
+        assertQuiet()
+    }
+
+    @Test
+    fun `a paused pass does not download a cloud-only rule file early`() {
+        start()
+        val pause = Pause()
+        engine.mountWiring.guard.attachPause(pause)
+        put(remote, "notes/.unidrive.ignore", "*.log\n")
+        put(remote, "notes/debug.log", "a cloud log")
+        put(remote, "notes/plan.txt", "the cloud's plan")
+
+        sync()
+
+        assertEquals(0, pause.tracked, "no rule-file transfer is started while paused")
+        assertFalse(Files.exists(local.resolve("notes/plan.txt")), "the folder waits for its rule file")
+        assertFalse(Files.exists(local.resolve("notes/debug.log")))
+
+        pause.isPaused = false
+        sync()
+
+        assertEquals("the cloud's plan", Files.readString(local.resolve("notes/plan.txt")))
+        assertFalse(Files.exists(local.resolve("notes/debug.log")))
         assertQuiet()
     }
 
@@ -300,6 +406,21 @@ class LocalfsMirrorIgnoreTest {
                     )
                 }
             return page.copy(items = page.items + tombstones)
+        }
+    }
+
+    private class Pause : TransferPause {
+        @Volatile override var isPaused = true
+
+        @Volatile var tracked = 0
+
+        override suspend fun track(
+            path: String,
+            block: suspend () -> Unit,
+        ) {
+            tracked++
+            check(!isPaused) { "paused" }
+            block()
         }
     }
 

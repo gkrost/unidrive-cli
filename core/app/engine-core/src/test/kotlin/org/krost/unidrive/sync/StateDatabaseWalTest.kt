@@ -178,7 +178,7 @@ class StateDatabaseWalTest {
 
     // The desktop connector, except that `PRAGMA journal_mode=WAL` fails as SQLITE_BUSY (a reader holds the file) or
     // answers the current mode (a file system without shared memory).
-    private class SwitchRefusingConnector(
+    internal class SwitchRefusingConnector(
         private val busy: Boolean,
     ) : StateDatabaseConnector {
         override fun open(path: Path?): Connection {

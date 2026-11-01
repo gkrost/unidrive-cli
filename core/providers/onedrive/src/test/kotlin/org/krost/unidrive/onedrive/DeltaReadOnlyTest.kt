@@ -30,16 +30,8 @@ class DeltaReadOnlyTest {
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
             }
-        val provider = OneDriveProvider(config)
-        val graphApi = GraphApiService(config = config, tokenProvider = { _ -> "test-token" })
-        val httpClientField = GraphApiService::class.java.getDeclaredField("httpClient")
-        httpClientField.isAccessible = true
-        (httpClientField.get(graphApi) as? HttpClient)?.close()
-        httpClientField.set(graphApi, HttpClient(engine))
-        val graphApiField = OneDriveProvider::class.java.getDeclaredField("graphApi")
-        graphApiField.isAccessible = true
-        (graphApiField.get(provider) as? GraphApiService)?.close()
-        graphApiField.set(provider, graphApi)
+        val graphApi = GraphApiService(config = config, httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+        val provider = OneDriveProvider(config, graphApi = graphApi)
         return provider
     }
 
