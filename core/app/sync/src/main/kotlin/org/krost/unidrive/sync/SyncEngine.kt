@@ -201,6 +201,11 @@ open class SyncEngine(
     @Volatile
     private var remoteListingReady = false
 
+    // gkrost/unidrive-cli#68: whether this pass may download a cloud-only rule file before its plan (not a dry run, not a
+    // refresh). Set at the start of each pass.
+    @Volatile
+    private var ruleFilesBeforePlan = false
+
     init {
         // archive#737: a local file in the way of a remote folder is replaced only with proof that its bytes
         // are in the cloud. Otherwise PlaceholderManager keeps it as a conflict copy, recorded here.
@@ -216,7 +221,8 @@ open class SyncEngine(
      * does not is downloaded on purpose, capped at [org.krost.unidrive.sync.ignore.IgnoreSettings.maxRuleFileBytes],
      * into [ignoreRuleFilesRoot]. A larger one, one whose size is not positive, or one whose download fails or is not
      * the cloud's copy, holds its folder back. The mirror's are read from the sync root: one the cloud holds that is
-     * not downloaded yet holds its folder back until the sync downloads it.
+     * not downloaded yet is downloaded before the plan ([downloadCloudOnlyRuleFiles]); one that cannot be holds its
+     * folder back until the sync downloads it.
      */
     val uploadIgnore: org.krost.unidrive.sync.ignore.UploadIgnore? =
         mountIgnore?.let { settings ->
@@ -802,6 +808,7 @@ open class SyncEngine(
         fastBootstrapActive = false
         remoteTopLevelByName = null
         remoteListingReady = false
+        ruleFilesBeforePlan = !dryRun && !skipTransfers
         // The last pass's apply may have moved rows out of the trash namespace (a restored folder takes the rows below
         // it along): read it again before this pass plans, or their ids stay refused for one more pass.
         trashNamespace.refresh(db)
@@ -1146,6 +1153,9 @@ open class SyncEngine(
 
         passRemoteChanges = allRemoteChanges
         remoteListingReady = true
+        // Non-streaming has not scanned yet: a cloud-only rule file downloaded now applies to this pass's scan and plan.
+        // The streaming gather did the same when it published its listing.
+        if (localChangesForStreaming == null) downloadCloudOnlyRuleFiles(allRemoteChanges, runScope)
         // A probe that ran before this assignment (streaming slices already asked with the listing in hand)
         // must not keep a fail-open answer. Non-streaming has not scanned yet: this is before its first explain.
         mirrorRules?.revalidate()
@@ -2115,11 +2125,92 @@ open class SyncEngine(
         }
     }
 
-    private fun publishPassListing(listing: Map<String, CloudItem>) {
+    private suspend fun publishPassListing(
+        listing: Map<String, CloudItem>,
+        scope: List<String>,
+    ) {
         passRemoteChanges = HashMap(listing)
         remoteListingReady = true
+        downloadCloudOnlyRuleFiles(listing, scope)
         // Drop a probe cached as absent before this listing existed, so the scan and the slice ask again.
         mirrorRules?.revalidate()
+    }
+
+    /**
+     * gkrost/unidrive-cli#68: on a mirror, a rule file this pass's [listing] reports that this computer does not have yet
+     * is downloaded now, after the listing and before the scan and the plan, so its rules apply in this pass, as a
+     * mount's do. It is the download the plan would make (the row records it hydrated with the cloud's hash, so the
+     * plan finds nothing left to do for it), made earlier. Fail closed as before: a rule file over the cap or of no
+     * known size, one not downloaded while transfers are paused, one whose download fails or does not match the
+     * cloud's hash, keeps its folder held back until the plan downloads it.
+     */
+    private suspend fun downloadCloudOnlyRuleFiles(
+        listing: Map<String, CloudItem>,
+        scope: List<String>,
+    ) {
+        val rules = mirrorRules ?: return
+        if (!ruleFilesBeforePlan || syncDirection == SyncDirection.UPLOAD) return
+        listing
+            .filter { (path, item) ->
+                !item.deleted && !item.isFolder && rules.isRuleFile(path) && (scope.isEmpty() || SyncScope.contains(path, scope))
+            }
+            // A folder's rules decide whether a rule file below it is ignored: the shallower ones come first.
+            .entries
+            .sortedBy { (path, _) -> path.count { it == '/' } }
+            .forEach { (path, item) ->
+                val local = ruleFileToDownload(path, item, rules.settings.maxRuleFileBytes)
+                if (local != null && downloadRuleFile(path, item, local)) rules.revalidate()
+            }
+    }
+
+    /** Where the cloud-only rule file [path] goes in the sync root, or null when it is not downloaded before the plan. */
+    private fun ruleFileToDownload(
+        path: String,
+        item: CloudItem,
+        maxBytes: Long,
+    ): Path? {
+        if (!ruleFileNotDownloaded(path) || item.size < 0L || item.size > maxBytes) return null
+        val local = safeResolveLocalOrNull(syncRoot, path) ?: return null
+        if (Files.exists(local, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return null
+        if (planExcludePatterns.any { Reconciler.matchesGlob(path, it) } || guard.isReadOnlyPath(path)) return null
+        // Its folder, as the rules above it decide (asking for the file itself would read the folder's own rules, the
+        // file not here yet, and report it as unreadable just before it is downloaded).
+        val folder = path.substringBeforeLast('/', "")
+        if (folder.isNotEmpty() && ignoredByRules(folder, true)) return null
+        return local
+    }
+
+    /** Downloads the rule file [path] as the plan would; false when it is not here afterwards as the cloud's copy. */
+    @Suppress("TooGenericExceptionCaught") // whatever the download throws, the folder stays held back as before
+    private suspend fun downloadRuleFile(
+        path: String,
+        item: CloudItem,
+        local: Path,
+    ): Boolean {
+        val transfers = guard.ruleFileTransfers
+        if (transfers.isPaused) return false
+        val previous = db.getEntry(path)
+        try {
+            local.parent?.let { Files.createDirectories(it) }
+            val transfer = transfers.runner(path)
+            transfer { applyDownload(SyncAction.DownloadContent(path, item)) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: AuthenticationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("ignore rule file {} cannot be downloaded before the plan ({}): its folder waits for it", path, e.toString())
+            return false
+        }
+        if (!HashVerifier.verify(local, item.hash, provider.hashAlgorithm())) {
+            // Not the cloud's copy: it is not read as the rules. The plan downloads it again.
+            runCatching { Files.deleteIfExists(local) }
+            if (previous != null) db.upsertEntry(previous) else db.deleteEntry(path)
+            log.warn("ignore rule file {} does not match the cloud copy after its download: its folder waits for it", path)
+            return false
+        }
+        log.info("ignore rule file {} downloaded before the plan, so its rules apply in this pass ({} bytes)", path, item.size)
+        return true
     }
 
     private suspend fun gatherStreamingChanges(
@@ -2212,7 +2303,7 @@ open class SyncEngine(
                     // archive#116: arm adopt-on-name-match for this run's apply pass.
                     fastBootstrapActive = true
                     if (deferUntilListing) {
-                        publishPassListing(changes)
+                        publishPassListing(changes, scope)
                         resolvedLocal.set(scanLocal!!.invoke())
                     }
                     return@withContext Triple(changes, emptyList(), resolvedLocal.get())
@@ -2583,7 +2674,7 @@ open class SyncEngine(
                     // Final flush of whatever's still held after the last page.
                     flushHeld()
                     if (deferUntilListing) {
-                        publishPassListing(changes)
+                        publishPassListing(changes, scope)
                         resolvedLocal.set(scanLocal!!.invoke())
                         for (page in deferredSlices) pageChannel.send(page)
                     }
