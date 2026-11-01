@@ -53,9 +53,10 @@ class StrictNamesGatherTest {
     private fun cloudItem(
         path: String,
         isFolder: Boolean = false,
+        id: String = "id-$path",
     ): CloudItem =
         CloudItem(
-            id = "id-$path",
+            id = id,
             name = path.substringAfterLast("/"),
             path = path,
             size = 5,
@@ -206,6 +207,24 @@ class StrictNamesGatherTest {
             provider.existingNameIssues.clear()
             engine.syncOnce()
             assertEquals("similar_name", db.nameBlock("/twin.txt")?.reason, "and stays when the strict-name answer is gone")
+        }
+
+    @Test
+    fun `a remote rename of a settled item into a refused name marks the row at its new path`() =
+        runTest {
+            seed("/fine.txt")
+            provider.deltaItems = listOf(cloudItem("/fine.txt", id = "the-id"))
+            engine.syncOnce()
+            assertNull(db.nameBlock("/fine.txt"))
+
+            // Renamed in the web UI to a name the official clients refuse: the same id arrives at the new path.
+            provider.existingNameIssues["/bad.txt"] = "name_incompatible: windows_character"
+            seed("/bad.txt")
+            provider.deltaItems = listOf(cloudItem("/bad.txt", id = "the-id"))
+            engine.syncOnce()
+
+            assertEquals("name_incompatible: windows_character", db.nameBlock("/bad.txt")?.reason, "the renamed row is blocked by its new name")
+            assertNull(db.nameBlock("/fine.txt"))
         }
 
     @Test
