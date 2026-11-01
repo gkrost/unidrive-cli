@@ -3286,10 +3286,11 @@ class InternxtProvider(
 
         // A poll re-delivers the items of the rewound window; the unchanged folders above them are
         // answered by the engine's rows (archive#936), as on the offset path.
+        val (verifiedFiles, verifiedFolders) = reapLaggedDeletions(files.values.toList(), folders.values.toList())
         val page =
             assembleFullDelta(
-                files.values.toList(),
-                folders.values.toList(),
+                verifiedFiles,
+                verifiedFolders,
                 advanceCursor(maxSeen, cursor, api.serverNowOrNull()),
                 onProgress = onProgress,
                 listing = ScanProgress.LISTING_CURSOR,
@@ -3302,6 +3303,52 @@ class InternxtProvider(
                 "The next gather lists the drive instead of trusting the poll.",
         )
         return page.copy(complete = false)
+    }
+
+    // The `/files` and `/folders` index a poll reads lags a trash made in the web UI by an hour or more (#14): the
+    // trashed row arrives in the sync stream with a bumped `updatedAt` while `status` is still `EXISTS` and neither
+    // `removed` nor `deleted` is set, so nothing in the stream says it is gone — the local copy is not reaped until
+    // the index flips. The folder-contents endpoint reflects the same trash at once (measured live, #14's evidence),
+    // which is also how the scoped walk has always detected deletions. Every changed row the stream still reports as
+    // live is therefore verified against its parent folder's content: a row the folder no longer holds (or holds only
+    // as a tombstone) is delivered as the tombstone the index has not written yet. One content call per distinct
+    // parent, sequential — a poll's changed set is small, the calls ride the retry ladder and the listing permits,
+    // and the dedup collapses repeats. A content call that fails concludes nothing: eventual reaping, as today, stays
+    // the answer for that row. Rows the stream itself tombstones are delivered as they came; a full gather is not
+    // checked — its absence sweep would mean asking the whole drive folder by folder.
+    private suspend fun reapLaggedDeletions(
+        files: List<InternxtFile>,
+        folders: List<InternxtFolder>,
+    ): Pair<List<InternxtFile>, List<InternxtFolder>> {
+        val rootUuid = authService.getValidCredentials().rootFolderId
+        val liveFiles = files.filter { it.isLive() }
+        val liveFolders = folders.filter { it.isLive() }
+        if (liveFiles.isEmpty() && liveFolders.isEmpty()) return files to folders
+        val byParent = LinkedHashMap<String, MutableList<String>>()
+        for (file in liveFiles) byParent.getOrPut(file.folderUuid ?: rootUuid) { mutableListOf() }.add(file.uuid)
+        for (folder in liveFolders) byParent.getOrPut(folder.parentUuid ?: rootUuid) { mutableListOf() }.add(folder.uuid)
+        val gone = HashSet<String>()
+        for ((parent, uuids) in byParent) {
+            val content =
+                runCatching { api.getFolderContents(parent) }.getOrElse {
+                    log.info(
+                        "The content of folder {} could not be read for the trash check ({}); its changed rows stay as the stream reported them",
+                        parent,
+                        it.javaClass.simpleName,
+                    )
+                    continue
+                }
+            val heldLive =
+                content.files.filter { it.isLive() }.mapTo(HashSet()) { it.uuid } +
+                    content.children.filter { it.isLive() }.mapTo(HashSet()) { it.uuid }
+            for (uuid in uuids) {
+                // Held only as a tombstone is as gone as not held at all: the folder view says the item left the folder.
+                if (uuid !in heldLive) gone += uuid
+            }
+        }
+        if (gone.isEmpty()) return files to folders
+        return files.map { if (it.uuid in gone) it.copy(deleted = true) else it } to
+            folders.map { if (it.uuid in gone) it.copy(deleted = true) else it }
     }
 
     // The newest updatedAt on [rows], against the newest seen so far — compared lexicographically,

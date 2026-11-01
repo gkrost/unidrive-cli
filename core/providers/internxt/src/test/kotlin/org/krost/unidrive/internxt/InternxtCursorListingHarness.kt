@@ -164,6 +164,12 @@ internal class DriveMock(
     val offsetListing: Boolean = false,
     val tree: Map<String, String>? = null,
     val contentStatus: Int? = null,
+    // #14: a poll verifies its changed rows against the combined folder-contents endpoint, so the fake drive serves
+    // it by default from the same fixture the streams serve (a folder's children are the folder rows naming it as
+    // their parent, its files the file rows naming it as their folder): a coherent drive, and the changed rows of
+    // every existing poll test are present and stay live. [tree] and [contentStatus] answer first; a test that wants
+    // the endpoint to fail outright for an unexpected request sets this off.
+    val contentFromFixture: Boolean = true,
     val failure: (stream: String, page: Int) -> Failure? = { _, _ -> null },
     val body: (stream: String, cursor: String?) -> String? = { _, _ -> null },
     // archive#523/#647: raw item bodies for the paged per-folder listing, keyed by folder uuid; a uuid with no
@@ -298,6 +304,17 @@ internal class DriveMock(
                             tree.entries.firstOrNull { path.endsWith("/drive/folders/content/${it.key}") }?.value
                         if (content != null) respond(content, HttpStatusCode.OK, jsonHeaders)
                         else error("unexpected request: ${request.url}")
+                    }
+                    contentFromFixture && path.contains("/folders/content/") -> {
+                        val uuid = path.substringAfter("/folders/content/").substringBefore('/')
+                        fun rowsNaming(pages: List<List<String>>, field: String) =
+                            pages.flatten().filter { Regex("\"$field\":\"([^\"]*)\"").find(it)?.groupValues?.get(1) == uuid }
+                        respond(
+                            """{"children":[${rowsNaming(folderPages, "parentUuid").joinToString(",")}],""" +
+                                """"files":[${rowsNaming(filePages, "folderUuid").joinToString(",")}]}""",
+                            HttpStatusCode.OK,
+                            jsonHeaders,
+                        )
                     }
                     !offsetListing || !(path.endsWith("/drive/folders") || path.endsWith("/drive/files")) -> {
                         error("unexpected request: ${request.url}")
