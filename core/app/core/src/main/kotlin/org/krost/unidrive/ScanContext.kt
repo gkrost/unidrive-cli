@@ -31,6 +31,12 @@ package org.krost.unidrive
  * which bounds its cost by the subtree size. Providers that cannot enumerate a
  * subtree ignore it and the engine filters the result.
  *
+ * [creatableRoots] are the scope roots the engine may create: each is a folder in the local sync root, and state.db
+ * holds no row at or below it that a remote item backs. A provider that resolves the scope roots for its listing and cannot find one of these
+ * on the remote lists it as an empty folder (nothing below it) instead of failing; the engine then creates it from the
+ * local side. A scope root it cannot find that is not in this set still fails the listing (the typo case: neither side
+ * has the folder).
+ *
  * [readOnly] is true when the pass is a preview (a dry-run). The provider must then leave
  * every persistent side effect of a delta call undone: it may read the remote and use its
  * credentials, but must not record "delta seen" markers or other state that a real pass would
@@ -68,6 +74,7 @@ data class ScanContext(
     val resumedItems: List<CloudItem>,
     val persistPage: suspend (items: List<CloudItem>, marker: String) -> Unit,
     val scopeRoots: List<String> = emptyList(),
+    val creatableRoots: Set<String> = emptySet(),
     val readOnly: Boolean = false,
     val onProgress: ((ScanProgress) -> Unit)? = null,
     val trackedRow: ((remoteId: String) -> CloudItem?)? = null,

@@ -49,6 +49,9 @@ class RemoteGather(
     // archive#401/#309: whether the collision key folds case: the profile's case policy (NameKey.foldsCase), true when the
     // provider or the local file system folds case. The engine passes it; a test runs the case-twin rules on any host.
     private val foldGatherKeys: Boolean = NameKey.foldsCase(provider.caseSensitivity, NameKey.platformFoldsCase),
+    // #22: whether the local sync root holds a folder at a remote path, for the scope roots the engine may create
+    // ([creatableScopeRoots]). The mirror engine supplies it; none means no root is created.
+    private val localFolderExists: (remotePath: String) -> Boolean = { false },
 ) {
     /** What the gather is asked to do, fixed per engine. */
     data class Options(
@@ -154,6 +157,15 @@ class RemoteGather(
             trashed = guard.trash.contains(entry.path),
         )
     }
+
+    /**
+     * #22: the scope roots the provider may find missing (ScanContext.creatableRoots): a folder in the local sync root, and
+     * state.db holds no row at or below it that a remote item backs. Such a root is an empty remote folder the sync
+     * creates. A root that state.db knows from the remote is not one of them: missing on the remote, it still fails the
+     * listing, as does a root that neither side has.
+     */
+    fun creatableScopeRoots(): Set<String> =
+        guard.trackScope.filterTo(LinkedHashSet()) { root -> localFolderExists(root) && !db.hasRemoteRowAtOrBelow(root) }
 
     /** Reads the place of the trash root from state.db again: its row has appeared, moved or been reaped. */
     fun refreshTrash() = guard.trash.refresh(db)
@@ -765,6 +777,7 @@ class RemoteGather(
                 resumedItems = resumedItems,
                 persistPage = { items, marker -> db.persistScanPage(scanId, items, marker) },
                 scopeRoots = guard.trackScope,
+                creatableRoots = creatableScopeRoots(),
                 readOnly = readOnly,
                 onProgress = providerProgress,
                 trackedRow = ::trackedRow,
@@ -867,6 +880,7 @@ class RemoteGather(
                     resumedItems = emptyList(),
                     persistPage = { items, marker -> db.persistScanPage(recoveryScanId, items, marker) },
                     scopeRoots = guard.trackScope,
+                    creatableRoots = creatableScopeRoots(),
                     readOnly = readOnly,
                     onProgress = providerProgress,
                     trackedRow = ::trackedRow,

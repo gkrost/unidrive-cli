@@ -488,6 +488,10 @@ class FakeCloudProvider : CloudProvider {
     // test can pin that the engine persists them for the status.
     var deltaSkippedPaths: List<String> = emptyList()
 
+    // A provider whose full listing resolves the scope roots before it lists them (Internxt's scoped walk): a root
+    // without a live folder fails the listing, unless the engine named it in ScanContext.creatableRoots.
+    var walksScopeRoots = false
+
     // archive#422: stands in for a provider whose delta() lists the whole tree on every call and
     // never sends tombstones (localfs).
     var deltaFullListing = false
@@ -525,6 +529,12 @@ class FakeCloudProvider : CloudProvider {
         if (deltaFailCount > 0) {
             deltaFailCount--
             throw ProviderException("Network timeout on delta")
+        }
+        if (walksScopeRoots && cursor == null && scanContext != null) {
+            for (root in scanContext.scopeRoots) {
+                if (isLiveFolder(root) || root in scanContext.creatableRoots) continue
+                throw ProviderException("sync_path '$root' not found on the remote: no folder '${root.substringAfterLast('/')}'")
+            }
         }
         // Drive the engine's persistPage callback so a test can pin that
         // staged rows land in scan_staging.
