@@ -62,6 +62,42 @@ class StreamingReconcileBufferTest {
     // The same item downloaded mid-gather and tombstoned later is a real delete.
     // Path-only suppression would drop it, leave the local file, and the next edit
     // would upload it again.
+    // The reverse order of the test above. Graph delivers an item more than once and
+    // the last occurrence wins; a restore is another delivery of the same id. An
+    // earlier tombstone must not drain and delete the content that landed after it.
+    @Test
+    fun `an earlier tombstone does not delete the same item delivered later`() {
+        val buf = StreamingReconcileBuffer()
+        buf.classify(listOf(SyncAction.DeleteLocal("/x", remoteId = "A")))
+        buf.classify(listOf(SyncAction.DownloadContent("/x", item("/x").copy(id = "A"))))
+        assertTrue(
+            buf.drainDeferred().none { it.path == "/x" },
+            "a tombstone older than the live delivery of the same id must not drain",
+        )
+    }
+
+    @Test
+    fun `the same order inside one page keeps the later live delivery`() {
+        val buf = StreamingReconcileBuffer()
+        buf.classify(
+            listOf(
+                SyncAction.DeleteLocal("/x", remoteId = "A"),
+                SyncAction.DownloadContent("/x", item("/x").copy(id = "A")),
+            ),
+        )
+        assertTrue(buf.drainDeferred().none { it.path == "/x" })
+    }
+
+    @Test
+    fun `a tombstone after a restore of the same id is kept`() {
+        val buf = StreamingReconcileBuffer()
+        buf.classify(listOf(SyncAction.DeleteLocal("/x", remoteId = "A")))
+        buf.classify(listOf(SyncAction.DownloadContent("/x", item("/x").copy(id = "A"))))
+        val last = SyncAction.DeleteLocal("/x", remoteId = "A")
+        buf.classify(listOf(last))
+        assertEquals(listOf(last), buf.drainDeferred(), "the last delivery is the tombstone")
+    }
+
     @Test
     fun `delete of the item just downloaded is kept`() {
         val buf = StreamingReconcileBuffer()
