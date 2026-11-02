@@ -80,6 +80,16 @@ sync_root = "~/Internxt"
 # keeps it, and the folder is shown as "<name> (2)".
 # trash_folder_name = "Papierkorb"
 
+# What the account backs up (Internxt: one folder per device, then the folders backed up under it) can be shown apart,
+# in a read-only folder at the top of the profile. backups_folder_name is that folder's name (one folder name, no path);
+# a client sets it from the user's language. Default: Backups. It must not be the trash folder's name (Papierkorb when
+# trash_folder_name is unset), and the trash folder's name must not be this one (Backups when this is unset).
+# show_backups chooses whether the folder is shown. Absent leaves it off. auto shows it only when sync_path is unset;
+# true shows it even when sync_path is set; false leaves it off and does not move or delete rows already tracked.
+# A provider that does not declare backups never shows the folder. A running daemon reads both keys at start.
+# backups_folder_name = "Backups"
+# show_backups = false
+
 # Internxt only, mount profiles: what the account shares by itself is shown as one flat, read-only folder of files at the
 # top of the profile. shared_view = false switches it off (default: on; a provider without the view never shows it);
 # shared_folder_name is the folder's name (one folder name, no path; default: Shared). A live top-level item with the same

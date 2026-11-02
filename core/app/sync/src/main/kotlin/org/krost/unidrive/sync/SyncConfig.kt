@@ -125,6 +125,31 @@ data class FavoritesSettings(
 )
 
 /**
+ * The backups folder of a profile. [folderName] is `backups_folder_name` (null = the engine's "Backups").
+ * [show] is the flag `daemon run` passes as `showBackups`, before the daemon also requires a mount profile whose
+ * provider declares backups. Unset and `false` are off. `true` is on even when `sync_path` is set. `auto` is on only
+ * when the profile is unscoped. Nothing here asks the account whether it has devices.
+ * [rootAlways] is true where the key says `true` (not `auto`): the root then stays while nothing is in it, see BackupsNamespace.
+ */
+data class BackupsSettings(
+    val folderName: String?,
+    val show: Boolean,
+    val rootAlways: Boolean = false,
+)
+
+/** The profile's backups folder: its name, and whether `daemon run` passes `showBackups` (see [BackupsSettings]). */
+fun SyncConfig.backups(profileName: String): BackupsSettings {
+    val provider = providers[profileName]
+    val show =
+        when (provider?.showBackups) {
+            ShowBackups.ON -> true
+            ShowBackups.AUTO -> !provider.hasSyncPath
+            else -> false
+        }
+    return BackupsSettings(provider?.backupsFolderName, show, rootAlways = provider?.showBackups == ShowBackups.ON)
+}
+
+/**
  * UD-282: a TOML section header in `config.toml` that doesn't match the
  * schema (`[general]` or `[providers.X]`). Surfaced via [validateTomlSections]
  * so users get a loud signal when they typo'd `[profiles.X]` instead of the
@@ -378,6 +403,40 @@ internal object BooleanOrStringSerializer : KSerializer<Boolean> {
         }
 }
 
+/**
+ * `show_backups` as written. The key being absent is not a value here: that stays off, and is not [AUTO].
+ * [ON] and [OFF] are the booleans `true` and `false`.
+ */
+enum class ShowBackups { AUTO, ON, OFF }
+
+/** Decodes `show_backups`: `true`, `false`, or the string `auto` (a quoted `true` or `false` reads the same). */
+internal object ShowBackupsSerializer : KSerializer<ShowBackups> {
+    override val descriptor: SerialDescriptor = Boolean.serializer().descriptor
+
+    override fun serialize(
+        encoder: Encoder,
+        value: ShowBackups,
+    ) {
+        when (value) {
+            ShowBackups.ON -> encoder.encodeBoolean(true)
+            ShowBackups.OFF -> encoder.encodeBoolean(false)
+            ShowBackups.AUTO -> encoder.encodeString("auto")
+        }
+    }
+
+    override fun deserialize(decoder: Decoder): ShowBackups =
+        try {
+            if (decoder.decodeBoolean()) ShowBackups.ON else ShowBackups.OFF
+        } catch (_: TomlDecodingException) {
+            when (val raw = decoder.decodeString().trim().lowercase()) {
+                "auto" -> ShowBackups.AUTO
+                "true" -> ShowBackups.ON
+                "false" -> ShowBackups.OFF
+                else -> throw SerializationException("show_backups must be auto, true or false, got '$raw'")
+            }
+        }
+}
+
 @Serializable
 data class RawProvider(
     // Profile metadata
@@ -415,6 +474,12 @@ data class RawProvider(
     // The name of the virtual folder that shows what the provider keeps in its trash (the trash namespace, read-only,
     // under the root of the profile). Absent = "Papierkorb". A client sets it from its UI language; one folder name, no path.
     val trash_folder_name: String? = null,
+    // The name of the virtual folder that shows the account's backup devices (read-only, under the root of the profile).
+    // Absent = "Backups". A client sets it from its UI language; one folder name, no path. Not the trash folder's name.
+    val backups_folder_name: String? = null,
+    // Whether that folder is shown: auto, true, or false. Absent stays off (not auto). auto only when sync_path is empty.
+    @Serializable(with = ShowBackupsSerializer::class)
+    val show_backups: ShowBackups? = null,
     // The name of the virtual folder that lists the items the account shares with others (the Shared view, read-only, under
     // the root of the profile). Absent = "Shared". A client sets it from its UI language; one folder name, no path.
     val shared_folder_name: String? = null,
@@ -575,7 +640,7 @@ data class SyncConfig(
     val streamingReconciliation: Boolean? = null,
     // Validated, normalised `[providers.<profile>] sync_path`; empty = whole drive.
     val syncPaths: List<String> = emptyList(),
-    private val providers: Map<String, ProviderConfig>,
+    internal val providers: Map<String, ProviderConfig>,
 ) {
     fun providerPinIncludes(providerId: String): List<String> = providers[providerId]?.pinIncludes ?: emptyList()
 
@@ -654,6 +719,10 @@ data class SyncConfig(
         val recentsLimit: Int? = null,
         val favoritesFolderName: String? = null,
         val favoritesView: Boolean? = null,
+        val backupsFolderName: String? = null,
+        val showBackups: ShowBackups? = null,
+        // True when sync_path names a subtree. Absent, empty, and "/" (the whole drive) are not.
+        val hasSyncPath: Boolean = false,
     )
 
     companion object {
@@ -1121,6 +1190,9 @@ data class SyncConfig(
                         recentsLimit = rp.recents_limit,
                         favoritesFolderName = rp.favorites_folder_name,
                         favoritesView = rp.favorites_view,
+                        backupsFolderName = rp.backups_folder_name,
+                        showBackups = rp.show_backups,
+                        hasSyncPath = rp.sync_path?.let { SyncScope.normalize(it).isNotEmpty() } == true,
                     )
                 }
             val pollInt = general.poll_interval ?: 60

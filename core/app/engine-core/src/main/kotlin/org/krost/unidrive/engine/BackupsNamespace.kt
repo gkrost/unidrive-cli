@@ -20,12 +20,16 @@ import org.slf4j.LoggerFactory
  * out as unreachable (its row, if any, kept, nothing deleted). A root an earlier run placed stays read-only either way.
  *
  * **The root.** Its key is [ROOT_ID]; its name [DEFAULT_NAME] unless the host passes another. It yields to a live
- * top-level item and to the trash folder of the same name.
+ * top-level item and to the trash folder of the same name. It exists while something is in it, except where the profile
+ * asks for the backups by name ([rootAlways], `show_backups = true`): then it exists as long as the namespace is enabled,
+ * also when the listing that was read (a scoped one, say) carries no backup item.
  */
 class BackupsNamespace(
     configuredName: String? = null,
     /** Whether the profile shows the backups (and the provider declares them): the engine then asks for and places them. */
     val enabled: Boolean = false,
+    /** Whether the root is kept while nothing is in it: the profile sets `show_backups = true` (not `auto`). */
+    val rootAlways: Boolean = false,
     ignoreCase: Boolean = NameKey.platformFoldsCase,
     log: Logger = LoggerFactory.getLogger(BackupsNamespace::class.java),
 ) : PlacedNamespace(configuredName, DEFAULT_NAME, "backups_folder_name", "the backups", ROOT_ID, ignoreCase, log) {
@@ -34,6 +38,8 @@ class BackupsNamespace(
     override fun marked(item: CloudItem): CloudItem = item.copy(backup = true)
 
     override val addsWayDown: Boolean = false
+
+    override val keepsRootWhenEmpty: Boolean get() = enabled && rootAlways
 
     companion object {
         /** The remote id of the root's row: the stable internal key, whatever the root is called. */

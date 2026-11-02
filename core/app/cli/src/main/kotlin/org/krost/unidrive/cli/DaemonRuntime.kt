@@ -126,6 +126,8 @@ class DaemonRuntime(
     // (the default) leaves every listing and reply as it was.
     private val showBackups: Boolean = false,
     private val backupsFolderName: String? = null,
+    // The backups root stays while nothing is in it when the profile says `show_backups = true` (not `auto`).
+    private val backupsRootAlways: Boolean = false,
     // How long the references of a view are answered as they are before the next listing starts a refresh (a seam for tests).
     private val viewTtlMs: Long = ViewCache.DEFAULT_TTL_MS,
     // How a start that loses the profile lock ends the process (a seam for tests, which cannot exit).
@@ -244,7 +246,8 @@ class DaemonRuntime(
                     specs = if (profileMode == ProfileMode.MOUNT) viewsTheProviderHas(cloud) else emptyList(),
                     topLevelNames = { db?.listDirectChildren("")?.map { it.path.removePrefix("/") } ?: emptyList() },
                 )
-            val backups = BackupsNamespace(backupsFolderName, enabled = showBackups && providerShowsBackups(cloud))
+            val backups =
+                BackupsNamespace(backupsFolderName, enabled = showBackups && providerShowsBackups(cloud), rootAlways = backupsRootAlways)
             val provider = ReadOnlyTrashProvider(cloud, trash, viewNamespaces, backups)
             // archive#578: the flag wins over the profile key, same shape as --poll-interval.
             uploadConcurrencyOverride?.let { n ->

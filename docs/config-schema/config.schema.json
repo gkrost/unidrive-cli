@@ -91,6 +91,17 @@
             "description": "The name of the read-only folder at the top of the profile that shows what the provider keeps in its trash (Internxt: the items below a trashed folder), under the path they came from. One folder name, no path; at most 100 characters. A client sets it from the user's language. Default \"Papierkorb\". A live top-level item with the same name keeps it, and the folder is shown as \"<name> (2)\".",
             "type": "string"
           },
+          "backups_folder_name": {
+            "description": "The name of the read-only folder at the top of the profile that shows the account's backup devices (Internxt), and the folders backed up under them. One folder name, no path; at most 100 characters. A client sets it from the user's language. Default \"Backups\". Must not be the trash folder's effective name (trash_folder_name, or \"Papierkorb\" when that is unset), and trash_folder_name must not be this folder's effective name (\"Backups\" when this is unset). A live top-level item with the same name keeps it, and the folder is shown as \"<name> (2)\". Takes effect when the daemon starts.",
+            "type": "string"
+          },
+          "show_backups": {
+            "description": "Whether the profile shows the backups folder. Absent leaves it off (not auto). \"auto\" shows it only when sync_path is absent or empty. true shows it even when sync_path is set. false leaves it off and does not delete or move rows already tracked. Either way the daemon shows the folder only for a mount profile whose provider declares backups; it does not ask the account whether it has devices. Takes effect when the daemon starts.",
+            "oneOf": [
+              { "type": "boolean" },
+              { "type": "string", "enum": ["auto", "true", "false"] }
+            ]
+          },
           "shared_folder_name": {
             "description": "The name of the read-only folder at the top of the profile that lists the items the account shares with others, a flat list in which each item is the real one under its own name and a folder is a read-only alias of the real folder (Internxt: files and folders with a share by a person or a link; what others share with it is not listed). Shown only with shared_view. One folder name, no path; at most 100 characters. A client sets it from the user's language. Default \"Shared\". A live top-level item with the same name keeps it, and the folder is shown as \"<name> (2)\".",
             "type": "string"

@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import org.krost.unidrive.engine.NameKey
 import org.krost.unidrive.sync.SyncConfig
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
@@ -564,6 +565,140 @@ class ProfileJsonCommandTest {
             assertEquals("invalid_value", json().getValue("error").jsonPrimitive.content, "value '$bad'")
         }
         assertEquals(twoProfiles, config())
+    }
+
+    // -- profile set / list: the backups folder ------------------------------------------------------
+
+    @Test
+    fun `a profile without the backups keys lists null for the name and the switch`() {
+        writeConfig(twoProfiles)
+
+        val work = listed("work")
+        assertEquals(JsonNull, work.getValue("backups_folder_name"))
+        assertEquals(JsonNull, work.getValue("show_backups"))
+    }
+
+    @Test
+    fun `set backups_folder_name persists, lists the name and leaves the rest byte for byte`() {
+        writeConfig(twoProfiles)
+
+        assertEquals(0, run("profile", "set", "work", "backups_folder_name", "Sicherungen", "--json"), stderr())
+        val r = json()
+        assertTrue(r.getValue("ok").jsonPrimitive.boolean)
+        assertEquals("Sicherungen", r.getValue("value").jsonPrimitive.content)
+        assertEquals(JsonNull, r.getValue("previous"))
+        assertTrue(r.getValue("restart_required").jsonPrimitive.boolean, "the daemon reads it at start")
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "backups_folder_name = \"Sicherungen\"\n"), config())
+        assertEquals("Sicherungen", listed("work").getValue("backups_folder_name").jsonPrimitive.content)
+
+        assertEquals(0, run("profile", "set", "work", "backups_folder_name", "  Sauvegardes ", "--json"), stderr())
+        assertEquals("Sicherungen", json().getValue("previous").jsonPrimitive.content)
+        assertEquals("Sauvegardes", json().getValue("value").jsonPrimitive.content, "surrounding blanks are not part of the name")
+
+        assertEquals(0, run("profile", "set", "work", "backups_folder_name", "--unset", "--json"), stderr())
+        assertEquals(twoProfiles, config())
+    }
+
+    @Test
+    fun `set backups_folder_name refuses anything that is not one folder name, and changes nothing`() {
+        writeConfig(twoProfiles)
+        for (bad in listOf("", "  ", ".", "..", "a/b", "a\\b", "a:b", "a*b", "a?b", "end.", "x".repeat(101), "tab\there")) {
+            assertEquals(1, run("profile", "set", "work", "backups_folder_name", bad, "--json"), "value '$bad'")
+            assertEquals("invalid_value", json().getValue("error").jsonPrimitive.content, "value '$bad'")
+        }
+        assertEquals(twoProfiles, config())
+    }
+
+    @Test
+    fun `set show_backups persists auto, true and false and lists them`() {
+        writeConfig(twoProfiles)
+
+        assertEquals(0, run("profile", "set", "work", "show_backups", "auto", "--json"), stderr())
+        val r = json()
+        assertEquals("auto", r.getValue("value").jsonPrimitive.content)
+        assertTrue(r.getValue("value").jsonPrimitive.isString)
+        assertEquals(JsonNull, r.getValue("previous"))
+        assertTrue(r.getValue("restart_required").jsonPrimitive.boolean, "the daemon reads it at start")
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "show_backups = \"auto\"\n"), config())
+        assertEquals("auto", listed("work").getValue("show_backups").jsonPrimitive.content)
+
+        assertEquals(0, run("profile", "set", "work", "show_backups", " TRUE ", "--json"), stderr())
+        assertEquals("auto", json().getValue("previous").jsonPrimitive.content)
+        assertTrue(json().getValue("value").jsonPrimitive.boolean)
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "show_backups = true\n"), config())
+        assertTrue(listed("work").getValue("show_backups").jsonPrimitive.boolean)
+
+        assertEquals(0, run("profile", "set", "work", "show_backups", "false", "--json"), stderr())
+        assertFalse(json().getValue("value").jsonPrimitive.boolean)
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "show_backups = false\n"), config())
+        assertFalse(listed("work").getValue("show_backups").jsonPrimitive.boolean)
+
+        assertEquals(0, run("profile", "set", "work", "show_backups", "--unset", "--json"), stderr())
+        assertEquals(twoProfiles, config())
+        assertEquals(JsonNull, listed("work").getValue("show_backups"))
+    }
+
+    @Test
+    fun `set show_backups refuses anything but auto, true or false, and changes nothing`() {
+        writeConfig(twoProfiles)
+        for (bad in listOf("yes", "1", "", "maybe", "on", "auto true")) {
+            assertEquals(1, run("profile", "set", "work", "show_backups", bad, "--json"), "value '$bad'")
+            assertEquals("invalid_value", json().getValue("error").jsonPrimitive.content, "value '$bad'")
+        }
+        assertEquals(twoProfiles, config())
+    }
+
+    @Test
+    fun `set refuses a backups name equal to the trash folder's effective name, and the reverse`() {
+        writeConfig(twoProfiles)
+
+        assertEquals(1, run("profile", "set", "work", "backups_folder_name", "Papierkorb", "--json"), stderr())
+        assertEquals("invalid_value", json().getValue("error").jsonPrimitive.content)
+        assertTrue("trash_folder_name" in json().getValue("message").jsonPrimitive.content)
+        assertEquals(1, run("profile", "set", "work", "backups_folder_name", "  Papierkorb ", "--json"))
+        assertTrue("trash_folder_name" in json().getValue("message").jsonPrimitive.content)
+        assertEquals(1, run("profile", "set", "work", "trash_folder_name", "Backups", "--json"), stderr())
+        assertTrue("backups_folder_name" in json().getValue("message").jsonPrimitive.content)
+        if (NameKey.platformFoldsCase) {
+            assertEquals(1, run("profile", "set", "work", "backups_folder_name", "papierkorb", "--json"))
+            assertTrue("trash_folder_name" in json().getValue("message").jsonPrimitive.content)
+        }
+        assertEquals(twoProfiles, config())
+
+        assertEquals(0, run("profile", "set", "work", "trash_folder_name", "Corbeille", "--json"), stderr())
+        val withTrash = twoProfiles.replace(withPoll, withPoll + "trash_folder_name = \"Corbeille\"\n")
+        assertEquals(1, run("profile", "set", "work", "backups_folder_name", "Corbeille", "--json"))
+        assertTrue("trash_folder_name" in json().getValue("message").jsonPrimitive.content)
+        assertEquals(withTrash, config())
+
+        assertEquals(0, run("profile", "set", "work", "backups_folder_name", "Sicherungen", "--json"), stderr())
+        val withBoth =
+            withTrash.replace(
+                "trash_folder_name = \"Corbeille\"\n",
+                "trash_folder_name = \"Corbeille\"\nbackups_folder_name = \"Sicherungen\"\n",
+            )
+        assertEquals(withBoth, config())
+        assertEquals(1, run("profile", "set", "work", "trash_folder_name", "Sicherungen", "--json"))
+        assertTrue("backups_folder_name" in json().getValue("message").jsonPrimitive.content)
+        assertEquals(withBoth, config())
+    }
+
+    @Test
+    fun `unsetting a folder name is refused when the default would match the other root`() {
+        writeConfig(twoProfiles)
+        assertEquals(0, run("profile", "set", "work", "trash_folder_name", "Corbeille", "--json"), stderr())
+        assertEquals(0, run("profile", "set", "work", "backups_folder_name", "Papierkorb", "--json"), stderr())
+        val trashWouldCollide = config()
+        assertEquals(1, run("profile", "set", "work", "trash_folder_name", "--unset", "--json"), stderr())
+        assertTrue("backups_folder_name" in json().getValue("message").jsonPrimitive.content)
+        assertEquals(trashWouldCollide, config())
+
+        assertEquals(0, run("profile", "set", "work", "backups_folder_name", "Sicherungen", "--json"), stderr())
+        assertEquals(0, run("profile", "set", "work", "trash_folder_name", "Backups", "--json"), stderr())
+        val backupsWouldCollide = config()
+        assertEquals(1, run("profile", "set", "work", "backups_folder_name", "--unset", "--json"), stderr())
+        assertTrue("trash_folder_name" in json().getValue("message").jsonPrimitive.content)
+        assertEquals(backupsWouldCollide, config())
     }
 
     // -- profile set / list: the Shared view ---------------------------------------------------------

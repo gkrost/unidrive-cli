@@ -11,6 +11,7 @@ import org.krost.unidrive.sync.IpcLineClient
 import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessFacts
+import org.krost.unidrive.sync.backups
 import org.krost.unidrive.sync.isLockHolder
 import org.krost.unidrive.sync.lookupProcess
 import org.krost.unidrive.sync.SyncEngine
@@ -111,6 +112,7 @@ class DaemonRunCommand : Runnable {
             StoragePermissions.defaultLogDir(),
         )
         val pollIntervalMs = EnumeratePoller.effectiveIntervalMs(pollInterval, config.daemonPollSeconds(profile.name))
+        val backups = config.backups(profile.name)
 
         // archive#578: refuse an out-of-range override here, before a daemon starts with it.
         uploadConcurrency?.let { n ->
@@ -133,6 +135,9 @@ class DaemonRunCommand : Runnable {
             excludePatterns = config.effectiveExcludePatterns(profile.name),
             ignoreSettings = config.ignoreSettings(profile.name),
             trashFolderName = config.trashFolderName(profile.name),
+            backupsFolderName = backups.folderName,
+            showBackups = backups.show,
+            backupsRootAlways = backups.rootAlways,
             views = ConfiguredViews.of(config, profile.name),
             pollIntervalMs = pollIntervalMs,
             // archive#891: the health line, one INFO line per minute in unidrive.log.
