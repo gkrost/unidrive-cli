@@ -521,11 +521,27 @@ class InternxtCursorListingTest {
             assertEquals(12, cursorFileRequests(drive).size, "the cursor, not the page size, ends the listing")
         }
 
+    // #263: the offsets the offset fallback asks for a folder of [total] items when the gateway serves [served] per page. Each
+    // page after the first starts at the previous page's last item; the stream ends on a page that holds that item alone, confirmed by the empty page after it.
+    private fun overlappingOffsets(
+        total: Int,
+        served: Int,
+    ): List<Int> {
+        val offsets = mutableListOf(0)
+        var offset = 0
+        while (true) {
+            val size = minOf(served, total - offset)
+            if (offsets.size > 1 && size == 1) return offsets + (offset + 1)
+            offset += size - 1
+            offsets += offset
+        }
+    }
+
     @Test
     fun `a gateway without the cursor endpoints falls back to the offset endpoints with a limit of 50`() =
         runTest {
             // An older gateway answers the v2 route with 404 (no such route) or 405. The deprecated offset endpoints
-            // validate limit as required, 1..50: the listing must ask for exactly 50 and end on the empty page.
+            // validate limit as required, 1..50: the listing must ask for exactly 50.
             for (status in listOf(404, 405)) {
                 val drive =
                     DriveMock(
@@ -540,7 +556,7 @@ class InternxtCursorListingTest {
                 assertEquals(1201, page.items.size, "status $status: the folder itself plus all 1200 files")
                 val offsetRequests = drive.other.filter { it.contains("/folders/content/big/files") }
                 val offsets = offsetRequests.map { Regex("offset=(\\d+)").find(it)!!.groupValues[1].toInt() }
-                assertEquals((0..1200 step 50).toList(), offsets, "status $status: paged by 50 to the empty page")
+                assertEquals(overlappingOffsets(1200, 50), offsets, "status $status: paged by 50, each page from the previous page's last item")
                 assertTrue(
                     drive.other.filter { it.contains("/folders/content/") && it.contains("offset=") }
                         .all { it.contains("limit=50&") && it.contains("sort=uuid") && it.contains("order=ASC") },
@@ -553,8 +569,7 @@ class InternxtCursorListingTest {
     @Test
     fun `the offset fallback of a gateway that caps the page below 50 still lists every file`() =
         runTest {
-            // A short page is no sign of the last page: the offset listing ends only on an empty page and advances by
-            // what came back.
+            // A short page is no sign of the last page: the offset listing advances by what came back.
             val drive =
                 DriveMock(
                     contentStatus = 503,
@@ -570,7 +585,7 @@ class InternxtCursorListingTest {
             val offsets =
                 drive.other.filter { it.contains("/folders/content/big/files") }
                     .map { Regex("offset=([0-9]+)").find(it)!!.groupValues[1].toInt() }
-            assertEquals((0..1200 step 20).toList(), offsets, "advanced by the size of each page, ended on the empty one")
+            assertEquals(overlappingOffsets(1200, 20), offsets, "advanced by the size of each page less the overlap, ended on the overlap alone")
         }
 
     @Test
