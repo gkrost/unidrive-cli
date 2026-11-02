@@ -1,6 +1,8 @@
 package org.krost.unidrive.sync
 
 import org.krost.unidrive.io.LinkedEntries
+import org.krost.unidrive.io.engineKey
+import org.krost.unidrive.io.engineRelative
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -59,11 +61,10 @@ class TrashManager(
             // A junction or link in the trash is one item (the entry itself), never the content it leads to.
             LinkedEntries.forEachEntry(timestampDir) { file, attrs ->
                 if (!attrs.isRegularFile && !LinkedEntries.leadsElsewhere(file, attrs)) return@forEachEntry
-                // The key is the cloud-style path the item was trashed under (the
-                // write side resolves forward slashes on every OS), so normalize the
-                // walk's separators back: on Windows the raw relativize form made
-                // --list print "a\b.txt" and --restore "a/b.txt" never match it.
-                val relPath = timestampDir.relativize(file).toString().replace('\\', '/')
+                // The key is the cloud-style path the item was trashed under, without the leading
+                // slash (the write side resolves '/' on every OS). Name elements, so Windows still
+                // lists "a/b.txt" and a POSIX '\' stays in the name.
+                val relPath = engineKey(timestampDir.relativize(file)).removePrefix("/")
                 items.add(TrashedItem(ts, relPath, file, attrs.size()))
             }
         }
@@ -71,7 +72,7 @@ class TrashManager(
     }
 
     fun restore(originalPath: String): Boolean {
-        val normalized = originalPath.replace('\\', '/').removePrefix("/")
+        val normalized = engineRelative(originalPath)
         val dest = safeResolveLocal(syncRoot, normalized)
         val items = list().filter { it.originalPath == normalized }.sortedByDescending { it.timestamp }
         val latest = items.firstOrNull() ?: return false

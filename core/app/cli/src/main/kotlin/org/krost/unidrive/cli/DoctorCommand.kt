@@ -9,6 +9,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
+import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.formatSizePrecise
 import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.StateDatabase
@@ -375,8 +376,9 @@ class DoctorCommand : Runnable {
                 val p = iter.next()
                 if (p == syncRoot) continue
                 if (Files.isDirectory(p)) continue
-                val rel = syncRoot.relativize(p).toString().replace('\\', '/')
-                if (rel.isEmpty()) continue
+                val dbPath = engineKey(syncRoot.relativize(p))
+                if (dbPath == "/") continue
+                val rel = dbPath.removePrefix("/")
                 // Skip sidecar dirs
                 if (sidecarDirs.any { rel == it || rel.startsWith("$it/") }) continue
                 // PR archive#47 Codex P2: skip configured excludes (same path-key
@@ -384,13 +386,11 @@ class DoctorCommand : Runnable {
                 // slashes). Without this filter a profile with
                 // exclude_patterns = ["/Videos/**"] reports every excluded
                 // file as an orphan and falsely trips the WARN threshold.
-                val relForGlob = "/$rel"
-                if (excludePatterns.any { pattern -> org.krost.unidrive.sync.Reconciler.matchesGlob(relForGlob, pattern) }) {
+                if (excludePatterns.any { pattern -> org.krost.unidrive.sync.Reconciler.matchesGlob(dbPath, pattern) }) {
                     excluded++
                     continue
                 }
                 scanned++
-                val dbPath = "/$rel"
                 if (db.getEntry(dbPath) == null) {
                     orphanCount++
                     if (sampleOrphans.size < SAMPLE_DETAIL) sampleOrphans += dbPath

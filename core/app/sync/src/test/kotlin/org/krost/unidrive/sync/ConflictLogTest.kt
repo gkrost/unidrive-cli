@@ -8,6 +8,7 @@ import kotlin.test.assertFails
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.junit.Assume.assumeTrue
 
 class ConflictLogTest {
     private fun tempDir(): Path = Files.createTempDirectory("conflict-test-")
@@ -131,6 +132,32 @@ class ConflictLogTest {
         assertEquals(syncRoot.resolve("sub/dir/file.txt"), restored)
         assertTrue(Files.exists(restored))
         assertEquals("restore me", Files.readString(restored))
+    }
+
+    @Test
+    fun `restore of a literal backslash name leaves the slash-path file`() {
+        assumeTrue("a backslash is the separator on Windows", !System.getProperty("os.name", "").lowercase().contains("win"))
+        val dir = tempDir()
+        val log = createLog(dir)
+        val syncRoot = dir.resolve("syncroot")
+        val literal = syncRoot.resolve("docs").resolve("back\\slash.txt")
+        val slashed = syncRoot.resolve("docs").resolve("back").resolve("slash.txt")
+        Files.createDirectories(literal.parent)
+        Files.createDirectories(slashed.parent)
+        Files.writeString(literal, "literal")
+        Files.writeString(slashed, "slashed")
+        val entry =
+            log.record(
+                path = "/docs/back\\slash.txt",
+                localState = "MODIFIED",
+                remoteState = "MODIFIED",
+                policy = "LAST_WRITER_WINS",
+                loserFile = literal,
+            )
+        Files.writeString(literal, "changed")
+        log.restore(entry, syncRoot)
+        assertEquals("literal", Files.readString(literal))
+        assertEquals("slashed", Files.readString(slashed))
     }
 
     @Test

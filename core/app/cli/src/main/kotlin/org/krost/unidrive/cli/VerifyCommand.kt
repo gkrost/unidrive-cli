@@ -8,6 +8,7 @@ import org.krost.unidrive.RemoteObjectAuditReport
 import org.krost.unidrive.RemoteObjectStatus
 import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.io.OwnerOnlyAtomicWrite
+import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.sync.HashVerifier
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.Reconciler
@@ -367,7 +368,7 @@ class VerifyCommand : Callable<Int> {
                     attrs: BasicFileAttributes,
                 ): FileVisitResult {
                     if (!attrs.isRegularFile) return FileVisitResult.CONTINUE
-                    val relativePath = PathNormalizer.nfc("/" + syncRoot.relativize(file).toString().replace('\\', '/'))
+                    val relativePath = PathNormalizer.nfc(engineKey(syncRoot.relativize(file)))
                     if (!isExcluded(relativePath, excludes)) {
                         files[relativePath] = attrs.size()
                     }
@@ -379,7 +380,7 @@ class VerifyCommand : Callable<Int> {
                     attrs: BasicFileAttributes,
                 ): FileVisitResult {
                     if (dir == syncRoot) return FileVisitResult.CONTINUE
-                    val relativePath = PathNormalizer.nfc("/" + syncRoot.relativize(dir).toString().replace('\\', '/'))
+                    val relativePath = PathNormalizer.nfc(engineKey(syncRoot.relativize(dir)))
                     return if (isExcluded(relativePath, excludes)) FileVisitResult.SKIP_SUBTREE else FileVisitResult.CONTINUE
                 }
 

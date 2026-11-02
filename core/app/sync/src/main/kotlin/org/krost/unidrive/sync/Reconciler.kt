@@ -1,6 +1,7 @@
 package org.krost.unidrive.sync
 
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.ScanHeartbeat
 import org.krost.unidrive.engine.DuplicateNames
 import org.krost.unidrive.engine.NameKey
@@ -2145,7 +2146,7 @@ private fun firstUnreportedLocalEntry(
             folderLocal,
             object : java.nio.file.SimpleFileVisitor<Path>() {
                 fun judge(local: Path, isDir: Boolean): java.nio.file.FileVisitResult {
-                    val path = PathNormalizer.nfc("/" + syncRoot.relativize(local).toString().replace('\\', '/'))
+                    val path = PathNormalizer.nfc(engineKey(syncRoot.relativize(local)))
                     val unreported = skippedByScan(path, isDir) || path !in tracked
                     if (unreported) found = path
                     return if (unreported && isDir) java.nio.file.FileVisitResult.TERMINATE else java.nio.file.FileVisitResult.CONTINUE

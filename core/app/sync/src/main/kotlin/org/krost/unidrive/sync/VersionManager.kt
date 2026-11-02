@@ -1,5 +1,7 @@
 package org.krost.unidrive.sync
 
+import org.krost.unidrive.io.engineKey
+import org.krost.unidrive.io.engineRelative
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -39,7 +41,7 @@ class VersionManager(
     // The file and its version folder both come from the contained path: a name with `..`
     // segments must never copy a file from outside the sync root into it, nor out of it.
     fun snapshot(relativePath: String): Path? {
-        val normalized = relativePath.replace('\\', '/').removePrefix("/")
+        val normalized = engineRelative(relativePath)
         val source = safeResolveLocal(syncRoot, normalized)
         if (!source.exists() || !source.isRegularFile()) return null
         val timestamp = encodeTimestamp(Instant.now().truncatedTo(ChronoUnit.SECONDS))
@@ -52,7 +54,7 @@ class VersionManager(
     // Every entry point that takes a path derives the version folder from the contained path, so a name
     // with `..` segments can never list, restore or delete anything outside [versionsDir].
     fun listVersions(relativePath: String): List<VersionedItem> {
-        val normalized = relativePath.replace('\\', '/').removePrefix("/")
+        val normalized = engineRelative(relativePath)
         val fileVersionsDir = versionFolder(safeResolveLocal(syncRoot, normalized))
         if (!fileVersionsDir.exists() || !fileVersionsDir.isDirectory()) return emptyList()
         val items = mutableListOf<VersionedItem>()
@@ -70,11 +72,10 @@ class VersionManager(
         for (file in versionsDir.toFile().walkTopDown().filter { it.isFile }) {
             val filePath = file.toPath()
             val ts = decodeTimestamp(filePath.name) ?: continue
-            // The key is the cloud-style path the version was snapshotted under (the
-            // write side resolves forward slashes on every OS), so normalize the
-            // walk's separators back: on Windows the raw relativize form made --list
-            // print "a\b.txt" and --restore "a/b.txt" never match it.
-            val relPath = versionsDir.relativize(filePath.parent).toString().replace('\\', '/')
+            // The key is the cloud-style path the version was snapshotted under, without the
+            // leading slash (the write side resolves '/' on every OS). Name elements, so Windows
+            // still lists "a/b.txt" and a POSIX '\' stays in the name.
+            val relPath = engineKey(versionsDir.relativize(filePath.parent)).removePrefix("/")
             items.add(VersionedItem(ts, relPath, filePath, file.length()))
         }
         return items.sortedByDescending { it.timestamp }
@@ -84,7 +85,7 @@ class VersionManager(
         relativePath: String,
         timestamp: Instant,
     ): Boolean {
-        val normalized = relativePath.replace('\\', '/').removePrefix("/")
+        val normalized = engineRelative(relativePath)
         val dest = safeResolveLocal(syncRoot, normalized)
         val tsDir = encodeTimestamp(timestamp.truncatedTo(ChronoUnit.SECONDS))
         val versionFile = versionFolder(dest).resolve(tsDir)

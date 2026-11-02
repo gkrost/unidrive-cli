@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.StateDatabase
 import picocli.CommandLine.Command
@@ -137,7 +138,7 @@ class SweepCommand : Runnable {
                     val size = attrs.size()
                     if (size == 0L) return FileVisitResult.CONTINUE
 
-                    val relativePath = "/" + syncRoot.relativize(file).toString().replace('\\', '/')
+                    val relativePath = engineKey(syncRoot.relativize(file))
                     val entry = db.getEntry(relativePath) ?: return FileVisitResult.CONTINUE
                     if (entry.isFolder) return FileVisitResult.CONTINUE
                     if (entry.remoteSize != size) return FileVisitResult.CONTINUE
@@ -152,7 +153,7 @@ class SweepCommand : Runnable {
                     dir: Path,
                     attrs: BasicFileAttributes,
                 ): FileVisitResult {
-                    val relativePath = if (dir == syncRoot) "/" else "/" + syncRoot.relativize(dir).toString().replace('\\', '/')
+                    val relativePath = engineKey(syncRoot.relativize(dir))
                     if (relativePath == "/.unidrive-trash" || relativePath == "/.unidrive-versions") {
                         return FileVisitResult.SKIP_SUBTREE
                     }

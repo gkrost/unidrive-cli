@@ -3,6 +3,7 @@ package org.krost.unidrive.sync
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
 import org.krost.unidrive.io.LinkedEntries
+import org.krost.unidrive.io.engineKey
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.nio.file.*
@@ -65,7 +66,7 @@ class LocalWatcher(
                             @Suppress("UNCHECKED_CAST")
                             val ev = event as WatchEvent<Path>
                             val child = dir.resolve(ev.context())
-                            val relativePath = "/" + syncRoot.relativize(child).toString().replace('\\', '/')
+                            val relativePath = engineKey(syncRoot.relativize(child))
 
                             if (relativePath in suppressedPaths) continue
 
