@@ -148,5 +148,5 @@ org.ow2.asm:asm-tree:9.10.1=jacocoAnt
 org.ow2.asm:asm:9.10.1=jacocoAnt
 org.slf4j:slf4j-api:2.0.19=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.snakeyaml:snakeyaml-engine:2.7=detekt
-org.xerial:sqlite-jdbc:3.53.4.0=runtimeClasspath,testRuntimeClasspath
+org.xerial:sqlite-jdbc:3.54.1.0=runtimeClasspath,testRuntimeClasspath
 empty=annotationProcessor,detektPlugins,implementationDependenciesMetadata,kotlinCompilerPluginClasspath,kotlinNativeCompilerPluginClasspath,kotlinScriptDefExtensions,testAnnotationProcessor,testImplementationDependenciesMetadata,testKotlinScriptDefExtensions
