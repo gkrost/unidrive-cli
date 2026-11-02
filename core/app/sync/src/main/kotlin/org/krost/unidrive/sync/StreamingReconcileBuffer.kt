@@ -42,11 +42,12 @@ internal class StreamingReconcileBuffer {
     private val deferred = mutableMapOf<Key, SyncAction>()
     private val safePaths = mutableSetOf<String>()
 
-    // Paths where a safe-now action LANDED REMOTE CONTENT this gather (download /
-    // placeholder create / move-into). Only these supersede a deferred delete for the
-    // same path. A local Upload must NOT — otherwise a modify-vs-remote-delete conflict
-    // on a path that also produced a per-page Upload would be silently dropped.
-    private val remoteContentPaths = mutableSetOf<String>()
+    // Path -> remote id of the safe-now action that last landed remote content there
+    // this gather (download / placeholder create / move-into). A deferred delete is a
+    // recreate only when its tombstone id differs from this. A local Upload is not
+    // recorded — otherwise a modify-vs-remote-delete on a path that also produced a
+    // per-page Upload would be silently dropped.
+    private val remoteContentIds = mutableMapOf<String, String>()
 
     /**
      * Split a reconciler verdict into (safe-now, deferred). The safe-now
@@ -72,7 +73,7 @@ internal class StreamingReconcileBuffer {
             } else {
                 safeNow.add(action)
                 safePaths.add(action.path)
-                if (landsRemoteContent(action)) remoteContentPaths.add(action.path)
+                landedRemoteId(action)?.let { remoteContentIds[action.path] = it }
             }
         }
         return safeNow
@@ -85,19 +86,30 @@ internal class StreamingReconcileBuffer {
      * clears the buffer for the next gather pass.
      */
     fun drainDeferred(): List<SyncAction> {
-        // Delete/recreate split across delta pages: an earlier page tombstones the old
-        // id (deferred DeleteLocal), a later page re-creates the file at the same path
-        // (safe-now DownloadContent, already written to disk). Drop a deferred delete
-        // whose path had remote content land this gather — the recreate supersedes the
-        // stale tombstone. Scoped to remoteContentPaths (NOT all safePaths): a local
-        // Upload for a MODIFIED path must not suppress a genuine remote-delete conflict.
-        val out = deferred.values.filterNot { it.path in remoteContentPaths }
+        // Delete/recreate split across delta pages: an earlier page tombstones id A
+        // (deferred DeleteLocal), a later page re-creates the file at the same path
+        // under id B (safe-now DownloadContent, already written). Drop that delete.
+        // The same id tombstoned after it landed is a real delete and stays. A delete
+        // with no remote id is not a different id, so it stays too. Scoped to the
+        // landed remote id (NOT all safePaths): a local Upload for a MODIFIED path
+        // must not suppress a genuine remote delete.
+        val out = deferred.values.filterNot { droppedAsRecreate(it) }
         deferred.clear()
         return out
     }
 
     /** Union of paths that fired safe-now plus paths buffered as deferred. */
     fun touchedPaths(): Set<String> = safePaths + deferred.keys.map { it.path }
+
+    // A DeleteLocal is a recreate only when its tombstone id differs from the id that
+    // landed. Other deferred actions at a landed path stay on the path rule. No landed
+    // id, or a delete with no id, is kept.
+    private fun droppedAsRecreate(action: SyncAction): Boolean {
+        val landedId = remoteContentIds[action.path] ?: return false
+        val delete = action as? SyncAction.DeleteLocal ?: return true
+        val tombstoneId = delete.remoteId ?: return false
+        return tombstoneId != landedId
+    }
 
     private data class Key(
         val path: String,
@@ -125,16 +137,18 @@ internal class StreamingReconcileBuffer {
             }
 
         /**
-         * A safe-now action that LANDS REMOTE CONTENT at its path — the remote
-         * currently has the file there (a download, a placeholder create/update, or a
-         * move-into). Only these supersede a deferred delete for the same path. Local
-         * pushes (`Upload`, `CreateRemoteFolder`, `MoveRemote`) do not: they must not
-         * suppress a genuine remote-delete-vs-local-modify conflict.
+         * Remote id of a safe-now action that lands remote content at its path — the
+         * remote currently has the file there (a download, a placeholder create/update,
+         * or a move-into). Null for local pushes (`Upload`, `CreateRemoteFolder`,
+         * `MoveRemote`): they must not suppress a genuine remote delete.
          */
-        fun landsRemoteContent(action: SyncAction): Boolean =
-            action is SyncAction.DownloadContent ||
-                action is SyncAction.CreatePlaceholder ||
-                action is SyncAction.UpdatePlaceholder ||
-                action is SyncAction.MoveLocal
+        fun landedRemoteId(action: SyncAction): String? =
+            when (action) {
+                is SyncAction.DownloadContent -> action.remoteItem.id
+                is SyncAction.CreatePlaceholder -> action.remoteItem.id
+                is SyncAction.UpdatePlaceholder -> action.remoteItem.id
+                is SyncAction.MoveLocal -> action.remoteItem.id
+                else -> null
+            }
     }
 }

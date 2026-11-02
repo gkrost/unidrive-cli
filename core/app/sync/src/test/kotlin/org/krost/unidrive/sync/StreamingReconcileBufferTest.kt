@@ -43,19 +43,48 @@ class StreamingReconcileBufferTest {
     }
 
     // C6 invariant: a delete/recreate split across delta pages must keep the recreated
-    // file. Page 1 tombstones the old id (DeleteLocal, deferred); a later page re-creates
-    // the file at the same path (DownloadContent, safe-now, already written). The drain
-    // must drop the stale DeleteLocal.
-    // If this test is removed or loosened, the streaming delete-then-recreate data-loss
-    // path silently re-opens.
+    // file. Page 1 tombstones id A (DeleteLocal, deferred); a later page re-creates
+    // the file at the same path under id B (DownloadContent, safe-now, already written).
+    // The drain must drop that stale DeleteLocal. The same id is not a recreate — see
+    // the test below. If this test is removed or loosened, the streaming
+    // delete-then-recreate data-loss path silently re-opens.
     @Test
-    fun `deferred delete is suppressed when remote content lands at the same path`() {
+    fun `deferred delete is suppressed when a different remote id lands at the same path`() {
         val buf = StreamingReconcileBuffer()
-        buf.classify(listOf(SyncAction.DeleteLocal("/p"))) // earlier page: tombstone(old id) -> deferred
-        buf.classify(listOf(SyncAction.DownloadContent("/p", item("/p")))) // later page: recreate -> safe-now
+        buf.classify(listOf(SyncAction.DeleteLocal("/p", remoteId = "A"))) // earlier page: tombstone(A)
+        buf.classify(listOf(SyncAction.DownloadContent("/p", item("/p").copy(id = "B")))) // later page: recreate B
         assertTrue(
             buf.drainDeferred().none { it.path == "/p" },
-            "a deferred delete must be dropped once remote content lands at that path",
+            "a deferred delete must be dropped when a different id recreated that path",
+        )
+    }
+
+    // The same item downloaded mid-gather and tombstoned later is a real delete.
+    // Path-only suppression would drop it, leave the local file, and the next edit
+    // would upload it again.
+    @Test
+    fun `delete of the item just downloaded is kept`() {
+        val buf = StreamingReconcileBuffer()
+        buf.classify(listOf(SyncAction.DownloadContent("/x", item("/x").copy(id = "A"))))
+        val delete = SyncAction.DeleteLocal("/x", remoteId = "A")
+        buf.classify(listOf(delete))
+        assertEquals(
+            listOf(delete),
+            buf.drainDeferred(),
+            "a delete of the item just downloaded must still drain",
+        )
+    }
+
+    @Test
+    fun `a delete with no remote id is not treated as a different id`() {
+        val buf = StreamingReconcileBuffer()
+        buf.classify(listOf(SyncAction.DownloadContent("/x", item("/x").copy(id = "A"))))
+        val delete = SyncAction.DeleteLocal("/x")
+        buf.classify(listOf(delete))
+        assertEquals(
+            listOf(delete),
+            buf.drainDeferred(),
+            "a missing tombstone id must not drop a real delete",
         )
     }
 
@@ -63,7 +92,8 @@ class StreamingReconcileBufferTest {
     // localChanges map is replayed every page, so a MODIFIED-local path produces a
     // per-page safe-now Upload; the page carrying the remote tombstone emits a
     // DELETED-bearing Conflict. That conflict is a genuine modify-vs-remote-delete and
-    // must survive the drain — only remote-content landing supersedes a delete.
+    // must survive the drain — a local Upload is not landed remote content, so it
+    // must not supersede a delete.
     @Test
     fun `local Upload does not suppress a deferred delete-modify conflict`() {
         val buf = StreamingReconcileBuffer()
@@ -75,6 +105,19 @@ class StreamingReconcileBufferTest {
             listOf(conflict),
             buf.drainDeferred(),
             "a local Upload must not drop a genuine remote-delete conflict",
+        )
+    }
+
+    @Test
+    fun `local Upload does not suppress a deferred remote delete`() {
+        val buf = StreamingReconcileBuffer()
+        buf.classify(listOf(SyncAction.Upload("/p")))
+        val delete = SyncAction.DeleteLocal("/p", remoteId = "A")
+        buf.classify(listOf(delete))
+        assertEquals(
+            listOf(delete),
+            buf.drainDeferred(),
+            "a same-path local Upload must not drop a deferred remote delete",
         )
     }
 

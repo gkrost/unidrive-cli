@@ -1071,7 +1071,11 @@ class Reconciler(
                 // nothing left to delete — applyDeleteLocal would be a pure no-op that only
                 // pollutes the preview ("N del-local") every time a rewound delta cursor
                 // re-delivers the same deletion. Alive rows and files still on disk keep the action.
-                if (entry == null && isAbsentLocally(path)) null else SyncAction.DeleteLocal(path)
+                if (entry == null && isAbsentLocally(path)) {
+                    null
+                } else {
+                    SyncAction.DeleteLocal(path, remoteId = remoteItem?.id)
+                }
 
             // Local only changes
             localState == ChangeState.NEW && remoteState == ChangeState.UNCHANGED -> {
