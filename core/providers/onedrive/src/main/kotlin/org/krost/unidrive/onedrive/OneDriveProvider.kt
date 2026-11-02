@@ -371,6 +371,22 @@ class OneDriveProvider(
                 if (renameRefused.isSimilarName()) landUnderServerName(renameRefused) else throw renameRefused
             }
 
+        // archive#291: 412 Precondition Failed means a concurrent remote edit landed after the
+        // engine planned this replace. Overwriting it would be the classic lost update.
+        // Keep BOTH: the concurrent remote edit stays untouched and the local copy lands
+        // under a server-assigned name via "rename" (no If-Match — this is a fresh name,
+        // not a guarded replace). Routes distinctly from a 409 nameAlreadyExists.
+        suspend fun keepBothBesideConcurrentEdit(): CloudItem {
+            log.warn(
+                "#291: OneDrive replace of '{}' hit 412 Precondition Failed — a concurrent remote " +
+                    "edit landed since the engine planned this upload. Preserving the remote change " +
+                    "untouched and landing the local copy as a keep-both copy (conflictBehavior=rename) " +
+                    "rather than overwriting it.",
+                remotePath,
+            )
+            return keepBoth().copy(keptBoth = true)
+        }
+
         if (existingRemoteId != null) {
             // MODIFIED file we own → replace-in-place, guarded by If-Match so a concurrent edit
             // surfaces as 412 instead of silently overwriting the other editor's change. archive#291
@@ -391,19 +407,10 @@ class OneDriveProvider(
                 // A keep-both copy would land in the caller's own drive, not beside the shared item: the refusal stands.
                 if (e.statusCode == 412 && sharedId != null) throw e
                 if (e.statusCode == 412) {
-                    // archive#291: 412 Precondition Failed means a concurrent remote edit landed after the
-                    // engine planned this replace. Overwriting it would be the classic lost update.
-                    // Keep BOTH: the concurrent remote edit stays untouched and the local copy lands
-                    // under a server-assigned name via "rename" (no If-Match — this is a fresh name,
-                    // not a guarded replace). Routes distinctly from a 409 nameAlreadyExists below.
-                    log.warn(
-                        "#291: OneDrive replace of '{}' hit 412 Precondition Failed — a concurrent remote " +
-                            "edit landed since the engine planned this upload. Preserving the remote change " +
-                            "untouched and landing the local copy as a keep-both copy (conflictBehavior=rename) " +
-                            "rather than overwriting it.",
-                        remotePath,
-                    )
-                    return keepBoth().copy(keptBoth = true)
+                    // The remote already holds exactly these bytes: the change the 412 reports is this upload's own
+                    // write (a chunked replace whose final answer was lost, retried under the plan-time eTag), or an
+                    // edit that ended at the same content. There is nothing to keep both of.
+                    return identicalRemoteAt(remotePath, localPath, fileSize) ?: keepBothBesideConcurrentEdit()
                 }
                 if (e.isSimilarName()) {
                     // The name this update targets is a similar name of another sibling: the update cannot move
@@ -452,8 +459,9 @@ class OneDriveProvider(
         }
     }
 
-    // A create collided with an item of that name. When it is a file of the same size whose quickXorHash equals the
-    // local file's, it already holds these bytes: it is adopted as the upload's result, with no copy and no write.
+    // A create collided with an item of that name, or a replace was refused with 412. When it is a file of the same
+    // size whose quickXorHash equals the local file's, it already holds these bytes: it is adopted as the upload's
+    // result, with no copy and no write.
     // Whatever cannot be compared (a folder, no hash reported, the lookup or the local read fails) keeps both.
     private suspend fun identicalRemoteAt(
         remotePath: String,
@@ -480,7 +488,7 @@ class OneDriveProvider(
             }
         if (localHash != remoteHash) return null
         log.info(
-            "Create-collision on '{}': the remote item at this path has the same size and quickXorHash; " +
+            "Collision on '{}': the remote item at this path has the same size and quickXorHash; " +
                 "adopting it instead of uploading a keep-both copy.",
             remotePath,
         )
