@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import org.krost.unidrive.http.UrlRedaction
 import org.krost.unidrive.io.ndjsonString
 import org.krost.unidrive.sync.PathNormalizer
 import java.nio.file.InvalidPathException
@@ -630,7 +631,7 @@ class HydrationIpcHandler(
     }
 
     private fun reply(ok: Boolean, error: String? = null): String =
-        if (ok) """{"ok":true}""" else """{"ok":false,"error":${jsonEsc(error ?: "unknown")}}"""
+        if (ok) """{"ok":true}""" else """{"ok":false,"error":${errorEsc(error ?: "unknown")}}"""
 
     // `excluded` is only serialized when true — an additive wire field: a reply
     // on the common (non-excluded) path is byte-identical to the pre-field
@@ -772,7 +773,7 @@ fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
         """{"event":"downloading","path":${jsonEsc(e.path)}$handle,"bytes_done":${e.bytesDone},"bytes_total":${e.bytesTotal}}"""
     }
     is HydrationEvent.Failed -> {
-        val base = """{"event":"failed","path":${jsonEsc(e.path)},"error":${jsonEsc(e.error.message)}"""
+        val base = """{"event":"failed","path":${jsonEsc(e.path)},"error":${errorEsc(e.error.message)}"""
         // retry_scheduled is only serialized for upload attempts; download and
         // verb failures keep the pre-existing shape byte-identical.
         if (e.retryScheduled == null) "$base}" else "$base,\"retry_scheduled\":${e.retryScheduled}}"
@@ -780,7 +781,7 @@ fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
     is HydrationEvent.Completed -> {
         val direction = if (e.direction == HydrationEvent.Completed.Direction.UPLOAD) "upload" else "download"
         val base = """{"event":"completed","path":${jsonEsc(e.path)},"handle_id":${jsonEsc(e.handleId)},"direction":"$direction","ok":${e.ok}"""
-        if (e.ok) "$base}" else "$base,\"error\":${jsonEsc(e.error?.message ?: "unknown")}}"
+        if (e.ok) "$base}" else "$base,\"error\":${errorEsc(e.error?.message ?: "unknown")}}"
     }
     is HydrationEvent.Paused -> {
         val base = """{"event":"paused","reason":${jsonEsc(e.reason)},"since_ms":${e.sinceMs},"auto":${e.auto}"""
@@ -809,3 +810,7 @@ fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
 // routinely carries a newline, and one raw newline (or NEL, U+2028, U+2029) in a reply or event line splits the framing for
 // the reader.
 private fun jsonEsc(s: String): String = ndjsonString(s)
+
+// The error text of a reply or event: a provider's exception message can quote a request URL whose query is a credential
+// (a pre-authenticated download or upload URL). The stable tokens (`not_found`, `busy`, ...) pass unchanged.
+private fun errorEsc(s: String): String = jsonEsc(UrlRedaction.redact(s))

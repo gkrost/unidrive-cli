@@ -278,6 +278,39 @@ class IpcAuthServerTest {
     }
 
     @Test
+    fun `a handler that throws answers a read client without the exception text, a full client with it`() {
+        IpcAuth.issue(profileDir, "p1", "test-engine")
+        val auth =
+            IpcAuth(
+                "p1",
+                IpcAuth.readToken(IpcAuth.tokenFile(profileDir, IpcAuth.Scope.FULL)),
+                IpcAuth.readToken(IpcAuth.tokenFile(profileDir, IpcAuth.Scope.READ)),
+                "test-engine",
+            )
+        val server = IpcServer(socketPath, auth = auth)
+        server.registerHandler("hydration.list") { _, _ -> throw IllegalStateException("'/home/someone/staging/a.part' became shorter") }
+        server.start(scope)
+        servers.add(server)
+
+        IpcAuthClient.connect(endpoint, IpcAuth.Scope.READ).use { ch ->
+            ch.configureBlocking(false)
+            val reply = ch.ask("""{"verb":"hydration.list","prefix":"/"}""")
+            assertTrue("someone" !in reply && "staging" !in reply, reply)
+            val o = obj(reply)
+            assertEquals(JsonPrimitive(false), o["ok"])
+            assertEquals("handler_threw", o.getValue("error").jsonPrimitive.content)
+            assertEquals("hydration.list", o.getValue("verb").jsonPrimitive.content)
+        }
+        IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).use { ch ->
+            ch.configureBlocking(false)
+            val o = obj(ch.ask("""{"verb":"hydration.list","prefix":"/"}"""))
+            assertEquals(JsonPrimitive(false), o["ok"])
+            assertEquals("handler_threw", o.getValue("error").jsonPrimitive.content)
+            assertEquals("'/home/someone/staging/a.part' became shorter", o.getValue("message").jsonPrimitive.content)
+        }
+    }
+
+    @Test
     fun `after a restart with new tokens the old token no longer authenticates`() {
         issueAndStart()
         val oldKey = fullKey()
