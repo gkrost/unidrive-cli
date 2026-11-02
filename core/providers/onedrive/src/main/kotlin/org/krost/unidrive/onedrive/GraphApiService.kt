@@ -788,7 +788,6 @@ class GraphApiService(
         var offset = initialOffset
         var result: DriveItem? = null
         var finalChunkConfirmedByProbe = false
-        var finalChunkSent = false
         try {
             while (offset < fileSize) {
                 val currentChunkSize = minOf(chunkSize, fileSize - offset).toInt()
@@ -803,7 +802,6 @@ class GraphApiService(
                     }
 
                 val endByte = offset + currentChunkSize - 1
-                if (endByte == fileSize - 1) finalChunkSent = true
                 val chunkResult = uploadChunkWithRetry(uploadUrl, bytes, offset, endByte, fileSize)
                 if (chunkResult is ChunkUploadResult.Committed) {
                     offset = chunkResult.nextOffset
@@ -811,6 +809,11 @@ class GraphApiService(
                     log.debug("Upload progress: {}/{} bytes", offset, fileSize)
                     onProgress?.invoke(offset, fileSize)
                     continue
+                }
+                if (chunkResult is ChunkUploadResult.GoneAfterLostAnswer) {
+                    result = committedAfterLostAnswer(localPath, target, fileSize) ?: throw chunkResult.failure
+                    onProgress?.invoke(fileSize, fileSize)
+                    break
                 }
 
                 val response = (chunkResult as ChunkUploadResult.Response).response
@@ -827,12 +830,6 @@ class GraphApiService(
                 onProgress?.invoke(offset, fileSize)
             }
         } catch (e: GraphApiException) {
-            if (finalChunkSent && (e.statusCode == 404 || e.statusCode == 410)) {
-                committedAfterLostAnswer(localPath, target, fileSize)?.let {
-                    sessionStore.delete(remotePath)
-                    return it
-                }
-            }
             // Terminal 4xx responses cannot be resumed. Keep the session for 408/429
             // and server errors so a later attempt can continue from its committed offset.
             if (e.statusCode in 400..499 && e.statusCode != 408 && e.statusCode != 429) {
@@ -851,11 +848,12 @@ class GraphApiService(
         return uploadedItem ?: throw GraphApiException("Upload session completed but no DriveItem returned")
     }
 
-    // The final chunk went out and the session is gone. Graph removes a session once its upload is complete, so a lost
-    // answer to the last PUT looks like an expired session (the probe answers 404, or tells no range and the resent chunk
-    // gets 404). The item is looked up: when it holds these bytes (same size and quickXorHash as the local file) the
-    // upload is done and the item is returned, so the upload is not started again from byte 0 and a replace does not
-    // meet its own write as a 412. Null when that cannot be told; the session-gone failure stands then.
+    // A try of the final chunk ended without its answer and the session is now gone. Graph removes a session once its
+    // upload is complete, so a lost answer to the last PUT looks like an expired session (the probe answers 404, or tells
+    // no range and the resent chunk gets 404). The item is looked up: when it holds these bytes (same size and
+    // quickXorHash as the local file) the upload is done and the item is returned, so the upload is not started again
+    // from byte 0 and a replace does not meet its own write as a 412. Null when that cannot be told; the session-gone
+    // failure stands then.
     private suspend fun committedAfterLostAnswer(
         localPath: Path,
         target: UploadTarget,
@@ -1147,6 +1145,9 @@ class GraphApiService(
     ): ChunkUploadResult {
         var currentOffset = offset
         var currentBytes = bytes
+        // Set once a try ended without the chunk's answer (it broke off, or met a status after which the session is
+        // probed): the server may hold the chunk although nothing said so.
+        var answerLost = false
 
         for ((attempt, delayMs) in CHUNK_RETRY_DELAYS_MS.withIndex()) {
             val lastTry = attempt == CHUNK_RETRY_DELAYS_MS.lastIndex
@@ -1173,11 +1174,23 @@ class GraphApiService(
                 throttleBudget.recordSuccess()
                 return ChunkUploadResult.Response(response)
             }
-            val retry = response?.let { chunkRetryAfterAnswer(it, currentOffset, delayMs, lastTry) } ?: ChunkRetry(delayMs, probe = true)
+            val retry =
+                try {
+                    response?.let { chunkRetryAfterAnswer(it, currentOffset, delayMs, lastTry) } ?: ChunkRetry(delayMs, probe = true)
+                } catch (e: GraphApiException) {
+                    return goneAfterLostFinalAnswer(e, answerLost, endByte, fileSize)
+                }
+            if (retry.probe) answerLost = true
             delay(retry.waitMs)
             if (!retry.probe) continue
 
-            val nextStart = probeCommittedOffset(uploadUrl, currentOffset) ?: continue
+            val probed =
+                try {
+                    probeCommittedOffset(uploadUrl, currentOffset)
+                } catch (e: GraphApiException) {
+                    return goneAfterLostFinalAnswer(e, answerLost, endByte, fileSize)
+                }
+            val nextStart = probed ?: continue
             if (nextStart > endByte) {
                 // The server accepted the entire chunk but its response was lost.
                 // Advance the outer loop instead of retrying an empty byte range.
@@ -1193,6 +1206,20 @@ class GraphApiService(
 
         // Unreachable — loop always throws or returns
         throw GraphApiException("Upload chunk failed at offset $currentOffset")
+    }
+
+    // A session gone (404/410) after a try of the final chunk ended without its answer: that try may have completed the
+    // upload, and Graph removes a completed session, so the caller looks the item up before it calls the session gone.
+    // Any other [failure] is thrown.
+    private fun goneAfterLostFinalAnswer(
+        failure: GraphApiException,
+        answerLost: Boolean,
+        endByte: Long,
+        fileSize: Long,
+    ): ChunkUploadResult {
+        val gone = failure.statusCode == 404 || failure.statusCode == 410
+        if (gone && answerLost && endByte == fileSize - 1) return ChunkUploadResult.GoneAfterLostAnswer(failure)
+        throw failure
     }
 
     // One chunk PUT under the write-progress watchdog: a server that takes the body and never answers (archive#1175: one PUT
@@ -1719,6 +1746,9 @@ private sealed interface ChunkUploadResult {
     data class Response(val response: HttpResponse) : ChunkUploadResult
 
     data class Committed(val nextOffset: Long) : ChunkUploadResult
+
+    // The session is gone after the final chunk's answer was lost; [failure] stands unless the item holds the bytes.
+    data class GoneAfterLostAnswer(val failure: GraphApiException) : ChunkUploadResult
 }
 
 // How a chunk is retried after a failed try: the wait before the next one, and whether the session is probed first.
