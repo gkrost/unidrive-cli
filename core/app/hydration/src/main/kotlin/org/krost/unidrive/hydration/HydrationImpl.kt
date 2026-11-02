@@ -33,6 +33,7 @@ import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.engine.CachePaths
 import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.RemoteEnumeration
+import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.moveFile
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.PendingUploads
@@ -2856,11 +2857,8 @@ class HydrationImpl(
         runCatching {
             val root = mount.resolveCachePath(path)
             if (!Files.exists(root)) return
-            Files.walk(root).use { stream ->
-                stream.sorted(Comparator.reverseOrder()).forEach { p ->
-                    runCatching { Files.deleteIfExists(p) }
-                }
-            }
+            // A junction or link below goes as the entry itself, never with what it leads to.
+            LinkedEntries.deleteTree(root) { p -> runCatching { Files.deleteIfExists(p) } }
         }
         // archive#728: the whole subtree left the accounting with the folder. (A partial failure over-counts
         // until the next walk, which finds the leftovers and reconciles them.)

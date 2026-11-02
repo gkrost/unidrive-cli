@@ -6,6 +6,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaCursorExpiredException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
+import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.fileSha256Hex
 import org.krost.unidrive.sync.ConflictLog
 import org.krost.unidrive.sync.HashVerifier
@@ -576,16 +577,14 @@ class TrackingEngine(
     private fun scanLocal(): Map<String, LocalObservation> {
         if (!Files.isDirectory(syncRoot)) return emptyMap()
         val out = mutableMapOf<String, LocalObservation>()
-        Files.walk(syncRoot).use { stream ->
-            for (p in stream) {
-                if (p == syncRoot) continue
-                if (Files.isDirectory(p)) continue
-                val rel = "/" + syncRoot.relativize(p).toString().replace('\\', '/')
-                // Keep-local: don't even hash excluded junk. The syncOnce universe loop also
-                // skips these paths, so this is a perf guard; the correctness guard is there.
-                if (isExcluded(rel)) continue
-                out[rel] = makeLocalObs(p)
-            }
+        // A junction leads out of the sync root: its content is not observed (the walk does not enter it).
+        LinkedEntries.forEachEntry(syncRoot) { p, attrs ->
+            if (attrs.isDirectory || Files.isDirectory(p)) return@forEachEntry
+            val rel = "/" + syncRoot.relativize(p).toString().replace('\\', '/')
+            // Keep-local: don't even hash excluded junk. The syncOnce universe loop also
+            // skips these paths, so this is a perf guard; the correctness guard is there.
+            if (isExcluded(rel)) return@forEachEntry
+            out[rel] = makeLocalObs(p)
         }
         return out
     }
