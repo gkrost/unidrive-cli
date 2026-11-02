@@ -131,6 +131,44 @@ class HydrationViewAliasTest {
         }
 
     @Test
+    fun `nested favorites make a flat list, each real item once by id, and the alias of the outer folder shows them again`() =
+        runTest {
+            val env = envWithAlias()
+            // /Docs/sub is favorited below the favorited /Docs, and so is the file /Docs/a.txt inside it.
+            env.providerForTest.viewAnswers[kind] =
+                CapabilityResult.Success(
+                    listOf(
+                        ViewRef("id-docs", true),
+                        ViewRef("id-sub", true),
+                        ViewRef("id-a", false),
+                        ViewRef("id-loose", false),
+                        ViewRef("id-sub", true),
+                    ),
+                )
+
+            val top = env.entries("/Favorites")
+
+            assertEquals(
+                listOf("/Favorites/Docs", "/Favorites/sub", "/Favorites/a.txt", "/Favorites/loose.txt"),
+                top.map { it.path },
+                "flat: no entry is nested in another, the repeated id is listed once",
+            )
+            assertEquals(top.size, top.map { it.remoteId }.toSet().size)
+            assertEquals(listOf("/Docs", "/Docs/sub", "/Docs/a.txt", "/loose.txt"), top.map { it.viewTarget })
+            assertEquals(listOf(true, true, false, false), top.map { it.isFolder })
+            // The outer alias holds the same two items once more, under its own prefix; both ways reach the one real file.
+            assertEquals(setOf("/Favorites/Docs/a.txt", "/Favorites/Docs/sub"), env.entries("/Favorites/Docs").map { it.path }.toSet())
+            assertEquals(listOf("/Favorites/sub/deep/c.txt"), env.entries("/Favorites/sub/deep").map { it.path })
+            env.syncEngine.seedRemoteContent("/Docs/sub/deep/c.txt", "hello")
+            val viaOuter = assertIs<OpenResult.Ok>(env.hydration.openForRead("c1", "h1", "/Favorites/Docs/sub/deep/c.txt"))
+            val viaInner = assertIs<OpenResult.Ok>(env.hydration.openForRead("c1", "h2", "/Favorites/sub/deep/c.txt"))
+            assertEquals(viaOuter.cachePath, viaInner.cachePath)
+            assertEquals(1, env.syncEngine.downloadCount())
+            assertEquals("read_only", tokenOf(env.hydration.unlink("/Favorites/sub")), "unlink does not unfavorite")
+            assertEquals("read_only", tokenOf(env.hydration.unlink("/Favorites/a.txt")))
+        }
+
+    @Test
     fun `the alias follows a rename of the real folder`() =
         runTest {
             val env = envWithAlias()

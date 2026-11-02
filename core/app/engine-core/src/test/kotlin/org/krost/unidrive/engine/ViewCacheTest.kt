@@ -156,6 +156,42 @@ class ViewCacheTest {
         }
 
     @Test
+    fun `a favorited folder added or removed is a change of the favorites view, the same list is none`() =
+        runTest {
+            val favorites = ViewKind.FAVORITES
+            val folder = ViewRef("d", true)
+            provider.serve(favorites, a)
+            val cache = cache()
+            cache.get(favorites)
+            assertEquals(listOf(favorites), changed.toList(), "the first fill")
+
+            advanceTimeBy(61_000)
+            provider.serve(favorites, folder, a)
+            cache.get(favorites)
+            runCurrent()
+            assertEquals(listOf(favorites, favorites), changed.toList(), "a folder added")
+            assertEquals(listOf(folder, a), cache.peek(favorites).refs)
+
+            advanceTimeBy(61_000)
+            cache.get(favorites)
+            runCurrent()
+            assertEquals(2, changed.size, "the same favorites again: no event")
+
+            advanceTimeBy(61_000)
+            provider.serve(favorites, a)
+            cache.get(favorites)
+            runCurrent()
+            assertEquals(listOf(favorites, favorites, favorites), changed.toList(), "the folder removed")
+            assertEquals(listOf(a), cache.peek(favorites).refs)
+
+            advanceTimeBy(61_000)
+            provider.serve(favorites, ViewRef("d", false), a)
+            cache.get(favorites)
+            runCurrent()
+            assertEquals(4, changed.size, "the same uuid as a file instead of a folder is a change too")
+        }
+
+    @Test
     fun `a refresh that finds the same list changes nothing`() =
         runTest {
             provider.serve(recents, a, b)

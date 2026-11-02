@@ -690,7 +690,10 @@ class IpcContractCorpusTest {
         )
 
     private fun favoritesRefs() =
-        mapOf(ViewKind.FAVORITES to listOf(ViewRef("rid-work", true), ViewRef("22222222-todo", false), ViewRef("55555555-gone", true)))
+        mapOf(ViewKind.FAVORITES to listOf(
+                ViewRef("rid-work", true), ViewRef("rid-reports", true), ViewRef("22222222-todo", false),
+                ViewRef("11111111-q3", false), ViewRef("55555555-gone", true),
+            ))
 
     private fun sharedRefs() =
         mapOf(ViewKind.SHARED_BY_ME to listOf(ViewRef("22222222-todo", false), ViewRef("11111111-q3", false), ViewRef("44444444-gone", false)))
