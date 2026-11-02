@@ -2982,6 +2982,7 @@ class InternxtProvider(
         // freshly-fetched pages dominate that anyway.
         resumedFolders.mapTo(allFolders) { it.toResumedFolder() }
         resumedFiles.mapTo(allFiles) { it.toResumedFile() }
+        logRowsWithoutStoredObject(resumedFiles.count(::namesNoStoredObject), "offset listing")
 
         // UD-352: this delta() loops internally over both /files and /folders
         // pagination, accumulating *all* pages before returning a single
@@ -3971,6 +3972,16 @@ class InternxtProvider(
         var after: String? = null
     }
 
+    // gkrost/unidrive-cli#194: file rows staged before the rows carried their stored object come back without it; their items
+    // have no contentId until the file changes. Said once per resume, with the count, not per row.
+    private fun logRowsWithoutStoredObject(
+        count: Int,
+        listing: String,
+    ) {
+        if (count == 0) return
+        log.info("{} files resumed from rows the {} staged before they named the stored object: delivered without a content id", count, listing)
+    }
+
     // The rows of a resumed cursor listing back into the gather: the folders and the ancestor-only records into their maps, the
     // files into [files], or, for a gather that hands its files over from the staging, only as far as [stream] needs them.
     private fun resumeFrom(
@@ -4042,7 +4053,7 @@ class InternxtProvider(
     ): CloudItem =
         toStagedCloudItem(rootUuid).copy(
             hash = stagedFileTag(CURSOR_FILE_PREFIX, this),
-            version = stream?.let { stagedFilePayload(it.id, this) },
+            version = if (stream != null) stagedFilePayload(stream.id, this) else stagedFileId(this),
         )
 
     // The next chunk of the hand-over: the files of the next page of the staging, with their paths; the last chunk also
@@ -4153,6 +4164,7 @@ class InternxtProvider(
             logFreshCursorStart(scanContext?.resumeMarker, staged.size)
         } else {
             resumeFrom(resume, stream, folders, files, ancestors)
+            logRowsWithoutStoredObject(resume.rows.count(::namesNoStoredObject), "cursor listing")
             log.info(
                 "Resuming the cursor listing begun {}: folders {}, files {}, {} staged rows, {} ancestor-only rows",
                 startedAt,
@@ -4356,6 +4368,7 @@ class InternxtProvider(
                 resume.listedFolders.size,
                 resume.files.size + resume.folders.size,
             )
+            logRowsWithoutStoredObject(resume.files.count { it.fileId == null && (it.size?.toLongOrNull() ?: 0) > 0 }, "folder walk")
         }
         val heartbeat = onPageProgress?.let { cb -> ScanHeartbeat(cb) }
         val rootUuid = authService.getValidCredentials().rootFolderId
@@ -5768,6 +5781,8 @@ class InternxtProvider(
                 hash = null,
                 mimeType = null,
                 parentId = pid,
+                // gkrost/unidrive-cli#194: the stored object, so the file rebuilt from the row keeps its contentId.
+                version = stagedFileId(this),
             )
         }
 
@@ -5797,11 +5812,13 @@ class InternxtProvider(
         // which is fine: the cursor-advance computation in delta() looks at
         // the freshly-fetched pages, which set the high-water mark.
         // The modification time is the string the server sent when the row carries it (archive#1039): the version
-        // token of the file is built from it, and the Instant's toString() drops a zero fraction.
+        // token of the file is built from it, and the Instant's toString() drops a zero fraction. The fileId is the one
+        // the row carries (gkrost/unidrive-cli#194): the contentId of the item is built from it.
         internal fun CloudItem.toResumedFile(): InternxtFile {
             val raw = stagedModificationTime(hash)
             return InternxtFile(
                 uuid = id,
+                fileId = stagedFileIdOf(this),
                 plainName = name.substringBeforeLast('.', name),
                 name = name.substringBeforeLast('.', name),
                 type = name.substringAfterLast('.', ""),

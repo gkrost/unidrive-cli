@@ -77,6 +77,27 @@ internal fun stagedFilePayloadOf(row: CloudItem): StagedFilePayload? {
     }
 }
 
+// gkrost/unidrive-cli#194: every other file row (the offset listing, the tree walk, a cursor gather that holds its files) is
+// rebuilt from the row alone, and a file rebuilt without its fileId built an item with a null contentId, so the row it reached
+// had none until the file changed, and a rename of it read as new bytes. Those rows carry the fileId alone in the same column
+// (the whole file would make the staging of a large account several times its size). A row staged before this, or a file
+// the server named no stored object for, carries none and is rebuilt as before.
+
+internal const val STAGED_FILE_ID_PREFIX: String = "file-id|"
+
+/** What the version column of the staged row of [file] carries when the row holds no payload: its stored object, if any. */
+internal fun stagedFileId(file: InternxtFile): String? = file.fileId?.takeIf { it.isNotBlank() }?.let { STAGED_FILE_ID_PREFIX + it }
+
+/** The stored object the staged file [row] names: from its fileId or its payload, null for a row that names none. */
+internal fun stagedFileIdOf(row: CloudItem): String? {
+    val raw = row.version ?: return null
+    if (raw.startsWith(STAGED_FILE_ID_PREFIX)) return raw.removePrefix(STAGED_FILE_ID_PREFIX).takeIf { it.isNotBlank() }
+    return stagedFilePayloadOf(row)?.file?.fileId?.takeIf { it.isNotBlank() }
+}
+
+/** Whether the staged file [row] has bytes but names no stored object: a row staged by a version before #194. */
+internal fun namesNoStoredObject(row: CloudItem): Boolean = !row.isFolder && row.size > 0 && stagedFileIdOf(row) == null
+
 // The cursor a full gather names between the chunks of its hand-over (see InternxtProvider.GatherHandover). It is no poll cursor,
 // which is a timestamp; the provider tells them apart by this prefix.
 internal const val GATHER_CURSOR_PREFIX: String = "internxt-gather|"
