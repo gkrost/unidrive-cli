@@ -1,0 +1,5 @@
+# Historical findings only. The PR's first commit (0a62980) carried AWS's documented example key pair as the S3ConfigToStringTest
+# fixture; 329dc16 replaces them with plain values, so the file at HEAD has nothing to find. The fingerprints name that commit,
+# and no rule or path is weakened: a new finding anywhere else still fails the scan.
+0a629806dd9cad1b18284eaf4828157fac7bcccb:core/providers/s3/src/test/kotlin/org/krost/unidrive/s3/S3ConfigToStringTest.kt:aws-access-token:16
+0a629806dd9cad1b18284eaf4828157fac7bcccb:core/providers/s3/src/test/kotlin/org/krost/unidrive/s3/S3ConfigToStringTest.kt:aws-access-token:22
