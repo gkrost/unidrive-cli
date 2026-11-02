@@ -78,6 +78,8 @@ internal data class FakeFile(
     val folder: String,
     val updatedAt: Instant,
     val status: String = "EXISTS",
+    // The stored object the file's bytes are (gkrost/unidrive-cli#194); null sends none, as the fixtures always did.
+    val fileId: String? = null,
 )
 
 private class FakeCursorBody(
@@ -97,7 +99,8 @@ private fun fakeFolderJson(
 }
 
 private fun fakeFileJson(row: FakeFile) =
-    "{\"uuid\":\"${row.uuid}\",\"plainName\":\"${row.name}\",\"type\":\"txt\",\"size\":\"1\",\"folderUuid\":\"${row.folder}\"," +
+    "{\"uuid\":\"${row.uuid}\"," + (row.fileId?.let { "\"fileId\":\"$it\"," } ?: "") +
+        "\"plainName\":\"${row.name}\",\"type\":\"txt\",\"size\":\"1\",\"folderUuid\":\"${row.folder}\"," +
         "\"status\":\"${row.status}\",\"modificationTime\":\"2026-07-01T10:00:00.000Z\",\"updatedAt\":\"${fakeMillis.format(row.updatedAt)}\"}"
 
 /**
