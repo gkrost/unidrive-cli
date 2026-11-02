@@ -13,14 +13,14 @@ class S3ConfigToStringTest {
                 bucket = "my-bucket",
                 region = "eu-west-1",
                 endpoint = "https://s3.eu-west-1.amazonaws.com",
-                accessKey = "AKIAEXAMPLEACCESSKEY",
-                secretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLESECRET",
+                accessKey = "test-access-key-value",
+                secretKey = "test-secret-key-value",
             )
 
         val text = config.toString()
 
-        assertFalse("AKIAEXAMPLEACCESSKEY" in text, text)
-        assertFalse("EXAMPLESECRET" in text, text)
+        assertFalse("test-access-key-value" in text, text)
+        assertFalse("test-secret-key-value" in text, text)
         assertTrue("bucket=my-bucket" in text && "region=eu-west-1" in text, text)
         assertTrue("secretKey=<redacted>" in text, text)
     }
