@@ -273,6 +273,27 @@ class RemoteChangeBeforeContentTest {
         }
 
     @Test
+    fun `a short download keeps the old bytes and the next pass retries the content`() =
+        runTest {
+            hydratedAtV1ThenCloudHoldsV2()
+            provider.files["/doc.txt"] = "short".toByteArray()
+
+            engine.syncOnce()
+
+            assertEquals("old content", read("doc.txt"), "the incomplete download must not replace the last good copy")
+            assertFalse(db.getEntry("/doc.txt")!!.isHydrated)
+            assertTrue(provider.uploadedPaths.isEmpty())
+
+            provider.files["/doc.txt"] = "the newer content of the cloud".toByteArray()
+            deltaDeliversNothing()
+            engine.syncOnce()
+
+            assertEquals("the newer content of the cloud", read("doc.txt"))
+            assertTrue(db.getEntry("/doc.txt")!!.isHydrated)
+            assertTrue(provider.uploadedPaths.isEmpty(), "short bytes never go back to the cloud")
+        }
+
+    @Test
     fun `a cloud version whose content is refused keeps the old bytes of the file`() =
         runTest {
             hydratedAtV1ThenCloudHoldsV2()
@@ -286,8 +307,14 @@ class RemoteChangeBeforeContentTest {
             assertFalse(row.isHydrated, "the new version did not arrive: the download is pending")
             assertTrue(row.downloadQuarantined)
 
-            // The quarantine ends when the cloud reports the item again; the pass after that fetches it.
+            // An unchanged delivery keeps the refusal; a genuinely new cloud version permits another download.
             provider.deltaItems = listOf(item("/doc.txt", "the newer content of the cloud", version = 2))
+            provider.deltaCursor = "cursor-unchanged"
+            engine.syncOnce()
+            assertTrue(db.getEntry("/doc.txt")!!.downloadQuarantined)
+            assertEquals("old content", read("doc.txt"))
+
+            provider.deltaItems = listOf(item("/doc.txt", "the newer content of the cloud", version = 3))
             provider.deltaCursor = "cursor-3"
             engine.syncOnce()
             deltaDeliversNothing()

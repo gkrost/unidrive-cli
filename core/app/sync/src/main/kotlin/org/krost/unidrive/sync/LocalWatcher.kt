@@ -2,6 +2,7 @@ package org.krost.unidrive.sync
 
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
+import org.krost.unidrive.io.LinkedEntries
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.nio.file.*
@@ -192,6 +193,8 @@ class LocalWatcher(
                         dir: Path,
                         attrs: BasicFileAttributes,
                     ): FileVisitResult {
+                        // A junction or a mounted volume leads outside the root: not watched (the scanner skips it too).
+                        if (dir != syncRoot && LinkedEntries.leadsElsewhere(dir, attrs)) return FileVisitResult.SKIP_SUBTREE
                         try {
                             val key =
                                 dir.register(

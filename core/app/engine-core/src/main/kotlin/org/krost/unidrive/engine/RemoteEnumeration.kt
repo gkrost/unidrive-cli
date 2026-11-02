@@ -7,6 +7,7 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.engine.RemoteGather.Companion.applyReverseTop
 import org.krost.unidrive.engine.RemoteGather.RemoteMerge
+import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.sync.EnumerateResult
 import org.krost.unidrive.sync.EnumerationStatus
 import org.krost.unidrive.sync.EnumerationTracker
@@ -632,7 +633,9 @@ private fun moveCacheCopiesInto(
     source: Path,
     target: Path,
 ) {
-    val copies = Files.walk(source).use { s -> s.filter { Files.isRegularFile(it) }.toList() }
+    // Only files inside [source]: a junction or link below it is not entered, so nothing it leads to is moved.
+    val copies = mutableListOf<Path>()
+    LinkedEntries.forEachEntry(source) { entry, attrs -> if (attrs.isRegularFile) copies.add(entry) }
     for (copy in copies) {
         val dest = target.resolve(source.relativize(copy).toString())
         if (Files.exists(dest)) continue

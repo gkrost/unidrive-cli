@@ -94,7 +94,6 @@ class LocalfsHazardNamesTest {
 
     // #287: on a Windows that can create these names, the refusal still writes a 0-byte stub under the refused name
     // (restoreToPlaceholder), and the next sync's remote merge clears the quarantine flag.
-    @Ignore("#287: a refused download leaves a 0-byte stub under its name, and the next sync drops the quarantine")
     @Test
     fun `a refused cloud name leaves nothing behind locally and its row stays quarantined`() {
         val refused = seed(remote, "from-cloud").keys.filter { localNameIssue("/$it") != null }

@@ -10,6 +10,7 @@ import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
+import org.krost.unidrive.io.stagingSiblingName
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.PermanentUploadFailureException
@@ -2916,7 +2917,20 @@ open class SyncEngine(
         remotePath: String,
         destination: Path,
         targetMtimeMillis: Long?,
-    ): DownloadReceipt = Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, destination, targetMtimeMillis)
+    ): DownloadReceipt {
+        // Check the provider's result before it can replace the last good local copy. A broken provider may
+        // return normally after writing short bytes; its own staging contract is not the mirror's safety net.
+        Files.createDirectories(destination.parent)
+        val staging = destination.resolveSibling(stagingSiblingName(destination.fileName.toString(), ".mirror.unidrive-tmp"))
+        try {
+            val receipt = Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staging, targetMtimeMillis)
+            requireCompleteDownload(remotePath, item, receipt)
+            Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            return receipt
+        } finally {
+            Files.deleteIfExists(staging)
+        }
+    }
 
     // Internal for the download-placement test (as applyConflict for the refused-case-collision test).
     internal suspend fun applyDownload(action: SyncAction.DownloadContent) {
@@ -4384,15 +4398,7 @@ open class SyncEngine(
                     placeholder.createPlaceholder(remotePath, item.size, item.modified)
                 }
             }
-            // UD-222: if no prior DB entry existed (first-time download that failed), create one
-            // marked non-hydrated so the next sync re-attempts. Without this, a failed first-time
-            // download left zero trace in the DB and the cursor-promotion guard was the only
-            // safety net.
-            val entry = db.getEntry(remotePath)
-            val next =
-                entry?.copy(isHydrated = false, remoteSize = item.size, remoteModified = item.modified)
-                    ?: entryFromCloudItem(item, remotePath, isHydrated = false)
-            db.upsertEntry(next)
+            restoreRowToPlaceholder(remotePath, item)
         } catch (e: Exception) {
             // UD-253: class name + throwable for diagnostics.
             log.warn(
@@ -4403,6 +4409,48 @@ open class SyncEngine(
                 e,
             )
         }
+    }
+
+    // The DB half of restoreToPlaceholder alone: the row exists again (or is created) marked not hydrated, so the
+    // next sync re-attempts. For a download refused by the name itself this is the only half that may run — the
+    // stub write would materialise the very name the refusal is about (#287).
+    private fun restoreRowToPlaceholder(
+        remotePath: String,
+        item: CloudItem,
+    ) {
+        try {
+            // UD-222: if no prior DB entry existed (first-time download that failed), create one
+            // marked non-hydrated so the next sync re-attempts. Without this, a failed first-time
+            // download left zero trace in the DB and the cursor-promotion guard was the only
+            // safety net.
+            val entry = db.getEntry(remotePath)
+            val next =
+                entry?.copy(isHydrated = false, remoteSize = item.size, remoteModified = item.modified)
+                    ?: entryFromCloudItem(item, remotePath, isHydrated = false)
+            db.upsertEntry(next)
+        } catch (e: Exception) {
+            log.warn(
+                "Could not restore the row of {} after a failed download: {}: {}",
+                remotePath,
+                e.javaClass.simpleName,
+                e.message,
+            )
+        }
+    }
+
+    // The mirror's second line on the download count, the way the mount re-checks it (#80): the provider contract
+    // says download throws on a short body, and a provider that breaks it must not have its short file recorded as
+    // synced. A mismatch fails the action as the transient fault it is (a chunked response that closed early), so
+    // the next pass re-downloads instead of the row keeping a truncated copy as its baseline (#282).
+    private fun requireCompleteDownload(
+        path: String,
+        item: CloudItem,
+        receipt: DownloadReceipt,
+    ) {
+        if (item.isFolder || item.size <= 0L || receipt.bytesWritten == item.size) return
+        throw java.io.IOException(
+            "Download of $path wrote ${receipt.bytesWritten} of ${item.size} bytes — placing it as synced would keep a truncated copy; failing the download to retry it",
+        )
     }
 
     // UD-256: read the persisted `effective_scope` list (TAB-separated, no entries
@@ -4507,7 +4555,14 @@ open class SyncEngine(
         )
         reporter.onWarning("Permanent failure: ${action.path} - ${e.message}")
         logFailure(action, e)
-        restoreToPlaceholder(action.path, action.remoteItem)
+        // A refusal by the name itself must not materialise the name: restoreToPlaceholder would write a 0-byte
+        // stub under the very path (or into the very folder) the local filesystem cannot hold (#287). The row is
+        // restored alone; the quarantine below keeps the reconciler from re-attempting it.
+        if (e is UnsupportedRemoteObjectDownloadException) {
+            restoreRowToPlaceholder(action.path, action.remoteItem)
+        } else {
+            restoreToPlaceholder(action.path, action.remoteItem)
+        }
         val remoteId = action.remoteItem.id
         if (remoteId.isNotEmpty()) {
             db.setDownloadQuarantine(remoteId, Instant.now())

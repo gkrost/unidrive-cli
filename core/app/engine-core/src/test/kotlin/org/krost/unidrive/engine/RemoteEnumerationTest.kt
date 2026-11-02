@@ -716,9 +716,17 @@ class RemoteEnumerationTest {
             assertNotNull(db.getEntry("/a.txt")?.lastErrorAt)
             invalidations.clear()
 
+            val unchanged = enumeration().enumerate(reset = false)
+            assertTrue(unchanged.ok)
+            assertTrue(db.getEntry("/a.txt")!!.downloadQuarantined)
+            assertNotNull(db.getEntry("/a.txt")?.lastErrorAt)
+            assertTrue(invalidations.isEmpty(), "an unchanged quarantined item is no news for the view")
+
+            provider.items = listOf(file("1", "/a.txt").copy(size = 42))
             val result = enumeration().enumerate(reset = false)
 
             assertTrue(result.ok)
+            assertTrue(!db.getEntry("/a.txt")!!.downloadQuarantined)
             assertNull(db.getEntry("/a.txt")?.lastErrorAt)
             assertEquals(setOf("/a.txt"), invalidations.single().first)
         }
