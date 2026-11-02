@@ -10,9 +10,13 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.krost.unidrive.engine.BackupsNamespace
+import org.krost.unidrive.engine.NameKey
 import org.krost.unidrive.engine.TrashNamespace
+import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.ProfileKeyEdit
 import org.krost.unidrive.sync.RawProvider
+import org.krost.unidrive.sync.ShowBackups
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncScope
 import org.krost.unidrive.sync.editProfileKey
@@ -50,6 +54,8 @@ internal object ProfileSettings {
     const val HONOR_GITIGNORE = "honor_gitignore"
     const val IGNORE_RULES = "ignore_rules"
     const val TRASH_FOLDER_NAME = "trash_folder_name"
+    const val BACKUPS_FOLDER_NAME = "backups_folder_name"
+    const val SHOW_BACKUPS = "show_backups"
     const val SHARED_FOLDER_NAME = "shared_folder_name"
     const val SHARED_VIEW = "shared_view"
     const val RECENTS_FOLDER_NAME = "recents_folder_name"
@@ -126,6 +132,27 @@ internal object ProfileSettings {
                 needsDaemonRestart = true,
                 toToml = { _, raw -> folderNameToml(TRASH_FOLDER_NAME, raw) },
                 read = { rp -> rp.trash_folder_name?.let(::JsonPrimitive) ?: JsonNull },
+            ),
+            Spec(
+                key = BACKUPS_FOLDER_NAME,
+                description = "name of the read-only folder that shows the account's backups, one folder name (default Backups); must not be the trash folder's name",
+                needsDaemonRestart = true,
+                toToml = { _, raw -> folderNameToml(BACKUPS_FOLDER_NAME, raw) },
+                read = { rp -> rp.backups_folder_name?.let(::JsonPrimitive) ?: JsonNull },
+            ),
+            Spec(
+                key = SHOW_BACKUPS,
+                description = "show the backups folder: auto, true or false (unset stays off, not auto)",
+                needsDaemonRestart = true,
+                toToml = { _, raw -> showBackupsToml(raw) },
+                read = { rp ->
+                    when (rp.show_backups) {
+                        null -> JsonNull
+                        ShowBackups.AUTO -> JsonPrimitive("auto")
+                        ShowBackups.ON -> JsonPrimitive(true)
+                        ShowBackups.OFF -> JsonPrimitive(false)
+                    }
+                },
             ),
             Spec(
                 key = SHARED_FOLDER_NAME,
@@ -224,6 +251,38 @@ internal object ProfileSettings {
         return "\"${escapeTomlValue(raw.trim())}\""
     }
 
+    private fun showBackupsToml(raw: String): String =
+        when (raw.trim().lowercase()) {
+            "auto" -> "\"auto\""
+            "true" -> "true"
+            "false" -> "false"
+            else -> throw ProfileCommandError("invalid_value", "$SHOW_BACKUPS must be auto, true or false, got '$raw'")
+        }
+
+    /**
+     * The trash folder and the backups folder must not share a name. Compared after the edit and before the file is
+     * written: each side is the configured name, or Papierkorb / Backups when that key is unset. [key] is the one being
+     * changed; the refusal names the other key.
+     */
+    internal fun refuseSharedVirtualRoot(
+        key: String,
+        rp: RawProvider,
+    ) {
+        if (key != TRASH_FOLDER_NAME && key != BACKUPS_FOLDER_NAME) return
+        val trashRaw = rp.trash_folder_name?.trim().orEmpty()
+        val trash = if (TrashNamespace.isUsableName(trashRaw)) PathNormalizer.nfc(trashRaw) else TrashNamespace.DEFAULT_NAME
+        val backupsRaw = rp.backups_folder_name?.trim().orEmpty()
+        val backups = if (TrashNamespace.isUsableName(backupsRaw)) PathNormalizer.nfc(backupsRaw) else BackupsNamespace.DEFAULT_NAME
+        val same = NameKey.of(trash, NameKey.platformFoldsCase) == NameKey.of(backups, NameKey.platformFoldsCase)
+        if (!same) return
+        val otherKey = if (key == TRASH_FOLDER_NAME) BACKUPS_FOLDER_NAME else TRASH_FOLDER_NAME
+        val otherName = if (key == TRASH_FOLDER_NAME) backups else trash
+        throw ProfileCommandError(
+            "invalid_value",
+            "$key collides with $otherKey (\"$otherName\"): the trash folder and the backups folder must not share a name",
+        )
+    }
+
     private fun recentsLimitToml(raw: String): String {
         val n = nonNegative(RECENTS_LIMIT, raw, SyncConfig.MAX_RECENTS_LIMIT.toLong())
         if (n < 1) {
@@ -315,7 +374,7 @@ internal fun writeConfigAtomically(
     name = "set",
     description = [
         "Change one documented key of a profile in config.toml (label, sync_path, hydration_cache_max_bytes, " +
-            "daemon_poll_seconds, honor_gitignore, ignore_rules, trash_folder_name, shared_folder_name, shared_view, recents_folder_name, recents_view, recents_limit, favorites_folder_name, favorites_view). " +
+            "daemon_poll_seconds, honor_gitignore, ignore_rules, trash_folder_name, backups_folder_name, show_backups, shared_folder_name, shared_view, recents_folder_name, recents_view, recents_limit, favorites_folder_name, favorites_view). " +
             "ignore_rules takes its rules from standard input, " +
             "one per line (an empty input clears them), not from an argument. Credentials and fixed keys (type, mode, sync_root) are refused. " +
             "A running daemon does not reload the config: restart it.",
@@ -404,6 +463,7 @@ class ProfileSetCommand : Callable<Int> {
             } catch (_: Exception) {
                 null
             } ?: throw ProfileCommandError("invalid_value", "the value for $key does not produce a valid config")
+        ProfileSettings.refuseSharedVirtualRoot(key, reread)
         try {
             writeConfigAtomically(configPath, edited)
         } catch (e: IOException) {
