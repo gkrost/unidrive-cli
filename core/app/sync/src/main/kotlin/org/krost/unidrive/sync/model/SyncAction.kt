@@ -38,8 +38,15 @@ sealed class SyncAction {
         val remoteTarget: String? = null,
     ) : SyncAction()
 
+    /**
+     * [remoteId] is the tombstone's id when a remote deletion planned this.
+     * Null when the delete has no remote id. The streaming drain drops it only
+     * when a different id landed at [path] (a recreate). A missing id is not
+     * a different id, so it does not drop the delete.
+     */
     data class DeleteLocal(
         override val path: String,
+        val remoteId: String? = null,
     ) : SyncAction()
 
     data class DeleteRemote(
