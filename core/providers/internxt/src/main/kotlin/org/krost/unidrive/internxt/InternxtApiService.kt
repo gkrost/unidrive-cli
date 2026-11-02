@@ -1290,7 +1290,14 @@ class InternxtApiService(
                     timeout { requestTimeoutMillis = downloadRequestTimeoutMs(expectedSize) }
                 }.execute { response ->
                     if (!response.status.isSuccess()) {
-                        throw InternxtApiException("Download failed: ${response.status}", response.status.value, responseReceived = true)
+                        // #262: a throttling storage host's Retry-After reaches the shard-commit retry and the bridge budget.
+                        // The presigned URL's error body is not quoted (it can echo the signed request).
+                        throw InternxtApiException(
+                            "Download failed: ${response.status}",
+                            response.status.value,
+                            retryAfterMs = parseRetryAfterHeader(response.headers[HttpHeaders.RetryAfter]),
+                            responseReceived = true,
+                        )
                     }
 
                     assertNotHtml(response, contextMsg = "Download (encrypted) -> ${destination.fileName}")
@@ -1663,7 +1670,13 @@ class InternxtApiService(
                     }
                 }
             if (!response.status.isSuccess()) {
-                throw InternxtApiException("Shard upload failed: ${response.status}", response.status.value, responseReceived = true)
+                // #262: as for the shard GET, the host's Retry-After is carried, the body is not quoted.
+                throw InternxtApiException(
+                    "Shard upload failed: ${response.status}",
+                    response.status.value,
+                    retryAfterMs = parseRetryAfterHeader(response.headers[HttpHeaders.RetryAfter]),
+                    responseReceived = true,
+                )
             }
             bridgeBudget.recordSuccess()
             // archive#578: the part's ETag, echoed back per part by the multipart finish. Null
