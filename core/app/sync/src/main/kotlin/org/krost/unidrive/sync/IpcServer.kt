@@ -574,6 +574,18 @@ class IpcServer(
         return sb.toString()
     }
 
+    // The exception text can hold local paths and provider error excerpts; only a full-scope connection (or the bare
+    // server of the unit tests) gets it, URL-redacted. A read-scope connection gets the fixed reply, the log the detail.
+    private fun handlerThrewReply(
+        connId: String,
+        verb: String,
+        e: Exception,
+    ): String {
+        val head = """{"ok":false,"error":"handler_threw","verb":${jsonString(verb)}"""
+        val full = auth == null || authSessions[connId]?.scope == IpcAuth.Scope.FULL
+        return if (full) "$head,\"message\":${jsonString(UrlRedaction.redact(e.message ?: ""))}}" else "$head}"
+    }
+
     private suspend fun dispatchRequest(
         client: SocketChannel,
         connId: String,
@@ -619,7 +631,7 @@ class IpcServer(
             } catch (e: Exception) {
                 handlerThrew = true
                 log.error("IPC: handler '$verb' threw", e)
-                """{"error":"handler_threw","verb":${jsonString(verb)},"message":${jsonString(UrlRedaction.redact(e.message ?: ""))}}"""
+                handlerThrewReply(connId, verb, e)
             }
         }
         val entry = clients.firstOrNull { it.channel === client } ?: return
