@@ -649,6 +649,9 @@ class ListChildrenPaginationTest {
                             putB++
                             respond(driveItemBody, HttpStatusCode.Created, headersOf(HttpHeaders.ContentType, "application/json"))
                         }
+                        // The lost-final-chunk resolution: before the retry the item is looked up once; here the
+                        // 410 was genuine (nothing was committed), so there is no item at the path.
+                        url.contains("/drive/root:/retry.bin") -> respond("", HttpStatusCode.NotFound)
                         else -> error("Unexpected URL: $url")
                     }
                 }
