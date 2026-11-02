@@ -981,6 +981,33 @@ class StatusCommandTest {
         }
     }
 
+    // A profile with no exclude_patterns of its own and no [general] ones: only the built-in defaults hide a folder.
+    @Test
+    fun `status out-of-scope line with no configured excludes hides only the built-in ones`() {
+        val dir = Files.createTempDirectory("status-no-exclude-")
+        val originalOut = System.out
+        try {
+            val root = dir.resolve("root")
+            listOf("In", "other", ".git").forEach { Files.createDirectories(root.resolve(it)) }
+            val slash = Char(92)
+            Files.writeString(
+                dir.resolve("config.toml"),
+                "[general]\n\n[providers.lf]\ntype = \"localfs\"\nmode = \"mirror\"\n" +
+                    "sync_root = \"${root.toString().replace(slash, '/')}\"\nsync_path = [\"/In\"]\n",
+            )
+            val captured = java.io.ByteArrayOutputStream()
+            System.setOut(java.io.PrintStream(captured, true, "UTF-8"))
+            val exit = CommandLine(Main()).execute("-c", dir.toString(), "-p", "lf", "status")
+            val out = captured.toString("UTF-8")
+            assertEquals(0, exit, out)
+            assertTrue("Out of scope on disk (left untouched): /other" in out, out)
+            assertFalse(out.contains(".git"), out)
+        } finally {
+            System.setOut(originalOut)
+            dir.toFile().deleteRecursively()
+        }
+    }
+
     // ── archive#646: status without a default profile ───────────────────────────────
 
     private fun rawOf(

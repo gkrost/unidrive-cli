@@ -149,6 +149,34 @@ class ExcludePatternSyntaxTest {
         assertFalse(Reconciler.matchesGlobRegex("x$grin\nfile", "$grin*"))
     }
 
+    // The string fast paths (no '/') and the regex must agree on a character outside the BMP, and `?` is one character.
+    @Test
+    fun `a character outside the BMP is one character for question mark and on the fast paths`() {
+        val grin = "😀"
+        val rows =
+            listOf(
+                Triple("a?", "a$grin", true),
+                Triple("a??", "a$grin", false),
+                Triple("a/?", "a/$grin", true),
+                Triple(grin, "dir/$grin", true),
+                Triple("*$grin", "dir/x$grin", true),
+                Triple("$grin*", "dir/${grin}x", true),
+                Triple("**/$grin", "dir/$grin", true),
+                Triple("**/*$grin", "dir/x$grin", true),
+                Triple("**/$grin/**", "a/$grin/b", true),
+                Triple("a/**/$grin", "a/$grin", true),
+                Triple("a/**/$grin", "a/x/y/$grin", true),
+                Triple("*", grin, true),
+                // A lone surrogate is a character too; it must not combine with a neighbour.
+                Triple("a\uD83D", "a\uD83D", true),
+                Triple("a?", "a\uDE00", true),
+            )
+        for ((pattern, path, expected) in rows) {
+            assertEquals(expected, Reconciler.matchesGlob(path, pattern), "matchesGlob '$path' against '$pattern'")
+            assertEquals(expected, Reconciler.matchesGlobRegex(path, pattern), "matchesGlobRegex '$path' against '$pattern'")
+        }
+    }
+
     @Test
     fun `a slash double-star slash in the middle matches zero or more directories`() {
         val rows =
