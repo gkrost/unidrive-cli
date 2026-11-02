@@ -137,6 +137,7 @@ class DaemonRunCommand : Runnable {
             trashFolderName = config.trashFolderName(profile.name),
             backupsFolderName = backups.folderName,
             showBackups = backups.show,
+            backupsRootAlways = backups.rootAlways,
             views = ConfiguredViews.of(config, profile.name),
             pollIntervalMs = pollIntervalMs,
             // archive#891: the health line, one INFO line per minute in unidrive.log.

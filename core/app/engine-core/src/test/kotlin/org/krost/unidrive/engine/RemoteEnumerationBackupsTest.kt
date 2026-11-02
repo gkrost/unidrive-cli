@@ -117,6 +117,36 @@ class RemoteEnumerationBackupsTest {
 
     private fun alive(): List<SyncEntry> = db.getAllEntries().sortedBy { it.path }
 
+    // PR #333 review: a profile scoped to /Docs gets a drive-only page, no backup item in it. With
+    // `show_backups = true` the root is still there, empty; the drive keeps its paths and nothing is sent.
+    @Test
+    fun `an explicitly shown backups root stays on a listing that carries no backup item`() =
+        runTest {
+            val backups = BackupsNamespace(enabled = true, rootAlways = true, ignoreCase = false)
+            val guard = guard(backups)
+            provider.items = drive()
+
+            val result = enumeration(gather(guard)).enumerate(reset = false)
+
+            assertTrue(result.ok)
+            assertEquals(listOf("/Backups", "/Docs", "/Docs/readme.txt"), alive().map { it.path })
+            assertEquals(BackupsNamespace.ROOT_ID, db.getEntry("/Backups")?.remoteId)
+            assertTrue(guard.isReadOnlyPath("/Backups"))
+            assertEquals(0, provider.writes)
+        }
+
+    @Test
+    fun `a backups root that is not explicit is not kept on a listing without backup items`() =
+        runTest {
+            val backups = BackupsNamespace(enabled = true, rootAlways = false, ignoreCase = false)
+            provider.items = drive()
+
+            enumeration(gather(guard(backups))).enumerate(reset = false)
+
+            assertEquals(listOf("/Docs", "/Docs/readme.txt"), alive().map { it.path })
+            assertNull(backups.rootPath())
+        }
+
     @Test
     fun `with the backups shown a listing asks for them and places every backup item below the root with its id`() =
         runTest {

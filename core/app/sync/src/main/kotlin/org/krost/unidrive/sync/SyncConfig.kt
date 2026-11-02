@@ -129,10 +129,12 @@ data class FavoritesSettings(
  * [show] is the flag `daemon run` passes as `showBackups`, before the daemon also requires a mount profile whose
  * provider declares backups. Unset and `false` are off. `true` is on even when `sync_path` is set. `auto` is on only
  * when the profile is unscoped. Nothing here asks the account whether it has devices.
+ * [rootAlways] is true where the key says `true` (not `auto`): the root then stays while nothing is in it, see BackupsNamespace.
  */
 data class BackupsSettings(
     val folderName: String?,
     val show: Boolean,
+    val rootAlways: Boolean = false,
 )
 
 /** The profile's backups folder: its name, and whether `daemon run` passes `showBackups` (see [BackupsSettings]). */
@@ -144,7 +146,7 @@ fun SyncConfig.backups(profileName: String): BackupsSettings {
             ShowBackups.AUTO -> !provider.hasSyncPath
             else -> false
         }
-    return BackupsSettings(provider?.backupsFolderName, show)
+    return BackupsSettings(provider?.backupsFolderName, show, rootAlways = provider?.showBackups == ShowBackups.ON)
 }
 
 /**

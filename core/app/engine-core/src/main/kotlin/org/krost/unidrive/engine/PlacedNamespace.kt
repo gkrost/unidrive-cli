@@ -61,6 +61,9 @@ abstract class PlacedNamespace protected constructor(
     /** Whether the folders between the root and the topmost held items are added (see the class comment). */
     protected open val addsWayDown: Boolean = true
 
+    /** Whether the root exists while nothing is in it (a namespace the profile asks for by name, see [BackupsNamespace]). */
+    protected open val keepsRootWhenEmpty: Boolean = false
+
     // The path of the root while the namespace exists ("/Papierkorb"), null while nothing is in it.
     @Volatile
     private var root: String? = null
@@ -139,7 +142,7 @@ abstract class PlacedNamespace protected constructor(
     ): List<CloudItem> {
         val held = items.filter(::holds)
         if (heldIds.isNotEmpty()) release(items)
-        if (held.isEmpty() && !takesRootName(items, yieldTo)) return items
+        if (held.isEmpty() && !takesRootName(items, yieldTo) && !keepsRootWhenEmpty) return items
         val name = rootName(items, topLevelNames, yieldTo)
         val rootPath = "/$name"
         val before = root
