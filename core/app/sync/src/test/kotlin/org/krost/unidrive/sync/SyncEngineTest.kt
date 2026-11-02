@@ -9,6 +9,7 @@ import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.sync.audit.AuditLog
 import org.krost.unidrive.sync.model.ChangeState
 import org.krost.unidrive.sync.model.ConflictPolicy
+import org.krost.unidrive.sync.model.PendingLocal
 import org.krost.unidrive.sync.model.SyncAction
 import org.krost.unidrive.sync.model.SyncEntry
 import org.slf4j.LoggerFactory
@@ -317,6 +318,118 @@ class SyncEngineTest {
 
             assertFalse(Files.exists(syncRoot.resolve("will-delete.txt")))
             assertNull(db.getEntry("/will-delete.txt"))
+        }
+
+    @Test
+    fun `a failed remote delete is retried after the cursor moves`() =
+        runTest {
+            val placeholder = FlakyPlaceholder(syncRoot, deleteFailures = 1)
+            val flaky = flakyEngine(placeholder)
+            provider.files["/gone.txt"] = ByteArray(100)
+            provider.deltaItems = listOf(cloudItem("/gone.txt", size = 100))
+            flaky.syncOnce()
+            assertTrue(Files.exists(syncRoot.resolve("gone.txt")))
+
+            provider.deltaItems = listOf(cloudItem("/gone.txt", size = 100, deleted = true))
+            provider.deltaCursor = "cursor-2"
+            flaky.syncOnce()
+
+            assertTrue(Files.exists(syncRoot.resolve("gone.txt")), "the failed delete leaves the file")
+            assertEquals("cursor-2", db.getSyncState("delta_cursor"), "the cursor still advances")
+            assertEquals(
+                PendingLocal.DELETE,
+                db.pendingLocalMarks().single { it.first.path == "/gone.txt" }.second,
+            )
+            assertEquals(1, placeholder.deleteAttempts)
+
+            // The tombstone is not delivered again. The row mark is what retries the delete.
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-3"
+            flaky.syncOnce()
+
+            assertFalse(Files.exists(syncRoot.resolve("gone.txt")))
+            assertNull(db.getEntry("/gone.txt"))
+            assertTrue(db.pendingLocalMarks().none { it.first.path == "/gone.txt" })
+            assertFalse(provider.uploadedPaths.contains("/gone.txt"))
+            assertEquals(2, placeholder.deleteAttempts)
+        }
+
+    @Test
+    fun `a failed remote move is retried after the cursor moves`() =
+        runTest {
+            val placeholder = FlakyPlaceholder(syncRoot, moveFailures = 1)
+            val flaky = flakyEngine(placeholder)
+            val stamp = Instant.parse("2026-03-28T12:00:00Z")
+            fun item(path: String) =
+                CloudItem(
+                    id = "id-doc",
+                    name = path.substringAfterLast('/'),
+                    path = path,
+                    size = 4,
+                    isFolder = false,
+                    modified = stamp,
+                    created = stamp,
+                    hash = "hash-doc",
+                    mimeType = "application/octet-stream",
+                )
+            provider.files["/old.txt"] = "DOCS".toByteArray()
+            provider.deltaItems = listOf(item("/old.txt"))
+            flaky.syncOnce()
+            assertEquals("DOCS", Files.readString(syncRoot.resolve("old.txt")))
+
+            provider.files["/new.txt"] = provider.files.remove("/old.txt")!!
+            provider.deltaItems = listOf(item("/new.txt"))
+            provider.deltaCursor = "cursor-2"
+            flaky.syncOnce()
+
+            assertTrue(Files.exists(syncRoot.resolve("old.txt")), "the failed move leaves the bytes at the old name")
+            assertFalse(Files.exists(syncRoot.resolve("new.txt")))
+            assertEquals("cursor-2", db.getSyncState("delta_cursor"), "the cursor still advances")
+            assertEquals("/new.txt", db.getEntryByRemoteId("id-doc")?.path)
+            assertEquals(
+                PendingLocal.move("/old.txt"),
+                db.pendingLocalMarks().single { it.first.path == "/new.txt" }.second,
+            )
+
+            // Empty delta: the rename is not delivered again. The mark retries the local move.
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-3"
+            flaky.syncOnce()
+
+            assertEquals("DOCS", Files.readString(syncRoot.resolve("new.txt")))
+            assertFalse(Files.exists(syncRoot.resolve("old.txt")))
+            assertFalse(provider.uploadedPaths.contains("/old.txt"), "the old name must not be uploaded as a new file")
+            assertFalse(provider.files.containsKey("/old.txt"))
+            assertNull(db.getEntry("/old.txt"))
+            assertEquals("id-doc", db.getEntry("/new.txt")?.remoteId)
+            assertTrue(db.pendingLocalMarks().none { it.first.path == "/new.txt" })
+        }
+
+    @Test
+    fun `a remote delete that keeps failing stays marked and is retried`() =
+        runTest {
+            val placeholder = FlakyPlaceholder(syncRoot, failDeletes = true)
+            val flaky = flakyEngine(placeholder)
+            provider.files["/stuck.txt"] = ByteArray(100)
+            provider.deltaItems = listOf(cloudItem("/stuck.txt", size = 100))
+            flaky.syncOnce()
+
+            provider.deltaItems = listOf(cloudItem("/stuck.txt", size = 100, deleted = true))
+            provider.deltaCursor = "cursor-2"
+            flaky.syncOnce()
+            assertEquals(1, placeholder.deleteAttempts)
+            assertTrue(Files.exists(syncRoot.resolve("stuck.txt")))
+            assertEquals("cursor-2", db.getSyncState("delta_cursor"))
+            assertEquals(PendingLocal.DELETE, db.pendingLocalMarks().single { it.first.path == "/stuck.txt" }.second)
+
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-3"
+            flaky.syncOnce()
+
+            assertEquals(2, placeholder.deleteAttempts, "the later pass still tries the delete")
+            assertTrue(Files.exists(syncRoot.resolve("stuck.txt")))
+            assertEquals("cursor-3", db.getSyncState("delta_cursor"))
+            assertEquals(PendingLocal.DELETE, db.pendingLocalMarks().single { it.first.path == "/stuck.txt" }.second)
         }
 
     @Test
@@ -4242,6 +4355,49 @@ class SyncEngineTest {
         hash = null,
         mimeType = null,
     )
+
+    private fun flakyEngine(placeholder: PlaceholderManager) =
+        SyncEngine(
+            provider = provider,
+            db = db,
+            syncRoot = syncRoot,
+            conflictPolicy = ConflictPolicy.KEEP_BOTH,
+            reporter = ProgressReporter.Silent,
+            useTrash = false,
+            placeholder = placeholder,
+        )
+
+    /** deleteLocal / moveLocal throw until their counters run out. useTrash must be false for deleteLocal to run. */
+    private class FlakyPlaceholder(
+        root: Path,
+        private var deleteFailures: Int = 0,
+        private var moveFailures: Int = 0,
+        private val failDeletes: Boolean = false,
+    ) : PlaceholderManager(root) {
+        var deleteAttempts = 0
+            private set
+
+        override fun deleteLocal(remotePath: String) {
+            deleteAttempts++
+            if (failDeletes || deleteFailures > 0) {
+                if (deleteFailures > 0) deleteFailures--
+                throw java.io.IOException("file is open")
+            }
+            super.deleteLocal(remotePath)
+        }
+
+        override fun moveLocal(
+            source: Path,
+            target: Path,
+            replaceExisting: Boolean,
+        ) {
+            if (moveFailures > 0) {
+                moveFailures--
+                throw java.io.IOException("file is open")
+            }
+            super.moveLocal(source, target, replaceExisting)
+        }
+    }
 
     private fun cloudItem(
         path: String,

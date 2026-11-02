@@ -11,6 +11,7 @@ import java.time.Instant
 import org.krost.unidrive.engine.localNameIssue
 import org.krost.unidrive.sync.model.SyncEntry
 import org.krost.unidrive.io.LinkedEntries
+import org.krost.unidrive.io.moveFile
 import org.krost.unidrive.io.withLocalIoRetryBlocking
 
 /**
@@ -214,6 +215,17 @@ open class PlaceholderManager(
         target: Path,
     ) {
         withLocalIoRetryBlocking { Files.move(source, target) }
+    }
+
+    /**
+     * The local half of a remote rename. Open so a test can fail it once; production is [moveFile].
+     */
+    open fun moveLocal(
+        source: Path,
+        target: Path,
+        replaceExisting: Boolean,
+    ) {
+        moveFile(source, target, replaceExisting)
     }
 
     fun createFolder(

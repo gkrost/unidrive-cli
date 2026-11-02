@@ -132,6 +132,21 @@ data class SyncEntry(
 }
 
 /**
+ * A remote change an incremental delta delivers once, still not applied on disk.
+ * Stored on the row, not on [SyncEntry], so it takes no part in equality.
+ */
+object PendingLocal {
+    const val DELETE = "delete"
+    const val MKDIR = "mkdir"
+    const val MOVE_PREFIX = "move\t"
+
+    fun move(fromPath: String): String = MOVE_PREFIX + fromPath
+
+    fun moveFrom(mark: String): String? =
+        mark.removePrefix(MOVE_PREFIX).takeIf { mark.startsWith(MOVE_PREFIX) && it.isNotEmpty() }
+}
+
+/**
  * Lifecycle state of a [SyncEntry]. EXISTS rows are the only ones the sync
  * loop reads (via the alive-only view); TRASHED and DELETED are tombstones
  * preserved for recovery and for the un-trash-on-scan branch.
