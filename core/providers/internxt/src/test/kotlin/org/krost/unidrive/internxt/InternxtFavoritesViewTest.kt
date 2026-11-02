@@ -21,7 +21,7 @@ import kotlin.test.assertTrue
 
 /**
  * The provider's side of the Favorites view: `listView(FAVORITES, limit)` pages `GET /favorites` and answers the uuids of the
- * live favorite files. A gateway without the route is an unsupported view, not an error.
+ * live favorite folders (first) and files. A gateway without the route is an unsupported view, not an error.
  */
 class InternxtFavoritesViewTest {
     private val favorites = ViewKind.FAVORITES
@@ -64,7 +64,8 @@ class InternxtFavoritesViewTest {
 
     private fun uuids(n: Int) = (0 until n).map { "f%05d".format(it) }
 
-    private fun offsets(fake: Fake) = fake.requests.map { Regex("offset=(\\d+)").find(it)!!.groupValues[1].toInt() }
+    // The offsets of the file stream (the folder stream, empty in these cases, is one request at offset 0 before it).
+    private fun offsets(fake: Fake) = fake.requests.filter { "type=file" in it }.map { Regex("offset=(\\d+)").find(it)!!.groupValues[1].toInt() }
 
     @Test
     fun `the provider declares the favorites view`() {
@@ -79,7 +80,13 @@ class InternxtFavoritesViewTest {
             val listed = refs(providerOn(fake).listView(favorites, 5_000))
 
             assertEquals(listOf(ViewRef("a", false), ViewRef("b", false), ViewRef("c", false)), listed)
-            assertEquals(listOf("/drive/favorites?type=file&limit=1000&offset=0&sort=uuid&order=ASC"), fake.requests)
+            assertEquals(
+                listOf(
+                    "/drive/favorites?type=folder&limit=1000&offset=0&sort=uuid&order=ASC",
+                    "/drive/favorites?type=file&limit=1000&offset=0&sort=uuid&order=ASC",
+                ),
+                fake.requests,
+            )
         }
 
     @Test
@@ -110,12 +117,46 @@ class InternxtFavoritesViewTest {
         }
 
     @Test
-    fun `favorited folders are neither requested nor listed`() =
+    fun `a favorited folder is listed as a folder reference`() =
         runTest {
             val fake = Fake(files = listOf(file("a")), folders = listOf(folder("d")))
 
-            assertEquals(listOf(ViewRef("a", false)), refs(providerOn(fake).listView(favorites, 10)))
-            assertTrue(fake.requests.none { "type=folder" in it })
+            val listed = refs(providerOn(fake).listView(favorites, 10))
+
+            assertEquals(listOf(ViewRef("d", true), ViewRef("a", false)), listed)
+            assertEquals(listOf("folder", "file"), fake.requests.map { Regex("type=(\\w+)").find(it)!!.groupValues[1] })
+        }
+
+    @Test
+    fun `a favorited folder below another favorited folder, and a favorited file inside one, are all listed once by uuid`() =
+        runTest {
+            // The list is flat: nesting is not read. "outer" and "inner" (below "outer") are both references, and so is the
+            // file "in-outer" that lives inside "outer". The engine shows each at the top of the view and, through the alias
+            // of "outer", again below it; the provider's answer holds each uuid once.
+            val fake =
+                Fake(
+                    files = listOf(file("in-outer"), file("in-outer"), file("loose")),
+                    folders = listOf(folder("inner"), folder("outer"), folder("inner")),
+                )
+
+            val listed = refs(providerOn(fake).listView(favorites, 10))
+
+            assertEquals(
+                listOf(ViewRef("inner", true), ViewRef("outer", true), ViewRef("in-outer", false), ViewRef("loose", false)),
+                listed,
+            )
+            assertEquals(listed.size, listed.map { it.id }.toSet().size)
+        }
+
+    @Test
+    fun `the limit cuts the folders first and says so`() =
+        runTest {
+            val fake = Fake(files = listOf(file("a")), folders = listOf(folder("d1"), folder("d2")))
+
+            val listed = refs(providerOn(fake).listView(favorites, 2))
+
+            assertEquals(listOf(ViewRef("d1", true), ViewRef("d2", true)), listed)
+            assertTrue((listed as ViewList).truncated)
         }
 
     @Test

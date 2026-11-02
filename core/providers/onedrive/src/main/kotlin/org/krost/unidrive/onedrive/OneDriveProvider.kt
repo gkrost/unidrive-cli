@@ -878,21 +878,22 @@ class OneDriveProvider(
         }
         val displayName = name ?: remote.name ?: "unnamed"
         val hashes = file?.hashes ?: remote.file?.hashes
-        val modifiedSource =
-            fileSystemInfo?.lastModifiedDateTime ?: remote.fileSystemInfo?.lastModifiedDateTime
-                ?: lastModifiedDateTime ?: remote.lastModifiedDateTime
-        val createdSource =
-            fileSystemInfo?.createdDateTime ?: remote.fileSystemInfo?.createdDateTime
-                ?: createdDateTime ?: remote.createdDateTime
+        val modified =
+            usableTime(fileSystemInfo?.lastModifiedDateTime, remote.fileSystemInfo?.lastModifiedDateTime)
+                ?: usableTime(lastModifiedDateTime, remote.lastModifiedDateTime)
+        val created =
+            usableTime(fileSystemInfo?.createdDateTime, remote.fileSystemInfo?.createdDateTime)
+                ?: usableTime(createdDateTime, remote.createdDateTime)
         return CloudItem(
             id = SharedItemRef(driveId, itemId).id,
             name = displayName,
             path = "/Shared/$displayName",
             size = if (size > 0) size else remote.size ?: 0,
             isFolder = folder != null || remote.folder != null,
-            modified = modifiedSource?.let { runCatching { Instant.parse(it) }.getOrNull() },
-            created = createdSource?.let { runCatching { Instant.parse(it) }.getOrNull() },
-            hash = hashes?.quickXorHash ?: hashes?.sha256Hash,
+            modified = modified,
+            created = created,
+            // Only a QuickXor hash: hashAlgorithm() is QuickXor, and a hash of another algorithm never matches it.
+            hash = hashes?.quickXorHash,
             contentId = oneDriveContentId(hashes, if (size > 0) size else remote.size ?: 0),
             mimeType = file?.mimeType ?: remote.file?.mimeType,
             // No version: the entry's own eTag is the stub's, not the shared item's. A write of the item then
@@ -1041,8 +1042,10 @@ class OneDriveProvider(
         // commit; fileSystemInfo carries the client-supplied local mtime/ctime that
         // round-trips through the API. Prefer it when present so a fresh download
         // gives the local file the same mtime it had at upload time.
-        val modifiedSource = fileSystemInfo?.lastModifiedDateTime ?: lastModifiedDateTime
-        val createdSource = fileSystemInfo?.createdDateTime ?: createdDateTime
+        // A fileSystemInfo time that is missing, unparsable or at an epoch (a client that never set it) says nothing:
+        // the server-stamped time stands in for it.
+        val modified = usableTime(fileSystemInfo?.lastModifiedDateTime, lastModifiedDateTime)
+        val created = usableTime(fileSystemInfo?.createdDateTime, createdDateTime)
 
         return CloudItem(
             id = id,
@@ -1050,17 +1053,16 @@ class OneDriveProvider(
             path = fullPath,
             size = size,
             isFolder = folder != null,
-            modified = modifiedSource?.let { runCatching { Instant.parse(it) }.getOrNull() },
-            created = createdSource?.let { runCatching { Instant.parse(it) }.getOrNull() },
-            // archive#112 / PR archive#193: prefer quickXorHash so remoteHash is consistent with
-            // hashAlgorithm()=QuickXor. Personal OneDrive reliably supplies quickXorHash
-            // for all files; sha256Hash is a fallback for drives that omit it (e.g. some
-            // SharePoint/business tenants). When neither field is present (folder, root,
-            // or draft item) hash is null and archive#112's isTouchOnly guard (remoteHash != null)
-            // safely falls back to mtime+size. One-time effect: existing DB entries whose
-            // stored remoteHash was SHA-256 will mismatch on the next enumeration and get
-            // re-stored as QuickXor — a single re-compare, not data loss.
-            hash = file?.hashes?.quickXorHash ?: file?.hashes?.sha256Hash,
+            modified = modified,
+            created = created,
+            // archive#112 / PR archive#193: remoteHash is the quickXorHash, consistent with hashAlgorithm()=QuickXor.
+            // Never the sha256Hash: the engine compares this value with the QuickXor of the local file, so a SHA-256
+            // there would read every download as corrupt and every file as changed. A file without a quickXorHash
+            // (a folder, a draft item, a SharePoint/business tenant that omits it) has no hash, and the engine
+            // judges it by version, size and time (archive#112's isTouchOnly guard needs remoteHash != null). The
+            // SHA-256 is still named, with its algorithm, in contentId. A stored SHA-256 remoteHash from an earlier
+            // version is replaced by null on the next enumeration: a single re-compare, not data loss.
+            hash = file?.hashes?.quickXorHash,
             // gkrost/unidrive-cli#233: the bytes' own name, which a rename leaves alone (the eTag and the modified time below
             // both move with it); see oneDriveContentId.
             contentId = oneDriveContentId(file?.hashes, size),
@@ -1146,3 +1148,12 @@ class OneDriveProvider(
             ),
         )
 }
+
+/**
+ * The first of [candidates] that is a usable time: parsable, and after the epoch. Graph's `fileSystemInfo` holds
+ * 1970-01-01 or 0001-01-01 for a client that never set the time; those, and text that is no date, are skipped.
+ */
+private fun usableTime(vararg candidates: String?): Instant? =
+    candidates.firstNotNullOfOrNull { text ->
+        text?.let { runCatching { Instant.parse(it) }.getOrNull() }?.takeIf { it.isAfter(Instant.EPOCH) }
+    }

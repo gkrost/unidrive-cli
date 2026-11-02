@@ -204,6 +204,23 @@ class PlaceholderManagerTest {
         assertEquals(syncRoot.resolve("docs"), mgr.resolveLocal("/docs/"))
     }
 
+    // Review of #331: a key may now hold a backslash (a POSIX name character). Where the backslash is the
+    // separator (Windows) such a key must never resolve to a different or an outside file; where it is a name
+    // character it must stay one element inside the root.
+    @Test
+    fun `a key with a backslash never escapes the root or names another file`() {
+        val windows = java.io.File.separatorChar == '\\'
+        for (key in listOf("/a\\..\\..\\b", "/..\\x", "/docs\\..\\victim.txt", "/a\\b")) {
+            if (windows) {
+                assertFailsWith<SecurityException>(key) { safeResolveLocal(syncRoot, key) }
+            } else {
+                val resolved = safeResolveLocal(syncRoot, key)
+                assertEquals(syncRoot.toAbsolutePath().normalize(), resolved.parent, key)
+                assertEquals(key.removePrefix("/"), resolved.fileName.toString())
+            }
+        }
+    }
+
     @Test
     fun `createPlaceholder rejects traversal path`() {
         // SecurityException is thrown during path resolution, before any filesystem mutation.

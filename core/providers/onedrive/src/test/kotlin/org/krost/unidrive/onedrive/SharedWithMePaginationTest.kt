@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -98,7 +99,7 @@ class SharedWithMePaginationTest {
         }
 
     @Test
-    fun `deltaWithShared returns shared items from every page with quickXor preferred over sha256`() =
+    fun `deltaWithShared returns shared items from every page with quickXor kept and sha256 never taken for it`() =
         runTest {
             val engine =
                 MockEngine { request ->
@@ -128,7 +129,7 @@ class SharedWithMePaginationTest {
             assertEquals(setOf("shared:d-s1:r-s1", "shared:d-s2:r-s2", "shared:d-s3:r-s3"), byId.keys)
             assertEquals("QX1", byId["shared:d-s1:r-s1"]?.hash)
             assertEquals("QX2", byId["shared:d-s2:r-s2"]?.hash)
-            assertEquals("SHA3", byId["shared:d-s3:r-s3"]?.hash, "sha256Hash is the fallback when quickXorHash is absent")
+            assertNull(byId["shared:d-s3:r-s3"]?.hash, "a sha256Hash is not a QuickXor: no hash when quickXorHash is absent")
             provider.close()
         }
 }
