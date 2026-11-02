@@ -461,8 +461,9 @@ The alias is found by the entry's name, whole segments only (`/Favorites/Doc` is
 (NFC, case folded where the file system folds case); the part below it is looked up in the real tree as given. The alias follows
 a rename or move of the real folder, because the entry is joined to its row by id: the entry takes the new name at the next
 listing. A reference to a folder with no live row, a row inside the trash namespace or outside `sync_path`, or a row that is not
-a folder, is skipped and counted like any other. A favorited file inside a favorited folder is listed twice (in the view and in
-the alias); that is intended. The rule is the same for every view kind whose provider references folders.
+a folder, is skipped and counted like any other. The Favorites list is flat: a favorited file inside a favorited folder, and a favorited folder below another
+favorited folder, are each listed at the top of the view (once by id) and again below the alias of the outer folder; that is
+intended. Unfavoriting is not a verb of the view: `unlink` of such an entry answers `read_only` and changes nothing. The rule is the same for every view kind whose provider references folders.
 
 An entry is called by the last segment of its real path. When two entries want the same name (compared in NFC, and with case
 folded where the file system folds case) the one whose item is a folder, else the one with the smaller id, keeps the plain name

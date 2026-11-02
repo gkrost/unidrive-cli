@@ -219,7 +219,7 @@ class InternxtProvider(
     private val sharedViewCutLogged = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
-     * The views this provider has: the favorite files ([ViewKind.FAVORITES], from [InternxtApiService.listFavorites]), the recent files ([ViewKind.RECENTS], from [InternxtApiService.listRecentFiles]) and what the account shares by itself ([ViewKind.SHARED_BY_ME]), from [InternxtApiService.listSharedByMe].
+     * The views this provider has: the favorite folders and files ([ViewKind.FAVORITES], from [InternxtApiService.listFavorites]), the recent files ([ViewKind.RECENTS], from [InternxtApiService.listRecentFiles]) and what the account shares by itself ([ViewKind.SHARED_BY_ME]), from [InternxtApiService.listSharedByMe].
      * A reference is the uuid of the real file or folder, and whether it is a folder, and nothing else: no name, no key, no
      * link (the answers carry those, the models of the listing do not declare them). The folders the account shares come
      * first, then the files; the engine shows a folder as a read-only alias of the real folder. A gateway without the sharings routes answers [CapabilityResult.Unsupported]; any other
@@ -253,19 +253,20 @@ class InternxtProvider(
         return CapabilityResult.Success(ViewList(listed.refs.take(cap).map { ViewRef(it.uuid, it.isFolder) }, truncated = cut))
     }
 
-    // The files the account marked as favorites. Folders are left out for now: the folder stream is not even requested (they
-    // would be shown as read-only aliases of the real folders, as the shared view's are; that is still to come). A gateway
+    // The folders and files the account marked as favorites, folders first. A reference is the uuid and the kind; the engine
+    // shows a folder as a read-only alias of the real folder, as the shared view's are. The list is flat: a favorited folder
+    // below another favorited one, and a favorited file inside one, are references of their own, each once by uuid. A gateway
     // without the route answers unsupported; any other failure throws.
     private suspend fun listFavorites(limit: Int): CapabilityResult<List<ViewRef>> {
         val listed =
-            api.listFavorites(includeFolders = false)
+            api.listFavorites(includeFolders = true)
                 ?: return CapabilityResult.Unsupported(Capability.View(ViewKind.FAVORITES), "The gateway has no favorites route")
         val cap = limit.coerceAtLeast(1)
         val cut = listed.truncated || listed.refs.size > cap
         if (!cut) {
             favoritesViewCutLogged.set(false)
         } else if (!favoritesViewCutLogged.getAndSet(true)) {
-            log.warn("The list of favorites is cut: showing the first {} of {} files", minOf(listed.refs.size, cap), listed.refs.size)
+            log.warn("The list of favorites is cut: showing the first {} of {} folders and files", minOf(listed.refs.size, cap), listed.refs.size)
         }
         return CapabilityResult.Success(ViewList(listed.refs.take(cap), truncated = cut))
     }
