@@ -15,7 +15,8 @@
 #   ?       one character that is not a "/"
 #   **/     at the start: no folder or any folders, so "**/x" matches "x" and "a/b/x"
 #   /**     at the end: the folder itself and everything below it, so "a/**" matches "a" and "a/b/c"
-#   Use ** only in these two places: elsewhere it does not do what it reads like ("a/**/b" matches no path).
+#   /**/    in the middle: no folder or any folders, so "a/**/b" matches "a/b" and "a/x/y/b"
+#   A ** that is not next to a "/" does not mean that ("a/**.log" is not "every .log file").
 #   A pattern without "/" (a leading one does not count) is matched against the name alone, at any depth:
 #   "*.log" and "/*.log" both exclude every .log file. A pattern with "/" is matched against the whole path.
 #   Every other character matches itself, case-sensitively. There is no {a,b} alternation and no [...] class:
