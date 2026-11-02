@@ -24,6 +24,7 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 import org.krost.unidrive.io.LinkedEntries
+import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.moveFile
 import org.krost.unidrive.io.stagingSiblingName
 import org.krost.unidrive.io.withLocalIoRetry
@@ -130,10 +131,8 @@ class LocalFsProvider(
         return resolved
     }
 
-    private fun toRemote(local: Path): String {
-        val rel = rootNorm.relativize(local.toAbsolutePath().normalize()).toString().replace('\\', '/')
-        return if (rel.isEmpty()) "/" else "/$rel"
-    }
+    private fun toRemote(local: Path): String =
+        engineKey(rootNorm.relativize(local.toAbsolutePath().normalize()))
 
     private fun toItem(local: Path): CloudItem {
         val norm = local.toAbsolutePath().normalize()

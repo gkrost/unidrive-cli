@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import org.krost.unidrive.HashAlgorithm
+import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.sync.HashVerifier
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.ProcessLock
@@ -462,7 +463,7 @@ internal object LegacyInventory {
                     attrs: BasicFileAttributes,
                 ): FileVisitResult {
                     if (attrs.isRegularFile && keep(f.fileName.toString())) {
-                        val key = PathNormalizer.nfc("/" + base.relativize(f).toString().replace('\\', '/'))
+                        val key = PathNormalizer.nfc(engineKey(base.relativize(f)))
                         files[key] = f
                         sizes[key] = attrs.size()
                     }

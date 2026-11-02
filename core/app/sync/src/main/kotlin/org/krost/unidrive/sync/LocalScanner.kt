@@ -6,6 +6,7 @@ import org.krost.unidrive.ScanHeartbeat
 import org.krost.unidrive.sync.model.ChangeState
 import org.krost.unidrive.sync.model.SyncEntry
 import org.krost.unidrive.io.LinkedEntries
+import org.krost.unidrive.io.engineKey
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.nio.file.FileVisitResult
@@ -82,7 +83,7 @@ class LocalScanner(
         }
         for ((nfcName, members) in byKey) {
             if (members.map { it.fileName.toString() }.distinct().size < 2) continue
-            val nfcPath = PathNormalizer.nfc("/" + syncRoot.relativize(dir.resolve(nfcName)).toString().replace('\\', '/'))
+            val nfcPath = PathNormalizer.nfc(engineKey(syncRoot.relativize(dir.resolve(nfcName))))
             if (isExcluded(nfcPath, Files.isDirectory(members[0])) || !onScopePath(nfcPath)) continue
             blockedPaths.addAll(members)
             blockedKeys.add(nfcPath)
@@ -203,7 +204,7 @@ class LocalScanner(
                     if (file in blockedPaths) return FileVisitResult.CONTINUE
                     // archive#171: canonicalize to NFC so an NFD on-disk name matches the
                     // NFC remote/state.db key in the reconciler.
-                    val relativePath = PathNormalizer.nfc("/" + syncRoot.relativize(file).toString().replace('\\', '/'))
+                    val relativePath = PathNormalizer.nfc(engineKey(syncRoot.relativize(file)))
                     if (isExcluded(relativePath)) return FileVisitResult.CONTINUE
                     if (!inScope(relativePath)) return FileVisitResult.CONTINUE
                     // A tree can arrive via WSL or an extended Win32 path. Do not
@@ -334,7 +335,7 @@ class LocalScanner(
                     if (dir == syncRoot) return FileVisitResult.CONTINUE
                     if (dir in blockedPaths) return FileVisitResult.SKIP_SUBTREE
                     // archive#171: canonicalize to NFC (see visitFile).
-                    val relativePath = PathNormalizer.nfc("/" + syncRoot.relativize(dir).toString().replace('\\', '/'))
+                    val relativePath = PathNormalizer.nfc(engineKey(syncRoot.relativize(dir)))
                     if (isExcluded(relativePath, isDir = true)) return FileVisitResult.SKIP_SUBTREE
                     if (!onScopePath(relativePath)) return FileVisitResult.SKIP_SUBTREE
                     // A junction or a mounted volume leads out of the sync root: its content is not walked and not
@@ -367,7 +368,7 @@ class LocalScanner(
                     exc: IOException,
                 ): FileVisitResult {
                     skipped++
-                    val relativePath = PathNormalizer.nfc("/" + syncRoot.relativize(file).toString().replace('\\', '/'))
+                    val relativePath = PathNormalizer.nfc(engineKey(syncRoot.relativize(file)))
                     unreadable.add(relativePath.removeSuffix("/"))
                     log.warn(
                         "Skipping unreadable file {} ({}: {})",
