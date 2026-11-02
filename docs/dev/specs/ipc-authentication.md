@@ -162,7 +162,8 @@ its passwords and secrets; a profile with neither is refused (`begin_failed`) be
 two-factor code. The password is never an argument: `--password-stdin` is required. A front-end can pass the e-mail and
 the one-time code on stdin as well (`--email-stdin`, `--totp-stdin`), so they don't appear in the process list.
 Standard input then holds one line each, in this order: e-mail, password, code (only the lines whose flag is given).
-A line ends at a line feed (a carriage return before it is dropped); the e-mail and the code are trimmed, the password is kept as typed.
+Piped input is UTF-8. A line ends at a line feed (a carriage return before it is dropped); the e-mail and the code are trimmed, the password is kept as typed.
+Interactive input uses the console's character reader and encoding for every field.
 `--email` with `--email-stdin`, or `--totp` with `--totp-stdin`, is refused (`invalid_value`); no e-mail at all is
 `missing_email`. On a terminal the prompts go to stderr and the password and the code are read without echo.
 

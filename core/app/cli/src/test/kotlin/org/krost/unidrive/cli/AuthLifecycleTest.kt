@@ -510,8 +510,15 @@ class AuthLifecycleTest {
     /** A fake terminal: counts the masked reads and answers with [typed] (null: end of input). */
     private class FakeTerminal(
         private val typed: String?,
-    ) : MaskedPasswordReader {
+        private val line: String? = null,
+    ) : TerminalInput {
         var reads = 0
+        var lineReads = 0
+
+        override fun readLine(): String? {
+            lineReads++
+            return line
+        }
 
         override fun readPassword(): CharArray? {
             reads++
@@ -683,12 +690,12 @@ class AuthLifecycleTest {
         val calls = mutableListOf<LoginCall>()
         fakeLogin(calls)
 
-        assertEquals(0, run("auth", "login", "--profile", "ix", "--email-stdin", "--password-stdin", "--totp", "111111", "--json", stdin = "a@b.test\npw\n"))
+        assertEquals(0, run("auth", "login", "--profile", "ix", "--email-stdin", "--password-stdin", "--totp", "111111", "--json", stdin = "müller@exämple.test\npw\n"))
         assertEquals(0, run("auth", "login", "--profile", "ix", "--email", "a@b.test", "--password-stdin", "--totp-stdin", "--json", stdin = "pw\n222222\n"))
         assertEquals(0, run("auth", "login", "--profile", "ix", "--email", "a@b.test", "--password-stdin", "--totp-stdin", "--json", stdin = "pw\n"))
 
         assertEquals(
-            listOf(Triple("a@b.test", "pw", "111111"), Triple("a@b.test", "pw", "222222"), Triple("a@b.test", "pw", null)),
+            listOf(Triple("müller@exämple.test", "pw", "111111"), Triple("a@b.test", "pw", "222222"), Triple("a@b.test", "pw", null)),
             calls.map { Triple(it.email, it.password, it.tfa) },
             "no code line is no code",
         )
@@ -698,14 +705,15 @@ class AuthLifecycleTest {
     fun `login on a terminal asks for the e-mail and reads the two-factor code masked`() {
         val calls = mutableListOf<LoginCall>()
         fakeLogin(calls)
-        val terminal = FakeTerminal("999888")
+        val terminal = FakeTerminal("999888", line = " müller@exämple.test ")
         LifecycleHooks.terminalPassword = { terminal }
 
-        val code = run("auth", "login", "--profile", "ix", "--email-stdin", "--password-stdin", "--totp-stdin", "--json", stdin = "me@example.test\n")
+        val code = run("auth", "login", "--profile", "ix", "--email-stdin", "--password-stdin", "--totp-stdin", "--json", stdin = "wrong-stream@example.test\n")
 
         assertEquals(0, code, err.toString())
+        assertEquals(1, terminal.lineReads, "the e-mail uses the console's decoded reader")
         assertEquals(2, terminal.reads, "the password and the code: two masked reads")
-        assertEquals("me@example.test", calls.single().email)
+        assertEquals("müller@exämple.test", calls.single().email)
         assertEquals("999888", calls.single().tfa)
         val prompts = err.toString(Charsets.UTF_8)
         assertTrue("E-mail" in prompts && "Password" in prompts && "Two-factor code" in prompts, prompts)

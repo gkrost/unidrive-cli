@@ -159,7 +159,7 @@ class AuthCompleteCommand : Callable<Int> {
 @Command(
     name = "login",
     description = [
-        "Sign in to Internxt without a console. The password is read from standard input (first line), " +
+        "Sign in to Internxt without a console. The password is read from standard input, " +
             "or asked for without echo when standard input and output are a terminal; " +
             "never from an argument. With --email-stdin and --totp-stdin the e-mail and the two-factor code come from " +
             "standard input too (one line each: e-mail, password, code), so none of them is in the process list. " +
@@ -247,9 +247,11 @@ class AuthLoginCommand : Callable<Int> {
 
     // The e-mail: on a terminal echoed as typed (the prompt on stderr), otherwise the next line of standard input.
     private fun readLine(prompt: String): String {
-        if (LifecycleHooks.terminalPassword() != null) {
+        val terminal = LifecycleHooks.terminalPassword()
+        if (terminal != null) {
             System.err.print(prompt)
             System.err.flush()
+            return terminal.readLine().orEmpty().trim()
         }
         return readStdinLine().trim()
     }
