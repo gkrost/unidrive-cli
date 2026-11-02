@@ -686,7 +686,7 @@ class StateDatabaseTest {
     }
 
     @Test
-    fun `upgrade path — pre-redesign DB drops sync_entries and rebuilds at schema_version=2`() {
+    fun `upgrade path — pre-redesign DB drops sync_entries and rebuilds at the current schema_version`() {
         // Inject a pre-redesign-shaped DB: sync_state exists, no schema_version
         // row, sync_entries has the old path-PK shape with a row that the
         // new schema would consider non-rescannable (its remote_id would be
