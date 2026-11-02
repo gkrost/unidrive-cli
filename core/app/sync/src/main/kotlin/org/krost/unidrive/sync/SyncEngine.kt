@@ -2510,6 +2510,7 @@ open class SyncEngine(
                                 scope,
                                 pageSlice.stableRemoteTopLevelNames,
                                 downloadOnly = syncDirection == SyncDirection.DOWNLOAD,
+                                landedRemoteId = buffer::landedIdAt,
                             )
                         val safeNow = buffer.classify(pageActions)
                         safeAccumulator.addAll(safeNow)

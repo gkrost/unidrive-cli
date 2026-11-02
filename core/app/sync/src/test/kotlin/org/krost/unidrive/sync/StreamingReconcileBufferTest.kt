@@ -112,6 +112,16 @@ class StreamingReconcileBufferTest {
     }
 
     @Test
+    fun `the buffer names the id that landed at a path this gather`() {
+        val buf = StreamingReconcileBuffer()
+        assertEquals(null, buf.landedIdAt("/x"))
+        buf.classify(listOf(SyncAction.Upload("/u")))
+        assertEquals(null, buf.landedIdAt("/u"), "a local upload lands no remote content")
+        buf.classify(listOf(SyncAction.DownloadContent("/x", item("/x").copy(id = "A"))))
+        assertEquals("A", buf.landedIdAt("/x"))
+    }
+
+    @Test
     fun `a delete with no remote id is not treated as a different id`() {
         val buf = StreamingReconcileBuffer()
         buf.classify(listOf(SyncAction.DownloadContent("/x", item("/x").copy(id = "A"))))
