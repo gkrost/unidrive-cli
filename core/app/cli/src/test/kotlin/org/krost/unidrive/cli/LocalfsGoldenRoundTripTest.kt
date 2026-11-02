@@ -31,7 +31,6 @@ import java.time.Instant
 import java.util.HexFormat
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -119,10 +118,7 @@ class LocalfsGoldenRoundTripTest {
         assertEquals(1, findings.size, "and the only one: $findings")
     }
 
-    // The engine itself has no second line against such a download: it places the short file, records the row as
-    // hydrated and never repairs it (#282). Expected once that is fixed: the action fails and no short file is left
-    // behind as synced.
-    @Ignore("#282: the mirror places a short download and records it as hydrated")
+    // A provider that breaks the short-body contract must not leave truncated bytes recorded as synced.
     @Test
     fun `the mirror refuses a download shorter than the item`() {
         val tree = goldenTree().only("cjk/").write(local)
@@ -138,6 +134,10 @@ class LocalfsGoldenRoundTripTest {
         val db = StateDatabase(profileDir.resolve("state.db")).also { it.initialize() }
         val row = db.getEntry("/$victim").also { db.close() }
         assertTrue(row == null || !row.isHydrated || row.localSize == row.remoteSize, "no short file is recorded as synced: $row")
+
+        sync(LocalFsProvider(remote))
+        assertTrue(compare(tree.files, tree.dirs, local).isEmpty(), "the next pass repairs the incomplete download")
+        assertTrue(compare(tree.files, tree.dirs, remote).isEmpty(), "the short local copy never overwrites the remote")
     }
 
     // ── what the round trip must give ─────────────────────────────────────────
