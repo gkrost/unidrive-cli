@@ -18,7 +18,6 @@ import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.http.Priority
-import org.krost.unidrive.io.moveFile
 import org.krost.unidrive.engine.AuditSink
 import org.krost.unidrive.engine.EnumerationEntryPoint
 import org.krost.unidrive.engine.MountHost
@@ -1676,6 +1675,7 @@ open class SyncEngine(
                         )
                         reporter.onWarning("Failed: ${action.path} - ${e.message}")
                         logFailure(action, e)
+                        rememberUnappliedRemoteChange(action)
                         // UD-248: previously, hitting 3 consecutive action failures
                         // threw ProviderException which tore down the whole pass and
                         // made the watch loop restart syncOnce (re-enumerating the
@@ -1906,6 +1906,10 @@ open class SyncEngine(
         // --force-delete" path impossible. Holding the cursor lets the tombstones replay
         // until the divergence clears or drops back under the cap. (DeleteRemote re-derives
         // from the local scan every cycle regardless, so it is unaffected either way.)
+        //
+        // A failed DeleteLocal, MoveLocal, or folder CreatePlaceholder is not a reason to hold
+        // the cursor. The row keeps a pending_local mark and the next reconcile retries that one
+        // action. deferDeletes stays the only hold.
         if (deferDeletes) {
             log.warn("#108: holding delta cursor this cycle (deletes deferred); tombstones replay next sync")
         } else {
@@ -2863,6 +2867,7 @@ open class SyncEngine(
                 entry
             },
         )
+        if (item.isFolder) db.clearPendingLocal(action.path)
     }
 
     private suspend fun applyUpdatePlaceholder(action: SyncAction.UpdatePlaceholder) {
@@ -3392,6 +3397,7 @@ open class SyncEngine(
         // The upsert above settles a name block (a new name does), and the merge marked this row by its new name just before: a remote
         // rename into a name the provider's clients refuse is marked again, so it is reported on this pass and not on a later delivery.
         provider.existingNameIssue(action.path)?.let { db.markNameBlocked(action.path, it, null) }
+        db.clearPendingLocal(action.path)
     }
 
     /**
@@ -3415,7 +3421,7 @@ open class SyncEngine(
         if (occupied) keepOccupantAside(path, newLocal)
         // archive#1086: moveFile renames through a name in between when only the case changes (a case-insensitive file system
         // would treat the plain move as already done).
-        moveFile(oldLocal, newLocal, replaceExisting = Files.isDirectory(newLocal, noFollow))
+        placeholder.moveLocal(oldLocal, newLocal, replaceExisting = Files.isDirectory(newLocal, noFollow))
         return occupied
     }
 
@@ -4367,6 +4373,39 @@ open class SyncEngine(
             policy = "KEEP_BOTH",
             loserFile = null,
         )
+    }
+
+    // A DeleteLocal, MoveLocal, or folder CreatePlaceholder comes from a delta the cursor will not replay.
+    // The row remembers it; the next reconcile plans the same action. A download or upload is left to the
+    // recovery loops, and an auth failure never reaches here.
+    private fun rememberUnappliedRemoteChange(action: SyncAction) {
+        try {
+            val (path, mark) =
+                when (action) {
+                    is SyncAction.DeleteLocal -> action.path to PendingLocal.DELETE
+                    is SyncAction.MoveLocal -> {
+                        val path =
+                            db.getEntry(action.path)?.path
+                                ?: db.getEntryByRemoteId(action.remoteItem.id)?.path
+                                ?: action.path
+                        path to PendingLocal.move(action.fromPath)
+                    }
+                    is SyncAction.CreatePlaceholder -> {
+                        if (!action.remoteItem.isFolder) return
+                        action.path to PendingLocal.MKDIR
+                    }
+                    else -> return
+                }
+            // The same action failing again counts up; at PendingLocal.MAX_ATTEMPTS the reconciler stops planning it.
+            val previous = db.pendingLocalMarkAt(path)
+            val attempt = if (previous != null && PendingLocal.base(previous) == mark) PendingLocal.attempts(previous) + 1 else 1
+            if (attempt == PendingLocal.MAX_ATTEMPTS) log.warn("{} failed {} times; it is not retried again", action.path, attempt)
+            if (!db.setPendingLocal(path, PendingLocal.withAttempts(mark, attempt))) {
+                log.warn("Could not mark {} for a later retry: no alive row", action.path)
+            }
+        } catch (e: Exception) {
+            log.warn("Could not mark {} for a later retry: {}: {}", action.path, e.javaClass.simpleName, e.message)
+        }
     }
 
     // archive#1045: the bytes of [item] did not arrive. The row says so (download pending) and keeps the rest; unlike

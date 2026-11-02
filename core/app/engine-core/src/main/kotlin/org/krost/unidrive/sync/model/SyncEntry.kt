@@ -132,6 +132,39 @@ data class SyncEntry(
 }
 
 /**
+ * A remote change an incremental delta delivers once, still not applied on disk.
+ * Stored on the row, not on [SyncEntry], so it takes no part in equality.
+ */
+object PendingLocal {
+    const val DELETE = "delete"
+    const val MKDIR = "mkdir"
+    const val MOVE_PREFIX = "move\t"
+
+    /** A mark that failed this many times is no longer retried: a poison action must not fail every cycle for ever. */
+    const val MAX_ATTEMPTS = 8
+
+    private const val ATTEMPT_SEPARATOR = "\t#"
+    private val ATTEMPTS = Regex("\t#(\\d+)$")
+
+    fun move(fromPath: String): String = MOVE_PREFIX + fromPath
+
+    /** The mark without its failure count; a mark written by the first failure carries none. */
+    fun base(mark: String): String = ATTEMPTS.replace(mark, "")
+
+    /** How many times the action failed: 1 for a mark without a count. */
+    fun attempts(mark: String): Int = ATTEMPTS.find(mark)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+
+    /** [mark] as written by its [attempt]-th failure. */
+    fun withAttempts(
+        mark: String,
+        attempt: Int,
+    ): String = if (attempt <= 1) base(mark) else base(mark) + ATTEMPT_SEPARATOR + attempt
+
+    fun moveFrom(mark: String): String? =
+        base(mark).let { b -> b.removePrefix(MOVE_PREFIX).takeIf { b.startsWith(MOVE_PREFIX) && it.isNotEmpty() } }
+}
+
+/**
  * Lifecycle state of a [SyncEntry]. EXISTS rows are the only ones the sync
  * loop reads (via the alive-only view); TRASHED and DELETED are tombstones
  * preserved for recovery and for the un-trash-on-scan branch.

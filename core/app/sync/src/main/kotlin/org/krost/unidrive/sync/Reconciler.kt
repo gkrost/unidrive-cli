@@ -146,6 +146,9 @@ class Reconciler(
     var lastUnhydratedFolderDeletes: List<String> = emptyList()
         private set
 
+    private val unappliedRemoteChanges =
+        UnappliedRemoteChanges(db, excludePatterns, { path, isDir -> isIgnored(path, isDir) }, { policyForPath(it) })
+
     fun reconcile(
         remoteChanges: Map<String, CloudItem>,
         localChanges: Map<String, ChangeState>,
@@ -440,6 +443,7 @@ class Reconciler(
             }
         }
 
+        unappliedRemoteChanges.replan(actions, remoteChanges, syncPaths, alias.remoteToLocal, ::renamedContentChanged)
         dropDownloadsOntoLocalCaseTwins(actions, localChanges)
         detectMoves(actions, entryByPath, alias)
         detectRemoteRenames(actions, remoteChanges, entryByRemoteId, localChanges, alias)
@@ -670,6 +674,7 @@ class Reconciler(
             }
         }
 
+        unappliedRemoteChanges.replan(actions, fullRemote, syncPaths, alias.remoteToLocal, ::renamedContentChanged)
         // Cross-page move detection runs here on the combined action set —
         // per-page detection would miss renames that span page boundaries.
         dropDownloadsOntoLocalCaseTwins(actions, fullLocal)

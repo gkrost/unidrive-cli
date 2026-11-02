@@ -642,7 +642,8 @@ class StateDatabase(
                     edit_base            TEXT,
                     remote_version       TEXT,
                     mount_deleted_at     TEXT,
-                    remote_content_id    TEXT
+                    remote_content_id    TEXT,
+                    pending_local        TEXT
                 )
             """,
             )
@@ -821,6 +822,11 @@ class StateDatabase(
             if (!columnExists("sync_entries", "remote_content_id")) {
                 stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN remote_content_id TEXT")
             }
+            // A remote delete, rename, or new folder the delta will not deliver again, still not applied locally.
+            // NULL = nothing pending. Same additive pattern, no schema_version bump: every older row reads as nothing pending.
+            if (!columnExists("sync_entries", "pending_local")) {
+                stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN pending_local TEXT")
+            }
             stmt.executeUpdate(
                 "CREATE INDEX IF NOT EXISTS idx_sync_entries_mount_deleted_at ON sync_entries(mount_deleted_at) " +
                     "WHERE mount_deleted_at IS NOT NULL",
@@ -838,6 +844,12 @@ class StateDatabase(
                 """
                 CREATE INDEX IF NOT EXISTS idx_sync_entries_name_block
                     ON sync_entries(name_block) WHERE status='EXISTS' AND name_block IS NOT NULL
+            """,
+            )
+            stmt.executeUpdate(
+                """
+                CREATE INDEX IF NOT EXISTS idx_sync_entries_pending_local
+                    ON sync_entries(path) WHERE status='EXISTS' AND pending_local IS NOT NULL
             """,
             )
             // Every item a gather brings is looked up by its effective remote path (getEntryByRemotePath), as two seeks
@@ -1113,12 +1125,17 @@ class StateDatabase(
                 stmt.setString(19, entry.editBase)
                 stmt.setString(20, entry.remoteVersion)
                 stmt.setString(21, entry.remoteContentId)
+                // pending_local is carried by every upsert and cleared only when the action lands or the row is
+                // trashed. A touch or a same-path merge must not forget a remote change the next delta will not send.
+                // The sub-select misses a path change, so that row stays unmarked until the failure path writes it.
+                stmt.setString(22, storedId)
+                stmt.setString(23, entry.path)
                 if (keepMarks) {
                     // The sub-selects read the row this statement replaces, before it is replaced.
-                    stmt.setString(22, storedId)
-                    stmt.setString(23, entry.path)
                     stmt.setString(24, storedId)
                     stmt.setString(25, entry.path)
+                    stmt.setString(26, storedId)
+                    stmt.setString(27, entry.path)
                 }
                 stmt.executeUpdate()
             }
@@ -1773,12 +1790,72 @@ class StateDatabase(
             beginWrite()
             conn
                 .prepareStatement(
-                    "UPDATE sync_entries SET status='TRASHED' WHERE remote_id=? AND status='EXISTS'",
+                    "UPDATE sync_entries SET status='TRASHED', pending_local=NULL WHERE remote_id=? AND status='EXISTS'",
                 ).use { stmt ->
                     stmt.setString(1, remoteId)
                     val flipped = stmt.executeUpdate()
                     countAlive(-flipped)
                     return flipped == 1
+                }
+        }
+
+    /**
+     * Remember that a remote change at this alive path is not applied yet ([org.krost.unidrive.sync.model.PendingLocal]).
+     * False when no alive row has the path.
+     */
+    fun setPendingLocal(
+        pathRaw: String,
+        mark: String,
+    ): Boolean =
+        locked("setPendingLocal") {
+            beginWrite()
+            val path = PathNormalizer.nfc(pathRaw)
+            conn.prepareStatement("UPDATE sync_entries SET pending_local=? WHERE path=? AND status='EXISTS'").use { stmt ->
+                stmt.setString(1, mark)
+                stmt.setString(2, path)
+                return stmt.executeUpdate() == 1
+            }
+        }
+
+    /** The remote change at this path landed. A no-op when the row is already clear or gone. */
+    fun clearPendingLocal(pathRaw: String) {
+        locked("clearPendingLocal") {
+            beginWrite()
+            val path = PathNormalizer.nfc(pathRaw)
+            conn
+                .prepareStatement(
+                    "UPDATE sync_entries SET pending_local=NULL WHERE path=? AND status='EXISTS' AND pending_local IS NOT NULL",
+                ).use { stmt ->
+                    stmt.setString(1, path)
+                    stmt.executeUpdate()
+                }
+        }
+    }
+
+    /** The mark of the alive row at this path, or null. */
+    fun pendingLocalMarkAt(pathRaw: String): String? =
+        read("pendingLocalMarkAt") { c ->
+            c.prepareStatement("SELECT pending_local FROM sync_entries WHERE path=? AND status='EXISTS'").use { stmt ->
+                stmt.setString(1, PathNormalizer.nfc(pathRaw))
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
+        }
+
+    /** Alive rows that still owe a remote change, with the mark each one carries. Read from the base table. */
+    fun pendingLocalMarks(): List<Pair<SyncEntry, String>> =
+        read("pendingLocalMarks") { c ->
+            c
+                .prepareStatement(
+                    "SELECT * FROM sync_entries WHERE status='EXISTS' AND pending_local IS NOT NULL",
+                ).use { stmt ->
+                    stmt.executeQuery().use { rs ->
+                        val out = mutableListOf<Pair<SyncEntry, String>>()
+                        while (rs.next()) {
+                            val mark = rs.getString("pending_local") ?: continue
+                            out.add(rs.toSyncEntry() to mark)
+                        }
+                        out
+                    }
                 }
         }
 
@@ -2435,7 +2512,7 @@ class StateDatabase(
             beginWrite()
             conn
                 .prepareStatement(
-                    "UPDATE sync_entries SET status='EXISTS' WHERE remote_id=? AND status='TRASHED' " +
+                    "UPDATE sync_entries SET status='EXISTS', pending_local=NULL WHERE remote_id=? AND status='TRASHED' " +
                         "AND NOT EXISTS (SELECT 1 FROM sync_entries o WHERE o.path = sync_entries.path AND o.status='EXISTS')",
                 ).use { stmt ->
                     stmt.setString(1, remoteId)
@@ -3341,16 +3418,20 @@ class StateDatabase(
             "INSERT OR REPLACE INTO sync_entries " +
                 "(remote_id, parent_uuid, path, remote_path, remote_hash, remote_size, remote_modified, " +
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
-                "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
+                "pending_local) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+                "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'))"
 
         // The same, with the refusal stamp and the name block of the row it replaces carried over (see upsertEntry).
+        // pending_local is carried here too: a same-path merge must not drop a remote change the next delta will not send.
         private const val UPSERT_ENTRY_KEEPING_MARKS_SQL =
             "INSERT OR REPLACE INTO sync_entries " +
                 "(remote_id, parent_uuid, path, remote_path, remote_hash, remote_size, remote_modified, " +
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
                 "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
-                "upload_refused, name_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+                "pending_local, upload_refused, name_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+                "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT upload_refused FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT name_block FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'))"
 
