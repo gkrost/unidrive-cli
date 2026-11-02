@@ -147,7 +147,7 @@ class Reconciler(
         private set
 
     private val unappliedRemoteChanges =
-        UnappliedRemoteChanges(db, excludePatterns) { path, isDir -> isIgnored(path, isDir) }
+        UnappliedRemoteChanges(db, excludePatterns, { path, isDir -> isIgnored(path, isDir) }, { policyForPath(it) })
 
     fun reconcile(
         remoteChanges: Map<String, CloudItem>,

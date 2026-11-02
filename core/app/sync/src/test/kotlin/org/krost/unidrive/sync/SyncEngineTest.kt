@@ -429,7 +429,79 @@ class SyncEngineTest {
             assertEquals(2, placeholder.deleteAttempts, "the later pass still tries the delete")
             assertTrue(Files.exists(syncRoot.resolve("stuck.txt")))
             assertEquals("cursor-3", db.getSyncState("delta_cursor"))
-            assertEquals(PendingLocal.DELETE, db.pendingLocalMarks().single { it.first.path == "/stuck.txt" }.second)
+            assertEquals(PendingLocal.DELETE, PendingLocal.base(db.pendingLocalMarks().single { it.first.path == "/stuck.txt" }.second))
+            assertEquals(2, PendingLocal.attempts(db.pendingLocalMarks().single { it.first.path == "/stuck.txt" }.second))
+        }
+
+    @Test
+    fun `review 336 - a remote delete that always fails is given up after a bounded number of attempts`() =
+        runTest {
+            val placeholder = FlakyPlaceholder(syncRoot, failDeletes = true)
+            val flaky = flakyEngine(placeholder)
+            provider.files["/poison.txt"] = ByteArray(100)
+            provider.deltaItems = listOf(cloudItem("/poison.txt", size = 100))
+            flaky.syncOnce()
+            provider.deltaItems = listOf(cloudItem("/poison.txt", size = 100, deleted = true))
+            provider.deltaCursor = "cursor-2"
+            flaky.syncOnce()
+            for (i in 3..(PendingLocal.MAX_ATTEMPTS + 6)) {
+                provider.deltaItems = emptyList()
+                provider.deltaCursor = "cursor-$i"
+                flaky.syncOnce()
+            }
+            assertEquals(PendingLocal.MAX_ATTEMPTS, placeholder.deleteAttempts)
+        }
+
+    @Test
+    fun `review 336 - a retried remote delete never discards a local edit made after the failure`() =
+        runTest {
+            val placeholder = FlakyPlaceholder(syncRoot, deleteFailures = 1)
+            val flaky = flakyEngine(placeholder)
+            provider.files["/gone.txt"] = ByteArray(100)
+            provider.deltaItems = listOf(cloudItem("/gone.txt", size = 100))
+            flaky.syncOnce()
+
+            provider.deltaItems = listOf(cloudItem("/gone.txt", size = 100, deleted = true))
+            provider.deltaCursor = "cursor-2"
+            flaky.syncOnce()
+            assertTrue(Files.exists(syncRoot.resolve("gone.txt")), "the failed delete leaves the file")
+
+            // The user saves a new version of the file the delete could not remove.
+            Files.writeString(syncRoot.resolve("gone.txt"), "PRECIOUS EDIT")
+
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-3"
+            flaky.syncOnce()
+
+            val survives =
+                Files.exists(syncRoot.resolve("gone.txt")) ||
+                    Files.list(syncRoot).use { s -> s.anyMatch { runCatching { Files.readString(it) }.getOrNull() == "PRECIOUS EDIT" } }
+            assertTrue(survives, "the retried delete must not destroy the edit")
+            assertTrue(provider.uploadedPaths.contains("/gone.txt"), "the edit goes up like any edit of a file deleted remotely")
+        }
+
+    @Test
+    fun `review 336 - a retried remote delete does not delete a newer item recreated at the same path`() =
+        runTest {
+            val placeholder = FlakyPlaceholder(syncRoot, deleteFailures = 1)
+            val flaky = flakyEngine(placeholder)
+            provider.files["/gone.txt"] = ByteArray(100)
+            provider.deltaItems = listOf(cloudItem("/gone.txt", size = 100))
+            flaky.syncOnce()
+
+            provider.deltaItems = listOf(cloudItem("/gone.txt", size = 100, deleted = true))
+            provider.deltaCursor = "cursor-2"
+            flaky.syncOnce()
+            assertEquals(PendingLocal.DELETE, db.pendingLocalMarks().single().second)
+
+            // Another client made a new file of the same name: a new id, new bytes.
+            provider.files["/gone.txt"] = "NEWER".toByteArray()
+            provider.deltaItems = listOf(cloudItem("/gone.txt", size = 5).copy(id = "id-newer", hash = "hash-newer"))
+            provider.deltaCursor = "cursor-3"
+            flaky.syncOnce()
+
+            assertEquals("NEWER", Files.readString(syncRoot.resolve("gone.txt")), "the newer item must be on disk")
+            assertEquals("id-newer", db.getEntry("/gone.txt")?.remoteId)
         }
 
     @Test

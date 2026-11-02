@@ -1830,6 +1830,15 @@ class StateDatabase(
         }
     }
 
+    /** The mark of the alive row at this path, or null. */
+    fun pendingLocalMarkAt(pathRaw: String): String? =
+        read("pendingLocalMarkAt") { c ->
+            c.prepareStatement("SELECT pending_local FROM sync_entries WHERE path=? AND status='EXISTS'").use { stmt ->
+                stmt.setString(1, PathNormalizer.nfc(pathRaw))
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
+        }
+
     /** Alive rows that still owe a remote change, with the mark each one carries. Read from the base table. */
     fun pendingLocalMarks(): List<Pair<SyncEntry, String>> =
         read("pendingLocalMarks") { c ->

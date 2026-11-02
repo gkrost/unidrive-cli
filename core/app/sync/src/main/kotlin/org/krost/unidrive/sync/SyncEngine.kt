@@ -4380,23 +4380,29 @@ open class SyncEngine(
     // recovery loops, and an auth failure never reaches here.
     private fun rememberUnappliedRemoteChange(action: SyncAction) {
         try {
-            val marked =
+            val (path, mark) =
                 when (action) {
-                    is SyncAction.DeleteLocal -> db.setPendingLocal(action.path, PendingLocal.DELETE)
+                    is SyncAction.DeleteLocal -> action.path to PendingLocal.DELETE
                     is SyncAction.MoveLocal -> {
                         val path =
                             db.getEntry(action.path)?.path
                                 ?: db.getEntryByRemoteId(action.remoteItem.id)?.path
                                 ?: action.path
-                        db.setPendingLocal(path, PendingLocal.move(action.fromPath))
+                        path to PendingLocal.move(action.fromPath)
                     }
                     is SyncAction.CreatePlaceholder -> {
                         if (!action.remoteItem.isFolder) return
-                        db.setPendingLocal(action.path, PendingLocal.MKDIR)
+                        action.path to PendingLocal.MKDIR
                     }
                     else -> return
                 }
-            if (!marked) log.warn("Could not mark {} for a later retry: no alive row", action.path)
+            // The same action failing again counts up; at PendingLocal.MAX_ATTEMPTS the reconciler stops planning it.
+            val previous = db.pendingLocalMarkAt(path)
+            val attempt = if (previous != null && PendingLocal.base(previous) == mark) PendingLocal.attempts(previous) + 1 else 1
+            if (attempt == PendingLocal.MAX_ATTEMPTS) log.warn("{} failed {} times; it is not retried again", action.path, attempt)
+            if (!db.setPendingLocal(path, PendingLocal.withAttempts(mark, attempt))) {
+                log.warn("Could not mark {} for a later retry: no alive row", action.path)
+            }
         } catch (e: Exception) {
             log.warn("Could not mark {} for a later retry: {}: {}", action.path, e.javaClass.simpleName, e.message)
         }

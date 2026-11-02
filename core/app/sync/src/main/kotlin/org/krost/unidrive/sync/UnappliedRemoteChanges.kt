@@ -1,6 +1,8 @@
 package org.krost.unidrive.sync
 
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.sync.model.ChangeState
+import org.krost.unidrive.sync.model.ConflictPolicy
 import org.krost.unidrive.sync.model.PendingLocal
 import org.krost.unidrive.sync.model.SyncAction
 import org.krost.unidrive.sync.model.SyncEntry
@@ -14,6 +16,7 @@ internal class UnappliedRemoteChanges(
     private val db: StateDatabase,
     private val excludePatterns: List<String>,
     private val isIgnored: (String, Boolean) -> Boolean,
+    private val policyFor: (String) -> ConflictPolicy,
 ) {
     private val log = LoggerFactory.getLogger(UnappliedRemoteChanges::class.java)
 
@@ -27,14 +30,22 @@ internal class UnappliedRemoteChanges(
         val marked = db.pendingLocalMarks()
         if (marked.isEmpty()) return
         val aliveById = HashMap<String, CloudItem>()
-        for (item in remoteChanges.values) {
-            if (!item.deleted) aliveById.putIfAbsent(item.id, item)
+        // The local paths an alive item of this delivery occupies: a delete mark never applies to a path a newer item took.
+        val occupied = HashSet<String>()
+        for ((key, item) in remoteChanges) {
+            if (item.deleted) continue
+            aliveById.putIfAbsent(item.id, item)
+            occupied.add(remoteToLocal(key))
         }
         for ((entry, mark) in marked) {
             if (skip(entry, syncPaths)) continue
+            if (PendingLocal.attempts(mark) >= PendingLocal.MAX_ATTEMPTS) {
+                log.warn("Giving up on the unapplied remote change of {}: it failed {} times", entry.path, PendingLocal.attempts(mark))
+                continue
+            }
             when {
-                mark == PendingLocal.DELETE -> replanDelete(actions, aliveById, entry)
-                mark == PendingLocal.MKDIR -> replanFolder(actions, entry)
+                PendingLocal.base(mark) == PendingLocal.DELETE -> replanDelete(actions, aliveById, occupied, entry)
+                PendingLocal.base(mark) == PendingLocal.MKDIR -> replanFolder(actions, entry)
                 else -> PendingLocal.moveFrom(mark)?.let { replanMove(actions, aliveById, entry, it, remoteToLocal, contentChanged) }
             }
         }
@@ -43,14 +54,33 @@ internal class UnappliedRemoteChanges(
     private fun replanDelete(
         actions: MutableList<SyncAction>,
         aliveById: Map<String, CloudItem>,
+        occupied: Set<String>,
         entry: SyncEntry,
     ) {
         val id = entry.remoteId
-        if (id != null && id in aliveById) {
+        // The item came back (same id), or another item took its path: the delete this mark remembers no longer
+        // describes the cloud. The normal plan for what was delivered stands.
+        if ((id != null && id in aliveById) || entry.path in occupied) {
             db.clearPendingLocal(entry.path)
             return
         }
         if (deleteOrConflictPlanned(actions, entry.path)) return
+        // A file edited since the failed delete is not the file the cloud deleted. Treated as the delete-vs-edit
+        // conflict a delivered tombstone would have been: the edit goes up, nothing is removed.
+        if (!entry.isFolder && actions.any { it is SyncAction.Upload && it.path == entry.path }) {
+            actions.removeAll { it.path == entry.path }
+            actions.add(
+                SyncAction.Conflict(
+                    entry.path,
+                    ChangeState.MODIFIED,
+                    ChangeState.DELETED,
+                    rowItem(entry).copy(deleted = true),
+                    policyFor(entry.path),
+                ),
+            )
+            db.clearPendingLocal(entry.path)
+            return
+        }
         actions.removeAll { it.path == entry.path && it !is SyncAction.DeleteLocal }
         actions.add(SyncAction.DeleteLocal(entry.path))
         log.debug("Retrying an unapplied remote delete of {}", entry.path)
