@@ -5,6 +5,7 @@ import org.krost.unidrive.HashAlgorithm
 import org.krost.unidrive.ScanHeartbeat
 import org.krost.unidrive.sync.model.ChangeState
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.io.LinkedEntries
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.nio.file.FileVisitResult
@@ -336,6 +337,14 @@ class LocalScanner(
                     val relativePath = PathNormalizer.nfc("/" + syncRoot.relativize(dir).toString().replace('\\', '/'))
                     if (isExcluded(relativePath, isDir = true)) return FileVisitResult.SKIP_SUBTREE
                     if (!onScopePath(relativePath)) return FileVisitResult.SKIP_SUBTREE
+                    // A junction or a mounted volume leads out of the sync root: its content is not walked and not
+                    // uploaded. Like an unreadable folder, nothing at or under it counts as deleted.
+                    if (LinkedEntries.leadsElsewhere(dir, attrs)) {
+                        skipped++
+                        unreadable.add(relativePath.removeSuffix("/"))
+                        log.warn("Skipping linked folder {}: it leads outside the sync root", relativePath)
+                        return FileVisitResult.SKIP_SUBTREE
+                    }
                     refuseNfcTwins(dir)
                     seenPaths.add(relativePath)
 

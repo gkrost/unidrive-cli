@@ -2,16 +2,15 @@ package org.krost.unidrive.sync
 
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
-import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardOpenOption
-import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.FileTime
 import java.time.Instant
 import org.krost.unidrive.engine.localNameIssue
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.withLocalIoRetryBlocking
 
 /**
@@ -278,27 +277,9 @@ open class PlaceholderManager(
 
     open fun deleteLocal(remotePath: String) {
         val local = resolveLocal(remotePath)
-        if (Files.isDirectory(local)) {
-            Files.walkFileTree(
-                local,
-                object : SimpleFileVisitor<Path>() {
-                    override fun visitFile(
-                        file: Path,
-                        attrs: BasicFileAttributes,
-                    ): FileVisitResult {
-                        withLocalIoRetryBlocking { Files.deleteIfExists(file) }
-                        return FileVisitResult.CONTINUE
-                    }
-
-                    override fun postVisitDirectory(
-                        dir: Path,
-                        exc: java.io.IOException?,
-                    ): FileVisitResult {
-                        withLocalIoRetryBlocking { Files.deleteIfExists(dir) }
-                        return FileVisitResult.CONTINUE
-                    }
-                },
-            )
+        // A junction or link below (or at) [local] goes as the entry itself, never with what it leads to.
+        if (Files.isDirectory(local, LinkOption.NOFOLLOW_LINKS)) {
+            LinkedEntries.deleteTree(local) { entry -> withLocalIoRetryBlocking { Files.deleteIfExists(entry) } }
         } else {
             withLocalIoRetryBlocking { Files.deleteIfExists(local) }
         }
