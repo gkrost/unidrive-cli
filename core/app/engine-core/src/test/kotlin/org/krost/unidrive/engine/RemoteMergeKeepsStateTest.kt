@@ -203,11 +203,23 @@ class RemoteMergeKeepsStateTest {
     }
 
     @Test
-    fun `a delivery after a quarantine still clears the quarantine and its failure time`() {
+    fun `an unchanged delivery keeps a quarantine and its failure time (#287)`() {
         seedRow("/q.txt", "id-q")
         assertTrue(db.setDownloadQuarantine("id-q", synced))
 
         gather().updateRemoteEntries(mapOf("/q.txt" to item("id-q", "/q.txt")))
+
+        val row = assertNotNull(db.getEntry("/q.txt"))
+        assertEquals(true, row.downloadQuarantined)
+        assertEquals(synced, row.lastErrorAt)
+    }
+
+    @Test
+    fun `a delivery of a changed item ends a quarantine and its failure time`() {
+        seedRow("/q.txt", "id-q")
+        assertTrue(db.setDownloadQuarantine("id-q", synced))
+
+        gather().updateRemoteEntries(mapOf("/q.txt" to item("id-q", "/q.txt", size = 9, hash = "h2")))
 
         val row = assertNotNull(db.getEntry("/q.txt"))
         assertEquals(false, row.downloadQuarantined)
