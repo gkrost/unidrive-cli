@@ -1954,7 +1954,13 @@ class Reconciler(
                         sb.append("(/.*)?")
                         i += 3
                     }
-                    // /** in middle → slash + anything + slash
+                    // /**/ in the middle → no directory or any directories. The slash after ** belongs to the
+                    // token; leaving it compiled a/**/b to ^a/(.+/)?/b$, which matches only a//b.
+                    pattern.startsWith("/**/", i) -> {
+                        sb.append("/(.+/)?")
+                        i += 4
+                    }
+                    // /** not followed by a slash (a/**.log). What that ** means is still open.
                     pattern.startsWith("/**", i) -> {
                         sb.append("/(.+/)?")
                         i += 3
@@ -2001,8 +2007,16 @@ class Reconciler(
                         i++
                     }
                     else -> {
-                        sb.append(Regex.escape(pattern[i].toString()))
-                        i++
+                        // One code point. Quoting each UTF-16 unit splits a character outside the BMP, and
+                        // Java's regex, which matches by code point, then never matches it in a path.
+                        val width =
+                            if (i + 1 < pattern.length && pattern[i].isHighSurrogate() && pattern[i + 1].isLowSurrogate()) {
+                                2
+                            } else {
+                                1
+                            }
+                        sb.append(Regex.escape(pattern.substring(i, i + width)))
+                        i += width
                     }
                 }
             }

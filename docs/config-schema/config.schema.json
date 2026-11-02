@@ -22,7 +22,7 @@
         "client_location": { "type": "string" },
         "client_network": { "type": "string" },
         "exclude_patterns": {
-          "description": "Paths never synced, in either direction, for every profile. unidrive's own glob syntax (config.example.toml spells it out): * and ? stay within one name, **/ at the start and /** at the end span folders, a pattern without '/' (a leading '/' does not count) is matched against the name at any depth, and matching is case-sensitive. There is no {a,b} alternation and no [...] class: '[', ']', '{' and '}' match themselves, and such a pattern logs a warning.",
+          "description": "Paths never synced, in either direction, for every profile. unidrive's own glob syntax (config.example.toml spells it out): * and ? stay within one name, **/ at the start, /**/ in the middle and /** at the end span folders, a pattern without '/' (a leading '/' does not count) is matched against the name at any depth, and matching is case-sensitive. A ** that is not next to a '/' does not span folders. There is no {a,b} alternation and no [...] class: '[', ']', '{' and '}' match themselves, and such a pattern logs a warning.",
           "type": "array",
           "items": { "type": "string" }
         },
