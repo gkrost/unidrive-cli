@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.sync.ConflictLog
 import picocli.CommandLine
 import picocli.CommandLine.Command
@@ -29,9 +30,8 @@ class ConflictsCommand : Runnable {
 
     fun conflictLog(): ConflictLog {
         val profile = parent.resolveCurrentProfile()
-        val os = System.getProperty("os.name", "").lowercase()
         val dataDir =
-            if (os.contains("win")) {
+            if (Os.isWindows()) {
                 val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
                 Paths.get(localAppData, "unidrive", profile.name)
             } else {

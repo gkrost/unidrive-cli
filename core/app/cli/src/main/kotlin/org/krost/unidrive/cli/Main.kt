@@ -13,6 +13,7 @@ import org.krost.unidrive.sync.RawSyncConfig
 import org.krost.unidrive.sync.NoDefaultProfileException
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.childProcessBuilder
 import org.slf4j.MDC
 import picocli.CommandLine
@@ -420,17 +421,11 @@ open class Main : Runnable {
             "remote_path" to rp.remote_path,
             "root_path" to rp.root_path, // localfs remote only; sync_root stays the engine's local mirror, never the remote
             "allow_drive_root" to rp.allow_drive_root?.toString(),
-            "identity" to rp.identity,
             "password" to rp.password,
             "client_id" to rp.client_id,
             "client_secret" to rp.client_secret,
             "url" to rp.url,
-            "rclone_remote" to rp.rclone_remote,
-            "rclone_path" to rp.rclone_path,
-            "rclone_binary" to rp.rclone_binary,
-            "rclone_config" to rp.rclone_config,
             "authority_url" to rp.authority_url,
-            "trust_all_certs" to rp.trust_all_certs?.toString(),
             "keep_overwritten" to rp.keep_overwritten?.toString(),
             "allow_unverified_shard_hash" to rp.allow_unverified_shard_hash?.toString(),
             "internxt_strict_names" to rp.internxt_strict_names?.toString(),
@@ -466,93 +461,6 @@ open class Main : Runnable {
     companion object {
         val KNOWN_PROVIDERS: List<Pair<String, String>>
             get() = ProviderRegistry.all().map { it.id to it.metadata.displayName }
-
-        val ONEDRIVE_USAGE =
-            """
-            |Microsoft OneDrive uses browser-based OAuth2 authentication.
-            |No environment variables are required.
-            |
-            |Authenticate:
-            |  unidrive -p onedrive auth
-            |
-            |A browser window will open for you to sign in with your Microsoft account.
-            |Token stored at ~/.config/unidrive/onedrive/token.json
-            """.trimMargin()
-
-        val S3_USAGE =
-            """
-            |S3 provider requires the following environment variables:
-            |
-            |  S3_BUCKET              (required)  Bucket name
-            |  AWS_ACCESS_KEY_ID      (required)  Access key ID
-            |  AWS_SECRET_ACCESS_KEY  (required)  Secret access key
-            |  S3_REGION              (optional)  Region, default: auto
-            |  S3_ENDPOINT            (optional)  Custom endpoint URL (for non-AWS S3-compatible storage)
-            |
-            |Example (AWS):
-            |  export S3_BUCKET=my-bucket
-            |  export S3_REGION=eu-central-1
-            |  export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
-            |  export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-            |  unidrive -p s3 auth
-            |
-            |Note: each S3 bucket is one account. For multiple accounts set different
-            |environment variable sets and run separate unidrive invocations.
-            """.trimMargin()
-
-        val SFTP_USAGE =
-            """
-            |SFTP provider requires the following environment variables:
-            |
-            |  SFTP_HOST         (required)  Hostname or IP address
-            |  SFTP_USER         (optional)  Username, default: current OS user
-            |  SFTP_PORT         (optional)  Port, default: 22
-            |  SFTP_REMOTE_PATH  (optional)  Remote base path, default: home directory
-            |  SFTP_IDENTITY     (optional)  Path to private key file (default: ~/.ssh/id_ed25519 or id_rsa)
-            |  SFTP_PASSWORD     (optional)  Password (prefer key-based auth)
-            |
-            |Example:
-            |  export SFTP_HOST=myserver.example.com
-            |  export SFTP_USER=alice
-            |  export SFTP_REMOTE_PATH=/backups/unidrive
-            |  unidrive -p sftp auth
-            |
-            |Note: for multiple SFTP accounts, set a different SFTP_HOST per invocation.
-            """.trimMargin()
-
-        val WEBDAV_USAGE =
-            """
-            |WebDAV provider requires the following environment variables:
-            |
-            |  WEBDAV_URL        (required)  Base URL of the WebDAV endpoint
-            |                               e.g. https://cloud.example.com/remote.php/dav/files/alice
-            |  WEBDAV_USER       (required)  Username
-            |  WEBDAV_PASSWORD   (required)  Password or app token
-            |
-            |Example (Nextcloud):
-            |  export WEBDAV_URL=https://nextcloud.example.com/remote.php/dav/files/alice
-            |  export WEBDAV_USER=alice
-            |  export WEBDAV_PASSWORD=app-token-here
-            |  unidrive -p webdav auth
-            |
-            |Note: for multiple WebDAV accounts, set a different WEBDAV_URL per invocation.
-            """.trimMargin()
-
-        val RCLONE_USAGE =
-            """
-            |Rclone provider requires a configured rclone remote.
-            |
-            |  RCLONE_REMOTE  (required)  rclone remote name with colon (e.g. "gdrive:")
-            |  RCLONE_PATH    (optional)  subpath within the remote
-            |  RCLONE_BINARY  (optional)  path to rclone binary (default: "rclone")
-            |  RCLONE_CONFIG  (optional)  path to rclone.conf
-            |
-            |Configure remotes with: rclone config
-            |
-            |Example:
-            |  export RCLONE_REMOTE=gdrive:
-            |  unidrive -p rclone auth
-            """.trimMargin()
     }
 
     /** Print a friendly auth-error message and exit with code 1. */
@@ -641,13 +549,8 @@ open class Main : Runnable {
 
     /**
      * Acquire the per-profile process lock in SYNC mode. Returns the lock on
-     * success. If another unidrive process holds the lock, prints a mode-
-     * specific message and exits with code 1.
-     *
-     * NOTE: holderDesc + pidPart wording is duplicated in
-     * ProfileLockFactoryTest.renderSyncFactoryContention. The recovery-hint
-     * lines below are NOT covered by that helper — change them freely, but if the
-     * holderDesc wording changes, update both sides together.
+     * success. If another unidrive process holds the lock, prints [lockContentionLines]
+     * and exits with code 1.
      */
     fun acquireProfileLock(): org.krost.unidrive.sync.ProcessLock {
         val lockFile = providerConfigDir().resolve(".lock")
@@ -655,81 +558,8 @@ open class Main : Runnable {
         val lock = org.krost.unidrive.sync.ProcessLock(lockFile)
         if (!lock.tryLock(org.krost.unidrive.sync.ProcessLock.Mode.SYNC)) {
             val profile = resolveCurrentProfile()
-            val holder = lock.readLiveHolderInfo()
-            val holderDesc = when {
-                holder?.mode == org.krost.unidrive.sync.ProcessLock.Mode.SYNC ->
-                    "Another `unidrive sync` is running for profile '${profile.name}'"
-                holder?.mode == org.krost.unidrive.sync.ProcessLock.Mode.DAEMON ->
-                    "Profile '${profile.name}' is currently in use by `unidrive daemon`"
-                holder != null && holder.mode == null && holder.rawMode != null ->
-                    "Profile '${profile.name}' is held by an unidrive process running in " +
-                        "unknown mode '${holder.rawMode}' (this binary may be older than the holder)"
-                else ->
-                    "Another unidrive process is using profile '${profile.name}'"
-            }
-            val pidPart = if (holder != null) " (PID ${holder.pid})" else ""
-            System.err.println("$holderDesc$pidPart.")
-            if (holder?.mode == org.krost.unidrive.sync.ProcessLock.Mode.DAEMON) {
-                System.err.println(
-                    "Stop the daemon first: `unidrive -p ${profile.name} daemon stop`.",
-                )
-            } else if (holder != null) {
-                val isWindows = System.getProperty("os.name").lowercase().contains("win")
-                val killCmd = if (isWindows) "taskkill /PID ${holder.pid} /F" else "kill ${holder.pid}"
-                System.err.println("Stop it with `$killCmd`, or wait for it to finish.")
-            } else {
-                System.err.println("Stop it first, or wait for it to finish.")
-            }
-            System.exit(1)
-        }
-        return lock
-    }
-
-    /**
-     * Acquire the per-profile process lock in DAEMON mode. Refuses with code 1
-     * if another process holds the lock (typically `unidrive sync` for the same
-     * profile, or another `unidrive daemon` instance).
-     * See docs/dev/specs/unidrive-daemon-design.md.
-     *
-     * NOTE: holderDesc + pidPart wording is duplicated in
-     * ProfileLockFactoryTest.renderDaemonFactoryContention. The recovery-hint
-     * lines below are NOT covered by that helper — change them freely, but if the
-     * holderDesc wording changes, update both sides together.
-     */
-    fun acquireProfileLockForDaemon(): org.krost.unidrive.sync.ProcessLock {
-        val lockFile = providerConfigDir().resolve(".lock")
-        java.nio.file.Files.createDirectories(lockFile.parent)
-        val lock = org.krost.unidrive.sync.ProcessLock(lockFile)
-        if (!lock.tryLock(org.krost.unidrive.sync.ProcessLock.Mode.DAEMON)) {
-            val profile = resolveCurrentProfile()
-            val holder = lock.readLiveHolderInfo()
-            val holderDesc = when {
-                holder?.mode == org.krost.unidrive.sync.ProcessLock.Mode.SYNC ->
-                    "Another `unidrive sync` is running for profile '${profile.name}'"
-                holder?.mode == org.krost.unidrive.sync.ProcessLock.Mode.DAEMON ->
-                    "Another `unidrive daemon` already serves profile '${profile.name}'"
-                holder != null && holder.mode == null && holder.rawMode != null ->
-                    "Profile '${profile.name}' is held by an unidrive process running in " +
-                        "unknown mode '${holder.rawMode}' (this binary may be older than the holder)"
-                else ->
-                    "Another unidrive process is using profile '${profile.name}'"
-            }
-            val pidPart = if (holder != null) " (PID ${holder.pid})" else ""
-            System.err.println("$holderDesc$pidPart.")
-            if (holder?.mode == org.krost.unidrive.sync.ProcessLock.Mode.SYNC) {
-                System.err.println(
-                    "Stop the sync watcher first: `kill ${holder.pid}` (or Ctrl-C its terminal).",
-                )
-                System.err.println(
-                    "Sync and daemon are mutually exclusive per profile " +
-                        "(see docs/dev/specs/unidrive-daemon-design.md).",
-                )
-            } else if (holder?.mode == org.krost.unidrive.sync.ProcessLock.Mode.DAEMON) {
-                System.err.println(
-                    "Stop the running daemon first: `unidrive -p ${profile.name} daemon stop`.",
-                )
-            } else if (holder != null) {
-                System.err.println("Stop it with `kill ${holder.pid}`, or wait for it to exit.")
+            for (line in lockContentionLines(lock.readLiveHolderInfo(), profile.name, org.krost.unidrive.sync.ProcessLock.Mode.SYNC, Os.isWindows())) {
+                System.err.println(line)
             }
             System.exit(1)
         }
@@ -858,7 +688,7 @@ internal fun ntfsFileId(configFile: Path): String? {
             null
         }
     if (viaNio != null) return viaNio
-    if (!System.getProperty("os.name").orEmpty().contains("windows", ignoreCase = true)) return null
+    if (!Os.isWindows()) return null
     return try {
         val proc =
             childProcessBuilder(listOf("fsutil", "file", "queryfileid", configFile.toAbsolutePath().toString()))

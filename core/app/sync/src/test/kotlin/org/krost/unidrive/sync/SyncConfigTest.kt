@@ -264,19 +264,18 @@ class SyncConfigTest {
     }
 
     @Test
-    fun `parses credential fields in provider config`() {
+    fun `keys of a removed provider are ignored and the profile still loads`() {
         val toml =
             """
             [providers.my-rclone]
             type = "rclone"
             rclone_remote = "my-remote"
             rclone_path = "/backup"
+            identity = "id_rsa"
+            trust_all_certs = true
             """.trimIndent()
         val raw = SyncConfig.parseRaw(toml)
-        val p = raw.providers["my-rclone"]!!
-        assertEquals("rclone", p.type)
-        assertEquals("my-remote", p.rclone_remote)
-        assertEquals("/backup", p.rclone_path)
+        assertEquals("rclone", raw.providers["my-rclone"]!!.type)
     }
 
     // ── resolveProfile tests ────────────────────────────────────────────────
@@ -490,35 +489,6 @@ class SyncConfigTest {
         val config = SyncConfig.defaults()
         assertNull(config.clientLocation)
         assertNull(config.clientNetwork)
-    }
-
-    @Test
-    fun `parses trust_all_certs config`() {
-        val toml =
-            """
-            [general]
-            [providers.my-webdav]
-            type = "webdav"
-            trust_all_certs = true
-            """.trimIndent()
-        val configFile = tmpDir.resolve("config.toml")
-        Files.writeString(configFile, toml)
-        val raw = SyncConfig.parseRaw(Files.readString(configFile))
-        assertTrue(raw.providers["my-webdav"]?.trust_all_certs == true)
-    }
-
-    @Test
-    fun `trust_all_certs defaults to null`() {
-        val toml =
-            """
-            [general]
-            [providers.my-webdav]
-            type = "webdav"
-            """.trimIndent()
-        val configFile = tmpDir.resolve("config.toml")
-        Files.writeString(configFile, toml)
-        val raw = SyncConfig.parseRaw(Files.readString(configFile))
-        assertNull(raw.providers["my-webdav"]?.trust_all_certs)
     }
 
     // ── Sync direction tests ─────────────────────────────────────────────────

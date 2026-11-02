@@ -17,12 +17,3 @@ internal fun isInsideCacheFolder(
     cacheDir: Path,
     candidate: Path,
 ): Boolean = CachePaths.isInside(cacheDir, candidate)
-
-
-/** [text] for a log line: control characters shown as `?`, at most 200 characters. */
-internal fun forLogLine(text: String): String {
-    val shown = if (text.length > 200) text.take(200) + "..." else text
-    return buildString(shown.length) {
-        for (c in shown) append(if (c.code < 0x20 || c.code == 0x7F) '?' else c)
-    }
-}

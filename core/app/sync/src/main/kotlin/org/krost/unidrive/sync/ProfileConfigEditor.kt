@@ -272,7 +272,6 @@ fun isProfileAuthenticated(
                     "url" to rp.url,
                     "client_id" to rp.client_id,
                     "client_secret" to rp.client_secret,
-                    "rclone_remote" to rp.rclone_remote,
                     // localfs answers isAuthenticated from this key; without it every localfs
                     // profile reads as "none" regardless of its root.
                     "root_path" to rp.root_path,

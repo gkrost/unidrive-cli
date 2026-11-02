@@ -10,6 +10,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.krost.unidrive.cli.LegacyInventory.PathClass
 import org.krost.unidrive.cli.StatusAudit.formatBytesBinary
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.sync.ExcludePatterns
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
@@ -118,7 +119,7 @@ class MigrateInventoryCommand : Runnable {
 
         // The Windows client keeps its recovery files under %LOCALAPPDATA%\unidrive\state; other platforms have none.
         internal fun defaultClientStateDir(): Path? {
-            if (!System.getProperty("os.name").lowercase().contains("win")) return null
+            if (!Os.isWindows()) return null
             return System.getenv("LOCALAPPDATA")?.let { Paths.get(it, "unidrive", "state") }
         }
 

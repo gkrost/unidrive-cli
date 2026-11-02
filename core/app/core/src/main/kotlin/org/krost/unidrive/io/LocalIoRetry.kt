@@ -19,7 +19,7 @@ import java.nio.file.Path
  */
 private val RETRY_DELAYS_MS = longArrayOf(100, 300, 900)
 
-private val WINDOWS = System.getProperty("os.name").lowercase().contains("windows")
+
 
 /**
  * What the retry loop does with a [FileSystemException] on [attempt]: null means worth another try (a
@@ -38,7 +38,7 @@ private fun lockRetryVerdict(
 
 suspend fun <T> withLocalIoRetry(
     delayMs: suspend (Long) -> Unit = { delay(it) },
-    windows: Boolean = WINDOWS,
+    windows: Boolean = Os.isWindows(),
     action: suspend () -> T,
 ): T {
     if (!windows) return action()
@@ -59,7 +59,7 @@ suspend fun <T> withLocalIoRetry(
 
 /** The same retry for code that is not suspend (the hydration staging walks); sleeps the worker thread. */
 fun <T> withLocalIoRetryBlocking(action: () -> T): T {
-    if (!WINDOWS) return action()
+    if (!Os.isWindows()) return action()
     var attempt = 0
     while (true) {
         try {

@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcEndpoint
@@ -255,7 +256,7 @@ object DaemonAutospawn {
         if (FILE_SAFE_PROFILE.matches(profileName)) "gc-$profileName.log" else "gc-default.log"
 
     private val isWindows: Boolean
-        get() = System.getProperty("os.name").lowercase().contains("windows")
+        get() = Os.isWindows()
 
     /** The jar this CLI class was loaded from; null when running from loose classes (tests, IDE). */
     fun thisJar(): Path? {

@@ -53,7 +53,3 @@ data class BackupDevice(
     val shown: Boolean get() = !removed && !deleted && (status == null || status == "EXISTS") && hasBackups != false
 }
 
-@Serializable
-data class FolderListResponse(
-    val list: List<InternxtFolder> = emptyList(),
-)

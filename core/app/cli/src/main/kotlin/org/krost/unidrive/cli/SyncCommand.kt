@@ -9,6 +9,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.selects.select
 import org.krost.unidrive.AuthenticationException
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.AccountOwner
 import org.krost.unidrive.authenticateAndLog
@@ -501,8 +502,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
 
         val dataDir =
             run {
-                val os = System.getProperty("os.name", "").lowercase()
-                if (os.contains("win")) {
+                if (Os.isWindows()) {
                     val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
                     java.nio.file.Paths
                         .get(localAppData, "unidrive", profile.name)
@@ -1111,24 +1111,6 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
             cli: List<String>,
             configured: List<String>,
         ): List<String> = cli.ifEmpty { configured }
-
-        internal fun scheduleForceHalt(
-            exitCode: Int,
-            delayMs: Long,
-        ) {
-            Thread({
-                try {
-                    Thread.sleep(delayMs)
-                } catch (_: InterruptedException) {
-                    return@Thread
-                }
-                Runtime.getRuntime().halt(exitCode)
-            }, "unidrive-exit-watchdog")
-                .apply {
-                    isDaemon = true
-                    start()
-                }
-        }
     }
 }
 

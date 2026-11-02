@@ -1,5 +1,6 @@
 package org.krost.unidrive.auth
 
+import org.krost.unidrive.io.Os
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
@@ -54,7 +55,7 @@ class MacKeychainCredentialProtector : CredentialProtector {
     }
 
     private fun requireMacOS() {
-        if (!System.getProperty("os.name", "").contains("mac", ignoreCase = true)) {
+        if (!Os.isMac()) {
             throw CredentialProtectionException("macOS Keychain is only available on macOS")
         }
     }
@@ -230,7 +231,7 @@ private class MacKeychain {
     private data class Operation(val arena: Arena, val owned: MutableList<MemorySegment> = mutableListOf())
 
     private fun requireMacOS() {
-        if (!System.getProperty("os.name", "").contains("mac", ignoreCase = true)) {
+        if (!Os.isMac()) {
             throw CredentialProtectionException("macOS Keychain is only available on macOS")
         }
     }

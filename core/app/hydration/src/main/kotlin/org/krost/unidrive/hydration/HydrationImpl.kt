@@ -616,8 +616,8 @@ class HydrationImpl(
         if (!isInsideCacheFolder(mount.hydrationCacheDir(), cachePath)) {
             log.warn(
                 "open_write of '{}' refused: its cache path '{}' is not inside the profile's hydration cache",
-                forLogLine(path),
-                forLogLine(cachePath.toString()),
+                CachePaths.forLog(path),
+                CachePaths.forLog(cachePath.toString()),
             )
             return OpenResult.Failed(HydrationError.InvalidPath)
         }

@@ -30,7 +30,7 @@ public fun OwnerOnly.grantProblem(path: Path): String? =
 
 private fun isWindowsPath(path: Path): Boolean =
     path.fileSystem == FileSystems.getDefault() &&
-        System.getProperty("os.name", "").lowercase().contains("win")
+        Os.isWindows()
 
 private val groupOrOther =
     setOf(

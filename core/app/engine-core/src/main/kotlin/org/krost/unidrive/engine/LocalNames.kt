@@ -1,5 +1,6 @@
 package org.krost.unidrive.engine
 
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.WindowsDeviceNames
 
 // archive#230: a cloud entry whose name cannot be represented on the local filesystem
@@ -25,7 +26,7 @@ private const val WINDOWS_RESERVED_CHARS = "<>:\"/\\|?*"
  */
 fun localNameIssue(
     remotePath: String,
-    windows: Boolean = System.getProperty("os.name", "").lowercase().contains("win"),
+    windows: Boolean = Os.isWindows(),
 ): String? {
     aliasingSegmentIssue(remotePath)?.let { return it }
     for (component in remotePath.split('/')) {

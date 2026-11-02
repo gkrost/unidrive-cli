@@ -296,8 +296,6 @@ open class PlaceholderManager(
         return Files.getLastModifiedTime(local).toMillis() != lastSyncedMtime
     }
 
-    fun localExists(remotePath: String): Boolean = Files.exists(resolveLocal(remotePath))
-
     fun localMtime(remotePath: String): Long? {
         val local = resolveLocal(remotePath)
         return if (Files.exists(local)) Files.getLastModifiedTime(local).toMillis() else null

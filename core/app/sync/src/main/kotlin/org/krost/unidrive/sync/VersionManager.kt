@@ -5,8 +5,6 @@ import org.krost.unidrive.io.engineRelative
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import kotlin.io.path.*
 
@@ -14,22 +12,6 @@ class VersionManager(
     private val syncRoot: Path,
 ) {
     private val versionsDir: Path = syncRoot.resolve(".unidrive-versions")
-
-    private companion object {
-        val DIR_FORMAT: DateTimeFormatter =
-            DateTimeFormatter
-                .ofPattern("yyyyMMdd'T'HHmmss'Z'")
-                .withZone(ZoneOffset.UTC)
-
-        fun encodeTimestamp(instant: Instant): String = DIR_FORMAT.format(instant)
-
-        fun decodeTimestamp(dirName: String): Instant? =
-            try {
-                DIR_FORMAT.parse(dirName, Instant::from)
-            } catch (_: Exception) {
-                null
-            }
-    }
 
     data class VersionedItem(
         val timestamp: Instant,
@@ -44,7 +26,7 @@ class VersionManager(
         val normalized = engineRelative(relativePath)
         val source = safeResolveLocal(syncRoot, normalized)
         if (!source.exists() || !source.isRegularFile()) return null
-        val timestamp = encodeTimestamp(Instant.now().truncatedTo(ChronoUnit.SECONDS))
+        val timestamp = UtcSecondStamp.encode(Instant.now().truncatedTo(ChronoUnit.SECONDS))
         val dest = versionFolder(source).resolve(timestamp)
         dest.parent.createDirectories()
         Files.copy(source, dest)
@@ -60,7 +42,7 @@ class VersionManager(
         val items = mutableListOf<VersionedItem>()
         for (entry in fileVersionsDir.listDirectoryEntries()) {
             if (!entry.isRegularFile()) continue
-            val ts = decodeTimestamp(entry.name) ?: continue
+            val ts = UtcSecondStamp.decode(entry.name) ?: continue
             items.add(VersionedItem(ts, normalized, entry, Files.size(entry)))
         }
         return items.sortedByDescending { it.timestamp }
@@ -71,7 +53,7 @@ class VersionManager(
         val items = mutableListOf<VersionedItem>()
         for (file in versionsDir.toFile().walkTopDown().filter { it.isFile }) {
             val filePath = file.toPath()
-            val ts = decodeTimestamp(filePath.name) ?: continue
+            val ts = UtcSecondStamp.decode(filePath.name) ?: continue
             // The key is the cloud-style path the version was snapshotted under, without the
             // leading slash (the write side resolves '/' on every OS). Name elements, so Windows
             // still lists "a/b.txt" and a POSIX '\' stays in the name.
@@ -87,7 +69,7 @@ class VersionManager(
     ): Boolean {
         val normalized = engineRelative(relativePath)
         val dest = safeResolveLocal(syncRoot, normalized)
-        val tsDir = encodeTimestamp(timestamp.truncatedTo(ChronoUnit.SECONDS))
+        val tsDir = UtcSecondStamp.encode(timestamp.truncatedTo(ChronoUnit.SECONDS))
         val versionFile = versionFolder(dest).resolve(tsDir)
         if (!versionFile.exists()) return false
         dest.parent.createDirectories()
@@ -104,14 +86,14 @@ class VersionManager(
         for (item in versions.drop(maxVersions)) {
             item.versionPath.deleteIfExists()
         }
-        cleanEmptyDirs(versions.first().versionPath.parent)
+        deleteEmptyParentsUntil(versions.first().versionPath.parent, versionsDir)
     }
 
     fun pruneByAge(retentionDays: Int) {
         if (!versionsDir.exists()) return
         val cutoff = Instant.now().minus(retentionDays.toLong(), ChronoUnit.DAYS)
         for (file in versionsDir.toFile().walkTopDown().filter { it.isFile }) {
-            val ts = decodeTimestamp(file.name) ?: continue
+            val ts = UtcSecondStamp.decode(file.name) ?: continue
             if (ts.isBefore(cutoff)) {
                 file.delete()
             }
@@ -123,7 +105,7 @@ class VersionManager(
     fun expiredCount(retentionDays: Int): Int {
         if (!versionsDir.exists()) return 0
         val cutoff = Instant.now().minus(retentionDays.toLong(), ChronoUnit.DAYS)
-        return versionsDir.toFile().walkTopDown().filter { it.isFile }.count { decodeTimestamp(it.name)?.isBefore(cutoff) == true }
+        return versionsDir.toFile().walkTopDown().filter { it.isFile }.count { UtcSecondStamp.decode(it.name)?.isBefore(cutoff) == true }
     }
 
     fun pruneAll() {
@@ -134,14 +116,6 @@ class VersionManager(
 
     /** The folder holding the versions of [contained], a path [safeResolveLocal] returned for [syncRoot]. */
     private fun versionFolder(contained: Path): Path = versionsDir.resolve(syncRoot.toAbsolutePath().normalize().relativize(contained))
-
-    private fun cleanEmptyDirs(dir: Path) {
-        var current = dir
-        while (current != versionsDir && current.exists() && current.isDirectory() && current.listDirectoryEntries().isEmpty()) {
-            current.deleteIfExists()
-            current = current.parent
-        }
-    }
 
     private fun cleanEmptyDirsRecursive(dir: Path) {
         if (!dir.exists() || !dir.isDirectory()) return

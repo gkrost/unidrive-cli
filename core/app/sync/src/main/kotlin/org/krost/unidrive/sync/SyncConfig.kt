@@ -12,6 +12,7 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.elementNames
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.sync.model.ConflictPolicy
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -507,7 +508,6 @@ data class RawProvider(
     val port: Int? = null,
     val user: String? = null,
     val remote_path: String? = null,
-    val identity: String? = null,
     val password: String? = null,
     // WebDAV credentials
     val url: String? = null,
@@ -525,13 +525,6 @@ data class RawProvider(
     val webhook: Boolean? = null,
     val webhook_port: Int? = null,
     val webhook_url: String? = null,
-    // TLS
-    val trust_all_certs: Boolean? = null,
-    // Rclone
-    val rclone_remote: String? = null,
-    val rclone_path: String? = null,
-    val rclone_binary: String? = null,
-    val rclone_config: String? = null,
     // UD-223: skip first-sync enumeration by adopting the provider's current cursor.
     // OneDrive / Graph: `?token=latest`. Other providers: flag is a warn+no-op.
     // Persists in config.toml so a user who opts in at profile creation doesn't need
@@ -872,8 +865,6 @@ data class SyncConfig(
             return if (appData != null) Paths.get(appData, "unidrive") else xdg
         }
 
-        fun defaultConfigPath(): Path = defaultConfigDir().resolve("config.toml")
-
         fun load(
             configFile: Path,
             providerId: String = org.krost.unidrive.ProviderRegistry.defaultProvider(),
@@ -1062,7 +1053,7 @@ data class SyncConfig(
          */
         fun detectRootIsolationConflicts(
             raw: RawSyncConfig,
-            caseInsensitive: Boolean = System.getProperty("os.name", "").lowercase().contains("win"),
+            caseInsensitive: Boolean = Os.isWindows(),
         ): String? {
             val seenNames = HashMap<String, String>() // lower-case name → first profile
             class Root(

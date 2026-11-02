@@ -182,10 +182,6 @@ class InFlightDedup<K : Any, V> {
     /** Number of outstanding (in-flight) keys. Exposed for tests / diagnostics. */
     internal fun inFlightCount(): Int = inFlight.size
 
-    /** Read the current effective priority of an in-flight key, or null if
-     *  no loader is in flight. Exposed for tests. */
-    internal fun inFlightPriority(key: K): Priority? = inFlight[key]?.priority?.get()
-
     private fun promote(
         ref: AtomicReference<Priority>,
         candidate: Priority,

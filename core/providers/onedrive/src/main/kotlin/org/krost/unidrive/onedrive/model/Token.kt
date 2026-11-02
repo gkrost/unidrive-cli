@@ -2,6 +2,8 @@ package org.krost.unidrive.onedrive.model
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import org.krost.unidrive.auth.accessTokenExpired
+import org.krost.unidrive.auth.accessTokenNearExpiry
 import org.krost.unidrive.auth.maskSecret
 
 @Serializable
@@ -27,9 +29,9 @@ data class Token(
     val scope: String? = null,
 ) {
     val isExpired: Boolean
-        get() = System.currentTimeMillis() >= expiresAt
+        get() = accessTokenExpired(expiresAt)
 
-    fun isNearExpiry(thresholdMs: Long = 5 * 60 * 1000): Boolean = System.currentTimeMillis() + thresholdMs >= expiresAt
+    fun isNearExpiry(thresholdMs: Long = 5 * 60 * 1000): Boolean = accessTokenNearExpiry(expiresAt, thresholdMs)
 
     fun hasPlausibleAccessTokenShape(): Boolean = accessToken.length >= 32
 
