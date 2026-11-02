@@ -104,9 +104,14 @@ object LinkedEntries {
      * Every entry below [root] (not [root] itself) with its attributes, parents before children, without passing an entry
      * that [leadsElsewhere]: such an entry is handed to [onEntry] itself, its content is not. An entry that cannot be read
      * is left out. The replacement for `Files.walk` where the walk must stay inside the tree.
+     *
+     * [onUnobserved] is told every path whose content the walk did not see: the entry that leads elsewhere (its content is
+     * left alone on purpose) and the entry that could not be read. A caller that reads absence as deletion must not read it
+     * for anything at or below these paths.
      */
     fun forEachEntry(
         root: Path,
+        onUnobserved: (Path) -> Unit = {},
         onEntry: (Path, BasicFileAttributes) -> Unit,
     ) {
         Files.walkFileTree(
@@ -117,7 +122,9 @@ object LinkedEntries {
                     attrs: BasicFileAttributes,
                 ): FileVisitResult {
                     if (dir != root) onEntry(dir, attrs)
-                    return if (leadsElsewhere(dir, attrs)) FileVisitResult.SKIP_SUBTREE else FileVisitResult.CONTINUE
+                    if (!leadsElsewhere(dir, attrs)) return FileVisitResult.CONTINUE
+                    if (dir != root) onUnobserved(dir)
+                    return FileVisitResult.SKIP_SUBTREE
                 }
 
                 override fun visitFile(
@@ -131,7 +138,10 @@ object LinkedEntries {
                 override fun visitFileFailed(
                     file: Path,
                     exc: IOException,
-                ): FileVisitResult = FileVisitResult.CONTINUE
+                ): FileVisitResult {
+                    onUnobserved(file)
+                    return FileVisitResult.CONTINUE
+                }
             },
         )
     }

@@ -122,6 +122,16 @@ class LinkedEntriesTest {
     }
 
     @Test
+    fun `listing a tree names the junction as unobserved and nothing else`() {
+        junction(tree.resolve("linked"), outside)
+        val unobserved = mutableListOf<String>()
+
+        LinkedEntries.forEachEntry(tree, onUnobserved = { unobserved += tree.relativize(it).toString().replace('\\', '/') }) { _, _ -> }
+
+        assertEquals(listOf("linked"), unobserved)
+    }
+
+    @Test
     fun `deleting a tree that holds a symbolic link to a folder deletes the link, not its target`() {
         val link = symlink(tree.resolve("plain").resolve("linked"), outside)
 
