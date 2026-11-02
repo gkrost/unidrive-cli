@@ -804,31 +804,14 @@ class GraphApiService(
                 val endByte = offset + currentChunkSize - 1
                 val chunkResult =
                     if (endByte == fileSize - 1) {
-                        try {
-                            uploadChunkWithRetry(uploadUrl, bytes, offset, endByte, fileSize)
-                        } catch (e: GraphApiException) {
-                            // The last chunk PUT may have reached Graph and committed the item while its response
-                            // was lost: the finished session no longer exists, so the probe's 404 — or the empty
-                            // range whose resend then 404s — reads as "session expired", and the retry wrapper
-                            // would upload the whole file again, under an If-Match guard into a 412 that lands a
-                            // keep-both copy beside the correct remote file. The session here can also be
-                            // genuinely gone with the chunk unsent, so resolve the item and adopt it only when
-                            // the remote provably holds these bytes (see the resolver).
-                            if (e.statusCode != 404 && e.statusCode != 410) throw e
-                            val committed =
-                                committedAfterLostFinalChunk(target, localPath, fileSize, ifMatchETag)
-                                    ?: throw e
-                            log.info(
-                                "Upload of {} was committed although the response of its final chunk was lost (the session is gone, the item holds {} bytes); adopting it instead of starting a second session",
-                                remotePath,
-                                committed.size,
-                            )
-                            result = committed
-                            break
-                        }
+                        uploadFinalChunk(uploadUrl, bytes, offset, endByte, fileSize, target, localPath)
                     } else {
                         uploadChunkWithRetry(uploadUrl, bytes, offset, endByte, fileSize)
                     }
+                if (chunkResult is ChunkUploadResult.Adopted) {
+                    result = chunkResult.item
+                    break
+                }
                 if (chunkResult is ChunkUploadResult.Committed) {
                     offset = chunkResult.nextOffset
                     finalChunkConfirmedByProbe = offset >= fileSize
@@ -869,17 +852,46 @@ class GraphApiService(
         return uploadedItem ?: throw GraphApiException("Upload session completed but no DriveItem returned")
     }
 
-    // The item when the final chunk went out, the session died, and the remote provably holds this upload: an item
-    // of the file's size whose quickXorHash equals the local file's. Without a hash to compare, an item whose eTag
-    // differs from the caller's If-Match guard is the commit's own work (any other change would have failed the
-    // session's create with a 412), and an unguarded upload adopts existence at the right size — an upload session
-    // creates the item only when the upload completes. Null when anything of this cannot be established: the caller
-    // then treats the loss as the session-gone it looks like, and the fresh-session retry decides.
+    // The last chunk PUT may have reached Graph and committed the item while its response was lost: the finished
+    // session no longer exists, so the probe's 404 — or the empty range whose resend then 404s — reads as "session
+    // expired", and the retry wrapper would upload the whole file again, under an If-Match guard into a 412 that lands
+    // a keep-both copy beside the correct remote file. The session can also be genuinely gone with the chunk unsent,
+    // so the item is resolved and adopted only when the remote provably holds these bytes (see
+    // [committedAfterLostFinalChunk]); otherwise the 404/410 is thrown and the fresh-session retry decides.
+    private suspend fun uploadFinalChunk(
+        uploadUrl: String,
+        bytes: ByteArray,
+        offset: Long,
+        endByte: Long,
+        fileSize: Long,
+        target: UploadTarget,
+        localPath: Path,
+    ): ChunkUploadResult =
+        try {
+            uploadChunkWithRetry(uploadUrl, bytes, offset, endByte, fileSize)
+        } catch (lost: GraphApiException) {
+            if (lost.statusCode != 404 && lost.statusCode != 410) throw lost
+            val committed = committedAfterLostFinalChunk(target, localPath, fileSize) ?: throw lost
+            log.info(
+                "Upload of {} was committed although the response of its final chunk was lost (the session is gone, the item holds {} bytes); adopting it instead of starting a second session",
+                target.remotePath,
+                committed.size,
+            )
+            ChunkUploadResult.Adopted(committed)
+        }
+
+    // The item when the final chunk went out, the session died, and the remote provably holds this upload: a file of
+    // the right size whose quickXorHash equals the local file's. Only content evidence counts. Size and eTag do not
+    // prove it: an old remote file can have the same size, an unguarded replace would then report success for bytes
+    // that were never uploaded and the pending local edit could be dropped; and an eTag that differs from the guard
+    // only says someone changed the item after the session was created, not that our final chunk committed. Without
+    // a hash to compare (Graph does not always report one), or with anything else at the path (a folder, a package),
+    // the answer is null: the caller treats the loss as the session-gone it looks like, and the fresh-session retry
+    // or the conflict path decides.
     private suspend fun committedAfterLostFinalChunk(
         target: UploadTarget,
         localPath: Path,
         fileSize: Long,
-        ifMatchETag: String?,
     ): DriveItem? {
         val item =
             try {
@@ -891,19 +903,17 @@ class GraphApiService(
                 log.info("Resolving the lost-final-chunk upload of {} broke off: {}", target.remotePath, e.message)
                 return null
             }
+        if (item.file == null || item.folder != null || item.packageFacet != null) return null
         if (item.size != fileSize) return null
-        val remoteHash = item.file?.hashes?.quickXorHash
-        if (remoteHash != null) {
-            val localHash =
-                try {
-                    withContext(Dispatchers.IO) { QuickXorHash.of(localPath) }
-                } catch (e: java.io.IOException) {
-                    return null
-                }
-            return if (localHash == remoteHash) item else null
-        }
-        if (ifMatchETag != null) return if (item.eTag != null && item.eTag != ifMatchETag) item else null
-        return item
+        val remoteHash = item.file.hashes?.quickXorHash ?: return null
+        val localHash =
+            try {
+                withContext(Dispatchers.IO) { QuickXorHash.of(localPath) }
+            } catch (e: java.io.IOException) {
+                log.info("Hashing {} to resolve the lost-final-chunk upload failed: {}", localPath, e.message)
+                return null
+            }
+        return if (localHash == remoteHash) item else null
     }
 
     /**
@@ -1734,6 +1744,9 @@ private sealed interface ChunkUploadResult {
     data class Response(val response: HttpResponse) : ChunkUploadResult
 
     data class Committed(val nextOffset: Long) : ChunkUploadResult
+
+    // The final chunk's response was lost, but the remote item provably holds this upload.
+    data class Adopted(val item: DriveItem) : ChunkUploadResult
 }
 
 // How a chunk is retried after a failed try: the wait before the next one, and whether the session is probed first.
