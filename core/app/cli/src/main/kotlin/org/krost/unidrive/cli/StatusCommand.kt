@@ -337,7 +337,7 @@ class StatusCommand : Runnable {
             if (Capability.QuotaExact in provider.capabilities()) {
                 runBlocking {
                     provider.authenticateAndLog()
-                    provider.quota()
+                    StatusAudit.quotaOrNull(provider)
                 }
             } else {
                 null
