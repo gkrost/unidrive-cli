@@ -45,4 +45,13 @@ class RetryAfterTest {
         assertNull(parseRetryAfterHeader("   ", now))
         assertNull(parseRetryAfterHeader(null, now))
     }
+
+    @Test
+    fun `a throttle wait takes the hint, else the fallback, and keeps both between the floor and the cap`() {
+        assertEquals(7_000L, throttleWaitMs(7_000L, 2_000L, 1_000L, 300_000L))
+        assertEquals(2_000L, throttleWaitMs(null, 2_000L, 1_000L, 300_000L))
+        assertEquals(1_000L, throttleWaitMs(0L, 2_000L, 1_000L, 300_000L))
+        assertEquals(300_000L, throttleWaitMs(MAX_RETRY_AFTER_MS, 2_000L, 1_000L, 300_000L))
+        assertEquals(300_000L, throttleWaitMs(null, 600_000L, 1_000L, 300_000L))
+    }
 }
