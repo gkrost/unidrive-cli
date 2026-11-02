@@ -1,5 +1,6 @@
 package org.krost.unidrive
 
+import org.krost.unidrive.io.Os
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -53,8 +54,8 @@ enum class CaseSensitivity {
 
         /** The case behaviour of the host's usual file system, for when [ofDirectory] cannot tell: Windows and macOS fold. */
         val host: CaseSensitivity =
-            System.getProperty("os.name", "").lowercase(java.util.Locale.ROOT).let { os ->
-                if (os.contains("win") || os.contains("mac")) INSENSITIVE_PRESERVING else SENSITIVE
+            Os.of(System.getProperty("os.name")).let { os ->
+                if (os.isWindows || os.isMac) INSENSITIVE_PRESERVING else SENSITIVE
             }
 
         private fun swapCase(name: String): String =

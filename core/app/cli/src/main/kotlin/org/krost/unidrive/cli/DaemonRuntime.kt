@@ -27,6 +27,7 @@ import org.krost.unidrive.hydration.MountEngine
 import org.krost.unidrive.hydration.StateDbNameSpellingStore
 import org.krost.unidrive.hydration.provesProviderReachable
 import org.krost.unidrive.hydration.serialiseHydrationEvent
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.ndjsonString
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcServer
@@ -912,20 +913,8 @@ class DaemonRuntime(
     }
 
     private fun renderLockContentionAndExit(lock: ProcessLock) {
-        val holder = lock.readLiveHolderInfo()
-        val holderDesc = when {
-            holder?.mode == ProcessLock.Mode.SYNC ->
-                "Another `unidrive sync` is running for profile '$profileName'"
-            holder?.mode == ProcessLock.Mode.DAEMON ->
-                "Another `unidrive daemon` already serves profile '$profileName'"
-            holder != null && holder.mode == null && holder.rawMode != null ->
-                "Profile '$profileName' is held by an unidrive process running in " +
-                    "unknown mode '${holder.rawMode}' (this binary may be older than the holder)"
-            else ->
-                "Another unidrive process is using profile '$profileName'"
-        }
-        val pidPart = if (holder != null) " (PID ${holder.pid})" else ""
-        System.err.println("$holderDesc$pidPart.")
+        val lines = lockContentionLines(lock.readLiveHolderInfo(), profileName, ProcessLock.Mode.DAEMON, Os.isWindows())
+        for (line in lines) System.err.println(line)
         exitProcess(1)
     }
 

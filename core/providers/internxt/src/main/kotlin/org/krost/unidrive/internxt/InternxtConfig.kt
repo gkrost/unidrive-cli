@@ -76,15 +76,6 @@ data class InternxtConfig(
         /** Page size of `GET /sharings/folders` and `/sharings/files` (`page` is 0-based; 50 is the server's default). */
         const val SHARINGS_PAGE_SIZE: Int = 50
 
-        /** swift-core parity — files at/above this size use multipart upload. */
-        const val MULTIPART_MIN_SIZE_BYTES: Long = 100L * 1024L * 1024L // 100 MB
-
-        /** swift-core parity — each multipart chunk size. */
-        const val MULTIPART_CHUNK_SIZE_BYTES: Long = 50L * 1024L * 1024L // 50 MB
-
-        /** swift-core parity — concurrent part uploads per file. */
-        const val MAX_PARALLEL_PARTS: Int = 6
-
         const val RESUME_TTL_MS: Long = 7L * 24L * 60L * 60L * 1000L
 
         const val URL_TTL_MS: Long = 10L * 60L * 1000L

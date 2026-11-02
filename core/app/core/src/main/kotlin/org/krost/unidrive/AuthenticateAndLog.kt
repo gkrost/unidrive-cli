@@ -3,14 +3,8 @@ package org.krost.unidrive
 import org.slf4j.LoggerFactory
 
 /**
- * UD-752: shared post-authenticate debug log. Lifted out of OneDriveProvider
- * and HiDriveProvider, where the same `Auth: {provider} authenticated /
- * not authenticated after initialize` lines were pasted verbatim.
- *
- * Calling this from the engine / CLI / MCP wrapper means every provider —
- * including Internxt, S3, SFTP, WebDAV, Rclone, LocalFs — gets a consistent
- * post-auth log line for free, without each provider needing to remember to
- * emit one.
+ * UD-752: shared post-authenticate debug log. The engine, the CLI and the MCP wrapper call it, so every
+ * provider gets one post-auth line without emitting it itself.
  *
  * Production callers that previously did `provider.authenticate()` should
  * call this instead. Tests and integration tests can keep calling

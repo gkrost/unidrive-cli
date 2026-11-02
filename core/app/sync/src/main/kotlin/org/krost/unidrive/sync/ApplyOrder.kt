@@ -24,8 +24,8 @@ fun topologicalApplyOrder(actions: List<SyncAction>): List<SyncAction> {
     structural.forEachIndexed { i, a ->
         val produced =
             when (a) {
-                is SyncAction.CreateRemoteFolder -> normalizePath(a.path)
-                is SyncAction.MoveRemote -> normalizePath(a.path)
+                is SyncAction.CreateRemoteFolder -> normalizeTrackedPath(a.path)
+                is SyncAction.MoveRemote -> normalizeTrackedPath(a.path)
                 else -> null
             }
         if (produced != null) producer.putIfAbsent(produced, i)
@@ -55,7 +55,7 @@ fun topologicalApplyOrder(actions: List<SyncAction>): List<SyncAction> {
         val required =
             when (a) {
                 is SyncAction.CreateRemoteFolder -> listOf(parentPath(a.path))
-                is SyncAction.MoveRemote -> listOf(normalizePath(a.fromPath), parentPath(a.path))
+                is SyncAction.MoveRemote -> listOf(normalizeTrackedPath(a.fromPath), parentPath(a.path))
                 else -> emptyList()
             }
         for (req in required) {
@@ -112,7 +112,7 @@ fun createFolderBatches(creates: List<SyncAction.CreateRemoteFolder>): List<List
 }
 
 private fun pathDepth(p: String): Int {
-    val n = normalizePath(p)
+    val n = normalizeTrackedPath(p)
     if (n.length <= 1) return 0
     return n.count { it == '/' }
 }
@@ -120,13 +120,13 @@ private fun pathDepth(p: String): Int {
 private fun SyncAction.isStructural(): Boolean =
     this is SyncAction.CreateRemoteFolder || this is SyncAction.MoveRemote
 
-private fun normalizePath(p: String): String {
+internal fun normalizeTrackedPath(p: String): String {
     val s = if (p.startsWith("/")) p else "/$p"
     return if (s.length > 1) s.trimEnd('/') else s
 }
 
 private fun parentPath(p: String): String {
-    val n = normalizePath(p)
+    val n = normalizeTrackedPath(p)
     val idx = n.lastIndexOf('/')
     return if (idx <= 0) "" else n.substring(0, idx)
 }

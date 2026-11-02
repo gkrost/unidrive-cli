@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.io.Os
 import java.nio.charset.Charset
 
 /**
@@ -122,7 +123,7 @@ object GlyphRenderer {
             true
         }
 
-    private fun isWindows(): Boolean = (propLookup("os.name") ?: "").lowercase().contains("win")
+    private fun isWindows(): Boolean = Os.of(propLookup("os.name")).isWindows
 
     private fun isAsciiForced(): Boolean {
         val value = envLookup("UNIDRIVE_ASCII") ?: return false
@@ -141,11 +142,6 @@ object GlyphRenderer {
 
     /** Failure cross. Unicode U+2718 (Dingbats), ASCII `[X]`. */
     fun cross(): String = if (isDingbatsSafe()) "\u2718" else "[X]"
-
-    /** Filled / empty star for ratings (Dingbats). */
-    fun starFilled(): String = if (isDingbatsSafe()) "\u2605" else "*"
-
-    fun starEmpty(): String = if (isDingbatsSafe()) "\u2606" else "."
 
     /** En-dash placeholder. Unicode U+2013 (General Punctuation), ASCII `-`. */
     fun dash(): String = if (isBoxDrawingSafe()) "\u2013" else "-"

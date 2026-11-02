@@ -265,16 +265,6 @@ class ProcessLock(
         }
     }
 
-    companion object {
-        /**
-         * Create a lock file in the same directory as the given [stateDbPath],
-         * named `.lock`.
-         */
-        fun fromStateDb(stateDbPath: Path): ProcessLock {
-            val lockFile = stateDbPath.parent.resolve(".lock")
-            return ProcessLock(lockFile)
-        }
-    }
 }
 
 /**

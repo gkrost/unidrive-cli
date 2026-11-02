@@ -2,6 +2,8 @@ package org.krost.unidrive.dropbox
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import org.krost.unidrive.auth.accessTokenExpired
+import org.krost.unidrive.auth.accessTokenNearExpiry
 import org.krost.unidrive.auth.maskSecret
 
 /** The answer of Dropbox's token endpoint. A refresh answers without a new refresh token: the old one stays valid. */
@@ -26,9 +28,9 @@ data class DropboxToken(
     val refreshToken: String? = null,
     val accountId: String? = null,
 ) {
-    val isExpired: Boolean get() = System.currentTimeMillis() >= expiresAt
+    val isExpired: Boolean get() = accessTokenExpired(expiresAt)
 
-    fun isNearExpiry(thresholdMs: Long = 5 * 60 * 1000): Boolean = System.currentTimeMillis() + thresholdMs >= expiresAt
+    fun isNearExpiry(thresholdMs: Long = 5 * 60 * 1000): Boolean = accessTokenNearExpiry(expiresAt, thresholdMs)
 
     fun hasPlausibleShape(): Boolean = accessToken.length >= 32
 

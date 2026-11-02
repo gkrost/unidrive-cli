@@ -13,9 +13,7 @@ import java.util.Base64
  * implementations: 32-byte SecureRandom random verifier, SHA-256
  * challenge, both URL-Base64-encoded without padding per RFC 7636.
  *
- * Lifted to `:app:core/auth/Pkce.kt` so future OAuth providers (S3
- * SSO, WebDAV bearer-token flows, Internxt OAuth flavours) inherit
- * the helpers without copy-paste.
+ * Lifted to `:app:core/auth/Pkce.kt` so an authorization-code provider inherits the helpers.
  *
  * Reference: RFC 7636 Sections 4.1 and 4.2.
  */

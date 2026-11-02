@@ -1,6 +1,7 @@
 package org.krost.unidrive.sync.ignore
 
 import org.krost.unidrive.engine.UploadIgnoreCheck
+import org.krost.unidrive.io.Os
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.nio.file.Path
@@ -119,7 +120,7 @@ class UploadIgnore(
             )
 
         private fun foldsCase(): Boolean =
-            File.separatorChar == '\\' || System.getProperty("os.name").orEmpty().startsWith("Mac", ignoreCase = true)
+            File.separatorChar == '\\' || Os.isMac()
     }
 }
 

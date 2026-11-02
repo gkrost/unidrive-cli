@@ -6,8 +6,6 @@ import org.krost.unidrive.io.engineRelative
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import kotlin.io.path.*
 
@@ -16,27 +14,11 @@ class TrashManager(
 ) {
     private val trashDir: Path = syncRoot.resolve(".unidrive-trash")
 
-    private companion object {
-        val DIR_FORMAT: DateTimeFormatter =
-            DateTimeFormatter
-                .ofPattern("yyyyMMdd'T'HHmmss'Z'")
-                .withZone(ZoneOffset.UTC)
-
-        fun encodeTimestamp(instant: Instant): String = DIR_FORMAT.format(instant)
-
-        fun decodeTimestamp(dirName: String): Instant? =
-            try {
-                DIR_FORMAT.parse(dirName, Instant::from)
-            } catch (_: Exception) {
-                null
-            }
-    }
-
     // The source and the trash key both come from the contained path: a remote name with `..`
     // segments must never move a file from outside the sync root, nor into a slot outside the trash.
     fun trash(relativePath: String): Path {
         val source = safeResolveLocal(syncRoot, relativePath)
-        val timestamp = encodeTimestamp(Instant.now().truncatedTo(ChronoUnit.SECONDS))
+        val timestamp = UtcSecondStamp.encode(Instant.now().truncatedTo(ChronoUnit.SECONDS))
         val dest = trashDir.resolve(timestamp).resolve(syncRoot.toAbsolutePath().normalize().relativize(source))
         dest.parent.createDirectories()
         if (source.exists()) {
@@ -57,7 +39,7 @@ class TrashManager(
         val items = mutableListOf<TrashedItem>()
         for (timestampDir in trashDir.listDirectoryEntries().sorted()) {
             if (!timestampDir.isDirectory()) continue
-            val ts = decodeTimestamp(timestampDir.name) ?: continue
+            val ts = UtcSecondStamp.decode(timestampDir.name) ?: continue
             // A junction or link in the trash is one item (the entry itself), never the content it leads to.
             LinkedEntries.forEachEntry(timestampDir) { file, attrs ->
                 if (!attrs.isRegularFile && !LinkedEntries.leadsElsewhere(file, attrs)) return@forEachEntry
@@ -78,7 +60,7 @@ class TrashManager(
         val latest = items.firstOrNull() ?: return false
         dest.parent.createDirectories()
         Files.move(latest.trashPath, dest)
-        cleanEmptyDirs(latest.trashPath.parent)
+        deleteEmptyParentsUntil(latest.trashPath.parent, trashDir)
         return true
     }
 
@@ -87,7 +69,7 @@ class TrashManager(
         val cutoff = Instant.now().minus(retentionDays.toLong(), ChronoUnit.DAYS)
         for (timestampDir in trashDir.listDirectoryEntries()) {
             if (!timestampDir.isDirectory()) continue
-            val ts = decodeTimestamp(timestampDir.name) ?: continue
+            val ts = UtcSecondStamp.decode(timestampDir.name) ?: continue
             if (ts.isBefore(cutoff)) {
                 LinkedEntries.deleteTree(timestampDir)
             }
@@ -101,7 +83,7 @@ class TrashManager(
     fun expiredCount(retentionDays: Int): Int {
         if (!trashDir.exists()) return 0
         val cutoff = Instant.now().minus(retentionDays.toLong(), ChronoUnit.DAYS)
-        return trashDir.listDirectoryEntries().count { it.isDirectory() && decodeTimestamp(it.name)?.isBefore(cutoff) == true }
+        return trashDir.listDirectoryEntries().count { it.isDirectory() && UtcSecondStamp.decode(it.name)?.isBefore(cutoff) == true }
     }
 
     fun purgeAll() {
@@ -110,11 +92,4 @@ class TrashManager(
         }
     }
 
-    private fun cleanEmptyDirs(dir: Path) {
-        var current = dir
-        while (current != trashDir && current.exists() && current.listDirectoryEntries().isEmpty()) {
-            current.deleteIfExists()
-            current = current.parent
-        }
-    }
 }

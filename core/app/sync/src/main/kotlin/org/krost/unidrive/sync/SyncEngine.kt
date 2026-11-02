@@ -10,6 +10,7 @@ import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.stagingSiblingName
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.PermanentDownloadFailureException
@@ -3928,11 +3929,6 @@ open class SyncEngine(
         return failures.get()
     }
 
-    private fun normalizeTrackedPath(p: String): String {
-        val s = if (p.startsWith("/")) p else "/$p"
-        return if (s.length > 1) s.trimEnd('/') else s
-    }
-
     // Returns the nearest ancestor path that already failed its create in this run, or null.
     private fun parentOfTracked(
         path: String,
@@ -4725,8 +4721,7 @@ open class SyncEngine(
         a: String,
         b: String,
     ): Boolean {
-        val isWindows = System.getProperty("os.name", "").lowercase().contains("win")
-        return if (isWindows) a.equals(b, ignoreCase = true) else a == b
+        return if (Os.isWindows()) a.equals(b, ignoreCase = true) else a == b
     }
 
     private fun logFailure(

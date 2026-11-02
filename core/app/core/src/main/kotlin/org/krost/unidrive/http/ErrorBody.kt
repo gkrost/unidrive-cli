@@ -15,8 +15,7 @@ import io.ktor.utils.io.readAvailable
  * by tens of MiB across a long-running watch session.
  *
  * Originally OneDrive-private at `GraphApiService.truncateErrorBody`;
- * lifted to `:app:core` under UD-336 (UD-334 Part A) so HiDrive / Internxt
- * / S3 / Rclone-stderr / WebDAV can share one implementation.
+ * lifted to `:app:core` under UD-336 so every provider shares one implementation.
  */
 public fun truncateErrorBody(body: String): String {
     val trimmed = body.trimStart()

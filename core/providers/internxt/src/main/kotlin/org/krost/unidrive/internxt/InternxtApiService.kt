@@ -1544,14 +1544,12 @@ class InternxtApiService(
         indexHex: String,
         shardHash: String,
         shardUuid: String,
-        @Suppress("UNUSED_PARAMETER") idempotencyKey: String? = null,
     ): BucketEntry {
         val request =
             FinishUploadRequest(
                 index = indexHex,
                 shards = listOf(ShardMeta(hash = shardHash, uuid = shardUuid)),
             )
-        // TODO: wire idempotencyKey to bridgePost headers once vendor ships Idempotency-Key support
         val body =
             bridgePost(
                 "/v2/buckets/$bucket/files/finish",

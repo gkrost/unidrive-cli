@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.io.Os
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
@@ -27,7 +28,7 @@ import java.nio.charset.Charset
  */
 object WindowsArgv {
     fun recover(args: Array<String>): Array<String> {
-        if (!System.getProperty("os.name").orEmpty().startsWith("Windows")) return args
+        if (!Os.isWindows()) return args
         val full =
             try {
                 nativeCommandLine()

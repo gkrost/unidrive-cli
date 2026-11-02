@@ -1,5 +1,6 @@
 package org.krost.unidrive.auth
 
+import org.krost.unidrive.io.Os
 import java.util.Locale
 
 /** Selects a native at-rest credential backend; unsupported systems fail closed. */
@@ -30,11 +31,11 @@ object CredentialProtectors {
         vmName: String = "",
         vendor: String = "",
     ): CredentialProtector? {
-        val platform = osName.lowercase(Locale.ROOT)
+        val kind = Os.of(osName)
         val android = vmName.equals("Dalvik", ignoreCase = true) || vendor.contains("Android", ignoreCase = true)
         return when {
             android -> null // the app passes its Keystore-backed protector itself
-            platform.contains("windows") || platform.contains("mac") || platform.contains("darwin") -> forPlatform(osName, vmName, vendor)
+            kind.isWindows || kind.isMac || osName.lowercase(Locale.ROOT).contains("darwin") -> forPlatform(osName, vmName, vendor)
             else -> null
         }
     }
@@ -44,16 +45,16 @@ object CredentialProtectors {
         vmName: String = "",
         vendor: String = "",
     ): CredentialProtector {
-        val platform = osName.lowercase(Locale.ROOT)
+        val kind = Os.of(osName)
         // Android reports os.name "Linux" but has no secret-tool; its app passes a Keystore-backed protector itself.
         val android = vmName.equals("Dalvik", ignoreCase = true) || vendor.contains("Android", ignoreCase = true)
         return when {
             android -> throw CredentialProtectionException(
                 "Credential protection has no default on Android; pass a CredentialProtector (e.g. Keystore-backed) in the provider config",
             )
-            platform.contains("linux") -> LinuxSecretServiceCredentialProtector()
-            platform.contains("windows") -> WindowsDpapiCredentialProtector()
-            platform.contains("mac") || platform.contains("darwin") -> MacKeychainCredentialProtector()
+            kind.isLinux -> LinuxSecretServiceCredentialProtector()
+            kind.isWindows -> WindowsDpapiCredentialProtector()
+            kind.isMac || osName.lowercase(Locale.ROOT).contains("darwin") -> MacKeychainCredentialProtector()
             else -> throw CredentialProtectionException("Credential protection is unsupported on this platform")
         }
     }

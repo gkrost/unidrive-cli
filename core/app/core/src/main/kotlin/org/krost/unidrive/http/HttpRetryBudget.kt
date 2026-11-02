@@ -359,9 +359,7 @@ class HttpRetryBudget(
          *  - [javax.net.ssl.SSLPeerUnverifiedException] — cert mismatch.
          *  - [javax.net.ssl.SSLHandshakeException] — protocol / cert version mismatch.
          *
-         * The implementation mirrors the per-provider helpers (UD-288 for WebDAV).
-         * Surfacing it on the shared budget lets HiDrive / Internxt / S3 / Rclone
-         * adopt the same shape under UD-330 without re-deriving the taxonomy.
+         * One taxonomy for every provider, so a retry decision is not re-derived per adapter.
          */
         fun isRetriableIoException(e: java.io.IOException): Boolean {
             if (e is java.net.SocketTimeoutException) return true

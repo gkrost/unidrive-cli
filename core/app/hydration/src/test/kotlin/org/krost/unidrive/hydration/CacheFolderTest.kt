@@ -130,9 +130,9 @@ class CacheFolderTest {
 
     @Test
     fun `a path for a log line carries no control characters and stays short`() {
-        val shown = forLogLine("/a" + Char(10) + "b" + Char(0) + "c")
+        val shown = CachePaths.forLog("/a" + Char(10) + "b" + Char(0) + "c")
         assertFalse(shown.any { it.code < 0x20 }, shown)
         assertTrue(shown.startsWith("/a"), shown)
-        assertTrue(forLogLine("/" + "n".repeat(1000)).length < 300)
+        assertTrue(CachePaths.forLog("/" + "n".repeat(1000)).length < 300)
     }
 }

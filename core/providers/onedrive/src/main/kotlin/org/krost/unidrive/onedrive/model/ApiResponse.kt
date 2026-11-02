@@ -19,25 +19,6 @@ data class DriveItemCollectionResponse(
 )
 
 @Serializable
-data class ErrorResponse(
-    @SerialName("error") val error: ODataError? = null,
-)
-
-@Serializable
-data class ODataError(
-    @SerialName("code") val code: String? = null,
-    @SerialName("message") val message: String? = null,
-    @SerialName("innerError") val innerError: InnerError? = null,
-)
-
-@Serializable
-data class InnerError(
-    @SerialName("date") val date: String? = null,
-    @SerialName("request-id") val requestId: String? = null,
-    @SerialName("client-request-id") val clientRequestId: String? = null,
-)
-
-@Serializable
 data class UploadSession(
     @SerialName("uploadUrl") val uploadUrl: String? = null,
     @SerialName("expirationDateTime") val expirationDateTime: String? = null,

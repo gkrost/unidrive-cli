@@ -156,7 +156,7 @@ public object OwnerOnly {
 
     private fun isWindows(path: Path): Boolean =
         path.fileSystem == FileSystems.getDefault() &&
-            System.getProperty("os.name", "").lowercase().contains("win")
+            Os.isWindows()
 
     private fun restrict(
         path: Path,

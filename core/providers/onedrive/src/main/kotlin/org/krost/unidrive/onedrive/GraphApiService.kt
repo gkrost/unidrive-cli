@@ -7,7 +7,6 @@ import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
-import io.ktor.utils.io.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -28,6 +27,7 @@ import org.krost.unidrive.http.UploadTimeoutPolicy
 import org.krost.unidrive.http.UploadWatchdogException
 import org.krost.unidrive.http.UploadWatchdogLimits
 import org.krost.unidrive.http.assertNotHtml
+import org.krost.unidrive.http.writeStagedDownload
 import org.krost.unidrive.http.parseRetryAfterHeader
 import org.krost.unidrive.http.throttleWaitMs
 import org.krost.unidrive.http.progressTrackingBody
@@ -40,8 +40,6 @@ import java.io.RandomAccessFile
 import java.net.URLEncoder
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
-import java.nio.file.StandardOpenOption
 
 class GraphApiService(
     private val config: OneDriveConfig,
@@ -366,47 +364,13 @@ class GraphApiService(
                         }
                         assertNotHtml(response, contextMsg = "Download itemId=$itemId")
                         throttleBudget.recordSuccess()
-                        val channel: ByteReadChannel = response.bodyAsChannel()
                         val written =
-                            withContext(Dispatchers.IO) {
-                                Files.createDirectories(destPath.parent)
-                                // archive#529: a name near the 255-byte component limit cannot take the suffix — stage short.
-                                val tmpPath = destPath.parent.resolve(
-                                    org.krost.unidrive.io.stagingSiblingName(destPath.fileName.toString(), ".unidrive-tmp"),
-                                )
-                                try {
-                                    val w =
-                                        Files.newOutputStream(tmpPath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING).use { out ->
-                                            val buf = ByteArray(8192)
-                                            var n = 0L
-                                            while (true) {
-                                                val r = channel.readAvailable(buf)
-                                                if (r <= 0) break
-                                                out.write(buf, 0, r)
-                                                n += r
-                                            }
-                                            n
-                                        }
-                                    // archive#354: the truncation guard runs on the TEMP file, before the
-                                    // atomic move. A connection that closes mid-body without throwing
-                                    // used to have its short temp promoted over the destination
-                                    // first and only detected afterwards — the intact previous
-                                    // version was gone before truncation surfaced. A short read now
-                                    // deletes the temp and throws with the destination untouched,
-                                    // the same guarantee the thrown-exception path already had.
-                                    val expected = response.contentLength()
-                                    if (expected != null && expected >= 0L && w != expected) {
-                                        throw java.io.IOException(
-                                            "Truncated download itemId=$itemId: got $w of $expected bytes",
-                                        )
-                                    }
-                                    Files.move(tmpPath, destPath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                                    w
-                                } catch (e: Exception) {
-                                    Files.deleteIfExists(tmpPath)
-                                    throw e
-                                }
-                            }
+                            writeStagedDownload(
+                                response.bodyAsChannel(),
+                                destPath,
+                                response.contentLength(),
+                                "download itemId=$itemId",
+                            )
                         downloadedBytes = written
                         DownloadOutcome.Done
                     }

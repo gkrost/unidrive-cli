@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.sync.ProcessLock
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -28,46 +29,14 @@ class ProfileLockFactoryTest {
         Files.deleteIfExists(lockFile.resolveSibling("${lockFile.fileName}.pid"))
     }
 
-    // MUST mirror the holderDesc + pidPart block of Main.acquireProfileLockForDaemon
-    // byte-for-byte. The factory additionally prints recovery-hint lines below the
-    // first println (e.g. "Stop the sync watcher first: ..."); those are NOT covered
-    // by this helper. If recovery-hint wording drift becomes a maintenance concern,
-    // extend this helper and add named tests for each branch's hints.
-    private fun renderDaemonFactoryContention(holder: ProcessLock.HolderInfo?, profileName: String) {
-        val holderDesc = when {
-            holder?.mode == ProcessLock.Mode.SYNC ->
-                "Another `unidrive sync` is running for profile '$profileName'"
-            holder?.mode == ProcessLock.Mode.DAEMON ->
-                "Another `unidrive daemon` already serves profile '$profileName'"
-            holder != null && holder.mode == null && holder.rawMode != null ->
-                "Profile '$profileName' is held by an unidrive process running in " +
-                    "unknown mode '${holder.rawMode}' (this binary may be older than the holder)"
-            else ->
-                "Another unidrive process is using profile '$profileName'"
+    private fun renderContention(
+        holder: ProcessLock.HolderInfo?,
+        profileName: String,
+        acquiring: ProcessLock.Mode,
+    ) {
+        for (line in lockContentionLines(holder, profileName, acquiring, Os.isWindows())) {
+            System.err.println(line)
         }
-        val pidPart = if (holder != null) " (PID ${holder.pid})" else ""
-        System.err.println("$holderDesc$pidPart.")
-    }
-
-    // MUST mirror the holderDesc + pidPart block of Main.acquireProfileLock
-    // byte-for-byte. The factory additionally prints recovery-hint lines below the
-    // first println (e.g. "Stop the daemon first: ..."); those are NOT covered by
-    // this helper. If recovery-hint wording drift becomes a maintenance concern,
-    // extend this helper and add named tests for each branch's hints.
-    private fun renderSyncFactoryContention(holder: ProcessLock.HolderInfo?, profileName: String) {
-        val holderDesc = when {
-            holder?.mode == ProcessLock.Mode.SYNC ->
-                "Another `unidrive sync` is running for profile '$profileName'"
-            holder?.mode == ProcessLock.Mode.DAEMON ->
-                "Profile '$profileName' is currently in use by `unidrive daemon`"
-            holder != null && holder.mode == null && holder.rawMode != null ->
-                "Profile '$profileName' is held by an unidrive process running in " +
-                    "unknown mode '${holder.rawMode}' (this binary may be older than the holder)"
-            else ->
-                "Another unidrive process is using profile '$profileName'"
-        }
-        val pidPart = if (holder != null) " (PID ${holder.pid})" else ""
-        System.err.println("$holderDesc$pidPart.")
     }
 
     @Test
@@ -79,7 +48,7 @@ class ProfileLockFactoryTest {
             val acquired = contender.tryLock(ProcessLock.Mode.DAEMON)
             assertEquals(false, acquired, "DAEMON must not acquire while SYNC holds")
             val holder = contender.readHolderInfo()
-            renderDaemonFactoryContention(holder, profileName = "test_profile")
+            renderContention(holder, profileName = "test_profile", ProcessLock.Mode.DAEMON)
 
             val out = capturedErr.toString()
             assertTrue(
@@ -104,7 +73,7 @@ class ProfileLockFactoryTest {
             val acquired = contender.tryLock(ProcessLock.Mode.SYNC)
             assertEquals(false, acquired, "SYNC must not acquire while DAEMON holds")
             val holder = contender.readHolderInfo()
-            renderSyncFactoryContention(holder, profileName = "test_profile")
+            renderContention(holder, profileName = "test_profile", ProcessLock.Mode.SYNC)
 
             val out = capturedErr.toString()
             assertTrue(
@@ -129,7 +98,7 @@ class ProfileLockFactoryTest {
             val acquired = contender.tryLock(ProcessLock.Mode.DAEMON)
             assertEquals(false, acquired, "second DAEMON must not acquire while DAEMON holds")
             val holder = contender.readHolderInfo()
-            renderDaemonFactoryContention(holder, profileName = "test_profile")
+            renderContention(holder, profileName = "test_profile", ProcessLock.Mode.DAEMON)
 
             val out = capturedErr.toString()
             assertTrue(
@@ -143,5 +112,14 @@ class ProfileLockFactoryTest {
         } finally {
             held.unlock()
         }
+    }
+
+    @Test
+    fun `a windows holder is stopped with taskkill and a posix holder with kill`() {
+        val holder = ProcessLock.HolderInfo(pid = 42, mode = ProcessLock.Mode.SYNC, rawMode = "sync")
+        val windows = lockContentionLines(holder, "p", ProcessLock.Mode.SYNC, windows = true)
+        val posix = lockContentionLines(holder, "p", ProcessLock.Mode.SYNC, windows = false)
+        assertEquals("Stop it with `taskkill /PID 42 /F`, or wait for it to finish.", windows[1])
+        assertEquals("Stop it with `kill 42`, or wait for it to finish.", posix[1])
     }
 }

@@ -22,8 +22,8 @@ interface CloudProvider {
      * delegated auth services) override the getter to compute from their
      * own state — see OneDrive's `tokenManager.isAuthenticated` delegation
      * and Internxt's `authService.isAuthenticated`. The setter on those
-     * delegated implementations becomes a no-op via the override; the four
-     * boilerplate providers (WebDAV, S3, Rclone, LocalFs) keep a simple
+     * delegated implementations becomes a no-op via the override; S3 and
+     * LocalFs keep a simple
      * `override var isAuthenticated: Boolean = false` so the default
      * [logout] body can reset it without per-provider override.
      * Because the setter may do nothing, a caller that has to sign an
@@ -47,7 +47,7 @@ interface CloudProvider {
 
     /**
      * The stable id of the user the current credentials belong to (one identity call, no sign-in), or null when this
-     * provider has no user (S3, SFTP, WebDAV, local folders) or the answer carries none. Read by
+     * provider has no user (S3, local folders) or the answer carries none. Read by
      * [AccountOwner.recordIfMissing] for a profile signed in before ids were kept. Personal data: never logged.
      */
     suspend fun currentAccountId(): String? = null
@@ -296,8 +296,7 @@ interface CloudProvider {
      * minutes pre-fix). Providers paginate at very different granularities;
      * the contract is "fire often enough that a 10 s+ scan emits at least
      * once" — see [ScanHeartbeat] for the canonical math. Providers whose
-     * remote-listing API is a single all-at-once call (rclone subprocess,
-     * HiDrive's recursive endpoint) may legitimately leave this null — the
+     * remote-listing API is one call may leave this null — the
      * engine still emits a final-count tick once `delta()` returns. Default
      * argument keeps existing call sites and test stubs source-compatible.
      *
@@ -379,8 +378,7 @@ interface CloudProvider {
      * (default for most providers — files larger than 4 GiB upload fine).
      * Returns a positive byte count when:
      *  - the user explicitly configured one in the profile TOML, OR
-     *  - the provider has a documented hard cap (Synology DSM WebDAV defaults
-     *    to 4 GiB unless the admin reconfigured nginx).
+     *  - the provider has a documented hard cap.
      *
      * Used by `CloudRelocator.preflightOversized` to surface oversized files
      * at planner-time, before a wasted PUT runs to its full timeout.
@@ -532,7 +530,7 @@ interface CloudProvider {
      * provider. `planSize` is the total byte count being moved.
      * Returning null (the default) means "no provider-specific
      * warning". Used by `relocate` to flag known transport ceilings
-     * (e.g. WebDAV's nginx-mod_dav throughput cliff).
+     * (a known transport ceiling).
      */
     fun transportWarning(planSize: Long): String? = null
 }

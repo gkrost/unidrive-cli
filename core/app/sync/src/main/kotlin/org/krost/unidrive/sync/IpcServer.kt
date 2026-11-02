@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
 import org.krost.unidrive.http.UrlRedaction
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.io.ndjsonString
 import org.slf4j.LoggerFactory
@@ -1079,7 +1080,7 @@ class IpcServer(
             defaultSocketPath(
                 profileName,
                 Path.of(System.getProperty("java.io.tmpdir")),
-                System.getProperty("os.name", "").lowercase().contains("win"),
+                Os.isWindows(),
             )
 
         internal fun defaultSocketPath(
@@ -1105,7 +1106,7 @@ class IpcServer(
         internal fun defaultSocketDirectory(): Path =
             defaultSocketDirectory(
                 Path.of(System.getProperty("java.io.tmpdir")),
-                System.getProperty("os.name", "").lowercase().contains("win"),
+                Os.isWindows(),
             )
 
         private fun defaultSocketDirectory(tmpDir: Path, windows: Boolean): Path {
