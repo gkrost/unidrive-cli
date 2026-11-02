@@ -812,19 +812,28 @@ class IpcServer(
         }
     }
 
-    private fun writeNonBlocking(
+    // Writes all of [buf]. The write timeout is a deadline on progress: it starts again whenever bytes go out, so a large
+    // reply that a client reads slowly is never cut while it moves, and a peer that takes nothing for the whole timeout
+    // fails the write (its connection is then dropped). A full send buffer is waited out with delay, not by sleeping:
+    // the hydration subscriber writers run on the daemon's event loop, which a sleeping write would stall. Not
+    // cancellable half way, so a cancelled writer cannot leave a torn line on the connection.
+    private suspend fun writeNonBlocking(
         client: SocketChannel,
         buf: ByteBuffer,
-    ) {
-        val deadline = System.nanoTime() + writeTimeoutNs
+    ) = withContext(NonCancellable) {
+        var deadline = System.nanoTime() + writeTimeoutNs
+        var pauseMs = 1L
         while (buf.hasRemaining()) {
-            val written = client.write(buf)
-            if (written == 0) {
-                if (System.nanoTime() > deadline) {
-                    throw IOException("Write timeout exceeded for IPC client")
-                }
-                Thread.sleep(10)
+            if (client.write(buf) > 0) {
+                deadline = System.nanoTime() + writeTimeoutNs
+                pauseMs = 1L
+                continue
             }
+            if (System.nanoTime() > deadline) {
+                throw IOException("Write timeout exceeded for IPC client: no progress for ${writeTimeoutNs / 1_000_000L} ms")
+            }
+            delay(pauseMs)
+            pauseMs = minOf(pauseMs * 2, WRITE_POLL_MAX_MS)
         }
     }
 
@@ -847,6 +856,9 @@ class IpcServer(
         // ipc-contract/connection/too_many_clients.ndjson).
         private const val TOO_MANY_CLIENTS_LINE = "{\"ok\":false,\"error\":\"too_many_clients\"}\n"
         private const val REFUSAL_WRITE_TIMEOUT_NS = 200_000_000L
+
+        // The longest pause between two tries of a write whose send buffer is full.
+        private const val WRITE_POLL_MAX_MS = 10L
 
         // How long a refused connection is kept open, reading and dropping its input, for the peer's end of
         // stream (see refuse), and how many may wait at once.
