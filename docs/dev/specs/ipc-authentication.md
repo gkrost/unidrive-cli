@@ -156,6 +156,16 @@ Both commands take the app key from the profile's `client_id` first, then from `
 the same lookup the provider itself uses. The CLI hands the profile's config to begin and complete without
 its passwords and secrets; a profile with neither is refused (`begin_failed`) before any flow is kept.
 
+## 5b. Sign-in for front-ends: login (Internxt)
+
+`auth login` signs an Internxt profile in with the e-mail, the password and, when the account has one, the current
+two-factor code. The password is never an argument: `--password-stdin` is required. A front-end can pass the e-mail and
+the one-time code on stdin as well (`--email-stdin`, `--totp-stdin`), so they don't appear in the process list.
+Standard input then holds one line each, in this order: e-mail, password, code (only the lines whose flag is given).
+A line ends at a line feed (a carriage return before it is dropped); the e-mail and the code are trimmed, the password is kept as typed.
+`--email` with `--email-stdin`, or `--totp` with `--totp-stdin`, is refused (`invalid_value`); no e-mail at all is
+`missing_email`. On a terminal the prompts go to stderr and the password and the code are read without echo.
+
 ## 6. Error tokens
 
 | Token | When |
