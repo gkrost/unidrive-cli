@@ -264,6 +264,39 @@ class RemoteEnumerationBackupsTest {
             assertFalse(backups.holdsId("old"))
         }
 
+    // Issue #51 S4 (A.9): a state.db from an earlier version holds the device trees at `/<device>/...` as ordinary rows. With the
+    // backups shown they move under the root with the ids they have, hydrated copies stay hydrated, and nothing is deleted from
+    // the disk or sent to the cloud: the paths change, the rows do not.
+    @Test
+    fun `rows an earlier version kept at a device's path move under the root with their ids and stay hydrated`() =
+        runTest {
+            val at = Instant.parse("2026-03-28T12:00:00Z")
+            db.upsertEntry(
+                SyncEntry(
+                    path = "/Laptop", remoteId = "dev1", remoteHash = null, remoteSize = 0, remoteModified = at, localMtime = null,
+                    localSize = null, isFolder = true, isPinned = false, isHydrated = false, lastSynced = at,
+                ),
+            )
+            db.upsertEntry(
+                SyncEntry(
+                    path = "/Laptop/Documents/report.txt", remoteId = "b1", remoteHash = "hash-b1", remoteSize = 7, remoteModified = at,
+                    localMtime = at.toEpochMilli(), localSize = 7, isFolder = false, isPinned = false, isHydrated = true, lastSynced = at,
+                ),
+            )
+            provider.items = drive() + devices()
+
+            val result = enumeration(BackupsNamespace(enabled = true, ignoreCase = false)).enumerate(reset = false)
+
+            assertTrue(result.ok)
+            assertNull(db.getEntry("/Laptop/Documents/report.txt"), "the old path is gone")
+            assertNull(db.getEntry("/Laptop"), "the old device row is gone")
+            val moved = assertNotNull(db.getEntry("/Backups/Laptop/Documents/report.txt"))
+            assertEquals("b1", moved.remoteId, "the same id")
+            assertTrue(moved.isHydrated, "a hydrated copy stays hydrated")
+            assertEquals(7L, moved.localSize, "the local copy is not touched")
+            assertEquals(0, provider.writes, "nothing is uploaded or deleted in the cloud")
+        }
+
     // The device row hangs below a root that has no counterpart at the provider: the engine never vouches for it, so the
     // provider learns from the device's own meta that it is the top of a tree of its own. What is below it is vouched for.
     @Test
