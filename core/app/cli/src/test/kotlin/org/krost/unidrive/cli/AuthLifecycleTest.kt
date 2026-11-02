@@ -510,8 +510,15 @@ class AuthLifecycleTest {
     /** A fake terminal: counts the masked reads and answers with [typed] (null: end of input). */
     private class FakeTerminal(
         private val typed: String?,
-    ) : MaskedPasswordReader {
+        private val line: String? = null,
+    ) : TerminalInput {
         var reads = 0
+        var lineReads = 0
+
+        override fun readLine(): String? {
+            lineReads++
+            return line
+        }
 
         override fun readPassword(): CharArray? {
             reads++
@@ -651,6 +658,84 @@ class AuthLifecycleTest {
         // There is no --password option at all: a password cannot be put in an argument list.
         assertEquals(2, run("auth", "login", "--profile", "ix", "--email", "a@b.test", "--password", "SHHH", "--json"))
         assertFalse("SHHH" in out.toString(Charsets.UTF_8))
+
+        assertTrue(calls.isEmpty(), "no refused call reached the provider")
+    }
+
+    // A front-end can pass the e-mail and the one-time code on stdin, so they don't appear in the process list.
+    @Test
+    fun `login reads the e-mail, the password and the two-factor code from stdin, one line each`() {
+        val calls = mutableListOf<LoginCall>()
+        fakeLogin(calls)
+
+        val code =
+            run(
+                "auth", "login", "--profile", "ix", "--email-stdin", "--password-stdin", "--totp-stdin", "--json",
+                stdin = " me@example.test \r\n pass word 3 \r\n 654321 \nnot read\n",
+            )
+
+        assertEquals(0, code, err.toString())
+        assertEquals("me@example.test", json().getValue("account").jsonPrimitive.content)
+        val call = calls.single()
+        assertEquals("me@example.test", call.email, "the first line, trimmed")
+        assertEquals(" pass word 3 ", call.password, "the second line as typed")
+        assertEquals("654321", call.tfa, "the third line, trimmed")
+        for (secret in listOf("pass word 3", "654321", "not read", "JWT-SECRET", "MNEMONIC-SECRET")) {
+            assertFalse(secret in everything(), "'$secret' must not appear in stdout or stderr")
+        }
+    }
+
+    @Test
+    fun `login takes the e-mail from stdin and the code from an argument, or the code from stdin and the e-mail from an argument`() {
+        val calls = mutableListOf<LoginCall>()
+        fakeLogin(calls)
+
+        assertEquals(0, run("auth", "login", "--profile", "ix", "--email-stdin", "--password-stdin", "--totp", "111111", "--json", stdin = "müller@exämple.test\npw\n"))
+        assertEquals(0, run("auth", "login", "--profile", "ix", "--email", "a@b.test", "--password-stdin", "--totp-stdin", "--json", stdin = "pw\n222222\n"))
+        assertEquals(0, run("auth", "login", "--profile", "ix", "--email", "a@b.test", "--password-stdin", "--totp-stdin", "--json", stdin = "pw\n"))
+
+        assertEquals(
+            listOf(Triple("müller@exämple.test", "pw", "111111"), Triple("a@b.test", "pw", "222222"), Triple("a@b.test", "pw", null)),
+            calls.map { Triple(it.email, it.password, it.tfa) },
+            "no code line is no code",
+        )
+    }
+
+    @Test
+    fun `login on a terminal asks for the e-mail and reads the two-factor code masked`() {
+        val calls = mutableListOf<LoginCall>()
+        fakeLogin(calls)
+        val terminal = FakeTerminal("999888", line = " müller@exämple.test ")
+        LifecycleHooks.terminalPassword = { terminal }
+
+        val code = run("auth", "login", "--profile", "ix", "--email-stdin", "--password-stdin", "--totp-stdin", "--json", stdin = "wrong-stream@example.test\n")
+
+        assertEquals(0, code, err.toString())
+        assertEquals(1, terminal.lineReads, "the e-mail uses the console's decoded reader")
+        assertEquals(2, terminal.reads, "the password and the code: two masked reads")
+        assertEquals("müller@exämple.test", calls.single().email)
+        assertEquals("999888", calls.single().tfa)
+        val prompts = err.toString(Charsets.UTF_8)
+        assertTrue("E-mail" in prompts && "Password" in prompts && "Two-factor code" in prompts, prompts)
+        assertFalse("999888" in everything())
+    }
+
+    @Test
+    fun `login refuses an e-mail or a code given both ways, and an empty e-mail line`() {
+        val calls = mutableListOf<LoginCall>()
+        fakeLogin(calls)
+
+        assertEquals(1, run("auth", "login", "--profile", "ix", "--email", "a@b.test", "--email-stdin", "--password-stdin", "--json", stdin = "a@b.test\npw\n"))
+        assertEquals("invalid_value", errorToken())
+
+        assertEquals(1, run("auth", "login", "--profile", "ix", "--email", "a@b.test", "--password-stdin", "--totp", "1", "--totp-stdin", "--json", stdin = "pw\n1\n"))
+        assertEquals("invalid_value", errorToken())
+
+        assertEquals(1, run("auth", "login", "--profile", "ix", "--password-stdin", "--json", stdin = "pw\n"))
+        assertEquals("missing_email", errorToken())
+
+        assertEquals(1, run("auth", "login", "--profile", "ix", "--email-stdin", "--password-stdin", "--json", stdin = "\npw\n"))
+        assertEquals("missing_email", errorToken())
 
         assertTrue(calls.isEmpty(), "no refused call reached the provider")
     }

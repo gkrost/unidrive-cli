@@ -159,9 +159,11 @@ class AuthCompleteCommand : Callable<Int> {
 @Command(
     name = "login",
     description = [
-        "Sign in to Internxt without a console. The password is read from standard input (first line), " +
+        "Sign in to Internxt without a console. The password is read from standard input, " +
             "or asked for without echo when standard input and output are a terminal; " +
-            "never from an argument. Starts no daemon; a running daemon of the profile signs in itself.",
+            "never from an argument. With --email-stdin and --totp-stdin the e-mail and the two-factor code come from " +
+            "standard input too (one line each: e-mail, password, code), so none of them is in the process list. " +
+            "Starts no daemon; a running daemon of the profile signs in itself.",
     ],
     mixinStandardHelpOptions = true,
 )
@@ -172,14 +174,20 @@ class AuthLoginCommand : Callable<Int> {
     @Option(names = ["--profile"], description = ["Profile (default: -p, else the default profile)"])
     var profile: String? = null
 
-    @Option(names = ["--email"], required = true, description = ["Account e-mail"])
-    lateinit var email: String
+    @Option(names = ["--email"], description = ["Account e-mail (or --email-stdin)"])
+    var email: String? = null
 
-    @Option(names = ["--password-stdin"], description = ["Read the password from the first line of standard input, or without echo at a terminal (required)"])
+    @Option(names = ["--email-stdin"], description = ["Read the account e-mail from standard input: the line before the password"])
+    var emailStdin: Boolean = false
+
+    @Option(names = ["--password-stdin"], description = ["Read the password from standard input (the first line, or the line after the e-mail), or without echo at a terminal (required)"])
     var passwordStdin: Boolean = false
 
-    @Option(names = ["--totp"], description = ["Current two-factor code, when the account has one"])
+    @Option(names = ["--totp"], description = ["Current two-factor code, when the account has one (or --totp-stdin)"])
     var totp: String? = null
+
+    @Option(names = ["--totp-stdin"], description = ["Read the current two-factor code from standard input: the line after the password"])
+    var totpStdin: Boolean = false
 
     @Option(names = ["--json"], description = ["Print the result (or the refusal) as one JSON object on stdout"])
     var json: Boolean = false
@@ -189,12 +197,17 @@ class AuthLoginCommand : Callable<Int> {
             if (!passwordStdin) {
                 throw LifecycleError("password_stdin_required", "pass --password-stdin and give the password on standard input")
             }
-            if (email.isBlank()) throw LifecycleError("missing_email", "--email is required")
+            if (email != null && emailStdin) throw LifecycleError("invalid_value", "give --email or --email-stdin, not both")
+            if (totp != null && totpStdin) throw LifecycleError("invalid_value", "give --totp or --totp-stdin, not both")
+            if (!emailStdin && email.isNullOrBlank()) throw LifecycleError("missing_email", "--email or --email-stdin is required")
             val target = resolveProfileTarget(authCmd.parent, profile)
-            requireInternxtProfile(target) // before the password is asked for
+            requireInternxtProfile(target) // before anything is read from standard input
+            // One line each, in this order: e-mail, password, two-factor code.
+            val account = if (emailStdin) readLine("E-mail: ") else email.orEmpty()
+            if (account.isBlank()) throw LifecycleError("missing_email", "no e-mail on standard input")
             val password = readPasswordLine()
-            requireInternxtLogin(target, email, password)
-            val code = totp?.trim()?.takeIf { it.isNotEmpty() }
+            requireInternxtLogin(target, account, password)
+            val code = (if (totpStdin) readSecretLine("Two-factor code: ") else totp)?.trim()?.takeIf { it.isNotEmpty() }
 
             withProfileLockOrDaemon(
                 target,
@@ -203,29 +216,48 @@ class AuthLoginCommand : Callable<Int> {
                     val request =
                         buildJsonObject {
                             put("verb", AuthLoginRpcHandler.LOGIN)
-                            put("email", email.trim())
+                            put("email", account.trim())
                             code?.let { put("totp", it) }
                             put("password", password)
                         }
                     askDaemonToSignIn(target, endpoint, request)
                 },
             ) {
-                runBlocking { loginInternxt(target, email, password, code) }
+                runBlocking { loginInternxt(target, account, password, code) }
             }
         }
 
     /**
      * On a terminal: the prompt on stderr (stdout stays clean for --json) and a masked read. Otherwise the
-     * first line of standard input without its line terminator, no prompt. Spaces in the password are kept.
+     * next line of standard input without its line terminator, no prompt. Spaces in the password are kept.
      */
-    private fun readPasswordLine(): String {
+    private fun readPasswordLine(): String = readSecretLine("Password: ")
+
+    // A secret line (the password, the two-factor code): read like the password.
+    private fun readSecretLine(prompt: String): String {
         val terminal = LifecycleHooks.terminalPassword()
         if (terminal != null) {
-            System.err.print("Password: ")
+            System.err.print(prompt)
             System.err.flush()
             val typed = terminal.readPassword() ?: return ""
             return String(typed).also { typed.fill('\u0000') }
         }
+        return readStdinLine()
+    }
+
+    // The e-mail: on a terminal echoed as typed (the prompt on stderr), otherwise the next line of standard input.
+    private fun readLine(prompt: String): String {
+        val terminal = LifecycleHooks.terminalPassword()
+        if (terminal != null) {
+            System.err.print(prompt)
+            System.err.flush()
+            return terminal.readLine().orEmpty().trim()
+        }
+        return readStdinLine().trim()
+    }
+
+    // The next line of standard input without its line terminator, read byte by byte so nothing past it is consumed.
+    private fun readStdinLine(): String {
         val bytes = java.io.ByteArrayOutputStream()
         while (true) {
             val b = System.`in`.read()

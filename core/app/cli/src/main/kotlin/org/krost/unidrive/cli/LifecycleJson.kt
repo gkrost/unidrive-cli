@@ -59,22 +59,23 @@ internal object LifecycleHooks {
     /** An environment variable of the process. */
     var env: (String) -> String? = { System.getenv(it) }
 
-    /** The masked reader of an interactive terminal on standard input, or null when it is piped or redirected. */
-    var terminalPassword: () -> MaskedPasswordReader? = { systemTerminalPassword() }
+    /** The decoded reader of an interactive terminal, or null when input is piped or redirected. */
+    var terminalPassword: () -> TerminalInput? = { systemTerminalInput() }
 }
 
-/** Reads one line from a terminal without echoing it; null at end of input. The caller blanks the array. */
-internal fun interface MaskedPasswordReader {
+/** The console's decoded input: an echoed line or a masked secret; null at end of input. */
+internal interface TerminalInput {
+    fun readLine(): String?
     fun readPassword(): CharArray?
 }
 
 /**
- * The system console as a [MaskedPasswordReader], only when it is a real terminal. JDK 22+ hands out a
+ * The system console as a [TerminalInput], only when it is a real terminal. JDK 22+ hands out a
  * [java.io.Console] even when the streams are redirected, so [java.io.Console.isTerminal] decides there; the
  * compile toolchain is JDK 21, which has no such method, so it is called reflectively. Up to JDK 21 a console
  * exists only when both input and output are a terminal, so its presence is the answer.
  */
-private fun systemTerminalPassword(): MaskedPasswordReader? {
+private fun systemTerminalInput(): TerminalInput? {
     val console = System.console() ?: return null
     val isTerminal =
         try {
@@ -82,7 +83,11 @@ private fun systemTerminalPassword(): MaskedPasswordReader? {
         } catch (_: NoSuchMethodException) {
             true
         }
-    return if (isTerminal) MaskedPasswordReader { console.readPassword() } else null
+    if (!isTerminal) return null
+    return object : TerminalInput {
+        override fun readLine(): String? = console.readLine()
+        override fun readPassword(): CharArray? = console.readPassword()
+    }
 }
 
 /** The profile a lifecycle command acts on. */
