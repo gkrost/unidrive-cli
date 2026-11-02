@@ -1,5 +1,6 @@
 package org.krost.unidrive.s3
 
+import org.krost.unidrive.auth.maskSecret
 import org.krost.unidrive.io.defaultTokenPath
 import java.net.URI
 import java.nio.file.Path
@@ -21,6 +22,11 @@ data class S3Config(
     val vendor: Vendor = Vendor.of(endpoint),
 ) {
     val host: String get() = URI(endpoint).let { if (it.port == -1) it.host else "${it.host}:${it.port}" }
+
+    override fun toString(): String =
+        "S3Config(bucket=$bucket, region=$region, endpoint=$endpoint, accessKey=${maskSecret(accessKey)}, " +
+            "secretKey=${maskSecret(secretKey)}, tokenPath=$tokenPath, multipartThreshold=$multipartThreshold, " +
+            "minPartSize=$minPartSize, vendor=$vendor)"
 
     /** What sets one S3 implementation apart from another for this provider. */
     data class Vendor(

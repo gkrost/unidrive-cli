@@ -2,6 +2,7 @@ package org.krost.unidrive.dropbox
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import org.krost.unidrive.auth.maskSecret
 
 /** The answer of Dropbox's token endpoint. A refresh answers without a new refresh token: the old one stays valid. */
 @Serializable
@@ -11,7 +12,11 @@ internal data class DropboxTokenResponse(
     @SerialName("expires_in") val expiresIn: Long,
     @SerialName("refresh_token") val refreshToken: String? = null,
     @SerialName("account_id") val accountId: String? = null,
-)
+) {
+    override fun toString(): String =
+        "DropboxTokenResponse(accessToken=${maskSecret(accessToken)}, tokenType=$tokenType, expiresIn=$expiresIn, " +
+            "refreshToken=${maskSecret(refreshToken)}, accountId=$accountId)"
+}
 
 /** The stored credential (`token.json` in the profile folder). */
 @Serializable
@@ -26,4 +31,8 @@ data class DropboxToken(
     fun isNearExpiry(thresholdMs: Long = 5 * 60 * 1000): Boolean = System.currentTimeMillis() + thresholdMs >= expiresAt
 
     fun hasPlausibleShape(): Boolean = accessToken.length >= 32
+
+    override fun toString(): String =
+        "DropboxToken(accessToken=${maskSecret(accessToken)}, expiresAt=$expiresAt, refreshToken=${maskSecret(refreshToken)}, " +
+            "accountId=$accountId)"
 }

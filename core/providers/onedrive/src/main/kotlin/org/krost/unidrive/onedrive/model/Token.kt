@@ -2,6 +2,7 @@ package org.krost.unidrive.onedrive.model
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import org.krost.unidrive.auth.maskSecret
 
 @Serializable
 data class TokenResponse(
@@ -11,7 +12,11 @@ data class TokenResponse(
     @SerialName("refresh_token") val refreshToken: String? = null,
     @SerialName("scope") val scope: String? = null,
     @SerialName("ext_expires_in") val extExpiresIn: Long? = null,
-)
+) {
+    override fun toString(): String =
+        "TokenResponse(accessToken=${maskSecret(accessToken)}, tokenType=$tokenType, expiresIn=$expiresIn, " +
+            "refreshToken=${maskSecret(refreshToken)}, scope=$scope, extExpiresIn=$extExpiresIn)"
+}
 
 @Serializable
 data class Token(
@@ -27,6 +32,10 @@ data class Token(
     fun isNearExpiry(thresholdMs: Long = 5 * 60 * 1000): Boolean = System.currentTimeMillis() + thresholdMs >= expiresAt
 
     fun hasPlausibleAccessTokenShape(): Boolean = accessToken.length >= 32
+
+    override fun toString(): String =
+        "Token(accessToken=${maskSecret(accessToken)}, tokenType=$tokenType, expiresAt=$expiresAt, " +
+            "refreshToken=${maskSecret(refreshToken)}, scope=$scope)"
 }
 
 data class DeviceCodeResponse(
