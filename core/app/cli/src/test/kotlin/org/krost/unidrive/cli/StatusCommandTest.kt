@@ -946,6 +946,41 @@ class StatusCommandTest {
         )
     }
 
+    // A folder outside sync_path that only [general] excludes must not be counted, and neither a profile pattern nor a built-in.
+    @Test
+    fun `status out-of-scope line skips general, profile and built-in excludes`() {
+        val dir = Files.createTempDirectory("status-general-exclude-")
+        val originalOut = System.out
+        try {
+            val root = dir.resolve("root")
+            listOf("In", "general-only", "profile-only", ".git", "kept").forEach { Files.createDirectories(root.resolve(it)) }
+            val slash = Char(92)
+            fun write(extra: String) =
+                Files.writeString(
+                    dir.resolve("config.toml"),
+                    "[general]\n${extra}exclude_patterns = [\"general-only\"]\n\n[providers.lf]\ntype = \"localfs\"\nmode = \"mirror\"\n" +
+                        "sync_root = \"${root.toString().replace(slash, '/')}\"\nsync_path = [\"/In\"]\nexclude_patterns = [\"profile-only\"]\n",
+                )
+            fun status() {
+                val captured = java.io.ByteArrayOutputStream()
+                System.setOut(java.io.PrintStream(captured, true, "UTF-8"))
+                val exit = CommandLine(Main()).execute("-c", dir.toString(), "-p", "lf", "status")
+                val out = captured.toString("UTF-8")
+                assertEquals(0, exit, out)
+                assertTrue("Out of scope on disk (left untouched): /kept" in out, out)
+                assertFalse(out.contains("general-only") || out.contains("profile-only") || out.contains(".git"), out)
+            }
+            write("")
+            status()
+            // Below the poll floor the config will not load; the raw sections are the fallback.
+            write("poll_interval = 1\n")
+            status()
+        } finally {
+            System.setOut(originalOut)
+            dir.toFile().deleteRecursively()
+        }
+    }
+
     // ── archive#646: status without a default profile ───────────────────────────────
 
     private fun rawOf(
