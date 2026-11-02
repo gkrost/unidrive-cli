@@ -2105,6 +2105,26 @@ class ReconcilerTest {
         assertIs<SyncAction.DeleteLocal>(actions[0])
     }
 
+    // Review of #330: a streamed download is still in flight when the page with the item's tombstone is
+    // reconciled, so the row is not written and the file not placed yet. "No row, nothing on disk" then reads as
+    // an already-applied delete and plans nothing: the download lands afterwards and the cursor moves on.
+    @Test
+    fun `a tombstone of the id whose download is in flight this gather still plans the delete`() {
+        val tombstone = mapOf("/x.txt" to cloudItem("/x.txt", deleted = true))
+        assertTrue(
+            reconciler.resolveSlice(tombstone, emptyMap()).isEmpty(),
+            "without a landed download there is nothing to delete",
+        )
+        val actions = reconciler.resolveSlice(tombstone, emptyMap(), landedRemoteId = { if (it == "/x.txt") "id-/x.txt" else null })
+        assertEquals(listOf(SyncAction.DeleteLocal("/x.txt", remoteId = "id-/x.txt")), actions)
+    }
+
+    @Test
+    fun `a tombstone of another id than the one in flight plans nothing`() {
+        val tombstone = mapOf("/x.txt" to cloudItem("/x.txt", deleted = true))
+        assertTrue(reconciler.resolveSlice(tombstone, emptyMap(), landedRemoteId = { "id-other" }).isEmpty())
+    }
+
     // ── archive#419: a re-delivered delete for an already-trashed, already-gone row ─
     //
     // The Internxt delta cursor rewinds by two minutes, so a run that only sees old

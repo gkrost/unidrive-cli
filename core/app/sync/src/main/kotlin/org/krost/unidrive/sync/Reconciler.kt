@@ -494,6 +494,10 @@ class Reconciler(
         // archive#160: mirror of the same flag on reconcile() — re-download hydrated rows
         // whose local file is absent instead of emitting DeleteRemote.
         downloadOnly: Boolean = false,
+        // Remote id of the content a streamed download already dispatched at a path this gather. Its row and
+        // file are written when the transfer ends, so a tombstone of that id must not read "no row, nothing on
+        // disk" as an applied delete: the download lands afterwards and would stay.
+        landedRemoteId: (String) -> String? = { null },
     ): List<SyncAction> {
         val pinRules = db.getPinRules()
 
@@ -541,7 +545,13 @@ class Reconciler(
             if (remoteState == ChangeState.UNCHANGED && localState == ChangeState.UNCHANGED) continue
             if (remoteState == ChangeState.UNCHANGED && localState == ChangeState.MODIFIED && activePlanRefusal(db, syncRoot, path)) continue
             val action = resolveAction(path, localState, remoteState, remoteItem, entry, pinRules, alias, downloadOnly)
-            if (action != null) actions.add(action)
+            if (action != null) {
+                actions.add(action)
+            } else if (remoteItem != null && deleteOfInFlightDownload(path, localState, remoteState, entry, remoteItem, landedRemoteId)) {
+                // "No row, nothing on disk" is read as an applied delete, but this id's download is dispatched
+                // and writes its row and file when it ends: the delete has to remove what lands.
+                actions.add(SyncAction.DeleteLocal(path, remoteId = remoteItem.id))
+            }
         }
         // archive#309: a streamed download starts before the scan ends, so a case twin's download is held back here already.
         dropDownloadsOntoLocalCaseTwins(actions, localChanges)
@@ -2172,3 +2182,14 @@ private fun firstUnreportedLocalEntry(
     }
     return found
 }
+
+private fun deleteOfInFlightDownload(
+    path: String,
+    localState: ChangeState,
+    remoteState: ChangeState,
+    entry: SyncEntry?,
+    tombstone: CloudItem,
+    landedRemoteId: (String) -> String?,
+): Boolean =
+    remoteState == ChangeState.DELETED && localState == ChangeState.UNCHANGED && entry == null &&
+        landedRemoteId(path) == tombstone.id
