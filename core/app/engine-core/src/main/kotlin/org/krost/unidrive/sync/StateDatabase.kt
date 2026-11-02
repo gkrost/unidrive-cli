@@ -547,6 +547,8 @@ class StateDatabase(
      *    scan repopulates. `sync_state` and `pin_rules` are preserved.
      * 3. `sync_state` present with `schema_version=SCHEMA_VERSION` → nothing
      *    to do beyond ensuring objects exist (CREATE IF NOT EXISTS is safe).
+     *    An older stamp (2) gets the columns it lacks from [createTables] and is
+     *    stamped [SCHEMA_VERSION]; a newer one is refused before any write.
      */
     @Synchronized
     private fun bootstrapSchema() {
@@ -3510,7 +3512,13 @@ class StateDatabase(
         // The resumable-scan slice lives in a file of its own (see ScanStaging);
         // the table it had in this file is dropped at open, which needs no
         // version bump either.
-        internal const val SCHEMA_VERSION: Int = 2
+        // 3 (gkrost/unidrive-cli#269): the eleven columns of sync_entries added at 2 (download_quarantined through
+        // remote_content_id, see createTables). A build that knows 2 opened a file with them and each of its INSERT OR
+        // REPLACE writes put back only the columns it knew, so an unsynced edit's edit_base, the remote_content_id, a
+        // name_block or an upload_refused went back to NULL. Such a build refuses a file stamped 3 at open (the guard in
+        // bootstrapSchema); a file at 2 gets the columns it lacks and is stamped 3, its rows kept. A column that an older
+        // build's upsert would reset bumps this number; a table of its own (rename_intents and the like) does not.
+        internal const val SCHEMA_VERSION: Int = 3
         internal const val SCHEMA_VERSION_KEY: String = "schema_version"
 
         // The keys of the resumable-scan checkpoint, read and written through
