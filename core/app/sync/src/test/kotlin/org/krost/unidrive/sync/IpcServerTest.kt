@@ -716,9 +716,9 @@ class IpcServerTest {
     // connection instead of being swallowed: a swallowed failure leaves the connection open and
     // the client waits on a reply line that never comes, out its own timeout. Driven
     // deterministically, not by racing a peer close: the handler returns a reply far larger than
-    // any socket buffer, the client never reads, and the server's write timeout is far shorter
-    // than writing it would take — writeNonBlocking throws, and the failure must end the
-    // connection (the client reads its partial reply, then EOF).
+    // any socket buffer and the client reads nothing until well past the server's write timeout,
+    // which runs on progress — writeNonBlocking throws, and the failure must end the connection
+    // (the client then reads its partial reply, then EOF).
     @Test
     fun `a reply-write failure closes the client connection`() =
         runBlocking(Dispatchers.IO) {
@@ -734,6 +734,8 @@ class IpcServerTest {
                 val req = """{"verb":"big"}""" + "\n"
                 val w = ByteBuffer.wrap(req.toByteArray(Charsets.UTF_8))
                 while (w.hasRemaining()) client.write(w)
+                // No reads while the server's write stalls: the timeout passes with no progress.
+                delay(1_000)
 
                 val closed = withTimeoutOrNull(10_000) {
                     val buf = ByteBuffer.allocate(8192)

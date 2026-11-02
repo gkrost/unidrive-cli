@@ -8,11 +8,13 @@ documentation, not here.
 
 ### `UNIDRIVE_IPC_WRITE_TIMEOUT_MS`
 
-Per-write socket deadline for `IpcServer`'s non-blocking write loop.
+How long `IpcServer`'s non-blocking write loop waits for progress.
 Applies to every byte written to a connected IPC client (broadcast
-events, verb replies, initial state dumps). When the deadline expires
-without the kernel accepting more bytes, the client is dropped and the
-close-listener fires.
+events, verb replies, initial state dumps). The deadline starts again
+whenever the kernel accepts bytes, so a large reply that keeps moving
+is never cut; when it passes without the kernel accepting more bytes,
+the client is dropped and the close-listener fires. The wait does not
+hold the writer's thread.
 
 - **Default:** `5000` (5 seconds)
 - **Accepted range:** `100..600000` (100ms..10min)
