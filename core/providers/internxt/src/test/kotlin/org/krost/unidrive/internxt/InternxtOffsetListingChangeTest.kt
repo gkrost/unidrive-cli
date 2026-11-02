@@ -23,7 +23,9 @@ class InternxtOffsetListingChangeTest {
 
     private class Gateway(
         count: Int,
-        // Called after each served offset page with the number of pages served so far; may change [rows].
+        // The most items one page serves, as a gateway with a page cap does; the next page may change it.
+        var cap: Int = Int.MAX_VALUE,
+        // Called after each served offset page with the number of pages served so far; may change [rows] and [cap].
         val afterPage: Gateway.(Int) -> Unit = {},
     ) {
         val rows: MutableList<String> = (0 until count).map { "c%04d".format(it) }.toMutableList()
@@ -39,7 +41,7 @@ class InternxtOffsetListingChangeTest {
                         val limit = request.url.parameters["limit"]!!.toInt()
                         val offset = request.url.parameters["offset"]!!.toInt()
                         offsets += offset
-                        val page = rows.sorted().drop(offset).take(limit)
+                        val page = rows.sorted().drop(offset).take(minOf(limit, cap))
                         pages++
                         afterPage(pages)
                         respond("""{"folders":[${page.joinToString(",") { folder(it, it, "big") }}]}""", HttpStatusCode.OK, jsonHeaders)
@@ -77,7 +79,34 @@ class InternxtOffsetListingChangeTest {
             val listed = service(gateway).getChildFoldersPaged("big").map { it.uuid }
 
             assertEquals(gateway.rows, listed)
-            assertEquals(listOf(0, 49, 98, 119), gateway.offsets, "each page starts at the previous page's last item")
+            assertEquals(
+                listOf(0, 49, 98, 119, 120),
+                gateway.offsets,
+                "each page starts at the previous page's last item; the end is confirmed by the empty page after it",
+            )
+        }
+
+    @Test
+    fun `a persistent one-item page cap fails as incomplete instead of answering the first item as the folder`() =
+        runTest {
+            // Three rows, one served per page: the overlap never moves, so no full list can be read.
+            val gateway = Gateway(3, cap = 1)
+
+            val e = assertFailsWith<InternxtApiException> { service(gateway).getChildFoldersPaged("big") }
+
+            assertEquals(503, e.statusCode, "incomplete, not the prefix [c0000]: ${e.message}")
+        }
+
+    @Test
+    fun `a nonterminal page shortened to the overlap alone fails as incomplete instead of ending the listing`() =
+        runTest {
+            // The first page serves 50 rows; the second is cut to its overlap item while rows follow it.
+            val gateway = Gateway(120) { pages -> cap = if (pages == 1) 1 else Int.MAX_VALUE }
+
+            val e = assertFailsWith<InternxtApiException> { service(gateway).getChildFoldersPaged("big") }
+
+            assertEquals(503, e.statusCode, "incomplete, not the 50 rows read so far: ${e.message}")
+            assertEquals(listOf(0, 49, 50), gateway.offsets, "the overlap-only page asks the position after it, which holds a row")
         }
 
     @Test
