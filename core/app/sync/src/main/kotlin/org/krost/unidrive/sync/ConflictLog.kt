@@ -1,6 +1,7 @@
 package org.krost.unidrive.sync
 
 import kotlinx.serialization.Serializable
+import org.krost.unidrive.io.engineRelative
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.nio.file.Path
@@ -135,7 +136,7 @@ class ConflictLog(
         // The engine records the logical path, which starts with '/'; Path.resolve of a rooted string
         // ignores its base, so the leading slashes go first and the result must stay under the root.
         val root = syncRoot.toAbsolutePath().normalize()
-        val target = root.resolve(entry.path.replace('\\', '/').trimStart('/')).normalize()
+        val target = root.resolve(engineRelative(entry.path)).normalize()
         require(target != root && target.startsWith(root)) {
             "Conflict path does not stay under the sync root: ${entry.path}"
         }

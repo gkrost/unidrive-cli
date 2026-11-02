@@ -8,6 +8,7 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import kotlin.io.path.*
 import kotlin.test.*
+import org.junit.Assume.assumeTrue
 
 class TrashManagerTest {
     private lateinit var syncRoot: Path
@@ -241,5 +242,25 @@ class TrashManagerTest {
         )
         assertTrue(manager.restore("/docs/deep/test.txt"), "restore matches the cloud-style key")
         assertEquals("nested", syncRoot.resolve("docs/deep/test.txt").readText())
+    }
+
+    @Test
+    fun `a backslash in a name round-trips through the trash and leaves the slash path`() {
+        assumeTrue("a backslash is the separator on Windows", !System.getProperty("os.name", "").lowercase().contains("win"))
+        val literal = syncRoot.resolve("docs").resolve("back\\slash.txt")
+        val slashed = syncRoot.resolve("docs").resolve("back").resolve("slash.txt")
+        literal.parent.createDirectories()
+        slashed.parent.createDirectories()
+        literal.writeText("literal")
+        slashed.writeText("slashed")
+
+        val manager = TrashManager(syncRoot)
+        manager.trash("/docs/back\\slash.txt")
+        assertFalse(literal.exists())
+        assertEquals("slashed", slashed.readText())
+        assertEquals("docs/back\\slash.txt", manager.list().single().originalPath)
+        assertTrue(manager.restore("/docs/back\\slash.txt"))
+        assertEquals("literal", literal.readText())
+        assertEquals("slashed", slashed.readText())
     }
 }

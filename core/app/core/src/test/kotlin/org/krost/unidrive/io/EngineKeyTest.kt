@@ -17,4 +17,15 @@ class EngineKeyTest {
         assertEquals("/", engineKey(emptyList()))
         assertEquals("/", engineKey(Path.of("")))
     }
+
+    @Test
+    fun `a typed separator becomes a slash only where backslash is the separator`() {
+        val typed = "docs\\a.txt"
+        if (java.io.File.separatorChar == '\\') {
+            assertEquals("docs/a.txt", engineRelative(typed))
+        } else {
+            assertEquals("docs\\a.txt", engineRelative(typed))
+        }
+        assertEquals("docs/back\\slash.txt".let { if (java.io.File.separatorChar == '\\') "docs/back/slash.txt" else it }, engineRelative("/docs/back\\slash.txt"))
+    }
 }

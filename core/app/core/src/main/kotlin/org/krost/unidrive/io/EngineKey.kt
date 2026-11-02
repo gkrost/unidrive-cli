@@ -16,3 +16,15 @@ fun engineKey(names: Iterable<String>): String {
 }
 
 fun engineKey(relative: Path): String = engineKey(relative.map { it.toString() })
+
+/**
+ * A relative engine key, without a leading slash.
+ *
+ * On Windows `\` is the separator, so a path typed at the CLI is turned into the `/` form the
+ * engine stores. On POSIX `\` is a character of a name and is left as it is: `docs/back\slash.txt`
+ * and `docs/back/slash.txt` are different files.
+ */
+fun engineRelative(path: String): String {
+    val slashed = if (java.io.File.separatorChar == '\\') path.replace('\\', '/') else path
+    return slashed.removePrefix("/")
+}

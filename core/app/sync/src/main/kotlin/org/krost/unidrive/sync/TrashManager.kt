@@ -2,6 +2,7 @@ package org.krost.unidrive.sync
 
 import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.engineKey
+import org.krost.unidrive.io.engineRelative
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -71,7 +72,7 @@ class TrashManager(
     }
 
     fun restore(originalPath: String): Boolean {
-        val normalized = originalPath.replace('\\', '/').removePrefix("/")
+        val normalized = engineRelative(originalPath)
         val dest = safeResolveLocal(syncRoot, normalized)
         val items = list().filter { it.originalPath == normalized }.sortedByDescending { it.timestamp }
         val latest = items.firstOrNull() ?: return false

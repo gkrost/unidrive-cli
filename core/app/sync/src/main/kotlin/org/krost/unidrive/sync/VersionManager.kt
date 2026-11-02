@@ -1,6 +1,7 @@
 package org.krost.unidrive.sync
 
 import org.krost.unidrive.io.engineKey
+import org.krost.unidrive.io.engineRelative
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -40,7 +41,7 @@ class VersionManager(
     // The file and its version folder both come from the contained path: a name with `..`
     // segments must never copy a file from outside the sync root into it, nor out of it.
     fun snapshot(relativePath: String): Path? {
-        val normalized = relativePath.replace('\\', '/').removePrefix("/")
+        val normalized = engineRelative(relativePath)
         val source = safeResolveLocal(syncRoot, normalized)
         if (!source.exists() || !source.isRegularFile()) return null
         val timestamp = encodeTimestamp(Instant.now().truncatedTo(ChronoUnit.SECONDS))
@@ -53,7 +54,7 @@ class VersionManager(
     // Every entry point that takes a path derives the version folder from the contained path, so a name
     // with `..` segments can never list, restore or delete anything outside [versionsDir].
     fun listVersions(relativePath: String): List<VersionedItem> {
-        val normalized = relativePath.replace('\\', '/').removePrefix("/")
+        val normalized = engineRelative(relativePath)
         val fileVersionsDir = versionFolder(safeResolveLocal(syncRoot, normalized))
         if (!fileVersionsDir.exists() || !fileVersionsDir.isDirectory()) return emptyList()
         val items = mutableListOf<VersionedItem>()
@@ -84,7 +85,7 @@ class VersionManager(
         relativePath: String,
         timestamp: Instant,
     ): Boolean {
-        val normalized = relativePath.replace('\\', '/').removePrefix("/")
+        val normalized = engineRelative(relativePath)
         val dest = safeResolveLocal(syncRoot, normalized)
         val tsDir = encodeTimestamp(timestamp.truncatedTo(ChronoUnit.SECONDS))
         val versionFile = versionFolder(dest).resolve(tsDir)
