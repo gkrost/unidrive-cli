@@ -42,6 +42,19 @@ data class AuditReport(
 enum class AuditSeverity { GREEN, YELLOW, RED }
 
 object StatusAudit {
+    /**
+     * The remote quota, or null when the provider cannot tell it (OneDrive answers a drive without a quota by failing the call):
+     * the audit then prints no quota instead of dying. A failed sign-in is not an unknown quota and goes on.
+     */
+    suspend fun quotaOrNull(provider: org.krost.unidrive.CloudProvider): org.krost.unidrive.QuotaInfo? =
+        try {
+            provider.quota()
+        } catch (e: org.krost.unidrive.AuthenticationException) {
+            throw e
+        } catch (expected: org.krost.unidrive.ProviderException) {
+            null
+        }
+
     /** How many decorated paths a status lists; the count is always the full one. */
     const val DUPLICATE_NAMES_LISTED = 50
 
