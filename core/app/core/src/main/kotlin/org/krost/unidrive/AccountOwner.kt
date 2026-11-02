@@ -20,7 +20,7 @@ import java.util.HexFormat
  *
  * The id comes from the provider's identity answer at sign-in: the drive owner id (`GET /me/drive` `owner.user.id`) for OneDrive,
  * the user uuid of the login answer for Internxt, the `account_id` of the token answer for Dropbox. Providers without a user
- * (S3, SFTP, WebDAV, local folders) keep none and are never checked. Personal data: never logged, never in a reply.
+ * (S3 and local folders) keep none and are never checked. Personal data: never logged, never in a reply.
  */
 object AccountOwner {
     private val log = org.slf4j.LoggerFactory.getLogger(AccountOwner::class.java)

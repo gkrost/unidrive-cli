@@ -6,8 +6,7 @@ import java.nio.file.Paths
 /**
  * Default per-profile token storage directory: `$HOME/.config/unidrive/<providerId>`.
  *
- * UD-009: lifted from 5 provider-local copies (SFTP, WebDAV, S3, OneDrive,
- * Internxt) that all had byte-identical implementations differing only in the
+ * UD-009: lifted from the provider-local copies, which differed only in the
  * trailing path segment. The caller passes its own `providerId` (typically
  * `factory.id`) so this helper does not need to know which providers exist.
  *

@@ -16,9 +16,7 @@ package org.krost.unidrive
  * | OneDrive (Microsoft Graph) | `request-id`, fallback `client-request-id` |
  * | Internxt                   | `x-request-id` |
  * | S3 / S3-compatible         | `x-amz-request-id` (primary); `x-amz-id-2` is captured separately by the S3 layer when needed |
- * | HiDrive                    | TBD — populate when verified |
- * | WebDAV                     | none standard — leave null |
- * | SFTP                       | n/a (not HTTP) |
+ * | Dropbox                    | none — leave null |
  *
  * Logging callers can grep for `requestId=` on every `ProviderException`
  * subclass without knowing which provider produced it. `null` means
