@@ -396,7 +396,7 @@ class StatusCommand : Runnable {
         val group = ProviderGroup(profile.type, providerDisplayName(profile.type), listOf(row))
         val ansi = AnsiHelper.isAnsiSupported()
         renderTable(listOf(group), ansi)
-        printScopeLine(profile, configDir)
+        printScopeLine(profile, configDir, raw)
         StatusAudit.duplicateNameLines(readDuplicateNames(configDir)).forEach(::println)
     }
 
@@ -439,6 +439,7 @@ class StatusCommand : Runnable {
     private fun printScopeLine(
         profile: ProfileInfo,
         configDir: Path,
+        raw: RawSyncConfig,
     ) {
         val configured =
             try {
@@ -449,7 +450,7 @@ class StatusCommand : Runnable {
             }
         scopeStatusLine(configured, persistedScope(configDir))?.let { println(it) }
         if (configured.isNotEmpty()) {
-            val excludes = ExcludePatterns.accepted(SyncConfig.DEFAULT_EXCLUDE_PATTERNS + profile.rawProvider?.exclude_patterns.orEmpty())
+            val excludes = scopeExcludes(profile, raw)
             val outside =
                 SyncScope.outOfScopeLocal(profile.syncRoot, configured) { path ->
                     excludes.any { Reconciler.matchesGlob(path, it) }
@@ -457,6 +458,20 @@ class StatusCommand : Runnable {
             outOfScopeLine(outside)?.let { println(it) }
         }
     }
+
+    // Sync matches the built-in, [general] and profile excludes. A config that will not load still has those raw sections.
+    private fun scopeExcludes(
+        profile: ProfileInfo,
+        raw: RawSyncConfig,
+    ): List<String> =
+        runCatching { parent.loadSyncConfig().effectiveExcludePatterns(profile.name) }
+            .getOrElse {
+                ExcludePatterns.accepted(
+                    SyncConfig.DEFAULT_EXCLUDE_PATTERNS +
+                        raw.general.exclude_patterns.orEmpty() +
+                        profile.rawProvider?.exclude_patterns.orEmpty(),
+                )
+            }
 
     private fun showMultiProviderStatus() {
         val baseDir = parent.configBaseDir()

@@ -127,6 +127,55 @@ class ExcludePatternSyntaxTest {
         }
     }
 
+    // The loop above quotes every UTF-16 unit on its own, so a surrogate pair never has to match a path.
+    @Test
+    fun `a character outside the BMP matches when the regex decides`() {
+        val grin = "😀"
+        val cases =
+            listOf(
+                "*$grin*" to "x${grin}y",
+                "a/*$grin" to "a/x$grin",
+                "**/$grin/x" to "dir/$grin/x",
+                // A line break skips the string fast path, so this name is decided by the regex too.
+                "$grin*" to "$grin\nfile",
+            )
+        for ((pattern, path) in cases) {
+            assertTrue(Reconciler.matchesGlob(path, pattern), "matchesGlob '$path' against '$pattern'")
+            assertTrue(Reconciler.matchesGlobRegex(path, pattern), "matchesGlobRegex '$path' against '$pattern'")
+        }
+        assertFalse(Reconciler.matchesGlob("xy", "*$grin*"))
+        assertFalse(Reconciler.matchesGlobRegex("a/x", "a/*$grin"))
+        assertFalse(Reconciler.matchesGlob("dir/$grin/y", "**/$grin/x"))
+        assertFalse(Reconciler.matchesGlobRegex("x$grin\nfile", "$grin*"))
+    }
+
+    @Test
+    fun `a slash double-star slash in the middle matches zero or more directories`() {
+        val rows =
+            listOf(
+                "a/b" to true,
+                "a/x/b" to true,
+                "a/x/y/b" to true,
+                "a//b" to false,
+            )
+        for ((path, expected) in rows) {
+            assertEquals(expected, Reconciler.matchesGlob(path, "a/**/b"), "matchesGlob '$path'")
+            assertEquals(expected, Reconciler.matchesGlobRegex(path, "a/**/b"), "matchesGlobRegex '$path'")
+        }
+        // a/**.log is not this shape. It still matches only a file whose name is exactly ".log".
+        val unchanged =
+            listOf(
+                "a/.log" to true,
+                "a/x/.log" to true,
+                "a/b.log" to false,
+                "a/x/b.log" to false,
+            )
+        for ((path, expected) in unchanged) {
+            assertEquals(expected, Reconciler.matchesGlob(path, "a/**.log"), "matchesGlob '$path'")
+            assertEquals(expected, Reconciler.matchesGlobRegex(path, "a/**.log"), "matchesGlobRegex '$path'")
+        }
+    }
+
     @Test
     fun `a pattern the compile step refuses is dropped with a warning`() {
         val (accepted, warns) =

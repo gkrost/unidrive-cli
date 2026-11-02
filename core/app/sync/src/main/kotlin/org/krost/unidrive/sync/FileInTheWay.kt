@@ -1,5 +1,6 @@
 package org.krost.unidrive.sync
 
+import org.krost.unidrive.io.engineKey
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.nio.file.FileAlreadyExistsException
@@ -111,5 +112,5 @@ internal object FileInTheWay {
     private fun relativeTo(
         root: Path,
         path: Path,
-    ): String = "/" + root.relativize(path).toString().replace('\\', '/')
+    ): String = engineKey(root.relativize(path))
 }

@@ -178,7 +178,8 @@ class ReconcilerTest {
         val localChanges = emptyMap<String, ChangeState>()
         val actions = reconciler.reconcile(remoteChanges, localChanges)
         assertEquals(1, actions.size)
-        assertIs<SyncAction.DeleteLocal>(actions[0])
+        val delete = assertIs<SyncAction.DeleteLocal>(actions[0])
+        assertEquals("id-/del.txt", delete.remoteId)
     }
 
     @Test

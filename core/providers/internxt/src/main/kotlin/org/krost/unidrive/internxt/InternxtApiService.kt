@@ -155,6 +155,9 @@ class InternxtApiService(
         /** Safety bound of one paged per-folder stream (10,000 pages are 10M items at the cursor page size of 1000). */
         internal const val MAX_LISTING_PAGES: Int = 10_000
 
+        /** #263: how often one offset-paged folder stream starts over because the folder changed while it was read. */
+        internal const val MAX_OFFSET_RESTARTS: Int = 2
+
         /** The most files the server's recents route answers with; it refuses a larger limit. */
         internal const val MAX_RECENT_FILES: Int = 1000
 
@@ -441,12 +444,22 @@ class InternxtApiService(
     /**
      * One stream of the deprecated offset listing of a folder, [InternxtConfig.FOLDER_CONTENT_OFFSET_PAGE_SIZE]
      * per page (the endpoint validates `limit` as 1..50). The server may serve fewer items than `limit`
-     * asks for, so a short page is no sign of the last one: the stream ends only on an EMPTY page, and
-     * the offset advances by the number of items a page actually returned. A server that ignores
-     * `offset` would serve the same page for ever; that is no listing, so the stream fails (a 503,
-     * which the walk counts as a skipped folder and reports as incomplete) when a page starts with
-     * the item the page before it started with, or after [MAX_LISTING_PAGES].
+     * asks for, so a short page is no sign of the last one. A server that ignores `offset` would serve the
+     * same page for ever; that is no listing, so the stream fails (a 503, which the walk counts as a skipped
+     * folder and reports as incomplete) when a page starts with the item the page before it started with, or
+     * after [MAX_LISTING_PAGES].
+     *
+     * #263: an offset counts positions in a list that can change between two pages. When an item before the
+     * offset is removed, every later item moves up one place and the item at the page boundary is never served.
+     * So the pages overlap by one: each page after the first is asked from the position of the previous page's
+     * last item, and must start with that item. A page that starts with any other item (or an empty one) means
+     * the folder changed under the listing: the stream starts over, at most [MAX_OFFSET_RESTARTS] times, and then
+     * fails as incomplete (503) rather than answer a list that may miss an item. The server may also serve fewer
+     * items than asked, so a page of the overlap item alone is no proof of the end: the position after it is asked
+     * once, and only an empty answer ends the stream (an empty first page ends it too). Items after it that the
+     * overlap cannot carry past a page cap are a broken listing (503), never a prefix answered as complete.
      */
+    @Suppress("ThrowsCount") // One exit per broken-listing reason, each with its own message.
     private suspend fun <T> offsetFolderStream(
         folderUuid: String,
         stream: String,
@@ -456,38 +469,74 @@ class InternxtApiService(
         val items = ArrayList<T>()
         var offset = 0
         var previousFirst: String? = null
+        var last: String? = null
         var pages = 0
-        while (true) {
-            val body =
+        var restarts = 0
+        suspend fun pageAt(at: Int): List<T> =
+            parse(
                 authenticatedGet(
                     "$baseUrl/folders/content/$folderUuid/$stream",
                     linkedMapOf(
                         "limit" to InternxtConfig.FOLDER_CONTENT_OFFSET_PAGE_SIZE.toString(),
-                        "offset" to offset.toString(),
+                        "offset" to at.toString(),
                         "sort" to "uuid",
                         "order" to "ASC",
                     ),
                     socketTimeoutMs = listingSocketTimeoutMs,
-                )
-            val page = parse(body)
-            if (page.isEmpty()) return items
-            val first = uuidOf(page.first())
-            if (first == previousFirst) {
-                throw InternxtApiException(
-                    "The paged $stream listing of folder $folderUuid returned the same page twice (offset $offset): " +
-                        "the server does not honour the offset, so the listing cannot be completed",
-                    statusCode = 503,
-                )
-            }
+                ),
+            )
+        while (true) {
+            val page = pageAt(offset)
             if (++pages > MAX_LISTING_PAGES) {
                 throw InternxtApiException(
                     "The paged $stream listing of folder $folderUuid exceeded $MAX_LISTING_PAGES pages without ending",
                     statusCode = 503,
                 )
             }
+            val first = page.firstOrNull()?.let(uuidOf)
+            if (last == null) {
+                if (first == null) return items
+            } else if (first != last) {
+                if (first != null && first == previousFirst) {
+                    throw InternxtApiException(
+                        "The paged $stream listing of folder $folderUuid returned the same page twice (offset $offset): " +
+                            "the server does not honour the offset, so the listing cannot be completed",
+                        statusCode = 503,
+                    )
+                }
+                if (++restarts > MAX_OFFSET_RESTARTS) {
+                    throw InternxtApiException(
+                        "The paged $stream listing of folder $folderUuid changed while it was read $restarts times " +
+                            "(offset $offset no longer starts with the last item read), so the listing cannot be completed",
+                        statusCode = 503,
+                    )
+                }
+                log.info("The paged {} listing of folder {} changed while it was read; reading it again", stream, folderUuid)
+                items.clear()
+                offset = 0
+                previousFirst = null
+                last = null
+                continue
+            } else if (page.size == 1) {
+                // The overlap item alone. The overlap is what keeps the list whole, so anything after it is asked for by
+                // position: an empty page there is the end, and an item there is a listing this stream cannot finish.
+                if (++pages > MAX_LISTING_PAGES) {
+                    throw InternxtApiException(
+                        "The paged $stream listing of folder $folderUuid exceeded $MAX_LISTING_PAGES pages without ending",
+                        statusCode = 503,
+                    )
+                }
+                if (pageAt(offset + 1).isEmpty()) return items
+                throw InternxtApiException(
+                    "The paged $stream listing of folder $folderUuid serves one item at a time after offset $offset, " +
+                        "and items follow it, so the listing cannot be completed",
+                    statusCode = 503,
+                )
+            }
             previousFirst = first
-            items.addAll(page)
-            offset += page.size
+            items.addAll(if (last == null) page else page.subList(1, page.size))
+            last = uuidOf(page.last())
+            offset += page.size - 1
         }
     }
 

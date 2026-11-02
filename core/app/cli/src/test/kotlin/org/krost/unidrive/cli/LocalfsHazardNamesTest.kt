@@ -11,7 +11,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -128,10 +127,7 @@ class LocalfsHazardNamesTest {
         }
     }
 
-    // #258: on POSIX a backslash is a name character, but the local scan and the localfs provider turn it into a
-    // separator, so the file is not synced under its own name. Windows refuses the name (it is its separator), so
-    // this is POSIX only.
-    @Ignore("#258: a backslash in a name is read as a path separator on POSIX")
+    // On POSIX '\' is a name character, so the file syncs under that name. Windows refuses it (it is the separator).
     @Test
     fun `a backslash in a name stays part of the name on POSIX`() {
         assumeTrue("a backslash is the separator on Windows", !System.getProperty("os.name", "").lowercase().contains("win"))

@@ -34,6 +34,7 @@ import org.krost.unidrive.engine.CachePaths
 import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.RemoteEnumeration
 import org.krost.unidrive.io.LinkedEntries
+import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.moveFile
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.PendingUploads
@@ -1795,7 +1796,7 @@ class HydrationImpl(
     // never-uploaded or failed-upload one is the only copy), whatever its name looks like; a lookup that fails
     // counts as named, so nothing is deleted on a guess.
     private fun namedByRow(cacheDir: Path, file: Path): Boolean {
-        val logical = "/" + cacheDir.relativize(file).toString().replace('\\', '/')
+        val logical = engineKey(cacheDir.relativize(file))
         return runCatching { stateDb.getEntry(logical) ?: stateDb.getEntryCaseInsensitive(logical) }.map { it != null }.getOrDefault(true)
     }
 
@@ -1821,7 +1822,7 @@ class HydrationImpl(
                         // the walk's filesystem calls (a third of the daemon's filesystem samples).
                         val attrs = Files.readAttributes(f, java.nio.file.attribute.BasicFileAttributes::class.java)
                         if (!attrs.isRegularFile) continue
-                        val path = "/" + dir.relativize(f).toString().replace('\\', '/')
+                        val path = engineKey(dir.relativize(f))
                         val fileTime = maxOf(attrs.lastModifiedTime().toMillis(), attrs.lastAccessTime().toMillis())
                         result += CacheFile(path, f, attrs.size(), lastAccess[path] ?: fileTime)
                     } catch (e: CancellationException) {

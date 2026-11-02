@@ -31,3 +31,16 @@ fun parseRetryAfterHeader(
         null
     }
 }
+
+/**
+ * The wait before a throttled call is sent again (#220): the server's [hintMs] (a `Retry-After` header or a hint in
+ * the body) when there is one, else the caller's own back-off [fallbackMs]; either way at least [minMs], so a
+ * `Retry-After: 0` is not resent at once, and at most [maxMs], so an hour's hint does not hold a transfer for an hour.
+ * The value a caller waits is the value it records on its budget.
+ */
+fun throttleWaitMs(
+    hintMs: Long?,
+    fallbackMs: Long,
+    minMs: Long,
+    maxMs: Long,
+): Long = (hintMs ?: fallbackMs).coerceIn(minMs, maxMs)

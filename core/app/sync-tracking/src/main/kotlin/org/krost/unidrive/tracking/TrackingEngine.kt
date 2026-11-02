@@ -7,6 +7,7 @@ import org.krost.unidrive.DeltaCursorExpiredException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.io.LinkedEntries
+import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.fileSha256Hex
 import org.krost.unidrive.sync.ConflictLog
 import org.krost.unidrive.sync.HashVerifier
@@ -603,7 +604,7 @@ class TrackingEngine(
         return LocalScan(out, unobserved)
     }
 
-    private fun relativeOf(p: Path): String = "/" + syncRoot.relativize(p).toString().replace('\\', '/')
+    private fun relativeOf(p: Path): String = engineKey(syncRoot.relativize(p))
 
     /** True when [path] matches any configured exclude glob (shared default-ignore-list semantics). */
     private fun isExcluded(path: String): Boolean =

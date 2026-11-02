@@ -8,6 +8,7 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import kotlin.io.path.*
 import kotlin.test.*
+import org.junit.Assume.assumeTrue
 
 class VersionManagerTest {
     private lateinit var syncRoot: Path
@@ -267,9 +268,13 @@ class VersionManagerTest {
         val manager = VersionManager(syncRoot)
         manager.snapshot("docs/deep/v.txt")
 
-        assertEquals(1, manager.listVersions("docs\\deep\\v.txt").size)
         assertEquals(1, manager.listVersions("/docs/deep/v.txt").size)
-        assertEquals("docs/deep/v.txt", manager.listVersions("docs\\deep\\v.txt").single().originalPath)
+        if (java.io.File.separatorChar == '\\') {
+            assertEquals(1, manager.listVersions("docs\\deep\\v.txt").size)
+            assertEquals("docs/deep/v.txt", manager.listVersions("docs\\deep\\v.txt").single().originalPath)
+        } else {
+            assertEquals(0, manager.listVersions("docs\\deep\\v.txt").size, "on POSIX a backslash is not a separator")
+        }
         manager.pruneByCount("/docs/deep/v.txt", 0)
         assertTrue(manager.listVersions("docs/deep/v.txt").isEmpty())
     }
@@ -299,6 +304,29 @@ class VersionManagerTest {
     @Test
     fun `expiredCount is zero without a versions directory`() {
         assertEquals(0, VersionManager(syncRoot).expiredCount(90))
+    }
+
+    @Test
+    fun `a backslash in a name is snapshotted and restored as that name`() {
+        assumeTrue("a backslash is the separator on Windows", !System.getProperty("os.name", "").lowercase().contains("win"))
+        val literal = syncRoot.resolve("docs").resolve("back\\slash.txt")
+        val slashed = syncRoot.resolve("docs").resolve("back").resolve("slash.txt")
+        literal.parent.createDirectories()
+        slashed.parent.createDirectories()
+        literal.writeText("literal")
+        slashed.writeText("slashed")
+
+        val manager = VersionManager(syncRoot)
+        val snap = manager.snapshot("/docs/back\\slash.txt")
+        assertNotNull(snap)
+        assertEquals("literal", snap.readText())
+        assertEquals("slashed", slashed.readText())
+        literal.writeText("changed")
+        val version = manager.listVersions("/docs/back\\slash.txt").single()
+        assertEquals("docs/back\\slash.txt", version.originalPath)
+        assertTrue(manager.restore("/docs/back\\slash.txt", version.timestamp))
+        assertEquals("literal", literal.readText())
+        assertEquals("slashed", slashed.readText())
     }
 
     @Test
