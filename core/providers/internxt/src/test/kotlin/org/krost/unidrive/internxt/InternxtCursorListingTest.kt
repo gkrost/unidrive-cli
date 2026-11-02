@@ -522,7 +522,7 @@ class InternxtCursorListingTest {
         }
 
     // #263: the offsets the offset fallback asks for a folder of [total] items when the gateway serves [served] per page. Each
-    // page after the first starts at the previous page's last item; the stream ends on a page that holds that item alone.
+    // page after the first starts at the previous page's last item; the stream ends on a page that holds that item alone, confirmed by the empty page after it.
     private fun overlappingOffsets(
         total: Int,
         served: Int,
@@ -531,7 +531,7 @@ class InternxtCursorListingTest {
         var offset = 0
         while (true) {
             val size = minOf(served, total - offset)
-            if (offsets.size > 1 && size == 1) return offsets
+            if (offsets.size > 1 && size == 1) return offsets + (offset + 1)
             offset += size - 1
             offsets += offset
         }
