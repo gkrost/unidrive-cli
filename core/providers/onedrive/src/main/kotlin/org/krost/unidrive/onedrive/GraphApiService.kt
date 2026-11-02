@@ -16,6 +16,7 @@ import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.HttpDefaults
 import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.ProviderException
+import org.krost.unidrive.QuickXorHash
 import org.krost.unidrive.RemoteContentRefusedDownloadException
 import org.krost.unidrive.ShareInfo
 import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
@@ -787,6 +788,7 @@ class GraphApiService(
         var offset = initialOffset
         var result: DriveItem? = null
         var finalChunkConfirmedByProbe = false
+        var finalChunkSent = false
         try {
             while (offset < fileSize) {
                 val currentChunkSize = minOf(chunkSize, fileSize - offset).toInt()
@@ -801,6 +803,7 @@ class GraphApiService(
                     }
 
                 val endByte = offset + currentChunkSize - 1
+                if (endByte == fileSize - 1) finalChunkSent = true
                 val chunkResult = uploadChunkWithRetry(uploadUrl, bytes, offset, endByte, fileSize)
                 if (chunkResult is ChunkUploadResult.Committed) {
                     offset = chunkResult.nextOffset
@@ -824,6 +827,12 @@ class GraphApiService(
                 onProgress?.invoke(offset, fileSize)
             }
         } catch (e: GraphApiException) {
+            if (finalChunkSent && (e.statusCode == 404 || e.statusCode == 410)) {
+                committedAfterLostAnswer(localPath, target, fileSize)?.let {
+                    sessionStore.delete(remotePath)
+                    return it
+                }
+            }
             // Terminal 4xx responses cannot be resumed. Keep the session for 408/429
             // and server errors so a later attempt can continue from its committed offset.
             if (e.statusCode in 400..499 && e.statusCode != 408 && e.statusCode != 429) {
@@ -840,6 +849,46 @@ class GraphApiService(
             }
         sessionStore.delete(remotePath)
         return uploadedItem ?: throw GraphApiException("Upload session completed but no DriveItem returned")
+    }
+
+    // The final chunk went out and the session is gone. Graph removes a session once its upload is complete, so a lost
+    // answer to the last PUT looks like an expired session (the probe answers 404, or tells no range and the resent chunk
+    // gets 404). The item is looked up: when it holds these bytes (same size and quickXorHash as the local file) the
+    // upload is done and the item is returned, so the upload is not started again from byte 0 and a replace does not
+    // meet its own write as a 412. Null when that cannot be told; the session-gone failure stands then.
+    private suspend fun committedAfterLostAnswer(
+        localPath: Path,
+        target: UploadTarget,
+        fileSize: Long,
+    ): DriveItem? {
+        val item =
+            try {
+                if (target.itemId != null) getItemById(target.itemId) else getItemByPath(target.remotePath)
+            } catch (_: GraphApiException) {
+                return null
+            } catch (_: java.io.IOException) {
+                return null
+            } catch (_: kotlinx.serialization.SerializationException) {
+                return null
+            }
+        val wantedName = target.remotePath.substringAfterLast('/')
+        val sameName = target.itemId != null || item.name?.let { OneDriveServerNames.sameName(it, wantedName) } == true
+        if (!sameName) return null
+        val remoteHash = item.file?.hashes?.quickXorHash
+        if (item.isFolder || remoteHash == null || item.size != fileSize) return null
+        val localHash =
+            try {
+                withContext(Dispatchers.IO) { QuickXorHash.of(localPath) }
+            } catch (_: java.io.IOException) {
+                return null
+            }
+        if (localHash != remoteHash) return null
+        log.info(
+            "OneDrive upload of {}: the answer to the final chunk was lost and the session is gone, but the item holds " +
+                "these bytes (same size and quickXorHash); the upload is complete",
+            target.remotePath,
+        )
+        return item
     }
 
     /**
