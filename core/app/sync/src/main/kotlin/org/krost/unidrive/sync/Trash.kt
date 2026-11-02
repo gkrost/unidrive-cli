@@ -1,5 +1,6 @@
 package org.krost.unidrive.sync
 
+import org.krost.unidrive.io.LinkedEntries
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.nio.file.FileVisitResult
@@ -124,8 +125,10 @@ object Trash {
                     source.relativize(path).fold(destination) { parent, part -> parent.resolve(part.toString()) }
 
                 override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    // Copying a folder copies the folder, not its entries: a junction becomes an empty folder here, and
+                    // what it leads to is neither copied nor (by deletePermanently) deleted.
                     Files.copy(dir, target(dir), LinkOption.NOFOLLOW_LINKS, StandardCopyOption.COPY_ATTRIBUTES)
-                    return FileVisitResult.CONTINUE
+                    return if (LinkedEntries.leadsElsewhere(dir, attrs)) FileVisitResult.SKIP_SUBTREE else FileVisitResult.CONTINUE
                 }
 
                 override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
@@ -149,30 +152,7 @@ object Trash {
     }
 
     private fun deletePermanently(path: Path) {
-        if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
-            Files.walkFileTree(
-                path,
-                object : SimpleFileVisitor<Path>() {
-                    override fun visitFile(
-                        file: Path,
-                        attrs: BasicFileAttributes,
-                    ): FileVisitResult {
-                        Files.deleteIfExists(file)
-                        return FileVisitResult.CONTINUE
-                    }
-
-                    override fun postVisitDirectory(
-                        dir: Path,
-                        exc: java.io.IOException?,
-                    ): FileVisitResult {
-                        if (exc != null) throw exc
-                        Files.deleteIfExists(dir)
-                        return FileVisitResult.CONTINUE
-                    }
-                },
-            )
-        } else {
-            Files.deleteIfExists(path)
-        }
+        // A junction or link goes as the entry itself, never with what it leads to.
+        LinkedEntries.deleteTree(path)
     }
 }

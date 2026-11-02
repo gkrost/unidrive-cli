@@ -18,12 +18,12 @@ import java.nio.channels.FileChannel
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
-import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
+import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.moveFile
 import org.krost.unidrive.io.stagingSiblingName
 import org.krost.unidrive.io.withLocalIoRetry
@@ -258,11 +258,8 @@ class LocalFsProvider(
      * would follow it).
      */
     private fun deleteRecursivelyNoFollow(path: Path) {
-        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return
-        if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
-            Files.newDirectoryStream(path).use { stream -> stream.forEach { deleteRecursivelyNoFollow(it) } }
-        }
-        Files.deleteIfExists(path)
+        // A junction reads as a directory without following links, too: LinkedEntries deletes it as the entry itself.
+        LinkedEntries.deleteTree(path)
     }
 
     override suspend fun createFolder(path: String): CloudItem =

@@ -15,8 +15,8 @@ import kotlinx.serialization.json.*
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.HttpDefaults
 import org.krost.unidrive.PermanentDownloadFailureException
-import org.krost.unidrive.QuickXorHash
 import org.krost.unidrive.ProviderException
+import org.krost.unidrive.QuickXorHash
 import org.krost.unidrive.RemoteContentRefusedDownloadException
 import org.krost.unidrive.ShareInfo
 import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
@@ -802,22 +802,18 @@ class GraphApiService(
                     }
 
                 val endByte = offset + currentChunkSize - 1
-                val chunkResult =
-                    if (endByte == fileSize - 1) {
-                        uploadFinalChunk(uploadUrl, bytes, offset, endByte, fileSize, target, localPath)
-                    } else {
-                        uploadChunkWithRetry(uploadUrl, bytes, offset, endByte, fileSize)
-                    }
-                if (chunkResult is ChunkUploadResult.Adopted) {
-                    result = chunkResult.item
-                    break
-                }
+                val chunkResult = uploadChunkWithRetry(uploadUrl, bytes, offset, endByte, fileSize)
                 if (chunkResult is ChunkUploadResult.Committed) {
                     offset = chunkResult.nextOffset
                     finalChunkConfirmedByProbe = offset >= fileSize
                     log.debug("Upload progress: {}/{} bytes", offset, fileSize)
                     onProgress?.invoke(offset, fileSize)
                     continue
+                }
+                if (chunkResult is ChunkUploadResult.GoneAfterLostAnswer) {
+                    result = committedAfterLostAnswer(localPath, target, fileSize) ?: throw chunkResult.failure
+                    onProgress?.invoke(fileSize, fileSize)
+                    break
                 }
 
                 val response = (chunkResult as ChunkUploadResult.Response).response
@@ -852,68 +848,45 @@ class GraphApiService(
         return uploadedItem ?: throw GraphApiException("Upload session completed but no DriveItem returned")
     }
 
-    // The last chunk PUT may have reached Graph and committed the item while its response was lost: the finished
-    // session no longer exists, so the probe's 404 — or the empty range whose resend then 404s — reads as "session
-    // expired", and the retry wrapper would upload the whole file again, under an If-Match guard into a 412 that lands
-    // a keep-both copy beside the correct remote file. The session can also be genuinely gone with the chunk unsent,
-    // so the item is resolved and adopted only when the remote provably holds these bytes (see
-    // [committedAfterLostFinalChunk]); otherwise the 404/410 is thrown and the fresh-session retry decides.
-    private suspend fun uploadFinalChunk(
-        uploadUrl: String,
-        bytes: ByteArray,
-        offset: Long,
-        endByte: Long,
-        fileSize: Long,
-        target: UploadTarget,
+    // A try of the final chunk ended without its answer and the session is now gone. Graph removes a session once its
+    // upload is complete, so a lost answer to the last PUT looks like an expired session (the probe answers 404, or tells
+    // no range and the resent chunk gets 404). The item is looked up: when it holds these bytes (same size and
+    // quickXorHash as the local file) the upload is done and the item is returned, so the upload is not started again
+    // from byte 0 and a replace does not meet its own write as a 412. Null when that cannot be told; the session-gone
+    // failure stands then.
+    private suspend fun committedAfterLostAnswer(
         localPath: Path,
-    ): ChunkUploadResult =
-        try {
-            uploadChunkWithRetry(uploadUrl, bytes, offset, endByte, fileSize)
-        } catch (lost: GraphApiException) {
-            if (lost.statusCode != 404 && lost.statusCode != 410) throw lost
-            val committed = committedAfterLostFinalChunk(target, localPath, fileSize) ?: throw lost
-            log.info(
-                "Upload of {} was committed although the response of its final chunk was lost (the session is gone, the item holds {} bytes); adopting it instead of starting a second session",
-                target.remotePath,
-                committed.size,
-            )
-            ChunkUploadResult.Adopted(committed)
-        }
-
-    // The item when the final chunk went out, the session died, and the remote provably holds this upload: a file of
-    // the right size whose quickXorHash equals the local file's. Only content evidence counts. Size and eTag do not
-    // prove it: an old remote file can have the same size, an unguarded replace would then report success for bytes
-    // that were never uploaded and the pending local edit could be dropped; and an eTag that differs from the guard
-    // only says someone changed the item after the session was created, not that our final chunk committed. Without
-    // a hash to compare (Graph does not always report one), or with anything else at the path (a folder, a package),
-    // the answer is null: the caller treats the loss as the session-gone it looks like, and the fresh-session retry
-    // or the conflict path decides.
-    private suspend fun committedAfterLostFinalChunk(
         target: UploadTarget,
-        localPath: Path,
         fileSize: Long,
     ): DriveItem? {
         val item =
             try {
                 if (target.itemId != null) getItemById(target.itemId) else getItemByPath(target.remotePath)
-            } catch (e: GraphApiException) {
-                log.info("Resolving the lost-final-chunk upload of {} failed: {}", target.remotePath, e.message)
+            } catch (_: GraphApiException) {
                 return null
-            } catch (e: java.io.IOException) {
-                log.info("Resolving the lost-final-chunk upload of {} broke off: {}", target.remotePath, e.message)
+            } catch (_: java.io.IOException) {
+                return null
+            } catch (_: kotlinx.serialization.SerializationException) {
                 return null
             }
-        if (item.file == null || item.folder != null || item.packageFacet != null) return null
-        if (item.size != fileSize) return null
-        val remoteHash = item.file.hashes?.quickXorHash ?: return null
+        val wantedName = target.remotePath.substringAfterLast('/')
+        val sameName = target.itemId != null || item.name?.let { OneDriveServerNames.sameName(it, wantedName) } == true
+        if (!sameName) return null
+        val remoteHash = item.file?.hashes?.quickXorHash
+        if (item.isFolder || remoteHash == null || item.size != fileSize) return null
         val localHash =
             try {
                 withContext(Dispatchers.IO) { QuickXorHash.of(localPath) }
-            } catch (e: java.io.IOException) {
-                log.info("Hashing {} to resolve the lost-final-chunk upload failed: {}", localPath, e.message)
+            } catch (_: java.io.IOException) {
                 return null
             }
-        return if (localHash == remoteHash) item else null
+        if (localHash != remoteHash) return null
+        log.info(
+            "OneDrive upload of {}: the answer to the final chunk was lost and the session is gone, but the item holds " +
+                "these bytes (same size and quickXorHash); the upload is complete",
+            target.remotePath,
+        )
+        return item
     }
 
     /**
@@ -1172,6 +1145,9 @@ class GraphApiService(
     ): ChunkUploadResult {
         var currentOffset = offset
         var currentBytes = bytes
+        // Set once a try ended without the chunk's answer (it broke off, or met a status after which the session is
+        // probed): the server may hold the chunk although nothing said so.
+        var answerLost = false
 
         for ((attempt, delayMs) in CHUNK_RETRY_DELAYS_MS.withIndex()) {
             val lastTry = attempt == CHUNK_RETRY_DELAYS_MS.lastIndex
@@ -1198,11 +1174,23 @@ class GraphApiService(
                 throttleBudget.recordSuccess()
                 return ChunkUploadResult.Response(response)
             }
-            val retry = response?.let { chunkRetryAfterAnswer(it, currentOffset, delayMs, lastTry) } ?: ChunkRetry(delayMs, probe = true)
+            val retry =
+                try {
+                    response?.let { chunkRetryAfterAnswer(it, currentOffset, delayMs, lastTry) } ?: ChunkRetry(delayMs, probe = true)
+                } catch (e: GraphApiException) {
+                    return goneAfterLostFinalAnswer(e, answerLost, endByte, fileSize)
+                }
+            if (retry.probe) answerLost = true
             delay(retry.waitMs)
             if (!retry.probe) continue
 
-            val nextStart = probeCommittedOffset(uploadUrl, currentOffset) ?: continue
+            val probed =
+                try {
+                    probeCommittedOffset(uploadUrl, currentOffset)
+                } catch (e: GraphApiException) {
+                    return goneAfterLostFinalAnswer(e, answerLost, endByte, fileSize)
+                }
+            val nextStart = probed ?: continue
             if (nextStart > endByte) {
                 // The server accepted the entire chunk but its response was lost.
                 // Advance the outer loop instead of retrying an empty byte range.
@@ -1218,6 +1206,20 @@ class GraphApiService(
 
         // Unreachable — loop always throws or returns
         throw GraphApiException("Upload chunk failed at offset $currentOffset")
+    }
+
+    // A session gone (404/410) after a try of the final chunk ended without its answer: that try may have completed the
+    // upload, and Graph removes a completed session, so the caller looks the item up before it calls the session gone.
+    // Any other [failure] is thrown.
+    private fun goneAfterLostFinalAnswer(
+        failure: GraphApiException,
+        answerLost: Boolean,
+        endByte: Long,
+        fileSize: Long,
+    ): ChunkUploadResult {
+        val gone = failure.statusCode == 404 || failure.statusCode == 410
+        if (gone && answerLost && endByte == fileSize - 1) return ChunkUploadResult.GoneAfterLostAnswer(failure)
+        throw failure
     }
 
     // One chunk PUT under the write-progress watchdog: a server that takes the body and never answers (archive#1175: one PUT
@@ -1745,8 +1747,8 @@ private sealed interface ChunkUploadResult {
 
     data class Committed(val nextOffset: Long) : ChunkUploadResult
 
-    // The final chunk's response was lost, but the remote item provably holds this upload.
-    data class Adopted(val item: DriveItem) : ChunkUploadResult
+    // The session is gone after the final chunk's answer was lost; [failure] stands unless the item holds the bytes.
+    data class GoneAfterLostAnswer(val failure: GraphApiException) : ChunkUploadResult
 }
 
 // How a chunk is retried after a failed try: the wait before the next one, and whether the session is probed first.

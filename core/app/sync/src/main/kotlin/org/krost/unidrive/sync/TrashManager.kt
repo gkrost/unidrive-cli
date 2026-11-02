@@ -1,5 +1,6 @@
 package org.krost.unidrive.sync
 
+import org.krost.unidrive.io.LinkedEntries
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -55,13 +56,15 @@ class TrashManager(
         for (timestampDir in trashDir.listDirectoryEntries().sorted()) {
             if (!timestampDir.isDirectory()) continue
             val ts = decodeTimestamp(timestampDir.name) ?: continue
-            for (file in timestampDir.toFile().walkTopDown().filter { it.isFile }) {
+            // A junction or link in the trash is one item (the entry itself), never the content it leads to.
+            LinkedEntries.forEachEntry(timestampDir) { file, attrs ->
+                if (!attrs.isRegularFile && !LinkedEntries.leadsElsewhere(file, attrs)) return@forEachEntry
                 // The key is the cloud-style path the item was trashed under (the
                 // write side resolves forward slashes on every OS), so normalize the
                 // walk's separators back: on Windows the raw relativize form made
                 // --list print "a\b.txt" and --restore "a/b.txt" never match it.
-                val relPath = timestampDir.relativize(file.toPath()).toString().replace('\\', '/')
-                items.add(TrashedItem(ts, relPath, file.toPath(), file.length()))
+                val relPath = timestampDir.relativize(file).toString().replace('\\', '/')
+                items.add(TrashedItem(ts, relPath, file, attrs.size()))
             }
         }
         return items
@@ -85,7 +88,7 @@ class TrashManager(
             if (!timestampDir.isDirectory()) continue
             val ts = decodeTimestamp(timestampDir.name) ?: continue
             if (ts.isBefore(cutoff)) {
-                timestampDir.toFile().deleteRecursively()
+                LinkedEntries.deleteTree(timestampDir)
             }
         }
         if (trashDir.exists() && trashDir.listDirectoryEntries().isEmpty()) {
@@ -102,7 +105,7 @@ class TrashManager(
 
     fun purgeAll() {
         if (trashDir.exists()) {
-            trashDir.toFile().deleteRecursively()
+            LinkedEntries.deleteTree(trashDir)
         }
     }
 

@@ -6,6 +6,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaCursorExpiredException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
+import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.fileSha256Hex
 import org.krost.unidrive.sync.ConflictLog
 import org.krost.unidrive.sync.HashVerifier
@@ -76,7 +77,8 @@ class TrackingEngine(
      */
     fun syncOnce(): PassReport =
         runBlocking {
-            val localObs = scanLocal()
+            val scan = scanLocal()
+            val localObs = scan.observations
             val remoteEnum = enumerateRemote()
             val remoteObs = remoteEnum.observations
             val tracked = trackingSet.paths()
@@ -93,6 +95,10 @@ class TrackingEngine(
                 // observation — is what guarantees "don't tombstone": an already-tracked path
                 // that becomes excluded is left inert rather than read as locally-gone.
                 if (isExcluded(path)) continue
+                // A subtree the scan did not see (behind a junction or link, or unreadable) says nothing about
+                // its files: absence there is not a local deletion, and nothing is uploaded, downloaded, adopted
+                // or cleaned up for it either. The tracking rows stay as they are until the subtree is seen again.
+                if (scan.isUnobserved(path)) continue
                 val l = localObs[path] ?: LocalObservation(exists = false, hash = null, size = null, mtime = null, inode = null)
                 val t = trackingSet.lookup(path)
                 val r =
@@ -573,22 +579,31 @@ class TrackingEngine(
             )
         }
 
-    private fun scanLocal(): Map<String, LocalObservation> {
-        if (!Files.isDirectory(syncRoot)) return emptyMap()
+    private fun scanLocal(): LocalScan {
+        if (!Files.isDirectory(syncRoot)) return LocalScan(emptyMap(), emptySet())
         val out = mutableMapOf<String, LocalObservation>()
-        Files.walk(syncRoot).use { stream ->
-            for (p in stream) {
-                if (p == syncRoot) continue
-                if (Files.isDirectory(p)) continue
-                val rel = "/" + syncRoot.relativize(p).toString().replace('\\', '/')
-                // Keep-local: don't even hash excluded junk. The syncOnce universe loop also
-                // skips these paths, so this is a perf guard; the correctness guard is there.
-                if (isExcluded(rel)) continue
-                out[rel] = makeLocalObs(p)
-            }
+        val unobserved = mutableSetOf<String>()
+        // A junction leads out of the sync root: its content is not observed (the walk does not enter it), and
+        // neither is an entry that cannot be read. Both are reported as unobserved, never as absent.
+        LinkedEntries.forEachEntry(
+            syncRoot,
+            onUnobserved = { p ->
+                val rel = relativeOf(p)
+                log.warn("Not observing {}: it leads out of the sync root or cannot be read; its tracked files are left as they are", rel)
+                unobserved += rel
+            },
+        ) { p, attrs ->
+            if (attrs.isDirectory || Files.isDirectory(p)) return@forEachEntry
+            val rel = relativeOf(p)
+            // Keep-local: don't even hash excluded junk. The syncOnce universe loop also
+            // skips these paths, so this is a perf guard; the correctness guard is there.
+            if (isExcluded(rel)) return@forEachEntry
+            out[rel] = makeLocalObs(p)
         }
-        return out
+        return LocalScan(out, unobserved)
     }
+
+    private fun relativeOf(p: Path): String = "/" + syncRoot.relativize(p).toString().replace('\\', '/')
 
     /** True when [path] matches any configured exclude glob (shared default-ignore-list semantics). */
     private fun isExcluded(path: String): Boolean =
@@ -810,6 +825,25 @@ data class AppliedAction(
 )
 
 /** Per-pass summary suitable for `ts sync` / `ts status` rendering. */
+/**
+ * What the local walk saw: the files it observed, and the paths whose content it did not see (a junction or link that
+ * leads out of the sync root, an entry that cannot be read). [isUnobserved] is true for such a path and everything below it.
+ */
+internal class LocalScan(
+    val observations: Map<String, LocalObservation>,
+    private val unobserved: Set<String>,
+) {
+    fun isUnobserved(path: String): Boolean {
+        if (unobserved.isEmpty()) return false
+        var prefix = path
+        while (prefix.isNotEmpty()) {
+            if (prefix in unobserved) return true
+            prefix = prefix.substringBeforeLast('/', "")
+        }
+        return false
+    }
+}
+
 data class PassReport(
     /** The full action list before [BatchGuard] / incomplete-enumeration suppression. */
     val plan: List<ReconcileAction>,

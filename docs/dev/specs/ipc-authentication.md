@@ -163,6 +163,7 @@ its passwords and secrets; a profile with neither is refused (`begin_failed`) be
 | `auth_required` | any verb other than `hello`, `hello.proof`, `daemon.status` before authentication |
 | `auth_failed` | a refused handshake step (after a 250 ms wait; the third closes the connection) |
 | `forbidden` | a verb outside the connection's scope (with `"scope":"read"`) |
+| `handler_threw` | the verb's handler failed (with `"verb"`); only a `full` connection also gets `"message"`, the exception text with URL queries redacted. The daemon log has the detail. |
 
 ## 7. Test vectors
 

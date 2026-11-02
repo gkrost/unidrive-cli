@@ -46,7 +46,7 @@ jobs:
       # Cache ~/.gradle (same 429 rationale as build.yml; see
       # core/settings.gradle.kts for the mirror set).
       - name: Set up Gradle dependency cache
-        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
 
       # The gate runs on the tagged commit itself, before anything is built,
       # signed or published. A failing check stops the job here, so an
