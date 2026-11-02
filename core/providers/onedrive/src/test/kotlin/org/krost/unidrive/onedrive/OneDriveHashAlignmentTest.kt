@@ -11,6 +11,7 @@ import org.krost.unidrive.HashAlgorithm
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 /**
  * archive#112 / PR archive#193 review: the touch-only upload-skip optimization computes a local hash
@@ -98,7 +99,7 @@ class OneDriveHashAlignmentTest {
      * the algorithm doesn't match, but having a non-null hash preserves diagnostic info.
      */
     @Test
-    fun `toCloudItem falls back to sha256Hash when quickXorHash is absent`() =
+    fun `toCloudItem gives no hash when only sha256Hash is present`() =
         runTest {
             val sha256Value = "deadbeefcafe"
             val provider = mockedProvider(
@@ -126,7 +127,8 @@ class OneDriveHashAlignmentTest {
             val page = provider.delta(null)
             val item = page.items.find { it.id == "FILE-2" }
             assertNotNull(item)
-            assertEquals(sha256Value, item.hash, "should fall back to sha256Hash when quickXorHash absent")
+            assertNull(item.hash, "a SHA-256 is not a QuickXor: no hash, not one of the wrong algorithm")
+            assertEquals("sha256:$sha256Value|4096", item.contentId, "the content id still names the SHA-256 with its algorithm")
             provider.close()
         }
 
