@@ -4920,7 +4920,7 @@ class SyncEngineTest {
         }
 
     @Test
-    fun `fresh delta event clears download quarantine`() =
+    fun `an unchanged delivery keeps download quarantine and changed content clears it`() =
         runTest {
             // Establish quarantine.
             provider.deltaItems = listOf(cloudItem("/dead.txt", size = 100))
@@ -4928,16 +4928,20 @@ class SyncEngineTest {
             engineWithGuards().syncOnce()
             assertTrue(db.getEntry("/dead.txt")!!.downloadQuarantined)
 
-            // Cloud reports the row alive again (fresh delta event) — clear the
-            // flag so the next reconcile re-emits the download.
+            // Repeating the same row is no reason to retry the same permanent failure.
             provider.permanentDownloadFailurePaths.clear()
             provider.deltaItems = listOf(cloudItem("/dead.txt", size = 100))
+            provider.deltaCursor = "cursor-unchanged"
+            engineWithGuards().syncOnce()
+            assertTrue(db.getEntry("/dead.txt")!!.downloadQuarantined)
+
+            provider.deltaItems = listOf(cloudItem("/dead.txt", size = 101))
             provider.deltaCursor = "cursor-revived"
             engineWithGuards().syncOnce()
 
             assertFalse(
                 db.getEntry("/dead.txt")!!.downloadQuarantined,
-                "fresh delta event should clear the quarantine flag",
+                "a changed cloud item should clear the quarantine flag",
             )
         }
 

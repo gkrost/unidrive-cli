@@ -1516,16 +1516,17 @@ class RemoteGather(
                         // lastSynced stays (a delivery syncs nothing, and the reap guard reads an edit as a cache
                         // copy newer than it), and so do the failure marks: only a quarantine ends with a delivery.
                         //
-                        // A fresh delta event for a previously-quarantined row
-                        // means the cloud is reporting it alive again — drop the
-                        // quarantine and let the next reconcile re-emit the
-                        // download. Belt-and-braces with
-                        // StateDatabase.clearDownloadQuarantine below: that call
-                        // wins on the canonical SQL UPDATE; this copy ensures
-                        // any consumer reading the merged value inside this loop
-                        // sees the cleared state too.
-                        downloadQuarantined = false,
-                        lastErrorAt = existing.lastErrorAt.takeUnless { existing.downloadQuarantined },
+                        // The failure marks move only when the delivery itself ends them: a delivery whose item
+                        // is unchanged (localfs lists what it always held; a rewound cursor re-names the same
+                        // items) keeps the quarantine — nothing new was learned, and a row that silently loses
+                        // its flag no longer says why its file is missing (#287). What ends it is below
+                        // (deliveryEndsQuarantine), and with it StateDatabase.clearDownloadQuarantine.
+                        downloadQuarantined =
+                            existing.downloadQuarantined && !deliveryEndsQuarantine(existing, item, renamedFrom != null),
+                        lastErrorAt =
+                            existing.lastErrorAt.takeUnless {
+                                existing.downloadQuarantined && deliveryEndsQuarantine(existing, item, renamedFrom != null)
+                            },
                         // A rename moves the row to the new path (preserving
                         // localMtime, localSize, isHydrated and isPinned — the
                         // hydration cache and pins travel with it, so a client can
@@ -1541,7 +1542,11 @@ class RemoteGather(
             // the destination would otherwise take.
             if (renamedFrom != null && PlacedNamespace.isRootId(item.id)) db.renamePrefix(renamedFrom, realLocalPath)
             db.upsertEntry(merged, keepMarks = true)
-            clearQuarantineOf(existing)
+            if (existing != null && existing.downloadQuarantined && !merged.downloadQuarantined) {
+                // The delivery ended the quarantine (see deliveryEndsQuarantine): the SQL clear, as the
+                // canonical second writer beside the merged row's copy.
+                db.clearDownloadQuarantine(item.id)
+            }
             reconcileNameBlockOf(merged.path, item)
             if (isNewsForTheView(existing, item, merged)) changed += realLocalPath
             if (renamedFrom != null) {
@@ -1573,7 +1578,8 @@ class RemoteGather(
             // gkrost/unidrive-cli#164: other bytes under the same token (an upload that kept the time); a row that only learns the
             // name of its bytes is no news.
             (existing.remoteContentId != null && existing.remoteContentId != merged.remoteContentId) ||
-            existing.downloadQuarantined
+            // A quarantine that this delivery ended is news; one it kept is not (nothing changed — #287).
+            existing.downloadQuarantined && !merged.downloadQuarantined
 
     // archive#1040 M6: the content of a hydrated file changed (another device rewrote or replaced it), so the cache copy is a
     // version the cloud no longer has. Judged by the size, then by the provider's name for the bytes where both sides carry one,
@@ -1665,13 +1671,29 @@ class RemoteGather(
             .filter { DuplicateNames.keyOf(it.first, it.second) == null }
             .sortedByDescending { it.second.length }
 
-    // Belt-and-braces (matches the .copy() of the merge): explicitly clear the quarantine flag on the canonical row in case a
-    // future upsertEntry call path mutates the row without going through that copy.
-    private fun clearQuarantineOf(existing: SyncEntry?) {
-        if (existing != null && existing.downloadQuarantined && existing.remoteId != null) {
-            db.clearDownloadQuarantine(existing.remoteId)
-        }
-    }
+    // A delivery ends a row's download quarantine only when the item itself changed: the cloud rewrote or
+    // replaced it, so the refusal's reason may be gone and the next reconcile may try again — a rename is
+    // such a change too (a new name may well be a representable one). An unchanged re-delivery (localfs lists
+    // what it always held, a rewound cursor re-names the same items) keeps the flag (#287).
+    private fun deliveryEndsQuarantine(
+        existing: SyncEntry,
+        item: CloudItem,
+        renamed: Boolean,
+    ): Boolean =
+        renamed ||
+            existing.remoteId != item.id ||
+            existing.remoteHash != item.hash ||
+            existing.remoteVersion != item.version ||
+            existing.remoteSize != item.size ||
+            existing.remoteModified != item.modified ||
+            (existing.remoteContentId != null && item.contentId != null && existing.remoteContentId != item.contentId) ||
+            strictNameRefusalEnded(existing, item)
+
+    // Turning strict mode off lifts its own refusal without a cloud rewrite. Other quarantines stay intact.
+    private fun strictNameRefusalEnded(existing: SyncEntry, item: CloudItem): Boolean =
+        provider.strictNameMode != null &&
+            db.nameBlock(existing.path)?.reason?.startsWith(org.krost.unidrive.NameRefusedException.NAME_INCOMPATIBLE) == true &&
+            provider.existingNameIssue(item.path) == null
 
     // gkrost/unidrive-cli#29: the strict-name block follows the provider's live answer. A delivery of an item the
     // official clients accept again (the mode went off, the item was renamed) takes a stale `name_incompatible`
