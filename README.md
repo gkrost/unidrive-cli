@@ -56,7 +56,8 @@ packaged launcher once against it. Launchers honour
 `-Djdk.net.unixdomain.tmpdir` to the host's temp directory. The Linux launcher
 picks the runtime itself (`UNIDRIVE_JAVA` overrides; Java 25+ preferred, below
 21 refused). The Windows launcher honours `UNIDRIVE_JAVA`, prefers the bundled
-runtime image a platform package ships next to the fat jar, falls back to
+runtime image a platform package ships (a `runtime-image` folder next to the
+launcher, else next to the fat jar), falls back to
 `java` on `PATH`, and refuses Java below 21. Launchers and the
 CLI's auto-spawn write post-mortem diagnostics — fatal-crash `hs_err` logs, OOM
 heap dumps, the daemon's bounded GC log — into `%LOCALAPPDATA%\unidrive\diagnostics`

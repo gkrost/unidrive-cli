@@ -111,31 +111,51 @@ if ($gcAt -ge 0) {
 $dumpProfile = if ($gcProfile) { $gcProfile } else { 'default' }
 $javaArgs += ('-XX:HeapDumpPath=' + $diag + 'heap-' + $dumpProfile + '.hprof')
 $javaArgs += @('-jar', '@JAR@')
-# Java runtime, resolved the way unidrive.sh.tmpl resolves it on Linux: UNIDRIVE_JAVA wins; else the
-# bundled runtime image a platform package ships next to the fat jar; else `java` on PATH. Versions
-# come from the JDK's `release` file, so choosing costs no extra JVM start. Windows has no /usr/lib/jvm
-# convention, so there is no folder scan; the bundled image, which follows the runtime release train,
-# beats any PATH java. The chosen runtime goes to the FRONT of PATH and the invocation below keeps its
+# Java runtime, resolved the way unidrive.sh.tmpl resolves it on Linux: UNIDRIVE_JAVA wins (and must exist: a
+# typo is an error, not a silent fall-through to another java); else the bundled runtime image a platform
+# package ships, in a runtime-image folder next to this launcher or, failing that, next to the fat jar; else
+# `java` on PATH. Versions come from the JDK's `release` file, so choosing costs no extra JVM start; a java
+# without one (a PATH shim such as Oracle's javapath) is asked once with `java -version`. Windows has no
+# /usr/lib/jvm convention, so there is no folder scan; the bundled image, which follows the runtime release
+# train, beats any PATH java. The chosen runtime goes to the FRONT of PATH and the invocation below keeps its
 # plain `& java`, so a stale JDK below 21 dies on this floor message instead of a bare class-file-version
 # error. Nothing found falls through to that invocation, which reports the missing runtime itself.
+# `1.8.0_x` is Java 8 (the pre-9 scheme): the leading `1.` is dropped.
 function Get-JavaMajor([string]$javaPath) {
     $release = Join-Path (Split-Path -Parent (Split-Path -Parent $javaPath)) 'release'
     if (Test-Path -LiteralPath $release) {
         foreach ($line in Get-Content -LiteralPath $release) {
-            if ($line -match '^JAVA_VERSION="(\d+)') { return [int]$Matches[1] }
+            if ($line -match '^JAVA_VERSION="(?:1\.)?(\d+)') { return [int]$Matches[1] }
         }
     }
+    try {
+        $first = & $javaPath -version 2>&1 | Select-Object -First 1 | ForEach-Object { "$_" }
+        if ($first -match 'version "(?:1\.)?(\d+)') { return [int]$Matches[1] }
+    } catch { }
     return 0
 }
 $javaBin = $null
-if ($env:UNIDRIVE_JAVA -and (Test-Path -LiteralPath $env:UNIDRIVE_JAVA)) { $javaBin = $env:UNIDRIVE_JAVA }
+if ($env:UNIDRIVE_JAVA) {
+    if (-not (Test-Path -LiteralPath $env:UNIDRIVE_JAVA)) {
+        [Console]::Error.WriteLine("unidrive: UNIDRIVE_JAVA points at a missing file: $($env:UNIDRIVE_JAVA)")
+        exit 1
+    }
+    $javaBin = $env:UNIDRIVE_JAVA
+}
 if (-not $javaBin) {
-    $bundled = Join-Path $PSScriptRoot 'runtime-image\bin\java.exe'
-    if (Test-Path -LiteralPath $bundled) { $javaBin = $bundled }
+    $jarDir = Split-Path -Parent '@JAR@'
+    foreach ($base in @($PSScriptRoot, $jarDir)) {
+        if (-not $base) { continue }
+        $bundled = Join-Path $base 'runtime-image\bin\java.exe'
+        if (Test-Path -LiteralPath $bundled) { $javaBin = $bundled; break }
+    }
 }
 if (-not $javaBin) { $javaBin = (Get-Command java -ErrorAction SilentlyContinue).Source }
 if ($javaBin) {
     $major = Get-JavaMajor $javaBin
+    if ($major -eq 0) {
+        [Console]::Error.WriteLine("unidrive: could not read the Java version of $javaBin; the Java 21 floor was not checked.")
+    }
     if ($major -gt 0 -and $major -lt 21) {
         [Console]::Error.WriteLine("unidrive: needs Java 21 or newer, found Java $major at $javaBin. Set UNIDRIVE_JAVA to a newer java.exe.")
         exit 1
