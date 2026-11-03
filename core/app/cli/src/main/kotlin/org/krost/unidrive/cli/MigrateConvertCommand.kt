@@ -721,10 +721,8 @@ internal object LegacyConversion {
         val staging = destination.resolveSibling(stagingSiblingName(destination.fileName.toString(), STAGING_SUFFIX))
         try {
             Files.copy(source, staging, StandardCopyOption.REPLACE_EXISTING)
-            // Windows carries the source's read-only bit into the copy, where a read-only staging could
-            // be neither flushed below nor removed by the cleanup — the same wrinkle LocalFsProvider's
-            // durable copy solves with setWritable. Asked through the DOS view, null where there is none.
-            Files.getFileAttributeView(staging, DosFileAttributeView::class.java)?.setReadOnly(false)
+            // A read-only source can leave staging unwritable, preventing the flush below and cleanup.
+            staging.toFile().setWritable(true)
             FileChannel.open(staging, StandardOpenOption.WRITE).use { it.force(true) }
             val copied = Files.size(staging)
             if (expectedBytes != null && copied != expectedBytes) {
