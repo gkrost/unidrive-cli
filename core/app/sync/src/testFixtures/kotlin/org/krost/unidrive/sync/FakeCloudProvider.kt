@@ -606,7 +606,7 @@ class FakeCloudProvider : CloudProvider {
     // directly to simulate the provider observing remote events.
     var registeredRemoteChangeCallback: (() -> Unit)? = null
 
-    override fun onRemoteChangeHint(callback: () -> Unit) {
+    override suspend fun onRemoteChangeHint(callback: () -> Unit) {
         registeredRemoteChangeCallback = callback
     }
 

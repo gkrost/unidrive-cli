@@ -618,7 +618,7 @@ class DropboxProvider(
      * hint the cursor stays the same until the engine walks the delta, so the next poll waits for a new cursor first
      * (or [HINT_REPEAT_MS], in case the engine did not walk).
      */
-    override fun onRemoteChangeHint(callback: () -> Unit) {
+    override suspend fun onRemoteChangeHint(callback: () -> Unit) {
         hintCallback = callback
         synchronized(this) {
             if (hintJob != null) return

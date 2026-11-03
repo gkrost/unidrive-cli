@@ -943,7 +943,9 @@ class DaemonRuntime(
         }
 
     // archive#111: the push channel is best effort; a channel that cannot start leaves the daemon on its poll alone.
-    private fun wakePollerOnRemoteChangeHint(
+    // The registration suspends (a provider may refresh a token over HTTP to open its channel) instead of
+    // blocking the daemon's event loop, which start() runs on.
+    private suspend fun wakePollerOnRemoteChangeHint(
         provider: CloudProvider,
         poller: EnumeratePoller,
     ) {

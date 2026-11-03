@@ -449,9 +449,11 @@ interface CloudProvider {
      *
      * Called at most once per provider lifetime; the second call REPLACES
      * the first. Pass `{}` to detach. Implementations may invoke the
-     * callback on any thread.
+     * callback on any thread. The registration itself suspends instead of
+     * blocking: the daemon calls it on its event loop, where a blocking
+     * start (a token refresh over HTTP) would park every coroutine on it.
      */
-    fun onRemoteChangeHint(callback: () -> Unit) { /* default: no-op */ }
+    suspend fun onRemoteChangeHint(callback: () -> Unit) { /* default: no-op */ }
 
     /**
      * The state of the push channel behind [onRemoteChangeHint], for `daemon.status` `notifications`. Null (the

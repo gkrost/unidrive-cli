@@ -422,12 +422,14 @@ class InternxtProvider(
         }
     }
 
-    override fun onRemoteChangeHint(callback: () -> Unit) {
+    override suspend fun onRemoteChangeHint(callback: () -> Unit) {
         remoteChangeCallback = callback
         remoteHintsWanted = true
-        // Registered after authenticate(): start now. Before it: authenticate() starts it.
+        // Registered after authenticate(): start now. Before it: authenticate() starts it. The start can
+        // run a JWT refresh over HTTP — suspending here yields the daemon's event loop instead of parking
+        // the thread every serve coroutine runs on.
         if (authService.isAuthenticated) {
-            runBlocking { ensureNotificationsClient() }
+            ensureNotificationsClient()
         }
     }
 

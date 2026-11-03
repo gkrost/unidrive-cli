@@ -654,7 +654,7 @@ open class SyncEngine(
      * default no-op; this call is then a registration into a black hole,
      * which is fine.
      */
-    fun registerRemoteWakeListener(
+    suspend fun registerRemoteWakeListener(
         scope: kotlinx.coroutines.CoroutineScope,
         listener: () -> Unit,
     ) {
