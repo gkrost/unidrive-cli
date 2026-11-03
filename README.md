@@ -49,11 +49,15 @@ cd core && ./gradlew :app:cli:shadowJar :app:cli:runtimeImage
 The image's JDK module set is pinned — a new dependency that changes it fails
 `check` (see `RuntimeModulesTest`, which compares the set with what `jdeps` reports),
 and CI runs the whole gate a second time with the tests executing on the runtime
-JDK's release (the `check-runtime-jdk` job, a full Zulu JDK on Linux). No CI job runs
-the `jlink` image itself: the module-set test and the `jdeps` guard are what pin it
-(gkrost/unidrive-cli#60). Launchers honour
+JDK's release (the `check-runtime-jdk` job, a full Zulu JDK on Linux). The
+`runtime-image` CI job builds the image on Linux and Windows and boots the
+packaged launcher once against it. Launchers honour
 `UNIDRIVE_XMX` (bare size, e.g. `512m`, `2g`; default `2g`) and pin
-`-Djdk.net.unixdomain.tmpdir` to the host's temp directory. Launchers and the
+`-Djdk.net.unixdomain.tmpdir` to the host's temp directory. The Linux launcher
+picks the runtime itself (`UNIDRIVE_JAVA` overrides; Java 25+ preferred, below
+21 refused). The Windows launcher honours `UNIDRIVE_JAVA`, prefers the bundled
+runtime image a platform package ships next to the fat jar, falls back to
+`java` on `PATH`, and refuses Java below 21. Launchers and the
 CLI's auto-spawn write post-mortem diagnostics — fatal-crash `hs_err` logs, OOM
 heap dumps, the daemon's bounded GC log — into `%LOCALAPPDATA%\unidrive\diagnostics`
 (Windows) or `~/.local/share/unidrive/diagnostics` (Linux), overridable with

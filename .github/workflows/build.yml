@@ -221,6 +221,88 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Builds the packaged distribution's jlink runtime image (:app:cli:runtimeImage) and boots the
+  # packaged launcher once against it, on the platforms a package ships for — Linux and Windows.
+  # The task itself repeats the jdeps module-set guard of RuntimeModulesTest, so a drifted module
+  # set fails here before an image ever ships, and the boot fails the job on a nonzero exit.
+  # Not a merge gate, like check-runtime-jdk above: `check` and `windows-security` stay the only
+  # required checks (repository ruleset).
+  runtime-image:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Cache ~/.gradle (see the comment in the check job).
+      - name: Set up Gradle dependency cache
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      # The compile toolchain (21) and the runtime toolchain the image is jlinked from (27,
+      # the current release train). Gradle itself ends up on the 27, as in check-runtime-jdk.
+      - name: Set up JDK 21
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up runtime JDK
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: zulu
+          java-version: '27'
+
+      - name: Build the runtime image
+        working-directory: core
+        run: ./gradlew :app:cli:runtimeImage --no-daemon
+
+      # Boot the launcher the way a packaged distribution ships it: fat jar and launcher in one
+      # directory, rendered from the templates in dist/launcher. On Windows the image sits next to
+      # the jar (boot/runtime-image), so the boot exercises the launcher's bundled-runtime leg, and
+      # PATH carries no other Java, so a boot that exits 0 ran the image. On Linux the documented
+      # UNIDRIVE_JAVA override points at the image.
+      - name: Boot the packaged launcher against the image (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          jar=$(ls core/app/cli/build/libs/unidrive-*.jar)
+          mkdir -p boot/bin
+          cp "$jar" boot/lib.jar
+          flags=$(sed 's/#.*//;s/^[[:space:]]*//;s/[[:space:]]*$//' dist/launcher/jvm-flags.txt | grep -v '^$' | sed 's/.*/"&"/' | tr '\n' ' ')
+          sed -e "s|@STATIC_FLAGS_SH@|$flags|" \
+              -e "s|@JAR@|$PWD/boot/lib.jar|" \
+              -e "s|@COROUTINES_DEBUG_AGENT@||" \
+              dist/launcher/unidrive.sh.tmpl > boot/bin/unidrive
+          chmod +x boot/bin/unidrive
+          UNIDRIVE_JAVA="$PWD/core/app/cli/build/runtime-image/bin/java" boot/bin/unidrive --version
+
+      - name: Boot the packaged launcher against the image (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $jar = (Get-ChildItem 'core/app/cli/build/libs/unidrive-*.jar' | Select-Object -First 1).FullName
+          $boot = Join-Path $PWD 'boot'
+          New-Item -ItemType Directory -Force -Path $boot | Out-Null
+          Copy-Item $jar (Join-Path $boot (Split-Path -Leaf $jar))
+          Copy-Item 'core/app/cli/build/runtime-image' (Join-Path $boot 'runtime-image') -Recurse
+          # The same render as the Gradle deploy: flags from jvm-flags.txt, CRLF line endings.
+          $flags = Get-Content 'dist/launcher/jvm-flags.txt' | ForEach-Object { ($_ -replace '#.*$', '').Trim() } | Where-Object { $_ }
+          $flagLine = '$javaArgs += @(' + (($flags | ForEach-Object { "'$_'" }) -join ', ') + ')'
+          $jarBoot = Join-Path $boot (Split-Path -Leaf $jar)
+          $text = (Get-Content 'dist/launcher/unidrive.ps1.tmpl' -Raw).Replace("`r`n", "`n").Replace('@STATIC_FLAGS_PS@', $flagLine).Replace('@COROUTINES_DEBUG_AGENT@', '').Replace('@JAR@', $jarBoot)
+          [IO.File]::WriteAllText((Join-Path $boot 'unidrive.ps1'), $text.Replace("`n", "`r`n"), [Text.UTF8Encoding]::new($false))
+          # No other Java on PATH: the bundled image is the only runtime the launcher can pick.
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $boot 'unidrive.ps1') --version
+          if ($LASTEXITCODE -ne 0) { throw "the packaged launcher exited $LASTEXITCODE against the bundled runtime image" }
+
   # The Windows security regression tests, as a job of its own: this job (check name `windows-security`) is a required
   # check, with `check`, in the repository ruleset; the full Windows suite, `check-windows` below, stays advisory
   # (`continue-on-error`). It runs only the classes that guard the owner-only ACLs, the credential stores, the IPC
