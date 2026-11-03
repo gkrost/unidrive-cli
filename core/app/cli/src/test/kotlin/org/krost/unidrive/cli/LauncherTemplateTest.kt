@@ -102,6 +102,60 @@ class LauncherTemplateTest {
         return dir to running
     }
 
+    /** A fake JDK `<root>/<name>` whose `release` says [version]; returns its bin/java.cmd, which prints which JDK it is. */
+    private fun fakeJdk(
+        root: Path,
+        name: String,
+        version: String,
+    ): Path {
+        val home = root.resolve(name)
+        Files.createDirectories(home.resolve("bin"))
+        Files.writeString(home.resolve("release"), "IMPLEMENTOR=\"fake\"\nJAVA_VERSION=\"$version\"\n")
+        val java = home.resolve("bin/java.cmd")
+        Files.writeString(java, "@echo JAVA:$name")
+        return java
+    }
+
+    /**
+     * Renders the template the way the deploys render it, keeps the real JVM start, and runs it with [env] and
+     * [passArgs]: the runtime resolution block decides which java starts, so a fake JDK whose java.cmd prints its
+     * name pins the choice (the resolution harness of LauncherShTemplateTest, ported to PowerShell 5.1, which finds
+     * java.cmd on PATH through PATHEXT). Standard input is an immediately closed pipe, as in [runLauncherStub].
+     */
+    private fun runResolution(
+        env: Map<String, String>,
+        vararg passArgs: String,
+    ): Pair<Int, String> {
+        val dir = Files.createTempDirectory("launcher-tmpl")
+        try {
+            val flags = templateFile().parent.resolve("jvm-flags.txt").toFile().readLines()
+                .map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
+            val rendered = templateFile().toFile().readText().replace("\r\n", "\n")
+                .replace("@STATIC_FLAGS_PS@", "\$javaArgs += @(" + flags.joinToString(", ") { "'$it'" } + ")")
+                .replace("@JAR@", "unidrive.jar")
+                .replace("@COROUTINES_DEBUG_AGENT@", "")
+            val script = dir.resolve("launcher.ps1")
+            Files.writeString(script, rendered)
+            val process = ProcessBuilder(
+                listOf("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script.toString()) + passArgs,
+            ).redirectErrorStream(true)
+                .also {
+                    it.environment().remove("JAVA_TOOL_OPTIONS")
+                    it.environment().remove("JDK_JAVA_OPTIONS")
+                    it.environment()["UNIDRIVE_DIAG_DIR"] = dir.resolve("diag").toString()
+                    it.environment().putAll(env)
+                }
+            process.redirectInput(ProcessBuilder.Redirect.PIPE)
+            val running = process.start()
+            running.outputStream.close()
+            val output = running.inputStream.bufferedReader().readText()
+            assertTrue(running.waitFor(60, TimeUnit.SECONDS), "powershell.exe did not finish")
+            return running.exitValue() to output
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
     @Test
     fun `the powershell launcher passes every diagnostics flag as an argument of its own`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
@@ -237,5 +291,37 @@ class LauncherTemplateTest {
             dir.resolve("jvm-flags.txt").toFile().readLines().none { !it.trimStart().startsWith("#") && "trustStore" in it },
             "jvm-flags.txt is read by the Linux launchers, where Windows-ROOT does not exist",
         )
+    }
+
+    // The runtime resolution and its floor, the Windows twin of LauncherShTemplateTest's cases: a stale JDK below
+    // 21 is refused with guidance (the floor, naming the minimum and UNIDRIVE_JAVA) instead of a bare
+    // class-file-version error from whatever java is first on PATH.
+    @Test
+    fun `a java older than 21 is refused with an actionable message`() {
+        assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
+        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        try {
+            val stale = fakeJdk(jdks, "jdk17", "17.0.9")
+            val (exit, output) = runResolution(mapOf("UNIDRIVE_JAVA" to stale.toString()), "status")
+            assertEquals(1, exit, output)
+            assertTrue("JAVA:jdk17" !in output, "the stale java must not be started: $output")
+            assertTrue(output.contains("needs Java 21 or newer, found Java 17"), output)
+        } finally {
+            jdks.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `UNIDRIVE_JAVA wins over every other candidate`() {
+        assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
+        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        try {
+            val chosen = fakeJdk(jdks, "jdk21-chosen", "21.0.12")
+            val (exit, output) = runResolution(mapOf("UNIDRIVE_JAVA" to chosen.toString()), "status")
+            assertEquals(0, exit, output)
+            assertTrue("JAVA:jdk21-chosen" in output, "UNIDRIVE_JAVA must be the java that runs: $output")
+        } finally {
+            jdks.toFile().deleteRecursively()
+        }
     }
 }
