@@ -165,12 +165,14 @@ profile folder makes the daemon write every live coroutine to
 `coroutine-dump.txt` next to it. A debugging-session cost; leave it off.
 - **Code:** `core/app/cli/src/main/kotlin/org/krost/unidrive/cli/CoroutineDebug.kt`.
 
-### `UNIDRIVE_JAVA`, `UNIDRIVE_JVM_DIR` (Linux launcher)
+### `UNIDRIVE_JAVA`, `UNIDRIVE_JVM_DIR` (launchers)
 
-`UNIDRIVE_JAVA=/path/to/bin/java` picks the runtime. Otherwise the launcher uses
-`java` on `PATH` when it is 25 or newer, else the newest 25+ JDK under
-`UNIDRIVE_JVM_DIR` (default `/usr/lib/jvm`), else `java` on `PATH`; it refuses
-Java below 21. See `dist/README.md`.
+`UNIDRIVE_JAVA=/path/to/bin/java` picks the runtime on both platforms. Otherwise
+the Linux launcher uses `java` on `PATH` when it is 25 or newer, else the newest
+25+ JDK under `UNIDRIVE_JVM_DIR` (default `/usr/lib/jvm`), else `java` on `PATH`;
+the Windows launcher prefers the bundled runtime image a platform package ships
+in a `runtime-image` folder next to the launcher, else next to the fat jar, else `java` on `PATH`. Both refuse Java below 21. See
+`dist/README.md` and `README.md`.
 
 ### `UNIDRIVE_ASCII`
 
