@@ -44,6 +44,17 @@ private fun remoteMetadataChanged(remoteItem: CloudItem, entry: SyncEntry): Bool
 
 private fun remoteHashChanged(remote: String?, recorded: String?): Boolean = remote != null && recorded != null && remote != recorded
 
+// #264: the delivered item names the same bytes the row records — equal content hashes when both
+// sides carry one, else equal content ids. A remote "modified" that changes no content is a
+// metadata-only touch: the bytes a download would fetch are the ones already on disk.
+private fun remoteContentUnchanged(
+    remoteItem: CloudItem,
+    entry: SyncEntry?,
+): Boolean =
+    entry != null &&
+        ((remoteItem.hash != null && entry.remoteHash != null && remoteItem.hash == entry.remoteHash) ||
+            (remoteItem.contentId != null && entry.remoteContentId != null && remoteItem.contentId == entry.remoteContentId))
+
 // The mirror stamps the bare token (SyncEngine.handlePermanentUploadFailure); a mount's `plan_limit: <sentence>` keeps its
 // own deadline in the hydration layer's replay and is skipped here like any other refusal.
 internal const val PLAN_REFUSAL_TOKEN = org.krost.unidrive.PlanLimitException.REASON
@@ -1080,6 +1091,10 @@ class Reconciler(
                     // updateRemoteEntries records the new metadata. A tracked FILE that the remote
                     // replaced with a folder is a real change and keeps its update.
                     if (entry?.isFolder == true) null else SyncAction.UpdatePlaceholder(path, remoteItem, wasHydrated = false)
+                } else if (remoteContentUnchanged(remoteItem, entry)) {
+                    // #264: metadata-only remote change on a file — record the new metadata and
+                    // restore the local mtime instead of re-downloading unchanged bytes.
+                    SyncAction.TouchMetadata(path, remoteItem)
                 } else {
                     SyncAction.DownloadContent(path, remoteItem)
                 }
@@ -1761,6 +1776,7 @@ class Reconciler(
             is SyncAction.CreatePlaceholder -> if (action.remoteItem.isFolder) 0 else 2
             is SyncAction.CreateRemoteFolder -> 0
             is SyncAction.UpdatePlaceholder -> 2
+            is SyncAction.TouchMetadata -> 2
             is SyncAction.DownloadContent -> 2
             is SyncAction.Upload -> 2
             is SyncAction.DeleteLocal -> 1

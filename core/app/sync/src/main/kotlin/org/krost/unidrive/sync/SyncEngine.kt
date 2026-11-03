@@ -1612,6 +1612,7 @@ open class SyncEngine(
                                 applyUpdatePlaceholder(action)
                                 if (action.wasHydrated) downloaded.incrementAndGet()
                             }
+                            is SyncAction.TouchMetadata -> applyTouchMetadata(action)
                             is SyncAction.MoveRemote -> applyMoveRemote(action)
                             is SyncAction.MoveLocal -> applyMoveLocal(action)
                             is SyncAction.DeleteLocal -> applyDeleteLocal(action)
@@ -2910,6 +2911,28 @@ open class SyncEngine(
             } else {
                 entry
             },
+        )
+    }
+
+    // #264: a metadata-only remote change on a file whose bytes the row already records. The
+    // local mtime follows the remote's (what the download would have set), the row records the
+    // delivered metadata, and no transfer runs. The pin, hydration and quarantine marks stay:
+    // the touch learns nothing new about a quarantined identifier — its own delivery ends that.
+    private fun applyTouchMetadata(action: SyncAction.TouchMetadata) {
+        val item = action.remoteItem
+        placeholder.restoreMtime(action.path, item.modified)
+        val row = db.getEntry(action.path) ?: return
+        db.upsertEntry(
+            row.copy(
+                remoteId = item.id,
+                remoteHash = item.hash,
+                remoteVersion = item.version,
+                remoteContentId = item.contentId ?: row.remoteContentId,
+                remoteSize = item.size,
+                remoteModified = item.modified,
+                localMtime = item.modified?.toEpochMilli() ?: row.localMtime,
+            ),
+            keepMarks = true,
         )
     }
 
@@ -4367,6 +4390,7 @@ open class SyncEngine(
                     else -> "placeholder"
                 }
             is SyncAction.UpdatePlaceholder -> "update"
+            is SyncAction.TouchMetadata -> "touch"
             is SyncAction.DownloadContent -> "down"
             is SyncAction.MoveRemote -> "move"
             is SyncAction.MoveLocal -> "move"
