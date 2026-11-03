@@ -912,8 +912,8 @@ data class SyncConfig(
                     )
                 }
                 val syncRoot =
-                    section.sync_root?.let { Paths.get(expandTilde(it)) }
-                        ?: raw.general.sync_root?.let { Paths.get(expandTilde(it)) }
+                    section.sync_root?.let { Paths.get(expandTilde(it)).toAbsolutePath().normalize() }
+                        ?: raw.general.sync_root?.let { Paths.get(expandTilde(it)).toAbsolutePath().normalize() }
                         ?: defaultSyncRoot(type)
                 return ProfileInfo(
                     name = name,
@@ -924,7 +924,7 @@ data class SyncConfig(
                 )
             } else if (name in KNOWN_TYPES) {
                 val syncRoot =
-                    raw.general.sync_root?.let { Paths.get(expandTilde(it)) }
+                    raw.general.sync_root?.let { Paths.get(expandTilde(it)).toAbsolutePath().normalize() }
                         ?: defaultSyncRoot(name)
                 return ProfileInfo(name = name, type = name, syncRoot = syncRoot, rawProvider = null, mode = null)
             } else {
@@ -1154,9 +1154,13 @@ data class SyncConfig(
         private fun RawSyncConfig.toSyncConfig(profileName: String): SyncConfig {
             val profile = providers[profileName]
             val providerType = profile?.type ?: profileName
+            // #264: a hand-edited sync_root ("./Cloud", "~/x/../Cloud") must not reach the engine
+            // raw: cleanEmptyParents compares against this path, and a non-normalized one never
+            // equals the resolved parents it walks — the empty sync root itself and every empty
+            // ancestor above it would be removed.
             val syncRoot =
-                profile?.sync_root?.let { Paths.get(expandTilde(it)) }
-                    ?: general.sync_root?.let { Paths.get(expandTilde(it)) }
+                profile?.sync_root?.let { Paths.get(expandTilde(it)).toAbsolutePath().normalize() }
+                    ?: general.sync_root?.let { Paths.get(expandTilde(it)).toAbsolutePath().normalize() }
                     ?: defaultSyncRoot(providerType)
             val logFile = general.log_file?.let { Paths.get(expandTilde(it)) }
             val providerConfigs =
