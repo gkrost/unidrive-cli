@@ -86,6 +86,12 @@ open class SyncEngine(
     private val versionManager: VersionManager? = null,
     private val maxVersions: Int = 5,
     private val versionRetentionDays: Int = 90,
+    // The engine-level byte-rate cap (config `max_bandwidth_kbps`): one shared
+    // budget bounds the AGGREGATE rate of every concurrent transfer the pass
+    // dispatches, not each transfer on its own. Null = uncapped. The wait the
+    // budget adds runs before a transfer takes a permit of the transfer budget
+    // ([transferBudget]), so pacing never idles a concurrency slot.
+    private val maxBandwidthKbps: Int? = null,
     private val fastBootstrap: Boolean = false,
     // UD-113: optional structured audit log of mutations (Download/Upload/Delete/Move/
     // CreateRemoteFolder). Wired from CLI/MCP startup; null in tests that don't need it.
@@ -188,6 +194,11 @@ open class SyncEngine(
 ) : MountHost,
     EnumerationEntryPoint {
     private val log = LoggerFactory.getLogger(SyncEngine::class.java)
+
+    // The shared line-time budget behind [maxBandwidthKbps]. One instance per
+    // engine, so every transfer of every dispatch path draws from the same
+    // budget whether it launches in Pass 2 or mid-scan on the streaming gather.
+    private val bandwidth: BandwidthPacer? = maxBandwidthKbps?.let { BandwidthPacer(it.toLong() * 1024) }
 
     // archive#738: the clock that stamps keep-both conflict copies. Tests pin it; production uses the system clock.
     // A property rather than a constructor parameter, so the constructor's signature stays as it is.
@@ -1760,6 +1771,9 @@ open class SyncEngine(
                         is SyncAction.DownloadContent -> {
                             launch {
                                 withContext(Priority.Foreground) {
+                                    // Pace the shared budget first: the wait for this transfer's line
+                                    // slot runs while no permit is held (see [BandwidthPacer]).
+                                    bandwidth?.pace(transferBytes(action))
                                     transferSemaphore.withPermit {
                                         try {
                                             applyDownload(action)
@@ -1817,6 +1831,9 @@ open class SyncEngine(
                         is SyncAction.Upload -> {
                             launch {
                                 withContext(Priority.Foreground) {
+                                    // Pace the shared budget first: the wait for this transfer's line
+                                    // slot runs while no permit is held (see [BandwidthPacer]).
+                                    bandwidth?.pace(transferBytes(action))
                                     transferSemaphore.withPermit {
                                         try {
                                             applyUpload(action)
@@ -2026,6 +2043,9 @@ open class SyncEngine(
         transferSemaphore: kotlinx.coroutines.sync.Semaphore,
     ) {
         withContext(Priority.Foreground) {
+            // Pace the shared budget first: the wait for this transfer's line
+            // slot runs while no permit is held (see [BandwidthPacer]).
+            bandwidth?.pace(transferBytes(action))
             transferSemaphore.withPermit {
                 try {
                     applyDownload(action)
@@ -2089,6 +2109,9 @@ open class SyncEngine(
         transferSemaphore: kotlinx.coroutines.sync.Semaphore,
     ) {
         withContext(Priority.Foreground) {
+            // Pace the shared budget first: the wait for this transfer's line
+            // slot runs while no permit is held (see [BandwidthPacer]).
+            bandwidth?.pace(transferBytes(action))
             transferSemaphore.withPermit {
                 try {
                     applyUpload(action)
@@ -4398,6 +4421,20 @@ open class SyncEngine(
             is SyncAction.CreateRemoteFolder -> "mkdir-remote"
             is SyncAction.Conflict -> "CONFLICT"
             is SyncAction.RemoveEntry -> "cleanup"
+        }
+
+    // The bytes a transfer will move, as far as they are known before it starts:
+    // the remote item's size for a download, the local file's for an upload (a
+    // file that is gone paces as nothing). The budget is paced before the
+    // transfer, so only the pre-transfer size can reserve its line time.
+    private fun transferBytes(action: SyncAction): Long =
+        when (action) {
+            is SyncAction.DownloadContent -> action.remoteItem.size
+            is SyncAction.Upload ->
+                placeholder.resolveLocal(action.path).let { p ->
+                    if (Files.isRegularFile(p)) Files.size(p) else 0L
+                }
+            else -> 0L
         }
 
     // UD-740: display path used in the user-facing progress line. For move

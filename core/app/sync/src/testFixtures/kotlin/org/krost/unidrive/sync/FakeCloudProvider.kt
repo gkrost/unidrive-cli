@@ -190,6 +190,10 @@ class FakeCloudProvider : CloudProvider {
     // override lets us count both call paths distinctly.
     val downloadByIdCalls = mutableListOf<Pair<String, String>>() // (remoteId, remotePath)
     val downloadByPathCalls = mutableListOf<String>()
+    // The wall-clock start of each downloadByIdWithHash call, by remote path: the
+    // bandwidth tests assert on the provider's own accounting (transfer starts
+    // spaced by the shared budget), not on spans measured around the engine.
+    val downloadStartNanosByPath = java.util.concurrent.ConcurrentHashMap<String, Long>()
     var afterDownloadWrite: ((Path) -> Unit)? = null
 
     // C8 follow-up: observe per-path download concurrency so a test can prove
@@ -231,6 +235,7 @@ class FakeCloudProvider : CloudProvider {
             throw ProviderException("Network timeout on download")
         }
         downloadByIdCalls.add(remoteId to remotePath)
+        downloadStartNanosByPath[remotePath] = System.nanoTime()
         trackDownloadConcurrency(remotePath)
         val content = files[remotePath] ?: throw ProviderException("Not found: $remotePath")
         Files.createDirectories(destination.parent)
