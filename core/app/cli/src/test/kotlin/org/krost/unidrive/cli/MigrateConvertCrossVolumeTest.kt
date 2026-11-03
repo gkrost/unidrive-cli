@@ -9,6 +9,7 @@ import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -70,6 +71,72 @@ class MigrateConvertCrossVolumeTest {
                 assertEquals(2, journal.quarantined.size, "both files are named for the explicit upload")
                 assertTrue(journal.moves.all { Files.exists(Path.of(it.to)) }, "every recorded move landed whole")
             }
+        } finally {
+            Files.walk(tmp).use { it.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
+        }
+    }
+
+    @Test
+    fun `a copy that falls short is caught before the source is given up`() {
+        val tmp = Files.createTempDirectory("migrate-fell-short")
+        try {
+            val source = tmp.resolve("file.txt")
+            Files.write(source, "12345".toByteArray())
+            val destination = tmp.resolve("aside").resolve("file.txt")
+
+            val e =
+                assertFailsWith<IllegalStateException> {
+                    LegacyConversion.copyAside(source, destination, expectedBytes = 99L)
+                }
+
+            assertTrue("fell short" in e.message!!, "the refusal names the shortfall: ${e.message}")
+            assertEquals("12345", Files.readString(source), "the source is not given up on a short copy")
+            assertFalse(Files.exists(destination), "nothing lands at the destination")
+            assertFalse(
+                Files.list(tmp.resolve("aside")).use { s -> s.anyMatch { it.fileName.toString().endsWith(".unidrive-tmp") } },
+                "no staging corpse is left behind",
+            )
+        } finally {
+            Files.walk(tmp).use { it.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
+        }
+    }
+
+    @Test
+    fun `a read-only source is moved aside on the cross-volume path`() {
+        val tmp = Files.createTempDirectory("migrate-readonly")
+        val source = tmp.resolve("file.txt")
+        try {
+            Files.write(source, "locked bytes".toByteArray())
+            assertTrue(source.toFile().setWritable(false), "the fixture made the source read-only")
+            val destination = tmp.resolve("aside").resolve("file.txt")
+
+            LegacyConversion.copyAside(source, destination, expectedBytes = "locked bytes".length.toLong())
+
+            assertEquals("locked bytes", Files.readString(destination), "the verified copy landed")
+            assertFalse(Files.exists(source), "the read-only source is given up after the verification")
+        } finally {
+            // The cleanup must never mask the body's failure: make the fixture writable again first.
+            runCatching { source.toFile().setWritable(true) }
+            Files.walk(tmp).use { it.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
+        }
+    }
+
+    @Test
+    fun `a verified copy is renamed whole before the source is deleted`() {
+        val tmp = Files.createTempDirectory("migrate-verified-copy")
+        try {
+            val source = tmp.resolve("file.txt")
+            Files.write(source, "carry me over".toByteArray())
+            val destination = tmp.resolve("aside").resolve("file.txt")
+
+            LegacyConversion.copyAside(source, destination, expectedBytes = 13L)
+
+            assertEquals("carry me over", Files.readString(destination), "the verified bytes are what landed")
+            assertFalse(Files.exists(source), "the source is given up only after the verification passed")
+            assertFalse(
+                Files.list(tmp.resolve("aside")).use { s -> s.anyMatch { it.fileName.toString().endsWith(".unidrive-tmp") } },
+                "the staging name is consumed by the rename",
+            )
         } finally {
             Files.walk(tmp).use { it.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
         }

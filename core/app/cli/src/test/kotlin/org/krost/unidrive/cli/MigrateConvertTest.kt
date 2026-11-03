@@ -12,6 +12,7 @@ import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -413,6 +414,72 @@ class MigrateConvertTest {
     }
 
     @Test
+    fun `a resume destination that matches the source by content finishes the interrupted delete`() {
+        val (config, profileDir, syncRoot) = fixture()
+        syncRoot.resolve("half-moved.txt").writeText("the whole file")
+
+        // A journal from an interrupted run whose copy of the file already landed whole, but whose
+        // source delete never ran (a kill between the rename into place and the delete).
+        val conversionDir = Files.createDirectories(profileDir.resolve("conversion-test"))
+        Files.createDirectories(conversionDir.resolve("quarantine"))
+        Files.write(conversionDir.resolve("quarantine/half-moved.txt"), "the whole file".toByteArray())
+        LegacyConversion.Journal.save(
+            profileDir,
+            LegacyConversion.Journal(
+                engineVersion = "0.0.1",
+                startedAt = "2026-10-08T00:00:00Z",
+                profileName = "p",
+                targetMode = "mount",
+                disposition = "retire",
+                phases = listOf("PLAN", "INVENTORY"),
+                conversionDir = conversionDir.toString(),
+            ),
+        )
+
+        val code = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+
+        assertEquals(0, code)
+        assertTrue(!Files.exists(syncRoot.resolve("half-moved.txt")), "the finished copy's missing delete is completed")
+        assertEquals("the whole file", Files.readString(conversionDir.resolve("quarantine/half-moved.txt")))
+        val journal = LegacyConversion.Journal.load(profileDir)!!
+        assertTrue("CONVERTED" in journal.phases)
+        assertEquals(1, journal.quarantined.size, "the resumed file is still named for the upload")
+    }
+
+    @Test
+    fun `a same-size resume destination with different content refuses and keeps the source`() {
+        val (config, profileDir, syncRoot) = fixture()
+        val source = syncRoot.resolve("zero-tail.txt")
+        Files.write(source, "the real bytes".toByteArray())
+
+        val conversionDir = Files.createDirectories(profileDir.resolve("conversion-test"))
+        Files.createDirectories(conversionDir.resolve("quarantine"))
+        // A killed cross-volume copy's corpse: the full source size with the bytes never written —
+        // here simulated as the same length, different content (14 bytes either way). A size match is
+        // exactly how such a corpse was once taken for a finished copy and the only copy of the real
+        // bytes deleted, so the two files must NOT differ in size: that is the whole test.
+        Files.write(conversionDir.resolve("quarantine/zero-tail.txt"), "NOT the source".toByteArray())
+        LegacyConversion.Journal.save(
+            profileDir,
+            LegacyConversion.Journal(
+                engineVersion = "0.0.1",
+                startedAt = "2026-10-08T00:00:00Z",
+                profileName = "p",
+                targetMode = "mount",
+                disposition = "retire",
+                phases = listOf("PLAN", "INVENTORY"),
+                conversionDir = conversionDir.toString(),
+            ),
+        )
+
+        val code = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+
+        assertEquals(1, code, "a destination the hashes cannot prove is not a finished copy")
+        assertEquals("the real bytes", Files.readString(source), "the only differing copy survives the resume")
+        assertTrue(!config.readText().contains("mode"), "nothing was published")
+    }
+
+    @Test
     fun `resuming with a different mode is refused`() {
         val (config, profileDir, syncRoot) = fixture()
         syncRoot.resolve("f.txt").writeText("x")
@@ -466,6 +533,125 @@ class MigrateConvertTest {
             secondJournal.quarantined.all { Files.exists(Path.of(it.quarantinePath)) },
             "every entry points at a copy on disk: ${secondJournal.quarantined}",
         )
+    }
+
+    @Test
+    fun `a read-only source is given up when its verified copy is already at the destination`() {
+        val (config, profileDir, syncRoot) = fixture()
+        val source = syncRoot.resolve("readonly.txt")
+        Files.write(source, "the whole file".toByteArray())
+        assertTrue(source.toFile().setWritable(false), "the fixture made the source read-only")
+
+        // The copy already landed whole (a previous run); only the source delete is missing — which a
+        // read-only source used to refuse on every run, after its bytes were already proven aside.
+        val conversionDir = Files.createDirectories(profileDir.resolve("conversion-test"))
+        Files.createDirectories(conversionDir.resolve("quarantine"))
+        Files.write(conversionDir.resolve("quarantine/readonly.txt"), "the whole file".toByteArray())
+        LegacyConversion.Journal.save(
+            profileDir,
+            LegacyConversion.Journal(
+                engineVersion = "0.0.1",
+                startedAt = "2026-10-08T00:00:00Z",
+                profileName = "p",
+                targetMode = "mount",
+                disposition = "retire",
+                phases = listOf("PLAN", "INVENTORY"),
+                conversionDir = conversionDir.toString(),
+            ),
+        )
+
+        val code = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+
+        assertEquals(0, code)
+        assertFalse(Files.exists(source), "the read-only source is given up once its copy is proven")
+        assertEquals("the whole file", Files.readString(conversionDir.resolve("quarantine/readonly.txt")))
+    }
+
+    @Test
+    fun `a restart keeps the quarantined copies at their recorded paths`() {
+        val (config, profileDir, syncRoot) = fixture()
+        syncRoot.resolve("a.txt").writeText("aaa")
+
+        val first = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+        assertEquals(0, first)
+        val firstJournal = LegacyConversion.Journal.load(profileDir)!!
+        val carriedPath = firstJournal.quarantined.single().quarantinePath
+
+        // Rewind to an interrupted state: the mode unpublished, the journal unfinished.
+        LegacyConversion.Journal.save(
+            profileDir,
+            firstJournal.copy(phases = firstJournal.phases.filter { it != "CONVERTED" }, convertedAt = null),
+        )
+        config.writeText("[general]\n\n[providers.p]\ntype = \"localfs\"\nsync_root = \"${syncRoot.toString().replace("\\", "\\\\")}\"\n")
+
+        val second = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = true, verbose = false)
+
+        assertEquals(0, second)
+        assertTrue(Files.exists(Path.of(carriedPath)), "the earlier copy is still at the path the first run recorded")
+        assertFalse(
+            Files.list(profileDir).use { s -> s.anyMatch { it.fileName.toString().startsWith("conversion-archive-") } },
+            "no archive move may dangle the entries in the window before the fresh journal is saved",
+        )
+        val secondJournal = LegacyConversion.Journal.load(profileDir)!!
+        assertEquals(
+            listOf(carriedPath),
+            secondJournal.quarantined.filter { it.remotePath == "/a.txt" }.map { it.quarantinePath },
+            "the carried entry keeps its recorded path, unchanged",
+        )
+    }
+
+    @Test
+    fun `a restart quarantines different bytes at the same path into a directory of its own`() {
+        val (config, profileDir, syncRoot) = fixture()
+        syncRoot.resolve("a.txt").writeText("first bytes")
+
+        val first = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+        assertEquals(0, first)
+        val firstCopy = Path.of(LegacyConversion.Journal.load(profileDir)!!.quarantined.single().quarantinePath)
+
+        // Rewind to an interrupted state, then another file takes the same path before the restart, in the same minute as the first run.
+        val firstJournal = LegacyConversion.Journal.load(profileDir)!!
+        LegacyConversion.Journal.save(
+            profileDir,
+            firstJournal.copy(phases = firstJournal.phases.filter { it != "CONVERTED" }, convertedAt = null),
+        )
+        config.writeText("[general]\n\n[providers.p]\ntype = \"localfs\"\nsync_root = \"${syncRoot.toString().replace("\\", "\\\\")}\"\n")
+        syncRoot.resolve("a.txt").writeText("second bytes")
+
+        val second = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = true, verbose = false)
+
+        assertEquals(0, second)
+        val copies = LegacyConversion.Journal.load(profileDir)!!.quarantined.filter { it.remotePath == "/a.txt" }
+        assertEquals(2, copies.map { it.quarantinePath }.toSet().size, "both copies sit at distinct paths: $copies")
+        assertEquals("first bytes", Files.readString(firstCopy), "the first copy is untouched")
+        val restartCopy = copies.single { it.quarantinePath != firstCopy.toString() }
+        assertEquals("second bytes", Files.readString(Path.of(restartCopy.quarantinePath)))
+    }
+
+    @Test
+    fun `a kill between the source removal and the save resumes with the moved file journaled`() {
+        val (config, profileDir, syncRoot) = fixture()
+        syncRoot.resolve("kill.txt").writeText("the only copy")
+
+        LegacyConversion.afterMove = { throw IllegalStateException("simulated kill") }
+        try {
+            assertFailsWith<IllegalStateException> {
+                LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+            }
+        } finally {
+            LegacyConversion.afterMove = null
+        }
+        assertFalse(Files.exists(syncRoot.resolve("kill.txt")), "the source is given up before the kill")
+        val interrupted = LegacyConversion.Journal.load(profileDir)!!
+        assertEquals(listOf("/kill.txt"), interrupted.quarantined.map { it.remotePath }, "the move is journaled before the source goes")
+
+        val code = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+
+        assertEquals(0, code)
+        val resumed = LegacyConversion.Journal.load(profileDir)!!
+        assertEquals(listOf("/kill.txt"), resumed.quarantined.map { it.remotePath }, "the resume neither loses nor repeats the entry")
+        assertEquals("the only copy", Files.readString(Path.of(resumed.quarantined.single().quarantinePath)))
+        assertTrue("CONVERTED" in resumed.phases)
     }
 
     @Test
