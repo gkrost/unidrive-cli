@@ -232,6 +232,16 @@ class FakeTrackingProvider : CloudProvider {
     val goneListDirs: MutableSet<String> = mutableSetOf()
 
     /**
+     * Test hook: remote directories that exist as empty shells (a listing-based
+     * provider like localfs keeps the directory after its last file is deleted).
+     * [getMetadata] answers a folder item for these; a path neither here nor in
+     * [files] throws the typed not-found. The pair models the ambiguity a
+     * listing alone cannot resolve: an absent directory lists as empty, just
+     * like an existing empty one.
+     */
+    val dirs: MutableSet<String> = mutableSetOf()
+
+    /**
      * Test hook: directory paths that report one phantom child on the FIRST
      * [listChildren] call and then settle to their real (empty) contents —
      * modelling an eventually-consistent provider's read-after-write lag where a
@@ -289,9 +299,23 @@ class FakeTrackingProvider : CloudProvider {
 
     override suspend fun getMetadata(path: String): CloudItem {
         getMetadataError?.let { throw it }
-        val bytes = files[path] ?: throw org.krost.unidrive.ProviderException("Item not found: $path")
-        return itemFor(path, bytes)
+        files[path]?.let { return itemFor(path, bytes = it) }
+        if (path in dirs) return folderItem(path)
+        throw org.krost.unidrive.ProviderException("Item not found: $path")
     }
+
+    private fun folderItem(path: String): CloudItem =
+        CloudItem(
+            id = "folder-$path",
+            name = path.substringAfterLast('/'),
+            path = path,
+            size = 0,
+            isFolder = true,
+            modified = Instant.parse("2026-05-21T00:00:00Z"),
+            created = Instant.parse("2026-05-21T00:00:00Z"),
+            hash = null,
+            mimeType = null,
+        )
 
     override suspend fun download(
         remotePath: String,
