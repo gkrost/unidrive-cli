@@ -13,9 +13,10 @@ import kotlin.test.assertTrue
 /**
  * The write ladder's default (retryOnTransient without retryServerErrors) retries only 429/503: a
  * 500/502/504 can come from a gateway whose origin already committed the write, and repeating a
- * non-idempotent write — a trash whose items are already trashed, a create that makes a second file —
- * must not blind-fire. The calls whose repeat is reconciled or writes the same bytes (the two deletes,
- * the two PUT overwrites) keep the full set.
+ * create that makes a second file must not blind-fire. The calls whose repeat is reconciled or writes
+ * the same bytes keep the full set: the two permanent deletes (a repeat's 404 is already-gone), the two
+ * PUT overwrites, and the trash (a 400 that follows a 5xx of the same call means the earlier attempt
+ * committed).
  */
 class InternxtWriteLadderRetryTest {
     private fun service(engine: MockEngine): InternxtApiService =
@@ -35,34 +36,82 @@ class InternxtWriteLadderRetryTest {
             httpClient = io.ktor.client.HttpClient(engine),
         )
 
-    // A 502 whose origin committed the trash, then the answer a repeat would get (400: the items are
-    // already in the bin). The 502 must reach the caller after one request — the caller reconciles;
-    // a retried trash would surface a failed delete for items that are in fact trashed.
-    @Test
-    fun `trashItems does not repeat a write after a 502`() =
-        runTest {
-            val requests = java.util.concurrent.atomic.AtomicInteger(0)
-            val engine =
-                MockEngine { request ->
-                    when (requests.incrementAndGet()) {
-                        1 -> respond("", HttpStatusCode.BadGateway, headersOf("Content-Type", "text/plain"))
-                        else -> respond(
-                            """{"statusCode":400,"message":"at least one uuid was invalid","error":"Bad Request"}""",
-                            HttpStatusCode.BadRequest,
-                            headersOf("Content-Type", "application/json"),
-                        )
-                    }
+    private suspend fun trashAgainst(vararg statuses: HttpStatusCode): Pair<Result<Unit>, Int> {
+        val requests = java.util.concurrent.atomic.AtomicInteger(0)
+        val engine =
+            MockEngine { request ->
+                assertTrue(request.url.toString().endsWith("/storage/trash/add"), request.url.toString())
+                val status = statuses[minOf(requests.getAndIncrement(), statuses.size - 1)]
+                if (status == HttpStatusCode.OK) {
+                    respond("{}", status, headersOf("Content-Type", "application/json"))
+                } else {
+                    respond(
+                        """{"statusCode":${status.value},"message":"x"}""",
+                        status,
+                        headersOf("Content-Type", "application/json"),
+                    )
                 }
-            val api = service(engine)
-            try {
-                val e =
-                    assertFailsWith<InternxtApiException> {
-                        api.trashItems(listOf("file-uuid-1" to "file"))
-                    }
-                assertEquals(502, e.statusCode, "the 502 reaches the caller, which reconciles")
-                assertEquals(1, requests.get(), "the trash POST was sent exactly once")
-            } finally {
-                api.close()
+            }
+        val api = service(engine)
+        try {
+            val result = runCatching { api.trashItems(listOf("file-uuid-1" to "file")) }
+            return result to requests.get()
+        } finally {
+            api.close()
+        }
+    }
+
+    // The routine delete has no reconcile behind it, so a trash retries a 500/502/504 like the deletes do.
+    @Test
+    fun `trashItems retries a 502 and succeeds on the second attempt`() =
+        runTest {
+            val (result, requests) = trashAgainst(HttpStatusCode.BadGateway, HttpStatusCode.OK)
+            assertTrue(result.isSuccess, "the retry answered 200: $result")
+            assertEquals(2, requests, "the trash POST was repeated once")
+        }
+
+    // A 502 whose origin committed the trash, then the answer a repeat gets (400: the items are already in the bin).
+    // That 400 follows a 5xx of the same call, so it means "an earlier attempt committed": the trash succeeded.
+    @Test
+    fun `trashItems treats a 400 after a 502 of the same call as already trashed`() =
+        runTest {
+            val (result, requests) = trashAgainst(HttpStatusCode.BadGateway, HttpStatusCode.BadRequest)
+            assertTrue(result.isSuccess, "a 400 after a 5xx is the committed first attempt: $result")
+            assertEquals(2, requests)
+        }
+
+    @Test
+    fun `trashItems treats a 400 after a 500 and after a 504 as already trashed`() =
+        runTest {
+            for (first in listOf(HttpStatusCode.InternalServerError, HttpStatusCode.GatewayTimeout)) {
+                val (result, requests) = trashAgainst(first, HttpStatusCode.BadRequest)
+                assertTrue(result.isSuccess, "$first then 400: $result")
+                assertEquals(2, requests)
+            }
+        }
+
+    // A 400 on the first attempt is an invalid uuid, not a committed repeat: it still surfaces, unretried.
+    @Test
+    fun `trashItems still throws a 400 on the first attempt`() =
+        runTest {
+            val (result, requests) = trashAgainst(HttpStatusCode.BadRequest)
+            val e = result.exceptionOrNull() as? InternxtApiException
+            assertEquals(400, e?.statusCode, "the first-attempt 400 reaches the caller: $result")
+            assertEquals(1, requests)
+        }
+
+    // A 503 or 429 is a refused answer that cannot have committed: retried as before, and a 400 after it is not
+    // the committed case.
+    @Test
+    fun `trashItems retries a 503 and a 429 and a 400 after them still throws`() =
+        runTest {
+            for (first in listOf(HttpStatusCode.ServiceUnavailable, HttpStatusCode.TooManyRequests)) {
+                val (ok, okRequests) = trashAgainst(first, HttpStatusCode.OK)
+                assertTrue(ok.isSuccess, "$first then 200: $ok")
+                assertEquals(2, okRequests)
+                val (bad, badRequests) = trashAgainst(first, HttpStatusCode.BadRequest)
+                assertEquals(400, (bad.exceptionOrNull() as? InternxtApiException)?.statusCode, "$first then 400: $bad")
+                assertEquals(2, badRequests)
             }
         }
 

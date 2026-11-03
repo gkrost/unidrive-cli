@@ -209,7 +209,9 @@ class InternxtApiService(
 
         // What the write ladder ([retryOnTransient] without retryServerErrors) retries: a rate limit and an
         // unavailable-server answer carry no committed effect to repeat. The 500/502/504 are left to the caller's
-        // reconcile paths, because a gateway can answer them after its origin already committed the write.
+        // reconcile paths (the creates), because a gateway can answer them after its origin already committed the
+        // write. The calls that reconcile their own repeat inside the call (the deletes, trash) or write the same bytes
+        // (the PUT overwrites) retry the full [TRANSIENT_STATUSES] instead.
         private val RETRYABLE_WRITE_STATUSES = setOf(429, 503)
 
         // The gateway's own answers for an origin that did not answer (Cloudflare): 520 unknown error, 521 down, 522
@@ -1250,34 +1252,48 @@ class InternxtApiService(
         require(items.all { it.second == "file" || it.second == "folder" }) {
             "type must be 'file' or 'folder'; got ${items.map { it.second }.distinct()}"
         }
-        retryOnTransient {
-            withAuthRetry { creds ->
-                budgeted(driveBudget) {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            put(
-                                "items",
-                                kotlinx.serialization.json.buildJsonArray {
-                                    items.forEach { (uuid, type) ->
-                                        add(
-                                            kotlinx.serialization.json.buildJsonObject {
-                                                put("uuid", kotlinx.serialization.json.JsonPrimitive(uuid))
-                                                put("type", kotlinx.serialization.json.JsonPrimitive(type))
-                                            },
-                                        )
-                                    }
-                                },
-                            )
-                        }
-                    val response =
-                        httpClient.post("$baseUrl/storage/trash/add") {
-                            applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
-                        }
-                    // 200 OK — items moved. 400 means at least one uuid was invalid; let it surface.
-                    checkResponse(response)
+        // The routine delete (InternxtProvider.delete / deleteById) has no reconcile behind this call, so it retries the
+        // full set. A repeat of a trash whose first attempt committed answers 400 (the items are already in the bin):
+        // that 400 after a 500/502/504 of this same call means the earlier attempt took effect. A 400 on a first
+        // attempt (an invalid uuid) still surfaces.
+        var ambiguous = false
+        retryOnTransient(retryServerErrors = true) {
+            try {
+                withAuthRetry { creds ->
+                    budgeted(driveBudget) {
+                        val requestBody =
+                            kotlinx.serialization.json.buildJsonObject {
+                                put(
+                                    "items",
+                                    kotlinx.serialization.json.buildJsonArray {
+                                        items.forEach { (uuid, type) ->
+                                            add(
+                                                kotlinx.serialization.json.buildJsonObject {
+                                                    put("uuid", kotlinx.serialization.json.JsonPrimitive(uuid))
+                                                    put("type", kotlinx.serialization.json.JsonPrimitive(type))
+                                                },
+                                            )
+                                        }
+                                    },
+                                )
+                            }
+                        val response =
+                            httpClient.post("$baseUrl/storage/trash/add") {
+                                applyAuth(creds)
+                                contentType(ContentType.Application.Json)
+                                setBody(requestBody.toString())
+                            }
+                        // 200 OK — items moved. A first-attempt 400 means at least one uuid was invalid; let it surface.
+                        checkResponse(response)
+                    }
                 }
+            } catch (e: InternxtApiException) {
+                if (ambiguous && e.statusCode == 400) {
+                    log.info("Internxt trash answered 400 after an earlier 5xx of the same call; treating it as already trashed")
+                    return@retryOnTransient
+                }
+                if (e.statusCode == 500 || e.statusCode == 502 || e.statusCode == 504) ambiguous = true
+                throw e
             }
         }
     }
@@ -2106,16 +2122,17 @@ class InternxtApiService(
      * The retry ladder of the calls that WRITE (create, replace, rename, move, delete, trash): by default it retries a
      * refused answer that cannot have committed ([RETRYABLE_WRITE_STATUSES], 429 and 503) and nothing else. A 500/502/504
      * can come from a gateway whose origin already committed the write — repeating a create makes a second file, repeating a
-     * trash surfaces a 400 for items that are already trashed — so those statuses reach the caller, which reconciles (see
-     * the create collision and keep-overwritten handling in the provider). A network error without a status (a connection
+     * trash surfaces a 400 for items that are already trashed — so for the creates those statuses reach the caller, which
+     * reconciles (see the create collision and keep-overwritten handling in the provider). A network error without a status (a connection
      * that closes before any response byte) is deliberately NOT retried here, for the same reason: the request may have
      * reached the server and taken effect. This is the matrix row "Network error" of [HttpRetryBudget]: the send loops of
      * Graph, Dropbox and S3 do the same. The enumeration GETs ([authenticatedGetReply]) are the exception on purpose: a
      * read has no effect to repeat, so that ladder keeps retrying the full [TRANSIENT_STATUSES].
      *
      * The calls whose repeat is reconciled or writes the same bytes pass [retryServerErrors] and retry the full set: the
-     * two PUT overwrites (replace, shard) repeat their identical body, and the two deletes already answer a repeat's 404
-     * as already-gone inside the call.
+     * two PUT overwrites (replace, shard) repeat their identical body, the two permanent deletes already answer a repeat's
+     * 404 as already-gone inside the call, and [trashItems] — the routine delete, with no reconcile behind it — answers a
+     * 400 that follows a 5xx of the same call as "an earlier attempt committed".
      */
     internal suspend fun <T> retryOnTransient(
         retryServerErrors: Boolean = false,
