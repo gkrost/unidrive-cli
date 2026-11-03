@@ -448,6 +448,7 @@ class Reconciler(
         detectMoves(actions, entryByPath, alias)
         detectRemoteRenames(actions, remoteChanges, entryByRemoteId, localChanges, alias)
         lastUnhydratedFolderDeletes = dropUnhydratedFolderDeletes(actions, entryByPath)
+        keepFoldersHoldingChangedRemoteChildren(actions, entryByPath)
         dropScopedAncestorRemoteDeletes(actions, syncPaths)
         deferIncompleteRemoteCreates(actions, localChanges, enumerationComplete)
         keepFoldersHoldingUnsyncedLocalContent(actions, localChanges, allDbEntries, alias)
@@ -691,6 +692,7 @@ class Reconciler(
         detectMoves(actions, entryByPath, alias)
         detectRemoteRenames(actions, fullRemote, entryByRemoteId, fullLocal, alias)
         lastUnhydratedFolderDeletes = dropUnhydratedFolderDeletes(actions, entryByPath)
+        keepFoldersHoldingChangedRemoteChildren(actions, entryByPath)
         dropScopedAncestorRemoteDeletes(actions, syncPaths)
         deferIncompleteRemoteCreates(actions, fullLocal, enumerationComplete)
         keepFoldersHoldingUnsyncedLocalContent(actions, fullLocal, allDbEntries, alias)
@@ -1322,6 +1324,50 @@ class Reconciler(
             )
         }
         return dropped
+    }
+
+    // The remote-side mirror of keepFoldersHoldingUnsyncedLocalContent. A hydrated folder that is missing locally
+    // plans one DeleteRemote of the folder, and the provider's delete takes the folder's whole subtree with it. That
+    // delete ran in Pass 1, before the downloads and conflicts the same plan made for the remote-new and
+    // remote-modified children below it — the children's content went to the provider's trash (gone for good where
+    // trash is a hard delete). When the plan still fetches remote content below the folder, drop the folder delete
+    // and let the changed children come down: the tracked, unchanged children keep their own file-level deletes, and
+    // the engine's empty-directory reaper removes the folder on a later pass once nothing survives below it.
+    private fun keepFoldersHoldingChangedRemoteChildren(
+        actions: MutableList<SyncAction>,
+        entryByPath: Map<String, SyncEntry>,
+    ) {
+        val folderDeletes =
+            actions.filterIsInstance<SyncAction.DeleteRemote>()
+                .filter { entryByPath[it.path]?.isFolder == true }
+        if (folderDeletes.isEmpty()) return
+        val held = folderDeletes.filter { del -> actions.any { holdsLiveRemoteItemBelow(it, del.path) } }
+        if (held.isEmpty()) return
+        actions.removeAll(held.toSet())
+        log.warn(
+            "Dropped {} DeleteRemote action(s) for folders the plan still fetches content under: {}",
+            held.size,
+            held.joinToString(",") { it.path },
+        )
+    }
+
+    // True when [action] applies remote content that lives below [folder]: a download of a remote-new item, a
+    // conflict whose remote side is alive, or a placeholder create or update. A delete below the folder does not
+    // hold it — the provider removes that item alone, and the empty-directory reaper decides about the folder after.
+    private fun holdsLiveRemoteItemBelow(
+        action: SyncAction,
+        folder: String,
+    ): Boolean {
+        if (!action.path.startsWith("$folder/")) return false
+        val remoteItem =
+            when (action) {
+                is SyncAction.DownloadContent -> action.remoteItem
+                is SyncAction.Conflict -> action.remoteItem
+                is SyncAction.CreatePlaceholder -> action.remoteItem
+                is SyncAction.UpdatePlaceholder -> action.remoteItem
+                else -> null
+            }
+        return remoteItem != null && !remoteItem.deleted
     }
 
     private fun dropScopedAncestorRemoteDeletes(actions: MutableList<SyncAction>, syncPaths: List<String>) {

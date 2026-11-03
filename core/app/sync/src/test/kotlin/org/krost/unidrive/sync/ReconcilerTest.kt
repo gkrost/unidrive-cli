@@ -118,6 +118,47 @@ class ReconcilerTest {
         assertTrue(actions.any { it is SyncAction.Conflict }, "the delete-vs-modify conflict must be raised; got $actions")
     }
 
+    // The provider does not report the folder itself as modified when only its children change. The folder delete
+    // would run at priority 1, ahead of the same plan's downloads (2) and conflicts (3) below it, and trash the
+    // children's content with the whole subtree. The folder delete waits; the unchanged child keeps its own
+    // file-level delete, which cannot take the changed children with it.
+    @Test
+    fun `a locally deleted folder whose children changed remotely keeps the folder so their content comes down`() {
+        db.upsertEntry(folderEntry("/p"))
+        db.upsertEntry(dbEntry("/p/a", isHydrated = true))
+        db.upsertEntry(dbEntry("/p/old.txt", isHydrated = true))
+        val remoteChanges =
+            mapOf(
+                "/p/a" to cloudItem("/p/a", hash = "edited"),
+                "/p/n.txt" to cloudItem("/p/n.txt", size = 50),
+            )
+        val localChanges =
+            mapOf(
+                "/p" to ChangeState.DELETED,
+                "/p/a" to ChangeState.DELETED,
+                "/p/old.txt" to ChangeState.DELETED,
+            )
+
+        val actions = reconciler.reconcile(remoteChanges, localChanges)
+
+        assertTrue(
+            actions.none { it is SyncAction.DeleteRemote && it.path == "/p" },
+            "the folder delete must not run ahead of the child fetches; got $actions",
+        )
+        assertTrue(
+            actions.any { it is SyncAction.DeleteRemote && it.path == "/p/old.txt" },
+            "the unchanged child keeps its file-level delete; got $actions",
+        )
+        assertTrue(
+            actions.any { it is SyncAction.Conflict && it.path == "/p/a" },
+            "the remote-modified child keeps its conflict; got $actions",
+        )
+        assertTrue(
+            actions.any { it is SyncAction.DownloadContent && it.path == "/p/n.txt" },
+            "the remote-new child still downloads; got $actions",
+        )
+    }
+
     @Test
     fun `remote new file downloads content`() {
         // UD-222: remote-new non-folder always emits DownloadContent (Pass 2 concurrent).
