@@ -1012,6 +1012,91 @@ class IpcServerTest {
             }
         }
 
+    // The edge of the cap: a request line of exactly 64 KiB (counted before the newline) is accepted, even when its
+    // newline arrives in a separate write after the server already holds the whole line.
+    @Test
+    fun `a request line of exactly the cap with its newline in a separate write is answered`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.registerHandler("echo") { _, json -> """{"ok":true,"len":${json.length}}""" }
+                server!!.start(serverScope)
+                waitForSocket(socketPath)
+
+                val cap = 64 * 1024
+                val prefix = "{\"verb\":\"echo\",\"pad\":\""
+                val suffix = "\"}"
+                val req = prefix + "a".repeat(cap - prefix.length - suffix.length) + suffix
+                assertEquals(cap, req.toByteArray(Charsets.UTF_8).size, "the line is exactly the cap")
+                val client = connectClient()
+                writeAll(client, req.toByteArray(Charsets.UTF_8))
+                delay(200)
+                writeAll(client, "\n".toByteArray(Charsets.UTF_8))
+
+                val lines = readFromClient(client, timeoutMs = 30_000, minLines = 1).trim().lines()
+                assertEquals(1, lines.size, "the line at the cap must be answered, got: $lines")
+                val reply = Json.parseToJsonElement(lines[0]) as JsonObject
+                assertEquals("true", reply["ok"]?.jsonPrimitive?.content)
+                assertEquals(cap.toString(), reply["len"]?.jsonPrimitive?.content)
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    // One byte over the cap: the connection is closed and nothing is written back, whether the newline follows in a
+    // separate write or not.
+    @Test
+    fun `a request line of the cap plus one byte closes the connection without a reply`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.registerHandler("echo") { _, json -> """{"ok":true,"len":${json.length}}""" }
+                server!!.start(serverScope)
+                waitForSocket(socketPath)
+
+                val cap = 64 * 1024
+                val prefix = "{\"verb\":\"echo\",\"pad\":\""
+                val suffix = "\"}"
+                val req = prefix + "a".repeat(cap + 1 - prefix.length - suffix.length) + suffix
+                assertEquals(cap + 1, req.toByteArray(Charsets.UTF_8).size, "the line is the cap plus one")
+                val client = connectClient()
+                writeAll(client, req.toByteArray(Charsets.UTF_8))
+                delay(200)
+                val received = java.io.ByteArrayOutputStream()
+                val buf = ByteBuffer.allocate(8192)
+                var eof = false
+                val deadline = System.currentTimeMillis() + 10_000
+                try {
+                    writeAll(client, "\n".toByteArray(Charsets.UTF_8))
+                } catch (_: java.io.IOException) {
+                    // the server already closed on the line-less tail; the newline has nowhere to go
+                }
+                while (!eof && System.currentTimeMillis() < deadline) {
+                    buf.clear()
+                    try {
+                        val n = client.read(buf)
+                        if (n < 0) {
+                            eof = true
+                        } else if (n == 0) {
+                            delay(10)
+                        } else {
+                            received.write(buf.array(), 0, n)
+                        }
+                    } catch (_: java.io.IOException) {
+                        eof = true // a reset is a close too
+                    }
+                }
+                assertTrue(eof, "the connection must be closed by the server")
+                assertEquals(0, received.size(), "no reply for a line over the cap: ${received.toString(Charsets.UTF_8)}")
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
     @Test
     fun `a long profile name is shortened to the first four bytes of its SHA-1, lower-case hex (golden)`() {
         assertEquals("7f900025", IpcServer.canonicalDiskName("a".repeat(100)))
