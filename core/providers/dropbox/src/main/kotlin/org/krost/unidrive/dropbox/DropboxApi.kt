@@ -41,6 +41,7 @@ import org.krost.unidrive.http.RequestMetricsTap
 import org.krost.unidrive.http.parseRetryAfterHeader
 import org.krost.unidrive.http.readBoundedErrorBody
 import org.krost.unidrive.http.truncateErrorBody
+import org.krost.unidrive.http.throttleWaitMs
 import org.krost.unidrive.http.writeStagedDownload
 import java.nio.file.Path
 
@@ -269,7 +270,8 @@ class DropboxApi(
 
     private fun isThrottle(status: HttpStatusCode): Boolean = status.value == 429 || status.value == 503
 
-    // Dropbox's own wait first (the Retry-After header, or retry_after in the body), else exponential backoff.
+    // Dropbox's own wait first (the Retry-After header, or retry_after in the body), else exponential backoff;
+    // the shared throttleWaitMs applies the one-second floor and the cap to either.
     private fun backoffMs(
         response: HttpResponse,
         body: String,
@@ -281,11 +283,7 @@ class DropboxApi(
                 json.parseToJsonElement(body).jsonObject["error"]?.jsonObject?.get("retry_after")?.jsonPrimitive?.intOrNull?.toLong()
             }.getOrNull()
         val hintMs = header ?: inBody?.let { it * 1000L }
-        return if (hintMs != null) {
-            hintMs.coerceIn(MIN_WAIT_MS, MAX_WAIT_MS)
-        } else {
-            (MIN_WAIT_MS shl attempt.coerceAtMost(6)).coerceAtMost(MAX_WAIT_MS)
-        }
+        return throttleWaitMs(hintMs, (MIN_WAIT_MS shl attempt.coerceAtMost(6)).coerceAtMost(MAX_WAIT_MS), MIN_WAIT_MS, MAX_WAIT_MS)
     }
 
     companion object {

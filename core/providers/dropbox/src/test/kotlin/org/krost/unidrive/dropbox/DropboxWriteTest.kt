@@ -477,6 +477,35 @@ class DropboxWriteTest {
         }
 
     @Test
+    fun `a 429 whose Retry-After is zero still waits the one-second floor`() =
+        runTest {
+            fake.on("files/get_metadata") { Answer(429, """{"error_summary":"too_many_requests/.."}""", headers = mapOf("Retry-After" to "0")) }
+            fake.on("files/get_metadata") { Answer(body = file("/a.txt", "id:1")) }
+
+            val started = testScheduler.currentTime
+            provider.getMetadata("/a.txt")
+
+            // At least the floor; the shared budget may pace the retry a little more.
+            val waited = testScheduler.currentTime - started
+            assertTrue(waited in 1_000..3_000, "waited $waited ms")
+            assertEquals(2, fake.callsTo("files/get_metadata").size)
+        }
+
+    @Test
+    fun `a 429 whose Retry-After asks an hour is capped at the five-minute maximum`() =
+        runTest {
+            fake.on("files/get_metadata") { Answer(429, """{"error_summary":"too_many_requests/.."}""", headers = mapOf("Retry-After" to "3600")) }
+            fake.on("files/get_metadata") { Answer(body = file("/a.txt", "id:1")) }
+
+            val started = testScheduler.currentTime
+            provider.getMetadata("/a.txt")
+
+            val waited = testScheduler.currentTime - started
+            assertTrue(waited in 300_000..330_000, "waited $waited ms")
+            assertEquals(2, fake.callsTo("files/get_metadata").size)
+        }
+
+    @Test
     fun `a 429 with Retry-After in the HTTP date form waits until that date`() =
         runTest {
             val date = DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now(ZoneOffset.UTC).plusSeconds(6))
