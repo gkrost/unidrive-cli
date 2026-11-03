@@ -455,9 +455,10 @@ class MigrateConvertTest {
         val conversionDir = Files.createDirectories(profileDir.resolve("conversion-test"))
         Files.createDirectories(conversionDir.resolve("quarantine"))
         // A killed cross-volume copy's corpse: the full source size with the bytes never written —
-        // here simulated as same length, different content. A size match is exactly how such a
-        // corpse was once taken for a finished copy and the only copy of the real bytes deleted.
-        Files.write(conversionDir.resolve("quarantine/zero-tail.txt"), "the real byte".toByteArray())
+        // here simulated as the same length, different content (14 bytes either way). A size match is
+        // exactly how such a corpse was once taken for a finished copy and the only copy of the real
+        // bytes deleted, so the two files must NOT differ in size: that is the whole test.
+        Files.write(conversionDir.resolve("quarantine/zero-tail.txt"), "NOT the source".toByteArray())
         LegacyConversion.Journal.save(
             profileDir,
             LegacyConversion.Journal(
