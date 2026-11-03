@@ -132,4 +132,43 @@ class SharedWithMePaginationTest {
             assertNull(byId["shared:d-s3:r-s3"]?.hash, "a sha256Hash is not a QuickXor: no hash when quickXorHash is absent")
             provider.close()
         }
+
+    // The gather calls deltaWithShared once per delta page; listSharedWithMe is one full listing of
+    // the shared set. It must run once per walk — on the page with hasMore == false — not once per
+    // page on the same throttle budget, and the shared set must be delivered once, not per page.
+    @Test
+    fun `deltaWithShared fetches the shared set once per walk, on the last delta page`() =
+        runTest {
+            var sharedCalls = 0
+            val engine =
+                MockEngine { request ->
+                    val url = request.url.toString()
+                    val body =
+                        when {
+                            url.contains("sharedWithMe") -> {
+                                sharedCalls++
+                                page(listOf(sharedItem("s1")))
+                            }
+                            url.contains("skiptoken=P2") ->
+                                """{"value":[],"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/drive/root/delta?${'$'}skiptoken=P3"}"""
+                            url.contains("skiptoken=P3") ->
+                                """{"value":[],"@odata.deltaLink":"https://graph.microsoft.com/v1.0/me/drive/root/delta?token=T"}"""
+                            else ->
+                                """{"value":[],"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/drive/root/delta?${'$'}skiptoken=P2"}"""
+                        }
+                    respond(body, HttpStatusCode.OK, json)
+                }
+            val provider = providerWith(engine)
+
+            val first = assertIs<CapabilityResult.Success<org.krost.unidrive.DeltaPage>>(provider.deltaWithShared(null)).value
+            val second = assertIs<CapabilityResult.Success<org.krost.unidrive.DeltaPage>>(provider.deltaWithShared(first.cursor)).value
+            val third = assertIs<CapabilityResult.Success<org.krost.unidrive.DeltaPage>>(provider.deltaWithShared(second.cursor)).value
+
+            assertTrue(first.hasMore && second.hasMore, "the walk runs three delta pages")
+            assertTrue(!third.hasMore, "the third page ends the walk")
+            assertTrue(first.items.isEmpty() && second.items.isEmpty(), "no shared items while more delta pages remain")
+            assertEquals(listOf("shared:d-s1:r-s1"), third.items.map { it.id }, "the shared set is delivered once, on the last page")
+            assertEquals(1, sharedCalls, "listSharedWithMe ran exactly once for the whole walk")
+            provider.close()
+        }
 }

@@ -358,17 +358,21 @@ class IpcServer(
                                     }
                                     buf.flip()
                                     val bytes = ByteArray(buf.remaining()).also { buf.get(it) }
-                                    if (pending.size() + bytes.size > MAX_REQUEST_BYTES) {
-                                        log.warn("IPC: request too large (pending={} + read={}), closing client", pending.size(), bytes.size)
-                                        runCatching { sc.close() }
-                                        break
-                                    }
                                     pending.write(bytes)
                                     // Split on \n (a byte no multi-byte UTF-8 sequence contains); dispatch each complete line.
+                                    // The cap applies to each complete request line and to the line-less tail, not to the raw
+                                    // read: two pipelined requests that a read boundary happens to split are each within the
+                                    // cap and both get their reply (gkrost/unidrive-cli#264).
                                     var data = pending.toByteArray()
                                     var start = 0
-                                    var idx = data.indexOfNewline(0)
+                                    var tooLarge = false
+                                    var idx = data.indexOfNewline(start)
                                     while (idx >= 0) {
+                                        if (idx - start > MAX_REQUEST_BYTES) {
+                                            log.warn("IPC: request too large ({} bytes), closing client", idx - start)
+                                            tooLarge = true
+                                            break
+                                        }
                                         val line = String(data, start, idx - start, Charsets.UTF_8)
                                         start = idx + 1
                                         dispatchRequest(sc, connId, line, readAhead)
@@ -380,6 +384,16 @@ class IpcServer(
                                             start = 0
                                         }
                                         idx = data.indexOfNewline(start)
+                                    }
+                                    // A line-less tail already over the cap can only grow into a longer request; drop it here
+                                    // instead of letting pending grow without bound.
+                                    if (!tooLarge && sc.isOpen && data.size - start > MAX_REQUEST_BYTES) {
+                                        log.warn("IPC: request too large ({} bytes without a newline), closing client", data.size - start)
+                                        tooLarge = true
+                                    }
+                                    if (tooLarge) {
+                                        runCatching { sc.close() }
+                                        break
                                     }
                                     pending.reset()
                                     pending.write(data, start, data.size - start)
