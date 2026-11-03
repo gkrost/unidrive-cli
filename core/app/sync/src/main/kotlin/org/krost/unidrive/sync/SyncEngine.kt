@@ -2229,6 +2229,11 @@ open class SyncEngine(
         val previous = db.getEntry(path)
         try {
             local.parent?.let { Files.createDirectories(it) }
+            // Pace the shared budget before the runner runs: the rule file's permit
+            // is taken inside the runner, so the wait for its line slot holds no
+            // permit (see [BandwidthPacer]). The size is capped by
+            // maxRuleFileBytes (ruleFileToDownload refused larger ones).
+            bandwidth?.pace(item.size)
             val transfer = transfers.runner(path)
             transfer { applyDownload(SyncAction.DownloadContent(path, item)) }
         } catch (e: CancellationException) {
@@ -4426,14 +4431,20 @@ open class SyncEngine(
     // The bytes a transfer will move, as far as they are known before it starts:
     // the remote item's size for a download, the local file's for an upload (a
     // file that is gone paces as nothing). The budget is paced before the
-    // transfer, so only the pre-transfer size can reserve its line time.
+    // transfer, so only the pre-transfer size can reserve its line time. This
+    // answers OUTSIDE every transfer's try/catch — the pace call sits before the
+    // permit — so a local-FS error here (a file vanishing between the two stats,
+    // an unreadable directory) must never throw: pace as nothing and let the
+    // transfer itself report the failure inside its own catch.
     private fun transferBytes(action: SyncAction): Long =
         when (action) {
             is SyncAction.DownloadContent -> action.remoteItem.size
             is SyncAction.Upload ->
-                placeholder.resolveLocal(action.path).let { p ->
-                    if (Files.isRegularFile(p)) Files.size(p) else 0L
-                }
+                runCatching {
+                    placeholder.resolveLocal(action.path).let { p ->
+                        if (Files.isRegularFile(p)) Files.size(p) else 0L
+                    }
+                }.getOrDefault(0L)
             else -> 0L
         }
 

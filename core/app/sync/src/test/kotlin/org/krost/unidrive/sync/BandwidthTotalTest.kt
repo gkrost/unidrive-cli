@@ -58,7 +58,10 @@ class BandwidthTotalTest {
         )
     }
 
-    private fun engine(maxBandwidthKbps: Int?) =
+    private fun engine(
+        maxBandwidthKbps: Int?,
+        onLocalScanDone: (() -> Unit)? = null,
+    ) =
         SyncEngine(
             provider = provider,
             db = db,
@@ -68,7 +71,12 @@ class BandwidthTotalTest {
                 override fun onScanProgress(
                     phase: String,
                     count: Int,
-                ) {}
+                ) {
+                    // Fires once with the scanned count when the local scan has
+                    // completed: the snapshot is taken, the plan and the transfers
+                    // are still ahead.
+                    if (phase == "local" && count > 0) onLocalScanDone?.invoke()
+                }
 
                 override fun onActionCount(
                     total: Int,
@@ -166,5 +174,34 @@ class BandwidthTotalTest {
                 "transfers must keep starting while earlier actions are already done " +
                     "(last start ${maxStartMs}ms, first done ${minDoneMs}ms)",
             )
+        }
+
+    @Test
+    fun `a vanished upload file does not abort the pass`() =
+        runBlocking {
+            // The pace size of an upload is read OUTSIDE the transfer's try/catch
+            // (before the permit), so a local-FS error there must never escape the
+            // launch and cancel the pass's scope. The observable shape: a file the
+            // scan saw (its edit is planned from the scan's snapshot) but that
+            // vanishes before its transfer leaves the transfer failed — reported
+            // per-transfer, not thrown out of syncOnce. The file is deleted as the
+            // local scan completes: the plan is already backed by the snapshot,
+            // Pass 2 finds the file gone.
+            val vanishing = syncRoot.resolve("vanishing.txt")
+            Files.write(vanishing, ByteArray(2048))
+            engine(maxBandwidthKbps = 1).syncOnce()
+            Files.write(vanishing, ByteArray(2048) { i -> (i % 7).toByte() })
+            var deleted = false
+            engine(maxBandwidthKbps = 1, onLocalScanDone = {
+                if (!deleted) deleted = Files.deleteIfExists(vanishing)
+            }).syncOnce()
+
+            assertEquals(
+                listOf("/vanishing.txt", "/vanishing.txt"),
+                provider.uploadAttempts,
+                "the re-planned upload reached the provider and failed there — the pass did not abort at the pace",
+            )
+            // The failed second upload leaves the row at the first upload's state.
+            assertEquals(2048L, db.getEntry("/vanishing.txt")?.remoteSize, "the failed re-upload did not update the row")
         }
 }
