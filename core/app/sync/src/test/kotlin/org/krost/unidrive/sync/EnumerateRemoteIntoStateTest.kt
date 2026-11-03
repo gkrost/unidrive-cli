@@ -441,7 +441,7 @@ class EnumerateRemoteIntoStateTest {
                 "sink must NOT receive the canonical /Documents; got $emittedPaths",
             )
         }
-    // ── Top-level fake provider — follows the ThrottledProviderTest /
+    // ── Top-level fake provider — follows the BandwidthPacerTest /
     // CloudRelocatorTest per-test fake convention. Adds the hooks the
     // enumerate path needs: a settable remote, recorded cursors, and an
     // on-demand incomplete delta. Cursor model: each delta() advances the
