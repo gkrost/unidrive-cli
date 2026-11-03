@@ -11,10 +11,14 @@ import org.krost.unidrive.cli.LegacyInventory.PathClass
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
+import org.krost.unidrive.io.stagingSiblingName
+import org.krost.unidrive.sync.HashVerifier
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.time.Instant
 import kotlin.io.path.name
 
@@ -184,6 +188,9 @@ class MigrateUploadQuarantinedCommand : Runnable {
  */
 internal object LegacyConversion {
     const val JOURNAL_FILE = "conversion-journal.json"
+
+    /** The staging suffix of [copyAside]'s sibling, the house `*.unidrive-tmp` every sweeper matches. */
+    private const val STAGING_SUFFIX = ".unidrive-tmp"
 
     @Serializable
     data class MovedFile(
@@ -540,8 +547,13 @@ internal object LegacyConversion {
                     val destination = dir.resolve(bucket).resolve(record.path.removePrefix("/"))
                     if (Files.exists(destination)) {
                         // A copy a previous run finished but whose source delete never ran: finishing the delete is
-                        // the resume. Anything else at the destination is a different file and refuses, as before.
-                        if (record.syncRootBytes != null && Files.size(destination) == record.syncRootBytes) {
+                        // the resume — proven by equal content, never by size. A killed cross-volume copy can leave
+                        // the full source size with an unwritten tail, and a size match is exactly how such a corpse
+                        // was once taken for a finished copy; equal SHA-256 is the proof the bytes really crossed.
+                        // Anything else at the destination is a different file and refuses, as before.
+                        if (Files.isRegularFile(destination) &&
+                            HashVerifier.computeSha256Hex(source) == HashVerifier.computeSha256Hex(destination)
+                        ) {
                             Files.delete(source)
                         } else {
                             System.err.println("Error: the resume destination already exists with different content: $destination")
@@ -647,8 +659,8 @@ internal object LegacyConversion {
 
     /**
      * Moves [source] to [destination] whole before the source is given up: an atomic move when the volume has one,
-     * else a copy verified by size and only then the delete. The sync root can lie on another volume than the
-     * profile folder, and a copy that fell short must never take the only differing copy of the bytes with it.
+     * else the cross-volume [copyAside]. The sync root can lie on another volume than the profile folder, and a
+     * copy that fell short must never take the only differing copy of the bytes with it.
      */
     private fun moveAside(
         source: Path,
@@ -660,13 +672,45 @@ internal object LegacyConversion {
             Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE)
             return
         } catch (_: AtomicMoveNotSupportedException) {
-            // Another volume: carry the bytes over, check, then give up the source.
+            // Another volume: carry the bytes over through a staging name, check, then give up the source.
         }
-        Files.copy(source, destination)
-        val copied = Files.size(destination)
-        if (expectedBytes != null && copied != expectedBytes) {
-            Files.deleteIfExists(destination)
-            error("the copy of $source fell short: $copied of $expectedBytes bytes at $destination")
+        copyAside(source, destination, expectedBytes)
+    }
+
+    /**
+     * The cross-volume move, one step short of giving up the source at every moment: the bytes are copied to a
+     * staging sibling of [destination] (never to [destination] itself, where a killed copy would leave a file a
+     * later run can mistake for the finished move), flushed with [FileChannel.force], verified — size against
+     * [expectedBytes], the inventory's record, then SHA-256 against the [source] — and only then renamed into
+     * place atomically and the source deleted. The staging pattern and the force are [org.krost.unidrive.localfs.LocalFsProvider]'s
+     * durable copy; the SHA-256 is what proves the bytes whole, since a killed copy can carry the full source size
+     * with an unwritten tail. Internal so the cross-volume tests can drive the verification directly: through
+     * `execute` an imperfect copy is reachable only by killing the run mid-file.
+     */
+    internal fun copyAside(
+        source: Path,
+        destination: Path,
+        expectedBytes: Long?,
+    ) {
+        Files.createDirectories(destination.parent)
+        val staging = destination.resolveSibling(stagingSiblingName(destination.fileName.toString(), STAGING_SUFFIX))
+        try {
+            Files.copy(source, staging, StandardCopyOption.REPLACE_EXISTING)
+            FileChannel.open(staging, StandardOpenOption.WRITE).use { it.force(true) }
+            val copied = Files.size(staging)
+            if (expectedBytes != null && copied != expectedBytes) {
+                error("the copy of $source fell short: $copied of $expectedBytes bytes at $destination")
+            }
+            val expected = HashVerifier.computeSha256Hex(source)
+            val actual = HashVerifier.computeSha256Hex(staging)
+            if (actual != expected) {
+                error("the copy of $source does not match its source (sha256 $actual, expected $expected) at $destination")
+            }
+            Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (e: Exception) {
+            // Whatever failed, the staging corpse goes: no partial copy is ever left behind for a resume to trip on.
+            Files.deleteIfExists(staging)
+            throw e
         }
         Files.delete(source)
     }

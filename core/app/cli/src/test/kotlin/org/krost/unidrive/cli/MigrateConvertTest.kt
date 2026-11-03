@@ -413,6 +413,71 @@ class MigrateConvertTest {
     }
 
     @Test
+    fun `a resume destination that matches the source by content finishes the interrupted delete`() {
+        val (config, profileDir, syncRoot) = fixture()
+        syncRoot.resolve("half-moved.txt").writeText("the whole file")
+
+        // A journal from an interrupted run whose copy of the file already landed whole, but whose
+        // source delete never ran (a kill between the rename into place and the delete).
+        val conversionDir = Files.createDirectories(profileDir.resolve("conversion-test"))
+        Files.createDirectories(conversionDir.resolve("quarantine"))
+        Files.write(conversionDir.resolve("quarantine/half-moved.txt"), "the whole file".toByteArray())
+        LegacyConversion.Journal.save(
+            profileDir,
+            LegacyConversion.Journal(
+                engineVersion = "0.0.1",
+                startedAt = "2026-10-08T00:00:00Z",
+                profileName = "p",
+                targetMode = "mount",
+                disposition = "retire",
+                phases = listOf("PLAN", "INVENTORY"),
+                conversionDir = conversionDir.toString(),
+            ),
+        )
+
+        val code = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+
+        assertEquals(0, code)
+        assertTrue(!Files.exists(syncRoot.resolve("half-moved.txt")), "the finished copy's missing delete is completed")
+        assertEquals("the whole file", Files.readString(conversionDir.resolve("quarantine/half-moved.txt")))
+        val journal = LegacyConversion.Journal.load(profileDir)!!
+        assertTrue("CONVERTED" in journal.phases)
+        assertEquals(1, journal.quarantined.size, "the resumed file is still named for the upload")
+    }
+
+    @Test
+    fun `a same-size resume destination with different content refuses and keeps the source`() {
+        val (config, profileDir, syncRoot) = fixture()
+        val source = syncRoot.resolve("zero-tail.txt")
+        Files.write(source, "the real bytes".toByteArray())
+
+        val conversionDir = Files.createDirectories(profileDir.resolve("conversion-test"))
+        Files.createDirectories(conversionDir.resolve("quarantine"))
+        // A killed cross-volume copy's corpse: the full source size with the bytes never written —
+        // here simulated as same length, different content. A size match is exactly how such a
+        // corpse was once taken for a finished copy and the only copy of the real bytes deleted.
+        Files.write(conversionDir.resolve("quarantine/zero-tail.txt"), "the real byte".toByteArray())
+        LegacyConversion.Journal.save(
+            profileDir,
+            LegacyConversion.Journal(
+                engineVersion = "0.0.1",
+                startedAt = "2026-10-08T00:00:00Z",
+                profileName = "p",
+                targetMode = "mount",
+                disposition = "retire",
+                phases = listOf("PLAN", "INVENTORY"),
+                conversionDir = conversionDir.toString(),
+            ),
+        )
+
+        val code = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+
+        assertEquals(1, code, "a destination the hashes cannot prove is not a finished copy")
+        assertEquals("the real bytes", Files.readString(source), "the only differing copy survives the resume")
+        assertTrue(!config.readText().contains("mode"), "nothing was published")
+    }
+
+    @Test
     fun `resuming with a different mode is refused`() {
         val (config, profileDir, syncRoot) = fixture()
         syncRoot.resolve("f.txt").writeText("x")
