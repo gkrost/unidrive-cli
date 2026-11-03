@@ -34,6 +34,7 @@ import org.krost.unidrive.http.parseRetryAfterHeader
 import org.krost.unidrive.http.readBoundedErrorBody
 import org.krost.unidrive.http.streamingFileBody
 import org.krost.unidrive.http.truncateErrorBody
+import org.krost.unidrive.http.throttleWaitMs
 import org.krost.unidrive.http.writeStagedDownload
 import org.krost.unidrive.s3.SigV4Signer.Companion.uriEncode
 import org.w3c.dom.Element
@@ -192,7 +193,8 @@ class S3Api(
             val outcome: Fetch =
                 statement.execute { response ->
                     when {
-                        isRetryable(response.status.value) && attempt < MAX_ATTEMPTS -> Fetch.Wait(backoffMs(response, attempt))
+                        isRetryable(response.status.value) && attempt < MAX_ATTEMPTS ->
+                            Fetch.Wait(backoffMs(response, attempt), isThrottle(response.status.value))
                         !response.status.isSuccess() -> throw failure(response, readBoundedErrorBody(response), "GET")
                         else -> {
                             budget.recordSuccess()
@@ -203,7 +205,7 @@ class S3Api(
             when (outcome) {
                 is Fetch.Done -> return outcome.bytes
                 is Fetch.Wait -> {
-                    budget.recordThrottle(outcome.ms)
+                    if (outcome.throttle) budget.recordThrottle(outcome.ms)
                     delay(outcome.ms)
                     attempt++
                 }
@@ -212,7 +214,10 @@ class S3Api(
     }
 
     private sealed interface Fetch {
-        data class Wait(val ms: Long) : Fetch
+        data class Wait(
+            val ms: Long,
+            val throttle: Boolean,
+        ) : Fetch
 
         data class Done(val bytes: Long) : Fetch
     }
@@ -435,7 +440,7 @@ class S3Api(
             if (isRetryable(response.status.value) && attempt < MAX_ATTEMPTS) {
                 val waitMs = backoffMs(response, attempt)
                 log.warn("S3 answered {} on {} {}; retrying in {} ms", response.status.value, method.value, key ?: "(bucket)", waitMs)
-                budget.recordThrottle(waitMs)
+                if (isThrottle(response.status.value)) budget.recordThrottle(waitMs)
                 delay(waitMs)
                 attempt++
                 continue
@@ -481,16 +486,15 @@ class S3Api(
 
     private fun isRetryable(status: Int): Boolean = status == 500 || status == 503 || status == 429
 
+    /** The budget's matrix counts only 429/503 as throttles; a 500 retries on the ladder without feeding the storm breaker. */
+    private fun isThrottle(status: Int): Boolean = status == 429 || status == 503
+
     private fun backoffMs(
         response: HttpResponse,
         attempt: Int,
     ): Long {
         val retryAfterMs = parseRetryAfterHeader(response.headers["Retry-After"])
-        return if (retryAfterMs != null) {
-            retryAfterMs.coerceIn(MIN_WAIT_MS, MAX_WAIT_MS)
-        } else {
-            (MIN_WAIT_MS shl attempt).coerceAtMost(MAX_WAIT_MS)
-        }
+        return throttleWaitMs(retryAfterMs, (MIN_WAIT_MS shl attempt).coerceAtMost(MAX_WAIT_MS), MIN_WAIT_MS, MAX_WAIT_MS)
     }
 
     companion object {
@@ -511,7 +515,8 @@ class S3Api(
                 "InvalidSecurity",
                 "AccessKeyDisabled",
             )
-        private const val MIN_WAIT_MS = 500L
+        // The shared one-second throttle floor; the cap stays this client's own.
+        private const val MIN_WAIT_MS = 1_000L
         private const val MAX_WAIT_MS = 60_000L
 
         fun md5Base64(bytes: ByteArray): String = Base64.getEncoder().encodeToString(MessageDigest.getInstance("MD5").digest(bytes))
