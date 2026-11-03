@@ -27,6 +27,8 @@ dependencies {
 
     // FakeCloudProvider implements the provider SPI and suspends (delay).
     testFixturesApi(project(":app:core"))
+    // The content hash a hash-capable fake answers is the engine's own HashVerifier, so the two cannot disagree.
+    testFixturesImplementation(project(":app:engine-core"))
     testFixturesImplementation(libs.kotlinx.coroutines.core)
 
     testImplementation(kotlin("test"))
