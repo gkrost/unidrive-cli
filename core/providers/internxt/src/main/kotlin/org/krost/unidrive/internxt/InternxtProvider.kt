@@ -352,8 +352,12 @@ class InternxtProvider(
     }
 
     override suspend fun logout() {
-        notificationsClient?.disconnect()
-        notificationsClient = null
+        // Under the start lock, like reloadCredentials and forgetCredentials: a sign-in re-running the
+        // notifications client must not race the teardown, and the disconnect must not race a start.
+        notificationsStartLock.withLock {
+            notificationsClient?.disconnect()
+            notificationsClient = null
+        }
         clearCachedSeed()
         // archive#1054: the staged ciphertext of the account's files and their resume state do not outlive the sign-in.
         withContext(Dispatchers.IO) { tombstoneStore.discardAll() }
@@ -363,8 +367,24 @@ class InternxtProvider(
     override fun attachRequestMetrics(sink: org.krost.unidrive.http.RequestMetricsSink?) = api.attachRequestMetrics(sink)
 
     override fun close() {
-        notificationsClient?.disconnect()
-        notificationsClient = null
+        // The suspend paths take [notificationsStartLock] around this teardown; close() cannot suspend,
+        // so it waits a few non-blocking tries for a start that holds the lock (its credential fetch ends
+        // when the daemon's serve scope is cancelled) and then tears down regardless — disconnect() is
+        // idempotent, and the only window left is a start between its last suspension point and its
+        // connect, microseconds wide.
+        var locked = notificationsStartLock.tryLock()
+        var tries = 0
+        while (!locked && tries < 50) {
+            Thread.sleep(10)
+            locked = notificationsStartLock.tryLock()
+            tries++
+        }
+        try {
+            notificationsClient?.disconnect()
+            notificationsClient = null
+        } finally {
+            if (locked) notificationsStartLock.unlock()
+        }
         clearCachedSeed()
         authService.close()
         api.close()
