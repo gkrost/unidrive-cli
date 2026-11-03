@@ -39,6 +39,7 @@ import org.krost.unidrive.http.parseRetryAfterHeader
 import org.krost.unidrive.http.progressTrackingBody
 import org.krost.unidrive.http.progressTrackingFileBody
 import org.krost.unidrive.http.progressTrackingFileRangeBody
+import org.krost.unidrive.http.throttleWaitMs
 import org.krost.unidrive.http.withUploadWatchdog
 import org.krost.unidrive.internxt.model.*
 import org.slf4j.LoggerFactory
@@ -148,6 +149,10 @@ class InternxtApiService(
         internal const val CONNECT_OUTAGE_BUDGET_MS: Long = 180_000L
         private const val OUTAGE_FIRST_DELAY_MS: Long = 2_000L
         private const val OUTAGE_MAX_DELAY_MS: Long = 30_000L
+
+        /** The bounds the throttle ladders apply to a server's Retry-After hint: at least one second, at most a minute. */
+        private const val MIN_THROTTLE_WAIT_MS: Long = 1_000L
+        private const val MAX_THROTTLE_WAIT_MS: Long = 60_000L
 
         /** How many shard pointers one [getBridgeMirrors] query asks for; an object with more shards cannot be judged from it. */
         internal const val BRIDGE_MIRROR_LIMIT: Int = 3
@@ -1915,7 +1920,7 @@ class InternxtApiService(
                     lastException = e
                     if (index < delays.size) {
                         val retryAfterMs = e.retryAfterMs ?: parseRetryAfter(e.message)
-                        kotlinx.coroutines.delay(retryAfterMs?.coerceIn(500L, 60_000L) ?: delay)
+                        kotlinx.coroutines.delay(throttleWaitMs(retryAfterMs, delay, MIN_THROTTLE_WAIT_MS, MAX_THROTTLE_WAIT_MS))
                     }
                 } else {
                     throw e
@@ -2117,11 +2122,13 @@ class InternxtApiService(
                 // `retry_after` hint (parsed back out of the exception message)
                 // > exponential backoff. Header wins per RFC 7231 §7.1.3, which
                 // is the canonical place for the server to put this signal.
-                val retryAfterMs =
-                    e.retryAfterMs
-                        ?: parseRetryAfter(e.message)
-                        ?: (1000L shl (attempt - 1))
-                val cappedMs = retryAfterMs.coerceIn(500L, 60_000L)
+                val cappedMs =
+                    throttleWaitMs(
+                        e.retryAfterMs ?: parseRetryAfter(e.message),
+                        1000L shl (attempt - 1),
+                        MIN_THROTTLE_WAIT_MS,
+                        MAX_THROTTLE_WAIT_MS,
+                    )
                 log.warn(
                     "Internxt {} on attempt {}/{}, sleeping {}ms before retry",
                     e.statusCode,
