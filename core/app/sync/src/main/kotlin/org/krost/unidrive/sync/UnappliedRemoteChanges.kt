@@ -81,6 +81,18 @@ internal class UnappliedRemoteChanges(
             db.clearPendingLocal(entry.path)
             return
         }
+        // The children of a retried folder tombstone were not themselves tombstoned, so the scan plans
+        // them as uploads of the ids the folder delete removed. Those ids replace the deleted items.
+        // Drop them: the upload is a new item, after this pass recreates the folder.
+        if (entry.isFolder) {
+            val prefix = entry.path.trimEnd('/') + "/"
+            for (i in actions.indices) {
+                val upload = actions[i] as? SyncAction.Upload ?: continue
+                if (upload.remoteId != null && upload.path.startsWith(prefix)) {
+                    actions[i] = upload.copy(remoteId = null)
+                }
+            }
+        }
         actions.removeAll { it.path == entry.path && it !is SyncAction.DeleteLocal }
         actions.add(SyncAction.DeleteLocal(entry.path))
         log.debug("Retrying an unapplied remote delete of {}", entry.path)

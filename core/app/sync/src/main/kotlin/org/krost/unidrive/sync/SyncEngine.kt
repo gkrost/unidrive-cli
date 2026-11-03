@@ -202,6 +202,10 @@ open class SyncEngine(
     @Volatile
     private var passRemoteChanges: Map<String, CloudItem> = emptyMap()
 
+    // Conflict copies this pass's deletes moved aside. A folder delete runs after its children, and the
+    // child's row is already tombstoned, so the folder walk cannot see the copy. Cleared at each apply.
+    private val editsKeptAside = mutableListOf<String>()
+
     // False until this pass's listing is published. A rule-file probe before that must not cache "absent".
     @Volatile
     private var remoteListingReady = false
@@ -1548,6 +1552,8 @@ open class SyncEngine(
         var batchCommitted = false
         try {
             withContext(Priority.Foreground) {
+                // A copy kept aside on an earlier pass must not defer this pass's folder deletes.
+                editsKeptAside.clear()
                 // archive#123: process a maximal contiguous run of CreateRemoteFolder
                 // actions with bounded concurrency instead of one blocking
                 // round-trip each. topologicalApplyOrder has already placed any
@@ -3048,12 +3054,16 @@ open class SyncEngine(
     private fun editedSinceScan(
         localPath: Path,
         row: SyncEntry,
+        // A caller that already judged these bytes (last-writer-wins) passes the stats it saw.
+        // Null uses the row, which is the scan baseline.
+        baselineMtime: Long? = null,
+        baselineSize: Long? = null,
     ): Boolean {
         if (looksLikePlaceholder(localPath, row, shorterIsPartialDownload = false)) return false
-        val baselineMtime = row.localMtime ?: return false
-        val baselineSize = row.localSize ?: return false
+        val mtime = baselineMtime ?: row.localMtime ?: return false
+        val size = baselineSize ?: row.localSize ?: return false
         val stat = Transfers.statBeforeUpload(localPath) ?: return false
-        return stat.first != baselineMtime || stat.second != baselineSize
+        return stat.first != mtime || stat.second != size
     }
 
     // Moves [localPath] aside as a conflict-local copy when its current stats differ from the row's baseline
@@ -3067,10 +3077,12 @@ open class SyncEngine(
         plannedFor: String = "download",
         // The remote side the baseline lost to, for the conflict record.
         remoteState: ChangeState = ChangeState.MODIFIED,
+        baselineMtime: Long? = null,
+        baselineSize: Long? = null,
     ): String? {
         if (!Files.isRegularFile(localPath)) return null
         val row = db.getEntry(path) ?: return null
-        if (!editedSinceScan(localPath, row)) return null
+        if (!editedSinceScan(localPath, row, baselineMtime, baselineSize)) return null
         val conflictPath =
             keepBothCopyPath(path, conflictStamp()) { candidate ->
                 Files.exists(placeholder.resolveLocal(candidate), java.nio.file.LinkOption.NOFOLLOW_LINKS) || db.getEntry(candidate) != null
@@ -3509,18 +3521,25 @@ open class SyncEngine(
         }
     }
 
-    private suspend fun applyDeleteLocal(action: SyncAction.DeleteLocal) {
+    private suspend fun applyDeleteLocal(
+        action: SyncAction.DeleteLocal,
+        // Stats a last-writer-wins decision already compared. Null uses the row's scan baseline.
+        observedMtime: Long? = null,
+        observedSize: Long? = null,
+    ) {
         // Resolved before any branch, so a path outside the sync root is refused whichever way the profile deletes.
         val localPath = placeholder.resolveLocal(action.path)
         // The plan judged this path by its scan baseline. A file whose stats moved off the baseline (an edit
         // that landed while the delete waited — the streaming drain can come a whole remote gather later) is
         // not the file the cloud deleted: its edit is kept aside as a conflict-local copy and uploaded, and
         // the trash never touches it. A folder with such an edited file below is kept whole; its delete
-        // re-plans on the next pass, where the scan reports the edit.
+        // re-plans on the next pass, where the scan reports the edit. A copy already moved aside by a child
+        // delete of this same pass counts too: that child's row is tombstoned, so the folder walk misses it,
+        // and a recursive delete would be the only remaining copy when the best-effort upload failed.
         val row = db.getEntry(action.path)
         val keptLocalEdit =
             if (row != null && row.isFolder) {
-                if (folderHoldsEditSinceScan(action.path)) {
+                if (folderHoldsEditSinceScan(action.path) || keptEditUnder(action.path)) {
                     log.warn(
                         "Not deleting {}: a file below it was edited after the scan planned its delete; the delete is retried on the next sync",
                         action.path,
@@ -3533,7 +3552,14 @@ open class SyncEngine(
                 }
                 null
             } else {
-                keepLocalEditAsideIfEditedSinceScan(action.path, localPath, plannedFor = "delete", remoteState = ChangeState.DELETED)
+                keepLocalEditAsideIfEditedSinceScan(
+                    action.path,
+                    localPath,
+                    plannedFor = "delete",
+                    remoteState = ChangeState.DELETED,
+                    baselineMtime = observedMtime,
+                    baselineSize = observedSize,
+                )?.also { editsKeptAside.add(it) }
             }
         if (keptLocalEdit == null) {
             withEchoSuppression(action.path) {
@@ -3585,6 +3611,12 @@ open class SyncEngine(
             if (Files.isRegularFile(childLocal) && editedSinceScan(childLocal, child)) return true
         }
         return false
+    }
+
+    // True when this pass already moved a conflict copy into [folderPath] or below it.
+    private fun keptEditUnder(folderPath: String): Boolean {
+        val prefix = folderPath.trimEnd('/') + "/"
+        return editsKeptAside.any { it == folderPath || it.startsWith(prefix) }
     }
 
     /**
@@ -3857,6 +3889,9 @@ open class SyncEngine(
                             parentUuid = existing.parentId,
                         ),
                     )
+                    // The upsert keeps a deferred delete when the adopted folder reuses its remote id.
+                    // That mark would remove the folder on a later pass, after the edit it protected is synced.
+                    db.clearPendingLocal(action.path)
                     return
                 }
                 auditLog?.emit(
@@ -3882,6 +3917,9 @@ open class SyncEngine(
                 lastSynced = Instant.now(),
             ),
         )
+        // The upsert keeps a deferred delete when the recreated folder reuses its remote id.
+        // That mark would remove the folder on a later pass, after the edit it protected is synced.
+        db.clearPendingLocal(action.path)
         // UD-113: success path.
         auditLog?.emit(
             action = "CreateRemoteFolder",
@@ -4179,7 +4217,10 @@ open class SyncEngine(
             // ran: the row stayed unchanged, and the next pass planned an upload against the gone item.
             // applyDeleteLocal tombstones or drops the row, so nothing is left to re-plan.
             if (Files.exists(localPath)) {
-                applyDeleteLocal(SyncAction.DeleteLocal(action.path))
+                // The decision already saw these bytes. Comparing the delete against the older synced
+                // baseline would keep that same edit aside and upload it under a conflict name.
+                val judged = if (Files.isRegularFile(localPath)) Transfers.statBeforeUpload(localPath) else null
+                applyDeleteLocal(SyncAction.DeleteLocal(action.path), judged?.first, judged?.second)
             } else {
                 val row = db.getEntry(action.path)
                 val remoteId = row?.remoteId

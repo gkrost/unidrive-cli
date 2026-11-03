@@ -21,6 +21,8 @@ import kotlin.test.assertTrue
  * on the streaming path the delete waits for the drain, so the unprotected window can span the whole
  * remote gather. The edit is kept aside as a conflict-local copy, the way a download's losing edit is
  * kept; a folder holding such an edit is kept whole and its delete re-plans on the next pass.
+ * A copy already moved aside by a child delete of the same pass keeps its parent too, and the
+ * retried folder uploads that edit as a new item.
  */
 class RemoteDeleteVsLocalEditTest {
     private lateinit var syncRoot: Path
@@ -208,6 +210,70 @@ class RemoteDeleteVsLocalEditTest {
             assertTrue(
                 provider.uploadedPaths.contains("/proj/a.txt"),
                 "the surviving edit uploads on the following pass, found ${provider.uploadedPaths}",
+            )
+            assertNull(
+                provider.lastUploadExistingRemoteId,
+                "the edit is a new item: the deleted child's id is not replaced",
+            )
+
+            // The folder was recreated so the edit had a parent (the plan keeps a folder that holds an
+            // unsynced edit), which also retired the deferred delete: nothing removes the edit after it synced.
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-4"
+            engine.syncOnce()
+            assertTrue(Files.exists(syncRoot.resolve("proj/a.txt")), "the uploaded edit stays after the delete is settled")
+            assertContentEquals(editBytes, Files.readAllBytes(syncRoot.resolve("proj/a.txt")))
+        }
+
+    @Test
+    fun `a parent delete does not erase a child conflict copy when its upload fails`() =
+        runTest {
+            provider.files["/proj/a.txt"] = baselineBytes
+            provider.deltaItems =
+                listOf(
+                    cloudItem("/proj", size = 0, isFolder = true),
+                    cloudItem("/proj/a.txt", size = baselineBytes.size.toLong()),
+                )
+            engine.syncOnce()
+            assertTrue(Files.isDirectory(syncRoot.resolve("proj")))
+
+            // Both tombstones, deepest first. The child's edit is moved aside and its upload fails,
+            // so the only copy is an untracked sibling. The parent delete must not take it.
+            provider.deltaItems =
+                listOf(
+                    cloudItem("/proj", size = 0, isFolder = true, deleted = true),
+                    cloudItem("/proj/a.txt", deleted = true),
+                )
+            provider.deltaCursor = "cursor-2"
+            provider.uploadFailCount = 1
+            var editLanded = false
+            val editing =
+                editingAfterThePlan {
+                    editLocally(syncRoot.resolve("proj").resolve("a.txt"))
+                    editLanded = true
+                }
+            engineWith(editing).syncOnce()
+            assertTrue(editLanded, "the edit must land after the plan, before the deletes apply")
+
+            assertTrue(
+                filesHolding(editBytes).isNotEmpty(),
+                "the edited bytes survive the failed upload and the enclosing delete",
+            )
+
+            // The next pass plans the untracked copy's upload; the plan keeps the folder for it and
+            // recreates it remotely, so the retried delete never takes the copy.
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-3"
+            engine.syncOnce()
+
+            assertTrue(
+                filesHolding(editBytes).isNotEmpty(),
+                "the copy outlives the pass that retries the folder delete",
+            )
+            assertTrue(Files.isDirectory(syncRoot.resolve("proj")), "the folder stays while its kept-aside copy is unsettled")
+            assertTrue(
+                provider.createdFolders.contains("/proj"),
+                "the folder is recreated so the copy has a parent, found ${provider.createdFolders}",
             )
         }
 }
