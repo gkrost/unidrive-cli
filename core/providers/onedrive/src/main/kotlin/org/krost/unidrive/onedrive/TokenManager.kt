@@ -156,11 +156,33 @@ class TokenManager(
                 if (refreshToken != null) {
                     try {
                         val refreshed = oauthService.refreshToken(refreshToken)
+                        // The refresh succeeded. A failed save of it (an antivirus scanner or a backup tool
+                        // holding the token file) must not surface as an auth failure: the new token is live
+                        // in memory and the caller gets it. The next refresh (or a sign-in) is the retry of
+                        // the save — every successful refresh saves again. The failure is recorded so the
+                        // health surface names the save, not "authentication expired".
                         val stored =
                             refreshLatch.commitIfCurrent(generation) {
                                 token = refreshed
-                                oauthService.saveToken(refreshed)
-                                lastRefreshFailure = null
+                                try {
+                                    oauthService.saveToken(refreshed)
+                                    lastRefreshFailure = null
+                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    log.warn(
+                                        "The refreshed token could not be saved to {}: {}: {}. It stays in memory; the next refresh or sign-in saves it.",
+                                        config.tokenPath,
+                                        e.javaClass.simpleName,
+                                        e.message,
+                                    )
+                                    lastRefreshFailure =
+                                        RefreshFailure(
+                                            timestamp = java.time.Instant.now(),
+                                            errorClass = e.javaClass.simpleName,
+                                            message = "saving the refreshed token failed: ${e.message}",
+                                        )
+                                }
                             }
                         if (stored) return@withRefresh refreshed
                         signedOut = true
