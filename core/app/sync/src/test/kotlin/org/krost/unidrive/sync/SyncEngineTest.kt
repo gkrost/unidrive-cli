@@ -406,6 +406,90 @@ class SyncEngineTest {
         }
 
     @Test
+    fun `a remote rename inside a locally deleted folder does not delete the remote folder`() =
+        runTest {
+            val bytes = "keep me".toByteArray()
+            provider.files["/dir/a.txt"] = bytes
+            provider.deltaItems =
+                listOf(
+                    cloudItem("/dir", size = 0, isFolder = true),
+                    cloudItem("/dir/a.txt", size = bytes.size.toLong()),
+                )
+            engine.syncOnce()
+            assertTrue(Files.isDirectory(syncRoot.resolve("dir")))
+
+            syncRoot.resolve("dir").toFile().deleteRecursively()
+            provider.files["/dir/b.txt"] = provider.files.remove("/dir/a.txt")!!
+            provider.deltaItems = listOf(cloudItem("/dir/b.txt", size = bytes.size.toLong()).copy(id = "id-/dir/a.txt"))
+            provider.deltaCursor = "cursor-2"
+            engine.syncOnce()
+
+            assertTrue(
+                provider.deletedPaths.none { it == "/dir" || it == "/dir/a.txt" || it.startsWith("/dir/") },
+                "the renamed file must not go with the folder delete; deleted ${provider.deletedPaths}",
+            )
+            assertContentEquals(bytes, provider.files.getValue("/dir/b.txt"))
+
+            // The move's source went with the folder, so the local move lands as a stub and the content
+            // is still to be fetched. Nothing re-delivers the rename: the passes must settle on that
+            // fetch, and the folder delete must never take the live child with the subtree.
+            repeat(3) { engine.syncOnce() }
+
+            assertContentEquals(bytes, Files.readAllBytes(syncRoot.resolve("dir/b.txt")))
+            assertContentEquals(bytes, provider.files.getValue("/dir/b.txt"))
+            assertTrue(
+                provider.deletedPaths.none { it == "/dir" || it.startsWith("/dir/") },
+                "a live renamed child keeps the folder delete waiting; deleted ${provider.deletedPaths}",
+            )
+            assertTrue(db.getEntry("/dir/b.txt")?.isHydrated == true)
+            assertTrue(db.pendingLocalMarks().isEmpty(), "no failed move to retry: ${db.pendingLocalMarks()}")
+        }
+
+    @Test
+    fun `a local move that keeps failing in a locally deleted folder is fetched instead of deleted`() =
+        runTest {
+            val bytes = "keep me".toByteArray()
+            provider.files["/dir/a.txt"] = bytes
+            provider.deltaItems =
+                listOf(
+                    cloudItem("/dir", size = 0, isFolder = true),
+                    cloudItem("/dir/a.txt", size = bytes.size.toLong()),
+                )
+            engine.syncOnce()
+            assertTrue(Files.isDirectory(syncRoot.resolve("dir")))
+
+            val placeholder = FlakyPlaceholder(syncRoot, failCreates = true)
+            val flaky = flakyEngine(placeholder)
+            syncRoot.resolve("dir").toFile().deleteRecursively()
+            provider.files["/dir/b.txt"] = provider.files.remove("/dir/a.txt")!!
+            // The same hash as before the rename: the move carries the bytes, no fetch is planned with it.
+            provider.deltaItems =
+                listOf(cloudItem("/dir/b.txt", size = bytes.size.toLong()).copy(id = "id-/dir/a.txt", hash = "hash-/dir/a.txt"))
+            provider.deltaCursor = "cursor-2"
+            // The rename's local move has no source and its stub cannot be created: one failure per pass.
+            flaky.syncOnce()
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-3"
+            // The mark retries the move until the retry bound is reached; each pass holds the folder's delete.
+            repeat(7) { flaky.syncOnce() }
+            assertTrue(
+                provider.deletedPaths.none { it == "/dir" || it.startsWith("/dir/") },
+                "the failing move holds the folder's delete; deleted ${provider.deletedPaths}",
+            )
+            assertTrue(db.pendingLocalMarks().isNotEmpty(), "the failed move stays marked for the retry")
+
+            // The bound is reached: the renamed item is fetched to its new path, not deleted with the row.
+            flaky.syncOnce()
+            assertTrue(
+                provider.deletedPaths.none { it == "/dir" || it == "/dir/a.txt" || it.startsWith("/dir/") },
+                "the renamed file is fetched, never deleted; deleted ${provider.deletedPaths}",
+            )
+            assertContentEquals(bytes, provider.files.getValue("/dir/b.txt"))
+            assertContentEquals(bytes, Files.readAllBytes(syncRoot.resolve("dir/b.txt")))
+            assertTrue(db.pendingLocalMarks().isEmpty(), "the fetch supersedes the move mark: ${db.pendingLocalMarks()}")
+        }
+
+    @Test
     fun `a remote delete that keeps failing stays marked and is retried`() =
         runTest {
             val placeholder = FlakyPlaceholder(syncRoot, failDeletes = true)
@@ -4439,12 +4523,13 @@ class SyncEngineTest {
             placeholder = placeholder,
         )
 
-    /** deleteLocal / moveLocal throw until their counters run out. useTrash must be false for deleteLocal to run. */
+    /** deleteLocal / moveLocal / createPlaceholder throw until their counters run out. useTrash must be false for deleteLocal to run. */
     private class FlakyPlaceholder(
         root: Path,
         private var deleteFailures: Int = 0,
         private var moveFailures: Int = 0,
         private val failDeletes: Boolean = false,
+        private val failCreates: Boolean = false,
     ) : PlaceholderManager(root) {
         var deleteAttempts = 0
             private set
@@ -4468,6 +4553,15 @@ class SyncEngineTest {
                 throw java.io.IOException("file is open")
             }
             super.moveLocal(source, target, replaceExisting)
+        }
+
+        override fun createPlaceholder(
+            remotePath: String,
+            size: Long,
+            modified: Instant?,
+        ) {
+            if (failCreates) throw java.io.IOException("file is open")
+            super.createPlaceholder(remotePath, size, modified)
         }
     }
 

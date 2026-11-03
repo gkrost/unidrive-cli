@@ -17,6 +17,9 @@ internal class UnappliedRemoteChanges(
     private val excludePatterns: List<String>,
     private val isIgnored: (String, Boolean) -> Boolean,
     private val policyFor: (String) -> ConflictPolicy,
+    // True only when a path is provably absent on disk (dangling symlinks count as present), the
+    // reconciler's own absence test.
+    private val isAbsentLocally: (String) -> Boolean,
 ) {
     private val log = LoggerFactory.getLogger(UnappliedRemoteChanges::class.java)
 
@@ -41,7 +44,29 @@ internal class UnappliedRemoteChanges(
         for ((entry, mark) in marked) {
             if (skip(entry, syncPaths)) continue
             if (PendingLocal.attempts(mark) >= PendingLocal.MAX_ATTEMPTS) {
-                log.warn("Giving up on the unapplied remote change of {}: it failed {} times", entry.path, PendingLocal.attempts(mark))
+                // An exhausted move leaves the row at its new path with no local bytes: the rename's
+                // re-key preserved the hydration flag (archive#595), so the scan reads the missing file
+                // as a user delete and plans the row's DeleteRemote — the delete that addresses the
+                // renamed item the move was to keep. Nothing local remains to keep, so fetch the item
+                // to the row's path instead, the same recovery an unhydrated orphan gets; the plan's
+                // folder-delete guard sees the download and holds a delete of a folder that still
+                // carries it.
+                val fromPath = PendingLocal.moveFrom(mark)
+                if (fromPath != null && entry.remoteSize > 0 && !entry.downloadQuarantined &&
+                    isAbsentLocally(fromPath) && isAbsentLocally(entry.path)
+                ) {
+                    actions.removeAll { it is SyncAction.DeleteRemote && it.path == entry.path }
+                    actions.add(SyncAction.DownloadContent(entry.path, rowItem(entry)))
+                    db.clearPendingLocal(entry.path)
+                    log.warn(
+                        "The move of {} to {} failed {} times; fetching the renamed item instead",
+                        fromPath,
+                        entry.path,
+                        PendingLocal.attempts(mark),
+                    )
+                } else {
+                    log.warn("Giving up on the unapplied remote change of {}: it failed {} times", entry.path, PendingLocal.attempts(mark))
+                }
                 continue
             }
             when {
