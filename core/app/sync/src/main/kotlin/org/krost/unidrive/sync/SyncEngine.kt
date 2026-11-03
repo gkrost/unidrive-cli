@@ -3004,7 +3004,9 @@ open class SyncEngine(
                 result = "success",
             )
             // The kept edit goes up in this pass, not on the next one (the plan was made before the copy existed).
-            if (keptLocalEdit != null && syncDirection != SyncDirection.DOWNLOAD) uploadKeptLocalEdit(keptLocalEdit, action.remoteItem)
+            if (keptLocalEdit != null && syncDirection != SyncDirection.DOWNLOAD) {
+                uploadKeptLocalEdit(keptLocalEdit, action.remoteItem.path.substringBeforeLast('/'))
+            }
         } catch (e: Exception) {
             auditLog?.emit(
                 action = "Download",
@@ -3017,15 +3019,17 @@ open class SyncEngine(
         }
     }
 
-    // Uploads the conflict-local copy [keptLocalEdit] that applyDownload moved aside, best effort, as applyKeepBoth
-    // uploads its copy: a failed upload leaves the copy local-only, and the next scan uploads it. A cancellation and
-    // an authentication failure are not swallowed: they fail the download that kept the copy.
+    // Uploads the conflict-local copy [keptLocalEdit] that applyDownload or applyDeleteLocal moved aside,
+    // best effort, as applyKeepBoth uploads its copy: a failed upload leaves the copy local-only, and the
+    // next scan uploads it. A cancellation and an authentication failure are not swallowed: they fail the
+    // action that kept the copy.
     private suspend fun uploadKeptLocalEdit(
         keptLocalEdit: String,
-        remoteItem: CloudItem,
+        // The canonical remote directory the canonical file lived in (`remotePath ?: path` up to the last '/').
+        canonicalRemoteParent: String,
     ) {
         // archive#115: the copy belongs next to the canonical remote file, as the reconciler's own Upload would.
-        val canonicalCopy = remoteItem.path.substringBeforeLast('/') + "/" + keptLocalEdit.substringAfterLast('/')
+        val canonicalCopy = canonicalRemoteParent + "/" + keptLocalEdit.substringAfterLast('/')
         val copyTarget = if (canonicalCopy != keptLocalEdit) canonicalCopy else null
         try {
             applyUpload(SyncAction.Upload(keptLocalEdit, remoteTarget = copyTarget), resolveRefusal = false)
@@ -3038,23 +3042,35 @@ open class SyncEngine(
         }
     }
 
+    // Whether the file at [localPath] sits off the stats its row recorded at scan time: an edit landed
+    // between the scan and the action about to touch the file. A placeholder artifact (a 0-byte stub,
+    // a freed placeholder whose zeros a tool's mtime touch survived, a partial download) is not an edit.
+    private fun editedSinceScan(
+        localPath: Path,
+        row: SyncEntry,
+    ): Boolean {
+        if (looksLikePlaceholder(localPath, row, shorterIsPartialDownload = false)) return false
+        val baselineMtime = row.localMtime ?: return false
+        val baselineSize = row.localSize ?: return false
+        val stat = Transfers.statBeforeUpload(localPath) ?: return false
+        return stat.first != baselineMtime || stat.second != baselineSize
+    }
+
     // Moves [localPath] aside as a conflict-local copy when its current stats differ from the row's baseline
-    // (localMtime, localSize): an edit landed between the scan and the download about to replace the file.
-    // Returns the copy's path, or null when there is nothing to keep — the file is absent, untracked, or
+    // (localMtime, localSize): an edit landed between the scan and the action about to replace or remove the
+    // file. Returns the copy's path, or null when there is nothing to keep — the file is absent, untracked, or
     // still at the baseline the scan recorded.
     private suspend fun keepLocalEditAsideIfEditedSinceScan(
         path: String,
         localPath: Path,
+        // What the plan that is about to clobber the file was made for, for the warning text.
+        plannedFor: String = "download",
+        // The remote side the baseline lost to, for the conflict record.
+        remoteState: ChangeState = ChangeState.MODIFIED,
     ): String? {
         if (!Files.isRegularFile(localPath)) return null
         val row = db.getEntry(path) ?: return null
-        // A placeholder artifact (a 0-byte stub, a freed placeholder whose zeros a tool's mtime touch survived,
-        // a partial download) is not an edit: the download fills it in, as every unhydrated-row pass does.
-        if (looksLikePlaceholder(localPath, row, shorterIsPartialDownload = false)) return null
-        val baselineMtime = row.localMtime ?: return null
-        val baselineSize = row.localSize ?: return null
-        val stat = Transfers.statBeforeUpload(localPath) ?: return null
-        if (stat.first == baselineMtime && stat.second == baselineSize) return null
+        if (!editedSinceScan(localPath, row)) return null
         val conflictPath =
             keepBothCopyPath(path, conflictStamp()) { candidate ->
                 Files.exists(placeholder.resolveLocal(candidate), java.nio.file.LinkOption.NOFOLLOW_LINKS) || db.getEntry(candidate) != null
@@ -3062,11 +3078,11 @@ open class SyncEngine(
         withEchoSuppression(conflictPath) {
             Files.move(localPath, placeholder.resolveLocal(conflictPath))
         }
-        reporter.onWarning("Conflict: $path was edited after the scan planned its download; the edit is kept as $conflictPath")
+        reporter.onWarning("Conflict: $path was edited after the scan planned its $plannedFor; the edit is kept as $conflictPath")
         conflictLog?.record(
             path = path,
             localState = ChangeState.MODIFIED.name,
-            remoteState = ChangeState.MODIFIED.name,
+            remoteState = remoteState.name,
             policy = "KEEP_BOTH",
             loserFile = null,
         )
@@ -3493,16 +3509,41 @@ open class SyncEngine(
         }
     }
 
-    private fun applyDeleteLocal(action: SyncAction.DeleteLocal) {
+    private suspend fun applyDeleteLocal(action: SyncAction.DeleteLocal) {
         // Resolved before any branch, so a path outside the sync root is refused whichever way the profile deletes.
         val localPath = placeholder.resolveLocal(action.path)
-        withEchoSuppression(action.path) {
-            if (trashManager != null) {
-                trashManager.trash(action.path)
-            } else if (useTrash) {
-                Trash.trash(localPath)
+        // The plan judged this path by its scan baseline. A file whose stats moved off the baseline (an edit
+        // that landed while the delete waited — the streaming drain can come a whole remote gather later) is
+        // not the file the cloud deleted: its edit is kept aside as a conflict-local copy and uploaded, and
+        // the trash never touches it. A folder with such an edited file below is kept whole; its delete
+        // re-plans on the next pass, where the scan reports the edit.
+        val row = db.getEntry(action.path)
+        val keptLocalEdit =
+            if (row != null && row.isFolder) {
+                if (folderHoldsEditSinceScan(action.path)) {
+                    log.warn(
+                        "Not deleting {}: a file below it was edited after the scan planned its delete; the delete is retried on the next sync",
+                        action.path,
+                    )
+                    reporter.onWarning("Skipped delete of ${action.path}: a file in it was edited after the scan")
+                    // The cursor will not replay this tombstone; the row remembers the delete the way a
+                    // failed one is remembered, so the next pass plans it against a fresh scan.
+                    rememberUnappliedRemoteChange(action)
+                    return
+                }
+                null
             } else {
-                placeholder.deleteLocal(action.path)
+                keepLocalEditAsideIfEditedSinceScan(action.path, localPath, plannedFor = "delete", remoteState = ChangeState.DELETED)
+            }
+        if (keptLocalEdit == null) {
+            withEchoSuppression(action.path) {
+                if (trashManager != null) {
+                    trashManager.trash(action.path)
+                } else if (useTrash) {
+                    Trash.trash(localPath)
+                } else {
+                    placeholder.deleteLocal(action.path)
+                }
             }
         }
         // The cloud cascaded a delete to us; flip the DB row to TRASHED rather
@@ -3526,6 +3567,24 @@ open class SyncEngine(
         if (priorEntry?.isFolder == true) {
             db.markDescendantsDeleted(action.path)
         }
+        // The kept edit goes up in this pass, not on the next one (the plan was made before the copy existed),
+        // the way a download's kept edit does.
+        if (keptLocalEdit != null && syncDirection != SyncDirection.DOWNLOAD) {
+            uploadKeptLocalEdit(keptLocalEdit, (row?.remotePath ?: action.path).substringBeforeLast('/'))
+        }
+    }
+
+    // Whether a tracked file below [folderPath] sits off the stats its row recorded at scan time — an edit
+    // that landed while the folder's delete waited. Content the scan never reports (excluded, ignored,
+    // untracked, pending-upload) keeps the folder at plan time (keepFoldersHoldingUnsyncedLocalContent);
+    // this is the tracked-file edit a plan cannot see, because the scan ran before the edit.
+    private fun folderHoldsEditSinceScan(folderPath: String): Boolean {
+        for (child in db.getEntriesByPrefix(folderPath.trimEnd('/') + "/")) {
+            if (child.isFolder || child.remoteId == null) continue
+            val childLocal = placeholder.resolveLocal(child.path)
+            if (Files.isRegularFile(childLocal) && editedSinceScan(childLocal, child)) return true
+        }
+        return false
     }
 
     /**
