@@ -40,7 +40,6 @@ import org.krost.unidrive.telemetry.TransferHistory
 import org.krost.unidrive.sync.ignore.IgnoreSettings
 import org.krost.unidrive.sync.ignore.UploadIgnore
 import org.slf4j.LoggerFactory
-import java.time.Instant
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -162,24 +161,14 @@ class DaemonRuntime(
     @Volatile
     private var signedInAtMs: Long? = null
 
-    /** archive#655: the last quota snapshot served in daemon.status (`quota`); null = nothing fetched yet. */
-    internal data class QuotaSnapshot(
-        val usedBytes: Long? = null,
-        val totalBytes: Long? = null,
-        val remainingBytes: Long? = null,
-        val fetchedAtMs: Long? = null,
-        val stale: Boolean = true,
-        val error: String? = null,
-    )
-
-    @Volatile
-    private var quotaSnapshot: QuotaSnapshot? = null
-
-    private val quotaRefreshInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
-
-
     private var lock: ProcessLock? = null
     private var db: StateDatabase? = null
+
+    // archive#655: the daemon's quota snapshot for daemon.status (`quota`). It reads the cache and persists
+    // through this runtime's database — the one the lifecycle opens and cleanup closes — and shares the
+    // provider factory.
+    private val quotaMonitor = QuotaSnapshotMonitor(quotaRefreshMs = quotaRefreshMs, providerFactory = providerFactory, db = { db })
+
     private var ipcServer: IpcServer? = null
     private val closeSignal = CompletableDeferred<Unit>()
 
@@ -232,7 +221,7 @@ class DaemonRuntime(
             // archive#655: seed the quota snapshot from the sync_state cache (the same tuple
             // `quota` persists), so the very first status already shows the last known
             // values flagged stale instead of nulls.
-            quotaSnapshot = readCachedQuotaSnapshot(db!!)
+            quotaMonitor.seedFromCache(db!!)
 
             // 4. Authenticate. NO socket is bound until this succeeds.
             // The trash namespace is read-only: this wrapper is the last line of that rule, whichever part of the
@@ -721,12 +710,12 @@ class DaemonRuntime(
                     // expired; no client asking means no provider call. Failure keeps the
                     // last value with stale=true and the error named; unknowns are null —
                     // never zero, never a division by a missing total.
-                    if (providerHasQuota) maybeTriggerQuotaRefresh(clientCount, serveScope, paused = pause.isPaused)
+                    if (providerHasQuota) quotaMonitor.maybeTriggerQuotaRefresh(clientCount, serveScope, paused = pause.isPaused)
                     val quotaJson =
                         if (!providerHasQuota) {
                             null
                         } else {
-                            val snap = quotaSnapshot ?: QuotaSnapshot()
+                            val snap = quotaMonitor.quotaSnapshot ?: QuotaSnapshot()
                             val errorJson = snap.error?.let { ndjsonString(it) } ?: "null"
                             """{"used_bytes":${snap.usedBytes ?: "null"},""" +
                                 """"total_bytes":${snap.totalBytes ?: "null"},""" +
@@ -980,138 +969,11 @@ class DaemonRuntime(
     private fun cleanup() {
         runCatching { ipcServer?.close() }
         ipcServer = null
-        runCatching { retryQuotaPersist(db) }
+        runCatching { quotaMonitor.retryQuotaPersist(db) }
         runCatching { db?.close() }
         db = null
         runCatching { lock?.unlock() }
         lock = null
-    }
-
-    // ── archive#655: the quota snapshot ─────────────────────────────────────────────
-
-    /**
-     * Triggers a single-flight quota fetch when a client is asking (status request), the TTL
-     * has expired (or nothing was fetched yet), and the facility is on. Never blocks the
-     * reply: the fetch runs on serveScope and the NEXT status serves the fresh snapshot.
-     * The reply's own `stale` flag is recomputed from the TTL, so a client sees staleness
-     * immediately even before the fetch lands.
-     */
-    private fun maybeTriggerQuotaRefresh(
-        clientCount: Int,
-        scope: kotlinx.coroutines.CoroutineScope,
-        // archive#778: no fetch while the daemon is paused; the snapshot is still marked stale once its TTL has expired.
-        paused: Boolean = false,
-    ) {
-        if (quotaRefreshMs <= 0 || clientCount <= 0) return
-        val snap = quotaSnapshot
-        val expired = snap == null || snap.fetchedAtMs == null ||
-            System.currentTimeMillis() - snap.fetchedAtMs >= quotaRefreshMs
-        if (snap != null && !expired && !snap.stale) return
-        if (snap != null && !snap.stale && expired && !quotaRefreshInFlight.get()) {
-            // Mark the served snapshot stale at once: a client must not read a TTL-expired
-            // value as fresh while the refetch is in flight.
-            quotaSnapshot = snap.copy(stale = true)
-        }
-        if (paused) return
-        if (!quotaRefreshInFlight.compareAndSet(false, true)) return
-        scope.launch {
-            try {
-                retryQuotaPersist(db)
-                val provider = providerFactory()
-                try {
-                    refreshQuotaSnapshotWith(provider)
-                } finally {
-                    provider.close()
-                }
-            } catch (e: Exception) {
-                log.warn("quota refresh crashed: {}", e.message)
-            } finally {
-                quotaRefreshInFlight.set(false)
-            }
-        }
-    }
-
-    /**
-     * The fetch behind a quota refresh, on the provider instance the caller hands over. It never signs in (#211):
-     * [CloudProvider.checkCredentials] refuses a profile whose credentials are not stored, where
-     * [CloudProvider.authenticate] would answer by opening a browser on the daemon host — a status poll must stay a
-     * status poll. The values land in the snapshot; a failure keeps the last ones and names itself as the stale
-     * reason. A cancelled fetch is not a quota error: cancellation goes on, the in-flight flag is cleared by the
-     * caller. Returns the snapshot it left (the fresh one, or the last one flagged stale). Internal for the tests.
-     */
-    internal suspend fun refreshQuotaSnapshotWith(provider: CloudProvider): QuotaSnapshot? {
-        try {
-            provider.checkCredentials()
-            val quota = provider.quota()
-            val now = System.currentTimeMillis()
-            quotaSnapshot =
-                QuotaSnapshot(
-                    usedBytes = quota.used,
-                    totalBytes = quota.total,
-                    remainingBytes = quota.remaining,
-                    fetchedAtMs = now,
-                    stale = false,
-                    error = null,
-                )
-            persistQuotaSnapshot(db, quotaSnapshot!!)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // Keep the last values; flag them stale and name the failure.
-            quotaSnapshot = (quotaSnapshot ?: QuotaSnapshot()).copy(
-                stale = true,
-                error = "${e.javaClass.simpleName}: ${e.message ?: "quota fetch failed"}",
-            )
-            log.warn("quota refresh failed; serving the last snapshot flagged stale: {}", e.message)
-        }
-        return quotaSnapshot
-    }
-
-    /** Reads the cached quota tuple `quota` persists (same keys, one shared cache). */
-    private fun readCachedQuotaSnapshot(db: StateDatabase): QuotaSnapshot? {
-        val used = db.getSyncState("quota_used")?.toLongOrNull() ?: return null
-        val total = db.getSyncState("quota_total")?.toLongOrNull() ?: return null
-        val remaining = db.getSyncState("quota_remaining")?.toLongOrNull()
-        val fetchedAt = db.getSyncState("quota_fetched_at")?.let { runCatching { Instant.parse(it) }.getOrNull() }
-            ?: return null
-        val age = System.currentTimeMillis() - fetchedAt.toEpochMilli()
-        return QuotaSnapshot(
-            usedBytes = used,
-            totalBytes = total,
-            remainingBytes = remaining,
-            fetchedAtMs = fetchedAt.toEpochMilli(),
-            stale = quotaRefreshMs <= 0 || age >= quotaRefreshMs,
-            error = null,
-        )
-    }
-
-    // Written through the daemon's own database. A second StateDatabase on the same file ran initialize() (schema
-    // writes) and met the write lock of a merge chunk on a connection of its own, with only its busy timeout to wait.
-    internal fun persistQuotaSnapshot(
-        db: StateDatabase?,
-        snap: QuotaSnapshot,
-    ) {
-        db ?: return
-        val values =
-            linkedMapOf(
-                "quota_used" to (snap.usedBytes?.toString() ?: return),
-                "quota_total" to (snap.totalBytes?.toString() ?: return),
-                "quota_fetched_at" to Instant.ofEpochMilli(snap.fetchedAtMs ?: return).toString(),
-            )
-        snap.remainingBytes?.let { values["quota_remaining"] = it.toString() }
-        unpersistedQuota.set(values)
-        retryQuotaPersist(db)
-    }
-
-    // The local scanner's manual batch must keep its transaction until it commits or rolls back, and it can stay open
-    // for a whole pass: a refresh that finds it open leaves the values here instead of waiting with the provider open.
-    // The next refresh, or the shutdown, writes them, unless a newer snapshot has replaced them by then.
-    private val unpersistedQuota = java.util.concurrent.atomic.AtomicReference<Map<String, String>?>(null)
-
-    internal fun retryQuotaPersist(db: StateDatabase?) {
-        db ?: return
-        val values = unpersistedQuota.get() ?: return
-        if (runCatching { db.trySetSyncStatesWhenIdle(values) }.getOrDefault(true)) unpersistedQuota.compareAndSet(values, null)
     }
 
     /**

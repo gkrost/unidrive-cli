@@ -419,9 +419,9 @@ class Reconciler(
         //
         // Sort the synthesised mkdirs by depth so Pass 1's sequential apply
         // creates parents before children inside the same prefix family.
-        // sortActions() at exit will re-sort by priority + slash count
+        // sortReconcileActions() at exit will re-sort by priority + slash count
         // anyway, but the explicit ordering here keeps the behaviour
-        // testable without depending on sortActions's internals.
+        // testable without depending on sortReconcileActions's internals.
         val recoveryEmitted = actions.subList(recoveryStartIdx, actions.size).toList()
         if (recoveryEmitted.isNotEmpty()) {
             val ancestorsToCreate = mutableSetOf<String>()
@@ -454,7 +454,7 @@ class Reconciler(
         keepFoldersHoldingUnsyncedLocalContent(actions, localChanges, allDbEntries, alias)
         retargetBelowTwinFolders(actions, allDbEntries)
 
-        val sorted = sortActions(actions)
+        val sorted = sortReconcileActions(actions)
         log.info(
             "Reconcile complete: {} actions in {}ms",
             sorted.size,
@@ -698,7 +698,7 @@ class Reconciler(
         keepFoldersHoldingUnsyncedLocalContent(actions, fullLocal, allDbEntries, alias)
         retargetBelowTwinFolders(actions, allDbEntries)
 
-        return sortActions(actions)
+        return sortReconcileActions(actions)
     }
 
     // archive#309: the key two paths are compared by: folded where the case policy folds ([foldCase]), so only then do two
@@ -1731,45 +1731,6 @@ class Reconciler(
             actions[i] = move.copy(fromPath = carrier.path + move.fromPath.removePrefix(carrier.fromPath))
         }
     }
-
-    private fun sortActions(actions: List<SyncAction>): List<SyncAction> =
-        actions.sortedWith(
-            compareBy(
-                { actionPriority(it) },
-                // archive#421: moves and deletes share a priority, and the depth key below is negative for a
-                // delete and positive for everything else, so every delete used to sort ahead of every
-                // move. A folder delete trashes the folder with whatever is still inside it, so a folder
-                // renamed d1 -> d2 (mkdir d2, del d1, move d1/x -> d2/x) lost the files its own moves
-                // still had to take out of d1 ("Folder not found: d1"), on every later sync too. Put all
-                // moves first; the deletes then run deepest first, children before their parent folder.
-                { if (it is SyncAction.DeleteLocal || it is SyncAction.DeleteRemote) 1 else 0 },
-                {
-                    if (it is SyncAction.DeleteLocal || it is SyncAction.DeleteRemote) {
-                        -it.path.count { c ->
-                            c == '/'
-                        }
-                    } else {
-                        it.path.count { c -> c == '/' }
-                    }
-                },
-                { it.path },
-            ),
-        )
-
-    private fun actionPriority(action: SyncAction): Int =
-        when (action) {
-            is SyncAction.CreatePlaceholder -> if (action.remoteItem.isFolder) 0 else 2
-            is SyncAction.CreateRemoteFolder -> 0
-            is SyncAction.UpdatePlaceholder -> 2
-            is SyncAction.DownloadContent -> 2
-            is SyncAction.Upload -> 2
-            is SyncAction.DeleteLocal -> 1
-            is SyncAction.DeleteRemote -> 1
-            is SyncAction.MoveRemote -> 1
-            is SyncAction.MoveLocal -> 1
-            is SyncAction.Conflict -> 3
-            is SyncAction.RemoveEntry -> 4
-        }
 
     private fun resolveLocal(remotePath: String): java.nio.file.Path = safeResolveLocal(syncRoot, remotePath)
 
