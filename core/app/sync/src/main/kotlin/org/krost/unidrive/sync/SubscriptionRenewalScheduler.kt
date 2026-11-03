@@ -1,8 +1,10 @@
 package org.krost.unidrive.sync
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.time.Clock
@@ -64,9 +66,17 @@ class SubscriptionRenewalScheduler(
                 // If we didn't, `isScheduledAndValid` called from inside `renew`
                 // would still see the current (active) job plus the unrenewed
                 // `expires_at > now + 24h` and wrongly short-circuit the renewal.
-                removeSelf(profileName)
+                // Two-arg remove: only THIS job's slot. A job whose delay fired after
+                // a caller re-scheduled the profile (which replaced and cancelled it)
+                // must not drop the newer job's slot — remove-by-key did.
+                removeSelf(profileName, coroutineContext.job)
                 try {
                     renew(profileName)
+                } catch (e: CancellationException) {
+                    // A cancel()/cancelAll() while the renewal runs is not a renewal
+                    // failure: swallowing it would end the job as completed instead of
+                    // cancelled.
+                    throw e
                 } catch (e: Exception) {
                     log.warn("Scheduled webhook renewal failed for profile {}: {}", profileName, e.message)
                 }
@@ -106,10 +116,15 @@ class SubscriptionRenewalScheduler(
      * Remove the current entry for [profileName] from the jobs map without
      * cancelling the coroutine — used by the scheduled job itself after its
      * delay expires to clear the "scheduled" flag before invoking [renew].
+     * The slot only goes when it is still [job]'s: a newer job for the same
+     * profile stays mapped.
      */
     @Synchronized
-    private fun removeSelf(profileName: String) {
-        jobs.remove(profileName)
+    private fun removeSelf(
+        profileName: String,
+        job: Job,
+    ) {
+        jobs.remove(profileName, job)
     }
 
     @Synchronized

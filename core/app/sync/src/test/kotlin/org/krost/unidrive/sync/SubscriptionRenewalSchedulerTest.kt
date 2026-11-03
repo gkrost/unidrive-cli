@@ -2,6 +2,7 @@
 
 package org.krost.unidrive.sync
 
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
@@ -149,4 +150,45 @@ class SubscriptionRenewalSchedulerTest {
             advanceTimeBy(2 * 3600 * 1000L)
             assertFalse(fired, "cancelled scheduler must not fire the renewal")
         }
+
+    // A cancellation that arrives while the renewal itself runs is not a renewal failure: the job
+    // must end cancelled, not swallow the CancellationException into the failure log and "complete".
+    // (The job has already dropped itself from the map by then, so no scheduler method can reach it;
+    // the cancellation that arrives is the caller's own — a shutdown or a profile teardown.)
+    @Test
+    fun `a cancellation during a renewal ends the job cancelled`() =
+        runTest {
+            store.save("frank", "sub-frank", t0.plusSeconds(25 * 3600))
+            val renewReached = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val holdRenew = kotlinx.coroutines.CompletableDeferred<Unit>()
+            var renewJob: kotlinx.coroutines.Job? = null
+            val scheduler =
+                SubscriptionRenewalScheduler(
+                    scope = this,
+                    store = store,
+                    renew = { _ ->
+                        renewJob = kotlin.coroutines.coroutineContext[Job]
+                        renewReached.complete(Unit)
+                        holdRenew.await()
+                    },
+                    clock = Clock.fixed(t0, ZoneOffset.UTC),
+                )
+
+            scheduler.schedule("frank")
+            advanceTimeBy(3600 * 1000L + 1)
+            renewReached.await()
+
+            // The cancellation the renewal cannot see coming: the owning scope's teardown.
+            renewJob!!.cancel()
+            holdRenew.complete(Unit)
+
+            val job = renewJob
+            assertTrue(job!!.isCancelled, "a cancellation during a renewal cancels the job instead of completing it")
+        }
+
+    // The other fix here — a job that self-removes with `remove(profileName, job)` so it cannot drop a
+    // newer job's slot — has no deterministic black-box seam: kotlinx cancels a queued post-delay
+    // resumption at its dispatch check, so a cancelled job never reaches the map cleanup, and the
+    // remaining window is a running continuation racing a re-schedule on another thread. The removal
+    // is identity-keyed and can therefore never remove another job's slot under any interleaving.
 }
