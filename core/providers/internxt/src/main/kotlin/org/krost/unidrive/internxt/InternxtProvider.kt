@@ -4660,7 +4660,14 @@ class InternxtProvider(
      * `<mnemonic>-<parentUuid>` as its password), resolved once per pass. Null when no
      * credentials are loaded — the converters then keep today's fallback.
      */
-    private suspend fun mnemonicOrNull(): String? = runCatching { authService.getValidCredentials().mnemonic }.getOrNull()
+    private suspend fun mnemonicOrNull(): String? =
+        try {
+            authService.getValidCredentials().mnemonic
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
 
     private suspend fun InternxtFile.toDeltaCloudItem(
         folderMap: MutableMap<String, InternxtFolder>,
