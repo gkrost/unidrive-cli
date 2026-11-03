@@ -15,10 +15,12 @@ import org.krost.unidrive.io.stagingSiblingName
 import org.krost.unidrive.sync.HashVerifier
 import java.nio.channels.FileChannel
 import java.nio.file.Files
+import java.nio.file.AccessDeniedException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.DosFileAttributeView
 import java.time.Instant
 import kotlin.io.path.name
 
@@ -544,7 +546,7 @@ internal object LegacyConversion {
                         if (Files.isRegularFile(destination) &&
                             HashVerifier.computeSha256Hex(source) == HashVerifier.computeSha256Hex(destination)
                         ) {
-                            Files.delete(source)
+                            deleteMovedSource(source)
                         } else {
                             System.err.println("Error: the resume destination already exists with different content: $destination")
                             return 1
@@ -686,6 +688,10 @@ internal object LegacyConversion {
         val staging = destination.resolveSibling(stagingSiblingName(destination.fileName.toString(), STAGING_SUFFIX))
         try {
             Files.copy(source, staging, StandardCopyOption.REPLACE_EXISTING)
+            // Windows carries the source's read-only bit into the copy, where a read-only staging could
+            // be neither flushed below nor removed by the cleanup — the same wrinkle LocalFsProvider's
+            // durable copy solves with setWritable. Asked through the DOS view, null where there is none.
+            Files.getFileAttributeView(staging, DosFileAttributeView::class.java)?.setReadOnly(false)
             FileChannel.open(staging, StandardOpenOption.WRITE).use { it.force(true) }
             val copied = Files.size(staging)
             if (expectedBytes != null && copied != expectedBytes) {
@@ -702,7 +708,26 @@ internal object LegacyConversion {
             Files.deleteIfExists(staging)
             throw e
         }
-        Files.delete(source)
+        deleteMovedSource(source)
+    }
+
+    /**
+     * Gives up the source after its bytes are proven at the destination. Windows refuses to delete a
+     * read-only file outright (AccessDeniedException), where the same-volume atomic move never needed
+     * anything cleared (a rename does not) — so a read-only file made the cross-volume run fail, and
+     * every resume fail again, after its copy had long landed. The read-only bit is cleared through the
+     * DOS view only: null on filesystems without one (Linux, a zip archive), where the delete answers
+     * for itself. A delete that fails again after the clear was refused for another reason and stays a
+     * failure.
+     */
+    private fun deleteMovedSource(source: Path) {
+        try {
+            Files.delete(source)
+        } catch (e: AccessDeniedException) {
+            val dos = Files.getFileAttributeView(source, DosFileAttributeView::class.java) ?: throw e
+            dos.setReadOnly(false)
+            Files.delete(source)
+        }
     }
 
     /** Deletes now-empty directories under [root], deepest first; [root] itself is kept. */

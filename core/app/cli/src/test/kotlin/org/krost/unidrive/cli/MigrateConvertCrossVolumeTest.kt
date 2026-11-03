@@ -102,6 +102,26 @@ class MigrateConvertCrossVolumeTest {
     }
 
     @Test
+    fun `a read-only source is moved aside on the cross-volume path`() {
+        val tmp = Files.createTempDirectory("migrate-readonly")
+        val source = tmp.resolve("file.txt")
+        try {
+            Files.write(source, "locked bytes".toByteArray())
+            assertTrue(source.toFile().setWritable(false), "the fixture made the source read-only")
+            val destination = tmp.resolve("aside").resolve("file.txt")
+
+            LegacyConversion.copyAside(source, destination, expectedBytes = "locked bytes".length.toLong())
+
+            assertEquals("locked bytes", Files.readString(destination), "the verified copy landed")
+            assertFalse(Files.exists(source), "the read-only source is given up after the verification")
+        } finally {
+            // The cleanup must never mask the body's failure: make the fixture writable again first.
+            runCatching { source.toFile().setWritable(true) }
+            Files.walk(tmp).use { it.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
+        }
+    }
+
+    @Test
     fun `a verified copy is renamed whole before the source is deleted`() {
         val tmp = Files.createTempDirectory("migrate-verified-copy")
         try {

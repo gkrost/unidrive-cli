@@ -535,6 +535,38 @@ class MigrateConvertTest {
     }
 
     @Test
+    fun `a read-only source is given up when its verified copy is already at the destination`() {
+        val (config, profileDir, syncRoot) = fixture()
+        val source = syncRoot.resolve("readonly.txt")
+        Files.write(source, "the whole file".toByteArray())
+        assertTrue(source.toFile().setWritable(false), "the fixture made the source read-only")
+
+        // The copy already landed whole (a previous run); only the source delete is missing — which a
+        // read-only source used to refuse on every run, after its bytes were already proven aside.
+        val conversionDir = Files.createDirectories(profileDir.resolve("conversion-test"))
+        Files.createDirectories(conversionDir.resolve("quarantine"))
+        Files.write(conversionDir.resolve("quarantine/readonly.txt"), "the whole file".toByteArray())
+        LegacyConversion.Journal.save(
+            profileDir,
+            LegacyConversion.Journal(
+                engineVersion = "0.0.1",
+                startedAt = "2026-10-08T00:00:00Z",
+                profileName = "p",
+                targetMode = "mount",
+                disposition = "retire",
+                phases = listOf("PLAN", "INVENTORY"),
+                conversionDir = conversionDir.toString(),
+            ),
+        )
+
+        val code = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+
+        assertEquals(0, code)
+        assertFalse(Files.exists(source), "the read-only source is given up once its copy is proven")
+        assertEquals("the whole file", Files.readString(conversionDir.resolve("quarantine/readonly.txt")))
+    }
+
+    @Test
     fun `a restart keeps the quarantined copies at their recorded paths`() {
         val (config, profileDir, syncRoot) = fixture()
         syncRoot.resolve("a.txt").writeText("aaa")
