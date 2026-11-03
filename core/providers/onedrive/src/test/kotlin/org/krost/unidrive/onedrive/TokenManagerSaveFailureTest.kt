@@ -11,7 +11,9 @@ import org.krost.unidrive.onedrive.model.Token
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -68,6 +70,91 @@ class TokenManagerSaveFailureTest {
                 )
             } finally {
                 Files.deleteIfExists(blocked)
+            }
+        }
+
+    private fun refreshEngine() =
+        MockEngine { _ ->
+            respond(
+                content =
+                    """{"access_token":"${"B".repeat(64)}","token_type":"Bearer",""" +
+                        """"expires_in":3600,"refresh_token":"${"n".repeat(80)}"}""",
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+
+    // The recovery half of the claim: once the blocking file is gone, the next forced refresh saves the new token
+    // again and clears the recorded failure.
+    @Test
+    fun `the next refresh after the blocking file is gone saves the token and clears the failure`() =
+        runTest {
+            val blocked = Files.createTempFile("unidrive-token-blocked-", ".json")
+            try {
+                val config = OneDriveConfig(tokenPath = blocked)
+                val oauth = OAuthService(config, httpClient = HttpClient(refreshEngine()))
+                val manager = TokenManager(config, oauth)
+                manager.token = nearExpiryTokenWithRefresh()
+
+                manager.getValidToken(forceRefresh = true)
+                assertNotNull(manager.lastRefreshFailure, "the first save failed")
+
+                Files.delete(blocked)
+                manager.token = manager.token!!.copy(expiresAt = System.currentTimeMillis() + 1_000)
+                manager.getValidToken(forceRefresh = true)
+
+                assertEquals("B".repeat(64), oauth.loadToken()?.accessToken, "the token file holds the refreshed token")
+                assertNull(manager.lastRefreshFailure, "a successful save clears the failure")
+            } finally {
+                blocked.toFile().deleteRecursively()
+            }
+        }
+
+    // A plain getValidToken() on the fast path (token not near expiry) retries the failed save right away, so a
+    // stopped process does not wait for the hourly refresh and lose a rotated refresh token.
+    @Test
+    fun `a plain getValidToken retries the failed save and clears the failure`() =
+        runTest {
+            val blocked = Files.createTempFile("unidrive-token-blocked-", ".json")
+            try {
+                val config = OneDriveConfig(tokenPath = blocked)
+                val oauth = OAuthService(config, httpClient = HttpClient(refreshEngine()))
+                val manager = TokenManager(config, oauth)
+                manager.token = nearExpiryTokenWithRefresh()
+                manager.getValidToken(forceRefresh = true)
+                Files.delete(blocked)
+
+                // Not near expiry (3600 s): the fast path, no refresh call.
+                val token = manager.getValidToken()
+
+                assertEquals("B".repeat(64), token.accessToken)
+                assertEquals("B".repeat(64), oauth.loadToken()?.accessToken, "the fast path saved the token")
+                assertNull(manager.lastRefreshFailure, "the retried save clears the failure")
+            } finally {
+                blocked.toFile().deleteRecursively()
+            }
+        }
+
+    // A sign-out between the failed save and the retry: the retry must not bring the token back to disk.
+    @Test
+    fun `a retried save does not store a token after a sign-out`() =
+        runTest {
+            val blocked = Files.createTempFile("unidrive-token-blocked-", ".json")
+            try {
+                val config = OneDriveConfig(tokenPath = blocked)
+                val oauth = OAuthService(config, httpClient = HttpClient(refreshEngine()))
+                val manager = TokenManager(config, oauth)
+                manager.token = nearExpiryTokenWithRefresh()
+                manager.getValidToken(forceRefresh = true)
+                Files.delete(blocked)
+
+                manager.forget()
+                assertFailsWith<org.krost.unidrive.AuthenticationException> { manager.getValidToken() }
+
+                assertNull(oauth.loadToken(), "nothing was written after the sign-out")
+                assertNull(manager.lastRefreshFailure)
+            } finally {
+                blocked.toFile().deleteRecursively()
             }
         }
 }
