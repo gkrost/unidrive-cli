@@ -12,6 +12,7 @@ import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -530,6 +531,39 @@ class MigrateConvertTest {
         assertTrue(
             secondJournal.quarantined.all { Files.exists(Path.of(it.quarantinePath)) },
             "every entry points at a copy on disk: ${secondJournal.quarantined}",
+        )
+    }
+
+    @Test
+    fun `a restart keeps the quarantined copies at their recorded paths`() {
+        val (config, profileDir, syncRoot) = fixture()
+        syncRoot.resolve("a.txt").writeText("aaa")
+
+        val first = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+        assertEquals(0, first)
+        val firstJournal = LegacyConversion.Journal.load(profileDir)!!
+        val carriedPath = firstJournal.quarantined.single().quarantinePath
+
+        // Rewind to an interrupted state: the mode unpublished, the journal unfinished.
+        LegacyConversion.Journal.save(
+            profileDir,
+            firstJournal.copy(phases = firstJournal.phases.filter { it != "CONVERTED" }, convertedAt = null),
+        )
+        config.writeText("[general]\n\n[providers.p]\ntype = \"localfs\"\nsync_root = \"${syncRoot.toString().replace("\\", "\\\\")}\"\n")
+
+        val second = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = true, verbose = false)
+
+        assertEquals(0, second)
+        assertTrue(Files.exists(Path.of(carriedPath)), "the earlier copy is still at the path the first run recorded")
+        assertFalse(
+            Files.list(profileDir).use { s -> s.anyMatch { it.fileName.toString().startsWith("conversion-archive-") } },
+            "no archive move may dangle the entries in the window before the fresh journal is saved",
+        )
+        val secondJournal = LegacyConversion.Journal.load(profileDir)!!
+        assertEquals(
+            listOf(carriedPath),
+            secondJournal.quarantined.filter { it.remotePath == "/a.txt" }.map { it.quarantinePath },
+            "the carried entry keeps its recorded path, unchanged",
         )
     }
 

@@ -461,29 +461,19 @@ internal object LegacyConversion {
         }
 
         // Journal: resume an interrupted run, or start over on --restart. A restart keeps the earlier
-        // quarantined list: the entries name unique local bytes whose upload command would otherwise forget
-        // them, so when the conversion directory is archived the entries follow their copies into it.
+        // quarantined list: the entries name unique local bytes whose upload command would otherwise
+        // forget them. The earlier conversion directory stays exactly where it is — moving it aside
+        // before the fresh journal is saved orphaned the copies when that save failed (the list is the
+        // only pointer to them), and rewriting every entry's path through a string comparison dangled
+        // them when the directory was spelled differently. Carrying the entries unchanged keeps every
+        // copy at its recorded path through any crash; the fresh run writes its own directory name, so
+        // nothing collides.
         var carried: List<QuarantinedFile> = emptyList()
         if (loaded != null && restart) {
-            val oldDir = loaded.conversionDir
-            val oldQuarantined = loaded.quarantined
-            var archived = false
-            Files.list(setup.profileDir).use { stream ->
-                stream
-                    .filter {
-                        val name = it.fileName.toString()
-                        name.startsWith("conversion-") && !name.startsWith("conversion-archive-") && Files.isDirectory(it)
-                    }
-                    .forEach { dir ->
-                        val archive = setup.profileDir.resolve("conversion-archive-${System.nanoTime()}")
-                        val moved = runCatching { Files.move(dir, archive) }.isSuccess
-                        if (moved && oldDir != null && dir.toString() == oldDir) {
-                            carried = oldQuarantined.map { it.copy(quarantinePath = it.quarantinePath.replace(oldDir, archive.toString())) }
-                            archived = true
-                        }
-                    }
+            carried = loaded.quarantined
+            if (carried.isNotEmpty()) {
+                println("Keeping ${carried.size} quarantined file(s) from the interrupted run at their recorded paths.")
             }
-            if (!archived) carried = oldQuarantined // the copies keep their paths (nothing to archive, or the move failed)
             loaded = null
         }
         val resumed = loaded
