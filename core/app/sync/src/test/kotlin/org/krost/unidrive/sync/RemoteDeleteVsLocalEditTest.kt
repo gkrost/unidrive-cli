@@ -12,6 +12,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -274,6 +275,100 @@ class RemoteDeleteVsLocalEditTest {
             assertTrue(
                 provider.createdFolders.contains("/proj"),
                 "the folder is recreated so the copy has a parent, found ${provider.createdFolders}",
+            )
+        }
+
+    @Test
+    fun `a parent-only tombstone recreates every deleted folder above a surviving edit, parent first`() =
+        runTest {
+            provider.files["/proj/sub/a.txt"] = baselineBytes
+            provider.deltaItems =
+                listOf(
+                    cloudItem("/proj", size = 0, isFolder = true),
+                    cloudItem("/proj/sub", size = 0, isFolder = true),
+                    cloudItem("/proj/sub/a.txt", size = baselineBytes.size.toLong()),
+                )
+            engine.syncOnce()
+            assertTrue(Files.isRegularFile(syncRoot.resolve("proj/sub/a.txt")))
+
+            // Only the outer folder is tombstoned; the children are left to the scan. The edit lands after the
+            // plan and its upload fails, so the folder delete is retried with a surviving edit below it.
+            provider.deltaItems = listOf(cloudItem("/proj", size = 0, isFolder = true, deleted = true))
+            provider.deltaCursor = "cursor-2"
+            provider.uploadFailCount = 1
+            var editLanded = false
+            val editing =
+                editingAfterThePlan {
+                    editLocally(syncRoot.resolve("proj/sub").resolve("a.txt"))
+                    editLanded = true
+                }
+            engineWith(editing).syncOnce()
+            assertTrue(editLanded, "the edit must land after the plan, before the delete applies")
+
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-3"
+            engine.syncOnce()
+
+            assertTrue(filesHolding(editBytes).isNotEmpty(), "the edit survives the retried folder delete")
+            assertEquals(
+                listOf("/proj", "/proj/sub"),
+                provider.createdFolders,
+                "every deleted folder above the surviving edit is created again, parent first",
+            )
+        }
+
+    @Test
+    fun `a write that lands after the decision and its backup keeps its bytes`() =
+        runTest {
+            provider.files["/notes.md"] = baselineBytes
+            provider.deltaItems = listOf(cloudItem("/notes.md", size = baselineBytes.size.toLong()))
+            engine.syncOnce()
+
+            // The local edit is older than the remote tombstone, so the tombstone is the last writer.
+            val notes = syncRoot.resolve("notes.md")
+            Files.write(notes, editBytes)
+            Files.setLastModifiedTime(notes, FileTime.from(Instant.parse("2026-03-01T08:00:00Z")))
+
+            // The conflict log copies the losing edit; a write lands right after that copy, before the delete guard.
+            val newerBytes = "written after the decision".toByteArray()
+            val newerMtime = FileTime.from(Instant.parse("2026-04-02T09:00:00Z"))
+            var racedWrite = false
+            val racingLog =
+                object : ConflictLog(Files.createTempDirectory("unidrive-delete-edit-log").resolve("log.json"), Files.createTempDirectory("unidrive-delete-edit-backups")) {
+                    override fun record(
+                        path: String,
+                        localState: String,
+                        remoteState: String,
+                        policy: String,
+                        loserFile: Path?,
+                    ): ConflictLog.Entry {
+                        val entry = super.record(path, localState, remoteState, policy, loserFile)
+                        Files.write(notes, newerBytes)
+                        Files.setLastModifiedTime(notes, newerMtime)
+                        racedWrite = true
+                        return entry
+                    }
+                }
+            provider.deltaItems = listOf(cloudItem("/notes.md", deleted = true))
+            provider.deltaCursor = "cursor-2"
+            SyncEngine(
+                provider = provider,
+                db = db,
+                syncRoot = syncRoot,
+                conflictPolicy = ConflictPolicy.LAST_WRITER_WINS,
+                reporter = ProgressReporter.Silent,
+                useTrash = false,
+                conflictLog = racingLog,
+            ).syncOnce()
+            assertTrue(racedWrite, "the conflict must reach the log, so the write lands in the window")
+
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-3"
+            engine.syncOnce()
+
+            assertTrue(
+                filesHolding(newerBytes).isNotEmpty(),
+                "the bytes written after the decision survive under the sync root",
             )
         }
 }

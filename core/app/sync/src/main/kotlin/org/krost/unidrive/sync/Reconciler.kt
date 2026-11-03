@@ -443,7 +443,7 @@ class Reconciler(
             }
         }
 
-        unappliedRemoteChanges.replan(actions, remoteChanges, syncPaths, alias.remoteToLocal, ::renamedContentChanged)
+        unappliedRemoteChanges.replan(actions, remoteChanges, syncPaths, alias.remoteToLocal, ::renamedContentChanged) { aliasTarget(alias, it) }
         dropDownloadsOntoLocalCaseTwins(actions, localChanges)
         detectMoves(actions, entryByPath, alias)
         detectRemoteRenames(actions, remoteChanges, entryByRemoteId, localChanges, alias)
@@ -685,7 +685,7 @@ class Reconciler(
             }
         }
 
-        unappliedRemoteChanges.replan(actions, fullRemote, syncPaths, alias.remoteToLocal, ::renamedContentChanged)
+        unappliedRemoteChanges.replan(actions, fullRemote, syncPaths, alias.remoteToLocal, ::renamedContentChanged) { aliasTarget(alias, it) }
         // Cross-page move detection runs here on the combined action set —
         // per-page detection would miss renames that span page boundaries.
         dropDownloadsOntoLocalCaseTwins(actions, fullLocal)

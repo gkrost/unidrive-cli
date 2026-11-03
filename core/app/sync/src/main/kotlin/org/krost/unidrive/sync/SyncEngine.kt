@@ -38,6 +38,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -4185,7 +4186,10 @@ open class SyncEngine(
 
     private suspend fun applyLastWriterWins(action: SyncAction.Conflict) {
         val localPath = placeholder.resolveLocal(action.path)
-        val localMtime = if (Files.exists(localPath)) Files.getLastModifiedTime(localPath).toInstant() else null
+        // One read of the local stats, before the decision and before the conflict log copies the loser: the delete
+        // below judges these same bytes, so a write that lands after the copy is not taken for one of them.
+        val attrs = if (Files.exists(localPath)) Files.readAttributes(localPath, BasicFileAttributes::class.java) else null
+        val localMtime = attrs?.lastModifiedTime()?.toInstant()
         val remoteMtime = action.remoteItem?.modified
 
         val remoteWins =
@@ -4219,7 +4223,7 @@ open class SyncEngine(
             if (Files.exists(localPath)) {
                 // The decision already saw these bytes. Comparing the delete against the older synced
                 // baseline would keep that same edit aside and upload it under a conflict name.
-                val judged = if (Files.isRegularFile(localPath)) Transfers.statBeforeUpload(localPath) else null
+                val judged = attrs?.takeIf { it.isRegularFile }?.let { it.lastModifiedTime().toMillis() to it.size() }
                 applyDeleteLocal(SyncAction.DeleteLocal(action.path), judged?.first, judged?.second)
             } else {
                 val row = db.getEntry(action.path)

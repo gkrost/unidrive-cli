@@ -26,6 +26,7 @@ internal class UnappliedRemoteChanges(
         syncPaths: List<String>,
         remoteToLocal: (String) -> String,
         contentChanged: (CloudItem, SyncEntry) -> Boolean,
+        remoteTargetOf: (String) -> String?,
     ) {
         val marked = db.pendingLocalMarks()
         if (marked.isEmpty()) return
@@ -44,7 +45,7 @@ internal class UnappliedRemoteChanges(
                 continue
             }
             when {
-                PendingLocal.base(mark) == PendingLocal.DELETE -> replanDelete(actions, aliveById, occupied, entry)
+                PendingLocal.base(mark) == PendingLocal.DELETE -> replanDelete(actions, aliveById, occupied, entry, remoteTargetOf)
                 PendingLocal.base(mark) == PendingLocal.MKDIR -> replanFolder(actions, entry)
                 else -> PendingLocal.moveFrom(mark)?.let { replanMove(actions, aliveById, entry, it, remoteToLocal, contentChanged) }
             }
@@ -56,6 +57,7 @@ internal class UnappliedRemoteChanges(
         aliveById: Map<String, CloudItem>,
         occupied: Set<String>,
         entry: SyncEntry,
+        remoteTargetOf: (String) -> String?,
     ) {
         val id = entry.remoteId
         // The item came back (same id), or another item took its path: the delete this mark remembers no longer
@@ -86,16 +88,43 @@ internal class UnappliedRemoteChanges(
         // Drop them: the upload is a new item, after this pass recreates the folder.
         if (entry.isFolder) {
             val prefix = entry.path.trimEnd('/') + "/"
+            val surviving = ArrayList<String>()
             for (i in actions.indices) {
                 val upload = actions[i] as? SyncAction.Upload ?: continue
                 if (upload.remoteId != null && upload.path.startsWith(prefix)) {
                     actions[i] = upload.copy(remoteId = null)
+                    surviving.add(upload.path)
                 }
             }
+            planDeletedFolders(actions, entry.path, surviving, remoteTargetOf)
         }
         actions.removeAll { it.path == entry.path && it !is SyncAction.DeleteLocal }
         actions.add(SyncAction.DeleteLocal(entry.path))
         log.debug("Retrying an unapplied remote delete of {}", entry.path)
+    }
+
+    // The folders between a deleted folder and a surviving upload below it are created again, parent first. The scan
+    // saw their rows as existing, so nothing else plans them, and the upload would have no parent in the cloud.
+    private fun planDeletedFolders(
+        actions: MutableList<SyncAction>,
+        root: String,
+        uploads: List<String>,
+        remoteTargetOf: (String) -> String?,
+    ) {
+        val prefix = root.trimEnd('/') + "/"
+        val folders = java.util.TreeSet<String>(compareBy<String> { it.count { c -> c == '/' } }.thenBy { it })
+        for (upload in uploads) {
+            val parts = upload.removePrefix("/").split('/')
+            for (i in 1 until parts.size) {
+                val folder = "/" + parts.take(i).joinToString("/")
+                if (folder == root || folder.startsWith(prefix)) folders.add(folder)
+            }
+        }
+        val planned = actions.filterIsInstance<SyncAction.CreateRemoteFolder>().mapTo(HashSet()) { it.path }
+        for (folder in folders) {
+            if (folder in planned) continue
+            actions.add(SyncAction.CreateRemoteFolder(folder, remoteTarget = remoteTargetOf(folder)))
+        }
     }
 
     private fun replanFolder(
