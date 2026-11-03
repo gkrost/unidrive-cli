@@ -2091,6 +2091,7 @@ internal fun foldersWithLiveRemoteItemsBelow(actions: List<SyncAction>): Set<Str
                 is SyncAction.Conflict -> action.remoteItem
                 is SyncAction.CreatePlaceholder -> action.remoteItem
                 is SyncAction.UpdatePlaceholder -> action.remoteItem
+                is SyncAction.MoveLocal -> action.remoteItem
                 else -> null
             }
         if (remoteItem == null || remoteItem.deleted) continue
