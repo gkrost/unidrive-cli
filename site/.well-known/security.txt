@@ -1,0 +1,4 @@
+Contact: https://github.com/gkrost/unidrive-cli/security/advisories/new
+Policy: https://github.com/gkrost/unidrive-cli/blob/main/SECURITY.md
+Expires: 2027-09-18T00:00:00.000Z
+Preferred-Languages: en
