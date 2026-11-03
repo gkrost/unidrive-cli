@@ -4110,38 +4110,16 @@ open class SyncEngine(
                 SyncAction.CreatePlaceholder(action.path, action.remoteItem, shouldHydrate = !action.remoteItem.isFolder),
             )
         } else if (action.remoteState == ChangeState.DELETED && Files.exists(localPath)) {
-            val sent = statBeforeUpload(localPath)
-            val result =
-                provider.upload(localPath, action.path) { transferred, total ->
-                    reporter.onTransferProgress(action.path, transferred, total)
+            // archive#115: the kept file goes back to its row's canonical remote path, never the
+            // real-local alias path — an upload to /Bilder/x.jpg would build a /Bilder tree in the
+            // cloud and the upsert below (applyUpload's) would drop the row's alias. remotePathOf
+            // resolves row.remotePath ?: nearest aliased ancestor ?: path; for a non-aliased row it
+            // equals action.path, so remoteTarget stays null and nothing changes for it.
+            val canonicalTarget =
+                db.getEntry(action.path)?.let { row ->
+                    remotePathOf(action.path, row).takeIf { it != action.path }
                 }
-            // archive#337/#148: record the pre-upload stat (same rule as applyUpload) so a
-            // write landing during this upload is re-planned by the next scan.
-            val afterUpload = statBeforeUpload(localPath)
-            if (afterUpload != null && sent != null && afterUpload != sent) {
-                log.debug(
-                    "Conflict keep-both: {} changed while it was being uploaded; keeping the pre-upload watermark",
-                    action.path,
-                )
-            }
-            val mtime = sent?.first ?: afterUpload?.first ?: Files.getLastModifiedTime(localPath).toMillis()
-            val size = sent?.second ?: afterUpload?.second ?: Files.size(localPath)
-            db.upsertEntry(
-                SyncEntry(
-                    path = action.path,
-                    remoteId = result.id,
-                    remoteHash = result.hash,
-                    remoteVersion = result.version,
-                    remoteSize = result.size,
-                    remoteModified = result.modified,
-                    localMtime = mtime,
-                    localSize = size,
-                    isFolder = false,
-                    isPinned = false,
-                    isHydrated = true,
-                    lastSynced = Instant.now(),
-                ).let { withSentHash(it, localPath, sent) },
-            )
+            applyUpload(SyncAction.Upload(action.path, remoteTarget = canonicalTarget), resolveRefusal = false)
         }
     }
 
