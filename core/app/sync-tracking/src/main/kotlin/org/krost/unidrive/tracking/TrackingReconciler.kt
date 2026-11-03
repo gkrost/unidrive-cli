@@ -64,10 +64,7 @@ class TrackingReconciler(
                     // decide adoption. Reconciler emits actions; adoption is state-only.
                     return ReconcileAction.NoOp(path)
                 }
-                return ReconcileAction.ReportCollision(
-                    path,
-                    "untracked path exists on both sides with different content (hash mismatch)",
-                )
+                return ReconcileAction.ReportCollision(path, collisionReason(local, remote))
             }
 
             // Pure-local untracked: a file created locally that the remote does
@@ -192,6 +189,26 @@ class TrackingReconciler(
         remote: RemoteObservation,
         track: TrackingRecord?,
     ): Boolean = track == null && local.exists && remote.exists && contentMatches(path, local, remote)
+
+    /**
+     * Why the both-sides-exist pair did not match. With a hash on both sides
+     * the content really differs; without one on either side the collision is
+     * still the safe answer, but the reason must not claim a difference the
+     * engine never observed — it names the size comparison that was possible
+     * and the hash that was not, so the reader does not go looking for a
+     * content difference that may not exist.
+     */
+    private fun collisionReason(
+        local: LocalObservation,
+        remote: RemoteObservation,
+    ): String {
+        if (local.hash != null && remote.hash != null) {
+            return "untracked path exists on both sides with different content (hash mismatch)"
+        }
+        val sizeNote =
+            if (local.size != null && local.size == remote.size) "same size, " else ""
+        return "untracked path exists on both sides; ${sizeNote}no content hash to compare, so sameness cannot be proven"
+    }
 
     private fun contentMatches(
         path: String,
