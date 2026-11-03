@@ -287,6 +287,9 @@ class FakeCloudProvider : CloudProvider {
         uploadedPaths.add(remotePath)
         val content = Files.readAllBytes(localPath)
         files[remotePath] = content
+        // The hash is of the bytes just sent. duringUpload may change the local file afterwards, and that edit is a
+        // later upload, not this one.
+        val hash = hashOf(content)
         duringUpload?.invoke(localPath)
         return CloudItem(
             id = "id-$remotePath",
@@ -296,9 +299,26 @@ class FakeCloudProvider : CloudProvider {
             isFolder = false,
             modified = uploadModified ?: Instant.now(),
             created = Instant.now(),
-            hash = "uploaded",
+            hash = hash,
             mimeType = null,
         )
+    }
+
+    // gkrost/unidrive-cli#187: a hash-capable stand-in answers the bytes' own hash, the one HashVerifier computes, so a
+    // row whose recorded remote hash a regression corrupts no longer compares equal to every upload. A hashless
+    // stand-in (the default) still answers the constant, which is not a content hash. ifMatchETag stays recorded and
+    // is still enforced only through refuseUpload: a faithful precondition needs the token the engine will echo, and
+    // turning that on by default is the rest of #187.
+    private fun hashOf(bytes: ByteArray): String {
+        val algorithm = hashAlgorithmOverride ?: return "uploaded"
+        val tmp = Files.createTempFile("unidrive-fake-hash", ".bin")
+        try {
+            Files.write(tmp, bytes)
+            return HashVerifier.computeHash(tmp, algorithm)
+                ?: error("hash algorithm $algorithm produced no hash")
+        } finally {
+            Files.deleteIfExists(tmp)
+        }
     }
 
     // When non-null, the NEXT delete() call throws this exception (single-use, cleared after throw).
@@ -445,7 +465,7 @@ class FakeCloudProvider : CloudProvider {
                 isFolder = false,
                 modified = Instant.now(),
                 created = Instant.now(),
-                hash = "uploaded",
+                hash = hashOf(content),
                 mimeType = null,
             )
         } else {
