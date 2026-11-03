@@ -159,6 +159,55 @@ class ReconcilerTest {
         )
     }
 
+    // detectRemoteRenames runs before the guard and turns the planned create of a remote folder moved into the deleted
+    // folder into a MoveLocal. That item is alive remotely below /p, so the folder delete still waits for it.
+    @Test
+    fun `a locally deleted folder keeps its remote delete waiting when a remote folder was moved into it`() {
+        db.upsertEntry(folderEntry("/p"))
+        db.upsertEntry(folderEntry("/q"))
+        val movedIn = folderItem("/p/q", "2026-03-28T12:00:00Z").copy(id = "id-/q")
+        val remoteChanges = mapOf("/p/q" to movedIn)
+        val localChanges = mapOf("/p" to ChangeState.DELETED)
+
+        val actions = reconciler.reconcile(remoteChanges, localChanges)
+
+        assertTrue(
+            actions.any { it is SyncAction.MoveLocal && it.path == "/p/q" && it.fromPath == "/q" },
+            "the moved-in folder is planned as a local move; got $actions",
+        )
+        assertTrue(
+            actions.none { it is SyncAction.DeleteRemote && it.path == "/p" },
+            "the folder delete must not take the moved-in folder with the subtree; got $actions",
+        )
+    }
+
+    // The guard is one pass over the plan with a set of ancestor folders, not a scan of every action per folder delete:
+    // 10^4 folder deletes against 10^5 actions was 10^9 prefix comparisons.
+    @Test
+    fun `the folders holding live remote items come from one pass over a large plan`() {
+        val folders = 10_000
+        val filesPerFolder = 10
+        val actions = ArrayList<SyncAction>()
+        for (i in 0 until folders) {
+            actions.add(SyncAction.DeleteRemote("/d$i"))
+            // Even folders get remote-new files two levels down; odd ones only a delete below them.
+            if (i % 2 == 0) {
+                for (j in 0 until filesPerFolder) actions.add(SyncAction.DownloadContent("/d$i/s/n$j.txt", cloudItem("/d$i/s/n$j.txt")))
+            } else {
+                actions.add(SyncAction.DeleteRemote("/d$i/gone.txt"))
+            }
+        }
+
+        val started = System.nanoTime()
+        val holders = foldersWithLiveRemoteItemsBelow(actions)
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+
+        assertEquals(folders / 2 * 2, holders.size, "each even folder and its subfolder hold live content; got ${holders.size}")
+        assertTrue("/d0" in holders && "/d0/s" in holders && "/d1" !in holders)
+        assertTrue(actions.size > 50_000, "the plan is large; got ${actions.size}")
+        assertTrue(elapsedMs < 5_000, "the walk must stay linear in the plan; it took $elapsedMs ms")
+    }
+
     @Test
     fun `remote new file downloads content`() {
         // UD-222: remote-new non-folder always emits DownloadContent (Pass 2 concurrent).

@@ -1341,7 +1341,9 @@ class Reconciler(
             actions.filterIsInstance<SyncAction.DeleteRemote>()
                 .filter { entryByPath[it.path]?.isFolder == true }
         if (folderDeletes.isEmpty()) return
-        val held = folderDeletes.filter { del -> actions.any { holdsLiveRemoteItemBelow(it, del.path) } }
+        val holders = foldersWithLiveRemoteItemsBelow(actions)
+        if (holders.isEmpty()) return
+        val held = folderDeletes.filter { it.path in holders }
         if (held.isEmpty()) return
         actions.removeAll(held.toSet())
         log.warn(
@@ -1349,25 +1351,6 @@ class Reconciler(
             held.size,
             held.joinToString(",") { it.path },
         )
-    }
-
-    // True when [action] applies remote content that lives below [folder]: a download of a remote-new item, a
-    // conflict whose remote side is alive, or a placeholder create or update. A delete below the folder does not
-    // hold it — the provider removes that item alone, and the empty-directory reaper decides about the folder after.
-    private fun holdsLiveRemoteItemBelow(
-        action: SyncAction,
-        folder: String,
-    ): Boolean {
-        if (!action.path.startsWith("$folder/")) return false
-        val remoteItem =
-            when (action) {
-                is SyncAction.DownloadContent -> action.remoteItem
-                is SyncAction.Conflict -> action.remoteItem
-                is SyncAction.CreatePlaceholder -> action.remoteItem
-                is SyncAction.UpdatePlaceholder -> action.remoteItem
-                else -> null
-            }
-        return remoteItem != null && !remoteItem.deleted
     }
 
     private fun dropScopedAncestorRemoteDeletes(actions: MutableList<SyncAction>, syncPaths: List<String>) {
@@ -2089,6 +2072,32 @@ class Reconciler(
             return sb.toString()
         }
     }
+}
+
+/**
+ * The folders that have a live remote item applied below them by [actions]: a download of a remote-new item, a conflict
+ * whose remote side is alive, a placeholder create or update, or a local move of a remote item renamed or moved into
+ * place (detectRemoteRenames runs before the folder-delete guard and turns the download of a renamed item into a
+ * MoveLocal). A delete does not hold a folder — the provider removes that item alone, and the empty-directory reaper
+ * decides about the folder after. One pass: every ancestor folder of a qualifying action goes into a set, stopping at
+ * the first ancestor already in it, the same walk as keepFoldersHoldingUnsyncedLocalContent.
+ */
+internal fun foldersWithLiveRemoteItemsBelow(actions: List<SyncAction>): Set<String> {
+    val holders = HashSet<String>()
+    for (action in actions) {
+        val remoteItem =
+            when (action) {
+                is SyncAction.DownloadContent -> action.remoteItem
+                is SyncAction.Conflict -> action.remoteItem
+                is SyncAction.CreatePlaceholder -> action.remoteItem
+                is SyncAction.UpdatePlaceholder -> action.remoteItem
+                else -> null
+            }
+        if (remoteItem == null || remoteItem.deleted) continue
+        var parent = action.path.substringBeforeLast('/', "")
+        while (parent.isNotEmpty() && holders.add(parent)) parent = parent.substringBeforeLast('/', "")
+    }
+    return holders
 }
 
 // #99: a scoped run never deletes in the cloud above its scope. A scope ancestor that is gone
