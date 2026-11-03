@@ -3,6 +3,14 @@
    <configuration>
       <verify-metadata>true</verify-metadata>
       <verify-signatures>false</verify-signatures>
+      <trusted-keys>
+         <trusted-key id="6F538074CCEBF35F28AF9B066A0975F8B1127B83" group="org.jetbrains.kotlin" origin="github.com/JetBrains/kotlin-web-site docs/topics/security.md" reason="Signing subkey of the Kotlin Release key 2FBA29D08D2E25EE84C132C30729A0AFF8999A87 whose fingerprint the project publishes; Gradle matches the signing key itself"/>
+         <trusted-key id="6F538074CCEBF35F28AF9B066A0975F8B1127B83" group="org.jetbrains.kotlin.jvm" origin="github.com/JetBrains/kotlin-web-site docs/topics/security.md" reason="Signing subkey of the Kotlin Release key 2FBA29D08D2E25EE84C132C30729A0AFF8999A87; signs the kotlin Gradle plugin marker"/>
+         <trusted-key id="6F538074CCEBF35F28AF9B066A0975F8B1127B83" group="org.jetbrains.kotlin.plugin.serialization" origin="github.com/JetBrains/kotlin-web-site docs/topics/security.md" reason="Signing subkey of the Kotlin Release key 2FBA29D08D2E25EE84C132C30729A0AFF8999A87; signs the kotlin serialization plugin marker"/>
+         <trusted-key id="8E3A02905A1AE67E7B0F9ACD3967D4EDA591B991" group="io.ktor" origin="keyserver.ubuntu.com" reason="Signing subkey of the Ktor Release key 394CB436C56916FC01EEA4A77C30F7B1329DBA87 (UID Ktor Release, ktor at jetbrains.com); Gradle matches the signing key itself"/>
+         <trusted-key id="60200AC4AE761F1614D6C46766D68DAA073BE985" group="ch.qos.logback" origin="github.com/qos-ch/logback SECURITY.md" reason="Signs the artifacts published to Maven Central under this group; fingerprint published by the project"/>
+         <trusted-key id="5DD80B0DDCCBE005F0A47FD66751E1A6E2001B8D" group="com.squareup.okhttp3" origin="github.com/lysine-dev/okhttp docs/security/security.md" reason="Signs the artifacts published to Maven Central under this group; fingerprint published by the project"/>
+      </trusted-keys>
    </configuration>
    <components>
       <component group="aopalliance" name="aopalliance" version="1.0">
