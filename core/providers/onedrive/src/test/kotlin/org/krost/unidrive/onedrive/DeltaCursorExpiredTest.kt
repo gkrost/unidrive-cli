@@ -41,7 +41,7 @@ class DeltaCursorExpiredTest {
             GraphApiService(
                 config = OneDriveConfig(),
                 httpClient = HttpClient(engine),
-                tokenProvider = { _ -> "test-token" },
+                tokenProvider = { _, _ -> "test-token" },
             )
 
         val provider = OneDriveProvider(OneDriveConfig(includeShared = includeShared), graphApi = freshGraphApi)

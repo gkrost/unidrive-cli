@@ -396,10 +396,12 @@ open class AuthService(
      * `TokenManager.getValidToken(forceRefresh)`. When the API layer sees an
      * unexpected 401 mid-request (the server rotated the token earlier than
      * our pre-expiry margin predicted, e.g. tenant policy change), it replays
-     * the call after asking for `forceRefresh = true`. Concurrent forced
-     * callers still coalesce inside [refreshToken]'s [RefreshableTokenLatch],
-     * so the second-and-Nth replay observe the post-refresh value without
-     * issuing redundant HTTP refreshes.
+     * the call after asking for `forceRefresh = true`, naming the jwt the
+     * refused request carried ([rejectedJwt]). Concurrent forced callers
+     * coalesce inside [refreshToken]'s [RefreshableTokenLatch]: callers still
+     * in flight when the refresh commits take its value, and a replay that
+     * arrives after it names a jwt the stored one already differs from — the
+     * rotation answers it, so no further HTTP refresh is issued.
      *
      * Refresh goes through [refreshToken], which serialises concurrent callers via
      * [RefreshableTokenLatch] (UD-338) — we deliberately do not duplicate any of
@@ -414,9 +416,12 @@ open class AuthService(
      * Absent credentials (never authenticated) still throw [AuthenticationException]
      * — the contract for that case is unchanged.
      */
-    suspend fun getValidCredentials(forceRefresh: Boolean = false): InternxtCredentials {
+    suspend fun getValidCredentials(
+        forceRefresh: Boolean = false,
+        rejectedJwt: String? = null,
+    ): InternxtCredentials {
         val current = signedIn()
-        if (forceRefresh) return refreshToken()
+        if (forceRefresh) return refreshToken(rejectedJwt)
         // Refresh both for already-expired tokens (UD-308 cold-start fast path)
         // and for tokens within the effective margin of expiry (see
         // [effectiveRefreshMarginMs]). The margin prevents the case where a
@@ -563,19 +568,24 @@ open class AuthService(
      * and double-check the in-memory jwt after acquiring the lock: if another coroutine
      * has already rotated the token while we were waiting, we return the fresh value
      * instead of making a redundant (and potentially invalidating) second HTTP call.
+     *
+     * [rejectedJwt] is the token the caller's own rejected request carried, when it knows it:
+     * a replay that arrives after another caller's refresh committed then sees a stored jwt that
+     * already differs from it and takes that value instead of rotating it a second time. Without
+     * a name, the snapshot of the jwt at entry decides, as before.
      */
-    suspend fun refreshToken(): InternxtCredentials {
-        val stale = credentials ?: throw AuthenticationException("Not authenticated")
+    suspend fun refreshToken(rejectedJwt: String? = null): InternxtCredentials {
+        val stale = rejectedJwt ?: (credentials ?: throw AuthenticationException("Not authenticated")).jwt
         // UD-338: serialisation + NonCancellable wrap delegated to
         // RefreshableTokenLatch (replaces the inline `refreshMutex.withLock {
         // ... withContext(NonCancellable) { ... } }` pattern that mirrored
-        // UD-310/UD-331 by hand). Double-check predicate (`jwt != stale.jwt`)
+        // UD-310/UD-331 by hand). Double-check predicate (`jwt != stale`)
         // stays here because it's the Internxt-specific "did someone else
         // already refresh?" answer.
         return refreshLatch.withRefresh(
             isAlreadyFresh = {
                 val current = credentials ?: throw AuthenticationException("Not authenticated")
-                if (current.jwt != stale.jwt) current else null
+                if (current.jwt != stale) current else null
             },
             body = {
                 // Read before the credentials: a sign-out after this point keeps the refreshed JWT from being stored.

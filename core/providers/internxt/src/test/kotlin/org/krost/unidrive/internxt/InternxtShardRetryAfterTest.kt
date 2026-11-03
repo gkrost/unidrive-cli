@@ -44,7 +44,7 @@ class InternxtShardRetryAfterTest {
         bridge: HttpRetryBudget,
     ) = InternxtApiService(
         InternxtConfig(credentialProtector = null),
-        credentialsProvider = { _ -> credentials },
+        credentialsProvider = { _, _ -> credentials },
         bridgeBudget = bridge,
         httpClient = HttpClient(engine),
     )

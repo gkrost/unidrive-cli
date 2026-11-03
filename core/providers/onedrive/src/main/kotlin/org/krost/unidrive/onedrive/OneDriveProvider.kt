@@ -37,8 +37,8 @@ class OneDriveProvider(
     private val loggedPackageIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     private val graphApi =
-        graphApi ?: GraphApiService(config, engine = engine) { forceRefresh ->
-            tokenManager.getValidToken(forceRefresh).accessToken
+        graphApi ?: GraphApiService(config, engine = engine) { forceRefresh, rejectedToken ->
+            tokenManager.getValidToken(forceRefresh, rejectedToken).accessToken
         }
 
     // UD-007: tokenManager is the source of truth — the setter is a no-op so

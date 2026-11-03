@@ -143,6 +143,36 @@ class InternxtAuthServiceTest {
         }
 
     /**
+     * The coalescing invariant the two concurrency tests above cannot see: they fan callers out
+     * *before* any refresh commits, where the latch's double-check answers them. A caller whose
+     * request went out with the old jwt and whose replay arrives *after* another caller's refresh
+     * committed takes the fresh token as its "stale" snapshot and rotated it a second time — one
+     * extra /users/refresh per concurrent 401. The forced refresh names the token its rejected
+     * request carried instead ([AuthService.getValidCredentials]), and a stored jwt that already
+     * differs from it is taken as is.
+     */
+    @Test
+    fun `a forced refresh naming the rejected jwt does not refresh a token already rotated for it`() =
+        runBlocking {
+            val tmp = Files.createTempDirectory("internxt-auth-rejected-")
+            try {
+                seedCredentials(tmp, jwt = "rejected-jwt")
+                val auth = CountingAuthService(InternxtConfig(credentialProtector = null, tokenPath = tmp))
+                auth.initialize()
+
+                // The first rotation replaces the rejected jwt before the second caller's replay arrives.
+                auth.refreshToken()
+
+                val creds = auth.getValidCredentials(forceRefresh = true, rejectedJwt = "rejected-jwt")
+
+                assertEquals("refreshed-jwt-#1", creds.jwt)
+                assertEquals(1, auth.callCount.get(), "the stored jwt already answers the rejected one; no second refresh")
+            } finally {
+                Files.walk(tmp).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+            }
+        }
+
+    /**
      * UD-308 invariant: `getValidCredentials()` proactively refreshes when the
      * stored JWT is expired, instead of returning a known-stale token and forcing
      * the caller to discover staleness via a 401.

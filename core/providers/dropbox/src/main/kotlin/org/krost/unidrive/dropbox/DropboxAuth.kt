@@ -145,15 +145,25 @@ class DropboxAuth(
     /**
      * A usable access token: the stored one, or a refreshed one when it is near its expiry or [forceRefresh] is set
      * (the API refused it). One refresh at a time; a caller that waited for another's refresh takes its result.
+     * A caller that names the token its rejected request carried ([rejectedAccessToken]) also takes a stored
+     * token that already differs from it: another caller's refresh answered the 401, and the rotation must not
+     * run again. Without a name, the token observed at entry decides, as before.
      */
-    suspend fun accessToken(forceRefresh: Boolean = false): String {
+    suspend fun accessToken(
+        forceRefresh: Boolean = false,
+        rejectedAccessToken: String? = null,
+    ): String {
         val seen = signedIn()
         if (!forceRefresh && !seen.isNearExpiry()) return seen.accessToken
         return refreshLatch
             .withRefresh(
                 isAlreadyFresh = {
                     val now = signedIn()
-                    if (!now.isNearExpiry() && (!forceRefresh || now !== seen)) now else null
+                    when {
+                        !forceRefresh -> if (!now.isNearExpiry()) now else null
+                        rejectedAccessToken != null -> if (!now.isNearExpiry() && now.accessToken != rejectedAccessToken) now else null
+                        else -> if (!now.isNearExpiry() && now !== seen) now else null
+                    }
                 },
                 body = { refresh() },
             ).accessToken

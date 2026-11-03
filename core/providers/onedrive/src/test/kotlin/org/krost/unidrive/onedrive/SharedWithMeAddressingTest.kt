@@ -102,7 +102,7 @@ class SharedWithMeAddressingTest {
 
     private fun providerWith(engine: MockEngine): OneDriveProvider {
         val config = OneDriveConfig(tokenPath = tempDir(), includeShared = true)
-        val service = GraphApiService(config = config, httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+        val service = GraphApiService(config = config, httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" })
         val provider = OneDriveProvider(config, graphApi = service)
         providers += provider
         return provider

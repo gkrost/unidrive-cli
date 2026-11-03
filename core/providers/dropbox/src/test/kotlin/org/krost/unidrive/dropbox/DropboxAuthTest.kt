@@ -153,4 +153,35 @@ class DropboxAuthTest {
             assertIs<CompleteAuthResult.Failure>(outcome)
             assertEquals(CompleteAuthResult.Reason.EXPIRED, outcome.reason)
         }
+
+    /**
+     * The forced refresh coalesces the concurrent 401s it answers: the "seen" token was snapshotted when
+     * the forced refresh was asked for, so a caller whose request went out with the old token and whose
+     * replay arrives after another caller's refresh committed read the fresh token as "seen" and rotated
+     * it again. The forced refresh names the token its rejected request carried instead
+     * ([DropboxAuth.accessToken]), and a stored token that already differs from it is taken as is.
+     */
+    @Test
+    fun `a forced refresh naming the rejected token does not refresh a token already rotated for it`() =
+        kotlinx.coroutines.runBlocking<Unit> {
+            val fake = FakeDropbox()
+            fake.json(
+                "oauth2/token",
+                """{"access_token":"${"b".repeat(40)}","expires_in":14400,"refresh_token":"r1","account_id":"dbid:a"}""",
+            )
+            Files.writeString(
+                dir.resolve(DropboxAuth.TOKEN_FILE),
+                org.krost.unidrive.UnidriveJson.encodeToString(DropboxToken.serializer(), DropboxToken("a".repeat(40), System.currentTimeMillis() + 3_600_000, "r1")),
+            )
+            val auth = DropboxAuth(DropboxConfig(appKey = "key", tokenPath = dir), io.ktor.client.HttpClient(fake.engine))
+            auth.load()
+
+            // The first rotation replaces the rejected token before the second caller's replay arrives.
+            auth.accessToken(forceRefresh = true)
+
+            val again = auth.accessToken(forceRefresh = true, rejectedAccessToken = "a".repeat(40))
+
+            assertEquals("b".repeat(40), again)
+            assertEquals(1, fake.callsTo("oauth2/token").size, "the stored token already answers the rejected one; no second refresh")
+        }
 }

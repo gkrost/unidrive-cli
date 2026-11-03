@@ -203,7 +203,7 @@ internal fun loopbackService(
 ): InternxtApiService =
     InternxtApiService(
         InternxtConfig(credentialProtector = null, ),
-        credentialsProvider = { _ ->
+        credentialsProvider = { _, _ ->
             InternxtCredentials(jwt = "test-jwt", mnemonic = "test-mnemonic", rootFolderId = "test-root", email = "test@example.invalid")
         },
         driveBudget = HttpRetryBudget(maxConcurrency = 2, minSpacingMs = 0, stormSpacingMs = 0),

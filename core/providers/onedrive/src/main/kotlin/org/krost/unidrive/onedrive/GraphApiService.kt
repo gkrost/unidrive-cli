@@ -52,7 +52,9 @@ class GraphApiService(
     httpClient: HttpClient? = null,
     // Tests point the requests at a loopback server; production talks to Graph.
     private val baseUrl: String = "${OneDriveConfig.GRAPH_BASE_URL}/${OneDriveConfig.GRAPH_VERSION}",
-    private val tokenProvider: suspend (forceRefresh: Boolean) -> String,
+    // [rejectedToken] names the token the refused request carried on a forced refresh (#215), so the
+    // token manager can take a stored token that already differs from it as fresh instead of rotating again.
+    private val tokenProvider: suspend (forceRefresh: Boolean, rejectedToken: String?) -> String,
 ) : AutoCloseable {
     private val log = LoggerFactory.getLogger(GraphApiService::class.java)
 
@@ -327,12 +329,15 @@ class GraphApiService(
         // auth: re-resolve the item once for a fresh URL before treating it as an
         // authentication failure. Bounded to a single re-resolve (no loop).
         var authUrlReresolved = false
+        var sentToken: String? = null
         while (true) {
             try {
                 throttleBudget.awaitSlot()
+                val bearer = if (authNeeded) tokenProvider(authRefreshed, sentToken) else null
+                if (bearer != null) sentToken = bearer
                 val statement =
                     httpClient.prepareGet(url) {
-                        if (authNeeded) bearerAuth(tokenProvider(authRefreshed))
+                        if (bearer != null) bearerAuth(bearer)
                         // Ktor counts the request timeout up to the end of the `execute` block, so the client's flat
                         // 10 minute cap cut every download that needs longer, steady transfer or not. Sized from the
                         // declared size like an upload (the larger of that floor and the time at the minimum throughput).
@@ -1333,16 +1338,19 @@ class GraphApiService(
             throw ProviderException("Refusing to send the OneDrive token to a URL that is not on the Graph origin")
         }
         var refreshed = false
+        var sentToken: String? = null
         var throttleAttempts = 0
         var totalThrottleWaitMs = 0L
         while (true) {
             throttleBudget.awaitSlot()
+            val token = tokenProvider(refreshed, sentToken)
+            sentToken = token
             val response =
                 httpClient.request(
                     HttpRequestBuilder().apply {
                         url(endpoint)
                         this.method = method
-                        bearerAuth(tokenProvider(refreshed))
+                        bearerAuth(token)
                         configure()
                     },
                 )

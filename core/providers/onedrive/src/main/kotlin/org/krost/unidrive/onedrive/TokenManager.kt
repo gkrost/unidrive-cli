@@ -135,7 +135,13 @@ class TokenManager(
         return fresh
     }
 
-    suspend fun getValidToken(forceRefresh: Boolean = false): Token {
+    suspend fun getValidToken(
+        forceRefresh: Boolean = false,
+        // The token the caller's rejected request carried (#215): when the stored token already differs
+        // from it, another caller's refresh answered the 401 and this one must not rotate again. Without
+        // it, the token observed at entry decides, as before.
+        rejectedToken: String? = null,
+    ): Token {
         // Read before the token: a sign-out or reload after this point keeps a retried save from storing a stale token.
         val seenGeneration = refreshLatch.generation()
         val currentToken = token ?: throw AuthenticationException("Not authenticated")
@@ -149,17 +155,19 @@ class TokenManager(
         // RefreshableTokenLatch. The skip-if-already-fresh predicate
         // captures both OneDrive nuances:
         //  - normal callers (no forceRefresh) accept any fresh token,
-        //  - forceRefresh callers accept a fresh token IFF it's a
-        //    different object than the one we observed pre-lock (i.e.
-        //    another coroutine already did the force-refresh).
+        //  - forceRefresh callers accept a fresh token IFF it's not the
+        //    one their rejected request carried (another coroutine
+        //    already did the force-refresh), or — when no rejected token
+        //    was named — a different object than the one observed pre-lock.
         // RefreshFailure recording (UD-111) and the throw still live
         // here because they're provider-specific UX, not lock-mechanics.
         return refreshLatch.withRefresh(
             isAlreadyFresh = {
                 val freshToken = token ?: throw AuthenticationException("Not authenticated")
+                val rotated = rejectedToken?.let { freshToken.accessToken != it } ?: (freshToken !== currentToken)
                 when {
                     !forceRefresh && !freshToken.isNearExpiry() -> freshToken
-                    forceRefresh && !freshToken.isNearExpiry() && freshToken !== currentToken -> freshToken
+                    forceRefresh && !freshToken.isNearExpiry() && rotated -> freshToken
                     else -> null
                 }
             },

@@ -52,7 +52,7 @@ class OneDriveSimilarNameMountTest {
         tmp = Files.createTempDirectory("ud-similar-mount")
         graph = SimilarNameGraph()
         val config = OneDriveConfig(tokenPath = tmp.resolve("token"))
-        val api = GraphApiService(config = config, httpClient = graph.client(), tokenProvider = { _ -> "test-token" })
+        val api = GraphApiService(config = config, httpClient = graph.client(), tokenProvider = { _, _ -> "test-token" })
         provider = OneDriveProvider(config, graphApi = api)
         db = StateDatabase(dbPath = tmp.resolve("state.db"), inMemory = true).also { it.initialize() }
         engine = SyncEngine(provider = provider, db = db, syncRoot = tmp.resolve("sync"), cacheRoot = tmp.resolve("cache"))

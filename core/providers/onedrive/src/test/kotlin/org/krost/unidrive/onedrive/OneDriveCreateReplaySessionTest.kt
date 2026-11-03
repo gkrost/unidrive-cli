@@ -154,7 +154,7 @@ class OneDriveCreateReplaySessionTest {
     }
 
     private fun providerWith(engine: MockEngine): OneDriveProvider {
-        val graph = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+        val graph = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" })
         val provider = OneDriveProvider(graphApi = graph)
         return provider
     }

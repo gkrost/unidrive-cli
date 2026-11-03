@@ -78,9 +78,9 @@ class InternxtProvider(
     // internal so tests can call the API service of a provider they built; nothing else outside this class uses it.
     internal val api =
         if (httpClient == null) {
-            InternxtApiService(config, credentialsProvider = { forceRefresh -> authService.getValidCredentials(forceRefresh) })
+            InternxtApiService(config, credentialsProvider = { forceRefresh, rejectedJwt -> authService.getValidCredentials(forceRefresh, rejectedJwt) })
         } else {
-            InternxtApiService(config, credentialsProvider = { forceRefresh -> authService.getValidCredentials(forceRefresh) }, httpClient = httpClient)
+            InternxtApiService(config, credentialsProvider = { forceRefresh, rejectedJwt -> authService.getValidCredentials(forceRefresh, rejectedJwt) }, httpClient = httpClient)
         }
     override val remoteObjectAuditor: RemoteObjectAuditor =
         InternxtRemoteObjectAuditor(

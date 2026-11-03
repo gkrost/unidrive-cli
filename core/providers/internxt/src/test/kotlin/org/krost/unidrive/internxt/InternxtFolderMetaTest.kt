@@ -43,7 +43,7 @@ class InternxtFolderMetaTest {
     private fun serviceOn(engine: MockEngine) =
         InternxtApiService(
             InternxtConfig(credentialProtector = null),
-            credentialsProvider = { _ ->
+            credentialsProvider = { _, _ ->
                 InternxtCredentials(
                     jwt = "test-jwt",
                     mnemonic = "test-mnemonic",

@@ -1,6 +1,10 @@
 package org.krost.unidrive.internxt
 
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
 import io.ktor.utils.io.toByteArray
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -10,7 +14,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.internxt.model.FolderContentResponse
+import org.krost.unidrive.internxt.model.InternxtCredentials
+import org.krost.unidrive.internxt.model.InternxtFile
 import org.krost.unidrive.internxt.model.Mirror
 import org.krost.unidrive.internxt.model.StartUploadResponse
 import java.util.Base64
@@ -132,7 +139,7 @@ class InternxtApiServiceTest {
     private fun mkService(): InternxtApiService =
         InternxtApiService(
             InternxtConfig(credentialProtector = null, ),
-            credentialsProvider = { _ ->
+            credentialsProvider = { _, _ ->
                 // Tests don't actually call any HTTP method that needs creds —
                 // they exercise the retry/parse helpers directly. Surface a
                 // sentinel so any accidental real call fails loudly.
@@ -556,7 +563,7 @@ class InternxtApiServiceTest {
             val service =
                 InternxtApiService(
                     InternxtConfig(credentialProtector = null, ),
-                    { _ ->
+                    { _, _ ->
                         org.krost.unidrive.internxt.model.InternxtCredentials(
                             jwt = "test-jwt",
                             mnemonic = "test-mnemonic",
@@ -622,7 +629,7 @@ class InternxtApiServiceTest {
         val service =
             InternxtApiService(
                 InternxtConfig(credentialProtector = null, ),
-                { _ ->
+                { _, _ ->
                     org.krost.unidrive.internxt.model.InternxtCredentials(
                         jwt = "test-jwt",
                         mnemonic = "test-mnemonic",
@@ -1062,7 +1069,7 @@ class InternxtApiServiceTest {
             val service =
                 InternxtApiService(
                     InternxtConfig(credentialProtector = null, ),
-                    { forceRefresh ->
+                    { forceRefresh, _ ->
                         if (forceRefresh) forcedRefreshCount.incrementAndGet()
                         else nonForcedCallCount.incrementAndGet()
                         org.krost.unidrive.internxt.model.InternxtCredentials(
@@ -3081,5 +3088,47 @@ class InternxtApiServiceTest {
             testScheduler.advanceUntilIdle()
             fgAdmit.await()
             bgAdmit.await()
+        }
+
+    /**
+     * The 401 replay asks the credentials provider for a forced refresh *naming the jwt the refused
+     * request carried*: the provider can then take a stored jwt that already differs from it as fresh
+     * (another caller's refresh answered the 401) instead of rotating the token a second time.
+     */
+    @Test
+    fun `the 401 replay names the jwt the refused request carried`() =
+        kotlinx.coroutines.test.runTest {
+            val asks = mutableListOf<Pair<Boolean, String?>>()
+            val asksFor = AtomicInteger(0)
+            val httpCalls = AtomicInteger(0)
+            val service =
+                InternxtApiService(
+                    InternxtConfig(credentialProtector = null),
+                    credentialsProvider = { forceRefresh, rejectedJwt ->
+                        asks += forceRefresh to rejectedJwt
+                        InternxtCredentials(
+                            jwt = if (asksFor.incrementAndGet() == 1) "jwt-1" else "jwt-2",
+                            mnemonic = "test-mnemonic",
+                            rootFolderId = "test-root",
+                            email = "test@example.invalid",
+                        )
+                    },
+                    driveBudget = HttpRetryBudget(maxConcurrency = 2, minSpacingMs = 0, stormSpacingMs = 0),
+                    httpClient =
+                        HttpClient(
+                            MockEngine {
+                                if (httpCalls.incrementAndGet() == 1) {
+                                    respond(content = """{"message":"expired"}""", status = HttpStatusCode.Unauthorized, headers = headersOf("Content-Type", "application/json"))
+                                } else {
+                                    respond(content = "[]", status = HttpStatusCode.OK, headers = headersOf("Content-Type", "application/json"))
+                                }
+                            },
+                        ),
+                )
+
+            assertEquals(emptyList<InternxtFile>(), service.listFiles())
+
+            assertEquals(listOf<Pair<Boolean, String?>>(false to null, true to "jwt-1"), asks, "the replay names the jwt the refused request carried")
+            service.close()
         }
 }

@@ -78,7 +78,7 @@ class DropboxProvider(
     override val caseSensitivity: CaseSensitivity get() = CaseSensitivity.INSENSITIVE_PRESERVING
 
     private val log = org.slf4j.LoggerFactory.getLogger(DropboxProvider::class.java)
-    private val api: DropboxApi = DropboxApi(config, { force -> auth.accessToken(force) }, engine)
+    private val api: DropboxApi = DropboxApi(config, { force, rejected -> auth.accessToken(force, rejected) }, engine)
 
     // archive#867: upload sessions in flight, so an interrupted big upload resumes at the committed offset.
     private val sessionStore = DropboxSessionStore(config.tokenPath)

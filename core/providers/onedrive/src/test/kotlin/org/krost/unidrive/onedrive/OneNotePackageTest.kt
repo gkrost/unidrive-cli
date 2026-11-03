@@ -65,7 +65,7 @@ class OneNotePackageTest {
                 }
             }
         val config = OneDriveConfig(tokenPath = tmp.resolve("token"))
-        val api = GraphApiService(config = config, httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+        val api = GraphApiService(config = config, httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" })
         return OneDriveProvider(config, graphApi = api)
     }
 

@@ -199,7 +199,7 @@ class OneDriveSessionReplayTest {
     }
 
     private fun graphWith(engine: MockEngine): GraphApiService {
-        val service = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+        val service = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" })
         return service
     }
 }

@@ -538,7 +538,7 @@ class OneDriveChangeChannelTest {
                             headersOf(HttpHeaders.ContentType, "application/json"),
                         )
                     }
-                GraphApiService(OneDriveConfig(tokenPath = dir), engine = engine) { "made-up-access-token" }.use { api ->
+                GraphApiService(OneDriveConfig(tokenPath = dir), engine = engine) { _, _ -> "made-up-access-token" }.use { api ->
                     val e = api.getSocketIoEndpoint()
                     assertEquals("/v1.0/me/drive/root/subscriptions/socketIo", path)
                     assertEquals(url(7), e.notificationUrl)

@@ -65,12 +65,14 @@ class DropboxApiException(
  * with their arguments in the `Dropbox-API-Arg` header, and the long-poll on the notify host, which takes no token.
  *
  * Every authenticated request goes through [send]: a slot from the shared [budget], a forced token refresh and one
- * retry on 401, and the server's own wait on 429 and 503 (Dropbox's `Retry-After`, or `retry_after` in the body).
- * Anything else reaches the caller as it is, so a write that may have taken effect is never repeated here.
+ * retry on 401 — naming the token the refused request carried, so the auth layer can take a token another caller
+ * already rotated in for it (#215) — and the server's own wait on 429 and 503 (Dropbox's `Retry-After`, or
+ * `retry_after` in the body). Anything else reaches the caller as it is, so a write that may have taken effect is
+ * never repeated here.
  */
 class DropboxApi(
     private val config: DropboxConfig,
-    private val accessToken: suspend (forceRefresh: Boolean) -> String,
+    private val accessToken: suspend (forceRefresh: Boolean, rejectedToken: String?) -> String,
     engine: HttpClientEngine? = null,
     private val budget: HttpRetryBudget = HttpRetryBudget(maxConcurrency = MAX_CONCURRENCY),
 ) : AutoCloseable {
@@ -140,14 +142,17 @@ class DropboxApi(
         requestTimeoutMs: Long? = null,
     ): Pair<JsonObject, Long> {
         var refreshed = false
+        var sentToken: String? = null
         var throttleAttempts = 0
         while (true) {
             budget.awaitSlot()
+            val token = accessToken(refreshed, sentToken)
+            sentToken = token
             val statement =
                 httpClient.prepareRequest {
                     url("${config.contentBase}/files/download")
                     method = HttpMethod.Post
-                    bearerAuth(accessToken(refreshed))
+                    bearerAuth(token)
                     pathRoot?.let { header(PATH_ROOT, it) }
                     header(API_ARG, headerSafeJson(obj("path" to path)))
                     // Ktor counts the request timeout up to the end of the `execute` block, so the client's flat 10 minute
@@ -214,14 +219,17 @@ class DropboxApi(
         configure: HttpRequestBuilder.() -> Unit,
     ): HttpResponse {
         var refreshed = false
+        var sentToken: String? = null
         var throttleAttempts = 0
         while (true) {
             budget.awaitSlot()
+            val token = accessToken(refreshed, sentToken)
+            sentToken = token
             val response =
                 httpClient.request {
                     url(endpoint)
                     method = HttpMethod.Post
-                    bearerAuth(accessToken(refreshed))
+                    bearerAuth(token)
                     pathRoot?.let { header(PATH_ROOT, it) }
                     configure()
                 }

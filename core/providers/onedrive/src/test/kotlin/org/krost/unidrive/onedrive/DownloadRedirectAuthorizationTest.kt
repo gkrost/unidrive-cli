@@ -55,7 +55,7 @@ class DownloadRedirectAuthorizationTest {
                 GraphApiService(
                     config = OneDriveConfig(),
                     httpClient = graphHttpClient(RequestMetricsTap(), OneDriveConfig.DEFAULT_USER_AGENT, engine),
-                    tokenProvider = { _ -> "secret-token" },
+                    tokenProvider = { _, _ -> "secret-token" },
                 )
             val dir = Files.createTempDirectory("redirect-auth")
             try {

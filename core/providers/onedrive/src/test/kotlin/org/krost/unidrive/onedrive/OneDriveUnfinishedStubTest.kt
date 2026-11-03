@@ -24,7 +24,7 @@ class OneDriveUnfinishedStubTest {
     private fun jsonHeaders() = headersOf(HttpHeaders.ContentType, "application/json")
 
     private fun providerWith(engine: MockEngine): OneDriveProvider {
-        val graph = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+        val graph = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" })
         val provider = OneDriveProvider(graphApi = graph)
         return provider
     }

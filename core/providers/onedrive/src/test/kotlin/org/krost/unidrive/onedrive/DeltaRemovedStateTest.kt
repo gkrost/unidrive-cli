@@ -37,7 +37,7 @@ class DeltaRemovedStateTest {
             GraphApiService(
                 config = OneDriveConfig(),
                 httpClient = HttpClient(engine),
-                tokenProvider = { _ -> "test-token" },
+                tokenProvider = { _, _ -> "test-token" },
             )
 
         val provider = OneDriveProvider(graphApi = freshGraphApi)

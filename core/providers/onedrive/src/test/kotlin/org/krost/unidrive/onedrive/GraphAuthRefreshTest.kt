@@ -66,7 +66,7 @@ class GraphAuthRefreshTest {
                 GraphApiService(
                     config = OneDriveConfig(),
                     httpClient = HttpClient(engine),
-                    tokenProvider = { refreshed ->
+                    tokenProvider = { refreshed, _ ->
                         tokenCalls += refreshed
                         if (refreshed) "refreshed-token" else "stale-token"
                     },
@@ -106,7 +106,7 @@ class GraphAuthRefreshTest {
                 GraphApiService(
                     config = OneDriveConfig(),
                     httpClient = HttpClient(engine),
-                    tokenProvider = { refreshed ->
+                    tokenProvider = { refreshed, _ ->
                         tokenCalls += refreshed
                         if (refreshed) "still-bad" else "bad"
                     },
@@ -144,7 +144,7 @@ class GraphAuthRefreshTest {
                 GraphApiService(
                     config = OneDriveConfig(),
                     httpClient = HttpClient(engine),
-                    tokenProvider = { refreshed ->
+                    tokenProvider = { refreshed, _ ->
                         tokenCalls += refreshed
                         "ok-token"
                     },
@@ -153,6 +153,50 @@ class GraphAuthRefreshTest {
             service.getDrive()
 
             assertEquals(listOf(false), tokenCalls, "success path must not request a refreshed token")
+            service.close()
+        }
+
+    /**
+     * The replay names the token the refused request carried (#215): the token manager can then take a
+     * stored token that already differs from it as fresh (another caller's refresh answered the 401)
+     * instead of rotating the token a second time.
+     */
+    @Test
+    fun `the 401 replay names the token the refused request carried`() =
+        runTest {
+            val attempt = AtomicInteger(0)
+            val rejectedSeen = mutableListOf<String?>()
+
+            val engine =
+                MockEngine {
+                    if (attempt.getAndIncrement() == 0) {
+                        respond(
+                            content = "{\"error\":\"token expired\"}",
+                            status = HttpStatusCode.Unauthorized,
+                            headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                        )
+                    } else {
+                        respond(
+                            content = "{\"id\":\"drive-id\",\"driveType\":\"personal\",\"quota\":{\"total\":0,\"used\":0,\"remaining\":0,\"deleted\":0}}",
+                            status = HttpStatusCode.OK,
+                            headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                        )
+                    }
+                }
+
+            val service =
+                GraphApiService(
+                    config = OneDriveConfig(),
+                    httpClient = HttpClient(engine),
+                    tokenProvider = { refreshed, rejected ->
+                        if (refreshed) rejectedSeen += rejected
+                        if (refreshed) "refreshed-token" else "stale-token"
+                    },
+                )
+
+            service.getDrive()
+
+            assertEquals(listOf<String?>("stale-token"), rejectedSeen, "the replay names the token the refused request carried")
             service.close()
         }
 }

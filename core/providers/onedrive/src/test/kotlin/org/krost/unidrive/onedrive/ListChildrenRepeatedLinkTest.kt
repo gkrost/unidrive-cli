@@ -30,7 +30,7 @@ class ListChildrenRepeatedLinkTest {
         return """{"value":[$entries]$nextPart}"""
     }
 
-    private fun newService(engine: MockEngine) = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+    private fun newService(engine: MockEngine) = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" })
 
     @Test
     fun `a repeated nextLink fails the listing instead of fetching it again`() =

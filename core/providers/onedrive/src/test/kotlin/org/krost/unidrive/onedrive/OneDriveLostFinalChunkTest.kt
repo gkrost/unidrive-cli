@@ -284,7 +284,7 @@ class OneDriveLostFinalChunkTest {
     }
 
     private fun graphWith(engine: MockEngine): GraphApiService =
-        GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+        GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" })
 
     private fun jsonHeaders() = headersOf(HttpHeaders.ContentType, "application/json")
 

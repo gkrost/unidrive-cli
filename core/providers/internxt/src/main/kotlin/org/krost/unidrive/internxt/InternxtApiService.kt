@@ -77,7 +77,9 @@ internal class InternxtDownloadBudgetExhaustedException(
 
 class InternxtApiService(
     private val config: InternxtConfig,
-    private val credentialsProvider: suspend (forceRefresh: Boolean) -> InternxtCredentials,
+    // [rejectedJwt] names the token the refused request carried on a forced refresh (#215), so the
+    // auth layer can take a stored jwt that already differs from it as fresh instead of rotating again.
+    private val credentialsProvider: suspend (forceRefresh: Boolean, rejectedJwt: String?) -> InternxtCredentials,
     // Two budgets matching drive-desktop's audited `bottleneck` config:
     //   - Drive REST: maxConcurrency=2, minSpacing=500ms (storm widens to 1000ms).
     //   - Bridge upload: maxConcurrency=4, minSpacing=0 (concurrency-only).
@@ -1501,7 +1503,7 @@ class InternxtApiService(
             budgeted(bridgeBudget) {
                 // Bridge auth is HTTP Basic — JWT refresh wouldn't change bridgeUser/bridgeUserId,
                 // so this stays out of withAuthRetry. Pass forceRefresh = false unconditionally.
-                val creds = credentialsProvider(false)
+                val creds = credentialsProvider(false, null)
                 val authHeader = InternxtCrypto.bridgeAuthHeader(creds.bridgeUser, creds.bridgeUserId)
                 val response =
                     httpClient.get("$bridgeUrl$path") {
@@ -1525,7 +1527,7 @@ class InternxtApiService(
             budgeted(bridgeBudget) {
                 // Bridge auth is HTTP Basic — JWT refresh wouldn't change bridgeUser/bridgeUserId,
                 // so this stays out of withAuthRetry. Pass forceRefresh = false unconditionally.
-                val creds = credentialsProvider(false)
+                val creds = credentialsProvider(false, null)
                 val authHeader = InternxtCrypto.bridgeAuthHeader(creds.bridgeUser, creds.bridgeUserId)
                 val response =
                     httpClient.post("$bridgeUrl$path") {
@@ -2068,28 +2070,33 @@ class InternxtApiService(
     // `GraphApiService.authenticatedRequest` ladder: fetch creds, run the
     // body, and if it surfaces an [AuthenticationException] (401 mapped by
     // [checkResponse]) and we haven't refreshed yet, ask the
-    // `credentialsProvider` for a forced refresh and retry once. A second
-    // consecutive 401 propagates — it indicates either a refresh that
-    // silently failed or a new token the server also rejects, both of which
-    // are auth-flow bugs the user must see.
+    // `credentialsProvider` for a forced refresh naming the jwt the refused
+    // request carried, and retry once. A second consecutive 401 propagates
+    // — it indicates either a refresh that silently failed or a new token
+    // the server also rejects, both of which are auth-flow bugs the user
+    // must see.
     //
     // Concurrent forced-refresh callers coalesce inside
-    // [AuthService.refreshToken]'s [RefreshableTokenLatch], so the second
-    // and Nth replays cost one shared HTTP refresh, not N.
+    // [AuthService.refreshToken]'s [RefreshableTokenLatch]: the ones still in
+    // flight take the committed value, and the ones arriving after it name a
+    // jwt the stored one already differs from — so N replays cost one shared
+    // HTTP refresh, not N.
     //
     // Bridge calls (HTTP Basic auth) MUST NOT be wrapped: a 401 from the
     // Bridge surface means the credentials themselves are wrong, not that
     // the JWT expired, and a JWT refresh wouldn't help.
     private suspend fun <T> withAuthRetry(body: suspend (InternxtCredentials) -> T): T {
         var refreshed = false
+        var rejectedJwt: String? = null
         while (true) {
-            val creds = credentialsProvider(refreshed)
+            val creds = credentialsProvider(refreshed, rejectedJwt)
             try {
                 return body(creds)
             } catch (e: AuthenticationException) {
                 if (!refreshed) {
                     log.info("Got 401 on Drive REST call — forcing JWT refresh and retrying once")
                     refreshed = true
+                    rejectedJwt = creds.jwt
                     continue
                 }
                 throw e

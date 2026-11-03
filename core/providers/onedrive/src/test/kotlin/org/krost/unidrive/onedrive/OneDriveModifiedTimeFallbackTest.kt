@@ -25,7 +25,7 @@ class OneDriveModifiedTimeFallbackTest {
 
     private suspend fun deltaItem(body: String): CloudItem {
         val engine = MockEngine { respond(body, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json")) }
-        val provider = OneDriveProvider(graphApi = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" }))
+        val provider = OneDriveProvider(graphApi = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" }))
         try {
             return assertNotNull(provider.delta(null).items.find { it.id == "F1" })
         } finally {

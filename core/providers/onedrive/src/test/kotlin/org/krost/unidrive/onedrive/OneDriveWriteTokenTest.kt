@@ -48,7 +48,7 @@ class OneDriveWriteTokenTest {
 
     // A real provider over a GraphApiService whose transport is [engine] (the `engine =` seam of GraphApiService).
     private fun providerWith(engine: MockEngine): OneDriveProvider {
-        val graphApi = GraphApiService(config = OneDriveConfig(tokenPath = tmp), engine = engine, tokenProvider = { _ -> "test-token" })
+        val graphApi = GraphApiService(config = OneDriveConfig(tokenPath = tmp), engine = engine, tokenProvider = { _, _ -> "test-token" })
         val provider = OneDriveProvider(OneDriveConfig(tokenPath = tmp), graphApi = graphApi)
         return provider
     }

@@ -338,7 +338,7 @@ open class OneDriveProviderFactory(
     internal open fun newGraphApiForIdentity(
         profileDir: Path,
         token: Token,
-    ): GraphApiService = GraphApiService(OneDriveConfig(tokenPath = profileDir, credentialProtector = credentialProtector)) { token.accessToken }
+    ): GraphApiService = GraphApiService(OneDriveConfig(tokenPath = profileDir, credentialProtector = credentialProtector)) { _, _ -> token.accessToken }
 
     /** UD-014 test seam: subclassed in OneDriveInteractiveAuthContractTest
      *  to inject a Ktor MockEngine-backed HttpClient. Production code

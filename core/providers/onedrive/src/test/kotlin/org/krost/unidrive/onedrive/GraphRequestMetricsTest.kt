@@ -42,7 +42,7 @@ class GraphRequestMetricsTest {
         engine: MockEngine,
         collected: Collected?,
     ): GraphApiService =
-        GraphApiService(config = OneDriveConfig(), engine = engine, tokenProvider = { "test-token" }).also {
+        GraphApiService(config = OneDriveConfig(), engine = engine, tokenProvider = { _, _ -> "test-token" }).also {
             if (collected != null) it.attachRequestMetrics(collected)
         }
 
