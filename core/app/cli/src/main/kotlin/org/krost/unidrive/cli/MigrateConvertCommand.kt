@@ -191,6 +191,12 @@ class MigrateUploadQuarantinedCommand : Runnable {
 internal object LegacyConversion {
     const val JOURNAL_FILE = "conversion-journal.json"
 
+    /**
+     * Test seam: runs once a file has left the sync_root and before the run records it as moved, so a test can kill
+     * the run in that window. Null outside the tests.
+     */
+    internal var afterMove: ((Path) -> Unit)? = null
+
     /** The staging suffix of [copyAside]'s sibling, the house `*.unidrive-tmp` every sweeper matches. */
     private const val STAGING_SUFFIX = ".unidrive-tmp"
 
@@ -529,14 +535,46 @@ internal object LegacyConversion {
                 return 1
             }
             if (rootRecords.isNotEmpty()) {
-                var dir = conversionDir ?: setup.profileDir.resolve("conversion-${Instant.now().toString().replace(":", "").take(15)}")
+                // A new run gets a directory the filesystem names uniquely (a minute-resolution name let a restart in the same
+                // minute reuse the earlier run's quarantine). Recorded in the journal before the first file moves.
+                val dir = conversionDir ?: Files.createTempDirectory(setup.profileDir, "conversion-")
                 Files.createDirectories(dir)
-                journal = journal.copy(conversionDir = dir.toString())
+                if (journal.conversionDir != dir.toString()) {
+                    journal = journal.copy(conversionDir = dir.toString())
+                    Journal.save(setup.profileDir, journal)
+                }
+                reconcilePendingMoves(journal)
                 for (record in rootRecords) {
                     val source = setup.syncRoot.resolve(record.path.removePrefix("/"))
-                    if (!Files.exists(source)) continue // already moved by an interrupted run
+                    if (!Files.exists(source)) continue // already moved by an interrupted run, and journaled before it went
                     val bucket = if (record.cls == PathClass.BOTH_IDENTICAL) "retired" else "quarantine"
                     val destination = dir.resolve(bucket).resolve(record.path.removePrefix("/"))
+                    // The move is journaled before the source is given up: a kill after the removal leaves the copy named
+                    // for upload, and the resume finds it at the recorded destination.
+                    fun journalMove() {
+                        if (journal.moves.any { it.from == source.toString() }) return
+                        journal =
+                            journal.copy(
+                                moves =
+                                    journal.moves + MovedFile(
+                                        from = source.toString(),
+                                        to = destination.toString(),
+                                        bytes = record.syncRootBytes ?: 0L,
+                                        bucket = bucket,
+                                    ),
+                                quarantined =
+                                    if (bucket == "quarantine") {
+                                        journal.quarantined + QuarantinedFile(
+                                            remotePath = record.path,
+                                            quarantinePath = destination.toString(),
+                                            bytes = record.syncRootBytes ?: 0L,
+                                        )
+                                    } else {
+                                        journal.quarantined
+                                    },
+                            )
+                        Journal.save(setup.profileDir, journal)
+                    }
                     if (Files.exists(destination)) {
                         // A copy a previous run finished but whose source delete never ran: finishing the delete is
                         // the resume — proven by equal content, never by size. A killed cross-volume copy can leave
@@ -546,35 +584,17 @@ internal object LegacyConversion {
                         if (Files.isRegularFile(destination) &&
                             HashVerifier.computeSha256Hex(source) == HashVerifier.computeSha256Hex(destination)
                         ) {
+                            journalMove()
                             deleteMovedSource(source)
                         } else {
                             System.err.println("Error: the resume destination already exists with different content: $destination")
                             return 1
                         }
                     } else {
+                        journalMove()
                         moveAside(source, destination, record.syncRootBytes)
                     }
-                    journal =
-                        journal.copy(
-                            moves =
-                                journal.moves + MovedFile(
-                                    from = source.toString(),
-                                    to = destination.toString(),
-                                    bytes = record.syncRootBytes ?: 0L,
-                                    bucket = bucket,
-                                ),
-                            quarantined =
-                                if (bucket == "quarantine") {
-                                    journal.quarantined + QuarantinedFile(
-                                        remotePath = record.path,
-                                        quarantinePath = destination.toString(),
-                                        bytes = record.syncRootBytes ?: 0L,
-                                    )
-                                } else {
-                                    journal.quarantined
-                                },
-                        )
-                    Journal.save(setup.profileDir, journal)
+                    afterMove?.invoke(destination)
                     if (bucket == "retired") retired++ else quarantinedCount++
                     if (verbose) println("  moved ${record.path} -> $bucket")
                 }
@@ -631,6 +651,19 @@ internal object LegacyConversion {
             println("Next: review the quarantined files, then 'unidrive -p ${setup.profileName} migrate upload-quarantined'.")
         }
         return 0
+    }
+
+    /**
+     * A journaled move whose source is gone must have its copy at the recorded destination. Nothing is moved or deleted
+     * here: a source gone with no copy beside it is said, not taken for a finished move.
+     */
+    private fun reconcilePendingMoves(journal: Journal) {
+        for (move in journal.moves) {
+            if (Files.exists(Path.of(move.from))) continue
+            if (!Files.isRegularFile(Path.of(move.to))) {
+                System.err.println("Warning: '${move.from}' is gone and its copy is not at '${move.to}'.")
+            }
+        }
     }
 
     private fun legacyInventoryInputs(

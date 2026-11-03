@@ -601,6 +601,60 @@ class MigrateConvertTest {
     }
 
     @Test
+    fun `a restart quarantines different bytes at the same path into a directory of its own`() {
+        val (config, profileDir, syncRoot) = fixture()
+        syncRoot.resolve("a.txt").writeText("first bytes")
+
+        val first = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+        assertEquals(0, first)
+        val firstCopy = Path.of(LegacyConversion.Journal.load(profileDir)!!.quarantined.single().quarantinePath)
+
+        // Rewind to an interrupted state, then another file takes the same path before the restart, in the same minute as the first run.
+        val firstJournal = LegacyConversion.Journal.load(profileDir)!!
+        LegacyConversion.Journal.save(
+            profileDir,
+            firstJournal.copy(phases = firstJournal.phases.filter { it != "CONVERTED" }, convertedAt = null),
+        )
+        config.writeText("[general]\n\n[providers.p]\ntype = \"localfs\"\nsync_root = \"${syncRoot.toString().replace("\\", "\\\\")}\"\n")
+        syncRoot.resolve("a.txt").writeText("second bytes")
+
+        val second = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = true, verbose = false)
+
+        assertEquals(0, second)
+        val copies = LegacyConversion.Journal.load(profileDir)!!.quarantined.filter { it.remotePath == "/a.txt" }
+        assertEquals(2, copies.map { it.quarantinePath }.toSet().size, "both copies sit at distinct paths: $copies")
+        assertEquals("first bytes", Files.readString(firstCopy), "the first copy is untouched")
+        val restartCopy = copies.single { it.quarantinePath != firstCopy.toString() }
+        assertEquals("second bytes", Files.readString(Path.of(restartCopy.quarantinePath)))
+    }
+
+    @Test
+    fun `a kill between the source removal and the save resumes with the moved file journaled`() {
+        val (config, profileDir, syncRoot) = fixture()
+        syncRoot.resolve("kill.txt").writeText("the only copy")
+
+        LegacyConversion.afterMove = { throw IllegalStateException("simulated kill") }
+        try {
+            assertFailsWith<IllegalStateException> {
+                LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+            }
+        } finally {
+            LegacyConversion.afterMove = null
+        }
+        assertFalse(Files.exists(syncRoot.resolve("kill.txt")), "the source is given up before the kill")
+        val interrupted = LegacyConversion.Journal.load(profileDir)!!
+        assertEquals(listOf("/kill.txt"), interrupted.quarantined.map { it.remotePath }, "the move is journaled before the source goes")
+
+        val code = LegacyConversion.execute(setup(config, profileDir, syncRoot), "mount", "retire", restart = false, verbose = false)
+
+        assertEquals(0, code)
+        val resumed = LegacyConversion.Journal.load(profileDir)!!
+        assertEquals(listOf("/kill.txt"), resumed.quarantined.map { it.remotePath }, "the resume neither loses nor repeats the entry")
+        assertEquals("the only copy", Files.readString(Path.of(resumed.quarantined.single().quarantinePath)))
+        assertTrue("CONVERTED" in resumed.phases)
+    }
+
+    @Test
     fun `a journal written by a newer engine is refused`() {
         val (config, profileDir, syncRoot) = fixture()
         LegacyConversion.Journal.save(
