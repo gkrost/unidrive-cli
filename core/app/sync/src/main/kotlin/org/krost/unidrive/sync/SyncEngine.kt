@@ -38,6 +38,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -86,6 +87,12 @@ open class SyncEngine(
     private val versionManager: VersionManager? = null,
     private val maxVersions: Int = 5,
     private val versionRetentionDays: Int = 90,
+    // The engine-level byte-rate cap (config `max_bandwidth_kbps`): one shared
+    // budget bounds the AGGREGATE rate of every concurrent transfer the pass
+    // dispatches, not each transfer on its own. Null = uncapped. The wait the
+    // budget adds runs before a transfer takes a permit of the transfer budget
+    // ([transferBudget]), so pacing never idles a concurrency slot.
+    private val maxBandwidthKbps: Int? = null,
     private val fastBootstrap: Boolean = false,
     // UD-113: optional structured audit log of mutations (Download/Upload/Delete/Move/
     // CreateRemoteFolder). Wired from CLI/MCP startup; null in tests that don't need it.
@@ -189,6 +196,11 @@ open class SyncEngine(
     EnumerationEntryPoint {
     private val log = LoggerFactory.getLogger(SyncEngine::class.java)
 
+    // The shared line-time budget behind [maxBandwidthKbps]. One instance per
+    // engine, so every transfer of every dispatch path draws from the same
+    // budget whether it launches in Pass 2 or mid-scan on the streaming gather.
+    private val bandwidth: BandwidthPacer? = maxBandwidthKbps?.let { BandwidthPacer(it.toLong() * 1024) }
+
     // archive#738: the clock that stamps keep-both conflict copies. Tests pin it; production uses the system clock.
     // A property rather than a constructor parameter, so the constructor's signature stays as it is.
     internal var conflictClock: java.time.Clock = java.time.Clock.systemDefaultZone()
@@ -201,6 +213,10 @@ open class SyncEngine(
     // reports deleted, or whose path is now a folder, does not count as being in the cloud.
     @Volatile
     private var passRemoteChanges: Map<String, CloudItem> = emptyMap()
+
+    // Conflict copies this pass's deletes moved aside. A folder delete runs after its children, and the
+    // child's row is already tombstoned, so the folder walk cannot see the copy. Cleared at each apply.
+    private val editsKeptAside = mutableListOf<String>()
 
     // False until this pass's listing is published. A rule-file probe before that must not cache "absent".
     @Volatile
@@ -1548,6 +1564,8 @@ open class SyncEngine(
         var batchCommitted = false
         try {
             withContext(Priority.Foreground) {
+                // A copy kept aside on an earlier pass must not defer this pass's folder deletes.
+                editsKeptAside.clear()
                 // archive#123: process a maximal contiguous run of CreateRemoteFolder
                 // actions with bounded concurrency instead of one blocking
                 // round-trip each. topologicalApplyOrder has already placed any
@@ -1761,6 +1779,9 @@ open class SyncEngine(
                         is SyncAction.DownloadContent -> {
                             launch {
                                 withContext(Priority.Foreground) {
+                                    // Pace the shared budget first: the wait for this transfer's line
+                                    // slot runs while no permit is held (see [BandwidthPacer]).
+                                    bandwidth?.pace(transferBytes(action))
                                     transferSemaphore.withPermit {
                                         try {
                                             applyDownload(action)
@@ -1818,6 +1839,9 @@ open class SyncEngine(
                         is SyncAction.Upload -> {
                             launch {
                                 withContext(Priority.Foreground) {
+                                    // Pace the shared budget first: the wait for this transfer's line
+                                    // slot runs while no permit is held (see [BandwidthPacer]).
+                                    bandwidth?.pace(transferBytes(action))
                                     transferSemaphore.withPermit {
                                         try {
                                             applyUpload(action)
@@ -2027,6 +2051,9 @@ open class SyncEngine(
         transferSemaphore: kotlinx.coroutines.sync.Semaphore,
     ) {
         withContext(Priority.Foreground) {
+            // Pace the shared budget first: the wait for this transfer's line
+            // slot runs while no permit is held (see [BandwidthPacer]).
+            bandwidth?.pace(transferBytes(action))
             transferSemaphore.withPermit {
                 try {
                     applyDownload(action)
@@ -2090,6 +2117,9 @@ open class SyncEngine(
         transferSemaphore: kotlinx.coroutines.sync.Semaphore,
     ) {
         withContext(Priority.Foreground) {
+            // Pace the shared budget first: the wait for this transfer's line
+            // slot runs while no permit is held (see [BandwidthPacer]).
+            bandwidth?.pace(transferBytes(action))
             transferSemaphore.withPermit {
                 try {
                     applyUpload(action)
@@ -2207,6 +2237,11 @@ open class SyncEngine(
         val previous = db.getEntry(path)
         try {
             local.parent?.let { Files.createDirectories(it) }
+            // Pace the shared budget before the runner runs: the rule file's permit
+            // is taken inside the runner, so the wait for its line slot holds no
+            // permit (see [BandwidthPacer]). The size is capped by
+            // maxRuleFileBytes (ruleFileToDownload refused larger ones).
+            bandwidth?.pace(item.size)
             val transfer = transfers.runner(path)
             transfer { applyDownload(SyncAction.DownloadContent(path, item)) }
         } catch (e: CancellationException) {
@@ -3071,12 +3106,16 @@ open class SyncEngine(
     private fun editedSinceScan(
         localPath: Path,
         row: SyncEntry,
+        // A caller that already judged these bytes (last-writer-wins) passes the stats it saw.
+        // Null uses the row, which is the scan baseline.
+        baselineMtime: Long? = null,
+        baselineSize: Long? = null,
     ): Boolean {
         if (looksLikePlaceholder(localPath, row, shorterIsPartialDownload = false)) return false
-        val baselineMtime = row.localMtime ?: return false
-        val baselineSize = row.localSize ?: return false
+        val mtime = baselineMtime ?: row.localMtime ?: return false
+        val size = baselineSize ?: row.localSize ?: return false
         val stat = Transfers.statBeforeUpload(localPath) ?: return false
-        return stat.first != baselineMtime || stat.second != baselineSize
+        return stat.first != mtime || stat.second != size
     }
 
     // Moves [localPath] aside as a conflict-local copy when its current stats differ from the row's baseline
@@ -3090,10 +3129,12 @@ open class SyncEngine(
         plannedFor: String = "download",
         // The remote side the baseline lost to, for the conflict record.
         remoteState: ChangeState = ChangeState.MODIFIED,
+        baselineMtime: Long? = null,
+        baselineSize: Long? = null,
     ): String? {
         if (!Files.isRegularFile(localPath)) return null
         val row = db.getEntry(path) ?: return null
-        if (!editedSinceScan(localPath, row)) return null
+        if (!editedSinceScan(localPath, row, baselineMtime, baselineSize)) return null
         val conflictPath =
             keepBothCopyPath(path, conflictStamp()) { candidate ->
                 Files.exists(placeholder.resolveLocal(candidate), java.nio.file.LinkOption.NOFOLLOW_LINKS) || db.getEntry(candidate) != null
@@ -3532,18 +3573,25 @@ open class SyncEngine(
         }
     }
 
-    private suspend fun applyDeleteLocal(action: SyncAction.DeleteLocal) {
+    private suspend fun applyDeleteLocal(
+        action: SyncAction.DeleteLocal,
+        // Stats a last-writer-wins decision already compared. Null uses the row's scan baseline.
+        observedMtime: Long? = null,
+        observedSize: Long? = null,
+    ) {
         // Resolved before any branch, so a path outside the sync root is refused whichever way the profile deletes.
         val localPath = placeholder.resolveLocal(action.path)
         // The plan judged this path by its scan baseline. A file whose stats moved off the baseline (an edit
         // that landed while the delete waited — the streaming drain can come a whole remote gather later) is
         // not the file the cloud deleted: its edit is kept aside as a conflict-local copy and uploaded, and
         // the trash never touches it. A folder with such an edited file below is kept whole; its delete
-        // re-plans on the next pass, where the scan reports the edit.
+        // re-plans on the next pass, where the scan reports the edit. A copy already moved aside by a child
+        // delete of this same pass counts too: that child's row is tombstoned, so the folder walk misses it,
+        // and a recursive delete would be the only remaining copy when the best-effort upload failed.
         val row = db.getEntry(action.path)
         val keptLocalEdit =
             if (row != null && row.isFolder) {
-                if (folderHoldsEditSinceScan(action.path)) {
+                if (folderHoldsEditSinceScan(action.path) || keptEditUnder(action.path)) {
                     log.warn(
                         "Not deleting {}: a file below it was edited after the scan planned its delete; the delete is retried on the next sync",
                         action.path,
@@ -3556,7 +3604,14 @@ open class SyncEngine(
                 }
                 null
             } else {
-                keepLocalEditAsideIfEditedSinceScan(action.path, localPath, plannedFor = "delete", remoteState = ChangeState.DELETED)
+                keepLocalEditAsideIfEditedSinceScan(
+                    action.path,
+                    localPath,
+                    plannedFor = "delete",
+                    remoteState = ChangeState.DELETED,
+                    baselineMtime = observedMtime,
+                    baselineSize = observedSize,
+                )?.also { editsKeptAside.add(it) }
             }
         if (keptLocalEdit == null) {
             withEchoSuppression(action.path) {
@@ -3608,6 +3663,12 @@ open class SyncEngine(
             if (Files.isRegularFile(childLocal) && editedSinceScan(childLocal, child)) return true
         }
         return false
+    }
+
+    // True when this pass already moved a conflict copy into [folderPath] or below it.
+    private fun keptEditUnder(folderPath: String): Boolean {
+        val prefix = folderPath.trimEnd('/') + "/"
+        return editsKeptAside.any { it == folderPath || it.startsWith(prefix) }
     }
 
     /**
@@ -3880,6 +3941,9 @@ open class SyncEngine(
                             parentUuid = existing.parentId,
                         ),
                     )
+                    // The upsert keeps a deferred delete when the adopted folder reuses its remote id.
+                    // That mark would remove the folder on a later pass, after the edit it protected is synced.
+                    db.clearPendingLocal(action.path)
                     return
                 }
                 auditLog?.emit(
@@ -3905,6 +3969,9 @@ open class SyncEngine(
                 lastSynced = Instant.now(),
             ),
         )
+        // The upsert keeps a deferred delete when the recreated folder reuses its remote id.
+        // That mark would remove the folder on a later pass, after the edit it protected is synced.
+        db.clearPendingLocal(action.path)
         // UD-113: success path.
         auditLog?.emit(
             action = "CreateRemoteFolder",
@@ -4148,7 +4215,10 @@ open class SyncEngine(
 
     private suspend fun applyLastWriterWins(action: SyncAction.Conflict) {
         val localPath = placeholder.resolveLocal(action.path)
-        val localMtime = if (Files.exists(localPath)) Files.getLastModifiedTime(localPath).toInstant() else null
+        // One read of the local stats, before the decision and before the conflict log copies the loser: the delete
+        // below judges these same bytes, so a write that lands after the copy is not taken for one of them.
+        val attrs = if (Files.exists(localPath)) Files.readAttributes(localPath, BasicFileAttributes::class.java) else null
+        val localMtime = attrs?.lastModifiedTime()?.toInstant()
         val remoteMtime = action.remoteItem?.modified
 
         val remoteWins =
@@ -4180,7 +4250,10 @@ open class SyncEngine(
             // ran: the row stayed unchanged, and the next pass planned an upload against the gone item.
             // applyDeleteLocal tombstones or drops the row, so nothing is left to re-plan.
             if (Files.exists(localPath)) {
-                applyDeleteLocal(SyncAction.DeleteLocal(action.path))
+                // The decision already saw these bytes. Comparing the delete against the older synced
+                // baseline would keep that same edit aside and upload it under a conflict name.
+                val judged = attrs?.takeIf { it.isRegularFile }?.let { it.lastModifiedTime().toMillis() to it.size() }
+                applyDeleteLocal(SyncAction.DeleteLocal(action.path), judged?.first, judged?.second)
             } else {
                 val row = db.getEntry(action.path)
                 val remoteId = row?.remoteId
@@ -4400,6 +4473,26 @@ open class SyncEngine(
             is SyncAction.CreateRemoteFolder -> "mkdir-remote"
             is SyncAction.Conflict -> "CONFLICT"
             is SyncAction.RemoveEntry -> "cleanup"
+        }
+
+    // The bytes a transfer will move, as far as they are known before it starts:
+    // the remote item's size for a download, the local file's for an upload (a
+    // file that is gone paces as nothing). The budget is paced before the
+    // transfer, so only the pre-transfer size can reserve its line time. This
+    // answers OUTSIDE every transfer's try/catch — the pace call sits before the
+    // permit — so a local-FS error here (a file vanishing between the two stats,
+    // an unreadable directory) must never throw: pace as nothing and let the
+    // transfer itself report the failure inside its own catch.
+    private fun transferBytes(action: SyncAction): Long =
+        when (action) {
+            is SyncAction.DownloadContent -> action.remoteItem.size
+            is SyncAction.Upload ->
+                runCatching {
+                    placeholder.resolveLocal(action.path).let { p ->
+                        if (Files.isRegularFile(p)) Files.size(p) else 0L
+                    }
+                }.getOrDefault(0L)
+            else -> 0L
         }
 
     // UD-740: display path used in the user-facing progress line. For move

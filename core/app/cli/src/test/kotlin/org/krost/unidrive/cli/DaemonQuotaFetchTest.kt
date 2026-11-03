@@ -11,7 +11,6 @@ import org.krost.unidrive.NotSignedInException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.ScanContext
-import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.StateDatabase
 import java.nio.file.Files
 import java.nio.file.Path
@@ -91,23 +90,19 @@ class DaemonQuotaFetchTest {
         ): DeltaPage = error("not used")
     }
 
-    private fun runtime() =
-        DaemonRuntime(
-            profileMode = ProfileMode.MOUNT,
-            profileName = "quota_fetch_test",
-            lockFile = tempDir.resolve(".lock"),
-            dbPath = tempDir.resolve("state.db"),
-            syncRoot = tempDir,
-            socketPath = tempDir.resolve("daemon.sock"),
+    private fun monitor() =
+        QuotaSnapshotMonitor(
+            quotaRefreshMs = 15 * 60_000L,
             providerFactory = { error("the fetch takes the provider it is handed") },
+            db = { db },
         )
 
     @Test
     fun `the quota fetch checks credentials and never signs in`() {
-        val runtime = runtime()
+        val monitor = monitor()
         val provider = QuotaProvider()
 
-        val snapshot = runBlocking { runtime.refreshQuotaSnapshotWith(provider) }
+        val snapshot = runBlocking { monitor.refreshQuotaSnapshotWith(provider) }
 
         assertEquals(listOf("checkCredentials", "quota"), provider.calls, "no authenticate() in the fetch: a status poll must not sign in")
         assertNotNull(snapshot)
@@ -119,10 +114,10 @@ class DaemonQuotaFetchTest {
 
     @Test
     fun `a signed-out profile is refused without a browser call and the snapshot names it`() {
-        val runtime = runtime()
+        val monitor = monitor()
         val provider = QuotaProvider().apply { failCheckWith = NotSignedInException("no token is stored for this profile") }
 
-        val snapshot = runBlocking { runtime.refreshQuotaSnapshotWith(provider) }
+        val snapshot = runBlocking { monitor.refreshQuotaSnapshotWith(provider) }
 
         assertEquals(listOf("checkCredentials"), provider.calls, "the refusal comes before any transfer, and authenticate() is never tried")
         assertNotNull(snapshot)
@@ -132,10 +127,10 @@ class DaemonQuotaFetchTest {
 
     @Test
     fun `a cancelled fetch is not a quota error`() {
-        val runtime = runtime()
+        val monitor = monitor()
         val provider = QuotaProvider().apply { failCheckWith = CancellationException("the daemon is stopping") }
 
-        assertFailsWith<CancellationException> { runBlocking { runtime.refreshQuotaSnapshotWith(provider) } }
+        assertFailsWith<CancellationException> { runBlocking { monitor.refreshQuotaSnapshotWith(provider) } }
 
         assertEquals(listOf("checkCredentials"), provider.calls)
     }

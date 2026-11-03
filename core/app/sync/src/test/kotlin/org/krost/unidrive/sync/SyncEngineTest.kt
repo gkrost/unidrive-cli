@@ -5509,8 +5509,10 @@ class SyncEngineTest {
                     remoteVersion = null,
                     remoteSize = 11,
                     remoteModified = Instant.parse("2025-12-01T00:00:00Z"),
-                    localMtime = Files.getLastModifiedTime(local).toMillis(),
-                    localSize = 10,
+                    // The row's baseline is older than the file the conflict already saw. That edit lost;
+                    // only a write after the decision may be kept aside.
+                    localMtime = Instant.parse("2025-06-01T00:00:00Z").toEpochMilli(),
+                    localSize = 3,
                     isFolder = false,
                     isPinned = false,
                     isHydrated = true,
@@ -5531,6 +5533,12 @@ class SyncEngineTest {
 
             assertFalse(Files.exists(local), "the newer tombstone wins: the local file is deleted")
             assertNull(db.getEntry("/doc.txt"), "the row is tombstoned, not left unchanged")
+            assertEquals(emptyList(), provider.uploadedPaths, "the edit the conflict already judged is not uploaded again")
+            val conflictCopies =
+                Files.walk(syncRoot).use { stream ->
+                    stream.filter { Files.isRegularFile(it) && it.fileName.toString().contains("conflict-local") }.toList()
+                }
+            assertTrue(conflictCopies.isEmpty(), "no conflict copy is kept for the edit the conflict already saw: $conflictCopies")
         }
 
     @Test

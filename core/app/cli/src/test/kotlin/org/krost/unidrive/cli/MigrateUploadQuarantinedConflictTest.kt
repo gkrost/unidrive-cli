@@ -12,6 +12,7 @@ import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -20,8 +21,15 @@ import kotlin.test.assertTrue
  * the conflict-copy naming may never rely on the upload failing, because there it succeeds.
  */
 class MigrateUploadQuarantinedConflictTest {
-    /** Keeps items by path and overwrites on create, like S3 and Dropbox do. */
-    private class OverwritingDrive : CloudProvider {
+    /**
+     * Keeps items by path and overwrites on create, like S3 and Dropbox do. [notFound] is how a missing path
+     * answers — every shape a real provider spells absence in: the typed message (OneDrive, S3, Internxt, and
+     * Dropbox after its provider's translation), the local-directory provider's [java.io.FileNotFoundException],
+     * an HTTP 404. The probe must read them all as absence, and anything else must stop the upload.
+     */
+    private class OverwritingDrive(
+        private val notFound: (String) -> Exception = { path -> ProviderException("Item not found: $path") },
+    ) : CloudProvider {
         override val id = "fake-overwriting"
         override val displayName = "Fake (create overwrites)"
         override var isAuthenticated = true
@@ -37,7 +45,7 @@ class MigrateUploadQuarantinedConflictTest {
             destination: Path,
         ): Long = 0L
         override suspend fun getMetadata(path: String): CloudItem =
-            cloud[path]?.let { item(path, it) } ?: throw ProviderException("Item not found: $path")
+            cloud[path]?.let { item(path, it) } ?: throw notFound(path)
 
         override suspend fun upload(
             localPath: Path,
@@ -114,14 +122,70 @@ class MigrateUploadQuarantinedConflictTest {
     }
 
     @Test
-    fun `a free name is uploaded as itself`() {
-        val drive = OverwritingDrive()
+    fun `a free name is uploaded as itself when absence is the local-directory provider's answer`() {
+        // The probe the audit caught: the local-directory provider throws java.io.FileNotFoundException for a
+        // missing path, and a probe that lets that propagate could place no file at all.
+        val drive = OverwritingDrive(notFound = { path -> java.io.FileNotFoundException("localfs: no such item: $path") })
         val local = localCopy("only local")
 
         runBlocking { MigrateUploadQuarantinedCommand().uploadAsConflictCopy(drive, local, "/docs/report.txt") }
 
         assertEquals(listOf("/docs/report.txt"), drive.uploads)
         assertEquals("only local", drive.cloud["/docs/report.txt"])
+    }
+
+    @Test
+    fun `a free name is uploaded as itself when absence is an http 404`() {
+        val drive = OverwritingDrive(notFound = { path -> ProviderException("no such path upstream: $path", httpStatus = 404) })
+        val local = localCopy("only local")
+
+        runBlocking { MigrateUploadQuarantinedCommand().uploadAsConflictCopy(drive, local, "/docs/report.txt") }
+
+        assertEquals(listOf("/docs/report.txt"), drive.uploads)
+        assertEquals("only local", drive.cloud["/docs/report.txt"])
+    }
+
+    @Test
+    fun `the real local-directory provider's taken name is never overwritten`() {
+        // The real provider, not a fake's guess at its shapes: getMetadata answers a missing path with
+        // FileNotFoundException, so every probe of a conflict candidate must read that as absence.
+        val root = Files.createTempDirectory("u5-localfs-probe")
+        Files.createDirectories(root.resolve("docs"))
+        Files.writeString(root.resolve("docs/report.txt"), "the live copy")
+        val provider = org.krost.unidrive.localfs.LocalFsProvider(root)
+        val local = localCopy("the differing local copy")
+
+        try {
+            runBlocking { MigrateUploadQuarantinedCommand().uploadAsConflictCopy(provider, local, "/docs/report.txt") }
+        } finally {
+            provider.close()
+        }
+
+        assertEquals("the live copy", Files.readString(root.resolve("docs/report.txt")), "the live copy is unchanged")
+        val placed = Files.list(root.resolve("docs")).use { s -> s.map { it.fileName.toString() }.toList() }
+        assertEquals(2, placed.size, "exactly one conflict copy landed beside the live file: $placed")
+        assertTrue(placed.any { it.contains(" (conflict ") }, "at the conflict name: $placed")
+        assertTrue(
+            placed.filter { it.contains(" (conflict ") }.all { Files.readString(root.resolve("docs").resolve(it)) == "the differing local copy" },
+            "the conflict copy carries the local bytes",
+        )
+    }
+
+    @Test
+    fun `a probe that cannot tell refuses to place anything`() {
+        // A blip is not absence: an upload that guesses past an unreadable probe is the overwrite the command
+        // must never do. Neither an HTTP 503 nor a plain I/O failure may be read as a free name.
+        val serverError = OverwritingDrive(notFound = { ProviderException("upstream trouble", httpStatus = 503) })
+        val ioFailure = OverwritingDrive(notFound = { java.io.IOException("the probe could not read") })
+        val local = localCopy("only local")
+
+        assertFailsWith<ProviderException> {
+            runBlocking { MigrateUploadQuarantinedCommand().uploadAsConflictCopy(serverError, local, "/docs/report.txt") }
+        }
+        assertFailsWith<java.io.IOException> {
+            runBlocking { MigrateUploadQuarantinedCommand().uploadAsConflictCopy(ioFailure, local, "/docs/report.txt") }
+        }
+        assertTrue(serverError.uploads.isEmpty() && ioFailure.uploads.isEmpty(), "nothing was placed on an unreadable probe")
     }
 
     @Test

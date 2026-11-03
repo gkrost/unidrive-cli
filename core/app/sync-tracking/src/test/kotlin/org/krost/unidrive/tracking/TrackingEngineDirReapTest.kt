@@ -74,6 +74,10 @@ class TrackingEngineDirReapTest {
     @Test
     fun `empty dir tree is reaped deepest-first`() {
         seedAndDeleteLocal("/a/b/c/file.txt")
+        // The shells still exist on the provider after the file's deletion (a
+        // listing-based provider keeps the empty directories); the reaper may
+        // ask for each one's metadata before removing it.
+        provider.dirs += listOf("/a/b/c", "/a/b", "/a")
 
         val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
         try {
@@ -160,6 +164,7 @@ class TrackingEngineDirReapTest {
         seedAndDeleteLocal("/x/y/file.txt")
         // Make the deepest directory's delete fail; its parent must still reap.
         provider.failDeleteDirs += "/x/y"
+        provider.dirs += listOf("/x/y", "/x")
 
         val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
         try {
@@ -207,6 +212,8 @@ class TrackingEngineDirReapTest {
         // The directories report a phantom child on their first listing this pass.
         provider.lagDirsOnce += "/a/b"
         provider.lagDirsOnce += "/a"
+        // The empty shells exist on the provider and are reaped once the listing settles.
+        provider.dirs += listOf("/a/b", "/a")
 
         // Pass 1: empties the file, but the lagging listing blocks the reap.
         val t1 = SqliteTrackingSet(dbPath).also { it.initialize() }
@@ -242,6 +249,7 @@ class TrackingEngineDirReapTest {
     fun `a dir whose delete fails is retried and reaped next pass`() {
         seedAndDeleteLocal("/x/y/file.txt")
         provider.failDeleteDirs += "/x/y"
+        provider.dirs += listOf("/x/y", "/x")
 
         val t1 = SqliteTrackingSet(dbPath).also { it.initialize() }
         try {
@@ -297,6 +305,56 @@ class TrackingEngineDirReapTest {
             assertTrue(
                 t2.pendingReaps().isEmpty(),
                 "a pending reap for an already-gone directory must be cleared, was ${t2.pendingReaps()}",
+            )
+        } finally {
+            t2.close()
+        }
+    }
+
+    /**
+     * NO-GHOST-RMDIR INVARIANT: a provider can answer a MISSING directory's
+     * listing with an EMPTY list (localfs shape) instead of the typed not-found,
+     * so the pending-reap retry cannot read "empty" as "exists and is empty".
+     * Before claiming a removal the reaper confirms the directory still exists;
+     * one that was already gone takes the not-found outcome — the pending reap
+     * is cleared, no delete is issued against the provider, and the pass output
+     * reports nothing as reaped. Regression mode: the pass printed `rmdir` for
+     * folders the provider had already taken, as if this pass had removed them.
+     */
+    @Test
+    fun `a pending reap whose directory the listing hides as gone is cleared, not reported as reaped`() {
+        seedAndDeleteLocal("/a/b/file.txt")
+        provider.lagDirsOnce += "/a/b"
+        provider.lagDirsOnce += "/a"
+
+        // Pass 1: the lagging listing defers both reaps into the pending set.
+        val t1 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val r1 = TrackingEngine(provider, t1, syncRoot, batchGuard = permissive).syncOnce()
+            assertTrue(r1.reapedDirs.isEmpty())
+            assertEquals(setOf("/a/b", "/a"), t1.pendingReaps(), "deferred directories must be persisted")
+        } finally {
+            t1.close()
+        }
+
+        // The directories then vanish remotely, and the provider does not say so
+        // in the listing: nothing is registered in provider.dirs, so an absent
+        // directory lists as empty — indistinguishable from an empty shell.
+
+        val t2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val r2 = TrackingEngine(provider, t2, syncRoot, batchGuard = permissive).syncOnce()
+            assertTrue(
+                r2.reapedDirs.isEmpty(),
+                "a directory that was already gone must not be reported as reaped; reaped=${r2.reapedDirs}",
+            )
+            assertTrue(
+                t2.pendingReaps().isEmpty(),
+                "the pending reap must be cleared once the directory is known gone, was ${t2.pendingReaps()}",
+            )
+            assertFalse(
+                provider.deletedPaths.contains("/a/b") || provider.deletedPaths.contains("/a"),
+                "no delete may be issued for directories that were already gone; deleted=${provider.deletedPaths}",
             )
         } finally {
             t2.close()

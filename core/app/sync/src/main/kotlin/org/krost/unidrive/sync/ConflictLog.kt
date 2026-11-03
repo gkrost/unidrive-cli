@@ -16,7 +16,7 @@ import java.time.format.DateTimeFormatter
  * Log file: `conflicts.jsonl` — one JSON object per line.
  * Backup dir: `conflict-backups/` — timestamped copies of overwritten files.
  */
-class ConflictLog(
+open class ConflictLog(
     private val logFile: Path,
     private val backupDir: Path,
 ) {
@@ -41,7 +41,7 @@ class ConflictLog(
      * Record a conflict resolution.
      * If [loserFile] is non-null, copies it to [backupDir] with a timestamped name.
      */
-    fun record(
+    open fun record(
         path: String,
         localState: String,
         remoteState: String,

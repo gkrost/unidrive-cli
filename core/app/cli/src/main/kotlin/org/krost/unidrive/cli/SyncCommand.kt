@@ -29,7 +29,6 @@ import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncDirection
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.SyncScope
-import org.krost.unidrive.sync.ThrottledProvider
 import org.krost.unidrive.engine.ReadOnlyTrashProvider
 import org.krost.unidrive.engine.TrashNamespace
 import org.krost.unidrive.sync.TrashManager
@@ -378,13 +377,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         // The trash namespace is read-only: the wrapper is the last line of that rule, and the same namespace goes to the
         // engine, whose guard and planner ask it too.
         val trash = TrashNamespace(config.trashFolderName(profile.name))
-        val provider =
-            ReadOnlyTrashProvider(
-                config.maxBandwidthKbps
-                    ?.let { ThrottledProvider(rawProvider, it.toLong() * 1024) }
-                    ?: rawProvider,
-                trash,
-            )
+        val provider = ReadOnlyTrashProvider(rawProvider, trash)
 
         val dbPath = parent.providerConfigDir().resolve("state.db")
 
@@ -586,6 +579,9 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                 versionManager = versionManager,
                 maxVersions = config.maxVersions,
                 versionRetentionDays = config.versionRetentionDays,
+                // The engine-level shared budget: `max_bandwidth_kbps` bounds the
+                // aggregate across concurrent transfers, not each transfer on its own.
+                maxBandwidthKbps = config.maxBandwidthKbps,
                 // UD-223: CLI flag wins over config.toml per-profile setting.
                 fastBootstrap = fastBootstrap || profile.rawProvider?.fast_bootstrap == true,
                 auditLog = auditLog,

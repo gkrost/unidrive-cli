@@ -665,6 +665,38 @@ class IpcServerTest {
         return sb.toString()
     }
 
+    /** Writes all of [bytes] to the non-blocking [channel], waiting out partial writes. */
+    private suspend fun writeAll(
+        channel: SocketChannel,
+        bytes: ByteArray,
+    ) {
+        val buf = ByteBuffer.wrap(bytes)
+        val deadline = System.currentTimeMillis() + 10_000
+        while (buf.hasRemaining()) {
+            channel.write(buf)
+            if (buf.hasRemaining() && System.currentTimeMillis() > deadline) error("writeAll: write timeout")
+            if (buf.hasRemaining()) delay(10)
+        }
+    }
+
+    /** True once [channel] reports end of stream (the server closed the connection), false on timeout. */
+    private suspend fun awaitEof(
+        channel: SocketChannel,
+        timeoutMs: Long = 10_000,
+    ): Boolean {
+        val buf = ByteBuffer.allocate(8192)
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            buf.clear()
+            when (channel.read(buf)) {
+                -1 -> return true
+                0 -> delay(10)
+                else -> {} // bytes the server wrote before closing; keep reading to EOF
+            }
+        }
+        return false
+    }
+
     @Test
     fun `registered handler receives a client request and replies on the same connection`() = runBlocking(Dispatchers.IO) {
         val sockPath = tempSocket()
@@ -912,6 +944,153 @@ class IpcServerTest {
                     ),
                     lines,
                 )
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    // The 64 KiB cap applies per request line, not per read: a client that pipelines two requests
+    // whose bytes happen to split across reads (the first line's newline arrives together with the
+    // second request) must get both replies, not a closed connection.
+    @Test
+    fun `two pipelined requests that a read boundary splits are both answered`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.registerHandler("echo") { _, json -> """{"ok":true,"len":${json.length}}""" }
+                server!!.start(serverScope)
+                waitForSocket(socketPath)
+
+                val req1 = """{"verb":"echo","pad":"${"a".repeat(40 * 1024)}"}"""
+                val req2 = """{"verb":"echo","pad":"${"b".repeat(30 * 1024)}"}"""
+                val client = connectClient()
+                // The first request without its newline, so the server's read holds 40 KiB with no
+                // complete line; the newline then arrives together with the second request.
+                writeAll(client, req1.toByteArray(Charsets.UTF_8))
+                delay(200)
+                writeAll(client, ("\n" + req2 + "\n").toByteArray(Charsets.UTF_8))
+
+                val lines = readFromClient(client, timeoutMs = 30_000, minLines = 2).trim().lines()
+                assertEquals(2, lines.size, "both pipelined requests must be answered, got: $lines")
+                val reply1 = Json.parseToJsonElement(lines[0]) as JsonObject
+                val reply2 = Json.parseToJsonElement(lines[1]) as JsonObject
+                assertEquals("true", reply1["ok"]?.jsonPrimitive?.content)
+                assertEquals(req1.length.toString(), reply1["len"]?.jsonPrimitive?.content)
+                assertEquals("true", reply2["ok"]?.jsonPrimitive?.content)
+                assertEquals(req2.length.toString(), reply2["len"]?.jsonPrimitive?.content)
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    // The cap itself still holds: one request line over 64 KiB (counted before the newline, as the
+    // spec documents) is not answered and closes the connection.
+    @Test
+    fun `a single request line over the cap is not answered and closes the connection`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.registerHandler("echo") { _, json -> """{"ok":true,"len":${json.length}}""" }
+                server!!.start(serverScope)
+                waitForSocket(socketPath)
+
+                val client = connectClient()
+                // One read's worth of line-less bytes (exactly at the cap, kept), then the byte that
+                // pushes the completed line over it, with the newline.
+                writeAll(client, "a".repeat(64 * 1024).toByteArray(Charsets.UTF_8))
+                delay(200)
+                writeAll(client, "a\n".toByteArray(Charsets.UTF_8))
+
+                assertTrue(awaitEof(client), "the connection must be closed by the server")
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    // The edge of the cap: a request line of exactly 64 KiB (counted before the newline) is accepted, even when its
+    // newline arrives in a separate write after the server already holds the whole line.
+    @Test
+    fun `a request line of exactly the cap with its newline in a separate write is answered`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.registerHandler("echo") { _, json -> """{"ok":true,"len":${json.length}}""" }
+                server!!.start(serverScope)
+                waitForSocket(socketPath)
+
+                val cap = 64 * 1024
+                val prefix = "{\"verb\":\"echo\",\"pad\":\""
+                val suffix = "\"}"
+                val req = prefix + "a".repeat(cap - prefix.length - suffix.length) + suffix
+                assertEquals(cap, req.toByteArray(Charsets.UTF_8).size, "the line is exactly the cap")
+                val client = connectClient()
+                writeAll(client, req.toByteArray(Charsets.UTF_8))
+                delay(200)
+                writeAll(client, "\n".toByteArray(Charsets.UTF_8))
+
+                val lines = readFromClient(client, timeoutMs = 30_000, minLines = 1).trim().lines()
+                assertEquals(1, lines.size, "the line at the cap must be answered, got: $lines")
+                val reply = Json.parseToJsonElement(lines[0]) as JsonObject
+                assertEquals("true", reply["ok"]?.jsonPrimitive?.content)
+                assertEquals(cap.toString(), reply["len"]?.jsonPrimitive?.content)
+                client.close()
+            } finally {
+                serverScope.cancel()
+            }
+        }
+
+    // One byte over the cap: the connection is closed and nothing is written back, whether the newline follows in a
+    // separate write or not.
+    @Test
+    fun `a request line of the cap plus one byte closes the connection without a reply`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server = IpcServer(socketPath)
+                server!!.registerHandler("echo") { _, json -> """{"ok":true,"len":${json.length}}""" }
+                server!!.start(serverScope)
+                waitForSocket(socketPath)
+
+                val cap = 64 * 1024
+                val prefix = "{\"verb\":\"echo\",\"pad\":\""
+                val suffix = "\"}"
+                val req = prefix + "a".repeat(cap + 1 - prefix.length - suffix.length) + suffix
+                assertEquals(cap + 1, req.toByteArray(Charsets.UTF_8).size, "the line is the cap plus one")
+                val client = connectClient()
+                writeAll(client, req.toByteArray(Charsets.UTF_8))
+                delay(200)
+                val received = java.io.ByteArrayOutputStream()
+                val buf = ByteBuffer.allocate(8192)
+                var eof = false
+                val deadline = System.currentTimeMillis() + 10_000
+                try {
+                    writeAll(client, "\n".toByteArray(Charsets.UTF_8))
+                } catch (_: java.io.IOException) {
+                    // the server already closed on the line-less tail; the newline has nowhere to go
+                }
+                while (!eof && System.currentTimeMillis() < deadline) {
+                    buf.clear()
+                    try {
+                        val n = client.read(buf)
+                        if (n < 0) {
+                            eof = true
+                        } else if (n == 0) {
+                            delay(10)
+                        } else {
+                            received.write(buf.array(), 0, n)
+                        }
+                    } catch (_: java.io.IOException) {
+                        eof = true // a reset is a close too
+                    }
+                }
+                assertTrue(eof, "the connection must be closed by the server")
+                assertEquals(0, received.size(), "no reply for a line over the cap: ${received.toString(Charsets.UTF_8)}")
                 client.close()
             } finally {
                 serverScope.cancel()

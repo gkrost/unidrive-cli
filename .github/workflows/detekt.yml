@@ -1,0 +1,45 @@
+name: detekt
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: detekt-${{ github.ref }}
+  cancel-in-progress: true
+
+# Advisory static analysis, like gitleaks, semgrep and CodeQL: continue-on-error, and never a
+# required merge check — `check` (and `windows-security`) stay the only gates. detekt is off
+# `check` (see the detekt block in core/build.gradle.kts), so this job is where a new finding
+# shows up in the PR that introduces it. `./gradlew detekt` runs the detekt task in every module.
+# Linux only; there is no macOS job (macOS is not a supported or tested platform).
+jobs:
+  detekt:
+    name: detekt (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Cache ~/.gradle so runs do not re-download dependencies (see the comment in build.yml's check job).
+      - name: Set up Gradle dependency cache
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: detekt
+        working-directory: core
+        run: ./gradlew detekt --no-daemon

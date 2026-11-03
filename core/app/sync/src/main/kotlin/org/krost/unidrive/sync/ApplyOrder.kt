@@ -2,6 +2,46 @@ package org.krost.unidrive.sync
 
 import org.krost.unidrive.sync.model.SyncAction
 
+internal fun sortReconcileActions(actions: List<SyncAction>): List<SyncAction> =
+    actions.sortedWith(
+        compareBy(
+            { actionPriority(it) },
+            // archive#421: moves and deletes share a priority, and the depth key below is negative for a
+            // delete and positive for everything else, so every delete used to sort ahead of every
+            // move. A folder delete trashes the folder with whatever is still inside it, so a folder
+            // renamed d1 -> d2 (mkdir d2, del d1, move d1/x -> d2/x) lost the files its own moves
+            // still had to take out of d1 ("Folder not found: d1"), on every later sync too. Put all
+            // moves first; the deletes then run deepest first, children before their parent folder.
+            { if (it is SyncAction.DeleteLocal || it is SyncAction.DeleteRemote) 1 else 0 },
+            {
+                if (it is SyncAction.DeleteLocal || it is SyncAction.DeleteRemote) {
+                    -it.path.count { c ->
+                        c == '/'
+                    }
+                } else {
+                    it.path.count { c -> c == '/' }
+                }
+            },
+            { it.path },
+        ),
+    )
+
+private fun actionPriority(action: SyncAction): Int =
+    when (action) {
+        is SyncAction.CreatePlaceholder -> if (action.remoteItem.isFolder) 0 else 2
+        is SyncAction.CreateRemoteFolder -> 0
+        is SyncAction.UpdatePlaceholder -> 2
+        is SyncAction.TouchMetadata -> 2
+        is SyncAction.DownloadContent -> 2
+        is SyncAction.Upload -> 2
+        is SyncAction.DeleteLocal -> 1
+        is SyncAction.DeleteRemote -> 1
+        is SyncAction.MoveRemote -> 1
+        is SyncAction.MoveLocal -> 1
+        is SyncAction.Conflict -> 3
+        is SyncAction.RemoveEntry -> 4
+    }
+
 /**
  * Orders the apply-phase action list so parent-folder dependencies are respected:
  * a `CreateRemoteFolder` runs after the action that makes its parent path exist, and a
