@@ -196,7 +196,8 @@ class TrackingReconciler(
      * still the safe answer, but the reason must not claim a difference the
      * engine never observed — it names the size comparison that was possible
      * and the hash that was not, so the reader does not go looking for a
-     * content difference that may not exist.
+     * content difference that may not exist; sizes that differ ARE an observed
+     * difference, and are named with their numbers.
      */
     private fun collisionReason(
         local: LocalObservation,
@@ -205,9 +206,17 @@ class TrackingReconciler(
         if (local.hash != null && remote.hash != null) {
             return "untracked path exists on both sides with different content (hash mismatch)"
         }
+        // Sizes both known is one more comparison the engine could make, so the reason names its outcome: agreeing
+        // sizes leave sameness unproven without a hash, differing sizes already prove the content differs.
         val sizeNote =
-            if (local.size != null && local.size == remote.size) "same size, " else ""
-        return "untracked path exists on both sides; ${sizeNote}no content hash to compare, so sameness cannot be proven"
+            when {
+                local.size != null && remote.size != null && local.size == remote.size ->
+                    "same size, no content hash to compare, so sameness cannot be proven"
+                local.size != null && remote.size != null ->
+                    "sizes differ (${local.size} and ${remote.size}), so the content differs"
+                else -> "no content hash to compare, so sameness cannot be proven"
+            }
+        return "untracked path exists on both sides; ${sizeNote}"
     }
 
     private fun contentMatches(

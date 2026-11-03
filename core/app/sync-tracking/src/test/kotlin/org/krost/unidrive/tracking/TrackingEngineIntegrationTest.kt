@@ -1305,6 +1305,46 @@ class TrackingEngineIntegrationTest {
     }
 
     /**
+     * The other no-hash shape: sizes both known and DIFFERENT. A differing size proves the content differs, so the
+     * reason names it with its numbers instead of sending the reader after a hash that cannot exist — the same honesty
+     * rule as the identical-files case, one branch over.
+     */
+    @Test
+    fun `collision on no-hash files whose sizes differ names the size difference`() {
+        val hashlessProvider = HashlessFakeProvider()
+        Files.write(syncRoot.resolve("same.txt"), "short".toByteArray())
+        hashlessProvider.files["/same.txt"] = "a longer byte string".toByteArray()
+
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report =
+                TrackingEngine(
+                    provider = hashlessProvider,
+                    trackingSet = tracking,
+                    syncRoot = syncRoot,
+                    dryRun = true,
+                ).syncOnce()
+
+            val collision = report.collisions.singleOrNull { it.path == "/same.txt" }
+            assertTrue(
+                collision != null,
+                "sizing apart must still collide (the safe default); collisions=${'$'}{report.collisions}",
+            )
+            val reason = collision!!.reason
+            assertTrue(
+                reason.contains("sizes differ (5 and 20)"),
+                "the reason must name the observed difference with its numbers: $reason",
+            )
+            assertFalse(
+                reason.contains("sameness cannot be proven"),
+                "the sizes already prove the content differs: $reason",
+            )
+        } finally {
+            tracking.close()
+        }
+    }
+
+    /**
      * --auto-match=size: when both hashes are null and sizes are EQUAL,
      * the engine must adopt the path (no collision).
      */
