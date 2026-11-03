@@ -59,4 +59,23 @@ class S3ThrottleWaitTest {
             assertEquals(2, fake.count { it.method == HttpMethod.Get }, "the ladder still retried the 500")
             api.close()
         }
+
+    @Test
+    fun `a 429 on a PUT waits the one-second floor and retries`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("a.txt", "hello")
+            fake.failures += Triple({ it.method == HttpMethod.Put && it.key == "a.txt" }, 429, "SlowDown")
+            fake.failureRetryAfter = "0"
+            val api = api(fake, HttpRetryBudget(maxConcurrency = 4, minSpacingMs = 0, stormSpacingMs = 0))
+            Files.writeString(dir.resolve("a.txt"), "hello")
+
+            val started = testScheduler.currentTime
+            api.put("a.txt", dir.resolve("a.txt"))
+
+            val waited = testScheduler.currentTime - started
+            assertTrue(waited >= 1_000, "waited $waited ms")
+            assertEquals("hello", fake.text("a.txt"))
+            api.close()
+        }
 }
