@@ -439,6 +439,19 @@ The value is the provider factory's offline check (`ProviderFactory.checkCredent
 
 A provider that rejects the credentials turns the state to `expired` without waiting for the next check: an enumeration or a download or upload that fails with an authentication error (a provider raises it only after its own token refresh has failed) newer than the last time the provider answered. A later success clears it. `missing` is not overridden by a rejection. Other operations (deletes, renames, folder creation) do not feed this signal yet.
 
+**The `requests` object** (additive, gkrost/unidrive-cli#74; the protocol version does not change) is the provider's own account of its HTTP calls, so a stalled transfer can be diagnosed from a status reply without reading the log. It is present only for a provider whose HTTP layer can account for its calls (Internxt today); absent otherwise, like `quota`.
+
+```json
+{"requests": {"in_flight": [{"class": "GET /drive/files", "count": 2, "oldest_ms": 45123}], "free_slots": {"drive": 0, "bridge": 4}}}
+```
+
+| field | meaning |
+|---|---|
+| `in_flight` | one entry per endpoint class with calls open now: `count` is how many are open, `oldest_ms` how long the oldest has been. A request whose answer never comes stays here - this is the state a stalled transfer is diagnosed from. A class names an endpoint (`GET /drive/files`), never a path or an id |
+| `free_slots` | per throttle budget, the permits still free (Internxt: `drive`, `bridge`). 0 means every permit of that budget is held - a call that waits for a permit waits there, and the in-flight entries above say for what |
+
+The reading is taken when the reply is built; it never blocks and never asks the provider anything.
+
 **The `notifications` object** (additive, archive#111; the protocol version does not change; `capabilities` lists `notifications.status`) reports the provider's remote-change push channel, the hint that wakes the poll before its interval. It is always present, on mount and mirror profiles alike.
 
 ```json

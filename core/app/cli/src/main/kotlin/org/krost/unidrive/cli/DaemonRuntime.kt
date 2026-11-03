@@ -683,6 +683,20 @@ class DaemonRuntime(
                             lastContactMs,
                             provider.strictNameMode?.let { on -> strictNamesStatusJson(on, mount.strictNameBlockedCount()) },
                         )
+                    // requests (gkrost/unidrive-cli#74): the provider's own account of its HTTP calls, so a stalled
+                    // transfer can be diagnosed without reading the log: per endpoint class how many calls are in
+                    // flight and how old the oldest is, and per throttle budget the free slots. Present only for a
+                    // provider whose HTTP layer can account for its calls; absent otherwise, like quota.
+                    val requestsJson =
+                        (cloud as? org.krost.unidrive.RequestStatusReporting)?.requestStatus()?.let { status ->
+                            val inFlightJson =
+                                status.inFlight.joinToString(",", "[", "]") { open ->
+                                    """{"class":${ndjsonString(open.endpointClass)},"count":${open.count},"oldest_ms":${open.oldestMs}}"""
+                                }
+                            val slotsJson =
+                                status.freeSlots.entries.sortedBy { it.key }.joinToString(",") { "\"${it.key}\":${it.value}" }
+                            ""","requests":{"in_flight":$inFlightJson,"free_slots":{$slotsJson}}"""
+                        } ?: ""
                     // credential_health (archive#586): the last offline check, or `expired` at once when the provider rejected the
                     // credentials after the check (a transfer or an enumeration failed authentication and nothing worked since).
                     val credentialHealthJson =
@@ -731,6 +745,7 @@ class DaemonRuntime(
                         (quotaJson?.let { ",\"quota\":$it" } ?: "") +
                         healthJson +
                         ",\"provider_health\":$providerHealth" +
+                        requestsJson +
                         ",\"credential_health\":$credentialHealthJson" +
                         // notifications (archive#111): the provider's remote-change push channel; `unsupported` where it has none.
                         ",\"notifications\":${notificationsStatusJson(provider.remoteChangeChannelStatus())}" +

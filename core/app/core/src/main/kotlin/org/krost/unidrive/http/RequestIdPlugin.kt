@@ -41,11 +41,13 @@ fun HttpRequestBuilder.requestId(): String? = attributes.getOrNull(RequestIdKey)
  * ```
  * HttpClient { install(RequestId) }
  * ```
- * To also report every attempt (see [RequestAttempt]) to whatever the daemon attaches to [RequestIdConfig.metrics]:
+ * To also report every attempt (see [RequestAttempt]) to whatever the daemon attaches to [RequestIdConfig.metrics],
+ * and account the attempts open now to a [RequestIdConfig.inFlight] registry:
  * ```
  * HttpClient { install(RequestId) { metrics = tap; provider = "x"; endpoints = classifier } }
  * ```
- * With no sink on the tap, the metrics part costs one volatile read per request.
+ * With no sink on the tap, nothing is recorded; the attempt is still classified, for the abandonment WARN and the
+ * in-flight registry, which do not depend on the tap.
  */
 @Suppress("TooGenericExceptionCaught") // the failure is classified, recorded and rethrown unchanged
 val RequestId =
@@ -56,19 +58,20 @@ val RequestId =
         val endpoints = pluginConfig.endpoints
         val profile = pluginConfig.profile
         val serverRequestIdHeaders = pluginConfig.serverRequestIdHeaders
+        val inFlight = pluginConfig.inFlight
         val retries = RetryTracker()
 
         // Attempt metrics. The Send hook wraps one trip to the engine: it sees the failure of a request that never
         // got a response, and the response whose body is consumed later (its job completes then). Redirects and
         // provider-level retries are further requests, each its own attempt.
         on(Send) { request ->
-            val sink = metrics?.sink ?: return@on proceed(request)
             val startedAtMs = System.currentTimeMillis()
             val startNanos = System.nanoTime()
             val method = request.method.value
             val endpointClass = endpoints.classify(method, request.url.host, "/" + request.url.encodedPathSegments.joinToString("/"))
             val retryKey = RetryTracker.keyOf(method + ' ' + request.url.buildString())
             val retryNo = retries.retryNo(retryKey, startNanos)
+            val openRequest = inFlight?.started(endpointClass)
 
             fun report(
                 outcome: AttemptOutcome,
@@ -78,6 +81,21 @@ val RequestId =
                 throttled: Boolean,
             ) {
                 val endNanos = System.nanoTime()
+                openRequest?.close()
+                // gkrost/unidrive-cli#74: a request abandoned by its timeout or a cancel leaves no ← line. One WARN
+                // names the kind, the class and the duration, and nothing that identifies the call: no id, no path.
+                if (outcome == AttemptOutcome.TIMEOUT || outcome == AttemptOutcome.CANCELLED) {
+                    val profileSegment = profile?.let { " [$it]" } ?: ""
+                    log.warn(
+                        "request abandoned ({}): {} {}{} after {} ms",
+                        outcome.wire,
+                        provider,
+                        endpointClass,
+                        profileSegment,
+                        nanosToMs(endNanos - startNanos),
+                    )
+                }
+                val sink = metrics?.sink ?: return
                 retries.ended(retryKey, outcome.retryable, endNanos)
                 // The sink promises not to throw; a broken one must still never fail the request that was measured.
                 runCatching {
@@ -185,6 +203,12 @@ val RequestId =
 class RequestIdConfig {
     /** Where attempts are reported once the tap has a sink; null for a client that reports nothing. */
     var metrics: RequestMetricsTap? = null
+
+    /**
+     * Where the attempts open now are counted (gkrost/unidrive-cli#74); null for a client whose requests nobody
+     * asks after. The registry is read while requests run, so it is the client's own object, not a late-bound tap.
+     */
+    var inFlight: RequestInFlight? = null
 
     /** The provider id written into every attempt. */
     var provider: String = "unknown"

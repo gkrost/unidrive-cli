@@ -268,4 +268,37 @@ class HttpRetryBudgetPermitTest {
             gate.complete(Unit)
             holder.await()
         }
+
+    // gkrost/unidrive-cli#74: what daemon.status's `requests.free_slots` reports - the permits still free, so a
+    // stalled transfer can be told apart from one that waits for a permit.
+    @Test
+    fun `freeSlots counts the permits not held`() =
+        runTest {
+            val budget = budget(maxConcurrency = 2)
+            assertEquals(2, budget.freeSlots(), "a fresh budget has every slot free")
+            val gate = CompletableDeferred<Unit>()
+            val holder = async { budget.withPermit { gate.await() } }
+            runCurrent()
+            assertEquals(1, budget.freeSlots(), "a held permit is not free")
+            gate.complete(Unit)
+            holder.await()
+            assertEquals(2, budget.freeSlots(), "a released permit is free again")
+        }
+
+    @Test
+    fun `a storm that halves the concurrency reads as no negative free slot`() =
+        runTest {
+            val clock = FakeClock()
+            val budget = budget(maxConcurrency = 2, clock = clock)
+            val gate = CompletableDeferred<Unit>()
+            val holders = List(2) { async { budget.withPermit { gate.await() } } }
+            runCurrent()
+            budget.recordThrottle(1_000)
+            budget.recordThrottle(1_000)
+            assertEquals(1, budget.currentConcurrency(), "the storm halves the bound, both permits still held")
+            assertEquals(0, budget.freeSlots(), "the free count never reads negative")
+            gate.complete(Unit)
+            holders.forEach { it.await() }
+            assertEquals(1, budget.freeSlots(), "the freed permits are counted against the halved bound")
+        }
 }
