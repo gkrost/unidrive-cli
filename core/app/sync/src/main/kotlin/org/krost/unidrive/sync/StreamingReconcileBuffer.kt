@@ -155,16 +155,18 @@ internal class StreamingReconcileBuffer {
             }
 
         /**
-         * Remote id of a safe-now action that lands remote content at its path — the
+         * Remote id of a safe-now action that lands the remote's item at its path — the
          * remote currently has the file there (a download, a placeholder create/update,
-         * or a move-into). Null for local pushes (`Upload`, `CreateRemoteFolder`,
-         * `MoveRemote`): they must not suppress a genuine remote delete.
+         * a metadata-only touch of the row's own item, or a move-into). Null for local
+         * pushes (`Upload`, `CreateRemoteFolder`, `MoveRemote`): they must not suppress
+         * a genuine remote delete.
          */
         fun landedRemoteId(action: SyncAction): String? =
             when (action) {
                 is SyncAction.DownloadContent -> action.remoteItem.id
                 is SyncAction.CreatePlaceholder -> action.remoteItem.id
                 is SyncAction.UpdatePlaceholder -> action.remoteItem.id
+                is SyncAction.TouchMetadata -> action.remoteItem.id
                 is SyncAction.MoveLocal -> action.remoteItem.id
                 else -> null
             }
