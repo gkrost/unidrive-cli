@@ -1,5 +1,10 @@
 package org.krost.unidrive.cli
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -38,9 +43,11 @@ class AuthLogoutRpcHandlerTest {
     private val db = StateDatabase(dir.resolve("state.db")).also { it.initialize() }
     // One entry per forgetCredentials() call: whether the credential file was still there at that moment.
     private val forgetCredentialsCalls = mutableListOf<Boolean>()
+    private val realLogin = LifecycleHooks.internxtLogin
 
     @AfterTest
     fun tearDown() {
+        LifecycleHooks.internxtLogin = realLogin
         db.close()
         dir.toFile().deleteRecursively()
     }
@@ -60,6 +67,9 @@ class AuthLogoutRpcHandlerTest {
         /** The order of the calls, to show that the token is revoked before the local forgetting. */
         val calls = mutableListOf<String>()
 
+        /** Blocks the provider's own logout mid-sign-out, to hold a handler mid-handle for a race test. */
+        var logoutHook: (() -> Unit)? = null
+
         override fun capabilities(): Set<Capability> = emptySet()
 
         override suspend fun authenticate() {}
@@ -74,6 +84,7 @@ class AuthLogoutRpcHandlerTest {
         override suspend fun logout() {
             logoutCalls += 1
             calls += "logout"
+            logoutHook?.invoke()
             failure?.let { throw it }
             isAuthenticated = false
         }
@@ -287,5 +298,72 @@ class AuthLogoutRpcHandlerTest {
         assertEquals("invalid_force", call("""{"verb":"auth.logout","force":"yes"}""").getValue("error").jsonPrimitive.content)
         assertEquals("invalid_force", call("""{"verb":"auth.logout","force":1}""").getValue("error").jsonPrimitive.content)
         assertEquals(0, provider.logoutCalls)
+    }
+
+    // The IPC handlers run in parallel (IpcServer serves connections concurrently on Dispatchers.IO), so a
+    // sign-in may not run through the sign-out's forget + credential-file deletion: that interleaving left the
+    // daemon holding credentials in memory with no file on disk, both replies saying success. The wiring hands
+    // AuthLoginRpcHandler and AuthLogoutRpcHandler one mutex.
+    @Test
+    fun `a sign-in waits for a running sign-out and its stored credentials survive the deletion`() = runBlocking {
+        val gate = Mutex()
+        val signOutMidRun = java.util.concurrent.CountDownLatch(1)
+        val releaseSignOut = java.util.concurrent.CountDownLatch(1)
+        val loginCalls = java.util.concurrent.atomic.AtomicInteger(0)
+        var reloads = 0
+        LifecycleHooks.internxtLogin = { config, email, _, _ ->
+            loginCalls.incrementAndGet()
+            Files.writeString(config.tokenPath.resolve("credentials.json"), """{"jwt":"JWT-NEW-SECRET"}""")
+            org.krost.unidrive.internxt.model.InternxtCredentials(
+                jwt = "JWT-NEW-SECRET",
+                mnemonic = "MNEMONIC-SECRET",
+                rootFolderId = "r",
+                email = email,
+                bridgeUser = email,
+                bridgeUserId = "u",
+                bucket = "b",
+            )
+        }
+        Files.writeString(dir.resolve("credentials.json"), """{"jwt":"JWT-OLD-SECRET"}""")
+        val logoutHandler =
+            AuthLogoutRpcHandler(
+                profileDir = dir,
+                db = db,
+                providerFactory = { provider },
+                forgetCredentials = { forgetCredentialsCalls += Files.exists(dir.resolve("credentials.json")) },
+                pendingRows = { PendingUploads.split(db.pendingUploadRows(), keepsLocal, null) },
+                oneAtATime = gate,
+            )
+        val loginHandler = AuthLoginRpcHandler(ProfileTarget("ix", "internxt", dir), { reloads++ }, gate)
+        provider.logoutHook = {
+            signOutMidRun.countDown()
+            releaseSignOut.await(5, java.util.concurrent.TimeUnit.SECONDS)
+        }
+
+        // The two verbs run like the IPC server runs them: on other threads, in parallel.
+        val signOut = launch(Dispatchers.IO) { logoutHandler.handle("""{"verb":"auth.logout"}""") }
+        assertTrue(signOutMidRun.await(5, java.util.concurrent.TimeUnit.SECONDS), "the sign-out reached the provider")
+        // The sign-out holds the shared lock right now (it is parked inside the provider's logout, before
+        // the forget and the file deletion), so the sign-in must not even reach its sign-in step.
+        assertEquals(0, loginCalls.get(), "a sign-in cannot start while a sign-out runs")
+        val signIn = launch(Dispatchers.IO) {
+            loginHandler.login("""{"verb":"auth.login","email":"user@example.test","password":"pw-GOOD-1"}""")
+        }
+        delay(100)
+        assertEquals(0, loginCalls.get(), "the sign-in waits for the sign-out instead of interleaving")
+        assertTrue(
+            Files.readAllBytes(dir.resolve("credentials.json")).contentEquals("""{"jwt":"JWT-OLD-SECRET"}""".toByteArray()),
+            "the sign-out has deleted nothing yet, because the sign-in has not run either",
+        )
+        releaseSignOut.countDown()
+        signOut.join()
+        signIn.join()
+
+        assertEquals(1, loginCalls.get(), "the sign-in ran after the sign-out finished")
+        assertEquals(1, reloads, "the daemon loaded the credentials the sign-in stored")
+        assertTrue(
+            Files.exists(dir.resolve("credentials.json")),
+            "the file the sign-in stored survives the sign-out's deletion",
+        )
     }
 }
