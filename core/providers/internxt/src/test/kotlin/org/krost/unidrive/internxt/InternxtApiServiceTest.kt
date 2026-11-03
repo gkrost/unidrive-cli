@@ -161,13 +161,42 @@ class InternxtApiServiceTest {
             val service = mkService()
             var attempts = 0
             val result =
-                service.retryOnTransient {
+                service.retryOnTransient(retryServerErrors = true) {
                     attempts++
                     if (attempts < 2) throw InternxtApiException("API error: 502 - {\"retry_after\":1}", 502)
                     "ok"
                 }
             assertEquals("ok", result)
             assertEquals(2, attempts)
+        }
+
+    // The write ladder's default: a 500/502/504 can come from a gateway whose origin already committed
+    // the write, so it is not retried for a call whose repeat is not reconciled (the callers whose
+    // repeat writes the same bytes or answers already-gone pass retryServerErrors, tested above).
+    @Test
+    fun `UD-335 retryOnTransient does not retry a 502 by default and retries a 503`() =
+        kotlinx.coroutines.test.runTest {
+            val service = mkService()
+            var attempts = 0
+            try {
+                service.retryOnTransient {
+                    attempts++
+                    throw InternxtApiException("API error: 502 - bad gateway", 502)
+                }
+                kotlin.test.fail("expected InternxtApiException")
+            } catch (e: InternxtApiException) {
+                assertEquals(502, e.statusCode)
+            }
+            assertEquals(1, attempts, "the 502 reached the caller unretried")
+            var retried = 0
+            val result =
+                service.retryOnTransient {
+                    retried++
+                    if (retried < 2) throw InternxtApiException("service unavailable", 503)
+                    "ok"
+                }
+            assertEquals("ok", result)
+            assertEquals(2, retried, "the 503 is still retried")
         }
 
     @Test
@@ -292,7 +321,7 @@ class InternxtApiServiceTest {
             val service = mkService()
             var attempts = 0
             try {
-                service.retryOnTransient(maxAttempts = 3) {
+                service.retryOnTransient(retryServerErrors = true, maxAttempts = 3) {
                     attempts++
                     throw InternxtApiException("API error: 502 - {}", 502)
                 }

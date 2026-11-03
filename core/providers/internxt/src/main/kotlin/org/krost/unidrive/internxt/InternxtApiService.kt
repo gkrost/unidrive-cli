@@ -207,6 +207,11 @@ class InternxtApiService(
 
         private val TRANSIENT_STATUSES = setOf(429, 500, 502, 503, 504)
 
+        // What the write ladder ([retryOnTransient] without retryServerErrors) retries: a rate limit and an
+        // unavailable-server answer carry no committed effect to repeat. The 500/502/504 are left to the caller's
+        // reconcile paths, because a gateway can answer them after its origin already committed the write.
+        private val RETRYABLE_WRITE_STATUSES = setOf(429, 503)
+
         // The gateway's own answers for an origin that did not answer (Cloudflare): 520 unknown error, 521 down, 522
         // connection timed out, 523 unreachable, 524 timed out. A GET treats them like 502/503/504: the same
         // "the server is unavailable" the callers' fallbacks act on, which is the 503 they end as.
@@ -947,6 +952,9 @@ class InternxtApiService(
      * to re-derive on the client side. Returns the updated `FileDto` (same `uuid`,
      * swapped `fileId`). archive#485: `fileId` is required when `size > 0` and must be absent when
      * `size == 0` (an empty file has no bucket entry); pass null for an empty replacement.
+     *
+     * The repeat of a committed-overwrite race writes the same bytes in place, so a 500/502/504 is retried
+     * (retryServerErrors): nothing can duplicate.
      */
     suspend fun replaceFile(
         uuid: String,
@@ -954,7 +962,7 @@ class InternxtApiService(
         fileId: String?,
         modificationTime: java.time.Instant? = null,
     ): InternxtFile =
-        retryOnTransient {
+        retryOnTransient(retryServerErrors = true) {
             withAuthRetry { creds ->
                 val answer =
                     budgeted(driveBudget) {
@@ -1207,8 +1215,9 @@ class InternxtApiService(
 
     suspend fun deleteFile(uuid: String) {
         // 404 is treated as already-gone (idempotent delete) — short-circuits
-        // before checkResponse so retryOnTransient never sees it as transient.
-        retryOnTransient {
+        // before checkResponse so retryOnTransient never sees it as transient. The repeat of a
+        // 500/502/504 whose origin committed answers that same 404, so the 5xx are retried too.
+        retryOnTransient(retryServerErrors = true) {
             withAuthRetry { creds ->
                 budgeted(driveBudget) {
                     val response =
@@ -1275,8 +1284,9 @@ class InternxtApiService(
 
     suspend fun deleteFolder(uuid: String) {
         // 404 is treated as already-gone (idempotent delete) — short-circuits
-        // before checkResponse so retryOnTransient never sees it as transient.
-        retryOnTransient {
+        // before checkResponse so retryOnTransient never sees it as transient. The repeat of a
+        // 500/502/504 whose origin committed answers that same 404, so the 5xx are retried too.
+        retryOnTransient(retryServerErrors = true) {
             withAuthRetry { creds ->
                 budgeted(driveBudget) {
                     val requestBody =
@@ -1563,12 +1573,13 @@ class InternxtApiService(
         data: ByteArray,
     ) {
         // OVH PUT to a presigned URL is idempotent at the S3 layer — same key,
-        // same body overwrites cleanly — so retryOnTransient is safe here.
+        // same body overwrites cleanly — so retryOnTransient retries the 5xx here
+        // (retryServerErrors), like every overwrite.
         // The streaming variant (putEncryptedShardFromFile) takes its retry at
         // the provider layer instead because that wrap also needs to keep
         // indexBytes / iv / fileKey stable across attempts (see Design constraint
         // in BACKLOG.md history).
-        retryOnTransient {
+        retryOnTransient(retryServerErrors = true) {
             bridgeBudget.awaitSlot()
             watchedShardPut(url, data.size.toLong()) { progress -> progressTrackingBody(data, progress) }
         }
@@ -2092,24 +2103,32 @@ class InternxtApiService(
     }
 
     /**
-     * The retry ladder of the calls that WRITE (create, replace, rename, move, delete, trash): it retries a refused answer
-     * ([TRANSIENT_STATUSES]) and nothing else. A network error without a status (a connection that closes before any response
-     * byte) is deliberately NOT retried here: the request may have reached the server and taken effect, and repeating a create
-     * or a move would make a second file or a collision. The error reaches the caller, which reconciles (see the create
-     * collision and keep-overwritten handling in the provider). This is the matrix row "Network error" of [HttpRetryBudget]:
-     * the send loops of Graph, Dropbox and S3 do the same. The enumeration GETs ([authenticatedGetReply]) are the exception
-     * on purpose: a read has no effect to repeat, so it retries an I/O error like a 5xx.
+     * The retry ladder of the calls that WRITE (create, replace, rename, move, delete, trash): by default it retries a
+     * refused answer that cannot have committed ([RETRYABLE_WRITE_STATUSES], 429 and 503) and nothing else. A 500/502/504
+     * can come from a gateway whose origin already committed the write — repeating a create makes a second file, repeating a
+     * trash surfaces a 400 for items that are already trashed — so those statuses reach the caller, which reconciles (see
+     * the create collision and keep-overwritten handling in the provider). A network error without a status (a connection
+     * that closes before any response byte) is deliberately NOT retried here, for the same reason: the request may have
+     * reached the server and taken effect. This is the matrix row "Network error" of [HttpRetryBudget]: the send loops of
+     * Graph, Dropbox and S3 do the same. The enumeration GETs ([authenticatedGetReply]) are the exception on purpose: a
+     * read has no effect to repeat, so that ladder keeps retrying the full [TRANSIENT_STATUSES].
+     *
+     * The calls whose repeat is reconciled or writes the same bytes pass [retryServerErrors] and retry the full set: the
+     * two PUT overwrites (replace, shard) repeat their identical body, and the two deletes already answer a repeat's 404
+     * as already-gone inside the call.
      */
     internal suspend fun <T> retryOnTransient(
+        retryServerErrors: Boolean = false,
         maxAttempts: Int = 3,
         op: suspend () -> T,
     ): T {
+        val retryable = if (retryServerErrors) TRANSIENT_STATUSES else RETRYABLE_WRITE_STATUSES
         var attempt = 0
         while (true) {
             try {
                 return op()
             } catch (e: InternxtApiException) {
-                if (e.statusCode !in TRANSIENT_STATUSES) throw e
+                if (e.statusCode !in retryable) throw e
                 attempt++
                 if (attempt >= maxAttempts) throw e
                 // Precedence: Retry-After HTTP header (captured at checkResponse
