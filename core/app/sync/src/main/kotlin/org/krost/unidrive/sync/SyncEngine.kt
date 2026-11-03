@@ -736,6 +736,13 @@ open class SyncEngine(
      */
     override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult = enumeration.enumerate(reset)
 
+    // Thread confinement (concurrency audit): one sync pass keeps its run state in PLAIN collections —
+    // `changes`, `safeAccumulator` and `deferredSlices` in the streaming gather, `appliedCounts` in the
+    // apply loop, `remoteTopLevelByName` below. They are safe only because every caller runs a pass
+    // inside `runBlocking` (SyncCommand, DaemonCommand) on ONE thread and nothing between switches
+    // dispatchers — `Priority` (org.krost.unidrive.http) tags the coroutine context without changing
+    // the dispatcher it runs on. Running a pass on a multi-thread dispatcher would race them silently;
+    // a new entry point must either keep that confinement or move these collections to concurrent ones.
     open suspend fun syncOnce(
         dryRun: Boolean = false,
         forceDelete: Boolean = false,
