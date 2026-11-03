@@ -2,7 +2,6 @@ package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
-import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.StateDatabase
 import java.nio.file.Files
 import java.nio.file.Path
@@ -37,28 +36,24 @@ class DaemonQuotaPersistTest {
         runCatching { tempDir.toFile().deleteRecursively() }
     }
 
-    private fun runtime() =
-        DaemonRuntime(
-            profileMode = ProfileMode.MOUNT,
-            profileName = "quota_persist_test",
-            lockFile = tempDir.resolve(".lock"),
-            dbPath = tempDir.resolve("state.db"),
-            syncRoot = tempDir,
-            socketPath = tempDir.resolve("daemon.sock"),
+    private fun monitor() =
+        QuotaSnapshotMonitor(
+            quotaRefreshMs = 15 * 60_000L,
             providerFactory = { error("no provider is opened here") },
+            db = { db },
         )
 
     private fun snapshot(used: Long) =
-        DaemonRuntime.QuotaSnapshot(usedBytes = used, totalBytes = 10, remainingBytes = 10 - used, fetchedAtMs = 1_000, stale = false)
+        QuotaSnapshot(usedBytes = used, totalBytes = 10, remainingBytes = 10 - used, fetchedAtMs = 1_000, stale = false)
 
     @Test
     fun `a quota refresh does not wait for an open manual batch, and the next refresh writes what it could not`() {
-        val runtime = runtime()
+        val monitor = monitor()
         db.beginBatch() // the local scanner's batch, open for a whole pass
         try {
             val returned =
                 CompletableFuture
-                    .supplyAsync { runBlocking { withTimeoutOrNull(2_000) { runtime.persistQuotaSnapshot(db, snapshot(1)) } } }
+                    .supplyAsync { runBlocking { withTimeoutOrNull(2_000) { monitor.persistQuotaSnapshot(db, snapshot(1)) } } }
                     .get(10, TimeUnit.SECONDS)
             assertNotNull(returned, "the refresh returns at once and frees the provider and the in-flight flag")
             assertNull(db.getSyncState("quota_used"), "nothing is written into the open batch")
@@ -66,7 +61,7 @@ class DaemonQuotaPersistTest {
             db.rollbackBatch()
         }
 
-        runtime.retryQuotaPersist(db)
+        monitor.retryQuotaPersist(db)
 
         assertEquals("1", db.getSyncState("quota_used"))
         assertEquals("10", db.getSyncState("quota_total"))
@@ -75,19 +70,19 @@ class DaemonQuotaPersistTest {
 
     @Test
     fun `a newer snapshot replaces values that could not be written yet`() {
-        val runtime = runtime()
+        val monitor = monitor()
         db.beginBatch()
         try {
-            CompletableFuture.runAsync { runtime.persistQuotaSnapshot(db, snapshot(1)) }.get(10, TimeUnit.SECONDS)
+            CompletableFuture.runAsync { monitor.persistQuotaSnapshot(db, snapshot(1)) }.get(10, TimeUnit.SECONDS)
         } finally {
             db.rollbackBatch()
         }
 
-        runtime.persistQuotaSnapshot(db, snapshot(4))
+        monitor.persistQuotaSnapshot(db, snapshot(4))
         assertEquals("4", db.getSyncState("quota_used"), "the newer snapshot replaced the pending one and was written")
         assertEquals("6", db.getSyncState("quota_remaining"))
         db.setSyncState("quota_used", "7") // written by someone else after the newer snapshot landed
-        runtime.retryQuotaPersist(db)
+        monitor.retryQuotaPersist(db)
 
         assertEquals("7", db.getSyncState("quota_used"), "nothing older is written over it later")
     }
