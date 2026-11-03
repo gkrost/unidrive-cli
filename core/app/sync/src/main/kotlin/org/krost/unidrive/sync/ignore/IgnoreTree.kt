@@ -111,7 +111,9 @@ data class IgnoreProblem(
  *
  * Caching: a directory's rule files are probed once per scan and parsed once per change of their stamp (size and
  * modification time). [revalidate] starts a new scan, [invalidate] forces one directory to be read again (for a
- * change the stamp cannot see). Thread-safe.
+ * change the stamp cannot see). Thread-safe, and no monitor is held while a rule file is probed (#212): a probe of
+ * a cloud rule file waits for its transfer, and an upload holding a permit must not queue behind that wait on the
+ * directory's node monitor.
  */
 class IgnoreTree(
     private val source: IgnoreFileSource,
@@ -138,6 +140,10 @@ class IgnoreTree(
     private class DirNode {
         var statEpoch = -1L
         var forceReload = false
+
+        /** Bumped by [invalidate]; a refresh whose probes raced one applies nothing and probes again at the next use. */
+        var reloadGen = 0L
+
         var probes: List<RuleFileProbe> = emptyList()
         var layers: List<IgnoreRules> = emptyList()
 
@@ -231,7 +237,10 @@ class IgnoreTree(
     /** Reads the rule files of [dir] (relative to the sync root, "" for the root) again at their next use. */
     fun invalidate(dir: String) {
         val node = nodes[dir.trim('/')] ?: return
-        synchronized(node) { node.forceReload = true }
+        synchronized(node) {
+            node.forceReload = true
+            node.reloadGen++
+        }
         chainEpoch.incrementAndGet()
     }
 
@@ -309,8 +318,12 @@ class IgnoreTree(
         node.lastUsed = useClock.incrementAndGet()
         if (created) trimIfNeeded()
         if (node.memoEpoch == epoch && node.chainParent === parent) node.memo?.let { return it }
+        // #212: the probes run outside the monitor (probesForRefresh), so a probe waiting for a transfer permit holds
+        // no lock a permit-holding upload of this folder could need. Only the load and the node's state, neither of
+        // which waits for the cloud, run under it.
+        val probed = probesForRefresh(node, dir)
         synchronized(node) {
-            val changed = refresh(node, dir)
+            val changed = probed?.let { applyProbes(node, dir, it) } ?: false
             // Fail open for this call only. The next explain probes again, so a rule file that shows up later
             // in the same pass still holds the directory back.
             if (node.listingUndecided) return parent
@@ -332,15 +345,44 @@ class IgnoreTree(
         }
     }
 
-    /** Re-reads [dir]'s rule files when this scan has not checked them yet. True when its rules changed. */
-    private fun refresh(
+    /**
+     * The rule-file probes of [dir] for the next [applyProbes], taken outside the node's monitor: a probe of a cloud
+     * rule file waits for its transfer there ([CloudRuleFiles.probe]), and a monitor held across that wait would
+     * serialize a permit-holding upload of the same folder behind it (#212). Null when the node's rule files have
+     * been read at this scan already. An [invalidate] that lands while the probes run is answered by the next use,
+     * not by these probes.
+     */
+    private fun probesForRefresh(
         node: DirNode,
         dir: String,
+    ): Probes? {
+        val gen: Long
+        synchronized(node) {
+            if (node.statEpoch == statEpoch.get() && !node.forceReload) return null
+            gen = node.reloadGen
+        }
+        val paths = fileNames.map { if (dir.isEmpty()) it else "$dir/$it" }
+        return Probes(gen, paths.map { source.probe(it) })
+    }
+
+    private class Probes(
+        val gen: Long,
+        val probes: List<RuleFileProbe>,
+    )
+
+    /** Applies the probes [probesForRefresh] took. Runs under the node's monitor. True when its rules changed. */
+    private fun applyProbes(
+        node: DirNode,
+        dir: String,
+        probed: Probes,
     ): Boolean {
         val epoch = statEpoch.get()
+        // An invalidate while the probes ran makes them stale: the next use probes again.
+        if (node.reloadGen != probed.gen) return false
+        // Another thread's probes may have answered for this node while these ran: its answer stands.
         if (node.statEpoch == epoch && !node.forceReload) return false
         val paths = fileNames.map { if (dir.isEmpty()) it else "$dir/$it" }
-        val probes = paths.map { source.probe(it) }
+        val probes = probed.probes
         if (probes.any { it is RuleFileProbe.Undecided }) {
             node.listingUndecided = true
             node.forceReload = true
