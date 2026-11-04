@@ -462,6 +462,24 @@ class DropboxWriteTest {
         }
 
     @Test
+    fun `a 401 on a download refreshes the token once and retries with the new one`() =
+        runTest {
+            fake.json("files/get_metadata", file("/a.txt", "id:1"))
+            fake.on("files/download") { Answer(401, """{"error_summary":"expired_access_token/.."}""") }
+            fake.on("files/download") {
+                Answer(bytes = "DATA".toByteArray(), headers = mapOf(DropboxApi.API_RESULT to file("/a.txt", "id:1")))
+            }
+            fake.json("oauth2/token", """{"access_token":"${"n".repeat(40)}","token_type":"bearer","expires_in":14400}""")
+
+            val destination = dir.resolve("downloaded.bin")
+            provider.download("/a.txt", destination)
+
+            assertEquals("DATA", Files.readString(destination))
+            assertEquals("Bearer ${"n".repeat(40)}", fake.callsTo("files/download").last().headers["Authorization"])
+            assertEquals(1, fake.callsTo("oauth2/token").size)
+        }
+
+    @Test
     fun `a 429 waits as long as dropbox asks and then succeeds`() =
         runTest {
             fake.on("files/get_metadata") { Answer(429, """{"error_summary":"too_many_requests/..","error":{"retry_after":2}}""") }
