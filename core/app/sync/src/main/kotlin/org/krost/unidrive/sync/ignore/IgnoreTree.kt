@@ -115,6 +115,8 @@ data class IgnoreProblem(
  * a cloud rule file waits for its transfer, and an upload holding a permit must not queue behind that wait on the
  * directory's node monitor.
  */
+// One cache of rule files: the probe, apply, chain and trim steps of a directory belong together.
+@Suppress("TooManyFunctions")
 class IgnoreTree(
     private val source: IgnoreFileSource,
     val settings: IgnoreSettings = IgnoreSettings(),
