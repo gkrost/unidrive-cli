@@ -1,11 +1,15 @@
 package org.krost.unidrive.hydration
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -16,32 +20,33 @@ import kotlin.test.assertTrue
  */
 class HydrationRecoveryScopeDefaultTest {
     @Test
-    fun `the default recovery upload scope survives a failed child and runs the next one`() = runBlocking {
-        val scope = HydrationImpl.defaultRecoveryUploadScope()
-        try {
-            val firstMayRun = CompletableDeferred<Unit>()
-            val secondRan = CompletableDeferred<Unit>()
-            val thirdRan = CompletableDeferred<Unit>()
+    fun `the default recovery upload scope survives a failed child and runs the next one`() =
+        runBlocking {
+            val scope = HydrationImpl.defaultRecoveryUploadScope()
+            try {
+                withTimeout(WAIT_MS) {
+                    // The failure is intentional: a test-local handler receives it, so it never reaches the
+                    // process-wide uncaught-exception handler (which the coroutines test module reports into the
+                    // next test of the module as UncaughtExceptionsBeforeTest).
+                    val caught = CompletableDeferred<Throwable>()
+                    val handler = CoroutineExceptionHandler { _, e -> caught.complete(e) }
+                    val failing = scope.launch(handler) { throw IllegalStateException("first recovery upload failed") }
+                    assertEquals("first recovery upload failed", caught.await().message)
+                    failing.join()
 
-            // The first child runs, then fails — as a failed recovery upload does.
-            scope.launch {
-                firstMayRun.await()
-                throw IllegalStateException("first recovery upload failed")
+                    // A child launched after the failure must still run: the scope is alive.
+                    val secondRan = CompletableDeferred<Unit>()
+                    scope.launch { secondRan.complete(Unit) }.join()
+                    secondRan.await()
+                    assertTrue(scope.isActive, "the scope stays alive after a failed child")
+                }
+            } finally {
+                scope.coroutineContext[Job]?.let { job ->
+                    job.cancel()
+                    withTimeout(WAIT_MS) { job.join() }
+                }
             }
-            // The second child runs meanwhile and completes.
-            scope.launch { secondRan.complete(Unit) }
-
-            firstMayRun.complete(Unit)
-            secondRan.await()
-            // A child launched after the failure must still run: the scope is alive.
-            scope.launch { thirdRan.complete(Unit) }
-            thirdRan.await()
-
-            assertTrue(scope.isActive, "the scope stays alive after a failed child")
-        } finally {
-            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
         }
-    }
 
     @Test
     fun `every call hands out its own supervising scope`() {
@@ -54,5 +59,10 @@ class HydrationRecoveryScopeDefaultTest {
         } finally {
             second.cancel()
         }
+    }
+
+    private companion object {
+        // Bounded, so a broken supervisor fails the test instead of hanging the module.
+        const val WAIT_MS = 30_000L
     }
 }
