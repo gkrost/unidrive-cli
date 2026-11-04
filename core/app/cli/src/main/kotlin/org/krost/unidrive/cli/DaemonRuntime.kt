@@ -694,7 +694,7 @@ class DaemonRuntime(
                                     """{"class":${ndjsonString(open.endpointClass)},"count":${open.count},"oldest_ms":${open.oldestMs}}"""
                                 }
                             val slotsJson =
-                                status.freeSlots.entries.sortedBy { it.key }.joinToString(",") { "\"${it.key}\":${it.value}" }
+                                status.freeSlots.entries.sortedBy { it.key }.joinToString(",") { "${ndjsonString(it.key)}:${it.value}" }
                             ""","requests":{"in_flight":$inFlightJson,"free_slots":{$slotsJson}}"""
                         } ?: ""
                     // credential_health (archive#586): the last offline check, or `expired` at once when the provider rejected the

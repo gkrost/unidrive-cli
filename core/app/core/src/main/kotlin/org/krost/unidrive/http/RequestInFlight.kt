@@ -10,18 +10,21 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * is the state a stalled transfer is diagnosed from. Nothing in a class name identifies content (see
  * [EndpointClassifier]); the entries hold times, never ids or paths.
  *
+ * Ages are elapsed monotonic time ([System.nanoTime] by default), not wall time: a host clock correction must not
+ * make a long-running request look new or a fresh one look stalled. [nowNanos] is the injectable seam for tests.
+ *
  * A client owns one; it is read from any thread while requests run.
  */
 class RequestInFlight(
-    private val nowMs: () -> Long = System::currentTimeMillis,
+    private val nowNanos: () -> Long = System::nanoTime,
 ) {
     private val started = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
 
     /** Opens one in-flight entry for [endpointClass]; the returned handle closes it. */
     fun started(endpointClass: String): AutoCloseable {
-        val atMs = nowMs()
-        started.computeIfAbsent(endpointClass) { ConcurrentLinkedQueue() }.add(atMs)
-        return AutoCloseable { started[endpointClass]?.remove(atMs) }
+        val atNanos = nowNanos()
+        started.computeIfAbsent(endpointClass) { ConcurrentLinkedQueue() }.add(atNanos)
+        return AutoCloseable { started[endpointClass]?.remove(atNanos) }
     }
 
     /**
@@ -29,10 +32,13 @@ class RequestInFlight(
      * Empty when the client has nothing open.
      */
     fun snapshot(): List<InFlightRequests> =
-        started.entries.mapNotNull { (clazz, times) ->
-            val oldest = times.minOrNull() ?: return@mapNotNull null
-            InFlightRequests(clazz, times.size, (nowMs() - oldest).coerceAtLeast(0))
-        }.sortedBy { it.endpointClass }
+        nowNanos().let { now ->
+            started.entries.mapNotNull { (clazz, times) ->
+                // nanoTime values are only comparable by difference (they may wrap), so the oldest is the largest age
+                val oldestAgeNanos = times.maxOfOrNull { now - it } ?: return@mapNotNull null
+                InFlightRequests(clazz, times.size, (oldestAgeNanos / 1_000_000L).coerceAtLeast(0))
+            }.sortedBy { it.endpointClass }
+        }
 }
 
 /** The requests of one endpoint class that are open now, and how long the oldest of them has been in flight. */

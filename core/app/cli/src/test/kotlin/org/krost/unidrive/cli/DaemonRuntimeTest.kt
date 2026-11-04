@@ -714,6 +714,39 @@ class DaemonRuntimeTest {
         }
     }
 
+    // A budget name is the provider service's own string; a quote or backslash in it must not break the reply.
+    @Test
+    fun `daemon_status escapes a free-slots budget name that needs JSON escaping`() = runBlocking {
+        val awkward = "dr\"ive\\x"
+        val runtime =
+            DaemonRuntime(
+                profileMode = ProfileMode.MOUNT,
+                profileName = "test_profile",
+                lockFile = lockFile,
+                dbPath = dbPath,
+                syncRoot = tempDir,
+                socketPath = socketPath,
+                providerFactory = {
+                    object :
+                        StubProvider(),
+                        org.krost.unidrive.RequestStatusReporting {
+                        override fun requestStatus(): org.krost.unidrive.http.RequestStatusSnapshot =
+                            org.krost.unidrive.http.RequestStatusSnapshot(emptyList(), mapOf(awkward to 3))
+                    }
+                },
+            )
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath)
+        try {
+            val reply = sendOneRequest("""{"verb":"daemon.status"}""")
+            val slots = Json.parseToJsonElement(reply).jsonObject["requests"]!!.jsonObject["free_slots"]!!.jsonObject
+            assertEquals(3, slots[awkward]!!.jsonPrimitive.int)
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
     @Test
     fun `daemon_status carries no requests object for a provider that cannot account for its calls`() = runBlocking {
         val runtime =
