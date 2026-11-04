@@ -1669,6 +1669,13 @@ open class SyncEngine(
                         if (action is SyncAction.MoveRemote && moveSourceStillRemote(action.fromPath)) {
                             failedMoveSources.add(action.fromPath)
                         }
+                        // A local move of a remote rename. The folder delete is later in this pass and would
+                        // take the renamed item with the subtree. Record both ends: a rename into the folder
+                        // has its source outside it, and a rename inside it has its destination under it.
+                        if (action is SyncAction.MoveLocal) {
+                            failedMoveSources.add(action.fromPath)
+                            failedMoveSources.add(action.path)
+                        }
                         // archive#530: one WARN line with the item, the class and the message (the
                         // console appender's threshold is WARN — a throwable here printed the
                         // full JVM stack trace for every expected per-file failure); the
@@ -3053,6 +3060,8 @@ open class SyncEngine(
 
             val entry = entryFromCloudItem(action.remoteItem, action.path, isHydrated = true)
             db.upsertEntry(withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash))
+            // The bytes of a renamed item are at the row's path: the failed local move this mark remembers is made up.
+            if (db.pendingLocalMarkAt(action.path)?.let { PendingLocal.moveFrom(it) } != null) db.clearPendingLocal(action.path)
             auditLog?.emit(
                 action = "Download",
                 path = action.path,

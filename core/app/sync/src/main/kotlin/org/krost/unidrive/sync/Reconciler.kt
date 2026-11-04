@@ -158,7 +158,13 @@ class Reconciler(
         private set
 
     private val unappliedRemoteChanges =
-        UnappliedRemoteChanges(db, excludePatterns, { path, isDir -> isIgnored(path, isDir) }, { policyForPath(it) })
+        UnappliedRemoteChanges(
+            db,
+            excludePatterns,
+            { path, isDir -> isIgnored(path, isDir) },
+            { policyForPath(it) },
+            { isAbsentLocally(it) },
+        )
 
     fun reconcile(
         remoteChanges: Map<String, CloudItem>,
@@ -1648,7 +1654,12 @@ class Reconciler(
             if (oldEffectiveRemote == remoteItem.path && !becameTwin) continue
 
             actions.remove(candidate)
-            actions.removeAll { it is SyncAction.DeleteLocal && it.path == oldEntry.path }
+            // The old path's remote id is the item that now lives at the new path. A DeleteRemote of the old
+            // path (the folder was deleted locally, so the scan reports the child deleted too) addresses that
+            // id and would destroy the renamed item. The move keeps it.
+            actions.removeAll {
+                it.path == oldEntry.path && (it is SyncAction.DeleteLocal || it is SyncAction.DeleteRemote)
+            }
             // Another live item took the folder's old place (the trash root moves aside for a folder of its name): what
             // is planned below that place is that item's, not left over from the move.
             val oldPlaceTaken = remoteChanges[oldEffectiveRemote]?.let { !it.deleted && it.id != remoteItem.id } == true

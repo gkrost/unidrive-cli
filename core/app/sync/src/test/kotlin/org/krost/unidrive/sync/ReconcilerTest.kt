@@ -201,6 +201,29 @@ class ReconcilerTest {
         )
     }
 
+    // The same window for a file renamed inside the folder. The scan reports the child deleted with the
+    // folder, and that DeleteRemote addresses the renamed item's id.
+    @Test
+    fun `a locally deleted folder keeps its remote delete waiting when a child file was renamed inside it`() {
+        db.upsertEntry(folderEntry("/dir"))
+        db.upsertEntry(dbEntry("/dir/a.txt", isHydrated = true))
+        val renamed = cloudItem("/dir/b.txt").copy(id = "id-/dir/a.txt")
+        val actions =
+            reconciler.reconcile(
+                mapOf("/dir/b.txt" to renamed),
+                mapOf("/dir" to ChangeState.DELETED, "/dir/a.txt" to ChangeState.DELETED),
+            )
+
+        assertTrue(
+            actions.any { it is SyncAction.MoveLocal && it.path == "/dir/b.txt" && it.fromPath == "/dir/a.txt" },
+            "the rename is a local move; got $actions",
+        )
+        assertTrue(
+            actions.none { it is SyncAction.DeleteRemote && (it.path == "/dir" || it.path == "/dir/a.txt") },
+            "neither the folder nor the old name is deleted: both would take the renamed file; got $actions",
+        )
+    }
+
     // The guard is one pass over the plan with a set of ancestor folders, not a scan of every action per folder delete:
     // 10^4 folder deletes against 10^5 actions was 10^9 prefix comparisons.
     @Test

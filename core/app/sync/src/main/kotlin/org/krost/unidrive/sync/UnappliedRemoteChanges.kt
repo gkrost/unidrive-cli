@@ -17,6 +17,9 @@ internal class UnappliedRemoteChanges(
     private val excludePatterns: List<String>,
     private val isIgnored: (String, Boolean) -> Boolean,
     private val policyFor: (String) -> ConflictPolicy,
+    // True only when a path is provably absent on disk (dangling symlinks count as present), the
+    // reconciler's own absence test.
+    private val isAbsentLocally: (String) -> Boolean,
 ) {
     private val log = LoggerFactory.getLogger(UnappliedRemoteChanges::class.java)
 
@@ -41,7 +44,7 @@ internal class UnappliedRemoteChanges(
         for ((entry, mark) in marked) {
             if (skip(entry, syncPaths)) continue
             if (PendingLocal.attempts(mark) >= PendingLocal.MAX_ATTEMPTS) {
-                log.warn("Giving up on the unapplied remote change of {}: it failed {} times", entry.path, PendingLocal.attempts(mark))
+                recoverExhausted(actions, entry, mark)
                 continue
             }
             when {
@@ -49,6 +52,44 @@ internal class UnappliedRemoteChanges(
                 PendingLocal.base(mark) == PendingLocal.MKDIR -> replanFolder(actions, entry)
                 else -> PendingLocal.moveFrom(mark)?.let { replanMove(actions, aliveById, entry, it, remoteToLocal, contentChanged) }
             }
+        }
+    }
+
+    // Handles a mark whose retry bound is spent (see the comment inside).
+    private fun recoverExhausted(
+        actions: MutableList<SyncAction>,
+        entry: SyncEntry,
+        mark: String,
+    ) {
+        // An exhausted move leaves the row at its new path with no local bytes: the rename's
+        // re-key preserved the hydration flag (archive#595), so the scan reads the missing file
+        // as a user delete and plans the row's DeleteRemote — the delete that addresses the
+        // renamed item the move was to keep. Nothing local remains to keep, so the item is
+        // fetched to the row's path instead (a file, empty or not) or created there (a folder),
+        // the same recovery an unhydrated orphan gets; the plan's folder-delete guard sees that
+        // action and holds a delete of a folder that still carries it. The mark stays: it is
+        // cleared where the recovery lands (applyDownload, applyCreatePlaceholder), so a pass
+        // that does not run it (a refresh skips Pass 2) keeps the knowledge that this absence
+        // is a failed rename, not a delete.
+        val fromPath = PendingLocal.moveFrom(mark)
+        if (fromPath != null && isAbsentLocally(fromPath) && isAbsentLocally(entry.path)) {
+            actions.removeAll { it is SyncAction.DeleteRemote && it.path == entry.path }
+            if (entry.isFolder) {
+                if (!folderRetryPlanned(actions, entry.path)) {
+                    actions.add(SyncAction.CreatePlaceholder(entry.path, rowItem(entry), shouldHydrate = false))
+                }
+            } else if (!entry.downloadQuarantined) {
+                actions.removeAll { it is SyncAction.DownloadContent && it.path == entry.path }
+                actions.add(SyncAction.DownloadContent(entry.path, rowItem(entry)))
+            }
+            log.warn(
+                "The move of {} to {} failed {} times; fetching the renamed item instead",
+                fromPath,
+                entry.path,
+                PendingLocal.attempts(mark),
+            )
+        } else {
+            log.warn("Giving up on the unapplied remote change of {}: it failed {} times", entry.path, PendingLocal.attempts(mark))
         }
     }
 
