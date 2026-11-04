@@ -1343,7 +1343,7 @@ class MountEngine private constructor(
         // The row just adopted the cache copy's stats, and these are exactly the bytes the
         // write-back sent: hash the cache copy (guarded against a writer landing mid-hash)
         // so the touch shield covers mount-edited files too.
-        db.upsertEntry(withSentHash(uploaded, cachePath, sent))
+        db.upsertEntry(withSentHash(uploaded, cachePath, sent, result.sentSha256))
         auditLog?.emit(
             action = "Upload",
             path = path,
@@ -1912,7 +1912,8 @@ class MountEngine private constructor(
         entry: SyncEntry,
         local: Path,
         sent: Pair<Long, Long>?,
-    ): SyncEntry = Transfers.withSentHash(entry, local, sent, provider.hashAlgorithm(), log)
+        sentSha256: String? = null,
+    ): SyncEntry = Transfers.withSentHash(entry, local, sent, provider.hashAlgorithm(), log, sentSha256)
 
     private fun isTracked(remotePath: String): Boolean = guard.isTracked(remotePath)
 

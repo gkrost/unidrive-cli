@@ -60,4 +60,9 @@ data class CloudItem(
     // is where it sits below its device, `/<device>/...`; the engine shows these items apart, under the backups namespace
     // (see `BackupsNamespace`), and never writes to them. False for every provider that does not report it.
     val backup: Boolean = false,
+    // gkrost/unidrive-cli#393: the SHA-256 (lower-case hex) of the source bytes the provider read while it sent them, reported
+    // on the answer of an upload when the provider hashed them in the pass that read them anyway. It lets the engine record the
+    // hash of what was sent (SyncEntry.localHash) without a second read of the file. Null for every item a provider did not
+    // hash while sending, and for every item that is not the answer of an upload; the engine then hashes the file itself.
+    val sentSha256: String? = null,
 )

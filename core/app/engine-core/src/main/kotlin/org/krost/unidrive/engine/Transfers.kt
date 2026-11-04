@@ -63,6 +63,10 @@ object Transfers {
      * same-size rewrite that overlaps the hash can land hash(new) under the old baseline and later
      * read as touch-only. The window is sub-second; the same race exists in the archive#112 remote-hash
      * compare, which relies on the file's stats the same way.
+     *
+     * gkrost/unidrive-cli#393: [precomputedSha256] is the hash of the bytes that were just sent, when the provider hashed
+     * them in the pass that sent them ([org.krost.unidrive.CloudItem.sentSha256]). It stands in for the read of the file,
+     * and the same stat guard decides whether it still describes the file.
      */
     fun withLocalHash(
         entry: SyncEntry,
@@ -71,11 +75,18 @@ object Transfers {
         size: Long,
         algorithm: HashAlgorithm?,
         log: Logger,
+        precomputedSha256: String? = null,
+        // gkrost/unidrive-cli#394: told when a hash was recorded: whether it came from the provider (true) or from a read of the
+        // file (false), and the milliseconds the read took (0 for the provider's).
+        onHashed: ((fromProvider: Boolean, ms: Long) -> Unit)? = null,
     ): SyncEntry {
         if ((algorithm != null && !entry.remoteHash.isNullOrEmpty()) || entry.isFolder) return entry
         return try {
-            val hash = HashVerifier.computeSha256Hex(local)
+            val startedNs = System.nanoTime()
+            val hash = precomputedSha256 ?: HashVerifier.computeSha256Hex(local)
+            val readMs = if (precomputedSha256 == null) (System.nanoTime() - startedNs) / 1_000_000 else 0L
             if (Files.getLastModifiedTime(local).toMillis() == mtime && Files.size(local) == size) {
+                onHashed?.invoke(precomputedSha256 != null, readMs)
                 entry.copy(localHash = hash)
             } else {
                 entry.copy(localHash = null)
@@ -99,8 +110,11 @@ object Transfers {
         sent: Pair<Long, Long>?,
         algorithm: HashAlgorithm?,
         log: Logger,
+        // gkrost/unidrive-cli#393: see [withLocalHash]; the file is not read again when the provider hashed it while sending.
+        sentSha256: String? = null,
+        onHashed: ((fromProvider: Boolean, ms: Long) -> Unit)? = null,
     ): SyncEntry {
         if (sent == null) return entry.copy(localHash = null)
-        return withLocalHash(entry, local, sent.first, sent.second, algorithm, log)
+        return withLocalHash(entry, local, sent.first, sent.second, algorithm, log, sentSha256, onHashed)
     }
 }
