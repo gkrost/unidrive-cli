@@ -246,6 +246,29 @@ class ProfileJsonCommandTest {
         assertEquals(before, config(), "list is read-only")
     }
 
+    // unidrive-cli#387: a profile without credentials says why and the folder the engine looked in (the table and the JSON).
+    private val noCredentialsConfig = "[general]\n[providers.nocreds]\ntype = \"internxt\"\nsync_root = \"/tmp/nocreds-root\"\n"
+
+    @Test
+    fun `list --json says why a profile has no credentials and the folder it looked in`() {
+        writeConfig(noCredentialsConfig)
+
+        val profile = listed("nocreds")
+
+        assertEquals("none", profile.getValue("auth").jsonPrimitive.content)
+        assertEquals("no_credentials", profile.getValue("auth_reason").jsonPrimitive.content)
+        assertEquals(dir.resolve("nocreds").toString(), profile.getValue("profile_dir").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `list prints the folder a profile without credentials looked in`() {
+        writeConfig(noCredentialsConfig)
+
+        assertEquals(0, run("profile", "list"))
+
+        assertTrue(stdout().contains("no credentials in ${dir.resolve("nocreds")}"), "the AUTH column must say where it looked; was: ${stdout()}")
+    }
+
     @Test
     fun `list --json without a config file is an empty list, not an error`() {
         assertEquals(0, run("profile", "list", "--json"))

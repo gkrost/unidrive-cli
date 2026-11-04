@@ -165,6 +165,42 @@ class DaemonCredentialHealthTest {
         }
     }
 
+    // unidrive-cli#387: the `auth` object says a missing credential needs a sign-in, why, and the folder the check looked in.
+    @Test
+    fun `a missing credential reports auth needs_sign_in with no_credentials and the profile folder`() = runBlocking<Unit> {
+        val runtime = runtime(Provider(), check = { CredentialHealth.Missing("No credentials file") })
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath, daemonJob)
+        try {
+            val s = awaitStatus("the missing credential") { it.credentialState() == "missing" }
+
+            val auth = s.getValue("auth").jsonObject
+            assertEquals("needs_sign_in", auth.getValue("state").jsonPrimitive.content)
+            assertEquals("no_credentials", auth.getValue("reason").jsonPrimitive.content)
+            assertEquals(tempDir.toString(), auth.getValue("profile_dir").jsonPrimitive.content, "the folder the check looked in")
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    @Test
+    fun `a usable credential reports auth ok with no reason`() = runBlocking<Unit> {
+        val runtime = runtime(Provider(), check = { CredentialHealth.Ok })
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath, daemonJob)
+        try {
+            val s = awaitStatus("the usable credential") { it.credentialState() == "ok" }
+
+            val auth = s.getValue("auth").jsonObject
+            assertEquals("ok", auth.getValue("state").jsonPrimitive.content)
+            assertEquals(JsonNull, auth.getValue("reason"))
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
     @Test
     fun `a daemon with no credential check says unknown and keeps authenticated as it was`() = runBlocking<Unit> {
         val runtime = runtime(Provider(), check = null)

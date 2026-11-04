@@ -401,6 +401,14 @@ class ProfileAddCommand : Callable<Int> {
  * sync root itself and the Drive-named variants. File-scope so the prompt and the tests share
  * one predicate.
  */
+/** unidrive-cli#387: why a profile's `auth` (see [ProfileCommand]) is not `ok`; null when it is. */
+internal fun authReasonOf(auth: String): String? =
+    when (auth) {
+        "none" -> "no_credentials"
+        "expired" -> "expired"
+        else -> null
+    }
+
 internal fun isOfficialInternxtClientFolder(fileName: String): Boolean =
     fileName.equals("Internxt", ignoreCase = true) || fileName.startsWith("InternxtDrive", ignoreCase = true)
 
@@ -460,6 +468,8 @@ class ProfileListCommand : Callable<Int> {
                 when (authState(main, name, rp)) {
                     "ok" -> AnsiHelper.green(GlyphRenderer.tick())
                     "expired" -> AnsiHelper.yellow("${GlyphRenderer.warn()} expired")
+                    // unidrive-cli#387: say where the engine looked, not a bare dash.
+                    "none" -> AnsiHelper.yellow("${GlyphRenderer.warn()} no credentials in ${main.configBaseDir().resolve(name)}")
                     else -> AnsiHelper.dim(dash)
                 }
             println("%-20s %-10s %-30s %s".format(name, type, syncRoot, authLabel))
@@ -506,7 +516,11 @@ class ProfileListCommand : Callable<Int> {
                             put("mode", rp.mode)
                             put("sync_root", rp.sync_root ?: SyncConfig.defaultSyncRoot(type).toString())
                             for (spec in ProfileSettings.SPECS) put(spec.key, spec.read(rp))
-                            put("auth", authState(main, name, rp, useVault = false))
+                            val auth = authState(main, name, rp, useVault = false)
+                            put("auth", auth)
+                            // unidrive-cli#387: why it is not "ok" and the profile folder the check looked in (additive; same reading as daemon.status auth).
+                            put("auth_reason", authReasonOf(auth))
+                            put("profile_dir", main.configBaseDir().resolve(name).toString())
                             // Kept at sign-in, read offline; null for a profile signed in before it was kept.
                             put("account", AccountName.read(main.configBaseDir().resolve(name)))
                         }

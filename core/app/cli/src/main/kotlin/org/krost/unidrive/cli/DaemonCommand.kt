@@ -96,7 +96,7 @@ class DaemonRunCommand : Runnable {
         // provider camp on its prompt. useVault = true because the start's own provider creation
         // merges vault credentials; a vault-stored S3 key must not read as "missing" here.
         val health = parent.checkCredentialHealth(profile, parent.providerConfigDir(), useVault = true)
-        daemonStartCredentialRefusal(profile.name, health)?.let { refusal ->
+        daemonStartCredentialRefusal(profile.name, health, parent.providerConfigDir())?.let { refusal ->
             System.err.println(refusal)
             kotlin.system.exitProcess(parent.MODE_REFUSAL_EXIT)
         }
@@ -613,6 +613,7 @@ internal fun applyPositionalProfile(parent: Main, positional: String?) {
 internal fun daemonStartCredentialRefusal(
     profileName: String,
     health: CredentialHealth,
+    profileDir: java.nio.file.Path? = null,
 ): String? {
     val needsSignIn =
         when (CredentialHealthMonitor.toReading(health, checkedAtMs = 0L).state) {
@@ -630,7 +631,9 @@ internal fun daemonStartCredentialRefusal(
             is CredentialHealth.ExpiresIn -> health.message
             is CredentialHealth.Ok -> "credential check inconclusive"
         }
+    // unidrive-cli#387: the folder the check looked in, so a front-end (or a person) sees where the credentials were expected.
+    val looked = profileDir?.let { ", looked in $it" }.orEmpty()
     return "Error: unidrive daemon: ${AuthRequiredException.REASON}: profile '$profileName' needs a " +
-        "sign-in before it can start ($detail); refusing to prompt without an interactive terminal. " +
+        "sign-in before it can start ($detail$looked); refusing to prompt without an interactive terminal. " +
         "Sign in again: unidrive -p $profileName auth"
 }
