@@ -394,7 +394,7 @@ class InternxtSharedByMeTest {
                     failure = { _, _ -> if (unauthorized.getAndIncrement() == 0) 401 else null },
                 )
             val service =
-                internxtApiOn(drive(sharings)) { forceRefresh ->
+                internxtApiOn(drive(sharings)) { forceRefresh, _ ->
                     if (forceRefresh) forced.incrementAndGet()
                     fakeCredentials()
                 }
@@ -412,7 +412,7 @@ class InternxtSharedByMeTest {
             val forced = AtomicInteger()
             val sharings = FakeSharings(failure = { _, _ -> 401 })
             val service =
-                internxtApiOn(drive(sharings)) { forceRefresh ->
+                internxtApiOn(drive(sharings)) { forceRefresh, _ ->
                     if (forceRefresh) forced.incrementAndGet()
                     fakeCredentials()
                 }
@@ -681,7 +681,7 @@ class InternxtSharedByMeTest {
             val service =
                 InternxtApiService(
                     InternxtConfig(credentialProtector = null),
-                    credentialsProvider = { _ -> fakeCredentials() },
+                    credentialsProvider = { _, _ -> fakeCredentials() },
                     driveBudget = HttpRetryBudget(maxConcurrency = 2, minSpacingMs = 0, stormSpacingMs = 0),
                     httpClient = HttpClient(engine),
                 )

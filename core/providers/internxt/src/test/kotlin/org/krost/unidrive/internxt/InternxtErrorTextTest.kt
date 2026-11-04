@@ -29,7 +29,7 @@ class InternxtErrorTextTest {
     private fun serviceOn(engine: MockEngine) =
         InternxtApiService(
             InternxtConfig(credentialProtector = null),
-            credentialsProvider = { _ -> fakeCredentials() },
+            credentialsProvider = { _, _ -> fakeCredentials() },
             driveBudget = HttpRetryBudget(maxConcurrency = 2, minSpacingMs = 0, stormSpacingMs = 0),
             httpClient = HttpClient(engine),
         )

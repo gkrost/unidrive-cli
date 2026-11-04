@@ -66,7 +66,7 @@ class GraphAuthRefreshTest {
                 GraphApiService(
                     config = OneDriveConfig(),
                     httpClient = HttpClient(engine),
-                    tokenProvider = { refreshed ->
+                    tokenProvider = { refreshed, _ ->
                         tokenCalls += refreshed
                         if (refreshed) "refreshed-token" else "stale-token"
                     },
@@ -106,7 +106,7 @@ class GraphAuthRefreshTest {
                 GraphApiService(
                     config = OneDriveConfig(),
                     httpClient = HttpClient(engine),
-                    tokenProvider = { refreshed ->
+                    tokenProvider = { refreshed, _ ->
                         tokenCalls += refreshed
                         if (refreshed) "still-bad" else "bad"
                     },
@@ -144,7 +144,7 @@ class GraphAuthRefreshTest {
                 GraphApiService(
                     config = OneDriveConfig(),
                     httpClient = HttpClient(engine),
-                    tokenProvider = { refreshed ->
+                    tokenProvider = { refreshed, _ ->
                         tokenCalls += refreshed
                         "ok-token"
                     },
@@ -154,5 +154,168 @@ class GraphAuthRefreshTest {
 
             assertEquals(listOf(false), tokenCalls, "success path must not request a refreshed token")
             service.close()
+        }
+
+    /**
+     * The replay names the token the refused request carried (#215): the token manager can then take a
+     * stored token that already differs from it as fresh (another caller's refresh answered the 401)
+     * instead of rotating the token a second time.
+     */
+    @Test
+    fun `the 401 replay names the token the refused request carried`() =
+        runTest {
+            val attempt = AtomicInteger(0)
+            val rejectedSeen = mutableListOf<String?>()
+
+            val engine =
+                MockEngine {
+                    if (attempt.getAndIncrement() == 0) {
+                        respond(
+                            content = "{\"error\":\"token expired\"}",
+                            status = HttpStatusCode.Unauthorized,
+                            headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                        )
+                    } else {
+                        respond(
+                            content = "{\"id\":\"drive-id\",\"driveType\":\"personal\",\"quota\":{\"total\":0,\"used\":0,\"remaining\":0,\"deleted\":0}}",
+                            status = HttpStatusCode.OK,
+                            headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                        )
+                    }
+                }
+
+            val service =
+                GraphApiService(
+                    config = OneDriveConfig(),
+                    httpClient = HttpClient(engine),
+                    tokenProvider = { refreshed, rejected ->
+                        if (refreshed) rejectedSeen += rejected
+                        if (refreshed) "refreshed-token" else "stale-token"
+                    },
+                )
+
+            service.getDrive()
+
+            assertEquals(listOf<String?>("stale-token"), rejectedSeen, "the replay names the token the refused request carried")
+            service.close()
+        }
+
+    /**
+     * Only the replay of a 401 is a forced refresh naming a rejected token. `401(A) -> 429(B) -> 200`: B was
+     * throttled, not refused, so the third request asks for no refresh, names nothing as rejected, and carries B.
+     */
+    @Test
+    fun `a throttle after the 401 replay does not force a second refresh`() =
+        runTest {
+            val attempt = AtomicInteger(0)
+            val asks = mutableListOf<Pair<Boolean, String?>>()
+            val requestBearers = mutableListOf<String?>()
+
+            val engine =
+                MockEngine { request ->
+                    requestBearers += request.headers[HttpHeaders.Authorization]
+                    when (attempt.getAndIncrement()) {
+                        0 ->
+                            respond(
+                                content = "{\"error\":\"token expired\"}",
+                                status = HttpStatusCode.Unauthorized,
+                                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                            )
+                        1 ->
+                            respond(
+                                content = "{\"error\":\"throttled\"}",
+                                status = HttpStatusCode.TooManyRequests,
+                                headers = headersOf(HttpHeaders.ContentType to listOf("application/json"), HttpHeaders.RetryAfter to listOf("1")),
+                            )
+                        else ->
+                            respond(
+                                content = "{\"id\":\"drive-id\",\"driveType\":\"personal\",\"quota\":{\"total\":0,\"used\":0,\"remaining\":0,\"deleted\":0}}",
+                                status = HttpStatusCode.OK,
+                                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                            )
+                    }
+                }
+
+            var stored = "A"
+            val service =
+                GraphApiService(
+                    config = OneDriveConfig(),
+                    httpClient = HttpClient(engine),
+                    tokenProvider = { force, rejected ->
+                        asks += force to rejected
+                        if (force) stored = "B"
+                        stored
+                    },
+                )
+
+            service.getDrive()
+
+            assertEquals(3, attempt.get())
+            assertEquals(listOf<Pair<Boolean, String?>>(false to null, true to "A", false to null), asks, "one forced refresh, naming A")
+            assertEquals(listOf<String?>("Bearer A", "Bearer B", "Bearer B"), requestBearers, "both later requests carry B")
+            service.close()
+        }
+
+    /** The same `401(A) -> 429(B) -> 200` sequence on the download loop, whose item has no pre-authenticated URL. */
+    @Test
+    fun `a download throttled after the 401 replay does not force a second refresh`() =
+        runTest {
+            val contentGets = AtomicInteger(0)
+            val asks = mutableListOf<Pair<Boolean, String?>>()
+            val contentBearers = mutableListOf<String?>()
+
+            val engine =
+                MockEngine { request ->
+                    if (!request.url.toString().endsWith("/content")) {
+                        respond(
+                            content = "{\"id\":\"item-9\",\"name\":\"f.bin\",\"size\":4,\"file\":{\"mimeType\":\"application/octet-stream\"}}",
+                            status = HttpStatusCode.OK,
+                            headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                        )
+                    } else {
+                        contentBearers += request.headers[HttpHeaders.Authorization]
+                        when (contentGets.getAndIncrement()) {
+                            0 -> respond(content = "{}", status = HttpStatusCode.Unauthorized, headers = headersOf(HttpHeaders.ContentType, "application/json"))
+                            1 ->
+                                respond(
+                                    content = "{}",
+                                    status = HttpStatusCode.TooManyRequests,
+                                    headers = headersOf(HttpHeaders.ContentType to listOf("application/json"), HttpHeaders.RetryAfter to listOf("1")),
+                                )
+                            else ->
+                                respond(
+                                    content = "REAL",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/octet-stream"),
+                                )
+                        }
+                    }
+                }
+
+            var stored = "A"
+            val service =
+                GraphApiService(
+                    config = OneDriveConfig(),
+                    httpClient = HttpClient(engine),
+                    tokenProvider = { force, rejected ->
+                        asks += force to rejected
+                        if (force) stored = "B"
+                        stored
+                    },
+                )
+            val dest = java.nio.file.Files.createTempFile("od-401-429", ".bin")
+
+            service.downloadFile("item-9", dest)
+
+            assertEquals(3, contentGets.get())
+            // The first ask is the item lookup; the content requests follow.
+            assertEquals(
+                listOf<Pair<Boolean, String?>>(false to null, false to null, true to "A", false to null),
+                asks,
+                "one forced refresh, naming A",
+            )
+            assertEquals(listOf<String?>("Bearer A", "Bearer B", "Bearer B"), contentBearers, "both later requests carry B")
+            service.close()
+            java.nio.file.Files.deleteIfExists(dest)
         }
 }

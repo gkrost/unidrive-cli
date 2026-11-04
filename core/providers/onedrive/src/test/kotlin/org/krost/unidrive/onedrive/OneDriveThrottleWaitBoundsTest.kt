@@ -240,7 +240,7 @@ class OneDriveThrottleWaitBoundsTest {
         engine: MockEngine,
         budget: HttpRetryBudget,
     ): GraphApiService =
-        GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), throttleBudget = budget, httpClient = HttpClient(engine), tokenProvider = { _ -> "token" })
+        GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), throttleBudget = budget, httpClient = HttpClient(engine), tokenProvider = { _, _ -> "token" })
 
     private fun TestScope.budget() = HttpRetryBudget(maxConcurrency = 8, clock = { currentTime })
 

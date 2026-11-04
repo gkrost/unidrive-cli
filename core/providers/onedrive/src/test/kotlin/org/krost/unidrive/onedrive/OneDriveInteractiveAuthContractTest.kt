@@ -60,7 +60,7 @@ class OneDriveInteractiveAuthContractTest {
                 GraphApiService(
                     OneDriveConfig(tokenPath = profileDir),
                     engine = MockEngine { respond(ByteReadChannel(""), HttpStatusCode.NotFound) },
-                ) { "t" }
+                ) { _, _ -> "t" }
         }
 
     /** Canned /devicecode response matching Azure's documented shape. */

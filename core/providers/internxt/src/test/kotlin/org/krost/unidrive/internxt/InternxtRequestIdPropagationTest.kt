@@ -37,7 +37,7 @@ class InternxtRequestIdPropagationTest {
     private fun newService(engine: MockEngine): InternxtApiService =
         InternxtApiService(
             InternxtConfig(credentialProtector = null, ),
-            credentialsProvider = { _ ->
+            credentialsProvider = { _, _ ->
                 InternxtCredentials(
                     jwt = "test-jwt",
                     mnemonic = "test-mnemonic",

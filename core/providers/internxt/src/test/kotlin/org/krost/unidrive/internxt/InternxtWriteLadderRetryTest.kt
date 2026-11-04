@@ -22,7 +22,7 @@ class InternxtWriteLadderRetryTest {
     private fun service(engine: MockEngine): InternxtApiService =
         InternxtApiService(
             InternxtConfig(credentialProtector = null),
-            { _ ->
+            { _, _ ->
                 org.krost.unidrive.internxt.model.InternxtCredentials(
                     jwt = "test-jwt",
                     mnemonic = "test-mnemonic",

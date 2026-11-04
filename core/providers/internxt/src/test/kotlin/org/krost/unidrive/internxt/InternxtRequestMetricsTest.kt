@@ -37,7 +37,7 @@ class InternxtRequestMetricsTest {
     ): InternxtApiService =
         InternxtApiService(
             InternxtConfig(credentialProtector = null),
-            credentialsProvider = { _ ->
+            credentialsProvider = { _, _ ->
                 InternxtCredentials(jwt = "test-jwt", mnemonic = "test-mnemonic", rootFolderId = "test-root", email = "test@example.invalid")
             },
             requestMetrics = tap,

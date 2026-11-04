@@ -40,7 +40,7 @@ class SharedWithMePaginationTest {
             GraphApiService(
                 config = OneDriveConfig(),
                 httpClient = HttpClient(engine),
-                tokenProvider = { _ -> "test-token" },
+                tokenProvider = { _, _ -> "test-token" },
             )
         return service
     }

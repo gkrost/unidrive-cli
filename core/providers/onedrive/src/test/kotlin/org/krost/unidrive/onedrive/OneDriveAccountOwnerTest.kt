@@ -85,7 +85,7 @@ class OneDriveAccountOwnerTest {
                                 respond(ByteReadChannel(meJson), HttpStatusCode.OK, jsonHeaders)
                             }
                         },
-                ) { "access" }
+                ) { _, _ -> "access" }
         }
 
     /** A `/me/drive` answer whose owner is user [id] called [name]. */

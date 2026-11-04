@@ -81,7 +81,7 @@ class OneDriveAccountNameTest {
                             check(request.url.encodedPath.endsWith("/me/drive")) { "unexpected ${request.url}" }
                             if (me == null) respond(ByteReadChannel(""), HttpStatusCode.Forbidden) else me()()
                         },
-                ) { "access" }
+                ) { _, _ -> "access" }
         }
 
     private fun meBody(json: String): () -> io.ktor.client.engine.mock.MockRequestHandleScope.() -> io.ktor.client.request.HttpResponseData =

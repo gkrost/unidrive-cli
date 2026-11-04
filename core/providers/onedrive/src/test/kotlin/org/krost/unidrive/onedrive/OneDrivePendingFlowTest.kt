@@ -56,7 +56,7 @@ class OneDrivePendingFlowTest {
                 GraphApiService(
                     OneDriveConfig(tokenPath = profileDir),
                     engine = MockEngine { respond(ByteReadChannel(""), HttpStatusCode.NotFound) },
-                ) { "t" }
+                ) { _, _ -> "t" }
         }
 
     private val deviceCodeBody =

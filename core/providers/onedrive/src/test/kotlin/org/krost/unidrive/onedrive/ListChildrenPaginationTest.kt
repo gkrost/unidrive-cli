@@ -49,7 +49,7 @@ class ListChildrenPaginationTest {
         return GraphApiService(
             config = OneDriveConfig(),
             httpClient = HttpClient(engine),
-            tokenProvider = { _ -> "test-token" },
+            tokenProvider = { _, _ -> "test-token" },
         )
     }
 
@@ -60,7 +60,7 @@ class ListChildrenPaginationTest {
         GraphApiService(
             config = OneDriveConfig(tokenPath = tokenPath),
             httpClient = HttpClient(engine),
-            tokenProvider = { _ -> "test-token" },
+            tokenProvider = { _, _ -> "test-token" },
         )
 
     @Test

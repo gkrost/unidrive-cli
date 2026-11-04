@@ -54,7 +54,7 @@ class InternxtOffsetListingChangeTest {
     private fun service(gateway: Gateway) =
         InternxtApiService(
             InternxtConfig(credentialProtector = null),
-            credentialsProvider = { _ -> credentials },
+            credentialsProvider = { _, _ -> credentials },
             httpClient = HttpClient(gateway.engine),
         )
 

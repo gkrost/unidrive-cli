@@ -449,7 +449,7 @@ internal class FakeSharings(
 /** An [InternxtApiService] on [drive]'s engine, built the way the production one is (the request-id plugin included), with no request spacing. */
 internal fun internxtApiOn(
     drive: FakeDrive,
-    credentials: suspend (forceRefresh: Boolean) -> InternxtCredentials = { fakeCredentials() },
+    credentials: suspend (forceRefresh: Boolean, rejectedJwt: String?) -> InternxtCredentials = { _, _ -> fakeCredentials() },
 ): InternxtApiService =
     InternxtApiService(
         InternxtConfig(credentialProtector = null),

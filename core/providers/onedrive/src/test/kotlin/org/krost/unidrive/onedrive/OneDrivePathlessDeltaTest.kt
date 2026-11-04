@@ -70,7 +70,7 @@ class OneDrivePathlessDeltaTest {
                 }
             }
         val config = OneDriveConfig(tokenPath = tmp.resolve("token"))
-        val api = GraphApiService(config = config, httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+        val api = GraphApiService(config = config, httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" })
         val provider = OneDriveProvider(config, graphApi = api)
         return provider
     }

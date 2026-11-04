@@ -22,7 +22,7 @@ class InternxtThrottleWaitTest {
     private fun service(engine: MockEngine) =
         InternxtApiService(
             InternxtConfig(credentialProtector = null, ),
-            credentialsProvider = { _ ->
+            credentialsProvider = { _, _ ->
                 InternxtCredentials(
                     jwt = "test-jwt",
                     mnemonic = "test-mnemonic",

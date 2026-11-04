@@ -29,7 +29,7 @@ class OneDriveByIdWriteTest {
         tmp = Files.createTempDirectory("ud-by-id-write")
         graph = SimilarNameGraph()
         val config = OneDriveConfig(tokenPath = tmp.resolve("token"))
-        val api = GraphApiService(config = config, httpClient = graph.client(), tokenProvider = { _ -> "test-token" })
+        val api = GraphApiService(config = config, httpClient = graph.client(), tokenProvider = { _, _ -> "test-token" })
         provider = OneDriveProvider(config, graphApi = api)
     }
 

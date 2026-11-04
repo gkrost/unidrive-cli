@@ -33,7 +33,7 @@ class GraphUserAgentTest {
     private fun service(
         engine: MockEngine,
         config: OneDriveConfig = OneDriveConfig(tokenPath = dir),
-    ) = GraphApiService(config = config, engine = engine, tokenProvider = { _ -> "test-token" })
+    ) = GraphApiService(config = config, engine = engine, tokenProvider = { _, _ -> "test-token" })
 
     @Test
     fun `delta, download url and upload url requests all carry the configured user agent`() =

@@ -66,12 +66,14 @@ class DropboxApiException(
  * with their arguments in the `Dropbox-API-Arg` header, and the long-poll on the notify host, which takes no token.
  *
  * Every authenticated request goes through [send]: a slot from the shared [budget], a forced token refresh and one
- * retry on 401, and the server's own wait on 429 and 503 (Dropbox's `Retry-After`, or `retry_after` in the body).
- * Anything else reaches the caller as it is, so a write that may have taken effect is never repeated here.
+ * retry on 401 — naming the token the refused request carried, so the auth layer can take a token another caller
+ * already rotated in for it (#215) — and the server's own wait on 429 and 503 (Dropbox's `Retry-After`, or
+ * `retry_after` in the body). Anything else reaches the caller as it is, so a write that may have taken effect is
+ * never repeated here.
  */
 class DropboxApi(
     private val config: DropboxConfig,
-    private val accessToken: suspend (forceRefresh: Boolean) -> String,
+    private val accessToken: suspend (forceRefresh: Boolean, rejectedToken: String?) -> String,
     engine: HttpClientEngine? = null,
     private val budget: HttpRetryBudget = HttpRetryBudget(maxConcurrency = MAX_CONCURRENCY),
 ) : AutoCloseable {
@@ -139,13 +141,19 @@ class DropboxApi(
         path: String,
         destination: Path,
         requestTimeoutMs: Long? = null,
-    ): Pair<JsonObject, Long> =
-        budget.retrying { refreshed, retries ->
+    ): Pair<JsonObject, Long> {
+        var rejectedToken: String? = null
+        return budget.retrying { refreshed, retries ->
+            // The token a 401 refused, until the replay that answers it takes it (#215): a forced refresh is for
+            // that replay alone, so a throttle of the replayed request does not make the next attempt rotate again.
+            val rejected = rejectedToken
+            rejectedToken = null
+            val token = accessToken(rejected != null, rejected)
             val statement =
                 httpClient.prepareRequest {
                     url("${config.contentBase}/files/download")
                     method = HttpMethod.Post
-                    bearerAuth(accessToken(refreshed))
+                    bearerAuth(token)
                     pathRoot?.let { header(PATH_ROOT, it) }
                     header(API_ARG, headerSafeJson(obj("path" to path)))
                     // Ktor counts the request timeout up to the end of the `execute` block, so the client's flat 10 minute
@@ -157,7 +165,10 @@ class DropboxApi(
                 }
             statement.execute { response ->
                 when {
-                    response.status == HttpStatusCode.Unauthorized && !refreshed -> RetryOutcome.RetryAuth
+                    response.status == HttpStatusCode.Unauthorized && !refreshed -> {
+                        rejectedToken = token
+                        RetryOutcome.RetryAuth
+                    }
                     isThrottle(response.status) && retries < MAX_THROTTLE_ATTEMPTS ->
                         RetryOutcome.Retry(backoffMs(response, readBoundedErrorBody(response), retries), throttle = true)
                     !response.status.isSuccess() -> throw failure(response, readBoundedErrorBody(response), "files/download")
@@ -172,6 +183,7 @@ class DropboxApi(
                 }
             }
         }
+    }
 
     /**
      * One long-poll on the notify host: blocks up to [timeoutSeconds] until something under [cursor] changes. Takes no
@@ -199,19 +211,25 @@ class DropboxApi(
     private suspend fun send(
         endpoint: String,
         configure: HttpRequestBuilder.() -> Unit,
-    ): HttpResponse =
-        budget.retrying { refreshed, retries ->
+    ): HttpResponse {
+        var rejectedToken: String? = null
+        return budget.retrying { refreshed, retries ->
+            // The token a 401 refused, until the replay that answers it takes it (#215): see download.
+            val rejected = rejectedToken
+            rejectedToken = null
+            val token = accessToken(rejected != null, rejected)
             val response =
                 httpClient.request {
                     url(endpoint)
                     method = HttpMethod.Post
-                    bearerAuth(accessToken(refreshed))
+                    bearerAuth(token)
                     pathRoot?.let { header(PATH_ROOT, it) }
                     configure()
                 }
             when {
                 response.status == HttpStatusCode.Unauthorized && !refreshed -> {
                     log.info("Dropbox answered 401 on {}; refreshing the token and retrying once", endpoint.substringAfter("/2/"))
+                    rejectedToken = token
                     RetryOutcome.RetryAuth
                 }
                 isThrottle(response.status) && retries < MAX_THROTTLE_ATTEMPTS -> {
@@ -227,6 +245,7 @@ class DropboxApi(
                 }
             }
         }
+    }
 
     private suspend fun parseOrThrow(
         response: HttpResponse,

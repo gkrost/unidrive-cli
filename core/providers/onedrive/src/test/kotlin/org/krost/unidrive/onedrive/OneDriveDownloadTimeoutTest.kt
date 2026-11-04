@@ -55,7 +55,7 @@ class OneDriveDownloadTimeoutTest {
                                 requestTimeoutMillis = HttpDefaults.REQUEST_TIMEOUT_MS
                             }
                         },
-                    tokenProvider = { "tok" },
+                    tokenProvider = { _, _ -> "tok" },
                 )
 
             // The 4-byte answer is shorter than the declared size: the outcome does not matter, the request's timeout does.

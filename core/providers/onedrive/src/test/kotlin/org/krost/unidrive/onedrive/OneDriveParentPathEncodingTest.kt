@@ -28,7 +28,7 @@ class OneDriveParentPathEncodingTest {
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
             }
-        val freshGraphApi = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+        val freshGraphApi = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" })
         val provider = OneDriveProvider(graphApi = freshGraphApi)
         return provider
     }

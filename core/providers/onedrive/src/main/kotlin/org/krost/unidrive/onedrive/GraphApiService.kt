@@ -52,7 +52,9 @@ class GraphApiService(
     httpClient: HttpClient? = null,
     // Tests point the requests at a loopback server; production talks to Graph.
     private val baseUrl: String = "${OneDriveConfig.GRAPH_BASE_URL}/${OneDriveConfig.GRAPH_VERSION}",
-    private val tokenProvider: suspend (forceRefresh: Boolean) -> String,
+    // [rejectedToken] names the token the refused request carried on a forced refresh (#215), so the
+    // token manager can take a stored token that already differs from it as fresh instead of rotating again.
+    private val tokenProvider: suspend (forceRefresh: Boolean, rejectedToken: String?) -> String,
 ) : AutoCloseable {
     private val log = LoggerFactory.getLogger(GraphApiService::class.java)
 
@@ -327,12 +329,20 @@ class GraphApiService(
         // auth: re-resolve the item once for a fresh URL before treating it as an
         // authentication failure. Bounded to a single re-resolve (no loop).
         var authUrlReresolved = false
+        // The token a 401 refused, until the replay that answers it takes it (#215): a forced refresh is for that
+        // replay alone, so a throttle of the replayed request does not make the next attempt rotate again.
+        var sentToken: String? = null
+        var rejectedToken: String? = null
         while (true) {
             try {
                 throttleBudget.awaitSlot()
+                val rejected = rejectedToken
+                rejectedToken = null
+                val bearer = if (authNeeded) tokenProvider(rejected != null, rejected) else null
+                if (bearer != null) sentToken = bearer
                 val statement =
                     httpClient.prepareGet(url) {
-                        if (authNeeded) bearerAuth(tokenProvider(authRefreshed))
+                        if (bearer != null) bearerAuth(bearer)
                         // Ktor counts the request timeout up to the end of the `execute` block, so the client's flat
                         // 10 minute cap cut every download that needs longer, steady transfer or not. Sized from the
                         // declared size like an upload (the larger of that floor and the time at the minimum throughput).
@@ -380,6 +390,7 @@ class GraphApiService(
                     DownloadOutcome.RetryAuth -> {
                         log.info("Got 401 on download itemId={} — forcing token refresh and retrying once", itemId)
                         authRefreshed = true
+                        rejectedToken = sentToken
                         continue
                     }
                     is DownloadOutcome.ExpiredUrl -> {
@@ -1333,22 +1344,29 @@ class GraphApiService(
             throw ProviderException("Refusing to send the OneDrive token to a URL that is not on the Graph origin")
         }
         var refreshed = false
+        // The token a 401 refused, until the replay that answers it takes it (#215): a forced refresh is for that
+        // replay alone, so a throttle of the replayed request does not make the next attempt rotate again.
+        var rejectedToken: String? = null
         var throttleAttempts = 0
         var totalThrottleWaitMs = 0L
         while (true) {
             throttleBudget.awaitSlot()
+            val rejected = rejectedToken
+            rejectedToken = null
+            val token = tokenProvider(rejected != null, rejected)
             val response =
                 httpClient.request(
                     HttpRequestBuilder().apply {
                         url(endpoint)
                         this.method = method
-                        bearerAuth(tokenProvider(refreshed))
+                        bearerAuth(token)
                         configure()
                     },
                 )
             if (response.status == HttpStatusCode.Unauthorized && !refreshed) {
                 log.info("Got 401 on {} — forcing token refresh and retrying once", endpoint.takeLast(60))
                 refreshed = true
+                rejectedToken = token
                 continue
             }
             if (shouldBackoff(response, throttleAttempts, totalThrottleWaitMs)) {

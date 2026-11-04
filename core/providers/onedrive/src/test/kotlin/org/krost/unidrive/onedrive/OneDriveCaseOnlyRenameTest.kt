@@ -39,7 +39,7 @@ class OneDriveCaseOnlyRenameTest {
                 GraphApiService(
                     config = OneDriveConfig(tokenPath = Files.createTempDirectory("od-case-rename")),
                     engine = engine,
-                    tokenProvider = { "token" },
+                    tokenProvider = { _, _ -> "token" },
                 )
 
             service.moveItem("item-1", "/docs/CASE1.txt", oldPath = "/docs/case1.txt")

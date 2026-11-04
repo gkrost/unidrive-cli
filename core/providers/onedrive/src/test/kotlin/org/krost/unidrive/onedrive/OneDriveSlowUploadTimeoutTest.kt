@@ -95,7 +95,7 @@ class OneDriveSlowUploadTimeoutTest {
                     }
                 },
             baseUrl = "http://127.0.0.1:${server.localPort}/v1.0",
-            tokenProvider = { _ -> "test-token" },
+            tokenProvider = { _, _ -> "test-token" },
         )
 
     private fun readRequest(input: java.io.InputStream): String {

@@ -17,7 +17,7 @@
     <ID>ThrowsCount:GraphApiService.kt$GraphApiService$suspend fun getDelta( link: String? = null, fromLatest: Boolean = false, // A preview must not reset the delta-cursor age clock that recordDeltaSeen maintains. readOnly: Boolean = false, ): DeltaResult</ID>
     <ID>ThrowsCount:OAuthService.kt$OAuthService$suspend fun getDeviceCode(): DeviceCodeResponse</ID>
     <ID>ThrowsCount:OAuthService.kt$OAuthService$suspend fun pollForToken( deviceCode: String, interval: Long, ): Token</ID>
-    <ID>ThrowsCount:TokenManager.kt$TokenManager$suspend fun getValidToken(forceRefresh: Boolean = false): Token</ID>
+    <ID>ThrowsCount:TokenManager.kt$TokenManager$suspend fun getValidToken( forceRefresh: Boolean = false, // The token the caller's rejected request carried (#215): when the stored token already differs // from it, another caller's refresh answered the 401 and this one must not rotate again. Without // it, the token observed at entry decides, as before. rejectedToken: String? = null, ): Token</ID>
     <ID>TooGenericExceptionCaught:GraphApiService.kt$GraphApiService$e: Exception</ID>
     <ID>TooGenericExceptionCaught:OAuthService.kt$OAuthService$e: Exception</ID>
     <ID>TooGenericExceptionCaught:OneDriveProviderFactory.kt$OneDriveProviderFactory$e: Exception</ID>

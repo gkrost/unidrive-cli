@@ -28,7 +28,7 @@ internal suspend fun graphUserId(
     token: Token,
 ): String? =
     try {
-        GraphApiService(config) { token.accessToken }.use { it.getDrive().accountId() }
+        GraphApiService(config) { _, _ -> token.accessToken }.use { it.getDrive().accountId() }
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
     } catch (_: Exception) {

@@ -48,7 +48,7 @@ class LiveGraphIntegrationTest {
         )
         val token = accessToken!!
         service =
-            GraphApiService(OneDriveConfig()) { _ ->
+            GraphApiService(OneDriveConfig()) { _, _ ->
                 // The tokenProvider lambda is called fresh on every request. Ignore
                 // forceRefresh — we never refresh in this harness; if the injected
                 // token expires the test fails loudly, which is the correct signal.
@@ -78,7 +78,7 @@ class LiveGraphIntegrationTest {
             // no call crashed and that currentConcurrency is still in bounds.
             val budget = HttpRetryBudget(maxConcurrency = 8)
             val svc =
-                GraphApiService(OneDriveConfig(), budget) { _ ->
+                GraphApiService(OneDriveConfig(), budget) { _, _ ->
                     accessToken!!
                 }
             val n = 24

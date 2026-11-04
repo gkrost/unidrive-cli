@@ -126,7 +126,7 @@ class GraphWriteThrottleTest {
     private fun serviceOver(
         engine: MockEngine,
         budget: HttpRetryBudget,
-        tokenProvider: suspend (Boolean) -> String = { "token" },
+        tokenProvider: suspend (Boolean, String?) -> String = { _, _ -> "token" },
     ): GraphApiService {
         val service = GraphApiService(config = OneDriveConfig(tokenPath = tokenDir), throttleBudget = budget, httpClient = HttpClient(engine), tokenProvider = tokenProvider)
         return service
@@ -228,7 +228,7 @@ class GraphWriteThrottleTest {
                 val seen = mutableListOf<HttpRequestData>()
                 val tokenCalls = mutableListOf<Boolean>()
                 val service =
-                    serviceOver(engine(write, listOf(Failure(HttpStatusCode.Unauthorized)), seen), budget()) { refreshed ->
+                    serviceOver(engine(write, listOf(Failure(HttpStatusCode.Unauthorized)), seen), budget()) { refreshed, _ ->
                         tokenCalls += refreshed
                         if (refreshed) "fresh" else "stale"
                     }

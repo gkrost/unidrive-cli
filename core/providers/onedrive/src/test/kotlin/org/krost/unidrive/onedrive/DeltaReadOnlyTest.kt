@@ -30,7 +30,7 @@ class DeltaReadOnlyTest {
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
             }
-        val graphApi = GraphApiService(config = config, httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+        val graphApi = GraphApiService(config = config, httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" })
         val provider = OneDriveProvider(config, graphApi = graphApi)
         return provider
     }

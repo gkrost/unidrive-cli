@@ -48,7 +48,7 @@ class OneDriveDownloadReresolveTest {
                 GraphApiService(
                     config = OneDriveConfig(),
                     httpClient = HttpClient(engine),
-                    tokenProvider = { "tok" },
+                    tokenProvider = { _, _ -> "tok" },
                 ),
         )
 
@@ -173,7 +173,7 @@ class OneDriveDownloadReresolveTest {
                 GraphApiService(
                     config = OneDriveConfig(),
                     httpClient = HttpClient(engine),
-                    tokenProvider = { "tok" },
+                    tokenProvider = { _, _ -> "tok" },
                 )
 
             val dest = Files.createTempFile("od-html", ".bin")
@@ -281,7 +281,7 @@ class OneDriveDownloadReresolveTest {
                     }
                 }
 
-            val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { "tok" })
+            val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "tok" })
 
             val dest = Files.createTempFile("od-329", ".bin")
             service.downloadFile("item-401", dest)
@@ -323,7 +323,7 @@ class OneDriveDownloadReresolveTest {
                     }
                 }
 
-            val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { "tok" })
+            val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "tok" })
 
             val dest = Files.createTempFile("od-329b", ".bin")
             assertFailsWith<AuthenticationException> {
@@ -367,7 +367,7 @@ class OneDriveDownloadReresolveTest {
                     }
                 }
 
-            val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { "tok" })
+            val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "tok" })
 
             val dest = Files.createTempFile("od-329c", ".bin")
             val ex = assertFailsWith<GraphApiException> { service.downloadFile("item-403", dest) }

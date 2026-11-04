@@ -29,7 +29,7 @@ class OneDriveQuotaUnknownTest {
                     respond("""{"error":{"code":"x","message":"unhandled"}}""", HttpStatusCode.BadRequest, json)
                 }
             }
-        return GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _ -> "test-token" })
+        return GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "test-token" })
     }
 
     @Test
