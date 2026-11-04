@@ -226,6 +226,13 @@ class HydrationImpl(
         currentCoroutineContext()[UploadWorker]?.job?.let { transferringWorkers.remove(it) }
     }
 
+    // The move is the attempt: on record before the stop flag is read, the same way a transfer is.
+    private suspend fun recordMoveRetryOrStop(retryingMove: Boolean) {
+        if (retryingMove && !recordForDrain()) {
+            throw CancellationException("the daemon is stopping: the retry is left to the next start")
+        }
+    }
+
     /**
      * archive#560 U3 compatibility adapter: hydration over the mount front-end of [syncEngine] (`MountEngine.over`,
      * the one instance per engine the daemon wiring uses too). It keeps the call sites that build hydration on
@@ -1072,10 +1079,7 @@ class HydrationImpl(
             cachePath = target.second
             try {
                 val retryingMove = strayed != null
-                // The move is the attempt: on record before the stop flag is read, the same way a transfer is.
-                if (retryingMove && !recordForDrain()) {
-                    throw CancellationException("the daemon is stopping: the retry is left to the next start")
-                }
+                recordMoveRetryOrStop(retryingMove)
                 val outcome = strayed ?: runWatchedTransferAttempt(path, cachePath, baseEtag, onProgress, tx, onPermitAcquired)
                 if (outcome.keptBothAs != null) return completeKeptBoth(path, handleId, outcome, tx)
                 // Kept while the move runs: a failed move is retried by the next attempt.
