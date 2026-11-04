@@ -22,7 +22,12 @@ for file, page in pages.items():
         url = urlsplit(link)
         if url.scheme or url.netloc or link.startswith('//'): continue
         path = unquote(url.path)
-        target = (root / path.lstrip('/') if path.startswith('/') else file.parent / path).resolve() if path else file
+        if path.startswith('/'):
+            # The Pages deploy serves the site under a project subpath, where a
+            # root-absolute link resolves outside the site. Link relatively.
+            errors.append(f'{file}: root-absolute internal link (use a path relative to the page): {link}')
+            continue
+        target = (file.parent / path).resolve() if path else file
         if not target.is_relative_to(root): errors.append(f'{file}: outside site: {link}'); continue
         if target.is_dir(): target = target / 'index.html'
         if not target.is_file(): errors.append(f'{file}: missing: {link}'); continue
