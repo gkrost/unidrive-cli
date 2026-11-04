@@ -76,6 +76,35 @@ class StreamingReconcileBufferTest {
         )
     }
 
+    // The metadata-only touch of #264 is a live delivery too: page 1 tombstones id A
+    // (DeleteLocal, deferred), a later page re-delivers the same id alive with a bumped
+    // mtime (TouchMetadata, safe-now). The touch lands the row's own id, so the stale
+    // same-id tombstone must cancel the way it does behind a DownloadContent — else the
+    // delete-then-restore data-loss path re-opens through the touch.
+    @Test
+    fun `an earlier tombstone does not delete the same item a later page touches`() {
+        val buf = StreamingReconcileBuffer()
+        buf.classify(listOf(SyncAction.DeleteLocal("/p", remoteId = "A")))
+        buf.classify(listOf(SyncAction.TouchMetadata("/p", item("/p").copy(id = "A"))))
+        assertTrue(
+            buf.drainDeferred().none { it.path == "/p" },
+            "a tombstone older than a live same-id touch must not drain",
+        )
+    }
+
+    @Test
+    fun `a tombstone after a touch of the same id is kept`() {
+        val buf = StreamingReconcileBuffer()
+        buf.classify(listOf(SyncAction.TouchMetadata("/x", item("/x").copy(id = "A"))))
+        val delete = SyncAction.DeleteLocal("/x", remoteId = "A")
+        buf.classify(listOf(delete))
+        assertEquals(
+            listOf(delete),
+            buf.drainDeferred(),
+            "a delete of the item just touched must still drain",
+        )
+    }
+
     @Test
     fun `the same order inside one page keeps the later live delivery`() {
         val buf = StreamingReconcileBuffer()

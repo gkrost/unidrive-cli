@@ -31,6 +31,7 @@ private fun actionPriority(action: SyncAction): Int =
         is SyncAction.CreatePlaceholder -> if (action.remoteItem.isFolder) 0 else 2
         is SyncAction.CreateRemoteFolder -> 0
         is SyncAction.UpdatePlaceholder -> 2
+        is SyncAction.TouchMetadata -> 2
         is SyncAction.DownloadContent -> 2
         is SyncAction.Upload -> 2
         is SyncAction.DeleteLocal -> 1

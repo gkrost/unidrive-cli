@@ -22,7 +22,6 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentLength
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
-import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -39,7 +38,9 @@ import org.krost.unidrive.http.RequestId
 import org.krost.unidrive.http.RequestMetricsSink
 import org.krost.unidrive.http.RequestMetricsTap
 import org.krost.unidrive.http.parseRetryAfterHeader
+import org.krost.unidrive.http.RetryOutcome
 import org.krost.unidrive.http.readBoundedErrorBody
+import org.krost.unidrive.http.retrying
 import org.krost.unidrive.http.truncateErrorBody
 import org.krost.unidrive.http.throttleWaitMs
 import org.krost.unidrive.http.writeStagedDownload
@@ -141,11 +142,8 @@ class DropboxApi(
         destination: Path,
         requestTimeoutMs: Long? = null,
     ): Pair<JsonObject, Long> {
-        var refreshed = false
         var sentToken: String? = null
-        var throttleAttempts = 0
-        while (true) {
-            budget.awaitSlot()
+        return budget.retrying { refreshed, retries ->
             val token = accessToken(refreshed, sentToken)
             sentToken = token
             val statement =
@@ -162,31 +160,21 @@ class DropboxApi(
                         timeout { requestTimeoutMillis = requestTimeoutMs }
                     }
                 }
-            val outcome: Fetch =
-                statement.execute { response ->
-                    when {
-                        response.status == HttpStatusCode.Unauthorized && !refreshed -> Fetch.RetryAuth
-                        isThrottle(response.status) && throttleAttempts < MAX_THROTTLE_ATTEMPTS ->
-                            Fetch.Wait(backoffMs(response, readBoundedErrorBody(response), throttleAttempts))
-                        !response.status.isSuccess() -> throw failure(response, readBoundedErrorBody(response), "files/download")
-                        else -> {
-                            budget.recordSuccess()
-                            val meta =
-                                response.headers[API_RESULT]?.let { json.parseToJsonElement(it).jsonObject }
-                                    ?: throw ProviderException("Dropbox download of '$path' came without its metadata")
-                            val written = writeStagedDownload(response.bodyAsChannel(), destination, response.contentLength(), "Dropbox download of '$path'")
-                            Fetch.Done(meta, written)
-                        }
+            statement.execute { response ->
+                when {
+                    response.status == HttpStatusCode.Unauthorized && !refreshed -> RetryOutcome.RetryAuth
+                    isThrottle(response.status) && retries < MAX_THROTTLE_ATTEMPTS ->
+                        RetryOutcome.Retry(backoffMs(response, readBoundedErrorBody(response), retries), throttle = true)
+                    !response.status.isSuccess() -> throw failure(response, readBoundedErrorBody(response), "files/download")
+                    else -> {
+                        budget.recordSuccess()
+                        val meta =
+                            response.headers[API_RESULT]?.let { json.parseToJsonElement(it).jsonObject }
+                                ?: throw ProviderException("Dropbox download of '$path' came without its metadata")
+                        val written = writeStagedDownload(response.bodyAsChannel(), destination, response.contentLength(), "Dropbox download of '$path'")
+                        RetryOutcome.Done(meta to written)
                     }
                 }
-            when (outcome) {
-                Fetch.RetryAuth -> refreshed = true
-                is Fetch.Wait -> {
-                    budget.recordThrottle(outcome.ms)
-                    delay(outcome.ms)
-                    throttleAttempts++
-                }
-                is Fetch.Done -> return outcome.meta to outcome.bytes
             }
         }
     }
@@ -218,11 +206,8 @@ class DropboxApi(
         endpoint: String,
         configure: HttpRequestBuilder.() -> Unit,
     ): HttpResponse {
-        var refreshed = false
         var sentToken: String? = null
-        var throttleAttempts = 0
-        while (true) {
-            budget.awaitSlot()
+        return budget.retrying { refreshed, retries ->
             val token = accessToken(refreshed, sentToken)
             sentToken = token
             val response =
@@ -233,23 +218,23 @@ class DropboxApi(
                     pathRoot?.let { header(PATH_ROOT, it) }
                     configure()
                 }
-            if (response.status == HttpStatusCode.Unauthorized && !refreshed) {
-                log.info("Dropbox answered 401 on {}; refreshing the token and retrying once", endpoint.substringAfter("/2/"))
-                refreshed = true
-                continue
+            when {
+                response.status == HttpStatusCode.Unauthorized && !refreshed -> {
+                    log.info("Dropbox answered 401 on {}; refreshing the token and retrying once", endpoint.substringAfter("/2/"))
+                    RetryOutcome.RetryAuth
+                }
+                isThrottle(response.status) && retries < MAX_THROTTLE_ATTEMPTS -> {
+                    // A bounded read of the answer for the retry hint: no megabyte String is built of a gateway page, and the JSON hint (Dropbox's
+                    // bodies are a few hundred bytes) is still read. The HTTP client has buffered the response by now; only the copy is bounded.
+                    val waitMs = backoffMs(response, readBoundedErrorBody(response), retries)
+                    log.warn("Dropbox answered {} on {}; waiting {} ms", response.status.value, endpoint.substringAfter("/2/"), waitMs)
+                    RetryOutcome.Retry(waitMs, throttle = true)
+                }
+                else -> {
+                    if (response.status.isSuccess()) budget.recordSuccess()
+                    RetryOutcome.Done(response)
+                }
             }
-            if (isThrottle(response.status) && throttleAttempts < MAX_THROTTLE_ATTEMPTS) {
-                // A bounded read of the answer for the retry hint: no megabyte String is built of a gateway page, and the JSON hint (Dropbox's
-                // bodies are a few hundred bytes) is still read. The HTTP client has buffered the response by now; only the copy is bounded.
-                val waitMs = backoffMs(response, readBoundedErrorBody(response), throttleAttempts)
-                log.warn("Dropbox answered {} on {}; waiting {} ms", response.status.value, endpoint.substringAfter("/2/"), waitMs)
-                budget.recordThrottle(waitMs)
-                delay(waitMs)
-                throttleAttempts++
-                continue
-            }
-            if (response.status.isSuccess()) budget.recordSuccess()
-            return response
         }
     }
 
@@ -334,14 +319,6 @@ class DropboxApi(
                     },
             )
     }
-}
-
-private sealed interface Fetch {
-    data object RetryAuth : Fetch
-
-    data class Wait(val ms: Long) : Fetch
-
-    data class Done(val meta: JsonObject, val bytes: Long) : Fetch
 }
 
 /** The words of the Dropbox API this client calls; every endpoint path is static, the data travels in bodies and headers. */
