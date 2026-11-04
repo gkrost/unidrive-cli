@@ -234,17 +234,17 @@ class RemoteEnumeration(
 
     private fun readSettledStatus() =
         SettledStatus(
-            first = db.getSyncState("delta_cursor").isNullOrEmpty(),
-            lastScanComplete = db.getSyncState("pending_cursor_complete")?.toBooleanStrictOrNull(),
+            first = gather.cursorState.deltaCursor.isNullOrEmpty(),
+            lastScanComplete = gather.cursorState.pendingComplete.strict,
             unreachableItems = db.getSyncState(RemoteGather.UNREACHABLE_ITEMS_KEY)?.toIntOrNull()?.takeIf { it > 0 },
             droppedItems = db.getSyncState(RemoteGather.DROPPED_ITEMS_KEY)?.toIntOrNull()?.takeIf { it > 0 },
             duplicateNames = DuplicateNames.decoratedTwins(db.rowsWithRemotePath()).size.takeIf { it > 0 },
-            skippedPaths = db.getSyncState(RemoteGather.PENDING_SKIPPED_PATHS_KEY)
+            skippedPaths = gather.cursorState.skippedPaths
                 ?.split('\n')
                 ?.filter { it.isNotEmpty() }
                 ?.takeIf { it.isNotEmpty() }
                 ?.take(RemoteGather.SKIPPED_PATHS_KEPT),
-            lastFullScanMs = db.getSyncState("last_full_scan")?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() },
+            lastFullScanMs = gather.cursorState.lastFullScan?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() },
         ).also { settledStatusRead() }
 
     /**
@@ -309,10 +309,10 @@ class RemoteEnumeration(
         // leaves the mount serving an empty view. A reset forces a full re-enumeration whose
         // complete-reap below sweeps stale rows (mark-and-sweep), with no empty-view window.
         gather.applyScopeTransition()
-        if (reset) db.setSyncState("delta_cursor", "")
+        if (reset) gather.cursorState.setDeltaCursor("")
         // Only a full listing is measured against a previous one; a delta of a few items must not
         // inherit the total of the whole drive.
-        val cursorEmpty = db.getSyncState("delta_cursor").isNullOrEmpty()
+        val cursorEmpty = gather.cursorState.deltaCursor.isNullOrEmpty()
         // The recovery latch as the pass starts: while it is set, this pass lists the whole drive because the last scan was incomplete.
         val recoveryPass = db.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)?.equals("true", ignoreCase = true) == true
         tracker.baseline(
@@ -337,7 +337,7 @@ class RemoteEnumeration(
         val listingMs = tracker.saving(remoteChanges.count { !it.value.deleted })
         db.setSyncState(FAILURE_STREAK_KEY, "0")
         // Completeness is recorded in sync_state by the gather, not on its return value.
-        val complete = db.getSyncState("pending_cursor_complete")?.equals("true", ignoreCase = true) ?: true
+        val complete = gather.cursorState.pendingComplete.ignoringCase ?: true
         val canonicalToLocalTop = gather.canonicalToLocalTop(remoteChanges)
         // Bulk-disappearance corroboration guard (spec §3.2). A complete enumeration that
         // would flip more than max(50, 20% of tracked rows) to deleted is suspicious (e.g.
@@ -480,7 +480,7 @@ class RemoteEnumeration(
         // Two full listings in a row that end incomplete with the same tracked items missing: accept them, do not list again.
         gather.boundIncompleteRecovery(remoteChanges, gatherStartedAt)
         // A complete full listing becomes the estimate for the next one (the gather recorded whether it was full).
-        if (complete && db.getSyncState("last_gather_full") == "true") recordFullEnumeration(remoteChanges, listingMs)
+        if (complete && gather.cursorState.lastGatherFull.strict == true) recordFullEnumeration(remoteChanges, listingMs)
         // Notify the view-invalidation sink once, with all paths that changed in state.db
         // during this pass. Only fires when something actually changed so quiescent polls
         // do not produce spurious cache-invalidation traffic (archive#595: a re-delivering delta
@@ -515,7 +515,7 @@ class RemoteEnumeration(
         preGatherTrackedRows: Int,
         reapsDeferred: Boolean,
     ) {
-        val fullListing = db.getSyncState("last_gather_full") == "true"
+        val fullListing = gather.cursorState.lastGatherFull.strict == true
         val observedAlive = remoteChanges.values.count { !it.deleted }
         val shrinkWarning = if (fullListing) RemoteGather.remoteShrinkWarningOrNull(observedAlive, preGatherTrackedRows) else null
         if (shrinkWarning != null && db.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)?.equals("true", ignoreCase = true) == true) {

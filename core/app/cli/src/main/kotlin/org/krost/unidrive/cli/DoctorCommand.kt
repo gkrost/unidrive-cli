@@ -9,6 +9,8 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
+import org.krost.unidrive.engine.CursorState
+import org.krost.unidrive.engine.CursorStateView
 import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.formatSizePrecise
 import org.krost.unidrive.sync.ProfileMode
@@ -257,12 +259,13 @@ class DoctorCommand : Runnable {
         now: Instant,
     ): CheckResult {
         val name = "cursor-freshness"
-        val lastFullScan = db.getSyncState("last_full_scan")
-        val deltaCursor = db.getSyncState("delta_cursor")
-        val pendingCursor = db.getSyncState("pending_cursor")
-        val pendingComplete = db.getSyncState("pending_cursor_complete")
-        // Written beside pending_cursor_complete (RemoteGather.PENDING_SKIPPED_PATHS_KEY): what the gather could not read (archive#1234).
-        val skippedPaths = db.getSyncState("pending_cursor_skipped_paths")
+        val cursor: CursorStateView = CursorState(db)
+        val lastFullScan = cursor.lastFullScan
+        val deltaCursor = cursor.deltaCursor
+        val pendingCursor = cursor.pendingCursor
+        val pendingComplete = cursor.pendingComplete.raw
+        // Written beside pending_cursor_complete: what the gather could not read (archive#1234).
+        val skippedPaths = cursor.skippedPaths
             ?.split('\n')?.filter { it.isNotEmpty() }.orEmpty()
         val detail = mutableListOf<String>()
         detail += "last_full_scan = ${lastFullScan ?: "(unset)"}"

@@ -3,6 +3,7 @@ package org.krost.unidrive.hydration
 import kotlinx.coroutines.CancellationException
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.engine.CursorState
 import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
@@ -112,7 +113,7 @@ internal class ContentIdBackfill(
     suspend fun pass(): Outcome {
         if (!reportsContentIds) return Outcome.NotNeeded
         if (db.getSyncState(STATE_KEY) == DONE) return Outcome.AlreadyDone
-        if (db.getSyncState(DELTA_CURSOR_KEY).isNullOrEmpty()) return Outcome.AwaitingFirstScan
+        if (CursorState(db).deltaCursor.isNullOrEmpty()) return Outcome.AwaitingFirstScan
         log.info("content ids: filling the rows from before the column, after {}", db.getSyncState(AFTER_KEY) ?: "the start")
         var listed = 0
         var filled = 0
@@ -225,7 +226,6 @@ internal class ContentIdBackfill(
         /** How long after a pass that stopped, or found no completed enumeration, the next one runs. */
         const val RETRY_MS: Long = 10 * 60_000L
 
-        private const val DELTA_CURSOR_KEY = "delta_cursor"
 
         /**
          * Whether [item] is the version [row] records, by the merge's rule for keeping a row's content id

@@ -51,7 +51,7 @@ object ScopeTransition {
                 }
             }
             if (widened) {
-                db.setSyncState("delta_cursor", "")
+                CursorState(db).setDeltaCursor("")
                 db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID)?.let { db.completeScan(it) }
             }
             db.setSyncState(TRACKED_SCOPE_KEY, trackScope.joinToString("\t"))
