@@ -124,6 +124,7 @@ class IgnoreTree(
         const val UNIDRIVE_FILE = IgnoreRules.DEFAULT_SOURCE
         const val GIT_FILE = ".gitignore"
         private const val TRIM_SLACK_DIVISOR = 8
+        private const val MAX_PROBE_RETRIES = 3
     }
 
     init {
@@ -321,28 +322,51 @@ class IgnoreTree(
         // #212: the probes run outside the monitor (probesForRefresh), so a probe waiting for a transfer permit holds
         // no lock a permit-holding upload of this folder could need. Only the load and the node's state, neither of
         // which waits for the cloud, run under it.
-        val probed = probesForRefresh(node, dir)
-        synchronized(node) {
-            val changed = probed?.let { applyProbes(node, dir, it) } ?: false
-            // Fail open for this call only. The next explain probes again, so a rule file that shows up later
-            // in the same pass still holds the directory back.
-            if (node.listingUndecided) return parent
-            var c = node.chain
-            if (changed || c == null || node.chainParent !== parent) {
-                val held = node.heldBack
-                c =
-                    when {
-                        held != null -> Chain(parent.layers, parent.matcher, held)
-                        node.layers.isEmpty() -> parent
-                        else -> (node.layers + parent.layers).let { Chain(it, IgnoreMatcher(it)) }
-                    }
-                node.chain = c
-                node.chainParent = parent
+        var probed = probesForRefresh(node, dir)
+        var retries = 0
+        while (true) {
+            synchronized(node) {
+                // A scan that started while the probes ran makes them its predecessor's answer, and applyProbes would
+                // refuse them: probe again outside the monitor (probesForRefresh is null when another thread has
+                // answered for this scan meanwhile). Bounded; past it the call goes on without them and the next use
+                // probes.
+                val taken = probed
+                if (taken == null || taken.statEpoch == statEpoch.get() || retries >= MAX_PROBE_RETRIES) {
+                    return finishChain(node, dir, parent, epoch, taken)
+                }
+                retries++
             }
-            node.memo = c
-            node.memoEpoch = epoch
-            return c
+            probed = probesForRefresh(node, dir)
         }
+    }
+
+    /** The rest of [chainFor], under the node's monitor: applies [probed] and builds or reuses the node's chain. */
+    private fun finishChain(
+        node: DirNode,
+        dir: String,
+        parent: Chain,
+        epoch: Long,
+        probed: Probes?,
+    ): Chain {
+        val changed = probed?.let { applyProbes(node, dir, it) } ?: false
+        // Fail open for this call only. The next explain probes again, so a rule file that shows up later
+        // in the same pass still holds the directory back.
+        if (node.listingUndecided) return parent
+        var c = node.chain
+        if (changed || c == null || node.chainParent !== parent) {
+            val held = node.heldBack
+            c =
+                when {
+                    held != null -> Chain(parent.layers, parent.matcher, held)
+                    node.layers.isEmpty() -> parent
+                    else -> (node.layers + parent.layers).let { Chain(it, IgnoreMatcher(it)) }
+                }
+            node.chain = c
+            node.chainParent = parent
+        }
+        node.memo = c
+        node.memoEpoch = epoch
+        return c
     }
 
     /**
@@ -357,16 +381,19 @@ class IgnoreTree(
         dir: String,
     ): Probes? {
         val gen: Long
+        val scan: Long
         synchronized(node) {
-            if (node.statEpoch == statEpoch.get() && !node.forceReload) return null
+            scan = statEpoch.get()
+            if (node.statEpoch == scan && !node.forceReload) return null
             gen = node.reloadGen
         }
         val paths = fileNames.map { if (dir.isEmpty()) it else "$dir/$it" }
-        return Probes(gen, paths.map { source.probe(it) })
+        return Probes(gen, scan, paths.map { source.probe(it) })
     }
 
     private class Probes(
         val gen: Long,
+        val statEpoch: Long,
         val probes: List<RuleFileProbe>,
     )
 
@@ -376,9 +403,10 @@ class IgnoreTree(
         dir: String,
         probed: Probes,
     ): Boolean {
-        val epoch = statEpoch.get()
-        // An invalidate while the probes ran makes them stale: the next use probes again.
-        if (node.reloadGen != probed.gen) return false
+        val epoch = probed.statEpoch
+        // An invalidate while the probes ran makes them stale: the next use probes again. So does a scan that started
+        // meanwhile: they would be stamped with an epoch they did not observe.
+        if (node.reloadGen != probed.gen || epoch != statEpoch.get()) return false
         // Another thread's probes may have answered for this node while these ran: its answer stands.
         if (node.statEpoch == epoch && !node.forceReload) return false
         val paths = fileNames.map { if (dir.isEmpty()) it else "$dir/$it" }

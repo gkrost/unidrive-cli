@@ -134,4 +134,59 @@ class IgnoreTreeConcurrencyTest {
         assertFalse(ipcAnswer.get().ignored, "the folder is not held back once its rule file is read")
         assertEquals(1, downloads.get(), "the waiting probe reuses the copy the upload's download kept")
     }
+
+    // A source whose first probe of one rule file answers at once and then holds the answer back until released: the
+    // probe has seen the file as it was, and lets the world move on before it reports.
+    private class HoldingSource(
+        private val heldPath: String,
+    ) : IgnoreFileSource {
+        private val files = ConcurrentHashMap<String, ByteArray>()
+        val probesOfHeld = AtomicInteger()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        private val armed = java.util.concurrent.atomic.AtomicBoolean(true)
+
+        fun put(
+            path: String,
+            text: String,
+        ) {
+            files[path] = text.toByteArray(Charsets.UTF_8)
+        }
+
+        override fun probe(path: String): RuleFileProbe {
+            val seen = files[path]?.let { RuleFileProbe.Present(it.size.toLong(), 1L) } ?: RuleFileProbe.Absent
+            if (path == heldPath) {
+                probesOfHeld.incrementAndGet()
+                if (armed.compareAndSet(true, false)) {
+                    entered.countDown()
+                    release.await(10, TimeUnit.SECONDS)
+                }
+            }
+            return seen
+        }
+
+        override fun read(
+            path: String,
+            maxBytes: Long,
+        ): ByteArray? = files[path] ?: throw java.nio.file.NoSuchFileException(path)
+    }
+
+    @Test
+    fun aProbeStartedBeforeTheNextScanDoesNotAnswerForTheNextScan() {
+        val source = HoldingSource("d/.unidrive.ignore")
+        val t = IgnoreTree(source)
+
+        // The old scan's probe sees no rule file in d/ and is held before it reports.
+        val old = thread(name = "old-scan") { t.explain("d/x") }
+        assertTrue(source.entered.await(timeoutMs, TimeUnit.MILLISECONDS))
+
+        // The rule file appears, the next scan starts, and only then does the old probe report.
+        source.put("d/.unidrive.ignore", "x\n")
+        t.revalidate()
+        source.release.countDown()
+        old.join(3 * timeoutMs)
+
+        assertTrue(t.explain("d/x").ignored, "the old probe's answer was taken for the next scan's: the new rule file was skipped")
+        assertTrue(source.probesOfHeld.get() >= 2, "the next scan probed the rule file again")
+    }
 }
