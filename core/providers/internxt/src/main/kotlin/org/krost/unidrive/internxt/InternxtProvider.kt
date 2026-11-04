@@ -139,6 +139,24 @@ class InternxtProvider(
 
     private val notificationsStartLock = Mutex()
 
+    // Builds the notifications client. A seam so a test can stall or fake the build; production builds the real one.
+    internal var notificationsClientFactory: (tokenSupplier: suspend (Boolean) -> String, onRemoteChange: () -> Unit) -> NotificationsClient =
+        { tokenSupplier, onRemoteChange ->
+            NotificationsClient(
+                notificationsUrl = config.notificationsUrl,
+                tokenSupplier = tokenSupplier,
+                onRemoteChange = onRemoteChange,
+            )
+        }
+
+    // Guards the publish-and-connect of a started client against close()'s detach. Held only for non-suspending
+    // work (a field store and connect(), which hands the socket to socket.io's own thread), never across a
+    // suspension point, so a plain monitor is enough and close() can take it.
+    private val notificationsGuard = Any()
+
+    // Set by close(), never cleared: a start that was still in flight when the provider closed must not connect.
+    private var notificationsClosed = false
+
     // UD-357: process-local cache of (parentUuid, sanitizedName) -> uuid for
     // folder lookups. Populated on createFolder success (the API returns the
     // new folder's UUID — without this the next resolveFolder call races
@@ -372,6 +390,8 @@ class InternxtProvider(
         // when the daemon's serve scope is cancelled) and then tears down regardless — disconnect() is
         // idempotent, and the only window left is a start between its last suspension point and its
         // connect, microseconds wide.
+        // After the wait it tears down regardless, and closes the gate for good: a start that is still stalled
+        // (credential lookup, client construction) finds the gate shut at its publish and drops its client.
         var locked = notificationsStartLock.tryLock()
         var tries = 0
         while (!locked && tries < 50) {
@@ -380,8 +400,12 @@ class InternxtProvider(
             tries++
         }
         try {
-            notificationsClient?.disconnect()
-            notificationsClient = null
+            val detached =
+                synchronized(notificationsGuard) {
+                    notificationsClosed = true
+                    notificationsClient.also { notificationsClient = null }
+                }
+            detached?.disconnect()
         } finally {
             if (locked) notificationsStartLock.unlock()
         }
@@ -454,13 +478,27 @@ class InternxtProvider(
                 return
             }
         val client =
-            NotificationsClient(
-                notificationsUrl = config.notificationsUrl,
-                tokenSupplier = { forceRefresh -> authService.getValidCredentials(forceRefresh).jwt },
-                onRemoteChange = { remoteChangeCallback() },
+            notificationsClientFactory(
+                { forceRefresh -> authService.getValidCredentials(forceRefresh).jwt },
+                { remoteChangeCallback() },
             )
-        notificationsClient = client
-        client.connect(creds.jwt)
+        // Publish and connect under the guard, against close()'s detach: close() either ran first (the gate is
+        // shut and this client is a spare that never connects) or runs after (it finds the client and
+        // disconnects it). The credential lookup and the construction above stay outside the guard.
+        val connected =
+            synchronized(notificationsGuard) {
+                if (notificationsClosed) {
+                    false
+                } else {
+                    notificationsClient = client
+                    client.connect(creds.jwt)
+                    true
+                }
+            }
+        if (!connected) {
+            client.disconnect()
+            log.debug("notifications start dropped: the provider was closed while it was starting")
+        }
     }
 
     override suspend fun listChildren(path: String): List<CloudItem> {
