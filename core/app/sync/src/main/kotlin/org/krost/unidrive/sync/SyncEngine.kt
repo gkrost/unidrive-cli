@@ -3060,6 +3060,8 @@ open class SyncEngine(
 
             val entry = entryFromCloudItem(action.remoteItem, action.path, isHydrated = true)
             db.upsertEntry(withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash))
+            // The bytes of a renamed item are at the row's path: the failed local move this mark remembers is made up.
+            if (db.pendingLocalMarkAt(action.path)?.let { PendingLocal.moveFrom(it) } != null) db.clearPendingLocal(action.path)
             auditLog?.emit(
                 action = "Download",
                 path = action.path,

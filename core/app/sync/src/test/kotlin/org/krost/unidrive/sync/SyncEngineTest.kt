@@ -490,6 +490,103 @@ class SyncEngineTest {
         }
 
     @Test
+    fun `an empty file whose local move keeps failing is fetched at the retry bound, not deleted`() =
+        runTest {
+            val bytes = ByteArray(0)
+            val flaky = driveRenameInDeletedFolderToTheRetryBound(bytes)
+            flaky.syncOnce()
+            assertTrue(
+                provider.deletedPaths.none { it == "/dir" || it == "/dir/a.txt" || it.startsWith("/dir/") },
+                "the renamed empty file is recovered, never deleted; deleted ${provider.deletedPaths}",
+            )
+            assertContentEquals(bytes, provider.files.getValue("/dir/b.txt"))
+            assertTrue(Files.isRegularFile(syncRoot.resolve("dir/b.txt")), "the empty file is back on disk")
+            assertTrue(db.pendingLocalMarks().isEmpty(), "the recovery supersedes the move mark: ${db.pendingLocalMarks()}")
+        }
+
+    @Test
+    fun `a folder whose local move reached the retry bound is created again, not deleted`() =
+        runTest {
+            provider.deltaItems =
+                listOf(
+                    cloudItem("/dir", size = 0, isFolder = true),
+                    cloudItem("/dir/sub", size = 0, isFolder = true),
+                )
+            engine.syncOnce()
+            assertTrue(Files.isDirectory(syncRoot.resolve("dir/sub")))
+
+            // The state a rename leaves after its local move failed 8 times: the row is re-keyed to the new
+            // name, marked with the move, and neither path exists on disk (the user deleted the folder).
+            val old = db.getEntry("/dir/sub")!!
+            db.deleteEntry("/dir/sub")
+            db.upsertEntry(old.copy(path = "/dir/sub2"))
+            db.setPendingLocal("/dir/sub2", PendingLocal.withAttempts(PendingLocal.move("/dir/sub"), PendingLocal.MAX_ATTEMPTS))
+            syncRoot.resolve("dir").toFile().deleteRecursively()
+            provider.files.clear()
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-2"
+
+            engine.syncOnce()
+
+            assertTrue(
+                provider.deletedPaths.none { it == "/dir" || it == "/dir/sub" || it == "/dir/sub2" },
+                "the renamed folder is never deleted; deleted ${provider.deletedPaths}",
+            )
+            assertTrue(Files.isDirectory(syncRoot.resolve("dir/sub2")), "the renamed folder is created again")
+            assertTrue(db.pendingLocalMarks().isEmpty(), "the folder creation supersedes the move mark: ${db.pendingLocalMarks()}")
+        }
+
+    @Test
+    fun `a refresh at the retry bound keeps the move mark so the next sync does not delete the renamed file`() =
+        runTest {
+            val bytes = "keep me".toByteArray()
+            val flaky = driveRenameInDeletedFolderToTheRetryBound(bytes)
+            // Pass 2 is skipped: nothing fetched the file, so the mark that remembers the failed rename stays.
+            flaky.syncOnce(skipTransfers = true)
+            assertTrue(db.pendingLocalMarks().isNotEmpty(), "the mark stays until the recovery landed")
+            assertTrue(
+                provider.deletedPaths.none { it == "/dir" || it.startsWith("/dir/") },
+                "the refresh deletes nothing; deleted ${provider.deletedPaths}",
+            )
+
+            engine.syncOnce()
+
+            assertTrue(
+                provider.deletedPaths.none { it == "/dir" || it.startsWith("/dir/") },
+                "the sync after the refresh deletes nothing either; deleted ${provider.deletedPaths}",
+            )
+            assertContentEquals(bytes, provider.files.getValue("/dir/b.txt"))
+            assertContentEquals(bytes, Files.readAllBytes(syncRoot.resolve("dir/b.txt")))
+            assertTrue(db.pendingLocalMarks().isEmpty(), "the download clears the mark: ${db.pendingLocalMarks()}")
+        }
+
+    // A remote rename of /dir/a.txt to /dir/b.txt arrives while /dir is deleted locally, and its local move fails on
+    // every pass. Returns the failing engine after its 8th failure, one pass short of acting on the retry bound.
+    private suspend fun driveRenameInDeletedFolderToTheRetryBound(bytes: ByteArray): SyncEngine {
+        provider.files["/dir/a.txt"] = bytes
+        provider.deltaItems =
+            listOf(
+                cloudItem("/dir", size = 0, isFolder = true),
+                cloudItem("/dir/a.txt", size = bytes.size.toLong()),
+            )
+        engine.syncOnce()
+        assertTrue(Files.isDirectory(syncRoot.resolve("dir")))
+
+        val flaky = flakyEngine(FlakyPlaceholder(syncRoot, failCreates = true))
+        syncRoot.resolve("dir").toFile().deleteRecursively()
+        provider.files["/dir/b.txt"] = provider.files.remove("/dir/a.txt")!!
+        provider.deltaItems =
+            listOf(cloudItem("/dir/b.txt", size = bytes.size.toLong()).copy(id = "id-/dir/a.txt", hash = "hash-/dir/a.txt"))
+        provider.deltaCursor = "cursor-2"
+        flaky.syncOnce()
+        provider.deltaItems = emptyList()
+        provider.deltaCursor = "cursor-3"
+        repeat(7) { flaky.syncOnce() }
+        assertEquals(PendingLocal.MAX_ATTEMPTS, PendingLocal.attempts(db.pendingLocalMarks().single().second))
+        return flaky
+    }
+
+    @Test
     fun `a remote delete that keeps failing stays marked and is retried`() =
         runTest {
             val placeholder = FlakyPlaceholder(syncRoot, failDeletes = true)

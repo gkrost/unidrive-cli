@@ -47,17 +47,24 @@ internal class UnappliedRemoteChanges(
                 // An exhausted move leaves the row at its new path with no local bytes: the rename's
                 // re-key preserved the hydration flag (archive#595), so the scan reads the missing file
                 // as a user delete and plans the row's DeleteRemote — the delete that addresses the
-                // renamed item the move was to keep. Nothing local remains to keep, so fetch the item
-                // to the row's path instead, the same recovery an unhydrated orphan gets; the plan's
-                // folder-delete guard sees the download and holds a delete of a folder that still
-                // carries it.
+                // renamed item the move was to keep. Nothing local remains to keep, so the item is
+                // fetched to the row's path instead (a file, empty or not) or created there (a folder),
+                // the same recovery an unhydrated orphan gets; the plan's folder-delete guard sees that
+                // action and holds a delete of a folder that still carries it. The mark stays: it is
+                // cleared where the recovery lands (applyDownload, applyCreatePlaceholder), so a pass
+                // that does not run it (a refresh skips Pass 2) keeps the knowledge that this absence
+                // is a failed rename, not a delete.
                 val fromPath = PendingLocal.moveFrom(mark)
-                if (fromPath != null && entry.remoteSize > 0 && !entry.downloadQuarantined &&
-                    isAbsentLocally(fromPath) && isAbsentLocally(entry.path)
-                ) {
+                if (fromPath != null && isAbsentLocally(fromPath) && isAbsentLocally(entry.path)) {
                     actions.removeAll { it is SyncAction.DeleteRemote && it.path == entry.path }
-                    actions.add(SyncAction.DownloadContent(entry.path, rowItem(entry)))
-                    db.clearPendingLocal(entry.path)
+                    if (entry.isFolder) {
+                        if (!folderRetryPlanned(actions, entry.path)) {
+                            actions.add(SyncAction.CreatePlaceholder(entry.path, rowItem(entry), shouldHydrate = false))
+                        }
+                    } else if (!entry.downloadQuarantined) {
+                        actions.removeAll { it is SyncAction.DownloadContent && it.path == entry.path }
+                        actions.add(SyncAction.DownloadContent(entry.path, rowItem(entry)))
+                    }
                     log.warn(
                         "The move of {} to {} failed {} times; fetching the renamed item instead",
                         fromPath,
