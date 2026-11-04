@@ -111,8 +111,12 @@ data class IgnoreProblem(
  *
  * Caching: a directory's rule files are probed once per scan and parsed once per change of their stamp (size and
  * modification time). [revalidate] starts a new scan, [invalidate] forces one directory to be read again (for a
- * change the stamp cannot see). Thread-safe.
+ * change the stamp cannot see). Thread-safe, and no monitor is held while a rule file is probed (#212): a probe of
+ * a cloud rule file waits for its transfer, and an upload holding a permit must not queue behind that wait on the
+ * directory's node monitor.
  */
+// One cache of rule files: the probe, apply, chain and trim steps of a directory belong together.
+@Suppress("TooManyFunctions")
 class IgnoreTree(
     private val source: IgnoreFileSource,
     val settings: IgnoreSettings = IgnoreSettings(),
@@ -122,6 +126,7 @@ class IgnoreTree(
         const val UNIDRIVE_FILE = IgnoreRules.DEFAULT_SOURCE
         const val GIT_FILE = ".gitignore"
         private const val TRIM_SLACK_DIVISOR = 8
+        private const val MAX_PROBE_RETRIES = 3
     }
 
     init {
@@ -138,6 +143,10 @@ class IgnoreTree(
     private class DirNode {
         var statEpoch = -1L
         var forceReload = false
+
+        /** Bumped by [invalidate]; a refresh whose probes raced one applies nothing and probes again at the next use. */
+        var reloadGen = 0L
+
         var probes: List<RuleFileProbe> = emptyList()
         var layers: List<IgnoreRules> = emptyList()
 
@@ -231,7 +240,10 @@ class IgnoreTree(
     /** Reads the rule files of [dir] (relative to the sync root, "" for the root) again at their next use. */
     fun invalidate(dir: String) {
         val node = nodes[dir.trim('/')] ?: return
-        synchronized(node) { node.forceReload = true }
+        synchronized(node) {
+            node.forceReload = true
+            node.reloadGen++
+        }
         chainEpoch.incrementAndGet()
     }
 
@@ -309,38 +321,98 @@ class IgnoreTree(
         node.lastUsed = useClock.incrementAndGet()
         if (created) trimIfNeeded()
         if (node.memoEpoch == epoch && node.chainParent === parent) node.memo?.let { return it }
-        synchronized(node) {
-            val changed = refresh(node, dir)
-            // Fail open for this call only. The next explain probes again, so a rule file that shows up later
-            // in the same pass still holds the directory back.
-            if (node.listingUndecided) return parent
-            var c = node.chain
-            if (changed || c == null || node.chainParent !== parent) {
-                val held = node.heldBack
-                c =
-                    when {
-                        held != null -> Chain(parent.layers, parent.matcher, held)
-                        node.layers.isEmpty() -> parent
-                        else -> (node.layers + parent.layers).let { Chain(it, IgnoreMatcher(it)) }
-                    }
-                node.chain = c
-                node.chainParent = parent
+        // #212: the probes run outside the monitor (probesForRefresh), so a probe waiting for a transfer permit holds
+        // no lock a permit-holding upload of this folder could need. Only the load and the node's state, neither of
+        // which waits for the cloud, run under it.
+        var probed = probesForRefresh(node, dir)
+        var retries = 0
+        while (true) {
+            synchronized(node) {
+                // A scan that started while the probes ran makes them its predecessor's answer, and applyProbes would
+                // refuse them: probe again outside the monitor (probesForRefresh is null when another thread has
+                // answered for this scan meanwhile). Bounded; past it the call goes on without them and the next use
+                // probes.
+                val taken = probed
+                if (taken == null || taken.statEpoch == statEpoch.get() || retries >= MAX_PROBE_RETRIES) {
+                    return finishChain(node, dir, parent, epoch, taken)
+                }
+                retries++
             }
-            node.memo = c
-            node.memoEpoch = epoch
-            return c
+            probed = probesForRefresh(node, dir)
         }
     }
 
-    /** Re-reads [dir]'s rule files when this scan has not checked them yet. True when its rules changed. */
-    private fun refresh(
+    /** The rest of [chainFor], under the node's monitor: applies [probed] and builds or reuses the node's chain. */
+    private fun finishChain(
         node: DirNode,
         dir: String,
+        parent: Chain,
+        epoch: Long,
+        probed: Probes?,
+    ): Chain {
+        val changed = probed?.let { applyProbes(node, dir, it) } ?: false
+        // Fail open for this call only. The next explain probes again, so a rule file that shows up later
+        // in the same pass still holds the directory back.
+        if (node.listingUndecided) return parent
+        var c = node.chain
+        if (changed || c == null || node.chainParent !== parent) {
+            val held = node.heldBack
+            c =
+                when {
+                    held != null -> Chain(parent.layers, parent.matcher, held)
+                    node.layers.isEmpty() -> parent
+                    else -> (node.layers + parent.layers).let { Chain(it, IgnoreMatcher(it)) }
+                }
+            node.chain = c
+            node.chainParent = parent
+        }
+        node.memo = c
+        node.memoEpoch = epoch
+        return c
+    }
+
+    /**
+     * The rule-file probes of [dir] for the next [applyProbes], taken outside the node's monitor: a probe of a cloud
+     * rule file waits for its transfer there ([CloudRuleFiles.probe]), and a monitor held across that wait would
+     * serialize a permit-holding upload of the same folder behind it (#212). Null when the node's rule files have
+     * been read at this scan already. An [invalidate] that lands while the probes run is answered by the next use,
+     * not by these probes.
+     */
+    private fun probesForRefresh(
+        node: DirNode,
+        dir: String,
+    ): Probes? {
+        val gen: Long
+        val scan: Long
+        synchronized(node) {
+            scan = statEpoch.get()
+            if (node.statEpoch == scan && !node.forceReload) return null
+            gen = node.reloadGen
+        }
+        val paths = fileNames.map { if (dir.isEmpty()) it else "$dir/$it" }
+        return Probes(gen, scan, paths.map { source.probe(it) })
+    }
+
+    private class Probes(
+        val gen: Long,
+        val statEpoch: Long,
+        val probes: List<RuleFileProbe>,
+    )
+
+    /** Applies the probes [probesForRefresh] took. Runs under the node's monitor. True when its rules changed. */
+    private fun applyProbes(
+        node: DirNode,
+        dir: String,
+        probed: Probes,
     ): Boolean {
-        val epoch = statEpoch.get()
+        val epoch = probed.statEpoch
+        // An invalidate while the probes ran makes them stale: the next use probes again. So does a scan that started
+        // meanwhile: they would be stamped with an epoch they did not observe.
+        if (node.reloadGen != probed.gen || epoch != statEpoch.get()) return false
+        // Another thread's probes may have answered for this node while these ran: its answer stands.
         if (node.statEpoch == epoch && !node.forceReload) return false
         val paths = fileNames.map { if (dir.isEmpty()) it else "$dir/$it" }
-        val probes = paths.map { source.probe(it) }
+        val probes = probed.probes
         if (probes.any { it is RuleFileProbe.Undecided }) {
             node.listingUndecided = true
             node.forceReload = true
