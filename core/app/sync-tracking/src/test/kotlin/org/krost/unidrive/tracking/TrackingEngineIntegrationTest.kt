@@ -34,6 +34,9 @@ import org.krost.unidrive.QuickXorHash
  * invariant holds across every shape of "tracking_db state
  * disagrees with reality" we can throw at it.
  */
+// One fixture, one lemma: every shape of tracking_db-vs-reality disagreement runs against the same engine setup,
+// so the cases stay together rather than being split into classes that each repeat the fixture.
+@Suppress("LargeClass")
 class TrackingEngineIntegrationTest {
     private lateinit var workDir: Path
     private lateinit var syncRoot: Path

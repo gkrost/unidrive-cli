@@ -327,8 +327,12 @@ open class PlaceholderManager(
     }
 
     protected fun cleanEmptyParents(dir: Path) {
+        // #264: [dir] arrives absolute and normalized (safeResolveLocal); stop at any path that is
+        // not at-or-inside the normalized root, so a non-normalized [syncRoot] (a hand-edited
+        // config value) can never let the walk climb past the sync root and remove it.
+        val root = syncRoot.toAbsolutePath().normalize()
         var current = dir
-        while (current != syncRoot && Files.isDirectory(current)) {
+        while (current != root && current.startsWith(root) && Files.isDirectory(current)) {
             val isEmpty = Files.list(current).use { it.findFirst().isEmpty }
             if (isEmpty) {
                 withLocalIoRetryBlocking { Files.deleteIfExists(current) }

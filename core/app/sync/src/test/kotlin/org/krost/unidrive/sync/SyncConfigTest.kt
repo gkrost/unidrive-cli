@@ -30,7 +30,7 @@ class SyncConfigTest {
 
         val config = SyncConfig.load(configFile)
         // Compare Path objects — string form is platform-dependent (\ vs /).
-        assertEquals(Paths.get("/tmp/test-sync"), config.syncRoot)
+        assertEquals(Paths.get("/tmp/test-sync").toAbsolutePath().normalize(), config.syncRoot)
         assertEquals(30, config.pollInterval)
         assertEquals(ConflictPolicy.LAST_WRITER_WINS, config.conflictPolicy)
     }
@@ -183,7 +183,21 @@ class SyncConfigTest {
             """.trimIndent()
 
         val config = SyncConfig.parse(toml, "work")
-        assertEquals(Paths.get("/tmp/work-drive"), config.syncRoot)
+        assertEquals(Paths.get("/tmp/work-drive").toAbsolutePath().normalize(), config.syncRoot)
+    }
+
+    @Test
+    fun `a hand-edited sync_root with dot segments parses normalized`() {
+        val toml =
+            """
+            [general]
+            sync_root = "sub/../Cloud"
+            """.trimIndent()
+
+        val config = SyncConfig.parse(toml)
+        assertTrue(config.syncRoot.isAbsolute, "the sync root is absolute, got ${config.syncRoot}")
+        assertEquals("Cloud", config.syncRoot.fileName.toString())
+        assertEquals(config.syncRoot.normalize(), config.syncRoot, "no dot segments survive")
     }
 
     @Test
@@ -198,7 +212,7 @@ class SyncConfigTest {
             """.trimIndent()
 
         val config = SyncConfig.parse(toml, "work")
-        assertEquals(Paths.get("/tmp/general"), config.syncRoot)
+        assertEquals(Paths.get("/tmp/general").toAbsolutePath().normalize(), config.syncRoot)
     }
 
     // ── Credential field parsing tests ───────────────────────────────────────
@@ -292,7 +306,7 @@ class SyncConfigTest {
         val profile = SyncConfig.resolveProfile("onedrive-work", raw)
         assertEquals("onedrive-work", profile.name)
         assertEquals("onedrive", profile.type)
-        assertEquals(Paths.get("/tmp/work"), profile.syncRoot)
+        assertEquals(Paths.get("/tmp/work").toAbsolutePath().normalize(), profile.syncRoot)
     }
 
     @Test
@@ -336,7 +350,7 @@ class SyncConfigTest {
             """.trimIndent()
         val raw = SyncConfig.parseRaw(toml)
         val profile = SyncConfig.resolveProfile("work", raw)
-        assertEquals(Paths.get("/tmp/global"), profile.syncRoot)
+        assertEquals(Paths.get("/tmp/global").toAbsolutePath().normalize(), profile.syncRoot)
     }
 
     @Test

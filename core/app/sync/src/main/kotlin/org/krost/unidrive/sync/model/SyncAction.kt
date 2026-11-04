@@ -17,6 +17,16 @@ sealed class SyncAction {
         val wasHydrated: Boolean,
     ) : SyncAction()
 
+    /**
+     * #264: the remote changed metadata only (the delivered item names the same bytes the
+     * row records — equal content hashes or content ids). Records the new remote metadata
+     * and restores the local mtime; no content is fetched and no transfer runs.
+     */
+    data class TouchMetadata(
+        override val path: String,
+        val remoteItem: CloudItem,
+    ) : SyncAction()
+
     data class DownloadContent(
         override val path: String,
         val remoteItem: CloudItem,
