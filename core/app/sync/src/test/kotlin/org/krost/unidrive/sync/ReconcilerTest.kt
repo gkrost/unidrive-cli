@@ -81,11 +81,31 @@ class ReconcilerTest {
     }
 
     @Test
-    fun `file_with_a_newer_modified_time_still_downloads`() {
+    fun `file_with_a_newer_modified_time_and_the_same_hash_touches_metadata_only`() {
         db.upsertEntry(dbEntry("/f.txt"))
         val remoteChanges = mapOf("/f.txt" to cloudItem("/f.txt").copy(modified = Instant.parse("2026-03-28T12:05:00Z")))
         val actions = reconciler.reconcile(remoteChanges, emptyMap())
+        assertTrue(actions.any { it is SyncAction.TouchMetadata }, "got $actions")
+        assertTrue(actions.none { it is SyncAction.DownloadContent }, "unchanged bytes must not download; got $actions")
+    }
+
+    @Test
+    fun `file_with_a_newer_modified_time_and_new_bytes_downloads`() {
+        db.upsertEntry(dbEntry("/f.txt"))
+        val remoteChanges =
+            mapOf("/f.txt" to cloudItem("/f.txt").copy(modified = Instant.parse("2026-03-28T12:05:00Z"), hash = "def"))
+        val actions = reconciler.reconcile(remoteChanges, emptyMap())
         assertTrue(actions.any { it is SyncAction.DownloadContent }, "got $actions")
+    }
+
+    @Test
+    fun `hashless_row_and_item_with_equal_content_ids_touch_metadata_only`() {
+        db.upsertEntry(dbEntry("/f.txt").copy(remoteHash = null, remoteContentId = "content-1"))
+        val remoteChanges =
+            mapOf("/f.txt" to cloudItem("/f.txt", hash = null).copy(modified = Instant.parse("2026-03-28T12:05:00Z"), contentId = "content-1"))
+        val actions = reconciler.reconcile(remoteChanges, emptyMap())
+        assertTrue(actions.any { it is SyncAction.TouchMetadata }, "got $actions")
+        assertTrue(actions.none { it is SyncAction.DownloadContent }, "got $actions")
     }
 
     @Test
