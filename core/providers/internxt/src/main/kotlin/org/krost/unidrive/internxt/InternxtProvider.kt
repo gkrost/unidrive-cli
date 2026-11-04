@@ -4704,6 +4704,7 @@ class InternxtProvider(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            log.debug("No mnemonic available; keeping the fallback", e)
             null
         }
 
