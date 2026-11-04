@@ -563,7 +563,8 @@ class HydrationTransferHistoryTest {
         upload(env, "/q/f.txt")
         withTimeout(10_000) { while (env.hydration.uploadHealth().inFlight == 0) kotlinx.coroutines.delay(5) }
 
-        withTimeout(10_000) { env.hydration.shutdownUploads() }
+        // gkrost/unidrive-cli#72: the held upload never ends, so it outlasts a short drain and is cancelled.
+        withTimeout(10_000) { env.hydration.shutdownUploads(drainMs = 200) }
 
         assertEquals("interrupted", rows().single().result)
     }

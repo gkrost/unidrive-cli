@@ -307,7 +307,8 @@ class DaemonStopCommand : Runnable {
     var force: Boolean = false
 
     companion object {
-        const val STOP_DEADLINE_MS: Long = 12_000  // 10s graceful + 2s buffer
+        // gkrost/unidrive-cli#72: the daemon's whole graceful stop (10 s upload drain + 10 s cleanup) + 2 s buffer.
+        const val STOP_DEADLINE_MS: Long = DaemonRuntime.SHUTDOWN_DEADLINE_MS + 2_000
         const val FORCED_STOP_DEADLINE_MS: Long = 5_000  // wait after destroy() before giving up
     }
 

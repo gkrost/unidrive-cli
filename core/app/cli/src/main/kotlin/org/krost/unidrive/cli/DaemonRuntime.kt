@@ -63,7 +63,9 @@ import java.nio.file.Path
  *      earlier accepted requests into the unregistered window and hung
  *      their senders. On bind failure: release lock, rethrow.
  *   6. SERVE until close() is called.
- *   7. On close: graceful shutdown bounded by SHUTDOWN_DEADLINE_MS (spec I7).
+ *   7. On close: graceful shutdown bounded by SHUTDOWN_DEADLINE_MS (spec I7): the IPC server closes, the
+ *      uploads that are transferring get up to HydrationImpl.UPLOAD_DRAIN_MS to finish (gkrost/unidrive-cli#72),
+ *      the rest is cancelled, then state.db, the socket and the lock are released.
  *
  * Phase 2 scope: hydration.* verbs + sync.subscribe wired. refresh.run and
  * daemon.status come in Phase 3.
@@ -140,6 +142,9 @@ class DaemonRuntime(
     // archive#578: the --upload-concurrency flag's override of the profile's upload_concurrency
     // key; null leaves the key in force. Applied to the provider right after construction.
     private val uploadConcurrencyOverride: Int? = null,
+    // gkrost/unidrive-cli#72: how long a stop waits for the uploads that are transferring before it cancels them
+    // (HydrationImpl.UPLOAD_DRAIN_MS); a seam for tests, which need no ten-second waits.
+    private val uploadDrainMs: Long = HydrationImpl.UPLOAD_DRAIN_MS,
 ) {
     private val log = LoggerFactory.getLogger(DaemonRuntime::class.java)
 
@@ -886,7 +891,7 @@ class DaemonRuntime(
                 ipcServer = null
                 serveJob.cancelAndJoin()
                 try {
-                    hydrationLink.hydration?.shutdownUploads()
+                    hydrationLink.hydration?.shutdownUploads(uploadDrainMs)
                 } finally {
                     // archive#652: after the uploads are joined (their last rows are queued by then), before state.db closes.
                     historyRpc?.close()
@@ -1037,7 +1042,11 @@ class DaemonRuntime(
     }
 
     companion object {
-        const val SHUTDOWN_DEADLINE_MS: Long = 10_000
+        /** gkrost/unidrive-cli#72: the cleanup headroom of a stop (spec I7), on top of the upload drain. */
+        const val SHUTDOWN_CLEANUP_MS: Long = 10_000
+
+        /** Spec I7: the whole stop, the upload drain (gkrost/unidrive-cli#72) plus the cleanup headroom it had before. */
+        const val SHUTDOWN_DEADLINE_MS: Long = HydrationImpl.UPLOAD_DRAIN_MS + SHUTDOWN_CLEANUP_MS
 
         /** archive#652: the transfer history's file, in the profile's state folder next to state.db. */
         const val HISTORY_FILE_NAME = "telemetry.db"

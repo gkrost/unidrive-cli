@@ -580,7 +580,8 @@ class DaemonRuntimeTest {
     @Test
     fun `shutdown cancels and joins a hydration upload before closing the state database`() = runBlocking(Dispatchers.IO) {
         val provider = BlockingUploadProvider()
-        val runtime = startDaemon(provider)
+        // gkrost/unidrive-cli#72: this upload never ends, so it outlasts the drain and is cancelled; a short drain keeps the test fast.
+        val runtime = startDaemon(provider, uploadDrainMs = 200)
         val daemonJob = launch { runtime.start() }
         try {
             awaitSocket(daemonJob)
@@ -615,6 +616,66 @@ class DaemonRuntimeTest {
             runtime.close()
             daemonJob.join()
         }
+    }
+
+    @Test
+    fun `#72 a stop lets an upload that is transferring finish within the stop deadline`() = runBlocking(Dispatchers.IO) {
+        val provider = HeldUploadProvider()
+        val runtime = startDaemon(provider) // the production drain, HydrationImpl.UPLOAD_DRAIN_MS
+        val daemonJob = launch { runtime.start() }
+        try {
+            awaitSocket(daemonJob)
+            val created = Json.parseToJsonElement(
+                sendOneRequest("""{"verb":"hydration.create","handle_id":"create-1","path":"/drain.txt"}"""),
+            ).jsonObject
+            assertTrue(created.getValue("ok").jsonPrimitive.content.toBoolean(), "create should succeed: $created")
+            val cachePath = Path.of(created.getValue("cache_path").jsonPrimitive.content)
+            Files.writeString(cachePath, "upload in flight")
+            val cacheJson = kotlinx.serialization.json.JsonPrimitive(cachePath.toString()).toString()
+            val opened = Json.parseToJsonElement(
+                sendOneRequest("""{"verb":"hydration.open_write","handle_id":"write-1","path":"/drain.txt","cache_path":$cacheJson}"""),
+            ).jsonObject
+            assertTrue(opened.getValue("ok").jsonPrimitive.content.toBoolean(), "open_write should start the upload: $opened")
+            withTimeout(5_000) { provider.uploadStarted.await() }
+
+            // The upload lands one second into the stop, well inside the drain.
+            val release = launch {
+                delay(1_000)
+                provider.gate.complete(Unit)
+            }
+            val startedAt = System.nanoTime()
+            val clean = runtime.shutdownAndWait(DaemonRuntime.SHUTDOWN_DEADLINE_MS)
+            val tookMs = (System.nanoTime() - startedAt) / 1_000_000
+            release.join()
+            withTimeout(5_000) { daemonJob.join() }
+
+            assertTrue(clean, "the stop completes within SHUTDOWN_DEADLINE_MS while the upload drains")
+            assertTrue(tookMs < DaemonRuntime.SHUTDOWN_DEADLINE_MS, "the stop took $tookMs ms")
+            assertEquals(1, provider.uploads.get(), "the upload ran once and was not cancelled")
+            val reopened = StateDatabase(dbPath)
+            reopened.initialize()
+            try {
+                val row = assertNotNull(reopened.getEntry("/drain.txt"))
+                assertNotNull(row.remoteId, "the drained upload is synced: nothing is replayed at the next start")
+                assertFalse("/drain.txt" in reopened.pendingUploadPaths())
+            } finally {
+                reopened.close()
+            }
+        } finally {
+            provider.gate.complete(Unit)
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    @Test
+    fun `#72 the stop deadlines leave room for the upload drain`() {
+        assertEquals(
+            org.krost.unidrive.hydration.HydrationImpl.UPLOAD_DRAIN_MS + DaemonRuntime.SHUTDOWN_CLEANUP_MS,
+            DaemonRuntime.SHUTDOWN_DEADLINE_MS,
+        )
+        assertTrue(DaemonStopCommand.STOP_DEADLINE_MS > DaemonRuntime.SHUTDOWN_DEADLINE_MS, "daemon stop waits longer than the daemon's own stop")
+        assertEquals(10_000L, SyncShutdown.DEADLINE_MS, "unidrive sync drains no mount uploads: its deadline stays")
     }
 
     @Test
@@ -1141,6 +1202,7 @@ class DaemonRuntimeTest {
         quotaRefreshMs: Long = 15 * 60_000L,
         providerHasQuota: Boolean = true,
         startupIoDispatcher: CoroutineDispatcher = Dispatchers.IO,
+        uploadDrainMs: Long = org.krost.unidrive.hydration.HydrationImpl.UPLOAD_DRAIN_MS,
     ) = DaemonRuntime(
         profileMode = ProfileMode.MOUNT,
         profileName = "test_profile",
@@ -1152,6 +1214,7 @@ class DaemonRuntimeTest {
         quotaRefreshMs = quotaRefreshMs,
         providerHasQuota = providerHasQuota,
         startupIoDispatcher = startupIoDispatcher,
+        uploadDrainMs = uploadDrainMs,
         )
 
     // Startup is fixture setup: delegates to the shared archive#625 helper (30 s ceiling, died-start check).
@@ -1572,6 +1635,39 @@ class DaemonRuntimeTest {
             } finally {
                 uploadStopped.complete(Unit)
             }
+        }
+    }
+
+    // gkrost/unidrive-cli#72: an upload that holds until [gate] completes, then lands as a new item.
+    private class HeldUploadProvider : StubProvider() {
+        val uploadStarted = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        val uploads = java.util.concurrent.atomic.AtomicInteger(0)
+
+        override suspend fun upload(
+            localPath: Path,
+            remotePath: String,
+            existingRemoteId: String?,
+            ifMatchETag: String?,
+            onProgress: ((Long, Long) -> Unit)?,
+        ): CloudItem {
+            uploads.incrementAndGet()
+            uploadStarted.complete(Unit)
+            onProgress?.invoke(1L, 2L)
+            gate.await()
+            val size = Files.size(localPath)
+            onProgress?.invoke(size, size)
+            return CloudItem(
+                id = "uploaded-$remotePath",
+                name = remotePath.substringAfterLast('/'),
+                path = remotePath,
+                size = size,
+                isFolder = false,
+                modified = Instant.now(),
+                created = null,
+                hash = null,
+                mimeType = null,
+            )
         }
     }
 
