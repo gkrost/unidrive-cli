@@ -95,8 +95,8 @@ internal class DeployedProcessStopper(
         /** The production wiring: every profile directory under [configDir]. */
         @JvmStatic
         fun stopAll(configDir: Path): List<String> {
-            // Keep the handle captured during validation. Looking the PID up again after a 12-second grace period
-            // could target an unrelated process that has since inherited it.
+            // Keep the handle captured during validation. Looking the PID up again after the graceful deadline
+            // (GRACEFUL_DEADLINE_MS) could target an unrelated process that has since inherited it.
             val holders = mutableMapOf<Long, ProcessHandle>()
             return DeployedProcessStopper(
                 profileDirs = {
