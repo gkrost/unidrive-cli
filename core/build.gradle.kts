@@ -30,7 +30,7 @@ val flakyTestTask = "flakyTest"
 
 allprojects {
     group = "org.krost.unidrive"
-    // Released: 0.0.1 (greenfield restart baseline), 0.0.2. The tag v<version> on the commit that carries this line makes the release (release.yml).
+    // Released: 0.0.1 (greenfield restart baseline). 0.0.2 is prepared (docs/releases/v0.0.2.md) and not tagged yet. The tag v<version> on the commit that carries this line makes the release (release.yml).
     version = "0.0.2"
 
     repositories {
