@@ -194,21 +194,36 @@ class HydrationImpl(
     /**
      * gkrost/unidrive-cli#72: one transfer attempt, entered once it holds its transfer permit. The worker is on record for the
      * drain before the stop flag is read, so a stop either sees the worker or the worker sees the stop; a stopping daemon starts
-     * no transfer (the upload stays a pending row). A failed attempt takes the worker off the record.
+     * no transfer (the upload stays a pending row). A provider call that returns keeps the worker on record while its outcome is
+     * written. A call that throws takes it off here; [backOff] takes it off before the retry wait.
      */
     private suspend fun <T> drainableTransfer(block: suspend () -> T): T {
-        val worker = currentCoroutineContext()[UploadWorker]?.job
-        worker?.let { transferringWorkers.add(it) }
-        if (stopping) {
-            worker?.let { transferringWorkers.remove(it) }
+        if (!recordForDrain()) {
             throw CancellationException("the daemon is stopping: the upload stays queued for the next start")
         }
         var landed = false
         try {
             return block().also { landed = true }
         } finally {
-            if (!landed) worker?.let { transferringWorkers.remove(it) }
+            if (!landed) leaveDrain()
         }
+    }
+
+    /**
+     * On record for the drain, then the stop flag is read. A stop that begins between the two either sees the worker or is
+     * seen by it. A daemon that is already stopping takes the worker back off and answers false: the attempt does not start.
+     */
+    private suspend fun recordForDrain(): Boolean {
+        val worker = currentCoroutineContext()[UploadWorker]?.job
+        worker?.let { transferringWorkers.add(it) }
+        if (!stopping) return true
+        worker?.let { transferringWorkers.remove(it) }
+        return false
+    }
+
+    // A retry wait is not a transfer, and neither is an attempt that already failed.
+    private suspend fun leaveDrain() {
+        currentCoroutineContext()[UploadWorker]?.job?.let { transferringWorkers.remove(it) }
     }
 
     /**
@@ -1057,6 +1072,10 @@ class HydrationImpl(
             cachePath = target.second
             try {
                 val retryingMove = strayed != null
+                // The move is the attempt: on record before the stop flag is read, the same way a transfer is.
+                if (retryingMove && !recordForDrain()) {
+                    throw CancellationException("the daemon is stopping: the retry is left to the next start")
+                }
                 val outcome = strayed ?: runWatchedTransferAttempt(path, cachePath, baseEtag, onProgress, tx, onPermitAcquired)
                 if (outcome.keptBothAs != null) return completeKeptBoth(path, handleId, outcome, tx)
                 // Kept while the move runs: a failed move is retried by the next attempt.
@@ -1262,6 +1281,8 @@ class HydrationImpl(
         tx: TransferHandle?,
         delayMs: Long,
     ) {
+        // A provider call that returned stays on record while its outcome is written. The wait after that is not a transfer.
+        leaveDrain()
         try {
             delay(delayMs)
         } finally {

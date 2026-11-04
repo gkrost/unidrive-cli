@@ -12,6 +12,7 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -40,11 +41,19 @@ class HydrationStopDuringUploadTest {
         val syncRoot: Path,
         val provider: MinimalFakeProvider,
         cloud: CloudProvider = provider,
+        uploadRetryDelaysMs: List<Long> = HydrationImpl.DEFAULT_UPLOAD_RETRY_DELAYS_MS,
     ) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val db = StateDatabase(dbPath).also { it.initialize() }
         val engine = SyncEngine(provider = cloud, db = db, syncRoot = syncRoot, cacheRoot = cacheRoot)
-        val hydration = HydrationImpl(syncEngine = engine, stateDb = db, recoveryUploadScope = scope, failedReplayDelayMs = 0)
+        val hydration =
+            HydrationImpl(
+                syncEngine = engine,
+                stateDb = db,
+                recoveryUploadScope = scope,
+                failedReplayDelayMs = 0,
+                uploadRetryDelaysMs = uploadRetryDelaysMs,
+            )
 
         suspend fun waitForUploadAttempts(n: Int) = withTimeout(10_000) { while (provider.uploadAttempts() < n) delay(20) }
 
@@ -211,6 +220,123 @@ class HydrationStopDuringUploadTest {
             assertNull(second.db.getEntry("/queued.bin")?.lastErrorAt, "a stop is not a failure of the upload")
         } finally {
             second.stop()
+        }
+    }
+
+    @Test
+    fun `an upload that only waits for a transfer permit does not hold the stop`() = runBlocking {
+        val dirs = Dirs()
+        val provider = MinimalFakeProvider()
+        val first = daemonOver(dirs.dbPath, dirs.cacheRoot, dirs.syncRoot, provider)
+        val mount = MountEngine.over(first.engine)
+        val held = CompletableDeferred<Unit>()
+        val entered = AtomicInteger(0)
+        val holders =
+            (1..mount.transferBudgetSize).map {
+                launch(Dispatchers.Default) {
+                    mount.withTransferPermit {
+                        entered.incrementAndGet()
+                        held.await()
+                    }
+                }
+            }
+        try {
+            withTimeout(10_000) { while (entered.get() < mount.transferBudgetSize) delay(20) }
+            first.write("/queued.bin", "waits for a permit", "hq")
+            delay(200)
+            assertEquals(0, provider.uploadAttempts(), "precondition: the upload has no transfer permit")
+
+            val startedAt = System.nanoTime()
+            withTimeout(40_000) { first.hydration.shutdownUploads(30_000) }
+            val tookMs = (System.nanoTime() - startedAt) / 1_000_000
+
+            assertTrue(tookMs < 5_000, "an upload waiting for a permit did not hold the stop ($tookMs ms)")
+            assertEquals(0, provider.uploadAttempts(), "the stop started no upload")
+        } finally {
+            // Released only after the stop, so a drain that joined the waiter waits out the drain and fails above.
+            held.complete(Unit)
+            holders.forEach { it.join() }
+            first.db.close()
+        }
+    }
+
+    /**
+     * The upload itself returned. The move of the item onto the path a rename took meanwhile fails, and that failure
+     * waits out its retry delay. The delay is not a transfer: a stop that begins during it returns without the delay.
+     */
+    @Test
+    fun `a failed move after the upload landed does not hold the stop in its backoff`() = runBlocking {
+        val dirs = Dirs()
+        val inner = MinimalFakeProvider()
+        val cloud = MoveFailsOnce(inner)
+        val first =
+            Daemon(
+                dirs.dbPath,
+                dirs.cacheRoot,
+                dirs.syncRoot,
+                inner,
+                cloud,
+                uploadRetryDelaysMs = listOf(60_000L),
+            )
+        first.write("/f.txt", "bytes that landed", "h1")
+        withTimeout(10_000) { cloud.bytesRead.await() }
+        assertEquals(RenameResult.Ok, first.hydration.rename("/f.txt", "/g.txt"), "the rename lands while the upload runs")
+        cloud.hold.complete(Unit)
+        withTimeout(10_000) {
+            while (cloud.moves.get() < 1 || first.db.getEntry("/g.txt")?.lastErrorAt == null) delay(20)
+        }
+        delay(400)
+
+        val startedAt = System.nanoTime()
+        try {
+            withTimeout(40_000) { first.hydration.shutdownUploads(drainMs = 30_000) }
+        } finally {
+            first.db.close()
+        }
+        val tookMs = (System.nanoTime() - startedAt) / 1_000_000
+
+        assertTrue(tookMs < 5_000, "the retry backoff after a landed upload did not hold the stop ($tookMs ms)")
+        assertEquals(1, cloud.uploads.get(), "the retry did not upload the bytes again")
+        assertEquals(1, cloud.moves.get(), "the move had already failed, and the stop did not ask again")
+    }
+
+    /**
+     * Reads the cache, then waits. The rename can move that cache while the attempt is on the wire, and the attempt
+     * still returns: only the following move onto the new path fails.
+     */
+    private class MoveFailsOnce(val inner: MinimalFakeProvider) : CloudProvider by inner {
+        val uploads = AtomicInteger(0)
+        val moves = AtomicInteger(0)
+        val bytesRead = CompletableDeferred<Unit>()
+        val hold = CompletableDeferred<Unit>()
+
+        override suspend fun upload(
+            localPath: Path,
+            remotePath: String,
+            existingRemoteId: String?,
+            ifMatchETag: String?,
+            onProgress: ((Long, Long) -> Unit)?,
+        ): CloudItem {
+            val bytes = Files.readAllBytes(localPath)
+            uploads.incrementAndGet()
+            bytesRead.complete(Unit)
+            hold.await()
+            return CloudItem(
+                id = "uploaded-$remotePath",
+                name = remotePath.substringAfterLast('/'),
+                path = remotePath,
+                size = bytes.size.toLong(),
+                isFolder = false,
+                modified = java.time.Instant.now(),
+                created = null,
+                hash = bytes.size.toString(),
+                mimeType = null,
+            )
+        }
+
+        override suspend fun moveById(remoteId: String, fromPath: String, toPath: String): CloudItem {
+            moves.incrementAndGet()
+            throw IOException("the move fails once")
         }
     }
 
