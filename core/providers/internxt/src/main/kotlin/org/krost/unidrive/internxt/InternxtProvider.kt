@@ -140,6 +140,24 @@ class InternxtProvider(
 
     private val notificationsStartLock = Mutex()
 
+    // Builds the notifications client. A seam so a test can stall or fake the build; production builds the real one.
+    internal var notificationsClientFactory: (tokenSupplier: suspend (Boolean) -> String, onRemoteChange: () -> Unit) -> NotificationsClient =
+        { tokenSupplier, onRemoteChange ->
+            NotificationsClient(
+                notificationsUrl = config.notificationsUrl,
+                tokenSupplier = tokenSupplier,
+                onRemoteChange = onRemoteChange,
+            )
+        }
+
+    // Guards the publish-and-connect of a started client against close()'s detach. Held only for non-suspending
+    // work (a field store and connect(), which hands the socket to socket.io's own thread), never across a
+    // suspension point, so a plain monitor is enough and close() can take it.
+    private val notificationsGuard = Any()
+
+    // Set by close(), never cleared: a start that was still in flight when the provider closed must not connect.
+    private var notificationsClosed = false
+
     // UD-357: process-local cache of (parentUuid, sanitizedName) -> uuid for
     // folder lookups. Populated on createFolder success (the API returns the
     // new folder's UUID — without this the next resolveFolder call races
@@ -353,8 +371,12 @@ class InternxtProvider(
     }
 
     override suspend fun logout() {
-        notificationsClient?.disconnect()
-        notificationsClient = null
+        // Under the start lock, like reloadCredentials and forgetCredentials: a sign-in re-running the
+        // notifications client must not race the teardown, and the disconnect must not race a start.
+        notificationsStartLock.withLock {
+            notificationsClient?.disconnect()
+            notificationsClient = null
+        }
         clearCachedSeed()
         // archive#1054: the staged ciphertext of the account's files and their resume state do not outlive the sign-in.
         withContext(Dispatchers.IO) { tombstoneStore.discardAll() }
@@ -367,8 +389,30 @@ class InternxtProvider(
     override fun requestStatus(): org.krost.unidrive.http.RequestStatusSnapshot = api.requestStatus()
 
     override fun close() {
-        notificationsClient?.disconnect()
-        notificationsClient = null
+        // The suspend paths take [notificationsStartLock] around this teardown; close() cannot suspend,
+        // so it waits a few non-blocking tries for a start that holds the lock (its credential fetch ends
+        // when the daemon's serve scope is cancelled) and then tears down regardless — disconnect() is
+        // idempotent, and the only window left is a start between its last suspension point and its
+        // connect, microseconds wide.
+        // After the wait it tears down regardless, and closes the gate for good: a start that is still stalled
+        // (credential lookup, client construction) finds the gate shut at its publish and drops its client.
+        var locked = notificationsStartLock.tryLock()
+        var tries = 0
+        while (!locked && tries < 50) {
+            Thread.sleep(10)
+            locked = notificationsStartLock.tryLock()
+            tries++
+        }
+        try {
+            val detached =
+                synchronized(notificationsGuard) {
+                    notificationsClosed = true
+                    notificationsClient.also { notificationsClient = null }
+                }
+            detached?.disconnect()
+        } finally {
+            if (locked) notificationsStartLock.unlock()
+        }
         clearCachedSeed()
         authService.close()
         api.close()
@@ -406,12 +450,14 @@ class InternxtProvider(
         }
     }
 
-    override fun onRemoteChangeHint(callback: () -> Unit) {
+    override suspend fun onRemoteChangeHint(callback: () -> Unit) {
         remoteChangeCallback = callback
         remoteHintsWanted = true
-        // Registered after authenticate(): start now. Before it: authenticate() starts it.
+        // Registered after authenticate(): start now. Before it: authenticate() starts it. The start can
+        // run a JWT refresh over HTTP — suspending here yields the daemon's event loop instead of parking
+        // the thread every serve coroutine runs on.
         if (authService.isAuthenticated) {
-            runBlocking { ensureNotificationsClient() }
+            ensureNotificationsClient()
         }
     }
 
@@ -436,13 +482,27 @@ class InternxtProvider(
                 return
             }
         val client =
-            NotificationsClient(
-                notificationsUrl = config.notificationsUrl,
-                tokenSupplier = { forceRefresh -> authService.getValidCredentials(forceRefresh).jwt },
-                onRemoteChange = { remoteChangeCallback() },
+            notificationsClientFactory(
+                { forceRefresh -> authService.getValidCredentials(forceRefresh).jwt },
+                { remoteChangeCallback() },
             )
-        notificationsClient = client
-        client.connect(creds.jwt)
+        // Publish and connect under the guard, against close()'s detach: close() either ran first (the gate is
+        // shut and this client is a spare that never connects) or runs after (it finds the client and
+        // disconnects it). The credential lookup and the construction above stay outside the guard.
+        val connected =
+            synchronized(notificationsGuard) {
+                if (notificationsClosed) {
+                    false
+                } else {
+                    notificationsClient = client
+                    client.connect(creds.jwt)
+                    true
+                }
+            }
+        if (!connected) {
+            client.disconnect()
+            log.debug("notifications start dropped: the provider was closed while it was starting")
+        }
     }
 
     override suspend fun listChildren(path: String): List<CloudItem> {
@@ -4642,7 +4702,15 @@ class InternxtProvider(
      * `<mnemonic>-<parentUuid>` as its password), resolved once per pass. Null when no
      * credentials are loaded — the converters then keep today's fallback.
      */
-    private suspend fun mnemonicOrNull(): String? = runCatching { authService.getValidCredentials().mnemonic }.getOrNull()
+    private suspend fun mnemonicOrNull(): String? =
+        try {
+            authService.getValidCredentials().mnemonic
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.debug("No mnemonic available; keeping the fallback", e)
+            null
+        }
 
     private suspend fun InternxtFile.toDeltaCloudItem(
         folderMap: MutableMap<String, InternxtFolder>,

@@ -2,7 +2,9 @@
 
 package org.krost.unidrive.sync
 
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
 import java.time.Clock
@@ -149,4 +151,62 @@ class SubscriptionRenewalSchedulerTest {
             advanceTimeBy(2 * 3600 * 1000L)
             assertFalse(fired, "cancelled scheduler must not fire the renewal")
         }
+
+    // A cancellation that arrives while the renewal itself runs is not a renewal failure. The job has
+    // already dropped itself from the map by then, so no scheduler method can reach it — the cancellation
+    // that arrives is the owner's own (a shutdown or a profile teardown). The observable that separates
+    // rethrowing the CancellationException from the old generic swallow is the WARN the swallow logged
+    // ("renewal failed"); the job's cancelled state proves nothing, because cancel() sets it either way.
+    @Test
+    fun `a cancellation during a renewal is not logged as a renewal failure`() =
+        runTest {
+            store.save("frank", "sub-frank", t0.plusSeconds(25 * 3600))
+            val renewReached = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val holdRenew = kotlinx.coroutines.CompletableDeferred<Unit>()
+            var renewJob: kotlinx.coroutines.Job? = null
+            val schedulerLogger = org.slf4j.LoggerFactory.getLogger(SubscriptionRenewalScheduler::class.java) as ch.qos.logback.classic.Logger
+            val oldLevel = schedulerLogger.level
+            val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().also { it.start() }
+            schedulerLogger.level = ch.qos.logback.classic.Level.DEBUG
+            schedulerLogger.addAppender(appender)
+            try {
+                val scheduler =
+                    SubscriptionRenewalScheduler(
+                        scope = this,
+                        store = store,
+                        renew = { _ ->
+                            renewJob = kotlin.coroutines.coroutineContext[Job]
+                            renewReached.complete(Unit)
+                            holdRenew.await()
+                        },
+                        clock = Clock.fixed(t0, ZoneOffset.UTC),
+                    )
+
+                scheduler.schedule("frank")
+                advanceTimeBy(3600 * 1000L + 1)
+                renewReached.await()
+
+                // The cancellation the renewal cannot see coming: the owning scope's teardown.
+                renewJob!!.cancel()
+                holdRenew.complete(Unit)
+                // Run the cancelled job's continuation now, so the swallow-or-rethrow decision — and the
+                // old swallow's WARN — has happened before the assertion reads the capture.
+                runCurrent()
+
+                val warns = appender.list.filter { it.level == ch.qos.logback.classic.Level.WARN }
+                assertTrue(
+                    warns.isEmpty(),
+                    "a cancellation during a renewal must not be logged as a renewal failure; saw: ${warns.map { it.formattedMessage }}",
+                )
+            } finally {
+                schedulerLogger.detachAppender(appender)
+                schedulerLogger.level = oldLevel
+            }
+        }
+
+    // The other fix here — a job that self-removes with `remove(profileName, job)` so it cannot drop a
+    // newer job's slot — has no deterministic black-box seam: kotlinx cancels a queued post-delay
+    // resumption at its dispatch check, so a cancelled job never reaches the map cleanup, and the
+    // remaining window is a running continuation racing a re-schedule on another thread. The removal
+    // is identity-keyed and can therefore never remove another job's slot under any interleaving.
 }

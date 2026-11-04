@@ -19,6 +19,10 @@ import kotlin.time.Duration
 class LocalWatcher(
     private val syncRoot: Path,
     private val debounceMs: Long = readDebounceFromEnv(),
+    // Test seam (in-module): the executor that holds and fires the debounced emits. Production uses
+    // one daemon thread; a test hands in a hand-driven one and runs the emits itself instead of
+    // waiting real time.
+    private val coalescer: ScheduledExecutorService = defaultCoalescer(),
 ) {
     private val log = LoggerFactory.getLogger(LocalWatcher::class.java)
     private val suppressedPaths = ConcurrentHashMap.newKeySet<String>()
@@ -33,12 +37,9 @@ class LocalWatcher(
     // UD-211 hold-and-emit state. Key = relative path (already normalised with leading "/").
     // Every observed event for a path arms (or re-arms) a single scheduled emit; the
     // last event in a burst wins on the schedule clock, and one emit is enqueued per
-    // path per quiet window.
-    private val pendingEmits = ConcurrentHashMap<String, ScheduledFuture<*>>()
-    private val coalescer: ScheduledExecutorService =
-        Executors.newSingleThreadScheduledExecutor { r ->
-            Thread(r, "unidrive-watcher-coalescer").apply { isDaemon = true }
-        }
+    // path per quiet window. The value is the [Emit] itself, not bare its future: a
+    // running task must know its own slot to leave a newer task's slot alone.
+    private val pendingEmits = ConcurrentHashMap<String, Emit>()
 
     fun start() {
         if (running) return
@@ -107,7 +108,7 @@ class LocalWatcher(
             log.warn("LocalWatcher thread did not exit within 2s of stop()")
         }
         // UD-211: cancel any in-flight emit schedules and shut down the coalescer.
-        pendingEmits.values.forEach { it.cancel(false) }
+        pendingEmits.values.forEach { it.cancel() }
         pendingEmits.clear()
         coalescer.shutdown()
         if (!coalescer.awaitTermination(2, TimeUnit.SECONDS)) {
@@ -156,29 +157,59 @@ class LocalWatcher(
      * leading-edge emit caused on editor saves. Mid-upload mutations are caught
      * separately by UD-210.
      */
-    private fun handleEvent(
+    internal fun handleEvent(
         @Suppress("UNUSED_PARAMETER") kind: WatchEvent.Kind<*>,
         relativePath: String,
     ) {
         // Cancel any in-flight schedule for this path and arm a fresh one. The last
         // observed event in a burst wins on the schedule clock.
-        pendingEmits.remove(relativePath)?.cancel(false)
-        val task =
-            coalescer.schedule(
-                {
-                    if (pendingEmits.remove(relativePath) != null) {
-                        enqueue(relativePath)
-                    }
-                },
-                debounceMs,
-                TimeUnit.MILLISECONDS,
-            )
-        pendingEmits[relativePath] = task
+        val emit = Emit(relativePath)
+        // Install the slot before scheduling: the executor may run a zero-delay task before schedule() returns
+        // (a zero debounce is accepted), and run() removes its own slot, which must already be there.
+        pendingEmits.put(relativePath, emit)?.cancel()
+        var scheduled = false
+        try {
+            emit.future = coalescer.schedule(emit, debounceMs, TimeUnit.MILLISECONDS)
+            scheduled = true
+        } finally {
+            // A schedule that threw (executor shut down) must not leave a slot that can never fire.
+            if (!scheduled) pendingEmits.remove(relativePath, emit)
+        }
     }
+
+    /** The armed emits that have not fired or been replaced; for tests. */
+    internal fun pendingEmitCount(): Int = pendingEmits.size
 
     private fun enqueue(relativePath: String) {
         changedPaths.add(relativePath)
         changeSignal.trySend(Unit)
+    }
+
+    /**
+     * One armed emit for a path. The map holds it, so a task that fires knows its own slot and removes
+     * only that: a task already running while a newer event re-armed the path must not remove the newer
+     * task's slot (remove-by-key did), which enqueued at once, before the newer task's quiet window, and
+     * left the newer task holding a map slot that can never fire.
+     */
+    private inner class Emit(
+        val path: String,
+    ) : Runnable {
+        // Set right after schedule() returns. Only cancel() reads it, and a cancel arrives from a later
+        // event, which armed its own task first — a task that starts before then runs without it. A task
+        // that already ran (zero delay) is installed first and removes its own slot, so it never lingers.
+        @Volatile
+        var future: ScheduledFuture<*>? = null
+
+        fun cancel() {
+            future?.cancel(false)
+        }
+
+        override fun run() {
+            // remove(key, value) answers a Boolean (false when a newer task owns the slot now).
+            if (pendingEmits.remove(path, this)) {
+                enqueue(path)
+            }
+        }
     }
 
     private fun registerRecursive(
@@ -229,5 +260,10 @@ class LocalWatcher(
     companion object {
         private fun readDebounceFromEnv(): Long =
             System.getenv("UNIDRIVE_WATCHER_DEBOUNCE_MS")?.toLongOrNull()?.takeIf { it >= 0 } ?: 2000L
+
+        private fun defaultCoalescer(): ScheduledExecutorService =
+            Executors.newSingleThreadScheduledExecutor { r ->
+                Thread(r, "unidrive-watcher-coalescer").apply { isDaemon = true }
+            }
     }
 }

@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -65,7 +66,7 @@ class HydrationImpl(
     // front-end; this class owns the upload queue, the open set and the cache budget on top of it.
     private val mount: MountEngine,
     private val stateDb: StateDatabase,
-    private val recoveryUploadScope: CoroutineScope = CoroutineScope(Dispatchers.IO),
+    private val recoveryUploadScope: CoroutineScope = defaultRecoveryUploadScope(),
     // Upload-queue tuning. The waiting depth bounds how many submitted-but-
     // not-yet-running uploads the daemon holds; a burst beyond it suspends
     // the open_write callers (back-pressure towards the client) instead of
@@ -157,7 +158,7 @@ class HydrationImpl(
     constructor(
         syncEngine: MountHost,
         stateDb: StateDatabase,
-        recoveryUploadScope: CoroutineScope = CoroutineScope(Dispatchers.IO),
+        recoveryUploadScope: CoroutineScope = defaultRecoveryUploadScope(),
         uploadQueueDepth: Int = DEFAULT_UPLOAD_QUEUE_DEPTH,
         maxUploadAttempts: Int = DEFAULT_MAX_UPLOAD_ATTEMPTS,
         uploadRetryDelaysMs: List<Long> = DEFAULT_UPLOAD_RETRY_DELAYS_MS,
@@ -357,6 +358,14 @@ class HydrationImpl(
     private val lastWalkAtMs = AtomicLong(0L)
 
     companion object {
+        /**
+         * The recovery-upload scope a host gets when it passes none. A [kotlinx.coroutines.SupervisorJob],
+         * so one failed recovery upload cannot cancel the uploads queued behind it (a plain [kotlinx.coroutines.Job]
+         * fails the whole scope on the first failure, and every launch into it afterwards is dead). The daemon's
+         * own wiring passes a supervising scope as well.
+         */
+        internal fun defaultRecoveryUploadScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
         // A provider refusal must not hot-loop, but unchanged local bytes get another chance after transient provider-side
         // state can expire.
         private const val UPLOAD_REFUSAL_RETRY_AFTER_MS = 6L * 60 * 60 * 1000

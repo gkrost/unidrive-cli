@@ -132,7 +132,7 @@ class OneDriveProvider(
      * Opens the change channel lazily (unless the profile set `remote_notifications = false`). The second call replaces
      * the callback and keeps the channel.
      */
-    override fun onRemoteChangeHint(callback: () -> Unit) {
+    override suspend fun onRemoteChangeHint(callback: () -> Unit) {
         hintCallback = callback
         openChangeChannel()
     }

@@ -497,4 +497,64 @@ class NotificationsClientBackoffTest {
         assertEquals(0, h.supplierCalls.size)
         assertTrue(events(Level.WARN).isEmpty())
     }
+
+    // disconnect() runs on a provider thread while the rebuild runs on the scheduler's; a rebuild that
+    // passed its running check and then saw disconnect() must not store and connect its fresh socket —
+    // that socket would be live with running=false, and every later disconnect a no-op.
+    @Test
+    fun `a rebuild that lands after a disconnect stores no socket and connects none`() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val supplierCalls = mutableListOf<Boolean>()
+        val created = mutableListOf<FakeSocket>()
+        val factory =
+            object : NotificationsSocketFactory {
+                override fun create(
+                    url: String,
+                    token: String,
+                ): NotificationsSocket {
+                    val socket = FakeSocket(token)
+                    val isRebuild = created.isNotEmpty()
+                    created += socket
+                    if (isRebuild) {
+                        // The rebuild: sit here while disconnect() runs, then finish it.
+                        entered.countDown()
+                        release.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                    }
+                    return socket
+                }
+            }
+        val client =
+            NotificationsClient(
+                notificationsUrl = "https://example.invalid",
+                tokenSupplier = { force ->
+                    supplierCalls += force
+                    "fresh"
+                },
+                onRemoteChange = {},
+                socketFactory = factory,
+                clock = { 1_000_000L },
+                scheduler = ManualScheduler(), // refreshAndRebuild runs inline on the emitter's thread
+            )
+        client.connect("token-0")
+        val stale = created.single()
+
+        val rebuilder =
+            Thread {
+                stale.emit("connect_error", unauthorizedUpgrade())
+            }
+        rebuilder.start()
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS), "the rebuild reached buildSocket")
+        client.disconnect()
+        assertTrue(stale.closed, "disconnect released the stale socket")
+        release.countDown()
+        rebuilder.join(5_000)
+        assertFalse(rebuilder.isAlive, "the rebuild finished")
+
+        assertEquals(listOf(true), supplierCalls, "one forced refresh ran before the disconnect")
+        val rebuilt = created.last()
+        assertEquals(2, created.size, "the rebuild built one spare socket")
+        assertEquals(0, rebuilt.connectCalls, "the spare socket is never connected after a disconnect")
+        assertTrue(rebuilt.closed, "the spare socket is closed instead of stored")
+    }
 }

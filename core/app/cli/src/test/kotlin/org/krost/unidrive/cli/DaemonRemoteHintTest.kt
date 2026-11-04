@@ -123,7 +123,7 @@ class DaemonRemoteHintTest {
         /** The callback the daemon registered for remote-change hints; null = none registered. */
         @Volatile var remoteChangeHint: (() -> Unit)? = null
 
-        override fun onRemoteChangeHint(callback: () -> Unit) {
+        override suspend fun onRemoteChangeHint(callback: () -> Unit) {
             remoteChangeHint = callback
         }
 

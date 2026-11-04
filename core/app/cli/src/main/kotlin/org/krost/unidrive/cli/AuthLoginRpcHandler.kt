@@ -26,16 +26,19 @@ import org.slf4j.LoggerFactory
  *
  * The secrets (password, TOTP code, authorization code) arrive in the request body only. Nothing here logs them, puts
  * them in a reply or keeps them after the request; what is logged is the verb and the refusal token. One step runs at
- * a time. Admin class: a `read` connection gets `forbidden` ([org.krost.unidrive.sync.IpcAuth]).
+ * a time, and no step interleaves an `auth.logout`: the wiring hands both handlers one mutex ([oneAtATime]), so a
+ * sign-out can never forget credentials and delete the files a sign-in stored meanwhile. Admin class: a `read`
+ * connection gets `forbidden` ([org.krost.unidrive.sync.IpcAuth]).
  */
 internal class AuthLoginRpcHandler(
     // The profile the daemon serves, with its non-secret config; null when it could not be read at start (every verb
     // then answers sign_in_unavailable).
     private val target: ProfileTarget?,
     private val onSignedIn: suspend () -> Unit,
+    // The daemon's one auth-mutation lock, shared with AuthLogoutRpcHandler.
+    private val oneAtATime: Mutex = Mutex(),
 ) {
     private val log = LoggerFactory.getLogger(AuthLoginRpcHandler::class.java)
-    private val oneAtATime = Mutex()
 
     suspend fun begin(jsonRequest: String): String =
         step(BEGIN, jsonRequest) { target, _ ->

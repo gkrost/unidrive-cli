@@ -129,7 +129,12 @@ internal class NotificationsClient(
     fun disconnect() {
         if (!running.compareAndSet(true, false)) return
         scheduler.shutdown()
-        socketRef.getAndSet(null)?.close()
+        // Under [lock]: a rebuild that already passed its `running` check and is holding a fresh
+        // socket must not store and connect it after this close — the CAS above alone cannot stop
+        // that (it ran before the rebuild's check), so the rebuild re-checks under the same monitor
+        // and closes its spare instead of storing it. Without this, a socket rebuilt after a
+        // disconnect would keep socket.io's reconnect loop alive with no later disconnect to stop it.
+        synchronized(lock) { socketRef.getAndSet(null)?.close() }
     }
 
     private fun buildSocket(token: String): NotificationsSocket {
@@ -304,9 +309,19 @@ internal class NotificationsClient(
             val freshToken = runBlocking { tokenSupplier(true) }
             if (!running.get() || socketRef.get() !== stale) return // disconnected or superseded meanwhile
             val rebuilt = buildSocket(freshToken)
-            socketRef.set(rebuilt)
+            // The store, the stale release and the connect are one step under [lock], so they cannot
+            // interleave with disconnect()'s swap-and-close: a disconnect that wins the race leaves
+            // this rebuild nothing to store (it closes the spare it built), and a disconnect that
+            // loses finds and closes the rebuilt socket here.
+            synchronized(lock) {
+                if (!running.get() || socketRef.get() !== stale) {
+                    rebuilt.close()
+                    return
+                }
+                socketRef.set(rebuilt)
+                rebuilt.connect()
+            }
             stale.close()
-            rebuilt.connect()
             synchronized(lock) { refreshedSinceConnect = true }
             log.info("Internxt notifications WS rebuilt with a refreshed token after an authentication rejection")
         } catch (e: Exception) {

@@ -7,6 +7,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.slf4j.MDCContext
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.AccountOwner
 import org.krost.unidrive.Capability
@@ -799,6 +800,10 @@ class DaemonRuntime(
                 // profile-lock holder, so the credential removal is its job (the CLI hands it over over IPC).
                 // It refuses while uploads are pending (without credentials they cannot finish) and never
                 // touches state.db. Both modes: a mirror daemon is signed out like a mount one.
+                // One lock for both sign-out and sign-in: the IPC handlers run in parallel, and the sign-out's
+                // forget + credential-file deletion must not run through a sign-in that stored credentials and
+                // reloaded them (that would leave credentials in memory with no file on disk, both saying success).
+                val authOneAtATime = Mutex()
                 val logoutHandler =
                     AuthLogoutRpcHandler(
                         profileDir = ipcTokenDir,
@@ -813,6 +818,7 @@ class DaemonRuntime(
                                 ?: PendingGate.keepsLocalRule(excludePatterns, syncPaths).let { keepsLocal ->
                                     { PendingUploads.split(db!!.pendingUploadRows(), keepsLocal, null) }
                                 },
+                        oneAtATime = authOneAtATime,
                     )
                 server.registerHandler(AuthLogoutRpcHandler.VERB) { _, json -> logoutHandler.handle(json) }
 
@@ -821,11 +827,15 @@ class DaemonRuntime(
                 // them; then its own provider instance reloads them in place (no restart, the mount stays), the credential
                 // check runs again and an authentication rejection from before the sign-in no longer reads as `expired`.
                 val signInHandler =
-                    AuthLoginRpcHandler(signInTarget) {
-                        provider.reloadCredentials()
-                        signedInAtMs = System.currentTimeMillis()
-                        credentialHealth.refreshNow()
-                    }
+                    AuthLoginRpcHandler(
+                        signInTarget,
+                        onSignedIn = {
+                            provider.reloadCredentials()
+                            signedInAtMs = System.currentTimeMillis()
+                            credentialHealth.refreshNow()
+                        },
+                        oneAtATime = authOneAtATime,
+                    )
                 server.registerHandler(AuthLoginRpcHandler.BEGIN) { _, json -> signInHandler.begin(json) }
                 server.registerHandler(AuthLoginRpcHandler.COMPLETE) { _, json -> signInHandler.complete(json) }
                 server.registerHandler(AuthLoginRpcHandler.LOGIN) { _, json -> signInHandler.login(json) }
@@ -937,7 +947,9 @@ class DaemonRuntime(
         }
 
     // archive#111: the push channel is best effort; a channel that cannot start leaves the daemon on its poll alone.
-    private fun wakePollerOnRemoteChangeHint(
+    // The registration suspends (a provider may refresh a token over HTTP to open its channel) instead of
+    // blocking the daemon's event loop, which start() runs on.
+    private suspend fun wakePollerOnRemoteChangeHint(
         provider: CloudProvider,
         poller: EnumeratePoller,
     ) {

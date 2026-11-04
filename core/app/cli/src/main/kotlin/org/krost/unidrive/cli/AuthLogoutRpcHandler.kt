@@ -1,5 +1,7 @@
 package org.krost.unidrive.cli
 
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -43,10 +45,20 @@ internal class AuthLogoutRpcHandler(
     // The uploads that can still happen: the daemon counts `uploads.pending` by the same rows, so the two agree (#86).
     // Without a hydration layer (a mirror daemon) every pending row counts.
     private val pendingRows: () -> PendingUploads.Split = { PendingUploads.split(db.pendingUploadRows(), { false }, null) },
+    // The daemon's one auth-mutation lock, shared with AuthLoginRpcHandler: the IPC handlers run in
+    // parallel, and a sign-out that ran its forget + credential-file deletion through a sign-in that
+    // stored credentials and reloaded them would leave the daemon holding credentials in memory with
+    // no file on disk, both replies saying success.
+    private val oneAtATime: Mutex = Mutex(),
 ) {
     private val log = LoggerFactory.getLogger(AuthLogoutRpcHandler::class.java)
 
-    suspend fun handle(jsonRequest: String): String {
+    suspend fun handle(jsonRequest: String): String =
+        oneAtATime.withLock {
+            handleLocked(jsonRequest)
+        }
+
+    private suspend fun handleLocked(jsonRequest: String): String {
         val body = runCatching { Json.parseToJsonElement(jsonRequest) as? JsonObject }.getOrNull()
         val force =
             when (val element = body?.get("force")) {
