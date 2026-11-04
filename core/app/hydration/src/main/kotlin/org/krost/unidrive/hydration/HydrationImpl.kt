@@ -1,5 +1,7 @@
 package org.krost.unidrive.hydration
 
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -18,6 +20,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.SupervisorJob
@@ -26,6 +29,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.krost.unidrive.FolderNotEmptyException
 import org.krost.unidrive.RemoteContentRefusedDownloadException
 import org.krost.unidrive.RemoteIncompleteDownloadException
@@ -144,9 +148,67 @@ class HydrationImpl(
     /** Test seam (archive#728): fired with the size of each row batch one eviction pass asks the database about. */
     internal var onDispositionBatch: (Int) -> Unit = {}
 
-    /** Cancel and join all background work owned by this hydration layer before its state DB closes. */
-    suspend fun shutdownUploads() {
-        recoveryUploadScope.coroutineContext[Job]?.cancelAndJoin()
+    /**
+     * Stop all background work owned by this hydration layer before its state DB closes (gkrost/unidrive-cli#72, owner decision
+     * 2026-11-02). From now on no upload attempt starts: queued uploads, retries and replays stay pending rows (state.db is the
+     * queue; the next start sends them). The attempts that are transferring right now get up to [drainMs] to finish; then the
+     * scope is cancelled and joined as before. A download, a cache pass, or an upload that waits for its turn, a transfer permit
+     * or the end of a retry backoff does not hold the stop. A cancelled upload keeps what the provider stored for a resume (a
+     * OneDrive upload session); a provider without one sends the file again from byte 0 at the next start.
+     */
+    suspend fun shutdownUploads(drainMs: Long = UPLOAD_DRAIN_MS) {
+        stopping = true
+        val draining = transferringWorkers.toList()
+        try {
+            if (draining.isNotEmpty() && drainMs > 0) {
+                log.info("daemon stop: draining {} upload(s), up to {} s", draining.size, drainMs / 1000)
+                withTimeoutOrNull(drainMs) { draining.joinAll() }
+                val cancelled = draining.count { !it.isCompleted }
+                log.info(
+                    "daemon stop: upload drain ended, {} finished, {} cancelled (resumed at next start)",
+                    draining.size - cancelled,
+                    cancelled,
+                )
+            }
+        } finally {
+            // Also when the caller itself is cancelled during the drain: the scope never outlives the stop.
+            recoveryUploadScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+    }
+
+    // gkrost/unidrive-cli#72: set when a stop begins; no transfer attempt starts after it.
+    @Volatile private var stopping = false
+
+    // gkrost/unidrive-cli#72: the upload workers whose transfer attempt runs right now (they hold a transfer permit), and those
+    // whose attempt has just landed and that are writing its outcome down: what a stop waits for. A worker leaves the set when
+    // its attempt fails (a retry backoff does not hold a stop) and when it ends.
+    private val transferringWorkers: MutableSet<Job> = ConcurrentHashMap.newKeySet()
+
+    // gkrost/unidrive-cli#72: the upload worker a transfer attempt runs for, found from inside the attempt's own coroutines.
+    private class UploadWorker : AbstractCoroutineContextElement(UploadWorker) {
+        companion object Key : CoroutineContext.Key<UploadWorker>
+
+        @Volatile var job: Job? = null
+    }
+
+    /**
+     * gkrost/unidrive-cli#72: one transfer attempt, entered once it holds its transfer permit. The worker is on record for the
+     * drain before the stop flag is read, so a stop either sees the worker or the worker sees the stop; a stopping daemon starts
+     * no transfer (the upload stays a pending row). A failed attempt takes the worker off the record.
+     */
+    private suspend fun <T> drainableTransfer(block: suspend () -> T): T {
+        val worker = currentCoroutineContext()[UploadWorker]?.job
+        worker?.let { transferringWorkers.add(it) }
+        if (stopping) {
+            worker?.let { transferringWorkers.remove(it) }
+            throw CancellationException("the daemon is stopping: the upload stays queued for the next start")
+        }
+        var landed = false
+        try {
+            return block().also { landed = true }
+        } finally {
+            if (!landed) worker?.let { transferringWorkers.remove(it) }
+        }
     }
 
     /**
@@ -369,6 +431,12 @@ class HydrationImpl(
         // A provider refusal must not hot-loop, but unchanged local bytes get another chance after transient provider-side
         // state can expire.
         private const val UPLOAD_REFUSAL_RETRY_AFTER_MS = 6L * 60 * 60 * 1000
+
+        /**
+         * gkrost/unidrive-cli#72 (owner decision 2026-11-02): how long a daemon stop waits for the uploads that are transferring
+         * when it begins, before it cancels them. The daemon's stop deadline is this plus its cleanup headroom.
+         */
+        const val UPLOAD_DRAIN_MS: Long = 10_000
 
         // gkrost/unidrive-cli#145: the status of a plan's refusal ([planLimitOf]).
         private const val HTTP_PAYMENT_REQUIRED = 402
@@ -798,8 +866,10 @@ class HydrationImpl(
         // (slot stuck busy, queue permit lost, no Completed for the handle). ATOMIC
         // guarantees the body is entered; the ensureActive() below then turns a pending
         // cancel into the normal cancelled path. ATOMIC is a delicate API; this is the case it exists for.
+        val workerTag = UploadWorker()
         @OptIn(DelicateCoroutinesApi::class)
-        val worker = recoveryUploadScope.launch(start = CoroutineStart.ATOMIC) {
+        val worker = recoveryUploadScope.launch(workerTag, start = CoroutineStart.ATOMIC) {
+            workerTag.job = coroutineContext[Job]
             // Emitted only after the slot is released (below): a client that reacts to
             // Completed by re-listing must already see pending_upload settled, not still
             // raised by the slot of the upload it was just told about.
@@ -862,6 +932,7 @@ class HydrationImpl(
                 // a wait for the path's turn cancelled in Mutex.lock never enters the lock, so only this
                 // outermost finally sees it.
                 if (waitingSlotHeld) queueSlots.release()
+                coroutineContext[Job]?.let { transferringWorkers.remove(it) }
                 // archive#319: decrement the CAPTURED slot — a concurrent rename may have
                 // re-keyed it under the destination path (the running coroutine's
                 // captured path is stale). Removal is by slot IDENTITY, not by path:
@@ -1055,6 +1126,7 @@ class HydrationImpl(
                 if (retryScheduled) tx?.attemptFailed(e.javaClass.simpleName, e.message, nextTryAtMs)
                 _events.emit(HydrationEvent.Failed(path, err, retryScheduled = retryScheduled))
                 if (retryScheduled) {
+                    throwIfStoppingBeforeRetry()
                     log.info(
                         "upload attempt {}/{} failed for {}: {}; retrying",
                         attempt, maxUploadAttempts, path, e.message,
@@ -1084,6 +1156,13 @@ class HydrationImpl(
             ok = false,
             error = lastError,
         )
+    }
+
+    private fun throwIfStoppingBeforeRetry() {
+        // gkrost/unidrive-cli#72: a stopping daemon starts no further attempt; the row is the queue.
+        if (stopping) {
+            throw CancellationException("the daemon is stopping: the retry is left to the next start")
+        }
     }
 
     // The cloud copy changed between the row's token and the transfer (upload-time convergence): not transient — a retry would
@@ -1259,12 +1338,14 @@ class HydrationImpl(
         }
         if (uploadStallTimeoutMs <= 0) {
             return mount.withTransferPermit {
-                onPermitAcquired()
-                transfer.begin()
-                tx?.started()
-                holdingPermit(path) {
-                    _events.emit(HydrationEvent.Hydrating(path))
-                    mount.uploadMountWriteFromCache(path, cachePath, baseEtag, onProgress)
+                drainableTransfer {
+                    onPermitAcquired()
+                    transfer.begin()
+                    tx?.started()
+                    holdingPermit(path) {
+                        _events.emit(HydrationEvent.Hydrating(path))
+                        mount.uploadMountWriteFromCache(path, cachePath, baseEtag, onProgress)
+                    }
                 }
             }
         }
@@ -1290,12 +1371,14 @@ class HydrationImpl(
             }
             try {
                 mount.withTransferPermit {
-                    onPermitAcquired()
-                    transfer.begin()
-                    tx?.started()
-                    holdingPermit(path) {
-                        _events.emit(HydrationEvent.Hydrating(path))
-                        mount.uploadMountWriteFromCache(path, cachePath, baseEtag, kicked)
+                    drainableTransfer {
+                        onPermitAcquired()
+                        transfer.begin()
+                        tx?.started()
+                        holdingPermit(path) {
+                            _events.emit(HydrationEvent.Hydrating(path))
+                            mount.uploadMountWriteFromCache(path, cachePath, baseEtag, kicked)
+                        }
                     }
                 }
             } finally {

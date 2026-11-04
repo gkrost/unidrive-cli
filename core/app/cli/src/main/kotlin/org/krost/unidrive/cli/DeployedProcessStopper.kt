@@ -83,7 +83,8 @@ internal class DeployedProcessStopper(
     }
 
     companion object {
-        private const val GRACEFUL_DEADLINE_MS: Long = 12_000
+        // gkrost/unidrive-cli#72: as `daemon stop` waits (the upload drain included).
+        private const val GRACEFUL_DEADLINE_MS: Long = DaemonStopCommand.STOP_DEADLINE_MS
 
         private const val FORCED_DEADLINE_MS: Long = 5_000
 

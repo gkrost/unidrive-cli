@@ -136,8 +136,11 @@ internal class SyncShutdown(
         }
 
     companion object {
-        /** How long the hook waits for the run to end: the daemon's deadline (spec I7). */
-        const val DEADLINE_MS: Long = DaemonRuntime.SHUTDOWN_DEADLINE_MS
+        /**
+         * How long the hook waits for the run to end: the daemon's cleanup headroom (spec I7). `unidrive sync` drains no
+         * mount uploads, so the daemon's upload drain (gkrost/unidrive-cli#72) is not part of it.
+         */
+        const val DEADLINE_MS: Long = DaemonRuntime.SHUTDOWN_CLEANUP_MS
 
         const val STOP_REASON = "unidrive sync is shutting down"
     }
