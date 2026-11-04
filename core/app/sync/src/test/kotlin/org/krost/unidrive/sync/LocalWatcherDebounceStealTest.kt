@@ -85,6 +85,50 @@ class LocalWatcherDebounceStealTest {
         assertEquals(listOf("/hot.txt"), watcher.drainChanges())
     }
 
+    @Test
+    fun `a zero-delay task that runs before schedule returns still emits and leaves no slot behind`() {
+        syncRoot = Files.createTempDirectory("unidrive-watch-steal-test")
+        // The executor may run a zero-delay task on its own thread before schedule() returns; run it inline here.
+        val immediate = ImmediateCoalescer()
+        watcher = LocalWatcher(syncRoot, debounceMs = 0, coalescer = immediate)
+
+        modify("/now.txt")
+
+        assertEquals(listOf("/now.txt"), watcher.drainChanges(), "the emit that ran before schedule returned is queued")
+        // A second event must arm and emit again: no stale, never-firing slot left in the map by the first.
+        modify("/now.txt")
+        assertEquals(listOf("/now.txt"), watcher.drainChanges())
+    }
+
+    @Test
+    fun `a schedule that throws leaves no slot behind`() {
+        syncRoot = Files.createTempDirectory("unidrive-watch-steal-test")
+        val rejecting =
+            object : ScheduledExecutorService by Executors.newSingleThreadScheduledExecutor() {
+                override fun schedule(
+                    command: Runnable,
+                    delay: Long,
+                    unit: TimeUnit,
+                ): ScheduledFuture<*> = throw java.util.concurrent.RejectedExecutionException("shut down")
+            }
+        watcher = LocalWatcher(syncRoot, debounceMs = 0, coalescer = rejecting)
+
+        kotlin.runCatching { modify("/gone.txt") }
+
+        assertTrue(watcher.pendingEmitCount() == 0, "a rejected schedule must not leave its emit installed")
+    }
+
+    private class ImmediateCoalescer : ScheduledExecutorService by Executors.newSingleThreadScheduledExecutor() {
+        override fun schedule(
+            command: Runnable,
+            delay: Long,
+            unit: TimeUnit,
+        ): ScheduledFuture<*> {
+            command.run()
+            return StubFuture(command).also { it.ran = true }
+        }
+    }
+
     private class ManualCoalescer : ScheduledExecutorService by Executors.newSingleThreadScheduledExecutor() {
         val scheduled = mutableListOf<StubFuture>()
 

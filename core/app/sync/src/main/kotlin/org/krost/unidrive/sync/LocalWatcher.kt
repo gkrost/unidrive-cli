@@ -163,11 +163,21 @@ class LocalWatcher(
     ) {
         // Cancel any in-flight schedule for this path and arm a fresh one. The last
         // observed event in a burst wins on the schedule clock.
-        pendingEmits.remove(relativePath)?.cancel()
         val emit = Emit(relativePath)
-        emit.future = coalescer.schedule(emit, debounceMs, TimeUnit.MILLISECONDS)
-        pendingEmits[relativePath] = emit
+        // Install the slot before scheduling: the executor may run a zero-delay task before schedule() returns
+        // (a zero debounce is accepted), and run() removes its own slot, which must already be there.
+        pendingEmits.put(relativePath, emit)?.cancel()
+        try {
+            emit.future = coalescer.schedule(emit, debounceMs, TimeUnit.MILLISECONDS)
+        } catch (e: Throwable) {
+            // A rejected schedule (executor shut down) must not leave a slot that can never fire.
+            pendingEmits.remove(relativePath, emit)
+            throw e
+        }
     }
+
+    /** The armed emits that have not fired or been replaced; for tests. */
+    internal fun pendingEmitCount(): Int = pendingEmits.size
 
     private fun enqueue(relativePath: String) {
         changedPaths.add(relativePath)
@@ -184,7 +194,8 @@ class LocalWatcher(
         val path: String,
     ) : Runnable {
         // Set right after schedule() returns. Only cancel() reads it, and a cancel arrives from a later
-        // event, which armed its own task first — a task that starts before then runs without it.
+        // event, which armed its own task first — a task that starts before then runs without it. A task
+        // that already ran (zero delay) is installed first and removes its own slot, so it never lingers.
         @Volatile
         var future: ScheduledFuture<*>? = null
 
