@@ -175,6 +175,26 @@ class PlaceholderManagerTest {
     }
 
     @Test
+    fun `deleteLocal of the only file keeps a non-normalized sync root`() {
+        val base = Files.createTempDirectory("unidrive-ph-raw-root")
+        try {
+            // A hand-edited config value can hold dot segments; the root then never equals the
+            // resolved parents the empty-parent walk climbs, and the walk would remove the empty
+            // sync root itself and every empty ancestor above it.
+            val rawRootManager = PlaceholderManager(base.resolve("root/../root"))
+            Files.createDirectories(base.resolve("root"))
+            Files.writeString(base.resolve("root").resolve("only.txt"), "content")
+
+            rawRootManager.deleteLocal("/only.txt")
+
+            assertTrue(Files.isDirectory(base.resolve("root")), "the sync root survives the delete of its last file")
+            assertTrue(Files.isDirectory(base), "nothing above the sync root is removed")
+        } finally {
+            base.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun `resolveLocal maps path to filesystem`() {
         assertEquals(syncRoot.resolve("docs/test.txt"), mgr.resolveLocal("/docs/test.txt"))
     }

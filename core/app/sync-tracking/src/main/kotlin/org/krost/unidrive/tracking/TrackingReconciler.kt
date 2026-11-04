@@ -64,10 +64,7 @@ class TrackingReconciler(
                     // decide adoption. Reconciler emits actions; adoption is state-only.
                     return ReconcileAction.NoOp(path)
                 }
-                return ReconcileAction.ReportCollision(
-                    path,
-                    "untracked path exists on both sides with different content (hash mismatch)",
-                )
+                return ReconcileAction.ReportCollision(path, collisionReason(local, remote))
             }
 
             // Pure-local untracked: a file created locally that the remote does
@@ -192,6 +189,35 @@ class TrackingReconciler(
         remote: RemoteObservation,
         track: TrackingRecord?,
     ): Boolean = track == null && local.exists && remote.exists && contentMatches(path, local, remote)
+
+    /**
+     * Why the both-sides-exist pair did not match. With a hash on both sides
+     * the content really differs; without one on either side the collision is
+     * still the safe answer, but the reason must not claim a difference the
+     * engine never observed — it names the size comparison that was possible
+     * and the hash that was not, so the reader does not go looking for a
+     * content difference that may not exist; sizes that differ ARE an observed
+     * difference, and are named with their numbers.
+     */
+    private fun collisionReason(
+        local: LocalObservation,
+        remote: RemoteObservation,
+    ): String {
+        if (local.hash != null && remote.hash != null) {
+            return "untracked path exists on both sides with different content (hash mismatch)"
+        }
+        // Sizes both known is one more comparison the engine could make, so the reason names its outcome: agreeing
+        // sizes leave sameness unproven without a hash, differing sizes already prove the content differs.
+        val sizeNote =
+            when {
+                local.size != null && remote.size != null && local.size == remote.size ->
+                    "same size, no content hash to compare, so sameness cannot be proven"
+                local.size != null && remote.size != null ->
+                    "sizes differ (${local.size} and ${remote.size}), so the content differs"
+                else -> "no content hash to compare, so sameness cannot be proven"
+            }
+        return "untracked path exists on both sides; ${sizeNote}"
+    }
 
     private fun contentMatches(
         path: String,

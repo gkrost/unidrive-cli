@@ -448,8 +448,13 @@ class TrackingEngine(
      * settle.
      *
      * Per candidate, after listing its children:
-     *  - **empty** → delete it. On success, clear it from the pending set; on a
-     *    provider error, persist it for retry on a later pass.
+     *  - **empty** → confirmed against the provider's metadata before it is
+     *    read as "exists and is empty" — a missing directory lists as empty on
+     *    some providers (localfs), and an already-gone directory is not ours to
+     *    remove: its pending reap is cleared and nothing is reported as reaped.
+     *    A directory that is really there is deleted; on success, clear it from
+     *    the pending set; on a provider error, persist it for retry on a later
+     *    pass.
      *  - **non-empty** → it has a surviving child. If a TRACKED file still lives
      *    under it, the directory is legitimately populated and is retired from
      *    the pending set (not ours to reap). If no tracked descendant remains,
@@ -494,6 +499,19 @@ class TrackingEngine(
                     } else {
                         trackingSet.addPendingReap(dir)
                     }
+                    continue
+                }
+                // An empty listing is confirmed against the provider before it is
+                // read as "exists and is empty": a missing directory lists as
+                // empty too (localfs answers an absent path with an empty list —
+                // the same ambiguity `ls --live` resolves with getMetadata).
+                // Without the confirmation the pass would report `rmdir` for a
+                // directory that was already gone. Gone takes the not-found
+                // outcome: the pending reap is cleared, nothing is deleted and
+                // nothing is reported as reaped.
+                if (!observeRemote(dir).exists) {
+                    log.debug("Remote directory {} already gone, nothing to reap", dir)
+                    trackingSet.removePendingReap(dir)
                     continue
                 }
                 provider.delete(dir)

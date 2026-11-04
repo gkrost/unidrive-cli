@@ -18,7 +18,6 @@ import io.ktor.http.contentLength
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.HttpDefaults
@@ -27,11 +26,13 @@ import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.http.EndpointClassifier
 import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.http.RequestId
+import org.krost.unidrive.http.RetryOutcome
 import org.krost.unidrive.http.RequestMetricsSink
 import org.krost.unidrive.http.RequestMetricsTap
 import org.krost.unidrive.http.UploadTimeoutPolicy
 import org.krost.unidrive.http.parseRetryAfterHeader
 import org.krost.unidrive.http.readBoundedErrorBody
+import org.krost.unidrive.http.retrying
 import org.krost.unidrive.http.streamingFileBody
 import org.krost.unidrive.http.truncateErrorBody
 import org.krost.unidrive.http.throttleWaitMs
@@ -176,10 +177,8 @@ class S3Api(
         key: String,
         destination: Path,
         timeoutMs: Long? = null,
-    ): Long {
-        var attempt = 0
-        while (true) {
-            budget.awaitSlot()
+    ): Long =
+        budget.retrying { _, retries ->
             val statement =
                 httpClient.prepareRequest {
                     signed(HttpMethod.Get, key, emptyList(), emptyMap(), SigV4Signer.EMPTY_SHA256)
@@ -190,37 +189,18 @@ class S3Api(
                         timeout { requestTimeoutMillis = timeoutMs }
                     }
                 }
-            val outcome: Fetch =
-                statement.execute { response ->
-                    when {
-                        isRetryable(response.status.value) && attempt < MAX_ATTEMPTS ->
-                            Fetch.Wait(backoffMs(response, attempt), isThrottle(response.status.value))
-                        !response.status.isSuccess() -> throw failure(response, readBoundedErrorBody(response), "GET")
-                        else -> {
-                            budget.recordSuccess()
-                            Fetch.Done(writeStagedDownload(response.bodyAsChannel(), destination, response.contentLength(), "S3 download of '$key'"))
-                        }
+            statement.execute { response ->
+                when {
+                    isRetryable(response.status.value) && retries < MAX_ATTEMPTS ->
+                        RetryOutcome.Retry(backoffMs(response, retries), throttle = isThrottle(response.status.value))
+                    !response.status.isSuccess() -> throw failure(response, readBoundedErrorBody(response), "GET")
+                    else -> {
+                        budget.recordSuccess()
+                        RetryOutcome.Done(writeStagedDownload(response.bodyAsChannel(), destination, response.contentLength(), "S3 download of '$key'"))
                     }
-                }
-            when (outcome) {
-                is Fetch.Done -> return outcome.bytes
-                is Fetch.Wait -> {
-                    if (outcome.throttle) budget.recordThrottle(outcome.ms)
-                    delay(outcome.ms)
-                    attempt++
                 }
             }
         }
-    }
-
-    private sealed interface Fetch {
-        data class Wait(
-            val ms: Long,
-            val throttle: Boolean,
-        ) : Fetch
-
-        data class Done(val bytes: Long) : Fetch
-    }
 
     /**
      * PUTs [file] (or an empty body) to [key] with [meta]; [ifMatch] makes it conditional, [ifNoneMatch] makes it a create
@@ -420,10 +400,8 @@ class S3Api(
         payloadHash: String = SigV4Signer.EMPTY_SHA256,
         timeoutMs: Long? = null,
         body: (() -> Any)? = null,
-    ): HttpResponse {
-        var attempt = 0
-        while (true) {
-            budget.awaitSlot()
+    ): HttpResponse =
+        budget.retrying { _, retries ->
             val response =
                 httpClient.request {
                     signed(method, key, query, headers, payloadHash)
@@ -437,18 +415,15 @@ class S3Api(
                     }
                     if (body != null) setBody(body())
                 }
-            if (isRetryable(response.status.value) && attempt < MAX_ATTEMPTS) {
-                val waitMs = backoffMs(response, attempt)
+            if (isRetryable(response.status.value) && retries < MAX_ATTEMPTS) {
+                val waitMs = backoffMs(response, retries)
                 log.warn("S3 answered {} on {} {}; retrying in {} ms", response.status.value, method.value, key ?: "(bucket)", waitMs)
-                if (isThrottle(response.status.value)) budget.recordThrottle(waitMs)
-                delay(waitMs)
-                attempt++
-                continue
+                RetryOutcome.Retry(waitMs, throttle = isThrottle(response.status.value))
+            } else {
+                if (response.status.isSuccess()) budget.recordSuccess()
+                RetryOutcome.Done(response)
             }
-            if (response.status.isSuccess()) budget.recordSuccess()
-            return response
         }
-    }
 
     private fun conditionHeaders(
         ifMatch: String?,

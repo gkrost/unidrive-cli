@@ -835,8 +835,18 @@ class OneDriveProvider(
                 known = result.items,
             )
 
-        val sharedItems = graphApi.listSharedWithMe().mapNotNull { it.toSharedCloudItem() }
-        log.debug("Delta: {} shared items", sharedItems.size)
+        // The gather calls this once per delta page, and listSharedWithMe is one full listing of the
+        // shared set: fetch it on the last page of the walk only (hasMore == false). On every page it
+        // ran hundreds of listings over one initial walk on the same throttle budget and delivered the
+        // shared set once per page.
+        val sharedItems =
+            if (result.nextLink == null) {
+                val shared = graphApi.listSharedWithMe().mapNotNull { it.toSharedCloudItem() }
+                log.debug("Delta: {} shared items", shared.size)
+                shared
+            } else {
+                emptyList()
+            }
 
         return CapabilityResult.Success(
             DeltaPage(

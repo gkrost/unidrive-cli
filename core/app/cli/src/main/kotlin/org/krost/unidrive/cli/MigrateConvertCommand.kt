@@ -11,10 +11,16 @@ import org.krost.unidrive.cli.LegacyInventory.PathClass
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
+import org.krost.unidrive.io.stagingSiblingName
+import org.krost.unidrive.sync.HashVerifier
+import java.nio.channels.FileChannel
 import java.nio.file.Files
+import java.nio.file.AccessDeniedException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.DosFileAttributeView
 import java.time.Instant
 import kotlin.io.path.name
 
@@ -182,8 +188,19 @@ class MigrateUploadQuarantinedCommand : Runnable {
  * The conversion engine behind [MigrateConvertCommand]. Internal and side-effect-explicit so
  * tests can drive it against fixture trees without picocli or System.exit.
  */
+// One conversion walk: its copy, verify, give-up-the-source and journal steps belong together.
+@Suppress("TooManyFunctions")
 internal object LegacyConversion {
     const val JOURNAL_FILE = "conversion-journal.json"
+
+    /**
+     * Test seam: runs once a file has left the sync_root and before the run records it as moved, so a test can kill
+     * the run in that window. Null outside the tests.
+     */
+    internal var afterMove: ((Path) -> Unit)? = null
+
+    /** The staging suffix of [copyAside]'s sibling, the house `*.unidrive-tmp` every sweeper matches. */
+    private const val STAGING_SUFFIX = ".unidrive-tmp"
 
     @Serializable
     data class MovedFile(
@@ -454,29 +471,19 @@ internal object LegacyConversion {
         }
 
         // Journal: resume an interrupted run, or start over on --restart. A restart keeps the earlier
-        // quarantined list: the entries name unique local bytes whose upload command would otherwise forget
-        // them, so when the conversion directory is archived the entries follow their copies into it.
+        // quarantined list: the entries name unique local bytes whose upload command would otherwise
+        // forget them. The earlier conversion directory stays exactly where it is — moving it aside
+        // before the fresh journal is saved orphaned the copies when that save failed (the list is the
+        // only pointer to them), and rewriting every entry's path through a string comparison dangled
+        // them when the directory was spelled differently. Carrying the entries unchanged keeps every
+        // copy at its recorded path through any crash; the fresh run writes its own directory name, so
+        // nothing collides.
         var carried: List<QuarantinedFile> = emptyList()
         if (loaded != null && restart) {
-            val oldDir = loaded.conversionDir
-            val oldQuarantined = loaded.quarantined
-            var archived = false
-            Files.list(setup.profileDir).use { stream ->
-                stream
-                    .filter {
-                        val name = it.fileName.toString()
-                        name.startsWith("conversion-") && !name.startsWith("conversion-archive-") && Files.isDirectory(it)
-                    }
-                    .forEach { dir ->
-                        val archive = setup.profileDir.resolve("conversion-archive-${System.nanoTime()}")
-                        val moved = runCatching { Files.move(dir, archive) }.isSuccess
-                        if (moved && oldDir != null && dir.toString() == oldDir) {
-                            carried = oldQuarantined.map { it.copy(quarantinePath = it.quarantinePath.replace(oldDir, archive.toString())) }
-                            archived = true
-                        }
-                    }
+            carried = loaded.quarantined
+            if (carried.isNotEmpty()) {
+                println("Keeping ${carried.size} quarantined file(s) from the interrupted run at their recorded paths.")
             }
-            if (!archived) carried = oldQuarantined // the copies keep their paths (nothing to archive, or the move failed)
             loaded = null
         }
         val resumed = loaded
@@ -530,47 +537,66 @@ internal object LegacyConversion {
                 return 1
             }
             if (rootRecords.isNotEmpty()) {
-                var dir = conversionDir ?: setup.profileDir.resolve("conversion-${Instant.now().toString().replace(":", "").take(15)}")
+                // A new run gets a directory the filesystem names uniquely (a minute-resolution name let a restart in the same
+                // minute reuse the earlier run's quarantine). Recorded in the journal before the first file moves.
+                val dir = conversionDir ?: Files.createTempDirectory(setup.profileDir, "conversion-")
                 Files.createDirectories(dir)
-                journal = journal.copy(conversionDir = dir.toString())
+                if (journal.conversionDir != dir.toString()) {
+                    journal = journal.copy(conversionDir = dir.toString())
+                    Journal.save(setup.profileDir, journal)
+                }
+                reconcilePendingMoves(journal)
                 for (record in rootRecords) {
                     val source = setup.syncRoot.resolve(record.path.removePrefix("/"))
-                    if (!Files.exists(source)) continue // already moved by an interrupted run
+                    if (!Files.exists(source)) continue // already moved by an interrupted run, and journaled before it went
                     val bucket = if (record.cls == PathClass.BOTH_IDENTICAL) "retired" else "quarantine"
                     val destination = dir.resolve(bucket).resolve(record.path.removePrefix("/"))
+                    // The move is journaled before the source is given up: a kill after the removal leaves the copy named
+                    // for upload, and the resume finds it at the recorded destination.
+                    fun journalMove() {
+                        if (journal.moves.any { it.from == source.toString() }) return
+                        journal =
+                            journal.copy(
+                                moves =
+                                    journal.moves + MovedFile(
+                                        from = source.toString(),
+                                        to = destination.toString(),
+                                        bytes = record.syncRootBytes ?: 0L,
+                                        bucket = bucket,
+                                    ),
+                                quarantined =
+                                    if (bucket == "quarantine") {
+                                        journal.quarantined + QuarantinedFile(
+                                            remotePath = record.path,
+                                            quarantinePath = destination.toString(),
+                                            bytes = record.syncRootBytes ?: 0L,
+                                        )
+                                    } else {
+                                        journal.quarantined
+                                    },
+                            )
+                        Journal.save(setup.profileDir, journal)
+                    }
                     if (Files.exists(destination)) {
                         // A copy a previous run finished but whose source delete never ran: finishing the delete is
-                        // the resume. Anything else at the destination is a different file and refuses, as before.
-                        if (record.syncRootBytes != null && Files.size(destination) == record.syncRootBytes) {
-                            Files.delete(source)
+                        // the resume — proven by equal content, never by size. A killed cross-volume copy can leave
+                        // the full source size with an unwritten tail, and a size match is exactly how such a corpse
+                        // was once taken for a finished copy; equal SHA-256 is the proof the bytes really crossed.
+                        // Anything else at the destination is a different file and refuses, as before.
+                        if (Files.isRegularFile(destination) &&
+                            HashVerifier.computeSha256Hex(source) == HashVerifier.computeSha256Hex(destination)
+                        ) {
+                            journalMove()
+                            deleteMovedSource(source)
                         } else {
                             System.err.println("Error: the resume destination already exists with different content: $destination")
                             return 1
                         }
                     } else {
+                        journalMove()
                         moveAside(source, destination, record.syncRootBytes)
                     }
-                    journal =
-                        journal.copy(
-                            moves =
-                                journal.moves + MovedFile(
-                                    from = source.toString(),
-                                    to = destination.toString(),
-                                    bytes = record.syncRootBytes ?: 0L,
-                                    bucket = bucket,
-                                ),
-                            quarantined =
-                                if (bucket == "quarantine") {
-                                    journal.quarantined + QuarantinedFile(
-                                        remotePath = record.path,
-                                        quarantinePath = destination.toString(),
-                                        bytes = record.syncRootBytes ?: 0L,
-                                    )
-                                } else {
-                                    journal.quarantined
-                                },
-                        )
-                    Journal.save(setup.profileDir, journal)
+                    afterMove?.invoke(destination)
                     if (bucket == "retired") retired++ else quarantinedCount++
                     if (verbose) println("  moved ${record.path} -> $bucket")
                 }
@@ -629,6 +655,19 @@ internal object LegacyConversion {
         return 0
     }
 
+    /**
+     * A journaled move whose source is gone must have its copy at the recorded destination. Nothing is moved or deleted
+     * here: a source gone with no copy beside it is said, not taken for a finished move.
+     */
+    private fun reconcilePendingMoves(journal: Journal) {
+        for (move in journal.moves) {
+            if (Files.exists(Path.of(move.from))) continue
+            if (!Files.isRegularFile(Path.of(move.to))) {
+                System.err.println("Warning: '${move.from}' is gone and its copy is not at '${move.to}'.")
+            }
+        }
+    }
+
     private fun legacyInventoryInputs(
         setup: Setup,
         cacheDir: Path,
@@ -647,8 +686,8 @@ internal object LegacyConversion {
 
     /**
      * Moves [source] to [destination] whole before the source is given up: an atomic move when the volume has one,
-     * else a copy verified by size and only then the delete. The sync root can lie on another volume than the
-     * profile folder, and a copy that fell short must never take the only differing copy of the bytes with it.
+     * else the cross-volume [copyAside]. The sync root can lie on another volume than the profile folder, and a
+     * copy that fell short must never take the only differing copy of the bytes with it.
      */
     private fun moveAside(
         source: Path,
@@ -660,15 +699,70 @@ internal object LegacyConversion {
             Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE)
             return
         } catch (_: AtomicMoveNotSupportedException) {
-            // Another volume: carry the bytes over, check, then give up the source.
+            // Another volume: carry the bytes over through a staging name, check, then give up the source.
         }
-        Files.copy(source, destination)
-        val copied = Files.size(destination)
-        if (expectedBytes != null && copied != expectedBytes) {
-            Files.deleteIfExists(destination)
-            error("the copy of $source fell short: $copied of $expectedBytes bytes at $destination")
+        copyAside(source, destination, expectedBytes)
+    }
+
+    /**
+     * The cross-volume move, one step short of giving up the source at every moment: the bytes are copied to a
+     * staging sibling of [destination] (never to [destination] itself, where a killed copy would leave a file a
+     * later run can mistake for the finished move), flushed with [FileChannel.force], verified — size against
+     * [expectedBytes], the inventory's record, then SHA-256 against the [source] — and only then renamed into
+     * place atomically and the source deleted. The staging pattern and the force are [org.krost.unidrive.localfs.LocalFsProvider]'s
+     * durable copy; the SHA-256 is what proves the bytes whole, since a killed copy can carry the full source size
+     * with an unwritten tail. Internal so the cross-volume tests can drive the verification directly: through
+     * `execute` an imperfect copy is reachable only by killing the run mid-file.
+     */
+    // Any copy failure must take the staging corpse with it before it rethrows, whatever threw.
+    @Suppress("TooGenericExceptionCaught")
+    internal fun copyAside(
+        source: Path,
+        destination: Path,
+        expectedBytes: Long?,
+    ) {
+        Files.createDirectories(destination.parent)
+        val staging = destination.resolveSibling(stagingSiblingName(destination.fileName.toString(), STAGING_SUFFIX))
+        try {
+            Files.copy(source, staging, StandardCopyOption.REPLACE_EXISTING)
+            // A read-only source can leave staging unwritable, preventing the flush below and cleanup.
+            staging.toFile().setWritable(true)
+            FileChannel.open(staging, StandardOpenOption.WRITE).use { it.force(true) }
+            val copied = Files.size(staging)
+            if (expectedBytes != null && copied != expectedBytes) {
+                error("the copy of $source fell short: $copied of $expectedBytes bytes at $destination")
+            }
+            val expected = HashVerifier.computeSha256Hex(source)
+            val actual = HashVerifier.computeSha256Hex(staging)
+            if (actual != expected) {
+                error("the copy of $source does not match its source (sha256 $actual, expected $expected) at $destination")
+            }
+            Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (e: Exception) {
+            // Whatever failed, the staging corpse goes: no partial copy is ever left behind for a resume to trip on.
+            Files.deleteIfExists(staging)
+            throw e
         }
-        Files.delete(source)
+        deleteMovedSource(source)
+    }
+
+    /**
+     * Gives up the source after its bytes are proven at the destination. Windows refuses to delete a
+     * read-only file outright (AccessDeniedException), where the same-volume atomic move never needed
+     * anything cleared (a rename does not) — so a read-only file made the cross-volume run fail, and
+     * every resume fail again, after its copy had long landed. The read-only bit is cleared through the
+     * DOS view only: null on filesystems without one (Linux, a zip archive), where the delete answers
+     * for itself. A delete that fails again after the clear was refused for another reason and stays a
+     * failure.
+     */
+    private fun deleteMovedSource(source: Path) {
+        try {
+            Files.delete(source)
+        } catch (e: AccessDeniedException) {
+            val dos = Files.getFileAttributeView(source, DosFileAttributeView::class.java) ?: throw e
+            dos.setReadOnly(false)
+            Files.delete(source)
+        }
     }
 
     /** Deletes now-empty directories under [root], deepest first; [root] itself is kept. */

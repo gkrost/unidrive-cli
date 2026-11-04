@@ -1637,6 +1637,7 @@ open class SyncEngine(
                                 applyUpdatePlaceholder(action)
                                 if (action.wasHydrated) downloaded.incrementAndGet()
                             }
+                            is SyncAction.TouchMetadata -> applyTouchMetadata(action)
                             is SyncAction.MoveRemote -> applyMoveRemote(action)
                             is SyncAction.MoveLocal -> applyMoveLocal(action)
                             is SyncAction.DeleteLocal -> applyDeleteLocal(action)
@@ -2955,6 +2956,28 @@ open class SyncEngine(
         )
     }
 
+    // #264: a metadata-only remote change on a file whose bytes the row already records. The
+    // local mtime follows the remote's (what the download would have set), the row records the
+    // delivered metadata, and no transfer runs. The pin, hydration and quarantine marks stay:
+    // the touch learns nothing new about a quarantined identifier — its own delivery ends that.
+    private fun applyTouchMetadata(action: SyncAction.TouchMetadata) {
+        val item = action.remoteItem
+        placeholder.restoreMtime(action.path, item.modified)
+        val row = db.getEntry(action.path) ?: return
+        db.upsertEntry(
+            row.copy(
+                remoteId = item.id,
+                remoteHash = item.hash,
+                remoteVersion = item.version,
+                remoteContentId = item.contentId ?: row.remoteContentId,
+                remoteSize = item.size,
+                remoteModified = item.modified,
+                localMtime = item.modified?.toEpochMilli() ?: row.localMtime,
+            ),
+            keepMarks = true,
+        )
+    }
+
     internal suspend fun downloadByIdOrPath(
         item: CloudItem,
         remotePath: String,
@@ -4184,38 +4207,16 @@ open class SyncEngine(
                 SyncAction.CreatePlaceholder(action.path, action.remoteItem, shouldHydrate = !action.remoteItem.isFolder),
             )
         } else if (action.remoteState == ChangeState.DELETED && Files.exists(localPath)) {
-            val sent = statBeforeUpload(localPath)
-            val result =
-                provider.upload(localPath, action.path) { transferred, total ->
-                    reporter.onTransferProgress(action.path, transferred, total)
+            // archive#115: the kept file goes back to its row's canonical remote path, never the
+            // real-local alias path — an upload to /Bilder/x.jpg would build a /Bilder tree in the
+            // cloud and the upsert below (applyUpload's) would drop the row's alias. remotePathOf
+            // resolves row.remotePath ?: nearest aliased ancestor ?: path; for a non-aliased row it
+            // equals action.path, so remoteTarget stays null and nothing changes for it.
+            val canonicalTarget =
+                db.getEntry(action.path)?.let { row ->
+                    remotePathOf(action.path, row).takeIf { it != action.path }
                 }
-            // archive#337/#148: record the pre-upload stat (same rule as applyUpload) so a
-            // write landing during this upload is re-planned by the next scan.
-            val afterUpload = statBeforeUpload(localPath)
-            if (afterUpload != null && sent != null && afterUpload != sent) {
-                log.debug(
-                    "Conflict keep-both: {} changed while it was being uploaded; keeping the pre-upload watermark",
-                    action.path,
-                )
-            }
-            val mtime = sent?.first ?: afterUpload?.first ?: Files.getLastModifiedTime(localPath).toMillis()
-            val size = sent?.second ?: afterUpload?.second ?: Files.size(localPath)
-            db.upsertEntry(
-                SyncEntry(
-                    path = action.path,
-                    remoteId = result.id,
-                    remoteHash = result.hash,
-                    remoteVersion = result.version,
-                    remoteSize = result.size,
-                    remoteModified = result.modified,
-                    localMtime = mtime,
-                    localSize = size,
-                    isFolder = false,
-                    isPinned = false,
-                    isHydrated = true,
-                    lastSynced = Instant.now(),
-                ).let { withSentHash(it, localPath, sent) },
-            )
+            applyUpload(SyncAction.Upload(action.path, remoteTarget = canonicalTarget), resolveRefusal = false)
         }
     }
 
@@ -4469,6 +4470,7 @@ open class SyncEngine(
                     else -> "placeholder"
                 }
             is SyncAction.UpdatePlaceholder -> "update"
+            is SyncAction.TouchMetadata -> "touch"
             is SyncAction.DownloadContent -> "down"
             is SyncAction.MoveRemote -> "move"
             is SyncAction.MoveLocal -> "move"

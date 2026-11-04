@@ -28,9 +28,19 @@ class TokenManager(
     // (UD-111) stay below in `getValidToken`.
     private val refreshLatch = RefreshableTokenLatch()
 
+    // Only the log and tests read it today: the daemon's credential_health is an offline check of the token files
+    // (ProviderFactory.checkCredentialHealth) and holds no TokenManager, so a save failure is not on a health surface.
     @Volatile
     var lastRefreshFailure: RefreshFailure? = null
         private set
+
+    // The refreshed token is live in memory but its save failed: the token file still holds the older (possibly rotated
+    // away) refresh token. A plain getValidToken retries the save, at most once per SAVE_RETRY_INTERVAL_MS.
+    @Volatile
+    private var saveDirty = false
+
+    @Volatile
+    private var nextSaveRetryAtMs = 0L
 
     data class RefreshFailure(
         val timestamp: java.time.Instant,
@@ -54,6 +64,7 @@ class TokenManager(
         refreshLatch.replace {
             token = loaded
             lastRefreshFailure = null
+            saveDirty = false
         }
     }
 
@@ -65,6 +76,7 @@ class TokenManager(
         refreshLatch.replace {
             token = null
             lastRefreshFailure = null
+            saveDirty = false
         }
     }
 
@@ -118,14 +130,18 @@ class TokenManager(
         AccountOwner.requireSameUser(config.tokenPath, user)
         oauthService.saveToken(fresh)
         token = fresh
+        saveDirty = false
         AccountOwner.record(config.tokenPath, user)
         return fresh
     }
 
     suspend fun getValidToken(forceRefresh: Boolean = false): Token {
+        // Read before the token: a sign-out or reload after this point keeps a retried save from storing a stale token.
+        val seenGeneration = refreshLatch.generation()
         val currentToken = token ?: throw AuthenticationException("Not authenticated")
 
         if (!forceRefresh && !currentToken.isNearExpiry()) {
+            if (saveDirty) retryDirtySave(currentToken, seenGeneration)
             return currentToken
         }
 
@@ -156,11 +172,38 @@ class TokenManager(
                 if (refreshToken != null) {
                     try {
                         val refreshed = oauthService.refreshToken(refreshToken)
+                        // The refresh succeeded. A failed save of it (an antivirus scanner or a backup tool
+                        // holding the token file) must not surface as an auth failure: the new token is live
+                        // in memory and the caller gets it. The next refresh (or a sign-in) is the retry of
+                        // the save — every successful refresh saves again, and a plain getValidToken retries it
+                        // sooner (retryDirtySave). The failure is recorded in lastRefreshFailure, which names the
+                        // save, not "authentication expired"; only the log and tests read it today (no health
+                        // surface does).
                         val stored =
                             refreshLatch.commitIfCurrent(generation) {
                                 token = refreshed
-                                oauthService.saveToken(refreshed)
-                                lastRefreshFailure = null
+                                try {
+                                    oauthService.saveToken(refreshed)
+                                    lastRefreshFailure = null
+                                    saveDirty = false
+                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    log.warn(
+                                        "The refreshed token could not be saved to {}: {}: {}. It stays in memory; the next refresh or sign-in saves it.",
+                                        config.tokenPath,
+                                        e.javaClass.simpleName,
+                                        e.message,
+                                    )
+                                    lastRefreshFailure =
+                                        RefreshFailure(
+                                            timestamp = java.time.Instant.now(),
+                                            errorClass = e.javaClass.simpleName,
+                                            message = "saving the refreshed token failed: ${e.message}",
+                                        )
+                                    saveDirty = true
+                                    nextSaveRetryAtMs = 0L
+                                }
                             }
                         if (stored) return@withRefresh refreshed
                         signedOut = true
@@ -203,9 +246,41 @@ class TokenManager(
         )
     }
 
+    /**
+     * Retries the save of a refreshed token whose first save failed, on the fast path of [getValidToken], so a stopped
+     * process within the hour until the next refresh does not lose a rotated refresh token. Cheap: it runs only while
+     * [saveDirty], at most once per [SAVE_RETRY_INTERVAL_MS], and not at all after a sign-out or reload since
+     * [seenGeneration] (the commit is refused then) or when a refresh replaced [current] meanwhile (that refresh saves).
+     */
+    private suspend fun retryDirtySave(
+        current: Token,
+        seenGeneration: Long,
+    ) {
+        val now = System.currentTimeMillis()
+        if (now < nextSaveRetryAtMs) return
+        refreshLatch.commitIfCurrent(seenGeneration) {
+            if (!saveDirty || token !== current) return@commitIfCurrent
+            try {
+                oauthService.saveToken(current)
+                saveDirty = false
+                lastRefreshFailure = null
+                log.info("The refreshed token was saved to {} on retry.", config.tokenPath)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                nextSaveRetryAtMs = now + SAVE_RETRY_INTERVAL_MS
+                log.debug("Retrying the save of the refreshed token to {} failed: {}: {}", config.tokenPath, e.javaClass.simpleName, e.message)
+            }
+        }
+    }
+
     suspend fun logout() {
         forget()
         oauthService.deleteToken()
+    }
+
+    private companion object {
+        const val SAVE_RETRY_INTERVAL_MS = 30_000L
     }
 
     // Classify a refresh-time throwable as a transient network failure (retryable)

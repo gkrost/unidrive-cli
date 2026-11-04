@@ -2,7 +2,7 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>ComplexCondition:DaemonRuntime.kt$DaemonRuntime$snap != null &amp;&amp; !snap.stale &amp;&amp; expired &amp;&amp; !quotaRefreshInFlight.get()</ID>
+    <ID>ComplexCondition:QuotaSnapshotMonitor.kt$QuotaSnapshotMonitor$snap != null &amp;&amp; !snap.stale &amp;&amp; expired &amp;&amp; !quotaRefreshInFlight.get()</ID>
     <ID>CyclomaticComplexMethod:DaemonRuntime.kt$DaemonRuntime$private suspend fun lifecycle()</ID>
     <ID>CyclomaticComplexMethod:LegacyInventory.kt$LegacyInventory$private fun classify( inputs: Inputs, lockFacts: LockFacts, state: State?, ): Report</ID>
     <ID>CyclomaticComplexMethod:MigrateConvertCommand.kt$LegacyConversion$internal fun execute( setup: Setup, rawMode: String, rawDisposition: String?, restart: Boolean, verbose: Boolean, ): Int</ID>
@@ -73,6 +73,7 @@
     <ID>TooGenericExceptionCaught:ProfileCommand.kt$ProfileListCommand$e: Exception</ID>
     <ID>TooGenericExceptionCaught:ProfileCreate.kt$ProfileCreator$e: Exception</ID>
     <ID>TooGenericExceptionCaught:QuotaCommand.kt$QuotaCommand$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:QuotaSnapshotMonitor.kt$QuotaSnapshotMonitor$e: Exception</ID>
     <ID>TooGenericExceptionCaught:RefreshRpcHandler.kt$RefreshRpcHandler$e: Exception</ID>
     <ID>TooGenericExceptionCaught:RefreshRpcHandler.kt$RefreshRpcHandler$t: Throwable</ID>
     <ID>TooGenericExceptionCaught:RelocateCommand.kt$RelocateCommand$e: Exception</ID>
@@ -85,7 +86,6 @@
     <ID>TooGenericExceptionThrown:CliExtensionLoaderTest.kt$CliExtensionLoaderTest.&lt;no name provided&gt;$throw RuntimeException("intentional")</ID>
     <ID>TooGenericExceptionThrown:RelocateCommandTest.kt$RelocateCommandTest$throw RuntimeException("boom")</ID>
     <ID>TooManyFunctions:CliProgressReporter.kt$CliProgressReporter : ProgressReporter</ID>
-    <ID>TooManyFunctions:DaemonRuntime.kt$DaemonRuntime</ID>
     <ID>TooManyFunctions:GlyphRenderer.kt$GlyphRenderer</ID>
     <ID>TooManyFunctions:LegacyInventory.kt$LegacyInventory</ID>
     <ID>TooManyFunctions:Main.kt$Main : Runnable</ID>
