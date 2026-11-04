@@ -8,6 +8,8 @@ import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.Capability
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.CredentialHealth
+import org.krost.unidrive.engine.CursorState
+import org.krost.unidrive.engine.CursorStateView
 import org.krost.unidrive.engine.DuplicateNames
 import org.krost.unidrive.ProviderRegistry
 import org.krost.unidrive.authenticateAndLog
@@ -321,8 +323,9 @@ class StatusCommand : Runnable {
                 trackedFiles = files.size
                 trackedBytes = files.sumOf { it.remoteSize }
                 nonHydrated = files.count { !it.isHydrated }
-                lastFullScan = db.getSyncState("last_full_scan")
-                pendingCursor = db.getSyncState("pending_cursor")
+                val cursor: CursorStateView = CursorState(db)
+                lastFullScan = cursor.lastFullScan
+                pendingCursor = cursor.pendingCursor
                 // archive#403: the items kept under a decorated name (unresolved duplicates).
                 duplicateNames = duplicateNamesOf(db)
             } finally {
@@ -667,7 +670,7 @@ class StatusCommand : Runnable {
             val buckets = computeLocalSizeBuckets(entries)
             val hydratedBytes = buckets.hydratedBytes
             val pendingBytes = buckets.pendingBytes
-            val lastSyncRaw = db.getSyncState("last_full_scan")
+            val lastSyncRaw = CursorState(db).lastFullScan
             db.close()
             val lastSyncFormatted = formatLastSync(lastSyncRaw)
 
@@ -748,7 +751,7 @@ class StatusCommand : Runnable {
             val sparseCount = entries.count { !it.isHydrated && !it.isFolder }
             val totalRemoteSize = entries.filter { !it.isFolder }.sumOf { it.remoteSize }
             val buckets = computeLocalSizeBuckets(entries)
-            val lastSyncRaw = db.getSyncState("last_full_scan")
+            val lastSyncRaw = CursorState(db).lastFullScan
             db.close()
             AccountRow(
                 profileName = label,

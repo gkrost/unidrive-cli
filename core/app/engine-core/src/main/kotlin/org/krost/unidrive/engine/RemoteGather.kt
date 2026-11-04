@@ -53,6 +53,9 @@ class RemoteGather(
     // ([creatableScopeRoots]). The mirror engine supplies it; none means no root is created.
     private val localFolderExists: (remotePath: String) -> Boolean = { false },
 ) {
+    /** The cursor and recovery keys of this gather's state.db (gkrost/unidrive-cli#269); the mount's enumeration reads them here. */
+    val cursorState = CursorState(db)
+
     /** What the gather is asked to do, fixed per engine. */
     data class Options(
         // The provider type, for the log lines only.
@@ -622,14 +625,14 @@ class RemoteGather(
         // A checkpoint from an incomplete incremental delta has a different
         // cursor/offset meaning from a full listing. Drop that slice before
         // forcing the recovery inventory from its beginning.
-        if (retryIncompleteEnumeration && db.getSyncState("last_gather_full") == "false") {
+        if (retryIncompleteEnumeration && cursorState.lastGatherFull.strict == false) {
             db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID)?.let(db::completeScan)
         }
         // archive#321: when the remote walk began. The absence sweep defers the deletion verdict
         // for any row written after this instant — the listing pages that follow cannot
         // have seen such a write.
         val gatherStartedAt = Instant.now()
-        val storedCursor = if (retryIncompleteEnumeration) null else db.getSyncState("delta_cursor")
+        val storedCursor = if (retryIncompleteEnumeration) null else cursorState.deltaCursor
         val cursor = storedCursor?.ifEmpty { null }
         var isFullSync = cursor == null || provider.deltaIsFullListing
         var changes = mutableMapOf<String, CloudItem>()
@@ -683,8 +686,8 @@ class RemoteGather(
                         // usual "pending → delta after zero failures" dance is skipped —
                         // otherwise syncOnce's `if (actions.isEmpty()) return` short-circuits
                         // the promotion and the next run re-bootstraps forever.
-                        db.setSyncState("delta_cursor", page.cursor)
-                        db.setSyncState("last_full_scan", Instant.now().toString())
+                        cursorState.setDeltaCursor(page.cursor)
+                        cursorState.stampFullScan()
                         // Invalidate any in-progress scan checkpoint. The offsets persisted
                         // in `scan_in_progress_marker` correspond to the previous gather's
                         // cursor (cursor=null full enum, or an earlier delta cursor); they
@@ -839,12 +842,11 @@ class RemoteGather(
         // (OneDrive's @odata.nextLink URLs), and only providers can do the
         // comparison correctly.
         fun persistPendingCursor(cursor: String) {
-            db.setSyncState("pending_cursor", cursor)
-            db.setSyncState("pending_cursor_complete", if (allComplete) "true" else "false")
+            cursorState.setPendingCursor(cursor)
+            cursorState.setPendingComplete(allComplete)
             // The entries the listing could not read, capped (a localfs walk of E:\ names its recycle bin,
             // archive#1234); a pass that ends complete leaves the key empty.
-            db.setSyncState(
-                PENDING_SKIPPED_PATHS_KEY,
+            cursorState.setSkippedPaths(
                 if (allComplete) "" else skippedPaths.take(SKIPPED_PATHS_KEPT).joinToString("\n"),
             )
         }
@@ -890,7 +892,7 @@ class RemoteGather(
                 "#110: delta cursor expired ({}); clearing it and re-enumerating the full inventory.",
                 e.message,
             )
-            db.setSyncState("delta_cursor", "")
+            cursorState.setDeltaCursor("")
             // Abandon the stale scan context and start a fresh one for the full re-enum.
             db.completeScan(scanId)
             val recoveryScanId = db.beginScan(initialMarker = null)
@@ -998,7 +1000,7 @@ class RemoteGather(
         // Record the gather's ACTUAL full-enumeration verdict (a 410 recovery above
         // can upgrade an incremental pass to full) so the sync-path remote-shrink
         // guard judges the real mode, not just the pre-gather cursor state.
-        db.setSyncState("last_gather_full", isFullSync.toString())
+        cursorState.setLastGatherFull(isFullSync)
         if (!allComplete) {
             db.setSyncState(INCOMPLETE_ENUMERATION_KEY, "true")
         }
@@ -1028,14 +1030,8 @@ class RemoteGather(
         listener.onViewInvalidated(emptySet(), true)
     }
 
-    fun promotePendingCursor() {
-        val pendingCursor = db.getSyncState("pending_cursor") ?: return
-        db.setSyncState("delta_cursor", pendingCursor)
-        val complete = db.getSyncState("pending_cursor_complete") ?: "true"
-        if (complete == "true") {
-            db.setSyncState("last_full_scan", Instant.now().toString())
-        }
-    }
+    /** Moves the pending cursor to the delta cursor; see [CursorState.promote]. */
+    fun promotePendingCursor() = cursorState.promote()
 
     /**
      * The one decision about the recovery latch ([INCOMPLETE_ENUMERATION_KEY]), made by every caller that has just
@@ -1058,10 +1054,10 @@ class RemoteGather(
         reapsDeferred: Boolean = false,
         fullListingFallback: Boolean = false,
     ): Boolean {
-        val fullListing = db.getSyncState("last_gather_full")?.toBooleanStrictOrNull() ?: fullListingFallback
+        val fullListing = cursorState.lastGatherFull.strict ?: fullListingFallback
         val trusted =
             fullListing && !scoped && !reapsDeferred && shrinkWarning == null &&
-                db.getSyncState("pending_cursor_complete")?.toBooleanStrictOrNull() == true
+                cursorState.pendingComplete.strict == true
         if (trusted) {
             val current = db.getSyncState(INCOMPLETE_ENUMERATION_KEY)
             if (current != "false") {
@@ -1092,8 +1088,8 @@ class RemoteGather(
         remoteChanges: Map<String, CloudItem>,
         gatherStartedAt: Instant,
     ): Boolean {
-        if (db.getSyncState("last_gather_full")?.toBooleanStrictOrNull() != true) return false
-        if (db.getSyncState("pending_cursor_complete")?.toBooleanStrictOrNull() == true) {
+        if (cursorState.lastGatherFull.strict != true) return false
+        if (cursorState.pendingComplete.strict == true) {
             forgetDropped()
             return false
         }
@@ -1354,7 +1350,7 @@ class RemoteGather(
      * of the folder and its rows go with it.
      */
     fun expandDeletedFolders(changes: MutableMap<String, CloudItem>) {
-        if (db.getSyncState("last_gather_full")?.toBooleanStrictOrNull() == true) return
+        if (cursorState.lastGatherFull.strict == true) return
         expandFolderTombstones(changes)
     }
 

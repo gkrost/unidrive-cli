@@ -5,6 +5,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.engine.CursorState
 import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.engine.RemoteOperationGuard
@@ -69,7 +70,7 @@ internal class LiveFolderList(
      */
     suspend fun rowsOrNull(folder: String): List<SyncEntry>? {
         val path = PathNormalizer.nfc(folder)
-        if (!db.getSyncState("delta_cursor").isNullOrEmpty()) return null
+        if (!CursorState(db).deltaCursor.isNullOrEmpty()) return null
         if (path.isNotEmpty() && guard.isReadOnlyPath(path)) return null
         val folderRow = if (path.isEmpty()) null else db.getEntry(path)?.takeIf { it.isFolder && it.remoteId != null } ?: return null
         if (knowsCloudRows(path) || recentlyEmpty(path)) return null

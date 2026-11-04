@@ -20,6 +20,7 @@ import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.http.Priority
 import org.krost.unidrive.engine.AuditSink
+import org.krost.unidrive.engine.CursorState
 import org.krost.unidrive.engine.EnumerationEntryPoint
 import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.MountWiring
@@ -452,6 +453,10 @@ open class SyncEngine(
     // (which launches the depth-0 batch in parallel) issues the root listing once.
     private var remoteTopLevelByName: Map<String, CloudItem>? = null
     private val remoteTopLevelMutex = kotlinx.coroutines.sync.Mutex()
+
+    // gkrost/unidrive-cli#269: the cursor and recovery keys. The sync pass keeps its own copy of the cursor protocol
+    // (the engine split, #265, merges it with RemoteGather's); both go through CursorState.
+    private val cursorState = CursorState(db)
 
     // archive#560 U2b: the remote gather — delta paging, the scan staging and the cursor, the
     // archive#401 collision rule, the absence sweep, the tracked-scope transition and the
@@ -1090,8 +1095,8 @@ open class SyncEngine(
         // a prior incomplete pass left the cursor pinned at its older value.
         reporter.onScanCursorHint(
             phase = "remote",
-            cursor = db.getSyncState("delta_cursor")?.ifBlank { null },
-            complete = db.getSyncState("pending_cursor_complete")?.toBooleanStrictOrNull() ?: true,
+            cursor = cursorState.deltaCursor?.ifBlank { null },
+            complete = cursorState.pendingComplete.strict ?: true,
         )
         // Remote-shrink guard inputs (sync path only): snapshot the pre-gather
         // tracked-row baseline and whether this pass is expected to be a full
@@ -1100,7 +1105,7 @@ open class SyncEngine(
         // the gather — is read back after the gather below.
         val preGatherTrackedRows = db.getEntryCount()
         val fullEnumerationExpected =
-            db.getSyncState("delta_cursor").isNullOrEmpty() || provider.deltaIsFullListing ||
+            cursorState.deltaCursor.isNullOrEmpty() || provider.deltaIsFullListing ||
                 db.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)?.equals("true", ignoreCase = true) == true
         // A full enumeration against an established baseline must run NON-streaming
         // so the remote-shrink guard can abort before any transfer is dispatched —
@@ -1214,7 +1219,7 @@ open class SyncEngine(
         // the unscoped gather result; remoteChanges may be syncPath-filtered.
         // skipRemoteGather (apply mode) has no fresh listing to judge.
         val actualFullEnumeration =
-            db.getSyncState("last_gather_full")?.toBooleanStrictOrNull() ?: fullEnumerationExpected
+            cursorState.lastGatherFull.strict ?: fullEnumerationExpected
         val remoteShrinkWarning =
             if (actualFullEnumeration && runScope.isEmpty() && !skipRemoteGather) {
                 val observedAlive = allRemoteChanges.values.count { !it.deleted }
@@ -1250,7 +1255,7 @@ open class SyncEngine(
         // CLI/TOML override always wins on the next launch — the sentinel
         // sits at the lowest tier of [SyncConfig.resolveStreamingReconciliation].
         if (streamingReconciliation && !skipRemoteGather &&
-            db.getSyncState("pending_cursor_complete")?.equals("true", ignoreCase = true) == true
+            cursorState.pendingComplete.ignoringCase == true
         ) {
             db.setSyncState(SyncConfig.STREAMING_RECONCILIATION_SENTINEL_KEY, "true")
         }
@@ -1278,7 +1283,7 @@ open class SyncEngine(
         // gather forces this run to retry the full listing.
         // apply mode (skipRemoteGather) has no fresh listing, so it is never gated.
         val enumerationComplete =
-            skipRemoteGather || (db.getSyncState("pending_cursor_complete")?.toBooleanStrictOrNull() ?: true)
+            skipRemoteGather || (cursorState.pendingComplete.strict ?: true)
         val reconciledActionsAll =
             if (streamingActions != null) {
                 reconciler.finalizeStreaming(streamingActions, remoteChanges, localChanges, runScope,
@@ -2296,10 +2301,10 @@ open class SyncEngine(
             db.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)?.equals("true", ignoreCase = true) == true
         // Drop a checkpoint from an incomplete incremental delta before the
         // recovery full listing, whose provider resume marker has different semantics.
-        if (retryIncompleteEnumeration && db.getSyncState("last_gather_full") == "false") {
+        if (retryIncompleteEnumeration && cursorState.lastGatherFull.strict == false) {
             db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID)?.let(db::completeScan)
         }
-        val storedCursor = if (retryIncompleteEnumeration) null else db.getSyncState("delta_cursor")
+        val storedCursor = if (retryIncompleteEnumeration) null else cursorState.deltaCursor
         val cursor = storedCursor?.ifEmpty { null }
         val isFullSync = cursor == null || provider.deltaIsFullListing
         // archive#321: when the remote walk began — the absence sweep defers the deletion verdict
@@ -2342,8 +2347,8 @@ open class SyncEngine(
                         val resolved = resolveItemPath(item) ?: continue
                         changes[resolved.path] = resolved
                     }
-                    db.setSyncState("delta_cursor", page.cursor)
-                    db.setSyncState("last_full_scan", Instant.now().toString())
+                    cursorState.setDeltaCursor(page.cursor)
+                    cursorState.stampFullScan()
                     // See the non-streaming `gatherRemoteChanges` fast-bootstrap path
                     // for rationale. Stale `scan_in_progress_*` offsets index into a
                     // different result set than the new cursor=now delta returns.
@@ -2444,10 +2449,9 @@ open class SyncEngine(
         }
 
         fun persistPendingCursor(cursor: String) {
-            db.setSyncState("pending_cursor", cursor)
-            db.setSyncState("pending_cursor_complete", if (allComplete) "true" else "false")
-            db.setSyncState(
-                RemoteGather.PENDING_SKIPPED_PATHS_KEY,
+            cursorState.setPendingCursor(cursor)
+            cursorState.setPendingComplete(allComplete)
+            cursorState.setSkippedPaths(
                 if (allComplete) "" else skippedPaths.take(RemoteGather.SKIPPED_PATHS_KEPT).joinToString("\n"),
             )
         }
@@ -2832,7 +2836,7 @@ open class SyncEngine(
         }
         remoteGather.recordUnreachable(unreachable, isFullSync)
         // Record the gather's full-enumeration verdict (see gatherRemoteChanges).
-        db.setSyncState("last_gather_full", isFullSync.toString())
+        cursorState.setLastGatherFull(isFullSync)
         if (!allComplete) {
             db.setSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY, "true")
         }
