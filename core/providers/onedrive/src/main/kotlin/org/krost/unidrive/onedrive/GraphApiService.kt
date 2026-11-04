@@ -329,11 +329,16 @@ class GraphApiService(
         // auth: re-resolve the item once for a fresh URL before treating it as an
         // authentication failure. Bounded to a single re-resolve (no loop).
         var authUrlReresolved = false
+        // The token a 401 refused, until the replay that answers it takes it (#215): a forced refresh is for that
+        // replay alone, so a throttle of the replayed request does not make the next attempt rotate again.
         var sentToken: String? = null
+        var rejectedToken: String? = null
         while (true) {
             try {
                 throttleBudget.awaitSlot()
-                val bearer = if (authNeeded) tokenProvider(authRefreshed, sentToken) else null
+                val rejected = rejectedToken
+                rejectedToken = null
+                val bearer = if (authNeeded) tokenProvider(rejected != null, rejected) else null
                 if (bearer != null) sentToken = bearer
                 val statement =
                     httpClient.prepareGet(url) {
@@ -385,6 +390,7 @@ class GraphApiService(
                     DownloadOutcome.RetryAuth -> {
                         log.info("Got 401 on download itemId={} — forcing token refresh and retrying once", itemId)
                         authRefreshed = true
+                        rejectedToken = sentToken
                         continue
                     }
                     is DownloadOutcome.ExpiredUrl -> {
@@ -1338,13 +1344,16 @@ class GraphApiService(
             throw ProviderException("Refusing to send the OneDrive token to a URL that is not on the Graph origin")
         }
         var refreshed = false
-        var sentToken: String? = null
+        // The token a 401 refused, until the replay that answers it takes it (#215): a forced refresh is for that
+        // replay alone, so a throttle of the replayed request does not make the next attempt rotate again.
+        var rejectedToken: String? = null
         var throttleAttempts = 0
         var totalThrottleWaitMs = 0L
         while (true) {
             throttleBudget.awaitSlot()
-            val token = tokenProvider(refreshed, sentToken)
-            sentToken = token
+            val rejected = rejectedToken
+            rejectedToken = null
+            val token = tokenProvider(rejected != null, rejected)
             val response =
                 httpClient.request(
                     HttpRequestBuilder().apply {
@@ -1357,6 +1366,7 @@ class GraphApiService(
             if (response.status == HttpStatusCode.Unauthorized && !refreshed) {
                 log.info("Got 401 on {} — forcing token refresh and retrying once", endpoint.takeLast(60))
                 refreshed = true
+                rejectedToken = token
                 continue
             }
             if (shouldBackoff(response, throttleAttempts, totalThrottleWaitMs)) {
