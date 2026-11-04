@@ -37,4 +37,18 @@ class CredentialsToStringTest {
     fun `the refresh answer masks the token`() {
         assertFalse("SIGNATURE" in TokenRefreshResponse(newToken = jwt).toString())
     }
+
+    @Test
+    fun `a bridge mirror masks the shard's token`() {
+        val text =
+            Mirror(
+                index = 2,
+                token = "SHARD-ACCESS-TOKEN-VALUE",
+                farmer = Farmer(address = "farmer.example", port = 1_000),
+                url = "https://bridge.example/shard",
+            ).toString()
+
+        assertFalse("SHARD-ACCESS-TOKEN-VALUE" in text, text)
+        assertTrue("index=2" in text && "farmer.example" in text, text)
+    }
 }

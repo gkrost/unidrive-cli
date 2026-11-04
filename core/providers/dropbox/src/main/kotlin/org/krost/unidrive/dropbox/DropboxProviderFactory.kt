@@ -8,6 +8,7 @@ import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.PromptSpec
 import org.krost.unidrive.ProviderFactory
 import org.krost.unidrive.ProviderMetadata
+import org.krost.unidrive.auth.maskSecret
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -166,7 +167,9 @@ open class DropboxProviderFactory(
         val handle: String,
         val verifier: String,
         val expiresAt: String,
-    )
+    ) {
+        override fun toString(): String = "PendingDropboxFlow(handle=$handle, verifier=${maskSecret(verifier)}, expiresAt=$expiresAt)"
+    }
 
     private fun pendingFlowStore(profileDir: Path) =
         org.krost.unidrive.auth.CredentialStore(profileDir, PENDING_FLOW_FILE, PendingDropboxFlow.serializer(), protector = credentialProtector)
