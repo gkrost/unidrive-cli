@@ -33,7 +33,7 @@
     <ID>SwallowedException:InternxtProvider.kt$e: InternxtApiException</ID>
     <ID>ThrowsCount:AuthService.kt$AuthService$protected open suspend fun postLoginAccess( body: JsonObject, ): String</ID>
     <ID>ThrowsCount:AuthService.kt$AuthService$suspend fun authenticateInteractive(): InternxtCredentials</ID>
-    <ID>ThrowsCount:AuthService.kt$AuthService$suspend fun refreshToken(): InternxtCredentials</ID>
+    <ID>ThrowsCount:AuthService.kt$AuthService$suspend fun refreshToken(rejectedJwt: String? = null): InternxtCredentials</ID>
     <ID>ThrowsCount:InternxtApiService.kt$InternxtApiService$private suspend fun authenticatedGetReply( url: String, params: Map&lt;String, String&gt; = emptyMap(), socketTimeoutMs: Long = HttpDefaults.SOCKET_TIMEOUT_MS, ): GetReply</ID>
     <ID>ThrowsCount:InternxtApiService.kt$InternxtApiService$private suspend fun watchedShardPut( url: String, sizeBytes: Long, onBytesSent: ((Long) -&gt; Unit)? = null, progressIntervalMs: Long = SHARD_PROGRESS_INTERVAL_MS, body: (UploadProgress) -&gt; io.ktor.http.content.OutgoingContent, ): String?</ID>
     <ID>ThrowsCount:InternxtApiService.kt$InternxtApiService$suspend fun downloadFileStreaming( downloadUrl: String, cipher: javax.crypto.Cipher, destination: Path, expectedSize: Long? = null, expectedCiphertextSha256: String? = null, ): Long</ID>
