@@ -1713,32 +1713,44 @@ class MountEngine private constructor(
         val root = remotePathOf(folder.path, folder)
         pending.add(root)
         val visited = mutableSetOf<String>()
-        while (pending.isNotEmpty()) {
+        var unobserved = false
+        while (!unobserved && pending.isNotEmpty()) {
             val path = pending.removeFirst()
-            if (!visited.add(path)) throw FolderNotEmptyException("Remote folder listing repeated a folder")
+            if (!visited.add(path)) {
+                unobserved = true // a listing that repeats a folder cannot be compared with the rows
+                continue
+            }
             val children = try {
                 provider.listChildren(path)
             } catch (e: Exception) {
                 if (path == root && isAlreadyGone(e)) return
                 throw e
             }
-            for (child in children) {
-                if (child.deleted || child.trashed) continue
-                val row = observed[child.id]
-                if (row == null || row.isFolder != child.isFolder ||
-                    (!child.isFolder && (
-                        child.size != row.remoteSize ||
-                            (row.remoteModified != null && child.modified != row.remoteModified) ||
-                            (row.remoteHash != null && child.hash != row.remoteHash) ||
-                            (row.remoteVersion != null && child.version != row.remoteVersion) ||
-                            (row.remoteContentId != null && child.contentId != row.remoteContentId)
-                    ))
-                ) {
-                    throw FolderNotEmptyException("Remote folder contains an unobserved or changed child")
+            for (child in children.filter { !it.deleted && !it.trashed }) {
+                if (differsFromObserved(child, observed[child.id])) {
+                    unobserved = true
+                    break
                 }
                 if (child.isFolder) pending.add(child.path)
             }
         }
+        if (unobserved) throw FolderNotEmptyException("Remote folder contains an unobserved or changed child")
+    }
+
+    // True when a live child is not the row the mount observed: no row, a file turned folder (or the reverse), or a file whose
+    // size, time or recorded identity moved. Folder metadata alone never counts.
+    private fun differsFromObserved(
+        child: CloudItem,
+        row: SyncEntry?,
+    ): Boolean {
+        if (row == null || row.isFolder != child.isFolder) return true
+        if (child.isFolder) return false
+        val identityMoved =
+            (row.remoteHash != null && child.hash != row.remoteHash) ||
+                (row.remoteVersion != null && child.version != row.remoteVersion) ||
+                (row.remoteContentId != null && child.contentId != row.remoteContentId)
+        val timeMoved = row.remoteModified != null && child.modified != row.remoteModified
+        return child.size != row.remoteSize || timeMoved || identityMoved
     }
 
     /**
