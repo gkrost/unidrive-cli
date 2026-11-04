@@ -1753,4 +1753,5 @@ private fun assertVolatileShape(expected: JsonElement, actual: JsonElement, at: 
 // cache.bytes: the cache size is measured off the request path, so right after the start it is
 // either not measured yet (null) or already measured (0 for the empty corpus daemon); the corpus
 // pins that it is a number-or-null literal, not which of the two a fresh daemon shows.
-private val VOLATILE_FIELDS = setOf("cache_path", "uptime_ms", "clients_connected", "job_id", "engine_version", "engine_build_time_ms", "bytes", "since_ms", "as_of_ms")
+// profile_dir (auth, unidrive-cli#387) is the profile folder of the machine that runs the daemon.
+private val VOLATILE_FIELDS = setOf("cache_path", "uptime_ms", "clients_connected", "job_id", "engine_version", "engine_build_time_ms", "bytes", "since_ms", "as_of_ms", "profile_dir")

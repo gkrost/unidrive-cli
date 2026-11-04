@@ -705,10 +705,12 @@ class DaemonRuntime(
                         } ?: ""
                     // credential_health (archive#586): the last offline check, or `expired` at once when the provider rejected the
                     // credentials after the check (a transfer or an enumeration failed authentication and nothing worked since).
-                    val credentialHealthJson =
+                    val credentialReading =
                         credentialHealth.reading()
                             .withRejection(rejectionAfterSignIn(mount.authRejectedAtMs, signedInAtMs), lastContactMs)
-                            .toJson(System.currentTimeMillis())
+                    val credentialHealthJson = credentialReading.toJson(System.currentTimeMillis())
+                    // auth (unidrive-cli#387): the same reading as a sign-in question, with the profile folder the check looked in.
+                    val authJson = authStatusOf(credentialReading.state, lockFile.parent).toJson().toString()
                     // mode + capabilities (archive#603 U4): what this daemon serves, so a client can check the
                     // hosting contract before it sends a verb the profile refuses (additive, read-only).
                     val modeJson = ndjsonString(profileMode.wireName)
@@ -753,6 +755,7 @@ class DaemonRuntime(
                         ",\"provider_health\":$providerHealth" +
                         requestsJson +
                         ",\"credential_health\":$credentialHealthJson" +
+                        ",\"auth\":$authJson" +
                         // notifications (archive#111): the provider's remote-change push channel; `unsupported` where it has none.
                         ",\"notifications\":${notificationsStatusJson(provider.remoteChangeChannelStatus())}" +
                         // ignore (archive#660): present where the ignore rules apply; held_back counts the folders

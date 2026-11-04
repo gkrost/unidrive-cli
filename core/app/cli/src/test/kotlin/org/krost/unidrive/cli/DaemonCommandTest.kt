@@ -305,6 +305,16 @@ class DaemonCommandTest {
         assertNotNull(daemonStartCredentialRefusal("p", CredentialHealth.Warning("token file does not parse")))
     }
 
+    // unidrive-cli#387: the refusal names the folder the check looked in; the exit code and the typed reason stay as they were.
+    @Test
+    fun `daemon-start-refusal-names-the-folder-it-looked-in`() {
+        val folder = java.nio.file.Path.of("profile-folder")
+        val refusal = assertNotNull(daemonStartCredentialRefusal("p", CredentialHealth.Missing("No credentials file"), folder))
+
+        assertTrue(refusal.contains("auth_required"), "the typed reason stays; got: $refusal")
+        assertTrue(refusal.contains("looked in $folder"), "must name the folder it looked in; got: $refusal")
+    }
+
     @Test
     fun `daemon-start-proceeds-on-ok-and-expiring-credentials`() {
         assertEquals(null, daemonStartCredentialRefusal("p", CredentialHealth.Ok))
