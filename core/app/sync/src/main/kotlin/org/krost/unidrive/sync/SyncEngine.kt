@@ -454,8 +454,7 @@ open class SyncEngine(
     private var remoteTopLevelByName: Map<String, CloudItem>? = null
     private val remoteTopLevelMutex = kotlinx.coroutines.sync.Mutex()
 
-    // gkrost/unidrive-cli#269: the cursor and recovery keys. The sync pass keeps its own copy of the cursor protocol
-    // (the engine split, #265, merges it with RemoteGather's); both go through CursorState.
+    // The sync pass keeps its own cursor protocol; #265 is what merges it with RemoteGather's.
     private val cursorState = CursorState(db)
 
     // archive#560 U2b: the remote gather — delta paging, the scan staging and the cursor, the

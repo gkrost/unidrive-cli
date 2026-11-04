@@ -9,14 +9,15 @@ import kotlin.test.assertTrue
  * gkrost/unidrive-cli#269: the cursor and recovery keys of `sync_state` are read and written through [CursorState]
  * only. A `getSyncState("…")`/`setSyncState("…")` call with a literal key anywhere in the main sources is how a typo
  * or a second, different default for an absent key slips in. This test walks every module's `src/main` and fails on
- * such a literal outside [CursorState] and `StateDatabase`, unless the (file, key) pair is on [ALLOWED] below.
+ * such a literal outside [CursorState], unless the (file, key) pair is on [ALLOWED] below. StateDatabase
+ * keeps one checkpoint read of `last_full_scan`; any other safety key there fails.
  *
  * The test task runs in the module directory (see SyncCommandNoHydrationWiringTest in :app:cli), so `../..` is `core`.
  */
 class SyncStateLiteralKeyGuardTest {
     private val core = File("../..").canonicalFile
 
-    private val owners = setOf("CursorState.kt", "StateDatabase.kt")
+    private val owners = setOf("CursorState.kt")
 
     private val call = Regex("""\b(?:get|set)SyncState\(\s*"([^"]*)"""")
 
@@ -41,8 +42,8 @@ class SyncStateLiteralKeyGuardTest {
     }
 
     @Test
-    fun `no literal sync_state key outside CursorState, StateDatabase and the allow-list`() {
-        val offending = literalCalls().filterNot { it in ALLOWED }.distinct()
+    fun `no literal sync_state key outside CursorState and the allow-list`() {
+        val offending = literalCalls().filterNot { it in ALLOWED || it in SAFETY_CALLS_ALLOWED }.distinct()
         assertEquals(
             emptyList(),
             offending,
@@ -55,6 +56,11 @@ class SyncStateLiteralKeyGuardTest {
         assertEquals(emptyList(), ALLOWED.filter { it.second in SAFETY_KEYS }, "a safety key goes through CursorState")
         val present = literalCalls().toSet()
         assertEquals(emptyList(), ALLOWED.filterNot { it in present }, "drop allow-list entries the code no longer has")
+        assertEquals(
+            emptyList(),
+            SAFETY_CALLS_ALLOWED.filterNot { it in present },
+            "drop the checkpoint exception if StateDatabase no longer reads it",
+        )
     }
 
     @Test
@@ -63,8 +69,11 @@ class SyncStateLiteralKeyGuardTest {
         val quoted = SAFETY_KEYS.map { "\"$it\"" }
         val found =
             mainSources()
-                .filter { it.name !in owners && it.name !in SAFETY_TEXT_ELSEWHERE }
-                .flatMap { file -> quoted.filter { it in file.readText() }.map { file.name to it } }
+                .filter { it.name !in owners }
+                .flatMap { file ->
+                    val allowed = SAFETY_TEXT_ALLOWED[file.name].orEmpty()
+                    quoted.filter { key -> key in file.readText() && key !in allowed }.map { file.name to it }
+                }
         assertEquals(emptyList(), found, "the safety keys are owned by CursorState")
     }
 
@@ -80,10 +89,19 @@ class SyncStateLiteralKeyGuardTest {
             )
 
         /**
-         * Files that hold a safety key's text for another reason: RemoteGather declares PENDING_SKIPPED_PATHS_KEY (which
-         * CursorState uses), and tracking.db (SqliteTrackingSet) keeps a `delta_cursor` of its own in its own table.
+         * Quoted safety-key text that is not a [CursorState] call. RemoteGather names the skipped-paths key that
+         * CursorState reads. StateDatabase reads and deletes `last_full_scan` on the checkpoint path. tracking.db
+         * (SqliteTrackingSet) keeps a `delta_cursor` of its own in its own table. Any other quoted safety key fails.
          */
-        val SAFETY_TEXT_ELSEWHERE = setOf("RemoteGather.kt", "TrackingSet.kt")
+        val SAFETY_TEXT_ALLOWED: Map<String, Set<String>> =
+            mapOf(
+                "RemoteGather.kt" to setOf("\"pending_cursor_skipped_paths\""),
+                "StateDatabase.kt" to setOf("\"last_full_scan\""),
+                "TrackingSet.kt" to setOf("\"delta_cursor\""),
+            )
+
+        /** The one safety-key call that stays outside [CursorState]: the checkpoint read, not a second default. */
+        val SAFETY_CALLS_ALLOWED: Set<Pair<String, String>> = setOf("StateDatabase.kt" to "last_full_scan")
 
         /**
          * TODO(gkrost/unidrive-cli#269): keys with no deletion safety that still use literal keys: the quota snapshot, the

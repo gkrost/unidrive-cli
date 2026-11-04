@@ -53,7 +53,7 @@ class RemoteGather(
     // ([creatableScopeRoots]). The mirror engine supplies it; none means no root is created.
     private val localFolderExists: (remotePath: String) -> Boolean = { false },
 ) {
-    /** The cursor and recovery keys of this gather's state.db (gkrost/unidrive-cli#269); the mount's enumeration reads them here. */
+    /** Public so the mount's enumeration can read this gather's cursor. */
     val cursorState = CursorState(db)
 
     /** What the gather is asked to do, fixed per engine. */
@@ -1030,7 +1030,6 @@ class RemoteGather(
         listener.onViewInvalidated(emptySet(), true)
     }
 
-    /** Moves the pending cursor to the delta cursor; see [CursorState.promote]. */
     fun promotePendingCursor() = cursorState.promote()
 
     /**
