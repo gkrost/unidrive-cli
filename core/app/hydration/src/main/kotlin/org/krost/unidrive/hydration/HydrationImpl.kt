@@ -1125,11 +1125,8 @@ class HydrationImpl(
                 // archive#652: one logical transfer; the failed attempt is counted on its row, not a row of its own.
                 if (retryScheduled) tx?.attemptFailed(e.javaClass.simpleName, e.message, nextTryAtMs)
                 _events.emit(HydrationEvent.Failed(path, err, retryScheduled = retryScheduled))
-                if (retryScheduled && stopping) {
-                    // gkrost/unidrive-cli#72: a stopping daemon starts no further attempt; the row is the queue.
-                    throw CancellationException("the daemon is stopping: the retry is left to the next start")
-                }
                 if (retryScheduled) {
+                    throwIfStoppingBeforeRetry()
                     log.info(
                         "upload attempt {}/{} failed for {}: {}; retrying",
                         attempt, maxUploadAttempts, path, e.message,
@@ -1159,6 +1156,13 @@ class HydrationImpl(
             ok = false,
             error = lastError,
         )
+    }
+
+    private fun throwIfStoppingBeforeRetry() {
+        // gkrost/unidrive-cli#72: a stopping daemon starts no further attempt; the row is the queue.
+        if (stopping) {
+            throw CancellationException("the daemon is stopping: the retry is left to the next start")
+        }
     }
 
     // The cloud copy changed between the row's token and the transfer (upload-time convergence): not transient — a retry would
