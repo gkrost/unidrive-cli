@@ -36,7 +36,7 @@ class RemoteEnumeration(
     // What a client may ask about the enumeration (see status). The daemon's poller
     // records on the same tracker when it tries again after a failure.
     val tracker: EnumerationTracker,
-    private val reapGuards: ReapGuards,
+    val reapGuards: ReapGuards,
     // The engine's logger, so the moved log lines keep their logger name.
     private val log: Logger,
     // archive#147: how many remote rows one merge transaction upserts. Tests drive chunk
@@ -55,6 +55,14 @@ class RemoteEnumeration(
         // The hydration-cache file of a logical path.
         val cachePathOf: (path: String) -> Path,
     ) {
+        /**
+         * gkrost/unidrive-cli#391: told with the logical path when the reap (a delete seen in the cloud, a gone folder, a
+         * file replaced by a folder) has removed that path's cache copy from the disk, so the hydration layer's running
+         * cache total follows at once instead of at the next walk. Late-bound by the hydration layer; a no-op until then.
+         */
+        @Volatile
+        var onCacheCopyDropped: (path: String) -> Unit = {}
+
         /**
          * Whether the row at [path] ([row] is its alive row, if any) may hold the only copy of an edit that has
          * not reached the cloud, so that nothing may drop the row or its cache copy (archive#301):
@@ -599,7 +607,10 @@ internal fun evictCacheCopies(
     for ((path, cachePath, mtimeAtReap) in cacheEvictions) {
         runCatching {
             val unchanged = runCatching { Files.getLastModifiedTime(cachePath).toMillis() }.getOrNull() == mtimeAtReap
-            if (!reapGuards.uploadInFlight(path) && unchanged) Files.deleteIfExists(cachePath)
+            if (!reapGuards.uploadInFlight(path) && unchanged) {
+                Files.deleteIfExists(cachePath)
+                if (!Files.exists(cachePath)) reapGuards.onCacheCopyDropped(path)
+            }
         }
     }
 }
@@ -618,6 +629,7 @@ private fun dropReplacedCacheCopy(
         return
     }
     runCatching { Files.deleteIfExists(cache) }
+    if (!Files.exists(cache)) runCatching { reapGuards.onCacheCopyDropped(old.path) }
 }
 
 // The alive row a tombstone keyed at [path] is about (archive#1033). The key of a synthesized tombstone is the row's effective

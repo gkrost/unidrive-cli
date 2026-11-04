@@ -316,6 +316,14 @@ class MountEngine private constructor(
             log = contentIdLog,
         )
 
+    /**
+     * gkrost/unidrive-cli#391: [listener] is told the path of every cache copy the enumeration's reap removes from the disk
+     * (the hydration layer's running cache total follows it).
+     */
+    fun onReapedCacheCopy(listener: (path: String) -> Unit) {
+        wiring.enumeration.reapGuards.onCacheCopyDropped = listener
+    }
+
     /** One pass of the content-id backfill; see [ContentIdBackfill]. */
     internal suspend fun backfillContentIdsOnce(): ContentIdBackfill.Outcome = contentIds.pass()
 
