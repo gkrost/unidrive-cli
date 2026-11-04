@@ -34,7 +34,7 @@ class InternxtRequestStatusTest {
             val service =
                 InternxtApiService(
                     InternxtConfig(credentialProtector = null),
-                    credentialsProvider = { _ ->
+                    credentialsProvider = { _, _ ->
                         InternxtCredentials(jwt = "jwt", mnemonic = "m", rootFolderId = "root", email = "e@example.invalid", bridgeUser = "bu", bridgeUserId = "bi")
                     },
                     requestInFlight = inFlight,
@@ -69,7 +69,7 @@ class InternxtRequestStatusTest {
         val service =
             InternxtApiService(
                 InternxtConfig(credentialProtector = null),
-                credentialsProvider = { _ ->
+                credentialsProvider = { _, _ ->
                     InternxtCredentials(jwt = "jwt", mnemonic = "m", rootFolderId = "root", email = "e@example.invalid", bridgeUser = "bu", bridgeUserId = "bi")
                 },
                 httpClient = io.ktor.client.HttpClient(MockEngine { respond("{}", HttpStatusCode.OK) }),
