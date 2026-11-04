@@ -76,7 +76,8 @@ internal class InternxtDownloadBudgetExhaustedException(
     cause: Throwable,
 ) : java.io.IOException(message, cause)
 
-class InternxtApiService(
+// One constructor parameter per test seam (clock, client, budgets, watchdog, metrics, in-flight); a parameter object would only move them.
+class InternxtApiService @Suppress("LongParameterList") constructor(
     private val config: InternxtConfig,
     private val credentialsProvider: suspend (forceRefresh: Boolean) -> InternxtCredentials,
     // Two budgets matching drive-desktop's audited `bottleneck` config:
