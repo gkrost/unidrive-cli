@@ -188,6 +188,8 @@ class MigrateUploadQuarantinedCommand : Runnable {
  * The conversion engine behind [MigrateConvertCommand]. Internal and side-effect-explicit so
  * tests can drive it against fixture trees without picocli or System.exit.
  */
+// One conversion walk: its copy, verify, give-up-the-source and journal steps belong together.
+@Suppress("TooManyFunctions")
 internal object LegacyConversion {
     const val JOURNAL_FILE = "conversion-journal.json"
 
@@ -712,6 +714,8 @@ internal object LegacyConversion {
      * with an unwritten tail. Internal so the cross-volume tests can drive the verification directly: through
      * `execute` an imperfect copy is reachable only by killing the run mid-file.
      */
+    // Any copy failure must take the staging corpse with it before it rethrows, whatever threw.
+    @Suppress("TooGenericExceptionCaught")
     internal fun copyAside(
         source: Path,
         destination: Path,
