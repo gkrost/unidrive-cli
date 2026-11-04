@@ -4,12 +4,13 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
 
-// The shadow plugin drags log4j-core and plexus-utils onto this module's
-// buildscript (plugin) classpath; both carried known advisories at the
+// The shadow plugin drags log4j-core, plexus-utils, jackson and guava onto this
+// module's buildscript (plugin) classpath; each carried known advisories at the
 // versions shadow pins (log4j-core deserialization/DoS; plexus-utils
-// directory-traversal). The latest shadow release still pins the vulnerable
-// versions, so a plugin bump can't fix it — force the patched releases on the
-// plugin classpath. These are build-time-only and never reach the shipped jar.
+// directory-traversal; jackson-core/-databind of the 2.19–2.21 line; guava up to
+// 33.7.1). The latest shadow release still pins the vulnerable versions, so a
+// plugin bump can't fix it — force the patched releases on the plugin classpath.
+// These are build-time-only and never reach the shipped jar.
 // The classpath is dependency-locked (buildscript-gradle.lockfile beside this
 // file): lockAllConfigurations() in the root build script covers project
 // configurations only, so without this a plugin transitive drift resolves
@@ -20,6 +21,10 @@ buildscript {
             activateDependencyLocking()
             force("org.apache.logging.log4j:log4j-core:2.26.1")
             force("org.codehaus.plexus:plexus-utils:4.1.0")
+            force("com.fasterxml.jackson.core:jackson-core:2.21.7")
+            force("com.fasterxml.jackson.core:jackson-databind:2.21.7")
+            force("com.fasterxml.jackson.core:jackson-annotations:2.21")   // the annotations line has no 2.21.x patches
+            force("com.google.guava:guava:33.7.2-jre")
         }
     }
 }
