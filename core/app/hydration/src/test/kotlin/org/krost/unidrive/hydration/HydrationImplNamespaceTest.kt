@@ -28,10 +28,11 @@ class HydrationImplNamespaceTest {
         var lastDeletedPath: String? = null
         var throwOnCreate: Throwable? = null
         var throwOnDelete: Throwable? = null
+        var children: List<CloudItem> = emptyList()
 
         override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
         override suspend fun authenticate() {}
-        override suspend fun listChildren(path: String): List<CloudItem> = emptyList()
+        override suspend fun listChildren(path: String): List<CloudItem> = children
         // A never-uploaded local file is genuinely absent on the cloud — the
         // rename/unlink ghost-probe expects a typed not-found, not a generic error.
         override suspend fun getMetadata(path: String): CloudItem = throw ProviderException("Item not found: $path")
@@ -416,6 +417,25 @@ class HydrationImplNamespaceTest {
         )
         provider2.throwOnDelete = RuntimeException("Internxt API: cannot delete non-empty folder")
         assertEquals(RmdirResult.NotEmpty, impl2.rmdir("/foo"))
+    }
+
+    @Test
+    fun rmdir_preserves_cache_and_rows_when_a_live_child_was_not_observed() = runTest {
+        val env = freshEnv()
+        assertEquals(MkdirResult.Ok, env.impl.mkdir("/dir"))
+        env.provider.children = listOf(
+            CloudItem("new-child", "new.txt", "/dir/new.txt", 5L, false, Instant.now(), null, null, null),
+        )
+        val cached = env.engine.resolveCachePath("/dir/old.txt")
+        Files.createDirectories(cached.parent)
+        Files.writeString(cached, "cached bytes")
+
+        for (recursive in listOf(false, true)) {
+            assertEquals(RmdirResult.NotEmpty, env.impl.rmdir("/dir", recursive = recursive))
+        }
+        assertEquals(null, env.provider.lastDeletedPath)
+        assertTrue(env.db.getEntry("/dir") != null)
+        assertEquals("cached bytes", Files.readString(cached))
     }
 
     @Test

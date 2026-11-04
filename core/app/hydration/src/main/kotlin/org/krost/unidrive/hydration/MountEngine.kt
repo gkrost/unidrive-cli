@@ -14,6 +14,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.ContentProof
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.FolderState
+import org.krost.unidrive.FolderNotEmptyException
 import org.krost.unidrive.NameRefusedException
 import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.PermanentUploadFailureException
@@ -1674,6 +1675,7 @@ class MountEngine private constructor(
             entryBefore != null && entryBefore.remoteId == null && entryBefore.isFolder &&
                 (isNameBlocked(path) || isExcludedPath(path, isDir = true))
         if (!neverOnDrive) {
+            if (entryBefore?.isFolder == true) checkFolderDeleteSnapshot(entryBefore)
             try {
                 // archive#402/#403: a row with a cloud id is deleted by that id: the twin of a duplicate remote name shares its
                 // remote path with the item that holds the name, and a lookup by path could reach either. archive#1178: the same
@@ -1698,6 +1700,45 @@ class MountEngine private constructor(
         // archive#87: a folder's rows below it are part of the same user delete — leave none of
         // them EXISTS, or the next fresh mount plans their re-download (the live 133k case).
         if (entryBefore?.isFolder == true) db.markDescendantsDeleted(path, mountDelete = true)
+    }
+
+    // A poll can lag another device's writes. A cascading delete must not erase a child the mount has never seen,
+    // or a file whose cloud version moved on. Snapshot the rows before the first listing; a concurrent poll must
+    // not make a newly discovered child look like part of this delete. The provider has no atomic subtree guard,
+    // so a write after this probe can still race the delete.
+    private suspend fun checkFolderDeleteSnapshot(folder: SyncEntry) {
+        val prefix = folder.path.trimEnd('/') + "/"
+        val observed = db.getEntriesByPrefix(prefix).filter { it.remoteId != null }.associateBy { it.remoteId }
+        val pending = ArrayDeque<String>()
+        val root = remotePathOf(folder.path, folder)
+        pending.add(root)
+        val visited = mutableSetOf<String>()
+        while (pending.isNotEmpty()) {
+            val path = pending.removeFirst()
+            if (!visited.add(path)) throw FolderNotEmptyException("Remote folder listing repeated a folder")
+            val children = try {
+                provider.listChildren(path)
+            } catch (e: Exception) {
+                if (path == root && isAlreadyGone(e)) return
+                throw e
+            }
+            for (child in children) {
+                if (child.deleted || child.trashed) continue
+                val row = observed[child.id]
+                if (row == null || row.isFolder != child.isFolder ||
+                    (!child.isFolder && (
+                        child.size != row.remoteSize ||
+                            (row.remoteModified != null && child.modified != row.remoteModified) ||
+                            (row.remoteHash != null && child.hash != row.remoteHash) ||
+                            (row.remoteVersion != null && child.version != row.remoteVersion) ||
+                            (row.remoteContentId != null && child.contentId != row.remoteContentId)
+                    ))
+                ) {
+                    throw FolderNotEmptyException("Remote folder contains an unobserved or changed child")
+                }
+                if (child.isFolder) pending.add(child.path)
+            }
+        }
     }
 
     /**

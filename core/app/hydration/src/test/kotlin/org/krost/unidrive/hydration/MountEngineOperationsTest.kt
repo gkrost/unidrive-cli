@@ -84,6 +84,66 @@ class MountEngineOperationsTest {
         deleted = deleted,
     )
 
+    @Test
+    fun `folder delete refuses a child added since the last poll`() = runTest {
+        db.upsertEntry(trackedRow("/dir", isFolder = true))
+        provider.childrenByParent["/dir"] = listOf(cloudItem("/dir/new.txt"))
+
+        for (permanent in listOf(false, true)) {
+            assertFailsWith<FolderNotEmptyException> { MountEngine.over(engine).deleteRemote("/dir", permanent) }
+        }
+        assertTrue(provider.deletedPaths.isEmpty())
+        assertNotNull(db.getEntry("/dir"), "refusal must not tombstone the folder")
+    }
+
+    @Test
+    fun `folder delete probes known subfolders for unseen descendants`() = runTest {
+        db.upsertEntry(trackedRow("/dir", isFolder = true))
+        db.upsertEntry(trackedRow("/dir/sub", isFolder = true))
+        provider.childrenByParent["/dir"] = listOf(cloudItem("/dir/sub", isFolder = true))
+        provider.childrenByParent["/dir/sub"] = listOf(cloudItem("/dir/sub/new.txt"))
+
+        assertFailsWith<FolderNotEmptyException> { engine.deleteRemote("/dir") }
+        assertEquals(listOf("/dir", "/dir/sub"), provider.listChildrenCalls)
+        assertTrue(provider.deletedPaths.isEmpty())
+        assertNotNull(db.getEntry("/dir/sub"))
+    }
+
+    @Test
+    fun `folder delete refuses a changed remote file`() = runTest {
+        db.upsertEntry(trackedRow("/dir", isFolder = true))
+        db.upsertEntry(trackedRow("/dir/a.txt", isFolder = false))
+        provider.childrenByParent["/dir"] = listOf(cloudItem("/dir/a.txt"))
+
+        assertFailsWith<FolderNotEmptyException> { engine.deleteRemote("/dir") }
+        assertTrue(provider.deletedPaths.isEmpty())
+        assertNotNull(db.getEntry("/dir/a.txt"))
+    }
+
+    @Test
+    fun `folder delete leaves rows intact when the live listing fails`() = runTest {
+        db.upsertEntry(trackedRow("/dir", isFolder = true))
+        provider.listChildrenThrow["/dir"] = java.io.IOException("offline")
+
+        assertFailsWith<java.io.IOException> { engine.deleteRemote("/dir") }
+        assertTrue(provider.deletedPaths.isEmpty())
+        assertNotNull(db.getEntry("/dir"))
+    }
+
+    @Test
+    fun `folder delete still removes the unchanged observed subtree`() = runTest {
+        db.upsertEntry(trackedRow("/dir", isFolder = true))
+        val row = trackedRow("/dir/a.txt", isFolder = false)
+        db.upsertEntry(row)
+        provider.childrenByParent["/dir"] = listOf(
+            cloudItem(row.path).copy(size = row.remoteSize, modified = row.remoteModified, hash = row.remoteHash),
+        )
+
+        engine.deleteRemote("/dir")
+        assertEquals(listOf("/dir"), provider.deletedPaths)
+        assertNull(db.getEntry(row.path))
+    }
+
     // ── archive#87 (WB-3): a folder delete forgets its subtree ─────────────────────────────────────────
     // The live case: a ~133k-item folder deleted in the mount left every row below it EXISTS in
     // state.db (only the folder's own row was tombstoned), so the next fresh mount listed the folder
