@@ -167,12 +167,13 @@ class LocalWatcher(
         // Install the slot before scheduling: the executor may run a zero-delay task before schedule() returns
         // (a zero debounce is accepted), and run() removes its own slot, which must already be there.
         pendingEmits.put(relativePath, emit)?.cancel()
+        var scheduled = false
         try {
             emit.future = coalescer.schedule(emit, debounceMs, TimeUnit.MILLISECONDS)
-        } catch (e: Throwable) {
-            // A rejected schedule (executor shut down) must not leave a slot that can never fire.
-            pendingEmits.remove(relativePath, emit)
-            throw e
+            scheduled = true
+        } finally {
+            // A schedule that threw (executor shut down) must not leave a slot that can never fire.
+            if (!scheduled) pendingEmits.remove(relativePath, emit)
         }
     }
 
