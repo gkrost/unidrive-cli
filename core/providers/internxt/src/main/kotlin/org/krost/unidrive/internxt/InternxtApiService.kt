@@ -27,6 +27,7 @@ import org.krost.unidrive.ViewRef
 import org.krost.unidrive.http.ErrorBodyExcerpt
 import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.http.InFlightDedup
+import org.krost.unidrive.http.RequestInFlight
 import org.krost.unidrive.http.RequestMetricsSink
 import org.krost.unidrive.http.RequestMetricsTap
 import org.krost.unidrive.http.UploadProgress
@@ -75,7 +76,8 @@ internal class InternxtDownloadBudgetExhaustedException(
     cause: Throwable,
 ) : java.io.IOException(message, cause)
 
-class InternxtApiService(
+// One constructor parameter per test seam (clock, client, budgets, watchdog, metrics, in-flight); a parameter object would only move them.
+class InternxtApiService @Suppress("LongParameterList") constructor(
     private val config: InternxtConfig,
     private val credentialsProvider: suspend (forceRefresh: Boolean) -> InternxtCredentials,
     // Two budgets matching drive-desktop's audited `bottleneck` config:
@@ -101,9 +103,12 @@ class InternxtApiService(
     private val listingSocketTimeoutMs: Long = LISTING_SOCKET_TIMEOUT_MS,
     // The seam the daemon attaches its request-attempt recorder to; no sink, no metrics (see attachRequestMetrics).
     private val requestMetrics: RequestMetricsTap = RequestMetricsTap(),
+    // The attempts open now, for daemon.status's `requests` object (gkrost/unidrive-cli#74); the client counts into
+    // it. A parameter so that a test can read the registry it drives.
+    private val requestInFlight: RequestInFlight = RequestInFlight(),
     // Tests hand in a client on a MockEngine; production builds the default one. The token path's leaf is the
     // profile name, so the request log lines carry the account independent of the thread's MDC (archive#644).
-    private val httpClient: HttpClient = defaultHttpClient(requestMetrics, profile = config.tokenPath.fileName.toString()),
+    private val httpClient: HttpClient = defaultHttpClient(requestMetrics, profile = config.tokenPath.fileName.toString(), inFlight = requestInFlight),
     // The limits of the shard PUT's write-progress watchdog (archive#571). A parameter so that loopback tests can run on a
     // scale of milliseconds.
     private val shardPutWatchdog: UploadWatchdogLimits = UploadWatchdogLimits.DEFAULT,
@@ -120,6 +125,17 @@ class InternxtApiService(
     fun attachRequestMetrics(sink: RequestMetricsSink?) {
         requestMetrics.sink = sink
     }
+
+    /**
+     * The service's own account of its requests, for daemon.status's `requests` object (gkrost/unidrive-cli#74): the
+     * calls in flight per endpoint class with the age of the oldest, and the free slots of the two budgets, named as
+     * the constructor KDoc names them (drive, bridge). Reads state only; nothing here waits or identifies a call.
+     */
+    fun requestStatus(): org.krost.unidrive.http.RequestStatusSnapshot =
+        org.krost.unidrive.http.RequestStatusSnapshot(
+            requestInFlight.snapshot(),
+            mapOf("drive" to driveBudget.freeSlots(), "bridge" to bridgeBudget.freeSlots()),
+        )
 
     /**
      * gkrost/unidrive-cli#181: the server's clock now, from the newest `Date` header seen; null when no answer has carried one
@@ -179,6 +195,7 @@ class InternxtApiService(
             tap: RequestMetricsTap,
             engine: io.ktor.client.engine.HttpClientEngine? = null,
             profile: String? = null,
+            inFlight: org.krost.unidrive.http.RequestInFlight? = null,
         ): HttpClient {
             val configure: io.ktor.client.HttpClientConfig<*>.() -> Unit = {
                 install(HttpTimeout) {
@@ -188,8 +205,10 @@ class InternxtApiService(
                 }
                 // UD-255: per-request correlation id + DEBUG req/response logging; the attempt metrics ride on it.
                 // archive#644: the profile and the server's x-request-id join the response line.
+                // gkrost/unidrive-cli#74: the attempts open now are counted for daemon.status's `requests` object.
                 install(org.krost.unidrive.http.RequestId) {
                     metrics = tap
+                    this.inFlight = inFlight
                     provider = "internxt"
                     endpoints = InternxtEndpoints.classifier
                     this.profile = profile

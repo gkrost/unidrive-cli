@@ -671,6 +671,108 @@ class DaemonRuntimeTest {
         }
     }
 
+    // gkrost/unidrive-cli#74: the provider's own account of its HTTP calls, so a stalled transfer can be diagnosed
+    // without reading the log. Present for a provider that can account for them, absent for one that cannot.
+    @Test
+    fun `daemon_status reports the provider's requests in flight and free slots`() = runBlocking {
+        val runtime =
+            DaemonRuntime(
+                profileMode = ProfileMode.MOUNT,
+                profileName = "test_profile",
+                lockFile = lockFile,
+                dbPath = dbPath,
+                syncRoot = tempDir,
+                socketPath = socketPath,
+                providerFactory = {
+                    object :
+                        StubProvider(),
+                        org.krost.unidrive.RequestStatusReporting {
+                        override fun requestStatus(): org.krost.unidrive.http.RequestStatusSnapshot =
+                            org.krost.unidrive.http.RequestStatusSnapshot(
+                                listOf(org.krost.unidrive.http.InFlightRequests("GET /drive/files", 2, 45_000)),
+                                mapOf("drive" to 0, "bridge" to 4),
+                            )
+                    }
+                },
+            )
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath)
+        try {
+            val reply = sendOneRequest("""{"verb":"daemon.status"}""")
+            val requests =
+                Json.parseToJsonElement(reply).jsonObject["requests"]
+                    ?: error("daemon.status must carry requests for a provider that reports them: $reply")
+            val open = requests.jsonObject["in_flight"]!!.jsonArray.single().jsonObject
+            assertEquals("GET /drive/files", open["class"]!!.jsonPrimitive.content)
+            assertEquals(2, open["count"]!!.jsonPrimitive.int)
+            assertEquals(45_000L, open["oldest_ms"]!!.jsonPrimitive.long)
+            assertEquals(0, requests.jsonObject["free_slots"]!!.jsonObject["drive"]!!.jsonPrimitive.int)
+            assertEquals(4, requests.jsonObject["free_slots"]!!.jsonObject["bridge"]!!.jsonPrimitive.int)
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    // A budget name is the provider service's own string; a quote or backslash in it must not break the reply.
+    @Test
+    fun `daemon_status escapes a free-slots budget name that needs JSON escaping`() = runBlocking {
+        val awkward = "dr\"ive\\x"
+        val runtime =
+            DaemonRuntime(
+                profileMode = ProfileMode.MOUNT,
+                profileName = "test_profile",
+                lockFile = lockFile,
+                dbPath = dbPath,
+                syncRoot = tempDir,
+                socketPath = socketPath,
+                providerFactory = {
+                    object :
+                        StubProvider(),
+                        org.krost.unidrive.RequestStatusReporting {
+                        override fun requestStatus(): org.krost.unidrive.http.RequestStatusSnapshot =
+                            org.krost.unidrive.http.RequestStatusSnapshot(emptyList(), mapOf(awkward to 3))
+                    }
+                },
+            )
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath)
+        try {
+            val reply = sendOneRequest("""{"verb":"daemon.status"}""")
+            val slots = Json.parseToJsonElement(reply).jsonObject["requests"]!!.jsonObject["free_slots"]!!.jsonObject
+            assertEquals(3, slots[awkward]!!.jsonPrimitive.int)
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    @Test
+    fun `daemon_status carries no requests object for a provider that cannot account for its calls`() = runBlocking {
+        val runtime =
+            DaemonRuntime(
+                profileMode = ProfileMode.MOUNT,
+                profileName = "test_profile",
+                lockFile = lockFile,
+                dbPath = dbPath,
+                syncRoot = tempDir,
+                socketPath = socketPath,
+                providerFactory = { StubProvider() },
+            )
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath)
+        try {
+            val reply = sendOneRequest("""{"verb":"daemon.status"}""")
+            assertNull(
+                Json.parseToJsonElement(reply).jsonObject["requests"],
+                "no provider account, no field: $reply",
+            )
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
     private fun sendOneRequest(request: String): String {
         val channel = connect()
         try {

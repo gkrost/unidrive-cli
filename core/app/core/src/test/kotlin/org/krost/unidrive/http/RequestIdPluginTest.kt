@@ -11,6 +11,12 @@ import io.ktor.client.request.request
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
@@ -247,6 +253,114 @@ class RequestIdPluginTest {
                     client.get("https://example.invalid/a?token=SECRET-VALUE")
                 }
             assertTrue(lines.none { "SECRET-VALUE" in it }, "the redaction rule covers every line: $lines")
+            client.close()
+        }
+
+    // gkrost/unidrive-cli#74: a request that ends by its timeout or a cancel leaves no ← line, so the log cannot say
+    // what became of it - the stalled-upload diagnosis had to count unanswered → lines by hand. One WARN names the
+    // kind, the endpoint class and the duration, and nothing that identifies the call (no id, no path, no query).
+    @Test
+    fun `a request abandoned by its timeout logs one WARN with class and duration`() =
+        runTest {
+            val engine =
+                MockEngine { _ ->
+                    throw java.net.SocketTimeoutException("read timed out")
+                }
+            val client =
+                HttpClient(engine) {
+                    install(RequestId) { profile = "alpha" }
+                }
+            val lines =
+                capturedLines {
+                    runCatching { client.get("https://example.invalid/drive/files?token=SECRET-VALUE") }
+                }
+            client.close()
+            val abandoned = lines.filter { it.startsWith("request abandoned") }
+            assertEquals(1, abandoned.size, "exactly one abandonment line: $lines")
+            assertTrue("timeout" in abandoned[0], "the kind is named: $lines")
+            assertTrue("GET external" in abandoned[0], "the endpoint class is named: $lines")
+            assertTrue("[alpha]" in abandoned[0], "the profile travels in the message: $lines")
+            assertTrue(Regex("""after \d+ ms""").containsMatchIn(abandoned[0]), "the duration is named: $lines")
+            assertTrue("SECRET-VALUE" !in abandoned[0] && "req=" !in abandoned[0], "no id, no path, no query: $lines")
+        }
+
+    @Test
+    fun `a request abandoned by a cancel logs one WARN`() =
+        runTest {
+            val engine =
+                MockEngine { _ ->
+                    awaitCancellation()
+                }
+            val client =
+                HttpClient(engine) {
+                    install(RequestId) { profile = "alpha" }
+                }
+            val lines =
+                capturedLines {
+                    coroutineScope {
+                        val call = launch { client.get("https://example.invalid/a") }
+                        runCurrent() // the request is on its way (the engine waits) when the caller gives up
+                        call.cancel()
+                        call.join()
+                    }
+                }
+            client.close()
+            val abandoned = lines.filter { it.startsWith("request abandoned") }
+            assertEquals(1, abandoned.size, "exactly one abandonment line: $lines")
+            assertTrue("cancelled" in abandoned[0], "the kind is named: $lines")
+        }
+
+    // gkrost/unidrive-cli#74: the attempts open now are counted while they run, so daemon.status's `requests`
+    // object can say what the client is waiting for. The entry closes however the attempt ends.
+    @Test
+    fun `a request in flight shows in the registry and leaves it when it ends`() =
+        runBlocking {
+            val inFlight = RequestInFlight()
+            val entered = Channel<Unit>(1)
+            val release = Channel<Unit>(1)
+            val engine =
+                MockEngine { _ ->
+                    entered.send(Unit)
+                    release.receive()
+                    respond("ok", HttpStatusCode.OK)
+                }
+            val client =
+                HttpClient(engine) {
+                    install(RequestId) { this.inFlight = inFlight }
+                }
+            val job = launch { client.get("https://example.invalid/a") }
+            entered.receive()
+            val open = inFlight.snapshot()
+            assertEquals(listOf("GET external"), open.map { it.endpointClass }, "the one open attempt: $open")
+            assertEquals(1, open.single().count)
+            release.send(Unit)
+            job.join()
+            assertEquals(emptyList(), inFlight.snapshot(), "nothing stays open after the answer")
+            client.close()
+        }
+
+    @Test
+    fun `a request that never gets an answer stays in flight until it fails`() =
+        runBlocking {
+            val inFlight = RequestInFlight()
+            val entered = Channel<Unit>(1)
+            val release = Channel<Unit>(1)
+            val engine =
+                MockEngine { _ ->
+                    entered.send(Unit)
+                    release.receive()
+                    throw java.net.SocketTimeoutException("read timed out")
+                }
+            val client =
+                HttpClient(engine) {
+                    install(RequestId) { this.inFlight = inFlight }
+                }
+            val job = launch { runCatching { client.get("https://example.invalid/a") } }
+            entered.receive()
+            assertTrue(inFlight.snapshot().isNotEmpty(), "the attempt without its answer is open")
+            release.send(Unit)
+            job.join()
+            assertEquals(emptyList(), inFlight.snapshot(), "the failed attempt is closed")
             client.close()
         }
 }

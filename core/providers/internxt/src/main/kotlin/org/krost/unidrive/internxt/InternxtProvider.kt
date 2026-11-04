@@ -40,7 +40,8 @@ class InternxtProvider(
     credentials: InternxtCredentials? = null,
     // Tests hand in a crypto that counts its seed derivations; production uses the default one.
     private val crypto: InternxtCrypto = InternxtCrypto(),
-) : CloudProvider {
+) : CloudProvider,
+    org.krost.unidrive.RequestStatusReporting {
     override val id = "internxt"
     override val displayName = "Internxt Drive"
 
@@ -361,6 +362,9 @@ class InternxtProvider(
     }
 
     override fun attachRequestMetrics(sink: org.krost.unidrive.http.RequestMetricsSink?) = api.attachRequestMetrics(sink)
+
+    // gkrost/unidrive-cli#74: the daemon reads this for daemon.status's `requests` object.
+    override fun requestStatus(): org.krost.unidrive.http.RequestStatusSnapshot = api.requestStatus()
 
     override fun close() {
         notificationsClient?.disconnect()

@@ -108,6 +108,13 @@ class HttpRetryBudget(
     fun currentConcurrency(): Int = concurrency.get()
 
     /**
+     * The permits [withPermit] could still hand out now: [currentConcurrency] minus the ones held
+     * (gkrost/unidrive-cli#74: daemon.status's `requests.free_slots`). Never negative: a storm that shrinks the
+     * bound while permits are held reads as 0 until they come back.
+     */
+    fun freeSlots(): Int = (concurrency.get() - permitsHeld.get()).coerceAtLeast(0)
+
+    /**
      * Runs [block] holding one of the [currentConcurrency] permits, and gives it back when [block] ends, however it ends.
      * A caller that finds every permit taken waits (suspended, polling every [PERMIT_POLL_MS]) and holds nothing while
      * it waits, so cancelling it releases nothing it does not own. The wait keeps the lanes of [awaitSlot]: while a

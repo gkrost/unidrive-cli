@@ -12,7 +12,7 @@
     <ID>ForbiddenComment:InternxtProvider.kt$InternxtProvider$// TODO: if a subsequent op using `cached` as a parent UUID returns</ID>
     <ID>LargeClass:InternxtApiService.kt$InternxtApiService : AutoCloseable</ID>
     <ID>LargeClass:InternxtApiServiceTest.kt$InternxtApiServiceTest</ID>
-    <ID>LargeClass:InternxtProvider.kt$InternxtProvider : CloudProvider</ID>
+    <ID>LargeClass:InternxtProvider.kt$InternxtProvider : CloudProviderRequestStatusReporting</ID>
     <ID>LongMethod:InternxtCreateCollisionTest.kt$InternxtCreateCollisionTest$@Test fun `create_collision_with_differing_remote_keeps_both_does_not_overwrite`()</ID>
     <ID>LongMethod:InternxtProvider.kt$InternxtProvider$private suspend fun uploadUnclassified( localPath: Path, remotePath: String, existingRemoteId: String?, // archive#291: Internxt replace-in-place keys on the file UUID (existingRemoteId), not an eTag. It has no If-Match-style // conditional PUT; archive#464: the token is "&lt;uuid&gt;|&lt;modificationTime&gt;|&lt;size&gt;" ([internxtVersionToken]), compared with fresh // metadata before anything is sent and again right before the replace. ifMatchETag: String?, onProgress: ((Long, Long) -&gt; Unit)?, ): CloudItem</ID>
     <ID>LongMethod:InternxtProvider.kt$InternxtProvider$suspend fun multipartUploadEntry( remotePath: String, bucket: String, parentUuid: String, plainName: String, ext: String?, fileSize: Long, encryptedSize: Long, indexHex: String, hashHex: String, startedAt: Instant, ): org.krost.unidrive.internxt.model.BucketEntry</ID>
@@ -51,7 +51,7 @@
     <ID>TooManyFunctions:AuthService.kt$AuthService : AutoCloseable</ID>
     <ID>TooManyFunctions:InternxtApiService.kt$InternxtApiService : AutoCloseable</ID>
     <ID>TooManyFunctions:InternxtCrypto.kt$InternxtCrypto</ID>
-    <ID>TooManyFunctions:InternxtProvider.kt$InternxtProvider : CloudProvider</ID>
+    <ID>TooManyFunctions:InternxtProvider.kt$InternxtProvider : CloudProviderRequestStatusReporting</ID>
     <ID>TooManyFunctions:InternxtProvider.kt$InternxtProvider$Companion</ID>
     <ID>VariableNaming:InternxtCrypto.kt$InternxtCrypto$private val SALTED_PREFIX = "Salted__".toByteArray(Charsets.US_ASCII)</ID>
   </CurrentIssues>
