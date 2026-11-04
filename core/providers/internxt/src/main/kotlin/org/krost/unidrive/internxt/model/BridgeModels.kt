@@ -1,6 +1,7 @@
 package org.krost.unidrive.internxt.model
 
 import kotlinx.serialization.Serializable
+import org.krost.unidrive.auth.maskSecret
 
 @Serializable
 data class Farmer(
@@ -23,7 +24,9 @@ data class Mirror(
     val farmer: Farmer,
     val url: String,
     val operation: String = "",
-)
+) {
+    override fun toString(): String = "Mirror(index=$index, hash=$hash, size=$size, parity=$parity, token=${maskSecret(token)}, healthy=$healthy, farmer=$farmer, url=$url, operation=$operation)"
+}
 
 @Serializable
 data class BridgeShard(
