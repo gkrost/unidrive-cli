@@ -732,6 +732,87 @@ class DaemonRuntimeTest {
         }
     }
 
+    // gkrost/unidrive-cli#392: transfer_budget is how many hydration downloads a client should run at once. It comes from the
+    // provider TYPE's audited limits, which the daemon now hands the engine (it passed no provider id before, so every
+    // profile ran at the fallback of 4), and it narrows to the transfer cap after the provider throttled.
+    private fun transferBudgetOf(reply: String): Int =
+        (Json.parseToJsonElement(reply).jsonObject["transfer_budget"] ?: error("daemon.status must carry transfer_budget: $reply"))
+            .jsonPrimitive.int
+
+    private class ProviderOfType(
+        override val id: String,
+    ) : StubProvider() {
+        @Volatile
+        var sink: org.krost.unidrive.http.RequestMetricsSink? = null
+
+        override fun attachRequestMetrics(sink: org.krost.unidrive.http.RequestMetricsSink?) {
+            this.sink = sink
+        }
+    }
+
+    @Test
+    fun `daemon_status reports the transfer budget of the provider type`() = runBlocking {
+        for ((type, expected) in listOf("internxt" to 8, "onedrive" to 8, "stub" to 4)) {
+            val runtime = DaemonRuntime(
+                profileMode = ProfileMode.MOUNT,
+                profileName = "test_profile",
+                lockFile = lockFile,
+                dbPath = dbPath,
+                syncRoot = tempDir,
+                socketPath = socketPath,
+                providerFactory = { ProviderOfType(type) },
+            )
+            val daemonJob = launch { runtime.start() }
+            awaitDaemonSocket(socketPath)
+            try {
+                val reply = sendOneRequest("""{"verb":"daemon.status"}""")
+                assertEquals(expected, transferBudgetOf(reply), "transfer_budget of a $type profile; got: $reply")
+            } finally {
+                runtime.close()
+                daemonJob.join()
+            }
+        }
+    }
+
+    @Test
+    fun `daemon_status narrows the transfer budget after the provider throttled`() = runBlocking {
+        val provider = ProviderOfType("internxt")
+        val runtime = DaemonRuntime(
+            profileMode = ProfileMode.MOUNT,
+            profileName = "test_profile",
+            lockFile = lockFile,
+            dbPath = dbPath,
+            syncRoot = tempDir,
+            socketPath = socketPath,
+            providerFactory = { provider },
+        )
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath)
+        try {
+            assertEquals(8, transferBudgetOf(sendOneRequest("""{"verb":"daemon.status"}""")))
+            val sink = assertNotNull(provider.sink, "the daemon attaches a request sink to every provider, recording or not")
+            sink.record(
+                org.krost.unidrive.http.RequestAttempt(
+                    startedAtMs = System.currentTimeMillis(),
+                    provider = "internxt",
+                    endpointClass = "GET /files/meta",
+                    method = "GET",
+                    outcome = org.krost.unidrive.http.AttemptOutcome.THROTTLED,
+                    headersMs = 5,
+                    totalMs = 5,
+                    bytesUp = null,
+                    bytesDown = null,
+                    retryNo = 0,
+                    throttled = true,
+                ),
+            )
+            assertEquals(2, transferBudgetOf(sendOneRequest("""{"verb":"daemon.status"}""")), "a throttle narrows it to the transfer cap")
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
     // gkrost/unidrive-cli#74: the provider's own account of its HTTP calls, so a stalled transfer can be diagnosed
     // without reading the log. Present for a provider that can account for them, absent for one that cannot.
     @Test

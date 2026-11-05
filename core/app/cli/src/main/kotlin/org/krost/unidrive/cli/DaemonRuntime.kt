@@ -21,6 +21,7 @@ import org.krost.unidrive.engine.TrashNamespace
 import org.krost.unidrive.engine.ViewCache
 import org.krost.unidrive.engine.ViewNamespaces
 import org.krost.unidrive.engine.ViewSpec
+import org.krost.unidrive.engine.throttleObservingSink
 import org.krost.unidrive.hydration.HydrationEvent
 import org.krost.unidrive.hydration.HydrationImpl
 import org.krost.unidrive.hydration.HydrationIpcHandler
@@ -786,6 +787,9 @@ class DaemonRuntime(
                         // archive#578: the effective part parallelism of the provider's multipart uploads
                         // (null when it does not upload in parts). Additive, read-only.
                         ",\"upload_concurrency\":${provider.multipartUploadConcurrency()?.let { kotlinx.serialization.json.JsonPrimitive(it).toString() } ?: "null"}" +
+                        // gkrost/unidrive-cli#392: how many hydration downloads a client should run at once (the download
+                        // budget's small-file width, the transfer cap for a while after a throttle). Additive, read-only.
+                        ",\"transfer_budget\":${mount.downloadBudget.recommended}" +
                         "}"
                 }
 
@@ -858,7 +862,11 @@ class DaemonRuntime(
 
                 // metrics.query (archive#654): the per-minute roll-ups of the provider's request attempts. A mount profile with an open
                 // history records them; a mirror daemon (no history) answers "not recording", never zeros.
-                val requestMetrics = transferHistory?.requestMetrics()?.also { provider.attachRequestMetrics(it) }
+                val requestMetrics = transferHistory?.requestMetrics()
+                // gkrost/unidrive-cli#392: the same attempts tell the download budget about the provider's throttles (a 429 or a
+                // Retry-After), so the small-file width narrows to the transfer cap until the provider has been quiet a while.
+                // Attached on every daemon, recording or not: the budget needs no history.
+                provider.attachRequestMetrics(throttleObservingSink(requestMetrics, mount.downloadBudget::noteThrottle))
                 val metricsHandler = MetricsRpcHandler(requestMetrics)
                 server.registerHandler("metrics.query") { _, json -> metricsHandler.query(json) }
 

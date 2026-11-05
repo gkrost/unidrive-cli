@@ -515,6 +515,16 @@ Nothing blocked is retried in a loop. The refusal is not repeated per file: a bl
 
 The reply also carries `upload_concurrency` (additive, archive#578): the effective part parallelism of the provider's multipart uploads, or `null` when the provider does not upload in parts. It reflects the profile's `upload_concurrency` key, overridden by `daemon run --upload-concurrency` when given.
 
+The reply also carries `transfer_budget` (additive, gkrost/unidrive-cli#392; the protocol version does not change): an integer, how many hydration downloads a client should run at once (a pin, a folder read ahead). It is the width of the daemon's download budget for small files: the provider type's `maxConcurrentSmallDownloads` (Internxt 8, OneDrive 8, S3 and local files 8, Dropbox and an unknown provider 4). For 60 s after the provider throttled a request (a 429 or a `Retry-After`) it reads the provider's transfer cap instead (Internxt 2, OneDrive 8), so a client that reads it again before a batch backs off with the daemon. The daemon enforces the same budget on its side, so a client that runs more only queues them there:
+
+| Download | Permits it takes | At once |
+|---|---|---|
+| a file below 1 MiB (the row's size) | one of the whole pool | `maxConcurrentSmallDownloads` |
+| a file of 1 MiB or more, or of unknown size | one of the large pool, then one of the whole pool | the provider's `maxConcurrentTransfers` |
+| any file, for 60 s after a throttle | as a large one | `maxConcurrentTransfers` |
+
+A daemon that does not send the field is older than #392: a client keeps its own default. The uploads do not use this budget: they share the provider's `maxConcurrentTransfers` with the sync pass, as before.
+
 ### 4.4 `sync.subscribe` (existing, unchanged semantics)
 
 The verb stays registered on the daemon's `IpcServer` with the same `scheduleAfterReply` post-reply hook mechanism (β) the `SyncCommand` uses today. On the daemon side, the only events emitted are refresh-progress events (the daemon has no reconcile loop). On the `SyncCommand` side today, the same verb emits sync-progress events. Both implementations honor the same subscriber-set contract; the event source differs by which IPC server the client connects to.
