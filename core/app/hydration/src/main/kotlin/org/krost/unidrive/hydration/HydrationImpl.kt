@@ -436,6 +436,12 @@ class HydrationImpl(
     private val accountedBytes = ConcurrentHashMap<String, Long>()
     private val cacheBytes = AtomicLong(0)
 
+    init {
+        // gkrost/unidrive-cli#391: a cache copy the enumeration's reap removes (a delete seen in the cloud, a gone folder) leaves the
+        // running total at once; before, it stayed in `cache.bytes` until the next walk, up to EVICTION_RECONCILE_INTERVAL_MS later.
+        mount.onReapedCacheCopy { path -> forgetCacheFile(path) }
+    }
+
     // archive#728: epoch ms of the last walk of the cache directory (0 = none yet). One walk per
     // [evictionMinIntervalMs] and never two at once ([evictionMutex]); a trigger inside the interval is
     // dropped, not queued — triggers keep coming while the mount is used.
@@ -2406,6 +2412,9 @@ class HydrationImpl(
             served.endDownload(bytes)
             accountCacheFile(path, bytes)
             _events.emit(HydrationEvent.Hydrated(path, bytes, fetched = hydrated.fetched))
+            // gkrost/unidrive-cli#391: a pin brings bytes in without any handle to close, so the budget pass that a close
+            // triggers never came for it; a pin of a big set ran the cache over its budget until some unrelated close.
+            requestEviction()
             HydrateResult.Ok
         } catch (e: CancellationException) {
             served.endDownloadFailed(e) // gkrost/unidrive-cli#80: a cancellation, not a failed hydrate
