@@ -44,9 +44,9 @@ class SyncConfigValidationTest {
     }
 
     @Test
-    fun `a negative hydration_cache_max_bytes is refused, zero stays unlimited`() {
-        val message = refusal("[providers.p]\ntype = \"internxt\"\nhydration_cache_max_bytes = -1\n")
-        assertTrue("hydration_cache_max_bytes" in message, message)
+    fun `a negative hydration_cache_max_bytes disables the cache, zero stays unlimited`() {
+        val disabled = SyncConfig.parse("[providers.p]\ntype = \"internxt\"\nhydration_cache_max_bytes = -1\n", "p")
+        assertEquals(-1L, disabled.hydrationCacheMaxBytes("p"))
         val unlimited = SyncConfig.parse("[providers.p]\ntype = \"internxt\"\nhydration_cache_max_bytes = 0\n", "p")
         assertEquals(0L, unlimited.hydrationCacheMaxBytes("p"))
     }

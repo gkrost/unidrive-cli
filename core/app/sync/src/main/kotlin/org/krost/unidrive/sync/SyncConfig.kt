@@ -462,7 +462,8 @@ data class RawProvider(
     @Serializable(with = StringOrListSerializer::class)
     val sync_path: List<String>? = null,
     // archive#450: budget of this profile's hydration cache in bytes (the copies the mount's reads and
-    // writes leave under ~/.cache/unidrive/hydration/<profile>). 0 = unlimited. Absent = the default.
+    // writes leave under ~/.cache/unidrive/hydration/<profile>). 0 = unlimited, below 0 = no content cache.
+    // Absent = the default (#404: the cache is off).
     val hydration_cache_max_bytes: Long? = null,
     // archive#463: how often `daemon run` polls the cloud for changes made elsewhere, in seconds. 0 = off.
     // Absent = the default (60). `daemon run --poll-interval` overrides it.
@@ -643,9 +644,12 @@ data class SyncConfig(
 
     fun providerExcludePatterns(providerId: String): List<String> = providers[providerId]?.excludePatterns ?: emptyList()
 
-    /** archive#450: this profile's hydration cache budget in bytes; 0 = unlimited. */
+    /**
+     * archive#450: this profile's hydration cache budget in bytes; 0 = unlimited, below 0 = no content cache.
+     * A profile without the key has the cache off (#404).
+     */
     fun hydrationCacheMaxBytes(profileName: String): Long =
-        (providers[profileName]?.hydrationCacheMaxBytes ?: DEFAULT_HYDRATION_CACHE_MAX_BYTES).coerceAtLeast(0L)
+        providers[profileName]?.hydrationCacheMaxBytes ?: DEFAULT_HYDRATION_CACHE_MAX_BYTES
 
     /** archive#463: seconds between the daemon's polls of the cloud for this profile; 0 = off. */
     fun daemonPollSeconds(profileName: String): Int =
@@ -719,8 +723,11 @@ data class SyncConfig(
     )
 
     companion object {
-        /** archive#450: default hydration cache budget per profile, 20 GiB. */
-        const val DEFAULT_HYDRATION_CACHE_MAX_BYTES: Long = 20L * 1024 * 1024 * 1024
+        /**
+         * archive#450: the hydration cache budget a profile without the key gets (#404): a negative value, which
+         * [hydrationCacheMaxBytes] passes through and the hydration layer reads as "no content cache".
+         */
+        const val DEFAULT_HYDRATION_CACHE_MAX_BYTES: Long = -1L
 
         /** The floor of `poll_interval` and `min_poll_interval`, in seconds. */
         const val MIN_POLL_INTERVAL_SECONDS: Int = 5
@@ -1193,13 +1200,6 @@ data class SyncConfig(
             val pollInt = general.poll_interval ?: 60
             if (pollInt < MIN_POLL_INTERVAL_SECONDS) {
                 throw ConfigValueException("[general] poll_interval = $pollInt: must be at least $MIN_POLL_INTERVAL_SECONDS (seconds).")
-            }
-            profile?.hydration_cache_max_bytes?.let {
-                if (it < 0) {
-                    throw ConfigValueException(
-                        "[providers.$profileName] hydration_cache_max_bytes = $it: must be 0 (unlimited) or more; a negative budget is not \"unlimited\".",
-                    )
-                }
             }
             val rawMin = general.min_poll_interval ?: 10
             val rawMax = general.max_poll_interval ?: 300

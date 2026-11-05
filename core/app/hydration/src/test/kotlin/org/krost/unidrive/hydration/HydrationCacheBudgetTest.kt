@@ -25,6 +25,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -343,6 +344,20 @@ class HydrationCacheBudgetTest {
             assertTrue(cache.values.all { Files.exists(it) })
         }
 
+    // #404: unlimited keeps its meaning: no budget pass, and no reclaim on the last close either.
+    @Test
+    fun `an unlimited cache keeps a clean copy after its read handle closes`() =
+        runTest {
+            val env = freshEnv()
+            val cache = env.syncedAndRead("a.txt").getValue("a.txt")
+            val hydration = env.hydration(this, budget = 0)
+            hydration.openForRead("conn", "h1", "/a.txt")
+            hydration.closeHandle("conn", "h1")
+            advanceUntilIdle()
+
+            assertTrue(Files.exists(cache), "0 = unlimited: the close reclaims nothing, as before")
+        }
+
     @Test
     fun `closing a handle triggers a pass`() =
         runTest {
@@ -468,18 +483,18 @@ class HydrationCacheBudgetTest {
             hydration.sweepCache()
             assertEquals(1, hydration.cacheWalkCount.get(), "the start sweep walks the cache")
 
-            // A warm open accounts the same 1 KiB again; the close's trigger is not worth a walk.
+            // A warm open accounts the same 1 KiB again; the close reclaims the clean copy (a positive
+            // budget reclaims on the last close) and its trigger is not worth a walk: the cache is empty.
             assertTrue(hydration.openForRead("conn", "h1", "/small.bin") is OpenResult.Ok)
             hydration.closeHandle("conn", "h1")
             advanceUntilIdle()
 
             assertEquals(1, hydration.cacheWalkCount.get(), "an under-budget cache is not walked")
 
-            // 4 KiB of new bytes cross the budget: the next trigger walks and evicts what nobody uses.
-            env.provider.seed("/cold.bin", bytesOf(2, 4_000))
+            // A pin of 5 KiB crosses the budget: the pin's trigger walks and evicts what nobody uses.
+            env.provider.seed("/cold.bin", bytesOf(2, 5_000))
             env.engine.syncOnce()
-            assertTrue(hydration.openForRead("conn", "h2", "/cold.bin") is OpenResult.Ok)
-            hydration.closeHandle("conn", "h2")
+            assertIs<HydrateResult.Ok>(hydration.hydrate("/cold.bin"))
             advanceUntilIdle()
 
             assertEquals(2, hydration.cacheWalkCount.get(), "crossing the budget is worth a walk")

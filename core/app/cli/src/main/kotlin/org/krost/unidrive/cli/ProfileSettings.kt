@@ -99,9 +99,23 @@ internal object ProfileSettings {
             ),
             Spec(
                 key = HYDRATION_CACHE_MAX_BYTES,
-                description = "hydration cache budget in bytes; 0 = unlimited",
+                description = "hydration cache budget in bytes; 0 = unlimited, below 0 = no content cache (the default)",
                 needsDaemonRestart = true,
-                toToml = { _, raw -> nonNegative(HYDRATION_CACHE_MAX_BYTES, raw, Long.MAX_VALUE).toString() },
+                toToml = { _, raw ->
+                    // A whole number of bytes; below 0 = no content cache, 0 = unlimited (#404).
+                    val n =
+                        raw.trim()
+                            .takeIf { it.isNotEmpty() && (it[0] == '-' || it[0].isDigit()) && it.drop(1).all(Char::isDigit) }
+                            ?.toLongOrNull()
+                    if (n == null) {
+                        throw ProfileCommandError(
+                            "invalid_value",
+                            "$HYDRATION_CACHE_MAX_BYTES must be a whole number of bytes " +
+                                "(below 0 disables the cache, 0 is unlimited), got '$raw'",
+                        )
+                    }
+                    n.toString()
+                },
                 read = { rp -> rp.hydration_cache_max_bytes?.let(::JsonPrimitive) ?: JsonNull },
             ),
             Spec(
