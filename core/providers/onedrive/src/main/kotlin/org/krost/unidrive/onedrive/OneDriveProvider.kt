@@ -22,7 +22,7 @@ class OneDriveProvider(
     engine: io.ktor.client.engine.HttpClientEngine? = null,
     // Tests hand in a GraphApiService with a fixed token; production builds one over the token manager.
     graphApi: GraphApiService? = null,
-) : CloudProvider {
+) : CloudProvider, org.krost.unidrive.EntrySkipReporting {
     override val id = "onedrive"
     override val displayName = "Microsoft OneDrive"
 
@@ -34,6 +34,12 @@ class OneDriveProvider(
     internal val tokenManager = TokenManager(config, oauthService)
 
     private val loggedVaultThisSession = AtomicBoolean(false)
+    // The skip counts behind daemon.status's provider_health.skipped (gkrost/unidrive-cli#405): every
+    // entry the filter leaves out, of this run. A restart starts at 0, like the other run-local readings.
+    private val vaultSkips = java.util.concurrent.atomic.AtomicLong()
+    private val packageSkips = java.util.concurrent.atomic.AtomicLong()
+    override fun skippedEntries(): org.krost.unidrive.SkippedEntries =
+        org.krost.unidrive.SkippedEntries(vaultSkips.get(), packageSkips.get())
     private val loggedPackageIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     private val graphApi =
@@ -1042,6 +1048,7 @@ class OneDriveProvider(
 
     private fun noteAndSkipVault(item: DriveItem): Boolean {
         if (!item.isPersonalVault) return false
+        vaultSkips.incrementAndGet()
         val displayName = item.name ?: "(unnamed)"
         if (loggedVaultThisSession.compareAndSet(false, true)) {
             log.info("Skipping Personal Vault entry (protected): {}", displayName)
@@ -1056,6 +1063,7 @@ class OneDriveProvider(
     // line per item and session, DEBUG after that.
     private fun noteAndSkipPackage(item: DriveItem): Boolean {
         if (item.packageFacet == null || item.isTombstone()) return false
+        packageSkips.incrementAndGet()
         if (loggedPackageIds.add(item.id)) {
             log.info("Skipping OneDrive package {} ({}): not a file or a folder", item.id, item.packageFacet.type ?: "unknown type")
         } else {

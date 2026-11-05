@@ -91,6 +91,40 @@ class OneDriveProviderVaultFilterTest {
         }
 
     @Test
+    fun `the skip counts name what the filter left out`() =
+        runTest {
+            // The same mixed payload: one vault stub is skipped, nothing else.
+            val body =
+                """
+                {
+                  "value": [
+                    {
+                      "id": "real-folder",
+                      "name": "Dokumente",
+                      "size": 0,
+                      "folder": {"childCount": 3},
+                      "parentReference": {"path": "/drive/root:"}
+                    },
+                    {
+                      "id": "vault-stub",
+                      "name": "Persönlicher Tresor",
+                      "size": 0,
+                      "parentReference": {"path": "/drive/root:"}
+                    }
+                  ]
+                }
+                """.trimIndent()
+            val provider = mockedProvider(body)
+            provider.listChildren("/")
+
+            val skipped = provider.skippedEntries()
+            assertEquals(1L, skipped.vault, "the vault stub is one skipped entry")
+            assertEquals(0L, skipped.packageEntries, "no package in this payload")
+            provider.close()
+        }
+
+
+    @Test
     fun `listChildren filters out facet-less zero-size stub by fallback rule`() =
         runTest {
             // No name match — a hypothetical future-locale vault. The belt-and-braces
