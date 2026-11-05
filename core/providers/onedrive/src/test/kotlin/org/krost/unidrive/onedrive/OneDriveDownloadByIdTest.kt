@@ -46,7 +46,7 @@ class OneDriveDownloadByIdTest {
         extra: String = """"file":{"mimeType":"application/octet-stream","hashes":{"quickXorHash":"QX$id"}}""",
     ) = """{"id":"$id","name":"$name","size":4,$extra,"@microsoft.graph.downloadUrl":"$dl"}"""
 
-    private fun itemNotFound() = """{"error":{"code":"itemNotFound","message":"The resource could not be found."}}"""
+    private val itemNotFound = """{"error":{"code":"itemNotFound","message":"The resource could not be found."}}"""
 
     private fun provider(engine: MockEngine) =
         OneDriveProvider(
@@ -73,7 +73,7 @@ class OneDriveDownloadByIdTest {
                 if (url.endsWith("/items/$liveId")) {
                     respond(itemJson, HttpStatusCode.OK, json)
                 } else {
-                    respond(itemNotFound(), HttpStatusCode.NotFound, json)
+                    respond(itemNotFound, HttpStatusCode.NotFound, json)
                 }
             }
             url.startsWith("https://cdn.example/") -> {
@@ -144,7 +144,7 @@ class OneDriveDownloadByIdTest {
                         url.contains("/me/drive/items/") -> calls.byId.incrementAndGet()
                         else -> error("unexpected URL: $url")
                     }
-                    respond(itemNotFound(), HttpStatusCode.NotFound, json)
+                    respond(itemNotFound, HttpStatusCode.NotFound, json)
                 }
             val p = provider(engine)
 
@@ -172,7 +172,7 @@ class OneDriveDownloadByIdTest {
                         }
                         url == "https://cdn.example/stale" -> {
                             calls.content.incrementAndGet()
-                            respond(itemNotFound(), HttpStatusCode.NotFound, json)
+                            respond(itemNotFound, HttpStatusCode.NotFound, json)
                         }
                         url == "https://cdn.example/fresh" -> {
                             calls.content.incrementAndGet()
