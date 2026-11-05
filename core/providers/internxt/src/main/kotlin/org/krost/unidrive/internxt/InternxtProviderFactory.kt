@@ -39,6 +39,12 @@ class InternxtProviderFactory(
             // pipeline (audit §4.3) makes higher concurrency dangerous —
             // IV-pinning means a parallel-retry race can corrupt files.
             maxConcurrentTransfers = 2,
+            // gkrost/unidrive-cli#392: a download is three serial round trips (Drive file meta, Bridge file info, the
+            // shard GET) and the upload's IV-pinning hazard above does not apply to it. None of them holds a permit of
+            // the service's budgets: the Drive meta call is paced only (no spacing until a throttle, then 500 ms, 1 s in
+            // a storm) and the Bridge budget is pace-only too. The bench of 2026-11-05 ran 4 at once with no throttle;
+            // the reference client does about 10 small files a second. 8 small ones at once; large files stay at 2.
+            maxConcurrentSmallDownloads = 8,
         )
 
     override fun create(

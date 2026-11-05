@@ -25,6 +25,14 @@ data class ProviderMetadata(
      */
     val maxConcurrentTransfers: Int = 4,
     /**
+     * gkrost/unidrive-cli#392: how many hydration downloads of SMALL files (below 1 MiB) the daemon runs at once, and
+     * the `transfer_budget` it tells a client in `daemon.status`. A small file is latency-bound (a few serial round
+     * trips, almost no bytes), so more of them in flight is what makes a folder of them come down fast; large files
+     * stay at [maxConcurrentTransfers]. Defaults to [maxConcurrentTransfers] (no change for a provider that does not
+     * set it). Uploads are not affected: they share [maxConcurrentTransfers] with the sync pass.
+     */
+    val maxConcurrentSmallDownloads: Int = maxConcurrentTransfers,
+    /**
      * archive#655: whether the provider's `quota()` reports the ACCOUNT's storage plan
      * (used/total of the user's subscription). `daemon.status` carries the `quota` snapshot
      * only for such providers; a provider whose quota() answers something else (localfs
