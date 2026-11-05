@@ -18,12 +18,12 @@ import kotlin.test.assertTrue
 class DownloadBudgetTest {
     private class Peak {
         private val running = AtomicInteger(0)
-        private val peak = AtomicInteger(0)
+        private val highest = AtomicInteger(0)
 
         suspend fun hold(ms: Long) = around { delay(ms) }
 
         suspend fun around(block: suspend () -> Unit) {
-            peak.accumulateAndGet(running.incrementAndGet(), ::maxOf)
+            highest.accumulateAndGet(running.incrementAndGet(), ::maxOf)
             try {
                 block()
             } finally {
@@ -31,7 +31,7 @@ class DownloadBudgetTest {
             }
         }
 
-        val value: Int get() = peak.get()
+        val value: Int get() = highest.get()
     }
 
     private val small = 300_000L

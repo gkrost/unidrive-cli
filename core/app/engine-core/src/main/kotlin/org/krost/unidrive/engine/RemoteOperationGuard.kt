@@ -26,6 +26,7 @@ import org.krost.unidrive.sync.SyncScope
  * Built once per engine; the instance holds the transfer semaphore, so the mirror
  * engine and the mount operations of one process must share the same instance.
  */
+@Suppress("LongParameterList") // the guard is the engine's whole remote-operation config; each parameter names one knob
 class RemoteOperationGuard(
     standingScope: List<String>,
     syncPaths: List<String>,
