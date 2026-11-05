@@ -315,6 +315,9 @@ class DaemonRuntime(
                 // invalidation event originates outside the per-path hydration lifecycle.
                 val engine = SyncEngine(
                     provider, db!!, syncRoot = syncRoot, cacheKey = profileName, syncPaths = syncPaths,
+                    // gkrost/unidrive-cli#392: the provider TYPE the engine looks its audited limits up by (transfer cap,
+                    // download budget). Left blank before, every daemon ran at the fallback of 4 whatever the provider.
+                    providerId = cloud.id,
                     standingScope = syncPaths, excludePatterns = excludePatterns, trashNamespace = trash, viewNamespaces = viewNamespaces,
                     backupsNamespace = backups,
                     mountIgnore = ignoreSettings.takeIf { profileMode == ProfileMode.MOUNT },
