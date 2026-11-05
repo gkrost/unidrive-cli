@@ -508,6 +508,145 @@ class CloudRelocatorTest {
             )
         }
 
+    // -- gkrost/unidrive-cli#61: a walk failure must mark the run failed --------------------------
+    //
+    // Pre-fix the walk-failure catch emitted one Error event but did NOT increment
+    // errorCount, so a run that lost half its tree to a mid-walk listChildren failure
+    // reported errorCount == 0 and the delete pass saw a clean migration.
+
+    @Test
+    fun `migrate marks the run failed when the walk itself fails midway`() =
+        runTest {
+            source.children["/"] =
+                listOf(
+                    cloudItem("/a.txt", size = 10),
+                    cloudItem("/sub", isFolder = true),
+                )
+            source.fileContents["/a.txt"] = ByteArray(10)
+            source.children["/sub"] =
+                listOf(
+                    cloudItem("/sub/deep.txt", size = 10),
+                )
+            source.fileContents["/sub/deep.txt"] = ByteArray(10)
+            source.listChildrenFailPaths.add("/sub")
+
+            val relocator = CloudRelocator(source, target)
+            // Known totals skip migrate's internal preFlightCheck (which walks the same tree
+            // and would fail first); this is how RelocateCommand calls migrate.
+            val events = relocator.migrate("/", "/", knownTotalSize = 20L, knownTotalFiles = 2).toList()
+
+            val errors = events.filterIsInstance<MigrateEvent.Error>()
+            assertTrue(errors.isNotEmpty(), "the walk failure must be reported as an Error event")
+            val completed = events.filterIsInstance<MigrateEvent.Completed>().first()
+            assertTrue(
+                completed.errorCount > 0,
+                "a walk failure must mark the run failed, not leave errorCount at 0; got ${completed.errorCount}",
+            )
+            assertTrue(
+                completed.doneFiles < completed.totalFiles,
+                "the files behind the failed walk were never processed; doneFiles=${completed.doneFiles}, totalFiles=${completed.totalFiles}",
+            )
+        }
+
+    // -- gkrost/unidrive-cli#61: the migration manifest ------------------------------------------
+    //
+    // The delete pass must delete exactly what the migration transferred, by id. The
+    // manifest is that record: source path + id, target id from the upload's return
+    // value, and whether a skip was proven equivalent by hash or only by size.
+
+    @Test
+    fun `migrate records a manifest entry with source and target ids for every transferred file`() =
+        runTest {
+            source.children["/"] =
+                listOf(
+                    CloudItem(
+                        id = "src-1",
+                        name = "a.txt",
+                        path = "/a.txt",
+                        size = 10,
+                        isFolder = false,
+                        modified = Instant.parse("2026-03-28T12:00:00Z"),
+                        created = Instant.parse("2026-03-28T10:00:00Z"),
+                        hash = "hash-a",
+                        mimeType = "application/octet-stream",
+                    ),
+                    cloudItem("/bad.txt", size = 10),
+                )
+            source.fileContents["/a.txt"] = ByteArray(10)
+            source.failPaths.add("/bad.txt")
+
+            val manifest = MigrationManifest()
+            val relocator = CloudRelocator(source, target)
+            relocator.migrate("/", "/", manifest = manifest).toList()
+
+            val entry = manifest.entries["/a.txt"]
+            assertNotNull(entry, "the transferred file must have a manifest entry; entries=${manifest.entries.keys}")
+            assertEquals("src-1", entry.sourceId, "the source id comes from the listing item")
+            assertEquals("/a.txt", entry.targetPath)
+            assertEquals("id-/a.txt", entry.targetId, "the target id comes from the upload's return value")
+            assertEquals(MigrationManifest.Outcome.TRANSFERRED, entry.outcome)
+            assertNull(
+                manifest.entries["/bad.txt"],
+                "a failed upload produces no manifest entry",
+            )
+        }
+
+    @Test
+    fun `migrate records skipped-equivalent entries and whether the equivalence was hash-backed`() =
+        runTest {
+            source.children["/"] =
+                listOf(
+                    cloudItem("/hash-equal.txt", size = 100, hash = "same"),
+                    cloudItem("/size-only.txt", size = 100, hash = null),
+                )
+            source.fileContents["/hash-equal.txt"] = ByteArray(100)
+            source.fileContents["/size-only.txt"] = ByteArray(100)
+            target.children["/"] =
+                listOf(
+                    cloudItem("/hash-equal.txt", size = 100, hash = "same"),
+                    cloudItem("/size-only.txt", size = 100, hash = null),
+                )
+
+            val manifest = MigrationManifest()
+            val relocator = CloudRelocator(source, target)
+            relocator.migrate("/", "/", manifest = manifest).toList()
+
+            val hashEntry = manifest.entries["/hash-equal.txt"]
+            assertNotNull(hashEntry)
+            assertEquals(MigrationManifest.Outcome.SKIPPED_EQUIVALENT, hashEntry.outcome)
+            assertTrue(hashEntry.hashEquivalent, "a hash match is a proven equivalence")
+            assertNull(hashEntry.targetId, "no upload happened for a skipped file")
+
+            val sizeEntry = manifest.entries["/size-only.txt"]
+            assertNotNull(sizeEntry)
+            assertEquals(MigrationManifest.Outcome.SKIPPED_EQUIVALENT, sizeEntry.outcome)
+            assertTrue(!sizeEntry.hashEquivalent, "a size-only skip is not a proven equivalence")
+        }
+
+    @Test
+    fun `migrate manifest lists every visited source folder with its id`() =
+        runTest {
+            source.children["/"] =
+                listOf(
+                    cloudItem("/sub", isFolder = true),
+                )
+            source.children["/sub"] =
+                listOf(
+                    cloudItem("/sub/deep", isFolder = true),
+                    cloudItem("/sub/data.bin", size = 5),
+                )
+            source.children["/sub/deep"] = emptyList()
+            source.fileContents["/sub/data.bin"] = ByteArray(5)
+
+            val manifest = MigrationManifest()
+            val relocator = CloudRelocator(source, target)
+            relocator.migrate("/", "/", manifest = manifest).toList()
+
+            assertEquals("id-/sub", manifest.folders["/sub"], "visited folders are recorded with their listing id")
+            assertEquals("id-/sub/deep", manifest.folders["/sub/deep"])
+            assertEquals(2, manifest.folders.size)
+        }
+
     // -- UD-269: stale tempdir GC ---------------------------------------------
 
     @Test
