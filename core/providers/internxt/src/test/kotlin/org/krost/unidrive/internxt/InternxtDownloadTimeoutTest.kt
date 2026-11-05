@@ -52,10 +52,14 @@ class InternxtDownloadTimeoutTest {
         }.use { server ->
             loopbackClient(server, socketTimeoutMs = 5_000, requestTimeoutMs = 300).use { client ->
                 loopbackService(client, listingSocketMs = 5_000).use { api ->
+                    val progress = mutableListOf<Long>()
                     val received =
                         runBlocking {
-                            api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = expectedSize)
+                            api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = expectedSize,
+                                onProgress = { progress += it })
                         }
+                    assertEquals(totalBytes, progress.last())
+                    assertTrue(progress.zipWithNext().all { (before, after) -> after > before })
                     assertEquals(totalBytes, received.bytesWritten)
                     assertEquals(totalBytes, Files.size(destination))
                 }

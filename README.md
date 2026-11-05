@@ -138,6 +138,12 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 ### Tracking-set engine (experimental, frozen)
 - `ts` — `sync`, `claim`, `unclaim`, `status` (see `core/app/sync-tracking/README.md`)
 
+## Pipeline log measurements
+
+`python scripts/dev/file-events.py run.log` summarizes captured per-file DEBUG events by phase; add `--per-file` for paths.
+It keeps download bytes, cache serves and eviction bytes separate, and reports summed operation durations and recovered
+engine retries. See [the event format and measurement limits](docs/logging.md#summarizing-a-captured-run).
+
 ## Key source files
 
 - `ProviderFactory.kt` — SPI provider registration framework

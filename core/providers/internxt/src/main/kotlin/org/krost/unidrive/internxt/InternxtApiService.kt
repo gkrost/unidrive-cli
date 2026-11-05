@@ -1373,6 +1373,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         expectedSize: Long? = null,
         expectedShardHash: ShardHashExpectation.Checkable? = null,
         targetMtimeMillis: Long? = null,
+        onProgress: ((Long) -> Unit)? = null,
     ): InternxtDownloadedContent {
         // The content is AES-CTR with no MAC, so a shard fetched over plain http can be altered on the way unseen
         // (the recorded hash is the only check, and it too comes from a response that is not ours to trust blindly).
@@ -1438,6 +1439,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                                     val n = channel.readAvailable(buf)
                                     if (n <= 0) break
                                     ciphertextBytes += n
+                                    onProgress?.invoke(ciphertextBytes)
                                     ciphertextDigest.update(buf, 0, n)
                                     val decrypted = cipher.update(buf, 0, n)
                                     if (decrypted != null) {

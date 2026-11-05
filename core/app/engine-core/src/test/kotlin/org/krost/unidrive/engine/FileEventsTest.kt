@@ -84,9 +84,9 @@ class FileEventsTest {
     fun `an extra value with blanks is quoted and a null one is left out`() {
         logger.level = Level.DEBUG
 
-        FileEvents.event(FileEvents.Phase.REMOTE_CHANGE, "/a", extra = listOf("note" to "two words", "gone" to null, "state" to "new"))
+        FileEvents.event(FileEvents.Phase.REMOTE_CHANGE, "/a", extra = listOf("note" to "two words", "gone" to null, "state" to "new", "empty" to ""))
 
-        assertEquals(listOf("""file_event phase=remote_change path="/a" note="two words" state=new"""), lines(Level.DEBUG))
+        assertEquals(listOf("""file_event phase=remote_change path="/a" note="two words" state=new empty="""""), lines(Level.DEBUG))
     }
 
     @Test
@@ -112,6 +112,19 @@ class FileEventsTest {
             listOf("""file_trace phase=upload_progress path="/a" bytes=4194304 total=9000000"""),
             lines(Level.TRACE),
         )
+    }
+
+    @Test
+    fun `progress callback is TRACE only and bounds lines without repeating completion`() {
+        logger.level = Level.DEBUG
+        assertNull(FileEvents.progress(FileEvents.Phase.DOWNLOAD_PROGRESS, "/a", 5_242_880))
+        logger.level = Level.TRACE
+        val progress = FileEvents.progress(FileEvents.Phase.DOWNLOAD_PROGRESS, "/a", 5_242_880)!!
+        for (bytes in 0L..5_242_880L step 262_144L) progress(bytes)
+        progress(5_242_880)
+        assertEquals(2, lines(Level.TRACE).size)
+        assertTrue(lines(Level.TRACE)[0].contains("bytes=4194304"))
+        assertTrue(lines(Level.TRACE)[1].contains("bytes=5242880"))
     }
 
     @Test

@@ -7,9 +7,9 @@ rolled at 10 MB per file, five files, 50 MB in all (`core/app/cli/src/main/resou
 that an exception quotes does not reach the file. Every line carries `[build] [profile] [scan]`; a grep of `scan=<id>` or
 `[<id>]` gives the slice of one sync pass.
 
-## Per-file events (gkrost/unidrive-cli#394)
+## Per-file events
 
-One shared helper, `org.krost.unidrive.engine.FileEvents` (`core/app/engine-core`), writes the events of a file's way through
+One shared helper, `org.krost.unidrive.engine.FileEvents` (`core/app/core`), writes the events of a file's way through
 the engine. All of them go to the logger `org.krost.unidrive.FileEvents`, so a single logger setting switches them.
 
 ```
@@ -32,18 +32,64 @@ file_summary scan=<id> remote_changes=<n> uploads=<n> upload_bytes=<n> upload_ms
 | `phase`            | written when                                                                                  | where |
 |--------------------|-----------------------------------------------------------------------------------------------|-------|
 | `pickup`           | the local watcher hands a debounced path to the next pass                                     | `LocalWatcher` |
-| `remote_change`    | the cloud reports a file that is new (`state=new`), differs from the row (`changed`) or is gone (`deleted`) | `SyncEngine.logRemoteChanges` |
-| `upload_start`     | before `provider.upload`; `bytes` is the size on disk, `remote=` when the target path differs | `SyncEngine.applyUpload` |
-| `upload_done`      | the provider answered (the cloud confirmed the bytes); `ms` is the whole call                 | `SyncEngine.applyUpload` |
-| `upload_failed`    | the upload threw; `ms` until the failure, `error=<class>`                                     | `SyncEngine.applyUpload` |
+| `remote_change`    | the cloud reports a file that is new (`state=new`), differs from the row (`changed`) or is gone (`deleted`) | `SyncEngine.logRemoteChanges` / `RemoteEnumeration` |
+| `upload_start`     | before `provider.upload`; `bytes` is the size on disk, `remote=` when the target path differs | `SyncEngine.applyUpload` / `MountEngine.uploadFromCache` |
+| `upload_done`      | the provider answered (the cloud confirmed the bytes); `ms` is the whole call                 | `SyncEngine.applyUpload` / `MountEngine.uploadFromCache` |
+| `upload_failed`    | the upload threw; `ms` until the failure, `error=<class>`                                     | `SyncEngine.applyUpload` / `MountEngine.uploadFromCache` |
 | `hash_done`        | the SHA-256 of the sent bytes was recorded; `via=provider` (taken from the send pass, no read) or `via=file` (one more read, `ms` is its time) | `SyncEngine` / `Transfers` |
-| `upload_confirmed` | the row of the uploaded file was written                                                      | `SyncEngine.applyUpload` |
-| `upload_progress`  | TRACE only                                                                                    | `SyncEngine.applyUpload` |
-| `download_done`, `hydrate_served`, `cache_evict` | named for the download, hydration and cache code; written with the same helper | see below |
+| `upload_confirmed` | the row of the uploaded file was written                                                      | `SyncEngine.applyUpload` / `MountEngine.uploadFromCache` |
+| `upload_progress`  | TRACE only                                                                                    | `SyncEngine.applyUpload` / `MountEngine.uploadFromCache` |
+| `download_start`, `download_done`, `download_failed` | provider call begins, returns staged plaintext, or throws | `Transfers` (mirror and mount) |
+| `cache_store` | validated download placed in the mount cache | `MountEngine` |
+| `hydrate_served`, `hydrate_failed` | cache readiness request returns or throws; `cache_hit` distinguishes warm and cold requests | `MountEngine` |
+| `cache_evict` | a cache file was actually deleted; `reason=budget` or `reason=dehydrate` | `MountEngine` / `HydrationImpl` |
+| `source_read`, `encrypt_done`, `encrypt_failed` | Internxt's source encryption pass completes or fails | `InternxtProvider` |
+| `download_progress` | TRACE ciphertext bytes received, at coarse intervals and the declared size | `InternxtProvider` |
+| `upload_skipped` | mount cache content already matches the cloud | `MountEngine` |
 
 Reading a run: `grep 'file_event phase=upload_done'` gives bytes and wall time per file; the sum of `bytes` over `upload_done`
 lines against the process's own read and write counters tells the amplification (#393); `hash_done via=file` counts the
 files the engine had to read a second time.
+
+### Summarizing a captured run
+
+```sh
+python scripts/dev/file-events.py run.log run.log.1
+python scripts/dev/file-events.py --per-file run.log
+python -m unittest discover -s scripts/dev -p test_file_events.py
+```
+
+Supply only the files from the run being measured, once each. The tool emits JSON grouped by phase (and optionally path),
+ignores TRACE progress and INFO summaries, and rejects malformed event records. `byte_samples` and `duration_samples`
+say how many events supplied a measurement: zero samples means unknown, not zero work. `recovered_retries` sums prior
+failed engine attempts on successful transfers only; failure events are counted separately. Mount download retry history
+survives successive requests within the process. Histories are bounded and reset on restart, so these are not lifetime totals.
+
+Mount operations write an INFO summary per hydration, upload or eviction, and enumeration writes one per changed poll.
+Download, hydration and cache totals use `<phase>_count`, `<phase>_bytes` and `<phase>_ms`; upload summaries retain the
+existing fields. A mount summary's `scan` identifies the operation type, not a unique request. Use the log's profile and
+scan context to select a run before combining files; `--per-file` groups identical paths across the supplied logs.
+
+Interpret the phases separately:
+
+- `upload_start` and `download_start` carry the expected content size, not completed bytes. Use the corresponding
+  `*_done` events for completed transfer totals.
+
+- `download_done` measures the provider call and its plaintext receipt. A subsequent validation or cache placement can
+  still fail, producing `hydrate_failed`. Partial failed downloads have no byte measurement at this layer.
+- `hydrate_served` means the cache path is ready, with its current full file size. It does not measure the bytes a client
+  subsequently reads. A warm hit adds served bytes but no downloaded bytes. Its duration includes lock waiting.
+- `source_read` and `encrypt_done` describe the same Internxt streaming pass and overlap. Their time is also inside
+  `upload_done`; do not add the durations. Other providers need no encryption pass and do not emit these events.
+- Durations are summed operation milliseconds, not elapsed run time: transfers can overlap. Byte counts are content
+  bytes, not socket traffic or process disk counters. TLS, metadata, failed partial transfers, provider-internal retries
+  and unrelated process I/O explain differences from external samplers. TRACE download progress is cumulative per
+  attempt; it is not additional completed bytes.
+- `cache_evict` covers budget reclamation and explicit dehydration, not every deletion caused by remote replacement,
+  corruption cleanup or unlink. Refused eviction and an already absent file produce no successful eviction event.
+
+The logger remains bounded by log rotation; capture all rotated files before they expire. Remote-change detail remains
+capped per pass, with suppression recorded in the summary, so a truncated run cannot supply an exhaustive item audit.
 
 ### Writing an event from another module
 

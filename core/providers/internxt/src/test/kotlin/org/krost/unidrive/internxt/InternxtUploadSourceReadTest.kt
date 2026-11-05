@@ -74,6 +74,11 @@ class InternxtUploadSourceReadTest {
     @Test
     fun `an upload reports the SHA-256 of the plaintext it read and sends the payload once`() =
         runTest {
+            val logger = org.slf4j.LoggerFactory.getLogger(org.krost.unidrive.engine.FileEvents.LOGGER_NAME) as ch.qos.logback.classic.Logger
+            val previous = logger.level
+            val events = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().apply { start() }
+            logger.level = ch.qos.logback.classic.Level.DEBUG
+            logger.addAppender(events)
             val bytes = ByteArray(100_000) { (it * 31 % 251).toByte() }
             val file = tmp.resolve("blob.bin").also { Files.write(it, bytes) }
             val provider = newProvider()
@@ -82,9 +87,15 @@ class InternxtUploadSourceReadTest {
 
                 val expected = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
                 assertEquals(expected, item.sentSha256, "the hash of the bytes the encrypt pass read")
+                val lines = events.list.map { it.formattedMessage }
+                assertTrue(lines.single { it.startsWith("file_event phase=source_read ") }.contains("bytes=100000"))
+                assertTrue(lines.single { it.startsWith("file_event phase=encrypt_done ") }.contains("bytes=100000"))
                 val wire = putBodies.single()
                 assertTrue(wire in bytes.size.toLong()..(bytes.size * 105L / 100), "wire bytes $wire for a payload of ${bytes.size}")
             } finally {
+                logger.detachAppender(events)
+                logger.level = previous
+                events.stop()
                 provider.close()
             }
         }

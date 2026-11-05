@@ -1,5 +1,8 @@
 package org.krost.unidrive.hydration
 
+import org.krost.unidrive.engine.FileEvents
+import org.krost.unidrive.engine.FileEventTally
+
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
@@ -2545,7 +2548,15 @@ class HydrationImpl(
 
         return try {
             val cachePath = mount.resolveCachePath(path)
-            java.nio.file.Files.deleteIfExists(cachePath)
+            val bytes = runCatching { Files.size(cachePath) }.getOrNull()
+            val started = System.nanoTime()
+            val deleted = java.nio.file.Files.deleteIfExists(cachePath)
+            if (deleted) {
+                val tally = FileEventTally()
+                FileEvents.event(FileEvents.Phase.CACHE_EVICT, path, bytes = bytes,
+                    ms = (System.nanoTime() - started) / 1_000_000, tally = tally, extra = listOf("reason" to "dehydrate"))
+                FileEvents.summary("mount-dehydrate", tally)
+            }
             forgetCacheFile(path)
             stateDb.markUnhydrated(path)
             _events.emit(HydrationEvent.Dehydrated(path))
