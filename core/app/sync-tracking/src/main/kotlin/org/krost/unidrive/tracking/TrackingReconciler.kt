@@ -28,6 +28,16 @@ package org.krost.unidrive.tracking
 class TrackingReconciler(
     val autoMatch: AutoMatchMode = AutoMatchMode.OFF,
     /**
+     * What the reconciler emits at the two collision sites (untracked
+     * content-mismatch; tracked both-changed): [TsConflictPolicy.REPORT] (the
+     * default) emits [ReconcileAction.ReportCollision] and touches nothing;
+     * [TsConflictPolicy.KEEP_BOTH] emits [ReconcileAction.ResolveKeepBoth] and
+     * the engine applies the resolution. Delete-meets-edit is NOT a site of
+     * this policy: it stays a collision under every policy — a resolution
+     * never resurrects a deleted path.
+     */
+    val conflictPolicy: TsConflictPolicy = TsConflictPolicy.REPORT,
+    /**
      * Optional comparison of the local file against the remote's content
      * hash, in the provider's own format: given the remote path and the
      * remote hash, decide whether the local bytes match. The engine supplies
@@ -64,7 +74,10 @@ class TrackingReconciler(
                     // decide adoption. Reconciler emits actions; adoption is state-only.
                     return ReconcileAction.NoOp(path)
                 }
-                return ReconcileAction.ReportCollision(path, collisionReason(local, remote))
+                return when (conflictPolicy) {
+                    TsConflictPolicy.REPORT -> ReconcileAction.ReportCollision(path, collisionReason(local, remote))
+                    TsConflictPolicy.KEEP_BOTH -> ReconcileAction.ResolveKeepBoth(path, collisionReason(local, remote))
+                }
             }
 
             // Pure-local untracked: a file created locally that the remote does
@@ -162,12 +175,23 @@ class TrackingReconciler(
             remoteGone ->
                 ReconcileAction.PropagateRemoteDelete(path)
 
-            // Both diverged — conflict. No silent winner.
+            // Both diverged — conflict. No silent winner. Under KEEP_BOTH the
+            // divergence resolves automatically (local edit preserved as the
+            // conflict copy, canonical synced to the remote); the delete-meets-
+            // edit branch above is deliberately outside the policy.
             localChanged && remoteChanged ->
-                ReconcileAction.ReportCollision(
-                    path,
-                    "tracked path diverged on both sides since last sync",
-                )
+                when (conflictPolicy) {
+                    TsConflictPolicy.REPORT ->
+                        ReconcileAction.ReportCollision(
+                            path,
+                            "tracked path diverged on both sides since last sync",
+                        )
+                    TsConflictPolicy.KEEP_BOTH ->
+                        ReconcileAction.ResolveKeepBoth(
+                            path,
+                            "tracked path diverged on both sides since last sync",
+                        )
+                }
 
             localChanged -> ReconcileAction.UploadLocal(path)
             remoteChanged -> ReconcileAction.DownloadRemote(path)
