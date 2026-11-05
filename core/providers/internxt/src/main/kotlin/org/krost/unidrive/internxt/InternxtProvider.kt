@@ -635,11 +635,17 @@ class InternxtProvider(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (!hintMayBeStale(e)) throw e
-            val current = currentFileMeta(fileUuid, remotePath)
-            if (sameStoredObject(current, hinted)) throw e
-            log.debug("download of {}: the listed object {} was replaced by {}; reading the current one", remotePath, hinted.fileId, current.fileId)
-            return downloadStoredObject(current, remotePath, destination, targetMtimeMillis)
+            // A failure a stale hint can cause falls back to the meta call: when the hinted object was replaced, the
+            // current answer is read; when it is the same object (or the failure is not a stale-hint one), the original
+            // failure stands.
+            if (hintMayBeStale(e)) {
+                val current = currentFileMeta(fileUuid, remotePath)
+                if (!sameStoredObject(current, hinted)) {
+                    log.debug("download of {}: the listed object {} was replaced by {}; reading the current one", remotePath, hinted.fileId, current.fileId)
+                    return downloadStoredObject(current, remotePath, destination, targetMtimeMillis)
+                }
+            }
+            throw e
         }
     }
 

@@ -64,10 +64,10 @@ internal class FileContentHints(
     internal fun size(): Int = synchronized(entries) { entries.size }
 
     private fun InternxtFile.downloadHint(): InternxtFile? {
-        val live = status == "EXISTS" && !removed && !deleted
-        val id = fileId?.takeIf { it.isNotBlank() }
-        val bucketName = bucket?.takeIf { it.isNotBlank() }
-        if (!live || id == null || bucketName == null || size?.toLongOrNull() == null) return null
+        if (status != "EXISTS" || removed || deleted) return null
+        val id = fileId?.takeIf { it.isNotBlank() } ?: return null
+        val bucketName = bucket?.takeIf { it.isNotBlank() } ?: return null
+        if (size?.toLongOrNull() == null) return null
         return InternxtFile(
             uuid = uuid,
             fileId = id,
