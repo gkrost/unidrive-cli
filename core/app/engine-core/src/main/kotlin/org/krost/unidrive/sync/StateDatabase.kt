@@ -385,6 +385,21 @@ class StateDatabase(
                 // connection: a copy of state.db alone is then complete again. The last connection to close does this
                 // anyway; this one may not be the last.
                 if (!readOnly && !isDisposable) {
+                    // #384 (measured in docs/dev/findings/state-db-optimize-page-size.md): the default `PRAGMA optimize`
+                    // records the planner statistics before the checkpoint, so the next start reads them from the file —
+                    // never a plain ANALYZE or an optimize mask, which analyse fully. Since SQLite 3.54 the bundled driver
+                    // writes sqlite_stat4 even for the default form (3.53 wrote only sqlite_stat1), and with sqlite_stat4
+                    // present every bound lookup recompiles (the findings measured 37 -> 173 us and a 3-8x slower merge),
+                    // so the table is dropped again and only its sqlite_stat1 rows stay. A failure is logged and ignored —
+                    // the statistics come from a later close.
+                    runCatching {
+                        c.createStatement().use { stmt ->
+                            stmt.execute("PRAGMA optimize")
+                            stmt.executeUpdate("DROP TABLE IF EXISTS sqlite_stat4")
+                        }
+                    }.onFailure { e ->
+                        log.debug("the optimize before the checkpoint failed ({}); the checkpoint and the close go on", e.message)
+                    }
                     runCatching {
                         c.createStatement().use { stmt ->
                             stmt.execute("PRAGMA busy_timeout=$CLOSE_CHECKPOINT_WAIT_MS")
