@@ -115,6 +115,13 @@ class MountEngine private constructor(
 
     /** The number of transfers this profile runs at once (the provider's `maxConcurrentTransfers`). */
     val transferBudgetSize: Int get() = guard.maxConcurrentTransfers
+
+    /**
+     * gkrost/unidrive-cli#392: the hydration downloads' budget (see [org.krost.unidrive.engine.DownloadBudget]). Its
+     * [org.krost.unidrive.engine.DownloadBudget.recommended] is `daemon.status`'s `transfer_budget`; the daemon feeds
+     * it the provider's throttles.
+     */
+    val downloadBudget: org.krost.unidrive.engine.DownloadBudget get() = guard.downloadBudget
     private val uploadInFlight: (path: String) -> Boolean = wiring.uploadInFlight
     private val syncPaths: List<String> = options.syncPaths
 
@@ -765,18 +772,22 @@ class MountEngine private constructor(
         try {
             // archive#778: a download starts only while the daemon is not paused; one running when a pause begins is
             // judged on the bytes the staging file holds so far.
+            // gkrost/unidrive-cli#392: and only with a permit of the download budget, by the size the row knows: many small
+            // files at once, large ones at the provider's transfer cap, all of them narrow again after a throttle.
             val fetched =
-                rememberingRemoteIncomplete(path, entry) {
-                    pause.track(path) { transfer ->
-                        transfer.begin()
-                        // archive#652: a cold download is a transfer from here on (a warm serve and a refusal for a pause never get here).
-                        history?.started()
-                        transfer.measuredBy(entry.remoteSize) { stagedBytes(staged) }
-                        runningDownloads[path] = transfer
-                        try {
-                            watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged, tally) }
-                        } finally {
-                            runningDownloads.remove(path, transfer)
+                guard.downloadBudget.withPermit(entry.remoteSize) {
+                    rememberingRemoteIncomplete(path, entry) {
+                        pause.track(path) { transfer ->
+                            transfer.begin()
+                            // archive#652: a cold download is a transfer from here on (a warm serve and a refusal for a pause never get here).
+                            history?.started()
+                            transfer.measuredBy(entry.remoteSize) { stagedBytes(staged) }
+                            runningDownloads[path] = transfer
+                            try {
+                                watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged, tally) }
+                            } finally {
+                                runningDownloads.remove(path, transfer)
+                            }
                         }
                     }
                 }

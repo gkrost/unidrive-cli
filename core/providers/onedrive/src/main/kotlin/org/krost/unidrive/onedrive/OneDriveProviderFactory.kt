@@ -77,6 +77,9 @@ open class OneDriveProviderFactory(
             userRating = 4.5,
             benchmarkGrade = "A",
             maxConcurrentTransfers = 8,
+            // gkrost/unidrive-cli#392: the same 8 as the Graph client's throttle budget (GraphApiService), stated so the
+            // size-aware download budget does not depend on the default.
+            maxConcurrentSmallDownloads = 8,
             minRequestSpacingMs = 200L,
             // Backwards-compat: existing users have a ~/OneDrive directory.
             // Title-casing the id would give ~/Onedrive, silently orphaning it.

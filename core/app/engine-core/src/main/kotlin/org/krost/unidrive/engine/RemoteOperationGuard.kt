@@ -15,7 +15,7 @@ import org.krost.unidrive.sync.SyncScope
  * - **Excludes**: the keep-local rule; an excluded path is never uploaded. Two sources: the profile's
  *   `exclude_patterns` (the old glob, unchanged) and, where the host passes them, the ignore rules ([ignore]).
  * - **Transfer budget**: one per-provider transfer cap shared by the sync pass and
- *   the hydration upload path (UD-263).
+ *   the hydration upload path (UD-263). The hydration downloads have their own, size-aware one ([downloadBudget]).
  * - **Trash namespace**: the virtual folder that shows what the provider keeps in its trash, which is read-only
  *   ([isReadOnlyPath], see [TrashNamespace]).
  * - **Backups namespace**: the virtual folder that shows the account's backup devices, read-only too ([isReadOnlyPath],
@@ -26,6 +26,7 @@ import org.krost.unidrive.sync.SyncScope
  * Built once per engine; the instance holds the transfer semaphore, so the mirror
  * engine and the mount operations of one process must share the same instance.
  */
+@Suppress("LongParameterList") // the guard is the engine's whole remote-operation config; each parameter names one knob
 class RemoteOperationGuard(
     standingScope: List<String>,
     syncPaths: List<String>,
@@ -49,6 +50,9 @@ class RemoteOperationGuard(
     // The views of the profile (see ViewNamespaces): none unless the host passes some, then the question
     // isReadOnlyPath asks of them costs nothing.
     val views: ViewNamespaces = ViewNamespaces.NONE,
+    // gkrost/unidrive-cli#392: how many small hydration downloads run at once (ProviderMetadata.maxConcurrentSmallDownloads);
+    // large ones stay at [maxConcurrentTransfers]. See [downloadBudget].
+    val maxConcurrentSmallDownloads: Int = maxConcurrentTransfers,
 ) {
     /** The namespaces whose items are rows placed under a root of their own: the trash, then the backups (which yield to it). */
     val placedNamespaces: List<PlacedNamespace> get() = listOf(trash, backups)
@@ -112,6 +116,13 @@ class RemoteOperationGuard(
      * executors; everything else goes through [withTransferPermit].
      */
     val transferBudget: Semaphore = Semaphore(maxConcurrentTransfers)
+
+    /**
+     * gkrost/unidrive-cli#392: the hydration downloads' own budget, by size (see [DownloadBudget]). Separate from
+     * [transferBudget]: a read never waits behind the uploads, and the uploads keep their cap.
+     */
+    val downloadBudget: DownloadBudget =
+        DownloadBudget(smallPermits = maxConcurrentSmallDownloads, largePermits = maxConcurrentTransfers)
 
     /**
      * Run [block] holding one permit of the per-provider transfer budget. The

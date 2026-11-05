@@ -363,6 +363,10 @@ open class SyncEngine(
     // provider's cap (Internxt allows 2) no matter which path the transfers
     // come from. Memory-pressure protection on big files is delegated to the
     // provider's HttpRetryBudget (UD-232).
+    // The provider's audited limits, looked up by TYPE ([providerId]); null for a host that names none (a test, or a
+    // caller that leaves providerId blank), which then runs at the conservative 4.
+    private val providerMetadata = org.krost.unidrive.ProviderRegistry.getMetadata(providerId)
+
     private val guard =
         org.krost.unidrive.engine.RemoteOperationGuard(
             standingScope = standingScope,
@@ -375,10 +379,9 @@ open class SyncEngine(
                 } else {
                     effectiveExcludePatterns.filterNot { it in SyncConfig.DEFAULT_EXCLUDE_PATTERNS }
                 },
-            maxConcurrentTransfers =
-                org.krost.unidrive.ProviderRegistry
-                    .getMetadata(providerId)
-                    ?.maxConcurrentTransfers ?: 4,
+            maxConcurrentTransfers = providerMetadata?.maxConcurrentTransfers ?: 4,
+            // gkrost/unidrive-cli#392: the small-file width of the hydration downloads' budget (the guard's downloadBudget).
+            maxConcurrentSmallDownloads = providerMetadata?.maxConcurrentSmallDownloads ?: 4,
             matchesGlob = { path, pattern -> Reconciler.matchesGlob(path, pattern) },
             ignore = uploadIgnore,
             trash = trashNamespace,
