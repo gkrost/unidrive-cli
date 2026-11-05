@@ -335,6 +335,10 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
     // semantics. One InFlightDedup per call site (per `InFlightDedup` KDoc
     // key-design guidance), mirroring the original folderContentsDedup wiring.
     internal val folderContentsDedup = InFlightDedup<String, FolderContentResponse>()
+
+    // gkrost/unidrive-cli#392: every Drive answer that carries files records them, so a download of a listed file can skip
+    // the meta call (see FileContentHints).
+    internal val fileHints = FileContentHints()
     internal val fileMetaDedup = InFlightDedup<String, InternxtFile>()
     internal val folderMetaDedup = InFlightDedup<String, InternxtFolder>()
     internal val listFilesDedup = InFlightDedup<String, List<InternxtFile>>()
@@ -343,7 +347,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
     suspend fun getFolderContents(folderUuid: String): FolderContentResponse =
         folderContentsDedup.load(folderUuid, currentPriority()) {
             val body = authenticatedGet("$baseUrl/folders/content/$folderUuid", socketTimeoutMs = listingSocketTimeoutMs)
-            json.decodeFromString<FolderContentResponse>(body)
+            json.decodeFromString<FolderContentResponse>(body).also { fileHints.recordAll(it.files) }
         }
 
     internal val folderContentsPagedDedup = InFlightDedup<String, FolderContentResponse>()
@@ -383,6 +387,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                     { it.uuid },
                     { parseFilesSyncPage(it) },
                 ) { json.decodeFromString<PagedFolderFilesResponse>(it).files }
+            fileHints.recordAll(files)
             FolderContentResponse(children = folders, files = files)
         }
 
@@ -587,7 +592,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                     listingQueryParams(updatedAt, limit, offset, status, sort),
                     socketTimeoutMs = listingSocketTimeoutMs,
                 )
-            json.decodeFromString<List<InternxtFile>>(body)
+            json.decodeFromString<List<InternxtFile>>(body).also(fileHints::recordAll)
         }
 
     suspend fun listFolders(
@@ -642,12 +647,12 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                 socketTimeoutMs = listingSocketTimeoutMs,
             ),
             rowsCarryStatus = status == null,
-        )
+        ).also { fileHints.recordAll(it.items) }
 
     suspend fun getFileMeta(uuid: String): InternxtFile =
         fileMetaDedup.load(uuid, currentPriority()) {
             val body = authenticatedGet("$baseUrl/files/$uuid/meta")
-            json.decodeFromString<InternxtFile>(body)
+            json.decodeFromString<InternxtFile>(body).also(fileHints::record)
         }
 
     // A 200 whose body the model cannot read is not a transport failure: the same body comes back on every attempt, so it
@@ -967,7 +972,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                         checkResponse(response)
                         response
                     }
-                json.decodeFromString<InternxtFile>(answer.bodyAsText())
+                json.decodeFromString<InternxtFile>(answer.bodyAsText()).also(fileHints::record)
             }
         }
 
@@ -1011,7 +1016,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                         checkResponse(response)
                         response
                     }
-                json.decodeFromString<InternxtFile>(answer.bodyAsText())
+                json.decodeFromString<InternxtFile>(answer.bodyAsText()).also(fileHints::record)
             }
         }
 
@@ -1156,7 +1161,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                         checkResponse(response)
                         response
                     }
-                json.decodeFromString<InternxtFile>(answer.bodyAsText())
+                json.decodeFromString<InternxtFile>(answer.bodyAsText()).also(fileHints::record)
             }
         }
 
@@ -1212,7 +1217,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                         checkResponse(response)
                         response
                     }
-                json.decodeFromString<InternxtFile>(answer.bodyAsText())
+                json.decodeFromString<InternxtFile>(answer.bodyAsText()).also(fileHints::record)
             }
         }
 
