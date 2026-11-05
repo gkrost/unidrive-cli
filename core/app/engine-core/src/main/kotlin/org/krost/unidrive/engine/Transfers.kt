@@ -72,7 +72,7 @@ object Transfers {
 
     /**
      * archive#396: [entry] with the SHA-256 of [local] as its local hash, for a provider without a content
-     * hash (either [algorithm] is null or this item has no hash). The hash is kept only if the file still has [mtime] and [size], so a
+     * hash (either [algorithm] is null or this item has no hash). The hash is kept only if the file still has the mtime and size in [stats], so a
      * write that lands while it is hashed cannot turn the new bytes into the tracked baseline. The
      * callers pass a row that already carries the new mtime/size but may still hold the hash of the
      * previous contents, so a failed hash clears it rather than keeping it.
@@ -89,8 +89,7 @@ object Transfers {
     fun withLocalHash(
         entry: SyncEntry,
         local: Path,
-        mtime: Long,
-        size: Long,
+        stats: Pair<Long, Long>,
         algorithm: HashAlgorithm?,
         log: Logger,
         precomputedSha256: String? = null,
@@ -99,6 +98,7 @@ object Transfers {
         onHashed: ((fromProvider: Boolean, ms: Long) -> Unit)? = null,
     ): SyncEntry {
         if ((algorithm != null && !entry.remoteHash.isNullOrEmpty()) || entry.isFolder) return entry
+        val (mtime, size) = stats
         return try {
             val startedNs = System.nanoTime()
             val hash = precomputedSha256 ?: HashVerifier.computeSha256Hex(local)
@@ -133,6 +133,6 @@ object Transfers {
         onHashed: ((fromProvider: Boolean, ms: Long) -> Unit)? = null,
     ): SyncEntry {
         if (sent == null) return entry.copy(localHash = null)
-        return withLocalHash(entry, local, sent.first, sent.second, algorithm, log, sentSha256, onHashed)
+        return withLocalHash(entry, local, sent, algorithm, log, sentSha256, onHashed)
     }
 }
