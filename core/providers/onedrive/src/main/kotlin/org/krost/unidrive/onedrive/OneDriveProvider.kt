@@ -191,7 +191,7 @@ class OneDriveProvider(
         if (SharedItemId.isShared(remoteId)) {
             downloadSharedReading(remoteId, remotePath, destination).receipt()
         } else {
-            downloadWithHash(remotePath, destination, targetMtimeMillis)
+            downloadByOwnIdReading(remoteId, remotePath, destination).receipt()
         }
 
     private fun GraphApiService.DownloadedFile.receipt(): DownloadReceipt =
@@ -209,8 +209,14 @@ class OneDriveProvider(
         // download on every poll. Any other 404 error code and every 5xx/429 keep
         // today's retryable behaviour. The re-resolve arm below runs FIRST, so a
         // stale download URL on a live item still recovers.
+        permanentIfGone(remotePath) { downloadResolved(remotePath, destination) }
+
+    private suspend fun <T> permanentIfGone(
+        remotePath: String,
+        block: suspend () -> T,
+    ): T =
         try {
-            downloadResolved(remotePath, destination)
+            block()
         } catch (e: GraphApiException) {
             if (e.isItemNotFound()) {
                 throw PermanentDownloadFailureException(
@@ -222,14 +228,41 @@ class OneDriveProvider(
         }
 
     // A shared-with-me item cannot be found by its path (it is not in the caller's drive), so it is always fetched by
-    // its id. The other items keep the path-resolving download.
+    // its id. An item of the caller's own drive is fetched by its id too (gkrost/unidrive-cli#392), with the path as fallback.
     override suspend fun downloadById(
         remoteId: String,
         remotePath: String,
         destination: Path,
     ): Long {
-        if (!SharedItemId.isShared(remoteId)) return super.downloadById(remoteId, remotePath, destination)
+        if (!SharedItemId.isShared(remoteId)) return downloadByOwnIdReading(remoteId, remotePath, destination).bytes
         return downloadSharedReading(remoteId, remotePath, destination).bytes
+    }
+
+    // gkrost/unidrive-cli#392: an item of the caller's own drive whose id the engine holds is fetched by that id: one metadata
+    // GET (`/items/{id}`, which carries the malware and package refusals, the download URL and the hashes the receipt names)
+    // and the content GET. Resolving the path first cost a second serial metadata round trip per file.
+    //
+    // A 404 from the id (the id drifted: the path now holds a new item) or from its content GET (a stale download URL)
+    // re-resolves BY PATH once, as [downloadResolved] does; a 404 itemNotFound that survives that is permanent, as in
+    // [downloadReading]. A synthetic `local:` id names nothing in the drive and goes by path from the start.
+    private suspend fun downloadByOwnIdReading(
+        remoteId: String,
+        remotePath: String,
+        destination: Path,
+    ): GraphApiService.DownloadedFile {
+        if (remoteId.isBlank() || remoteId.startsWith("local:")) return downloadReading(remotePath, destination)
+        return permanentIfGone(remotePath) {
+            try {
+                graphApi.downloadFileReading(remoteId, destination)
+            } catch (e: GraphApiException) {
+                if (e.statusCode != 404) throw e
+                log.info(
+                    "OneDrive download of '{}' by id got 404 (drifted id or stale download URL); re-resolving the item by path once",
+                    remotePath,
+                )
+                graphApi.downloadFileReading(itemAt(remotePath).id, destination)
+            }
+        }
     }
 
     private suspend fun downloadSharedReading(
