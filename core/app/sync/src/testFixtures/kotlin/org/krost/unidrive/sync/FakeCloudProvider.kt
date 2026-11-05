@@ -270,6 +270,12 @@ class FakeCloudProvider : CloudProvider {
     // while a long upload is still in flight.
     var duringUpload: ((Path) -> Unit)? = null
 
+    // gkrost/unidrive-cli#393: how many times upload() read the source file (once per call: it reads the bytes it sends), so
+    // a test can state that a file is read exactly once per upload, and a stand-in for a provider that hashes the source while
+    // it sends (Internxt's encrypt pass): when set, the answer carries CloudItem.sentSha256 = this function of the bytes.
+    val uploadSourceReads = java.util.concurrent.atomic.AtomicInteger()
+    var reportSentSha256: ((ByteArray) -> String)? = null
+
     override suspend fun upload(
         localPath: Path,
         remotePath: String,
@@ -291,6 +297,7 @@ class FakeCloudProvider : CloudProvider {
         }
         uploadedPaths.add(remotePath)
         val content = Files.readAllBytes(localPath)
+        uploadSourceReads.incrementAndGet()
         files[remotePath] = content
         // The hash is of the bytes just sent. duringUpload may change the local file afterwards, and that edit is a
         // later upload, not this one.
@@ -306,6 +313,7 @@ class FakeCloudProvider : CloudProvider {
             created = Instant.now(),
             hash = hash,
             mimeType = null,
+            sentSha256 = reportSentSha256?.invoke(content),
         )
     }
 

@@ -22,6 +22,8 @@ import org.krost.unidrive.http.Priority
 import org.krost.unidrive.engine.AuditSink
 import org.krost.unidrive.engine.CursorState
 import org.krost.unidrive.engine.EnumerationEntryPoint
+import org.krost.unidrive.engine.FileEventTally
+import org.krost.unidrive.engine.FileEvents
 import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.MountWiring
 import org.krost.unidrive.engine.NameKey
@@ -196,6 +198,9 @@ open class SyncEngine(
 ) : MountHost,
     EnumerationEntryPoint {
     private val log = LoggerFactory.getLogger(SyncEngine::class.java)
+
+    // gkrost/unidrive-cli#394: what the current pass did per phase (the `file_summary` line) and the failed attempts per upload path.
+    private val fileTally = FileEventTally()
 
     // The shared line-time budget behind [maxBandwidthKbps]. One instance per
     // engine, so every transfer of every dispatch path draws from the same
@@ -788,6 +793,7 @@ open class SyncEngine(
         withScanMdc(scanId) {
             val startTime = System.currentTimeMillis()
             log.info("Scan started scan={} reason={} dryRun={}", scanId, reason, dryRun)
+            fileTally.reset()
             try {
                 doSyncOnce(dryRun, forceDelete, scanId, reason, startTime, skipTransfers, skipRemoteGather)
             } finally {
@@ -796,6 +802,7 @@ open class SyncEngine(
                 enumeration.settleStatus()
                 val duration = System.currentTimeMillis() - startTime
                 log.info("Scan ended scan={} reason={} duration={}ms", scanId, reason, duration)
+                FileEvents.summary(scanId, fileTally)
             }
         }
     }
@@ -1202,6 +1209,7 @@ open class SyncEngine(
                 allRemoteChanges
             }
         reporter.onScanProgress("remote", remoteChanges.size)
+        logRemoteChanges(remoteChanges)
         // UD-747 / UD-748: persist the wall-clock + final count for next
         // run's ETA computation.
         val remoteScanSecs = (System.currentTimeMillis() - remotePhaseStart) / 1000
@@ -3197,8 +3205,19 @@ open class SyncEngine(
         // the cloud item has changed since (Dropbox writes against its rev, S3 sends If-Match, Internxt compares its token).
         val ifMatch = if (action.remoteId == null) null else writeGuard(replaces?.let { it.version ?: it.hash } ?: row?.writeToken)
         val sent = statBeforeUpload(localPath)
+        // gkrost/unidrive-cli#394: the file's trail through the upload; the retries are this process's earlier failed attempts.
+        val uploadStartNs = System.nanoTime()
+        val remoteTag = if (remotePath != action.path) listOf("remote" to remotePath) else emptyList()
+        FileEvents.event(
+            FileEvents.Phase.UPLOAD_START,
+            action.path,
+            bytes = sizeForLog.takeIf { it >= 0 },
+            retries = fileTally.attemptsFailed(action.path),
+            tally = fileTally,
+            extra = remoteTag,
+        )
 
-        fun auditFailure(e: Exception) =
+        fun auditFailureEntry(e: Exception) =
             auditLog?.emit(
                 action = "Upload",
                 path = action.path,
@@ -3206,12 +3225,32 @@ open class SyncEngine(
                 oldHash = prevHash,
                 result = "failed:${e.javaClass.simpleName}: ${e.message}",
             )
+
+        fun auditFailure(e: Exception) {
+            fileTally.noteFailure(action.path)
+            FileEvents.event(
+                FileEvents.Phase.UPLOAD_FAILED,
+                action.path,
+                bytes = sizeForLog.takeIf { it >= 0 },
+                ms = (System.nanoTime() - uploadStartNs) / 1_000_000,
+                retries = fileTally.attemptsFailed(action.path),
+                tally = fileTally,
+                extra = listOf("error" to e.javaClass.simpleName),
+            )
+            auditFailureEntry(e)
+        }
+        var traceStep = 0L
         val result =
             try {
                 // UD-366: action.remoteId carries the existing remote UUID for MODIFIED uploads;
                 // null for NEW. Internxt routes through PUT /files/{uuid} when non-null.
                 provider.upload(localPath, remotePath, existingRemoteId = action.remoteId, ifMatchETag = ifMatch) { transferred, total ->
                     reporter.onTransferProgress(action.path, transferred, total)
+                    // TRACE: one line per FILE_TRACE_STEP_BYTES of progress, and the last one, not one per chunk.
+                    if (FileEvents.traceEnabled() && (transferred / FILE_TRACE_STEP_BYTES > traceStep || transferred >= total)) {
+                        traceStep = transferred / FILE_TRACE_STEP_BYTES
+                        FileEvents.trace(FileEvents.Phase.UPLOAD_PROGRESS, action.path, transferred, listOf("total" to total))
+                    }
                 }
             } catch (e: RemoteConflictException) {
                 auditFailure(e)
@@ -3222,6 +3261,16 @@ open class SyncEngine(
                 auditFailure(e)
                 throw e
             }
+        FileEvents.event(
+            FileEvents.Phase.UPLOAD_DONE,
+            action.path,
+            bytes = sizeForLog.takeIf { it >= 0 },
+            ms = (System.nanoTime() - uploadStartNs) / 1_000_000,
+            retries = fileTally.attemptsFailed(action.path),
+            tally = fileTally,
+            extra = remoteTag,
+        )
+        fileTally.noteSuccess(action.path)
         // The eventually-consistent delta feed may not list this just-written remote
         // item on the next full enumeration; mark it so the absence sweep defers its
         // deletion verdict instead of reaping + re-uploading in a loop. Marked by
@@ -3259,7 +3308,14 @@ open class SyncEngine(
                 isPinned = false,
                 isHydrated = true,
                 lastSynced = Instant.now(),
-            ).let { withSentHash(it, localPath, sent) }, // archive#396: hashless providers get the SHA-256 of the bytes just sent
+            ).let { withSentHash(it, localPath, sent, result.sentSha256) }, // archive#396: hashless providers get the SHA-256 of the bytes just sent
+        )
+        FileEvents.event(
+            FileEvents.Phase.UPLOAD_CONFIRMED,
+            action.path,
+            bytes = result.size,
+            tally = fileTally,
+            extra = listOf("kept_both" to result.keptBoth),
         )
         // UD-113: success path. Failure path emits inside the try/catch above.
         auditLog?.emit(
@@ -3270,6 +3326,32 @@ open class SyncEngine(
             newHash = result.hash,
             result = "success",
         )
+    }
+
+    /**
+     * gkrost/unidrive-cli#394: one `remote_change` event per file the cloud reported as new, changed or gone since the row
+     * the engine holds. Bounded: at most [FILE_EVENT_REMOTE_INSPECT_LIMIT] items are compared with their rows per pass, and
+     * [FileEventTally.REMOTE_CHANGE_LINES_PER_PASS] lines are written (the rest are counted for the summary).
+     */
+    private fun logRemoteChanges(changes: Map<String, CloudItem>) {
+        var inspected = 0
+        for ((path, item) in changes) {
+            if (item.isFolder) continue
+            if (++inspected > FILE_EVENT_REMOTE_INSPECT_LIMIT) break
+            val row = db.getEntry(path)
+            val state =
+                when {
+                    item.deleted -> if (row == null) continue else "deleted"
+                    row == null -> "new"
+                    row.remoteId != item.id || row.remoteSize != item.size || row.remoteHash != item.hash -> "changed"
+                    else -> continue
+                }
+            if (fileTally.mayLogRemoteChange()) {
+                FileEvents.event(FileEvents.Phase.REMOTE_CHANGE, path, bytes = item.size, tally = fileTally, extra = listOf("state" to state))
+            } else {
+                fileTally.record(FileEvents.Phase.REMOTE_CHANGE, item.size, null, null)
+            }
+        }
     }
 
     // gkrost/unidrive-cli#57: the token a mirror write hands the provider as ifMatchETag. A provider with versions of its own
@@ -4389,7 +4471,18 @@ open class SyncEngine(
         entry: SyncEntry,
         local: Path,
         sent: Pair<Long, Long>?,
-    ): SyncEntry = Transfers.withSentHash(entry, local, sent, provider.hashAlgorithm(), log)
+        sentSha256: String? = null,
+    ): SyncEntry =
+        Transfers.withSentHash(entry, local, sent, provider.hashAlgorithm(), log, sentSha256) { fromProvider, ms ->
+            FileEvents.event(
+                FileEvents.Phase.HASH_DONE,
+                entry.path,
+                bytes = sent?.second,
+                ms = ms,
+                tally = fileTally,
+                extra = listOf("via" to if (fromProvider) "provider" else "file"),
+            )
+        }
 
     // #22: whether the sync root holds a folder at [remotePath], spelled exactly so: a file system that folds case answers
     // for any spelling, and a scope root spelled otherwise than the local folder is the typo case, not a folder to create.
@@ -4908,6 +5001,10 @@ open class SyncEngine(
     }
 
     companion object {
+        // gkrost/unidrive-cli#394: the TRACE progress of an upload is written once per this many bytes.
+        private const val FILE_TRACE_STEP_BYTES = 4L * 1024 * 1024
+        private const val FILE_EVENT_REMOTE_INSPECT_LIMIT = 20_000
+
         const val CONSECUTIVE_SYNC_FAILURE_HARD_CAP: Int = 20
 
         /** How many " (n)" names keepBothCopyPath tries before it refuses. */

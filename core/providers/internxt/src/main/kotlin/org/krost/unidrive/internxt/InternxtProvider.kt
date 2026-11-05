@@ -1162,8 +1162,12 @@ class InternxtProvider(
         onProgress: ((Long, Long) -> Unit)?,
     ): CloudItem {
         refuseIncompatibleName(remotePath)
+        // gkrost/unidrive-cli#393: the encrypt pass is the one read of the source; the SHA-256 of the plaintext it saw is handed to the
+        // engine on the result, which would otherwise read the whole file again to record it.
+        val sourceSha256 = java.util.concurrent.atomic.AtomicReference<String?>(null)
         return try {
-            uploadUnclassified(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress)
+            val item = uploadUnclassified(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress, sourceSha256)
+            sourceSha256.get()?.let { item.copy(sentSha256 = it) } ?: item
         } catch (e: InternxtApiException) {
             if (e.statusCode == PLAN_LIMIT_STATUS) {
                 throw org.krost.unidrive.PlanLimitException(
@@ -1209,6 +1213,9 @@ class InternxtProvider(
         // metadata before anything is sent and again right before the replace.
         ifMatchETag: String?,
         onProgress: ((Long, Long) -> Unit)?,
+        // Set to the SHA-256 of the plaintext when this call's encrypt pass read the whole source (not on a resume that reuses the
+        // ciphertext of an earlier pass, which reads nothing).
+        sourceSha256: java.util.concurrent.atomic.AtomicReference<String?>,
     ): CloudItem {
         val segments = pathSegments(remotePath)
         if (segments.isEmpty()) throw ProviderException("Cannot upload to root")
@@ -1411,10 +1418,12 @@ class InternxtProvider(
             // whatever the tombstone pinned, which is the IV-pinning guarantee.
             val encCipher = crypto.createContentEncryptCipher(fileKey, iv)
             val digest = java.security.MessageDigest.getInstance("SHA-256")
+            val plainDigest = java.security.MessageDigest.getInstance("SHA-256")
             try {
                 withContext(Dispatchers.IO) {
                     Files.createDirectories(tempFile.parent)
-                    javax.crypto.CipherInputStream(withLocalIoRetry { Files.newInputStream(localPath) }, encCipher).use { cipherIn ->
+                    val source = java.security.DigestInputStream(withLocalIoRetry { Files.newInputStream(localPath) }, plainDigest)
+                    javax.crypto.CipherInputStream(source, encCipher).use { cipherIn ->
                         Files.newOutputStream(tempFile).use { out ->
                             val buf = ByteArray(8192)
                             var n: Int
@@ -1427,6 +1436,7 @@ class InternxtProvider(
                 }
                 encryptedSize = withContext(Dispatchers.IO) { Files.size(tempFile) }
                 hashHex = HexFormat.of().formatHex(digest.digest())
+                val plainSha256 = HexFormat.of().formatHex(plainDigest.digest())
                 // The cipher is a stream cipher: the ciphertext is as long as the bytes it read. The file was sized before this
                 // pass; a source that changed length in between would be created with the old size and stored with another
                 // length, and every download of it refused as incomplete. Nothing is sent: the next attempt reads it afresh.
@@ -1439,6 +1449,7 @@ class InternxtProvider(
                         "$remotePath changed while it was being read for upload ($fileSize bytes when sized, $encryptedSize read); will be retried",
                     )
                 }
+                sourceSha256.set(plainSha256)
             } catch (e: java.nio.file.NoSuchFileException) {
                 // Mid-upload delete — local file vanished after we sized it.
                 withContext(Dispatchers.IO) { tombstoneStore.discard(pathHashStr) }

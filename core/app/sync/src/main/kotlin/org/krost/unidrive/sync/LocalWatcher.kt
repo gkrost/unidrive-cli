@@ -2,6 +2,7 @@ package org.krost.unidrive.sync
 
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
+import org.krost.unidrive.engine.FileEvents
 import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.engineKey
 import org.slf4j.LoggerFactory
@@ -181,6 +182,8 @@ class LocalWatcher(
     internal fun pendingEmitCount(): Int = pendingEmits.size
 
     private fun enqueue(relativePath: String) {
+        // gkrost/unidrive-cli#394: the debounced path leaves the watcher for the next pass (one line per emit, not per OS event).
+        FileEvents.event(FileEvents.Phase.PICKUP, relativePath)
         changedPaths.add(relativePath)
         changeSignal.trySend(Unit)
     }
