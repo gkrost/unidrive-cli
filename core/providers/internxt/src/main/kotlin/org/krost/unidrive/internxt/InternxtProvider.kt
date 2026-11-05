@@ -1,5 +1,7 @@
 package org.krost.unidrive.internxt
 
+import org.krost.unidrive.engine.FileEvents
+
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -742,6 +744,7 @@ class InternxtProvider(
                     // client cannot check is read without the ciphertext check and says so (see below).
                     val checkable = shardHashCheck(fileId, remotePath, usableShards.first().hash)
                     val cipher = crypto.createContentDecryptCipher(fileKey, iv)
+                    val traceProgress = FileEvents.progress(FileEvents.Phase.DOWNLOAD_PROGRESS, remotePath, expected)
                     refusalLogged(fileId, remotePath, checkable) {
                         api.downloadFileStreaming(
                             downloadUrl,
@@ -750,6 +753,7 @@ class InternxtProvider(
                             expectedSize = expected,
                             expectedShardHash = checkable,
                             targetMtimeMillis = targetMtimeMillis,
+                            onProgress = traceProgress,
                         )
                     }
                 }
@@ -1413,6 +1417,7 @@ class InternxtProvider(
         val encryptedSize: Long
         val hashHex: String
         if (needsEncrypt) {
+            val encryptStarted = System.nanoTime()
             // Re-derive a fresh Cipher per encrypt pass (javax.crypto.Cipher is
             // single-use after doFinal). The fileKey/iv stay byte-identical to
             // whatever the tombstone pinned, which is the IV-pinning guarantee.
@@ -1450,11 +1455,19 @@ class InternxtProvider(
                     )
                 }
                 sourceSha256.set(plainSha256)
+                val elapsed = (System.nanoTime() - encryptStarted) / 1_000_000
+                FileEvents.event(FileEvents.Phase.SOURCE_READ, remotePath, bytes = encryptedSize, ms = elapsed,
+                    extra = listOf("via" to "encrypt"))
+                FileEvents.event(FileEvents.Phase.ENCRYPT_DONE, remotePath, bytes = encryptedSize, ms = elapsed)
             } catch (e: java.nio.file.NoSuchFileException) {
+                FileEvents.event(FileEvents.Phase.ENCRYPT_FAILED, remotePath, ms = (System.nanoTime() - encryptStarted) / 1_000_000,
+                    extra = listOf("error" to e.javaClass.simpleName))
                 // Mid-upload delete — local file vanished after we sized it.
                 withContext(Dispatchers.IO) { tombstoneStore.discard(pathHashStr) }
                 throw e
             } catch (e: Exception) {
+                FileEvents.event(FileEvents.Phase.ENCRYPT_FAILED, remotePath, ms = (System.nanoTime() - encryptStarted) / 1_000_000,
+                    extra = listOf("error" to e.javaClass.simpleName))
                 // Keep the tombstone in place so the next attempt can resume
                 // (the .enc may be partial — encryptedSize mismatch on the
                 // resume path will trigger re-encrypt anyway).

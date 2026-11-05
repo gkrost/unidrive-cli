@@ -61,7 +61,16 @@ object FileEvents {
 
         // The phases below are written by the download, hydration and cache code. They are named here so that every
         // line of the trail shares one vocabulary.
+        DOWNLOAD_START("download_start"),
+        DOWNLOAD_PROGRESS("download_progress"),
         DOWNLOAD_DONE("download_done"),
+        DOWNLOAD_FAILED("download_failed"),
+        HYDRATE_FAILED("hydrate_failed"),
+        ENCRYPT_DONE("encrypt_done"),
+        ENCRYPT_FAILED("encrypt_failed"),
+        SOURCE_READ("source_read"),
+        UPLOAD_SKIPPED("upload_skipped"),
+        CACHE_STORE("cache_store"),
         HYDRATE_SERVED("hydrate_served"),
         CACHE_EVICT("cache_evict"),
     }
@@ -95,6 +104,17 @@ object FileEvents {
     /** Whether TRACE events are written; callers skip the work of a progress callback when they are not. */
     fun traceEnabled(): Boolean = log.isTraceEnabled
 
+    fun progress(phase: Phase, path: String, total: Long?): ((Long) -> Unit)? {
+        if (!traceEnabled()) return null
+        var previous = 0L
+        return { bytes ->
+            if (bytes > previous && (bytes - previous >= 4 * 1024 * 1024 || bytes == total)) {
+                previous = bytes
+                trace(phase, path, bytes, listOf("total" to total))
+            }
+        }
+    }
+
     /** The per-cycle summary at INFO, when anything happened. */
     fun summary(
         scanId: String,
@@ -122,7 +142,8 @@ object FileEvents {
             if (value == null) continue
             val text = UrlRedaction.redact(value.toString())
             sb.append(' ').append(key).append('=')
-            if (value is Number || value is Boolean || text.all { it.isLetterOrDigit() || it in "_-.:/" }) sb.append(text) else sb.append(quote(text))
+            val unquoted = text.isNotEmpty() && text.all { it.isLetterOrDigit() || it in "_-.:/" }
+            if (unquoted) sb.append(text) else sb.append(quote(text))
         }
         return sb.toString()
     }
@@ -136,7 +157,7 @@ object FileEvents {
                 c == '\n' -> sb.append("\\n")
                 c == '\r' -> sb.append("\\r")
                 c == '\t' -> sb.append("\\t")
-                c < ' ' -> sb.append("\\u").append(String.format("%04x", c.code))
+                c < ' ' -> sb.append("\\u").append(c.code.toString(16).padStart(4, '0'))
                 else -> sb.append(c)
             }
         }
@@ -206,13 +227,13 @@ class FileEventTally {
     /** How many `remote_change` lines the bound kept out of the log in this pass. */
     fun remoteChangeLinesSuppressed(): Long = maxOf(0L, remoteChangeLines.get() - REMOTE_CHANGE_LINES_PER_PASS)
 
-    internal fun summaryOrNull(scanId: String): String? {
+    fun summaryOrNull(scanId: String): String? {
         fun c(phase: FileEvents.Phase) = counters.getValue(phase)
         val up = c(FileEvents.Phase.UPLOAD_DONE)
         val failed = c(FileEvents.Phase.UPLOAD_FAILED)
         val remote = c(FileEvents.Phase.REMOTE_CHANGE)
         val hashes = c(FileEvents.Phase.HASH_DONE)
-        val any = listOf(up, failed, remote).any { it.count.sum() > 0 }
+        val any = counters.values.any { it.count.sum() > 0 }
         if (!any) return null
         return buildString {
             append("file_summary scan=").append(scanId)
@@ -224,6 +245,15 @@ class FileEventTally {
             append(" retries=").append(retried.get())
             append(" hash_bytes=").append(hashes.bytes.sum())
             append(" hash_ms=").append(hashes.ms.sum())
+            for (phase in listOf(FileEvents.Phase.DOWNLOAD_DONE, FileEvents.Phase.DOWNLOAD_FAILED,
+                FileEvents.Phase.HYDRATE_SERVED, FileEvents.Phase.HYDRATE_FAILED, FileEvents.Phase.CACHE_STORE, FileEvents.Phase.CACHE_EVICT,
+                FileEvents.Phase.UPLOAD_SKIPPED)) {
+                val counter = c(phase)
+                if (counter.count.sum() == 0L) continue
+                append(' ').append(phase.wire).append("_count=").append(counter.count.sum())
+                append(' ').append(phase.wire).append("_bytes=").append(counter.bytes.sum())
+                append(' ').append(phase.wire).append("_ms=").append(counter.ms.sum())
+            }
             val suppressed = remoteChangeLinesSuppressed()
             if (suppressed > 0) append(" remote_change_lines_suppressed=").append(suppressed)
         }

@@ -31,18 +31,36 @@ object Transfers {
         }
 
     /** Download while allowing the provider to return a hash of the plaintext it staged. */
+    @Suppress("TooGenericExceptionCaught") // Record every failed provider attempt, then rethrow unchanged.
     suspend fun downloadByIdOrPathWithHash(
         provider: CloudProvider,
         item: CloudItem,
         remotePath: String,
         destination: Path,
         targetMtimeMillis: Long? = null,
-    ): DownloadReceipt =
-        if (item.id.isNotEmpty()) {
-            provider.downloadByIdWithHash(item.id, remotePath, destination, targetMtimeMillis)
-        } else {
-            provider.downloadWithHash(remotePath, destination, targetMtimeMillis)
+        tally: FileEventTally? = null,
+        retryHistory: FileEventTally? = tally,
+    ): DownloadReceipt {
+        val eventPath = item.path
+        val started = System.nanoTime()
+        FileEvents.event(FileEvents.Phase.DOWNLOAD_START, eventPath, bytes = item.size, tally = tally)
+        try {
+            val receipt = if (item.id.isNotEmpty()) {
+                provider.downloadByIdWithHash(item.id, remotePath, destination, targetMtimeMillis)
+            } else {
+                provider.downloadWithHash(remotePath, destination, targetMtimeMillis)
+            }
+            FileEvents.event(FileEvents.Phase.DOWNLOAD_DONE, eventPath, bytes = receipt.bytesWritten,
+                ms = (System.nanoTime() - started) / 1_000_000, retries = retryHistory?.attemptsFailed(eventPath), tally = tally)
+            retryHistory?.noteSuccess(eventPath)
+            return receipt
+        } catch (e: Exception) {
+            retryHistory?.noteFailure(eventPath)
+            FileEvents.event(FileEvents.Phase.DOWNLOAD_FAILED, eventPath, ms = (System.nanoTime() - started) / 1_000_000,
+                retries = retryHistory?.attemptsFailed(eventPath), tally = tally, extra = listOf("error" to e.javaClass.simpleName))
+            throw e
         }
+    }
 
     /** mtime and size of a file about to be uploaded, or null when it cannot be read. */
     fun statBeforeUpload(local: Path): Pair<Long, Long>? =

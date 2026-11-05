@@ -498,6 +498,16 @@ class RemoteEnumeration(
         val upserted = upsertedViewPaths.size
         if (upserted > 0 || reaped > 0) {
             val changedPaths: Set<String> = upsertedViewPaths + reapedViewPaths
+            val tally = FileEventTally()
+            for (path in changedPaths) {
+                if (tally.mayLogRemoteChange()) {
+                    FileEvents.event(FileEvents.Phase.REMOTE_CHANGE, path, tally = tally,
+                        extra = listOf("state" to if (path in reapedViewPaths) "deleted" else "changed"))
+                } else {
+                    tally.record(FileEvents.Phase.REMOTE_CHANGE, null, null, null)
+                }
+            }
+            FileEvents.summary("mount-enumeration", tally)
             gather.invalidateView(changedPaths, false, movedView)
         }
         val recoveryPending = db.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)?.equals("true", ignoreCase = true) == true

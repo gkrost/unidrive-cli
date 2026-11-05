@@ -30,6 +30,8 @@ import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.engine.RemoteOperationGuard
 import org.krost.unidrive.engine.TransferPause
 import org.krost.unidrive.engine.Transfers
+import org.krost.unidrive.engine.FileEvents
+import org.krost.unidrive.engine.FileEventTally
 import org.krost.unidrive.engine.ViewCache
 import org.krost.unidrive.engine.ViewDirectory
 import org.krost.unidrive.engine.ViewNamespaces
@@ -639,7 +641,22 @@ class MountEngine private constructor(
     suspend fun ensureHydratedReporting(
         path: String,
         history: TransferHandle? = null,
-    ): HydratedCache = hydrateMutexes.computeIfAbsent(path) { Mutex() }.withLock { ensureHydratedLocked(path, history) }
+    ): HydratedCache {
+        val tally = FileEventTally()
+        val started = System.nanoTime()
+        try {
+            val result = hydrateMutexes.computeIfAbsent(path) { Mutex() }.withLock { ensureHydratedLocked(path, history, tally) }
+            FileEvents.event(FileEvents.Phase.HYDRATE_SERVED, path, bytes = runCatching { Files.size(result.path) }.getOrNull(),
+                ms = (System.nanoTime() - started) / 1_000_000, tally = tally, extra = listOf("cache_hit" to !result.fetched))
+            return result
+        } catch (e: Exception) {
+            FileEvents.event(FileEvents.Phase.HYDRATE_FAILED, path, ms = (System.nanoTime() - started) / 1_000_000,
+                tally = tally, extra = listOf("error" to e.javaClass.simpleName))
+            throw e
+        } finally {
+            FileEvents.summary("mount-hydrate", tally)
+        }
+    }
 
     /**
      * The cache file of a hydrated path and whether making it ready took a download ([fetched]). gkrost/unidrive-cli#171:
@@ -688,6 +705,7 @@ class MountEngine private constructor(
     private suspend fun ensureHydratedLocked(
         path: String,
         history: TransferHandle?,
+        tally: FileEventTally,
     ): HydratedCache {
         val entry = db.getEntry(path)
             ?: throw IllegalArgumentException("Unknown remote path: $path")
@@ -756,7 +774,7 @@ class MountEngine private constructor(
                         transfer.measuredBy(entry.remoteSize) { stagedBytes(staged) }
                         runningDownloads[path] = transfer
                         try {
-                            watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged) }
+                            watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged, tally) }
                         } finally {
                             runningDownloads.remove(path, transfer)
                         }
@@ -822,6 +840,7 @@ class MountEngine private constructor(
             recordProviderContact()
             // archive#660: a downloaded rule file is readable now; its folder is no longer held back.
             ignoreRuleFileWritten(path)
+            FileEvents.event(FileEvents.Phase.CACHE_STORE, path, bytes = downloadedSize, tally = tally)
             return HydratedCache(cachePath, fetched = true, contentId = fetched.contentId)
         } finally {
             runCatching { Files.deleteIfExists(staged) }
@@ -911,10 +930,11 @@ class MountEngine private constructor(
         entry: SyncEntry,
         item: CloudItem,
         staged: Path,
+        tally: FileEventTally,
     ): Fetched {
         val remotePath = remotePathOf(path, entry)
         try {
-            return Fetched(Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staged), liveItem = null)
+            return Fetched(Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staged, tally = tally, retryHistory = downloadEventRetries), liveItem = null)
         } catch (e: Exception) {
             if (item.id.isEmpty() || !DownloadFailures.isNotFound(e)) throw e
             val live = liveFileReplacing(path, remotePath, item.id) ?: throw e
@@ -923,7 +943,7 @@ class MountEngine private constructor(
                     "whose id the row takes",
                 path,
             )
-            return Fetched(Transfers.downloadByIdOrPathWithHash(provider, item.copy(id = live.id, size = live.size), remotePath, staged), live)
+            return Fetched(Transfers.downloadByIdOrPathWithHash(provider, item.copy(id = live.id, size = live.size), remotePath, staged, tally = tally, retryHistory = downloadEventRetries), live)
         }
     }
 
@@ -1118,12 +1138,17 @@ class MountEngine private constructor(
             // The same test cacheDisposition used: the cache copy is the row's local file.
             val cacheWasLocalFile =
                 entry.cacheBacked == true || (entry.cacheBacked == null && entry.localMtime == mtime && entry.localSize == size)
+            val evictionStarted = System.nanoTime()
             try {
                 Files.delete(cache)
             } catch (e: java.io.IOException) {
                 log.debug("#450: cannot evict the cache copy of {}: {}", path, e.message)
                 return@withLock null
             }
+            val tally = FileEventTally()
+            FileEvents.event(FileEvents.Phase.CACHE_EVICT, path, bytes = size,
+                ms = (System.nanoTime() - evictionStarted) / 1_000_000, tally = tally, extra = listOf("reason" to "budget"))
+            FileEvents.summary("mount-evict", tally)
             if (cacheWasLocalFile) {
                 db.markUnhydrated(path)
                 onUnhydrated(path)
@@ -1215,6 +1240,25 @@ class MountEngine private constructor(
         // always runs).
         onProgress: ((Long, Long) -> Unit)? = null,
     ): UploadOutcome {
+        val tally = FileEventTally()
+        FileEvents.event(FileEvents.Phase.PICKUP, path, tally = tally, extra = listOf("source" to "mount"))
+        try {
+            return uploadFromCacheMeasured(path, cachePath, ifMatchETag, onProgress, tally)
+        } finally {
+            FileEvents.summary("mount-upload", tally)
+        }
+    }
+
+    private val uploadEventRetries = FileEventTally()
+    private val downloadEventRetries = FileEventTally()
+
+    private suspend fun uploadFromCacheMeasured(
+        path: String,
+        cachePath: Path,
+        ifMatchETag: String?,
+        onProgress: ((Long, Long) -> Unit)?,
+        tally: FileEventTally,
+    ): UploadOutcome {
         require(Files.exists(cachePath)) { "Cache path missing: $cachePath" }
         // A path in a view has no row and never gets one: bytes found in a cache copy there are neither sent nor recorded.
         if (guard.views.contains(path)) return UploadOutcome(sent = false, size = Files.size(cachePath), oldHash = null, newHash = null)
@@ -1249,15 +1293,24 @@ class MountEngine private constructor(
         val unchanged = unchangedCloudVersionOrNull(existingEntry, remotePath, cachePath, sizeForLog)
         if (unchanged != null) {
             log.info("uploadFromCache: {} has the bytes the cloud already holds ({} bytes); upload skipped", path, sizeForLog)
+            FileEvents.event(FileEvents.Phase.UPLOAD_SKIPPED, path, bytes = sizeForLog, tally = tally)
         }
+        val uploadStarted = System.nanoTime()
+        val traceProgress = FileEvents.progress(FileEvents.Phase.UPLOAD_PROGRESS, path, sizeForLog)
+        if (unchanged == null) FileEvents.event(FileEvents.Phase.UPLOAD_START, path, bytes = sizeForLog,
+            retries = uploadEventRetries.attemptsFailed(path), tally = tally)
         val result =
             unchanged
                 ?: try {
                     provider.upload(cachePath, remotePath, existingRemoteId = existingRemoteId, ifMatchETag = ifMatchETag) { transferred, total ->
                         wiring.onTransferProgress(path, transferred, total)
                         onProgress?.invoke(transferred, total)
+                        traceProgress?.invoke(transferred)
                     }
                 } catch (e: Exception) {
+                    uploadEventRetries.noteFailure(path)
+                    FileEvents.event(FileEvents.Phase.UPLOAD_FAILED, path, ms = (System.nanoTime() - uploadStarted) / 1_000_000,
+                        retries = uploadEventRetries.attemptsFailed(path), tally = tally, extra = listOf("error" to e.javaClass.simpleName))
                     noteAuthRejection(e)
                     auditLog?.emit(
                         action = "Upload",
@@ -1268,6 +1321,11 @@ class MountEngine private constructor(
                     )
                     throw e
                 }
+        if (unchanged == null) {
+            FileEvents.event(FileEvents.Phase.UPLOAD_DONE, path, bytes = sizeForLog, ms = (System.nanoTime() - uploadStarted) / 1_000_000,
+                retries = uploadEventRetries.attemptsFailed(path), tally = tally)
+            uploadEventRetries.noteSuccess(path)
+        }
         // The cloud had a newer version and kept it: the bytes are a new item beside it, not this row's item.
         if (unchanged == null && result.keptBoth && existingRemoteId != null) {
             return settleKeptBoth(path, cachePath, remotePath, result, sent, prevHash)
@@ -1351,7 +1409,8 @@ class MountEngine private constructor(
         // The row just adopted the cache copy's stats, and these are exactly the bytes the
         // write-back sent: hash the cache copy (guarded against a writer landing mid-hash)
         // so the touch shield covers mount-edited files too.
-        db.upsertEntry(withSentHash(uploaded, cachePath, sent, result.sentSha256))
+        db.upsertEntry(withSentHash(uploaded, cachePath, sent, result.sentSha256, tally))
+        FileEvents.event(FileEvents.Phase.UPLOAD_CONFIRMED, path, bytes = size, tally = tally, extra = listOf("sent" to (unchanged == null)))
         auditLog?.emit(
             action = "Upload",
             path = path,
@@ -1921,7 +1980,11 @@ class MountEngine private constructor(
         local: Path,
         sent: Pair<Long, Long>?,
         sentSha256: String? = null,
-    ): SyncEntry = Transfers.withSentHash(entry, local, sent, provider.hashAlgorithm(), log, sentSha256)
+        tally: FileEventTally? = null,
+    ): SyncEntry = Transfers.withSentHash(entry, local, sent, provider.hashAlgorithm(), log, sentSha256) { fromProvider, ms ->
+        FileEvents.event(FileEvents.Phase.HASH_DONE, entry.path, bytes = sent?.second, ms = ms, tally = tally,
+            extra = listOf("via" to if (fromProvider) "provider" else "file"))
+    }
 
     private fun isTracked(remotePath: String): Boolean = guard.isTracked(remotePath)
 

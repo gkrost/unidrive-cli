@@ -201,6 +201,7 @@ open class SyncEngine(
 
     // gkrost/unidrive-cli#394: what the current pass did per phase (the `file_summary` line) and the failed attempts per upload path.
     private val fileTally = FileEventTally()
+    private val downloadEventRetries = FileEventTally()
 
     // The shared line-time budget behind [maxBandwidthKbps]. One instance per
     // engine, so every transfer of every dispatch path draws from the same
@@ -3013,7 +3014,7 @@ open class SyncEngine(
         Files.createDirectories(destination.parent)
         val staging = destination.resolveSibling(stagingSiblingName(destination.fileName.toString(), ".mirror.unidrive-tmp"))
         try {
-            val receipt = Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staging, targetMtimeMillis)
+            val receipt = Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staging, targetMtimeMillis, fileTally, downloadEventRetries)
             requireCompleteDownload(remotePath, item, receipt)
             Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             return receipt

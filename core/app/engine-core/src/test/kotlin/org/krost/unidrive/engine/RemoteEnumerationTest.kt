@@ -134,6 +134,28 @@ class RemoteEnumerationTest {
         assertNull(db.getEntry("/a.txt"))
     }
 
+    @Test
+    fun `enumeration logs changed paths once and quiet redelivery logs none`() = runTest {
+        val logger = LoggerFactory.getLogger(FileEvents.LOGGER_NAME) as ch.qos.logback.classic.Logger
+        val previous = logger.level
+        val events = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().apply { start() }
+        logger.level = ch.qos.logback.classic.Level.DEBUG
+        logger.addAppender(events)
+        try {
+            provider.items = listOf(file("a", "/a"))
+            val enumeration = enumeration()
+            assertTrue(enumeration.enumerate(reset = false).ok)
+            assertTrue(enumeration.enumerate(reset = false).ok)
+            val changes = events.list.filter { it.formattedMessage.startsWith("file_event phase=remote_change ") }
+            assertEquals(1, changes.size)
+            assertTrue(changes.single().formattedMessage.contains("path=\"/a\""))
+        } finally {
+            logger.detachAppender(events)
+            logger.level = previous
+            events.stop()
+        }
+    }
+
     // ---- archive#147: the merge runs in transactions of mergeChunkRows rows ----
 
     @Test
