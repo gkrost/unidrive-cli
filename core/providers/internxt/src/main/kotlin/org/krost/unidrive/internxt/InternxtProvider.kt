@@ -615,24 +615,74 @@ class InternxtProvider(
         return downloadWithFileUuid(metadata.id, remotePath, destination, targetMtimeMillis)
     }
 
-    @Suppress("ThrowsCount") // The baseline entry predates the streamed receipt parameters and return type.
+    // gkrost/unidrive-cli#392: a file a Drive answer of this run already described (a listing, the sync pages, an upload) is
+    // read by that description, without the meta call that used to open every download (one sequential Drive round trip
+    // per file). A hint can only be older than the server's row, never older than what the engine was told, so it reads the
+    // listed version or a newer one and the receipt names the one it read. When the hinted object turns out to be gone or
+    // of another size, the meta call decides as before: an unchanged answer keeps the failure as it was raised (the bridge
+    // object is really missing), a hard-deleted file is classified by the meta answer, a replaced one is read by the new
+    // answer.
     private suspend fun downloadWithFileUuid(
         fileUuid: String,
         remotePath: String,
         destination: Path,
         targetMtimeMillis: Long? = null,
     ): DownloadReceipt {
-        val fileMeta =
-            try {
-                api.getFileMeta(fileUuid)
-            } catch (e: InternxtApiException) {
-                // The 404-bucket-entry-not-found shape can also surface from
-                // getFileMeta if the file metadata has been hard-deleted
-                // upstream. Classify identically to the bridge-side 404 so
-                // the engine quarantines the row instead of retrying forever.
-                if (isBucketEntryNotFound(e)) throw permanentDownloadFailure(remotePath, e)
-                throw e
+        val hinted = api.fileHints.get(fileUuid)
+            ?: return downloadStoredObject(currentFileMeta(fileUuid, remotePath), remotePath, destination, targetMtimeMillis)
+        try {
+            return downloadStoredObject(hinted, remotePath, destination, targetMtimeMillis)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // A failure a stale hint can cause falls back to the meta call: when the hinted object was replaced, the
+            // current answer is read; when it is the same object (or the failure is not a stale-hint one), the original
+            // failure stands.
+            if (hintMayBeStale(e)) {
+                val current = currentFileMeta(fileUuid, remotePath)
+                if (!sameStoredObject(current, hinted)) {
+                    log.debug("download of {}: the listed object {} was replaced by {}; reading the current one", remotePath, hinted.fileId, current.fileId)
+                    return downloadStoredObject(current, remotePath, destination, targetMtimeMillis)
+                }
             }
+            throw e
+        }
+    }
+
+    // A failure a stale hint can cause: the hinted bridge object is gone (deleted with a replace or a hard delete), or its
+    // size is not the one the hint declared.
+    private fun hintMayBeStale(e: Exception): Boolean =
+        e is RemoteObjectMissingDownloadException ||
+            e is RemoteIncompleteDownloadException ||
+            (e is InternxtApiException && e.statusCode == 404)
+
+    private fun sameStoredObject(
+        a: InternxtFile,
+        b: InternxtFile,
+    ): Boolean = a.fileId == b.fileId && a.bucket == b.bucket && a.size == b.size && a.encryptVersion == b.encryptVersion
+
+    private suspend fun currentFileMeta(
+        fileUuid: String,
+        remotePath: String,
+    ): InternxtFile =
+        try {
+            api.getFileMeta(fileUuid)
+        } catch (e: InternxtApiException) {
+            // The 404-bucket-entry-not-found shape can also surface from
+            // getFileMeta if the file metadata has been hard-deleted
+            // upstream. Classify identically to the bridge-side 404 so
+            // the engine quarantines the row instead of retrying forever.
+            if (isBucketEntryNotFound(e)) throw permanentDownloadFailure(remotePath, e)
+            throw e
+        }
+
+    @Suppress("ThrowsCount") // The baseline entry predates the streamed receipt parameters and return type.
+    private suspend fun downloadStoredObject(
+        fileMeta: InternxtFile,
+        remotePath: String,
+        destination: Path,
+        targetMtimeMillis: Long?,
+    ): DownloadReceipt {
         // archive#485: an empty file is a drive entry with size 0 and no fileId (no bucket entry exists for it): there is nothing
         // to fetch or decrypt. A size of 0 WITH a fileId is the older "size unknown" shape and still goes to the bridge.
         // A null size is unknown, not empty: with no fileId either there is nothing to read, so it fails below.
