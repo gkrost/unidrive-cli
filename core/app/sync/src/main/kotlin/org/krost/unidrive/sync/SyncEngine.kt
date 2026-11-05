@@ -4462,7 +4462,7 @@ open class SyncEngine(
         local: Path,
         mtime: Long,
         size: Long,
-    ): SyncEntry = Transfers.withLocalHash(entry, local, mtime, size, provider.hashAlgorithm(), log)
+    ): SyncEntry = Transfers.withLocalHash(entry, local, mtime to size, provider.hashAlgorithm(), log)
 
     // mtime and size of a file about to be uploaded, or null when it cannot be read.
     private fun statBeforeUpload(local: Path): Pair<Long, Long>? = Transfers.statBeforeUpload(local)
