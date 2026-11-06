@@ -215,14 +215,20 @@ class DownloadUrlCache(
         except: String,
         max: Int,
         aheadMax: Int,
+        minBatch: Int = 1,
     ): List<PendingClaim> =
         synchronized(lock) {
             forgetPending(except)
-            pruneExpired()
+            val group = siblings[parent] ?: return emptyList()
+            // Expired entries only matter when the budget cannot fit a full batch: sweeping them on every call would cost a pass over the cache per download.
+            if (aheadMax - prefetchedUnused - reservedPending < minBatch) pruneExpired()
             val room = aheadMax - prefetchedUnused - reservedPending
             if (room <= 0) return emptyList()
-            val group = siblings[parent] ?: return emptyList()
-            val picked = group.take(minOf(max, room))
+            val take = minOf(max, room)
+            // A claim smaller than a full batch is only worth sending when it is all the folder has left: otherwise it waits
+            // until downloads have used enough of the run-ahead for a full one.
+            if (take < minBatch && group.size > take) return emptyList()
+            val picked = group.take(take)
             reservedPending += picked.size
             picked.forEach { id ->
                 parentOf.remove(id)?.let { dropFromParentIndex(id, it) }

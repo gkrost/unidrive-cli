@@ -9,7 +9,11 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.RemoteContentRefusedDownloadException
 import org.krost.unidrive.http.HttpRetryBudget
@@ -25,8 +29,7 @@ import kotlin.test.assertTrue
 
 /**
  * gkrost/unidrive-cli#417: a children listing carries each file's download URL, a delta page does NOT (measured live on a
- * OneDrive Personal drive). So the URLs of delta-named files are read ahead 20 per `POST /$batch` once downloads come in a
- * burst, and every URL held is reused while fresh. Counted per request: single metadata GETs, batch requests, content GETs.
+ * OneDrive Personal drive). So the URLs of delta-named files are read ahead 20 per `POST /$batch` from the first download of a folder, and every URL held is reused while fresh. Counted per request: single metadata GETs, batch requests, content GETs.
  */
 class OneDriveListingDownloadUrlTest {
     private val json = headersOf(HttpHeaders.ContentType, "application/json")
@@ -140,12 +143,14 @@ class OneDriveListingDownloadUrlTest {
     private fun api(
         engine: MockEngine,
         throttleBudget: HttpRetryBudget = HttpRetryBudget(maxConcurrency = 8),
+        claimWaitMs: Long = GraphApiService.CLAIM_WAIT_MS,
     ) = GraphApiService(
         config = OneDriveConfig(),
         httpClient = HttpClient(engine),
         tokenProvider = { _, _ -> "tok" },
         downloadUrls = DownloadUrlCache({ clock.get() }),
         throttleBudget = throttleBudget,
+        claimWaitMs = claimWaitMs,
     )
 
     private fun settle(g: GraphApiService) {
@@ -190,9 +195,8 @@ class OneDriveListingDownloadUrlTest {
 
             assertEquals(40, content.get(), "each file fetched once")
             assertTrue(batchSizes.all { it <= 20 }, "batch sizes $batchSizes")
-            assertTrue(batchSizes.isNotEmpty(), "the burst earned a read-ahead")
-            assertEquals(2, byId.get(), "only the first two downloads (before the burst was seen) read one by one")
-            assertEquals(38, batchSizes.sum(), "the other 38 URLs came in batches")
+            assertEquals(listOf(20, 19), batchSizes.sorted().reversed(), "the first download claimed the whole folder, in full batches")
+            assertEquals(1, byId.get(), "only the first download read one by one")
             p.close()
         }
 
@@ -312,10 +316,10 @@ class OneDriveListingDownloadUrlTest {
                 p.downloadByIdWithHash(id, "/$id.bin", dir.resolve("$id.out"))
                 settle(g)
             }
-            assertTrue(batchSizes.contains(4), "the burst batch read the other four: $batchSizes")
+            assertTrue(batchSizes.contains(5), "the first download claimed the other five: $batchSizes")
 
             p.downloadByIdWithHash("id-3", "/id-3.bin", dir.resolve("3.out"))
-            assertEquals(3, byId.get(), "the two pre-burst files and the throttled one read Graph one by one")
+            assertEquals(2, byId.get(), "the first file and the throttled one read Graph one by one")
             assertTrue(budget.currentSpacingMs() > 0, "the 429 inside the 200 envelope reached the shared budget")
 
             val metadataAfter = byId.get() + batchSizes.size
@@ -328,7 +332,7 @@ class OneDriveListingDownloadUrlTest {
 
     @Test
     fun `a download arriving during its batch waits for the batch instead of reading Graph again`() =
-        runTest {
+        runBlocking {
             val arrived = CompletableDeferred<Unit>()
             val gate = CompletableDeferred<Unit>()
             batchArrived = arrived
@@ -339,21 +343,56 @@ class OneDriveListingDownloadUrlTest {
 
             p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("1.out"))
             assertEquals(1, byId.get())
-
-            val second = async { p.downloadByIdWithHash("id-2", "/id-2.bin", dir.resolve("2.out")) }
-            arrived.await() // the batch of [id-3, id-4] is in flight
-            val third = async { p.downloadByIdWithHash("id-3", "/id-3.bin", dir.resolve("3.out")) }
-            gate.complete(Unit) // a foreground read arrives while the batch has not answered
-            second.await()
+            arrived.await() // the batch of [id-2, id-3, id-4] is in flight
+            val third = async(Dispatchers.Default) { p.downloadByIdWithHash("id-3", "/id-3.bin", dir.resolve("3.out")) }
+            delay(50) // the download is parked on the batch
+            gate.complete(Unit)
             third.await()
 
-            assertEquals(listOf(2), batchSizes)
-            assertEquals(2, byId.get(), "id-3 took the batch's answer, not a second metadata GET")
-            assertEquals(3, content.get())
+            assertEquals(listOf(3), batchSizes)
+            assertEquals(1, byId.get(), "id-3 took the batch's answer, not a second metadata GET")
 
             p.downloadByIdWithHash("id-4", "/id-4.bin", dir.resolve("4.out"))
-            assertEquals(2, byId.get(), "the batch's entry for id-4 stayed cached")
-            assertEquals(4, content.get())
+            assertEquals(1, byId.get(), "the batch's entry for id-4 stayed cached")
+            assertEquals(3, content.get())
+            p.close()
+        }
+
+    @Test
+    fun `a batch that never answers holds a download no longer than the bound`() =
+        runBlocking {
+            val arrived = CompletableDeferred<Unit>()
+            batchArrived = arrived
+            pauseBatch = CompletableDeferred() // never completed: the batch hangs
+            val g = api(engine(delta = ids(4).map { item(it, dl = null) }), claimWaitMs = 200)
+            val p = OneDriveProvider(OneDriveConfig(), graphApi = g)
+            g.getDelta()
+
+            p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("1.out"))
+            arrived.await()
+            val started = System.nanoTime()
+            val receipt = withTimeout(10_000) { p.downloadByIdWithHash("id-3", "/id-3.bin", dir.resolve("3.out")) }
+            val tookMs = (System.nanoTime() - started) / 1_000_000
+
+            assertEquals("quickxor:QXid-3|4", receipt.contentId)
+            assertTrue(tookMs < 5_000, "the download did not wait for the hung batch: $tookMs ms")
+            assertEquals(2, byId.get(), "id-1 and the id whose batch hung read Graph themselves")
+            p.close()
+        }
+
+    @Test
+    fun `the first download of a folder claims the whole folder as full batches of 20`() =
+        runTest {
+            val ids = ids(61)
+            val g = api(engine(delta = ids.map { item(it, dl = null) }))
+            val p = OneDriveProvider(OneDriveConfig(), graphApi = g)
+            g.getDelta()
+
+            p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("1.out"))
+            settle(g)
+
+            assertEquals(listOf(20, 20, 20), batchSizes.toList(), "three full batches ahead, capped by the read-ahead budget")
+            assertEquals(1, byId.get())
             p.close()
         }
 
@@ -384,7 +423,7 @@ class OneDriveListingDownloadUrlTest {
                 settle(g)
             }
             assertTrue(batchSizes.size > batchesAfterFolderA, "the expired read-ahead was pruned, the folder B burst still earned a batch: $batchSizes")
-            assertEquals(3, byId.get(), "only a-1 (before the burst), a-6 (the budget was full) and b-1 read one by one")
+            assertEquals(2, byId.get(), "only a-1 and b-1 (the first of each folder) read one by one: $byIdIds batches=$batchSizes")
             assertEquals(9, content.get())
             p.close()
         }
