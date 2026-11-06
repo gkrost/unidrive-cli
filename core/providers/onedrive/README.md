@@ -103,6 +103,21 @@ Names ([restrictions](https://support.microsoft.com/en-us/office/restrictions-an
 - Published: names cannot contain `" * : < > ? / \ |`, cannot start or end with a space, and cannot be `.lock`, `CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, `_vti_`, `desktop.ini` or start with `~$`. Some organisations also refuse `#` and `%`. The maximum file size is 250 GB.
 - `OneDriveNameRules` checks the published character, reserved-name and 400-character cloud-path restrictions before upload, folder creation and move/rename requests. Graph `400 invalidRequest` and the observed `_vti_` `403 accessDenied` responses are also mapped to `PermanentUploadFailureException` as a fallback. The mount queue and mirror engine record permanent refusals against the current content watermark; unchanged content is not retried, and `status --pending` reports the refused path and reason.
 
+## Personal Vault (and packages)
+
+OneDrive's Personal Vault (German "Persönlicher Tresor") is not synced: the drive exposes it in `GET /me/drive/root/children` as a facet-less,
+zero-size stub, and the provider filters that stub out of every listing surface (`listChildren`, the delta walk, the shared-delta walk;
+`OneDriveProvider.noteAndSkipVault`, `DriveItem.isPersonalVault` — a deletion tombstone short-circuits the check, so a vault deleted in the
+cloud still propagates its delete). Content access is not available through Graph at all, so there is nothing to sync even without the filter.
+A full delta walk did **not** carry the vault on the drive measured for gkrost/unidrive-cli#405 (one personal account, complete walk,
+no decode failures): the stub appeared in `root/children` but never in delta. That exclusion is an observation on one drive, not a
+documented Microsoft guarantee — which is why the `children` filter is treated as the load-bearing one and the capture instrument
+reports a walk with decode skips or a page cap as INCOMPLETE rather than concluding absence. The stub's shape is the filter's signature: no folder/file/package facet, size 0, and a name from the vault locale list or any non-blank
+name; an ordinary folder that merely shares a vault display name has a real folder facet and is synced normally. The skips are counted per
+daemon run and surface in `daemon.status` under `provider_health.skipped` (`EntrySkipReporting`; present only while a run skipped something).
+A package (a OneNote notebook, the `package` facet) is left out of the listings by the same mechanism, so the engine never tries to download it.
+The live capture instrument is `LiveVaultCaptureTest` (gated, read-only; run it against a test account or the account owner's own profile).
+
 ## Server-family matrix
 
 | Tenant | Throttle docs | `retryAfterSeconds` body | CDN edge | HTML-throttle response |

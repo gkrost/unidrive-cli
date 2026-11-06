@@ -23,7 +23,7 @@
     <ID>TooGenericExceptionCaught:OneDriveProviderFactory.kt$OneDriveProviderFactory$e: Exception</ID>
     <ID>TooGenericExceptionCaught:TokenManager.kt$TokenManager$e: Exception</ID>
     <ID>TooManyFunctions:GraphApiService.kt$GraphApiService : AutoCloseable</ID>
-    <ID>TooManyFunctions:OneDriveProvider.kt$OneDriveProvider : CloudProvider</ID>
+    <ID>TooManyFunctions:OneDriveProvider.kt$OneDriveProvider : CloudProviderEntrySkipReporting</ID>
     <ID>UseCheckOrError:CancellationPropagationTest.kt$CancellationPropagationTest$throw IllegalStateException("sibling-1 failed — cancelling scope")</ID>
   </CurrentIssues>
 </SmellBaseline>

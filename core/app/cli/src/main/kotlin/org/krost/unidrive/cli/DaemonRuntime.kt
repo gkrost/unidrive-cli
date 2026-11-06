@@ -690,10 +690,18 @@ class DaemonRuntime(
                     val lastContactMs = lastProviderContactMs(enumerationStatus.lastSuccessAtMs, mount.lastProviderContactAtMs)
                     // strict_names (issue 29): present only for a provider with a strict-name mode; the count reads the rows
                     // (the same ones `uploads.blocked` lists), so a busy state.db can hold the reply briefly, like any reader.
+                    // skipped (gkrost/unidrive-cli#405): the listing entries the provider leaves out — OneDrive's
+                    // Personal Vault stub and its package entries. Present only while the run has skipped some.
+                    val skippedJson =
+                        (cloud as? org.krost.unidrive.EntrySkipReporting)?.skippedEntries()?.let { skipped ->
+                            if (skipped.vault == 0L && skipped.packageEntries == 0L) null
+                            else skippedEntriesJson(skipped.vault, skipped.packageEntries)
+                        }
                     val providerHealth =
                         providerHealthJson(
                             lastContactMs,
                             provider.strictNameMode?.let { on -> strictNamesStatusJson(on, mount.strictNameBlockedCount()) },
+                            skippedJson,
                         )
                     // requests (gkrost/unidrive-cli#74): the provider's own account of its HTTP calls, so a stalled
                     // transfer can be diagnosed without reading the log: per endpoint class how many calls are in

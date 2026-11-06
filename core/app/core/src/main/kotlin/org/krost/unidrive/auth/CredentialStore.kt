@@ -48,14 +48,23 @@ public class CredentialStore<T>(
      *     shape guard for "syntactically parseable but obviously bad",
      *     e.g. empty access_token).
      */
-    public fun load(): T? {
+    public fun load(): T? = load(migrate = true)
+
+    /**
+     * Load and parse like [load], with the legacy-plaintext migration optional. `migrate = false`
+     * decodes and validates **without writing**: a diagnostic tool that only reads (the gated live
+     * captures, gkrost/unidrive-cli#407 review) must not rewrite the profile's file or change its
+     * permissions as a side effect of loading. Ordinary callers keep [load], whose migration removes
+     * any plaintext from disk before parsing.
+     */
+    public fun load(migrate: Boolean): T? {
         if (!Files.exists(file)) return null
 
         return try {
             val raw = Files.readString(file)
             val id = file.toAbsolutePath().normalize().toString()
             val decoded = protector?.decode(id, raw)
-            if (decoded != null && !decoded.protected) {
+            if (migrate && decoded != null && !decoded.protected) {
                 // Protect even malformed legacy content before parsing it. This removes any
                 // plaintext tokens from disk without making migration depend on valid JSON.
                 saveSerialized { raw }

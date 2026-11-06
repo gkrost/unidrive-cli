@@ -38,6 +38,11 @@ data class DriveItem(
             // file arrives facet-less with size 0, the same shape as the vault
             // stub, and dropping it means the remote delete never propagates.
             if (removed != null || deleted != null) return false
+            // A package (a OneNote notebook) can be a named zero-byte entry with neither
+            // folder nor file facet — the vault shape minus its name list. Excluding it here
+            // routes it to the package handler consistently, so the counters and the log
+            // name it as a package, never as a vault (gkrost/unidrive-cli#407 review).
+            if (packageFacet != null) return false
             val noFacets = folder == null && file == null
             val zeroSize = size == 0L
             val nameMatches = name != null && VAULT_NAMES.any { it.equals(name, ignoreCase = true) }

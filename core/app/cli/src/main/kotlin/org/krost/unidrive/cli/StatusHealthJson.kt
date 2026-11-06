@@ -126,14 +126,31 @@ internal fun notificationsStatusJson(status: RemoteChangeChannelStatus?): JsonOb
         put("rotations", status?.rotations ?: 0L)
     }
 
-/** `provider_health`: `last_contact_ms` is null until the provider has answered once since the daemon started. `strict_names` is present only for a provider that runs a strict-name mode (Internxt's `internxt_strict_names`). */
+/** `provider_health`: `last_contact_ms` is null until the provider has answered once since the daemon started. `strict_names` is present only for a provider that runs a strict-name mode (Internxt's `internxt_strict_names`). `skipped` is present only for a provider that reports skipped listing entries and has skipped some (gkrost/unidrive-cli#405). */
 internal fun providerHealthJson(
     lastContactMs: Long?,
     strictNames: JsonObject? = null,
+    skipped: JsonObject? = null,
 ): JsonObject =
     buildJsonObject {
         put("last_contact_ms", lastContactMs)
         if (strictNames != null) put("strict_names", strictNames)
+        if (skipped != null) put("skipped", skipped)
+    }
+
+/**
+ * `provider_health.skipped` (gkrost/unidrive-cli#405): the listing entries the provider deliberately leaves out —
+ * OneDrive's Personal Vault stub and its package entries — so an operator sees that the drive carries something
+ * this engine does not sync, without reading the log. Present only while the counts are not both zero: the
+ * provider reports them only once it has listed, and a restart starts at 0.
+ */
+internal fun skippedEntriesJson(
+    vault: Long,
+    packageEntries: Long,
+): JsonObject =
+    buildJsonObject {
+        put("vault", vault)
+        put("package", packageEntries)
     }
 
 /**

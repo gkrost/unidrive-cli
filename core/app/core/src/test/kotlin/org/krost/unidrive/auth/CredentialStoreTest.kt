@@ -116,6 +116,19 @@ class CredentialStoreTest {
     }
 
     @Test
+    fun `a read-only load decodes without migrating the legacy file`() {
+        val protector = FakeProtector()
+        val path = dir.resolve("creds.json")
+        val legacy = """{"accessToken":"legacy-secret","expiresAt":9}"""
+        Files.writeString(path, legacy)
+        val s = CredentialStore(dir, "creds.json", serializer<Sample>(), protector = protector)
+
+        assertEquals(Sample("legacy-secret", 9L), s.load(migrate = false))
+        assertEquals(legacy, Files.readString(path), "the file must stay byte-identical")
+        assertFalse(Files.readString(path).contains("protected-test-value"), "nothing was written")
+    }
+
+    @Test
     fun `protector failure leaves legacy plaintext and is not treated as missing`() {
         val path = dir.resolve("creds.json")
         val legacy = """{"accessToken":"legacy-secret","expiresAt":9}"""
