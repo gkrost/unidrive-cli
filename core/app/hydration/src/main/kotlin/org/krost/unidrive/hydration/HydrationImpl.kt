@@ -97,7 +97,8 @@ class HydrationImpl(
     // file. 0 emits every callback (tests).
     val uploadProgressMinIntervalMs: Long = DEFAULT_UPLOAD_PROGRESS_MIN_INTERVAL_MS,
     // archive#450: per-profile budget of the hydration cache in bytes (`hydration_cache_max_bytes`);
-    // 0 or less = unlimited. See [evictCache].
+    // 0 = unlimited, below 0 = no content cache (#404): every read fetches from the provider and a clean
+    // copy leaves with its last read handle. See [evictCache], [reclaimOnLastClose].
     private val cacheMaxBytes: Long = DEFAULT_CACHE_MAX_BYTES,
     // archive#450: a cache file used within this window is never evicted: a read that has just been served
     // is not in the open-set until the handle is registered, and a client that is about to open it
@@ -443,6 +444,10 @@ class HydrationImpl(
     private val accountedBytes = ConcurrentHashMap<String, Long>()
     private val cacheBytes = AtomicLong(0)
 
+    // #404: whether this layer reclaims at all. A positive budget evicts over budget and a disabled cache
+    // (below 0) reclaims every clean copy; 0 = unlimited keeps everything, as it always has.
+    private val cacheReclaims: Boolean = cacheMaxBytes != 0L
+
     init {
         // gkrost/unidrive-cli#391: a cache copy the enumeration's reap removes (a delete seen in the cloud, a gone folder) leaves the
         // running total at once; before, it stayed in `cache.bytes` until the next walk, up to EVICTION_RECONCILE_INTERVAL_MS later.
@@ -506,10 +511,16 @@ class HydrationImpl(
         /** gkrost/unidrive-cli#23: default gap between two `downloading` events of one request (see [downloadProgressIntervalMs]). */
         const val DEFAULT_DOWNLOAD_PROGRESS_INTERVAL_MS = 500L
 
-        /** archive#450: default hydration cache budget per profile, 20 GiB. */
-        // The value of SyncConfig.DEFAULT_HYDRATION_CACHE_MAX_BYTES (:app:sync, which this module no longer
-        // depends on, archive#560 U3); HydrationCacheDefaultTest in :app:cli pins that the two agree.
-        const val DEFAULT_CACHE_MAX_BYTES: Long = 20L * 1024 * 1024 * 1024
+        /**
+         * archive#450: the cache budget a host gets when it passes none: unlimited. The product default is the
+         * config's (SyncConfig.DEFAULT_HYDRATION_CACHE_MAX_BYTES, :app:sync, which this module no longer depends on,
+         * archive#560 U3): a profile without `hydration_cache_max_bytes` keeps no content cache (#404).
+         */
+        const val DEFAULT_CACHE_MAX_BYTES: Long = 0L
+
+        /** #404: a cache budget below 0 means the profile keeps no content cache; 0 itself stays unlimited. */
+        const val CACHE_DISABLED_BYTES: Long = -1L
+
         const val CACHE_ACCESS_GRACE_MS: Long = 60_000
         const val EVICTION_DELAY_MS: Long = 5_000
 
@@ -1833,8 +1844,27 @@ class HydrationImpl(
                     openSets.values.filter { it.containsKey(handleId) }.singleOrNull()?.remove(handleId)
                 }
         forgetSharedIdIfUnheld(handleId)
-        path?.let { accountCacheFileOnDisk(it) }
+        path?.let {
+            accountCacheFileOnDisk(it)
+            if (cacheReclaims) reclaimOnLastClose(it)
+        }
         requestEviction()
+    }
+
+    /**
+     * #404: the last handle of [path] has just closed and this layer reclaims (a positive budget, or a disabled
+     * cache): a clean, unpinned copy is dropped — file and bytes — at once, beside the existing unpin/delete/budget
+     * paths, without waiting for a budget pass. Never dropped: a copy with an open handle on any connection, one
+     * under a queued or in-flight upload, one used within the access grace window (a client may be about to open
+     * it, [inUse]), a pinned row's copy, and a dirty copy ([MountEngine.cacheDisposition]); the engine
+     * re-classifies the row and the bytes under the path's hydration lock, as the budget pass does.
+     */
+    private suspend fun reclaimOnLastClose(path: String) {
+        if (inUse(path)) return
+        if (stateDb.getEntry(path)?.isPinned == true) return
+        if (mount.cacheDisposition(path) != CacheDisposition.DISPOSABLE) return
+        val bytes = mount.evictCacheCopy(path) { _events.tryEmit(HydrationEvent.Dehydrated(it)) }
+        if (bytes != null) forgetCacheFile(path)
     }
 
     // ── archive#450 cache budget ───────────────────────────────────────────────────────────────────────
@@ -1847,9 +1877,10 @@ class HydrationImpl(
         val evictedFiles: Int,
     )
 
-    // One pass per burst of triggers, scheduled [evictionDelayMs] after the first. A no-op without a budget.
+    // One pass per burst of triggers, scheduled [evictionDelayMs] after the first. A no-op when the cache never
+    // reclaims (unlimited).
     private fun requestEviction() {
-        if (cacheMaxBytes <= 0) return
+        if (!cacheReclaims) return
         if (!evictionRequested.compareAndSet(false, true)) return
         recoveryUploadScope.launch {
             try {
@@ -2023,7 +2054,9 @@ class HydrationImpl(
      * has no local copy) and nothing here uses it: no open handle, no queued or in-flight upload
      * (also re-checked by the engine's own lock at deletion), not accessed within the grace window.
      * Files without a row (an upload target that was renamed away, archive#319), unfinished creates, failed
-     * uploads and modified copies are never touched, so the cache can stay over budget.
+     * uploads, modified copies and a pinned row's copy (#404) are never touched, so the cache can stay over
+     * budget. A disabled cache (below 0, #404) has no budget to stay under: the pass runs to the end of its
+     * candidates, so every copy the rules let go, goes.
      *
      * archive#728: unconditional here — the start sweep and a caller that wants the truth go through it; the
      * triggered path is [evictCacheIfDue]. Candidates are classified in LRU order in batches of
@@ -2040,7 +2073,7 @@ class HydrationImpl(
         val before = files.sumOf { it.size }
         var total = before
         val evicted = HashSet<String>()
-        if (cacheMaxBytes > 0 && before > cacheMaxBytes) {
+        if (cacheReclaims && before > cacheMaxBytes) {
             val candidates = files.sortedBy { it.lastUsed }
             var index = 0
             while (total > cacheMaxBytes && index < candidates.size) {
@@ -2078,6 +2111,7 @@ class HydrationImpl(
             // Re-checked here as before: the pass runs for a while, so a client may have opened or started
             // editing the copy meanwhile.
             if (inUse(f.path)) continue
+            if (rows[f.path]?.isPinned == true) continue // a pinned row's copy is never dropped (#404)
             if (mount.cacheDisposition(f.path, rows[f.path]) != CacheDisposition.DISPOSABLE) continue
             val bytes = mount.evictCacheCopy(f.path) { _events.tryEmit(HydrationEvent.Dehydrated(it)) }
             if (bytes == null) continue

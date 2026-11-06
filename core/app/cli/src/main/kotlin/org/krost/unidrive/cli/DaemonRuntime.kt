@@ -93,7 +93,9 @@ class DaemonRuntime(
     // queue, see DaemonHealthLine). `daemon run` passes 60 s; 0 = off, so tests that construct a runtime
     // log nothing.
     private val healthIntervalMs: Long = 0,
-    // archive#450: hydration cache budget in bytes (profile key hydration_cache_max_bytes); 0 = unlimited.
+    // archive#450: hydration cache budget in bytes (profile key hydration_cache_max_bytes); 0 = unlimited,
+    // below 0 = no content cache (#404). `daemon run` passes the config's resolution; a profile without the key
+    // gets the config default (disabled). Tests that build a runtime without it get [HydrationImpl.DEFAULT_CACHE_MAX_BYTES].
     private val hydrationCacheMaxBytes: Long = HydrationImpl.DEFAULT_CACHE_MAX_BYTES,
     // archive#603 (U4): the profile's hosting mode, resolved and gated by `daemon run` before this runtime is
     // constructed. A mount daemon serves the hydration verbs, sync.enumerate and the poller, and routes

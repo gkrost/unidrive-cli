@@ -1,5 +1,6 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -8,10 +9,14 @@ import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.FileTime
+import java.time.Instant
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -136,5 +141,92 @@ class HydrationCacheReclaimTest {
 
             assertTrue(env.onDisk() <= 1500L, "the budget holds after a pin, not only after a close (on disk: ${env.onDisk()})")
             assertEquals(env.onDisk(), hydration.cacheHealth().bytes)
+        }
+
+    // ── #404: reclaim on the last close ────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `the last read handle closing drops a clean unpinned copy at once`() =
+        runTest {
+            val env = freshEnv()
+            env.seedAndSync("a.bin" to 1000)
+            val hydration = env.hydration(this, budget = 1_000_000)
+            hydration.requestCacheMeasurement()
+            hydration.evictCache()
+
+            val opened = assertIs<OpenResult.Ok>(hydration.openForRead("conn", "h1", "/a.bin"))
+            assertContentEquals(bytesOf(1, 1000), Files.readAllBytes(opened.cachePath))
+            assertEquals(1000L, hydration.cacheHealth().bytes, "precondition: the read cached the copy")
+
+            hydration.closeHandle("conn", "h1")
+
+            assertEquals(0L, hydration.cacheHealth().bytes, "the close reclaimed the copy without waiting for a pass")
+            assertEquals(0L, env.onDisk())
+            assertIs<OpenResult.Ok>(hydration.openForRead("conn", "h2", "/a.bin"))
+            assertEquals(listOf("/a.bin", "/a.bin"), env.provider.downloads, "the next read fetches from the provider again")
+        }
+
+    @Test
+    fun `a pinned copy is never dropped on close`() =
+        runTest {
+            val env = freshEnv()
+            env.seedAndSync("a.bin" to 1000)
+            val hydration = env.hydration(this, budget = 1_000_000)
+            hydration.requestCacheMeasurement()
+            hydration.evictCache()
+            env.db.upsertEntry(assertNotNull(env.db.getEntry("/a.bin")).copy(isPinned = true))
+
+            assertIs<OpenResult.Ok>(hydration.openForRead("conn", "h1", "/a.bin"))
+            hydration.closeHandle("conn", "h1")
+
+            assertEquals(1000L, hydration.cacheHealth().bytes, "a pinned row's copy stays")
+            assertEquals(1000L, env.onDisk())
+        }
+
+    @Test
+    fun `a dirty copy is never dropped on close`() =
+        runTest {
+            val env = freshEnv()
+            env.seedAndSync("a.bin" to 1000)
+            val hydration = env.hydration(this, budget = 1_000_000)
+            hydration.requestCacheMeasurement()
+            hydration.evictCache()
+            val cachePath = env.engine.resolveCachePath("/a.bin")
+
+            assertIs<OpenResult.Ok>(hydration.openForRead("conn", "h1", "/a.bin"))
+            // An edit while the handle is open: these bytes exist nowhere else until they are uploaded.
+            Files.writeString(cachePath, "an unsynced edit")
+            Files.setLastModifiedTime(cachePath, FileTime.from(Instant.now().plusSeconds(60)))
+            hydration.closeHandle("conn", "h1")
+
+            assertTrue(Files.exists(cachePath), "the dirty copy is the only copy of the edit: it stays")
+        }
+
+    @Test
+    fun `a copy under a queued upload is never dropped on close`() =
+        runTest {
+            val env = freshEnv()
+            env.seedAndSync("a.bin" to 1000)
+            val hydration = env.hydration(this, budget = 1_000_000)
+            hydration.requestCacheMeasurement()
+            hydration.evictCache()
+            assertIs<HydrateResult.Ok>(hydration.hydrate("/a.bin"))
+            val cachePath = env.engine.resolveCachePath("/a.bin")
+            val gate = CompletableDeferred<Unit>().also { env.provider.uploadGate = it }
+
+            assertIs<OpenResult.Ok>(hydration.openForWrite("conn", "h-w", "/a.bin", cachePath, baseEtag = null))
+            hydration.closeHandle("conn", "h-w")
+            assertTrue(hydration.hasUploadSlot("/a.bin"), "precondition: the upload is queued behind the gate")
+            assertEquals(1000L, hydration.cacheHealth().bytes, "the upload pins the copy through the close")
+
+            gate.complete(Unit)
+            advanceUntilIdle()
+            assertFalse(hydration.hasUploadSlot("/a.bin"), "precondition: the upload landed")
+
+            // Once the upload landed, nothing protects the copy any more: the next last close reclaims it.
+            assertIs<OpenResult.Ok>(hydration.openForRead("conn", "h2", "/a.bin"))
+            hydration.closeHandle("conn", "h2")
+            assertFalse(Files.exists(cachePath), "once the upload landed, the clean copy is reclaimable again")
+            assertEquals(0L, env.onDisk())
         }
 }

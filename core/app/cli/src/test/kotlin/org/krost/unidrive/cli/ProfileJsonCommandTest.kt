@@ -389,8 +389,8 @@ class ProfileJsonCommandTest {
         writeConfig(twoProfiles)
         val before = config()
         for ((key, bad) in listOf(
-            "hydration_cache_max_bytes" to "-1",
             "hydration_cache_max_bytes" to "lots",
+            "hydration_cache_max_bytes" to "1.5",
             "daemon_poll_seconds" to "1.5",
             "daemon_poll_seconds" to "99999999999",
         )) {
@@ -399,6 +399,20 @@ class ProfileJsonCommandTest {
             assertEquals("invalid_value", json().getValue("error").jsonPrimitive.content, "$key=$bad")
         }
         assertEquals(before, config())
+    }
+
+    @Test
+    fun `a negative hydration_cache_max_bytes disables the cache, and 0 stays unlimited`() {
+        writeConfig(twoProfiles)
+
+        assertEquals(0, run("profile", "set", "--json", "work", "hydration_cache_max_bytes", "--", "-1"))
+        val disabled = json()
+        assertEquals(-1L, disabled.getValue("value").jsonPrimitive.long)
+        assertEquals(1024L, disabled.getValue("previous").jsonPrimitive.long)
+        assertEquals(-1L, SyncConfig.parse(config(), "work").hydrationCacheMaxBytes("work"))
+
+        assertEquals(0, run("profile", "set", "--json", "work", "hydration_cache_max_bytes", "0"))
+        assertEquals(0L, json().getValue("value").jsonPrimitive.long)
     }
 
     @Test

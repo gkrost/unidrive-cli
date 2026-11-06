@@ -95,7 +95,7 @@ class DoctorCommand : Runnable {
             }
 
         // archive#450: where this profile's hydration cache lives and what it may grow to. Like the exclude
-        // patterns above, a wedged config must not stop doctor: fall back to the default budget.
+        // patterns above, a wedged config must not stop doctor: fall back to the config default (#404: off).
         val cacheDir = SyncEngine.hydrationCacheRoot(SyncEngine.defaultHydrationCacheRoot(), profile.name)
         val cacheBudget: Long =
             try {
@@ -491,7 +491,8 @@ class DoctorCommand : Runnable {
 
     /**
      * **Check — Hydration cache size (archive#450).** Total bytes of the profile's hydration cache directory
-     * against its budget (`hydration_cache_max_bytes`, 0 = unlimited). WARN when over budget: the
+     * against its budget (`hydration_cache_max_bytes`, 0 = unlimited, below 0 = the cache is off, #404). WARN
+     * when over budget: the
      * eviction pass skips files with an open handle, a queued or failed upload, an unfinished create
      * or an unsynced edit, so a cache that stays over budget is holding bytes that exist nowhere else
      * (or the daemon has not run a pass yet). Read-only.
@@ -515,7 +516,12 @@ class DoctorCommand : Runnable {
                 }
             }
         }
-        val budget = if (budgetBytes > 0) formatBytes(budgetBytes) else "unlimited"
+        val budget =
+            when {
+                budgetBytes > 0 -> formatBytes(budgetBytes)
+                budgetBytes == 0L -> "unlimited"
+                else -> "off (no content cache)"
+            }
         val summary = "$files file(s), ${formatBytes(bytes)} of $budget budget ($cacheDir)"
         val over = budgetBytes > 0 && bytes > budgetBytes
         return CheckResult(
