@@ -1,0 +1,6 @@
+{"verb":"hydration.stat","path":"/docs/report.txt"}
+{"ok":true,"entry":{"path":"/docs/report.txt","size":42,"mtime_ms":1234567890123,"hydrated":true,"folder":false,"remote_modified_ms":1234567890000,"remote_id":"rid-report","etag":"etag-report","content_id":"obj-report|42","pending_upload":false,"error":false}}
+{"verb":"hydration.stat","path":"/missing.txt"}
+{"ok":false,"error":"unknown_path"}
+{"verb":"hydration.stat","path":"/docs/../report.txt"}
+{"ok":false,"error":"invalid_path"}

@@ -56,6 +56,9 @@ internal const val LIST_LIVE_CAPABILITY = "hydration.list_live"
  */
 internal const val LIST_CONTENT_ID_CAPABILITY = "hydration.list_content_id"
 
+/** The `daemon.status` capability that says the daemon answers `hydration.stat` (gkrost/unidrive-cli#415). */
+internal const val HYDRATION_STAT_CAPABILITY = "hydration.stat"
+
 /**
  * `uploads.running` (archive#1200): the uploads holding a transfer permit right now, present only while there is one. `count` is all
  * of them, `items` the first [HydrationImpl.RUNNING_ITEMS_CAP] by start time, `more` the rest. Each item: `path`,

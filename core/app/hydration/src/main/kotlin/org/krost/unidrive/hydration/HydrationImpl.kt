@@ -2647,6 +2647,23 @@ class HydrationImpl(
         }
     }
 
+    // gkrost/unidrive-cli#415: one row without the folder listing — the entry `list` answers for the path, read
+    // from the row state.db holds. Nothing is fetched from the provider (that round trip is what the verb exists
+    // to spare): a row the first scan has not brought in answers unknown_path, like lastSynced and matchesLocal.
+    override suspend fun stat(path: String): StatResult =
+        try {
+            // A path in a view answers as the view's listing writes it: the view's own path and key, the real
+            // item's attributes, where it really is. The view's root and a name the view does not list have no
+            // row of their own: unknown_path.
+            views.stat(path, ::statEntryOf, stateDb::getEntry)?.let { return StatResult.Ok(it) }
+            val entry = stateDb.getEntry(path) ?: return StatResult.Unknown(HydrationError.UNKNOWN_PATH_TOKEN)
+            StatResult.Ok(statEntryOf(entry))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            StatResult.Failed(HydrationError.Generic(e.message ?: "stat failed"))
+        }
+
     override suspend fun viewPage(
         kind: String,
         offset: Int,
@@ -2666,51 +2683,72 @@ class HydrationImpl(
         val blockedByPath = blockedRows.associate { PathNormalizer.nfc(it.path) to it.block.reason }
         val blockedFolders = blockedRows.filter { it.isFolder }.map { it.path.trimEnd('/') + "/" }
         return { e ->
-            // Clamp to >= 0: a stale / i32-overflowed remoteSize (e.g. a multi-GB
-            // folder size wrapped past Int.MAX to a negative) must never reach the
-            // wire — a negative size breaks strict u64 list parsers and EIO'd the
-            // FUSE co-daemon's whole directory listing.
-            // archive#524: while the upload is pending the cache file is the only copy
-            // and the upload sends ITS size — the row (written when the copy
-            // began) often still records 0 for both remote and local size, and a
-            // 0-byte file on the wire reads as data loss and invites a delete.
-            // One stat per pending row; a resolve/stat failure (unreadable name,
-            // no cache file) falls back to the recorded sizes.
-            val pendingUpload = e.remoteId == null || uploadSlots.containsKey(e.path)
-            val size = reportedSize(e, pendingUpload)
-            ListResult.Entry(
-                path = e.path,
-                size = size,
-                mtimeEpochMillis = e.localMtime ?: e.lastSynced.toEpochMilli(),
-                isHydrated = e.isHydrated,
-                isFolder = e.isFolder,
-                remoteModifiedEpochMillis = e.remoteModified?.toEpochMilli(),
-                remoteId = e.remoteId,
-                // The write token (SyncEntry.writeToken): the client hands it back as the base etag of an edit.
-                etag = e.writeToken,
-                // gkrost/unidrive-cli#171: what names the bytes, beside the token a rename moves. A folder has no bytes.
-                contentId = e.remoteContentId.takeUnless { e.isFolder },
-                // toSyncEntry surfaces a `local:` synthetic remote_id as null,
-                // so a null here means "never uploaded". An edit of a file that
-                // already has a remote id is owed to the cloud from open_write until
-                // its upload lands: that window is exactly the upload slot's lifetime.
-                // last_error_at marks the last attempt as failed (cleared by a later
-                // successful upload).
-                // archive#136: deliberately BROADER than SyncEntry.isPendingUpload (the
-                // UD-901 predicate) — this wire flag must also cover a remote-backed
-                // file whose cached edit is still queued in an upload slot, which
-                // the predicate (remoteId == null) cannot see.
-                pendingUpload = pendingUpload,
-                hasError = e.lastErrorAt != null,
-                excluded = mount.isExcludedPath(e.path, e.isFolder),
-                readOnly = mount.isReadOnlyPath(e.path),
-                trashRoot = mount.isTrashRoot(e.path),
-                backupsRoot = mount.isBackupsRoot(e.path),
-                blocked =
-                    blockedByPath[PathNormalizer.nfc(e.path)]
-                        ?: BLOCKED_BY_PARENT.takeIf { e.remoteId == null && blockedFolders.any { f -> e.path.startsWith(f) } },
+            entryOf(
+                e,
+                blockedByPath[PathNormalizer.nfc(e.path)]
+                    ?: BLOCKED_BY_PARENT.takeIf { e.remoteId == null && blockedFolders.any { f -> e.path.startsWith(f) } },
             )
         }
+    }
+
+    // The wire entry `stat` answers with: the same fields the listing writes, but the blocked reason looked up for
+    // THIS row alone — its own name block, else the nearest blocked ancestor folder for a pending row. Two indexed
+    // point lookups, none of the listing's bulk read of every blocked row in the profile: a post-upload stat costs
+    // the same however many name refusals other folders carry (gkrost/unidrive-cli#415).
+    private fun statEntryOf(e: org.krost.unidrive.sync.model.SyncEntry): ListResult.Entry =
+        entryOf(
+            e,
+            stateDb.nameBlock(e.path)?.reason
+                ?: BLOCKED_BY_PARENT.takeIf { e.remoteId == null && stateDb.blockedAncestor(e.path) != null },
+        )
+
+    // The one field mapping of `list` and `stat`; [blocked] is the row's blocked reason as the caller looked it up.
+    private fun entryOf(
+        e: org.krost.unidrive.sync.model.SyncEntry,
+        blocked: String?,
+    ): ListResult.Entry {
+        // Clamp to >= 0: a stale / i32-overflowed remoteSize (e.g. a multi-GB
+        // folder size wrapped past Int.MAX to a negative) must never reach the
+        // wire — a negative size breaks strict u64 list parsers and EIO'd the
+        // FUSE co-daemon's whole directory listing.
+        // archive#524: while the upload is pending the cache file is the only copy
+        // and the upload sends ITS size — the row (written when the copy
+        // began) often still records 0 for both remote and local size, and a
+        // 0-byte file on the wire reads as data loss and invites a delete.
+        // One stat per pending row; a resolve/stat failure (unreadable name,
+        // no cache file) falls back to the recorded sizes.
+        val pendingUpload = e.remoteId == null || uploadSlots.containsKey(e.path)
+        val size = reportedSize(e, pendingUpload)
+        return ListResult.Entry(
+            path = e.path,
+            size = size,
+            mtimeEpochMillis = e.localMtime ?: e.lastSynced.toEpochMilli(),
+            isHydrated = e.isHydrated,
+            isFolder = e.isFolder,
+            remoteModifiedEpochMillis = e.remoteModified?.toEpochMilli(),
+            remoteId = e.remoteId,
+            // The write token (SyncEntry.writeToken): the client hands it back as the base etag of an edit.
+            etag = e.writeToken,
+            // gkrost/unidrive-cli#171: what names the bytes, beside the token a rename moves. A folder has no bytes.
+            contentId = e.remoteContentId.takeUnless { e.isFolder },
+            // toSyncEntry surfaces a `local:` synthetic remote_id as null,
+            // so a null here means "never uploaded". An edit of a file that
+            // already has a remote id is owed to the cloud from open_write until
+            // its upload lands: that window is exactly the upload slot's lifetime.
+            // last_error_at marks the last attempt as failed (cleared by a later
+            // successful upload).
+            // archive#136: deliberately BROADER than SyncEntry.isPendingUpload (the
+            // UD-901 predicate) — this wire flag must also cover a remote-backed
+            // file whose cached edit is still queued in an upload slot, which
+            // the predicate (remoteId == null) cannot see.
+            pendingUpload = pendingUpload,
+            hasError = e.lastErrorAt != null,
+            excluded = mount.isExcludedPath(e.path, e.isFolder),
+            readOnly = mount.isReadOnlyPath(e.path),
+            trashRoot = mount.isTrashRoot(e.path),
+            backupsRoot = mount.isBackupsRoot(e.path),
+            blocked = blocked,
+        )
     }
 
     /**

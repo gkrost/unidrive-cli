@@ -374,6 +374,31 @@ class NameRefusalTest {
         assertNull(db.nameBlock("/african/$folderName/a.txt"), "the child carries no block of its own: the parent's is the reason")
     }
 
+    // gkrost/unidrive-cli#415: the stat's blocked reason is looked up for the one row (its own name block, else the
+    // nearest blocked ancestor folder) and comes out exactly as the listing's full scan writes it.
+    @Test
+    fun `stat answers the blocked entry the listing writes, direct or inherited`() {
+        provider.refuse["/dir/f.txt"] = "sibling.txt"
+        mkdir("/dir")
+        write("/dir/f.txt", "precious")
+        provider.refuse["/african/$folderName"] = "other"
+        mkdir("/african")
+        mkdir("/african/$folderName")
+        mkdir("/african/$folderName/sub")
+        write("/african/$folderName/sub/b.txt", "B")
+
+        val statFile = assertIs<StatResult.Ok>(runBlocking { hydration.stat("/dir/f.txt") }).entry
+        val listedFile = assertIs<ListResult.Ok>(runBlocking { hydration.list("/dir") }).entries.single()
+        assertEquals(listedFile, statFile, "a direct block: the entry the listing writes")
+        assertEquals("similar_name", statFile.blocked)
+
+        val statChild = assertIs<StatResult.Ok>(runBlocking { hydration.stat("/african/$folderName/sub/b.txt") }).entry
+        val listedChild = assertIs<ListResult.Ok>(runBlocking { hydration.list("/african/$folderName/sub") }).entries.single()
+        assertEquals(listedChild, statChild, "an inherited block: the entry the listing writes")
+        assertEquals("blocked_by_parent", statChild.blocked)
+        assertNull(db.nameBlock("/african/$folderName/sub/b.txt"), "the block is the parent's, found by the point lookup")
+    }
+
     @Test
     fun `the blocked list is capped and counts the rest`() {
         provider.refuse["/x"] = null

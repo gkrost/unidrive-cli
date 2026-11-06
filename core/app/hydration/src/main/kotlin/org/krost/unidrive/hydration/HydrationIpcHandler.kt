@@ -72,6 +72,15 @@ import java.util.concurrent.atomic.AtomicLong
  *               m: size, quickxor, sha256, recorded-sha256, internxt-shard-hash, empty. No reply carries a hash value.
  *   dehydrate   request:  {"verb":"hydration.dehydrate","path":"/foo"}
  *   dehydrate   reply:    {"ok":true} or {"ok":false,"error":"busy"} or {"ok":false,"error":"<message>"}
+ *   stat        (gkrost/unidrive-cli#415) request:  {"verb":"hydration.stat","path":"/foo.txt"}
+ *               One row without the folder listing: the entry `hydration.list` answers for the path, under
+ *               `entry` with the same field names and shapes, so a client reuses its list-entry parser. Read
+ *               from the row state.db holds; nothing is fetched from the provider.
+ *               reply:    {"ok":true,"entry":{...one hydration.list entry...}}
+ *                         {"ok":false,"error":"unknown_path"}        no row for the path
+ *                         {"ok":false,"error":"<msg>"}              EIO
+ *               daemon.status lists "hydration.stat" in capabilities on an engine that answers it.
+ *
  *   mkdir       request:  {"verb":"hydration.mkdir","path":"/foo"}
  *               reply:    {"ok":true}
  *                         {"ok":false,"error":"parent_not_found"}   ENOENT
@@ -346,6 +355,7 @@ class HydrationIpcHandler(
             "hydration.last_synced",
             "hydration.matches_local",
             "hydration.list",
+            "hydration.stat",
             "hydration.mkdir",
             "hydration.unlink",
             "hydration.rmdir",
@@ -506,6 +516,14 @@ class HydrationIpcHandler(
                 when (val r = hydration.list(prefix)) {
                     is ListResult.Ok -> serialiseListEntries(r.entries)
                     is ListResult.Failed -> reply(ok = false, error = r.error.message)
+                }
+            }
+            "hydration.stat" -> {
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
+                when (val r = hydration.stat(path)) {
+                    is StatResult.Ok -> StringBuilder("""{"ok":true,"entry":""").also { sb -> appendListEntry(sb, r.entry); sb.append('}') }.toString()
+                    is StatResult.Unknown -> reply(ok = false, error = r.reason)
+                    is StatResult.Failed -> reply(ok = false, error = r.error.message)
                 }
             }
             "hydration.mkdir" -> {
@@ -730,32 +748,42 @@ private fun serialiseViewPage(r: ViewPageResult.Ok): String {
 
 private fun serialiseListEntries(entries: List<ListResult.Entry>): String {
     val sb = StringBuilder("""{"ok":true,"entries":[""")
-    for ((i, e) in entries.withIndex()) {
+    entries.forEachIndexed { i, e ->
         if (i > 0) sb.append(',')
-        sb.append("{\"path\":").append(jsonEsc(e.path))
-            .append(",\"size\":").append(e.size)
-            .append(",\"mtime_ms\":").append(e.mtimeEpochMillis)
-            .append(",\"hydrated\":").append(e.isHydrated)
-            .append(",\"folder\":").append(e.isFolder)
-            .append(",\"remote_modified_ms\":").append(e.remoteModifiedEpochMillis?.toString() ?: "null")
-            .append(",\"remote_id\":").append(e.remoteId?.let { jsonEsc(it) } ?: "null")
-            .append(",\"etag\":").append(e.etag?.let { jsonEsc(it) } ?: "null")
-        // gkrost/unidrive-cli#171: additive, beside the etag, and only where the row names its bytes (daemon.status
-        // capability `hydration.list_content_id`).
-        if (e.contentId != null) sb.append(",\"content_id\":").append(jsonEsc(e.contentId))
-        sb.append(",\"pending_upload\":").append(e.pendingUpload)
-            .append(",\"error\":").append(e.hasError)
-        if (e.excluded) sb.append(",\"excluded\":true")
-        if (e.readOnly) sb.append(",\"read_only\":true")
-        if (e.trashRoot) sb.append(",\"trash_root\":true")
-        if (e.backupsRoot) sb.append(",\"backups_root\":true")
-        if (e.blocked != null) sb.append(",\"blocked\":").append(jsonEsc(e.blocked))
-        if (e.view != null) sb.append(",\"view\":").append(jsonEsc(e.view))
-        if (e.viewTarget != null) sb.append(",\"view_target\":").append(jsonEsc(e.viewTarget))
-        sb.append('}')
+        appendListEntry(sb, e)
     }
     sb.append("]}")
     return sb.toString()
+}
+
+// One entry exactly as hydration.list writes it, and hydration.stat under `entry`: the single serializer keeps
+// the two shapes identical, so a client parses both with its list-entry parser (gkrost/unidrive-cli#415). It
+// appends into the caller's builder — a listing of many rows builds one string, not one per row.
+private fun appendListEntry(
+    sb: StringBuilder,
+    e: ListResult.Entry,
+) {
+    sb.append("{\"path\":").append(jsonEsc(e.path))
+        .append(",\"size\":").append(e.size)
+        .append(",\"mtime_ms\":").append(e.mtimeEpochMillis)
+        .append(",\"hydrated\":").append(e.isHydrated)
+        .append(",\"folder\":").append(e.isFolder)
+        .append(",\"remote_modified_ms\":").append(e.remoteModifiedEpochMillis?.toString() ?: "null")
+        .append(",\"remote_id\":").append(e.remoteId?.let { jsonEsc(it) } ?: "null")
+        .append(",\"etag\":").append(e.etag?.let { jsonEsc(it) } ?: "null")
+    // gkrost/unidrive-cli#171: additive, beside the etag, and only where the row names its bytes (daemon.status
+    // capability `hydration.list_content_id`).
+    if (e.contentId != null) sb.append(",\"content_id\":").append(jsonEsc(e.contentId))
+    sb.append(",\"pending_upload\":").append(e.pendingUpload)
+        .append(",\"error\":").append(e.hasError)
+    if (e.excluded) sb.append(",\"excluded\":true")
+    if (e.readOnly) sb.append(",\"read_only\":true")
+    if (e.trashRoot) sb.append(",\"trash_root\":true")
+    if (e.backupsRoot) sb.append(",\"backups_root\":true")
+    if (e.blocked != null) sb.append(",\"blocked\":").append(jsonEsc(e.blocked))
+    if (e.view != null) sb.append(",\"view\":").append(jsonEsc(e.view))
+    if (e.viewTarget != null) sb.append(",\"view_target\":").append(jsonEsc(e.viewTarget))
+    sb.append('}')
 }
 
 fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
