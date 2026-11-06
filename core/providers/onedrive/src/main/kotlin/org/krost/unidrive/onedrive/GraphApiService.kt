@@ -52,10 +52,14 @@ class GraphApiService(
     httpClient: HttpClient? = null,
     // Tests point the requests at a loopback server; production talks to Graph.
     private val baseUrl: String = "${OneDriveConfig.GRAPH_BASE_URL}/${OneDriveConfig.GRAPH_VERSION}",
+    // Tests hand in a cache on their own clock and bounds; production uses the defaults.
+    private val downloadUrls: DownloadUrlCache = DownloadUrlCache(System::currentTimeMillis),
     // [rejectedToken] names the token the refused request carried on a forced refresh (#215), so the
     // token manager can take a stored token that already differs from it as fresh instead of rotating again.
     private val tokenProvider: suspend (forceRefresh: Boolean, rejectedToken: String?) -> String,
 ) : AutoCloseable {
+    // gkrost/unidrive-cli#417: the download URLs the listings carried, so a download need not ask Graph for them again.
+
     private val log = LoggerFactory.getLogger(GraphApiService::class.java)
 
     // The seam the daemon attaches its request-attempt recorder to; no sink, no metrics (see attachRequestMetrics).
@@ -156,7 +160,11 @@ class GraphApiService(
         return "$baseUrl/drives/${shared.driveId.encodeURLPathPart()}/items/${shared.itemId.encodeURLPathPart()}"
     }
 
-    suspend fun getItemById(id: String): DriveItem {
+    suspend fun getItemById(id: String): DriveItem = fetchItem(id)
+
+    // The metadata GET itself. It never feeds the download-URL cache: an item read for a write or a re-resolve may be
+    // newer or older than a listing, and only listings are remembered.
+    private suspend fun fetchItem(id: String): DriveItem {
         val response = authenticatedRequest(itemUrl(id))
         val body = response.bodyAsText()
         return json.decodeFromString<DriveItem>(body)
@@ -184,6 +192,7 @@ class GraphApiService(
             val body = response.bodyAsText()
             val collection = json.decodeFromString<DriveItemCollectionResponse>(body)
             accumulated.addAll(collection.value)
+            downloadUrls.remember(collection.value)
             log.debug("listChildren page {}: {} items, hasMore={}", pageIndex, collection.value.size, collection.nextLink != null)
             nextUrl = collection.nextLink
             pageIndex++
@@ -210,6 +219,7 @@ class GraphApiService(
                 // The envelope must decode (else the page is retried and fails); the items are read one by one.
                 val parsed = json.decodeFromString<DeltaPageEnvelope>(body)
                 val decoded = decodeDeltaItems(parsed.value)
+                downloadUrls.remember(decoded.items)
                 if (!readOnly) recordDeltaSeen()
                 return DeltaResult(
                     items = decoded.items,
@@ -312,7 +322,9 @@ class GraphApiService(
         itemId: String,
         destPath: Path,
     ): DownloadedFile {
-        var item = getItemById(itemId).also { refuseIfMalware(it, itemId) }.also { refuseIfPackage(it, itemId) }
+        // A fresh URL from a listing spares the metadata GET (#417). The listing's item carries the malware and package
+        // facets and the hashes the receipt names, so the refusals run on it exactly as on a live read; an entry is used once.
+        var item = (downloadUrls.take(itemId) ?: fetchItem(itemId)).also { refuseIfMalware(it, itemId) }.also { refuseIfPackage(it, itemId) }
         var downloadedBytes = 0L
         var url = item.downloadUrl ?: "${itemUrl(itemId)}/content"
         var authNeeded = item.downloadUrl == null
@@ -422,7 +434,7 @@ class GraphApiService(
                             outcome.statusCode,
                             itemId,
                         )
-                        val fresh = getItemById(itemId).also { refuseIfMalware(it, itemId) }
+                        val fresh = fetchItem(itemId).also { refuseIfMalware(it, itemId) }
                         item = fresh
                         url = fresh.downloadUrl ?: "${itemUrl(itemId)}/content"
                         authNeeded = fresh.downloadUrl == null
@@ -471,7 +483,7 @@ class GraphApiService(
                         itemId,
                         e.message,
                     )
-                    val fresh = getItemById(itemId).also { refuseIfMalware(it, itemId) }
+                    val fresh = fetchItem(itemId).also { refuseIfMalware(it, itemId) }
                     item = fresh
                     url = fresh.downloadUrl ?: "${itemUrl(itemId)}/content"
                     authNeeded = fresh.downloadUrl == null
