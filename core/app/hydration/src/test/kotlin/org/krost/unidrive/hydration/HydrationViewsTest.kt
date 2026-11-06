@@ -290,6 +290,33 @@ class HydrationViewsTest {
             assertEquals(0, env.syncEngine.downloadCount())
         }
 
+    // gkrost/unidrive-cli#415: the stat asks the provider for nothing — it resolves from the list the cache holds,
+    // whatever its age, and the listing stays the one that fills and refreshes a view.
+    @Test
+    fun `stat of a view path reads the held list and asks the provider for nothing, cold or expired`() =
+        runTest {
+            val env = envWithRecents()
+
+            assertIs<StatResult.Unknown>(env.hydration.stat("/Recents/q3.pdf"))
+            assertEquals(0, env.providerForTest.viewRequests.get(), "a cold view: no fetch, unknown_path")
+
+            assertEquals(3, env.entries("/Recents").size, "the listing is what fills the view")
+            assertEquals(1, env.providerForTest.viewRequests.get())
+
+            val warm = assertIs<StatResult.Ok>(env.hydration.stat("/Recents/q3.pdf")).entry
+            assertEquals("/Recents/q3.pdf", warm.path)
+            assertEquals("/Work/Reports/q3.pdf", warm.viewTarget)
+            assertEquals(1, env.providerForTest.viewRequests.get(), "a fresh view: no request")
+
+            env.viewClockMs.set(61_000)
+            val expired = assertIs<StatResult.Ok>(env.hydration.stat("/Recents/q3.pdf")).entry
+            assertEquals("/Work/Reports/q3.pdf", expired.viewTarget, "answered from the list held past its TTL")
+            assertEquals(1, env.providerForTest.viewRequests.get(), "an expired view: no refresh started")
+            assertEquals(3, env.entries("/Recents").size, "the listing stays the one that refreshes")
+            runCurrent()
+            assertEquals(2, env.providerForTest.viewRequests.get())
+        }
+
     @Test
     fun `a path that is not in a view is read as it always was`() =
         runTest {

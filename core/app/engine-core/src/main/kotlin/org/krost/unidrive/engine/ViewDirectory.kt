@@ -109,6 +109,17 @@ class ViewDirectory(
     /** The view [kind], joined to the rows as they are now. The kind must be active. */
     suspend fun list(kind: ViewKind): ViewListing {
         val snapshot = cache.get(kind)
+        val (entries, skipped) = joinOf(kind, snapshot)
+        lastCounts[kind] = Counts(entries.size, skipped)
+        return ViewListing(kind, entries, skipped, snapshot)
+    }
+
+    // The rows a snapshot's references join to (state.db lookups only), named as the view shows them, in the provider's
+    // order, and how many references had no row to show.
+    private fun joinOf(
+        kind: ViewKind,
+        snapshot: ViewSnapshot,
+    ): Pair<List<ViewEntry>, Int> {
         var skipped = 0
         val joined = LinkedHashMap<String, Pair<ViewRef, SyncEntry>>()
         for (ref in snapshot.refs) {
@@ -121,9 +132,7 @@ class ViewDirectory(
                 joined.values.map { (ref, row) -> ViewNames.Candidate(ref.id, row.path.substringAfterLast('/'), row.isFolder) },
                 foldCase,
             )
-        val entries = joined.values.map { (ref, row) -> ViewEntry(kind, names.getValue(ref.id), ref, row) }
-        lastCounts[kind] = Counts(entries.size, skipped)
-        return ViewListing(kind, entries, skipped, snapshot)
+        return joined.values.map { (ref, row) -> ViewEntry(kind, names.getValue(ref.id), ref, row) } to skipped
     }
 
     /**
@@ -162,10 +171,33 @@ class ViewDirectory(
     suspend fun resolve(path: String): ViewResolution {
         val at = namespaces.locate(path) ?: return ViewResolution.NotFound
         if (at.isRoot) return ViewResolution.Root(at.kind)
+        return resolveIn(at, cache.get(at.kind))
+    }
+
+    /**
+     * What [resolve] answers for [path], but only from what the cache holds: a verb that must ask the provider for
+     * nothing and start no refresh (hydration.stat) resolves with this — a view whose list was never fetched (or is
+     * unavailable) has nothing to join, so a path in it is [ViewResolution.NotFound], a view with a list past its TTL
+     * answers from the references it holds, and the listing stays the one that fills and refreshes a view. Null when
+     * [path] lies in no view.
+     */
+    fun resolveCached(path: String): ViewResolution? {
+        val at = namespaces.locate(path) ?: return null
+        if (at.isRoot) return ViewResolution.Root(at.kind)
+        val snapshot = cache.peek(at.kind)
+        if (snapshot.asOfMs == null) return ViewResolution.NotFound
+        return resolveIn(at, snapshot)
+    }
+
+    // The resolution of a located path against a snapshot: the name's entry, or a path below a folder alias.
+    private fun resolveIn(
+        at: ViewLocation,
+        snapshot: ViewSnapshot,
+    ): ViewResolution {
         val name = at.rest.substringBefore('/')
         val below = at.rest.substringAfter('/', "")
         val key = keyOf(name)
-        val entry = list(at.kind).entries.firstOrNull { keyOf(it.name) == key } ?: return ViewResolution.NotFound
+        val entry = joinOf(at.kind, snapshot).first.firstOrNull { keyOf(it.name) == key } ?: return ViewResolution.NotFound
         if ('/' !in at.rest) return ViewResolution.Entry(entry)
         if (!entry.row.isFolder || below.isEmpty()) return ViewResolution.NotFound
         return ViewResolution.Below(entry, entry.realPath.trimEnd('/') + "/" + below, "${at.rootPath}/${entry.name}/$below")

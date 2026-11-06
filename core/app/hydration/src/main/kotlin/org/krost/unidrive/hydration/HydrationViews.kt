@@ -74,7 +74,9 @@ internal class HydrationViews(
 
     /**
      * The entry of [path] as the view's listing writes it, or null when [path] has no row of its own in the views
-     * (its root, or a name the view does not list): the verb then answers from the rows, as for any real path.
+     * (its root, or a name the view does not list, or a view whose list is not there yet): the verb then answers from
+     * the rows, as for any real path. The resolution reads only what the cache holds — the verb asks the provider for
+     * nothing, starts no fill and no refresh; the listing stays the one that does.
      * [rowOf] reads the real row of a path below a folder alias.
      */
     suspend fun stat(
@@ -84,7 +86,7 @@ internal class HydrationViews(
     ): ListResult.Entry? {
         val at = namespaces.locate(path) ?: return null
         val directory = mount.views ?: return null
-        return when (val resolved = directory.resolve(path)) {
+        return when (val resolved = directory.resolveCached(path) ?: return null) {
             is ViewResolution.Entry -> resolved.entry.listed(entryOf)
             is ViewResolution.Below ->
                 rowOf(resolved.realPath)?.let { row ->

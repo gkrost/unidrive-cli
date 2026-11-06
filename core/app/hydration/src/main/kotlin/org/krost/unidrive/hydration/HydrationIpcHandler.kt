@@ -521,7 +521,7 @@ class HydrationIpcHandler(
             "hydration.stat" -> {
                 val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 when (val r = hydration.stat(path)) {
-                    is StatResult.Ok -> """{"ok":true,"entry":${serialiseListEntry(r.entry)}}"""
+                    is StatResult.Ok -> StringBuilder("""{"ok":true,"entry":""").also { sb -> appendListEntry(sb, r.entry); sb.append('}') }.toString()
                     is StatResult.Unknown -> reply(ok = false, error = r.reason)
                     is StatResult.Failed -> reply(ok = false, error = r.error.message)
                 }
@@ -748,18 +748,22 @@ private fun serialiseViewPage(r: ViewPageResult.Ok): String {
 
 private fun serialiseListEntries(entries: List<ListResult.Entry>): String {
     val sb = StringBuilder("""{"ok":true,"entries":[""")
-    for ((i, e) in entries.withIndex()) {
+    entries.forEachIndexed { i, e ->
         if (i > 0) sb.append(',')
-        sb.append(serialiseListEntry(e))
+        appendListEntry(sb, e)
     }
     sb.append("]}")
     return sb.toString()
 }
 
 // One entry exactly as hydration.list writes it, and hydration.stat under `entry`: the single serializer keeps
-// the two shapes identical, so a client parses both with its list-entry parser (gkrost/unidrive-cli#415).
-private fun serialiseListEntry(e: ListResult.Entry): String {
-    val sb = StringBuilder("{\"path\":").append(jsonEsc(e.path))
+// the two shapes identical, so a client parses both with its list-entry parser (gkrost/unidrive-cli#415). It
+// appends into the caller's builder — a listing of many rows builds one string, not one per row.
+private fun appendListEntry(
+    sb: StringBuilder,
+    e: ListResult.Entry,
+) {
+    sb.append("{\"path\":").append(jsonEsc(e.path))
         .append(",\"size\":").append(e.size)
         .append(",\"mtime_ms\":").append(e.mtimeEpochMillis)
         .append(",\"hydrated\":").append(e.isHydrated)
@@ -780,7 +784,6 @@ private fun serialiseListEntry(e: ListResult.Entry): String {
     if (e.view != null) sb.append(",\"view\":").append(jsonEsc(e.view))
     if (e.viewTarget != null) sb.append(",\"view_target\":").append(jsonEsc(e.viewTarget))
     sb.append('}')
-    return sb.toString()
 }
 
 fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
