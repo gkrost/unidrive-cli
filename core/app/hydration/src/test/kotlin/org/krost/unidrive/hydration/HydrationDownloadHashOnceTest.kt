@@ -74,12 +74,26 @@ class HydrationDownloadHashOnceTest {
         }
 
     @Test
-    fun `a receipt with the staged size but no mtime is taken too`() =
+    fun `a receipt with the staged size but no mtime has the copy hashed`() =
         runTest {
             val env = freshEnv()
             env.provider.receiptFor = { _, staged -> streamed(staged, mtimeDelta = null) }
 
-            assertEquals(MARKER, env.hydratedHash(this))
+            assertEquals(sha256(content), env.hydratedHash(this))
+        }
+
+    @Test
+    fun `a same-size write to the staged copy under a receipt with no mtime has the modified copy hashed`() =
+        runTest {
+            val env = freshEnv()
+            val modified = content.reversedArray() // the same length, other bytes
+            env.provider.receiptFor = { _, staged ->
+                val receipt = streamed(staged, mtimeDelta = null)
+                Files.write(staged, modified) // written after the provider reported its hash, before the engine reads the copy
+                receipt
+            }
+
+            assertEquals(sha256(modified), env.hydratedHash(this))
         }
 
     @Test

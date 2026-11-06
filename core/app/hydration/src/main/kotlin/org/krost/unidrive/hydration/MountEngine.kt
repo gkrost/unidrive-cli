@@ -2014,9 +2014,10 @@ class MountEngine private constructor(
     // The bytes are hashed as the host's transfers do (archive#396), see Transfers.withLocalHash.
     // gkrost/unidrive-cli#392: a provider that hashed the plaintext while it wrote the staged file (Internxt, as it decrypts)
     // reports that hash in the receipt, and it stands in for a second read of the cache copy, as the sent hash does for an
-    // upload (withSentHash). It is taken only while the copy has the size, and the mtime where the receipt records one, of the
-    // file the provider staged; any other copy, and a receipt without a hash, is read and hashed as before. The stat guard of
-    // Transfers.withLocalHash then drops either hash if the copy changed meanwhile.
+    // upload (withSentHash). It is taken only while the copy has the size and the mtime of the file the provider staged (the
+    // same test as SyncEngine.stagedLocalHash, gkrost/unidrive-cli#410: a same-size write leaves the size alone, so the size
+    // alone proves nothing); a receipt without a staged mtime, any other copy, and a receipt without a hash are read and hashed
+    // as before. The stat guard of Transfers.withLocalHash then drops either hash if the copy changed meanwhile.
     private fun withDownloadedHash(
         entry: SyncEntry,
         local: Path,
@@ -2027,7 +2028,7 @@ class MountEngine private constructor(
         val (mtime, size) = stats
         val streamed =
             receipt.plaintextSha256?.takeIf {
-                receipt.stagedSize == size && (receipt.stagedMtimeMillis == null || receipt.stagedMtimeMillis == mtime)
+                receipt.stagedSize == size && receipt.stagedMtimeMillis != null && receipt.stagedMtimeMillis == mtime
             }
         return Transfers.withLocalHash(entry, local, stats, provider.hashAlgorithm(), log, streamed) { fromProvider, ms ->
             FileEvents.event(FileEvents.Phase.HASH_DONE, entry.path, bytes = size, ms = ms, tally = tally,
