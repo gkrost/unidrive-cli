@@ -845,7 +845,7 @@ class MountEngine private constructor(
                 // copy's bytes: keeping a hash recorded for the previous contents would pair stale
                 // bytes with a fresh mtime/size and let a later touch be absorbed as unchanged.
                 db.upsertEntry(
-                    withLocalHash(rebaselined, cachePath, rebaselined.localMtime!!, rebaselined.localSize!!),
+                    withDownloadedHash(rebaselined, cachePath, rebaselined.localMtime!! to rebaselined.localSize!!, fetched.receipt, tally),
                 )
             }
             recordProviderContact()
@@ -2012,12 +2012,28 @@ class MountEngine private constructor(
     private fun markRecentlyUploaded(path: String) = gather.markRecentlyUploaded(path)
 
     // The bytes are hashed as the host's transfers do (archive#396), see Transfers.withLocalHash.
-    private fun withLocalHash(
+    // gkrost/unidrive-cli#392: a provider that hashed the plaintext while it wrote the staged file (Internxt, as it decrypts)
+    // reports that hash in the receipt, and it stands in for a second read of the cache copy, as the sent hash does for an
+    // upload (withSentHash). It is taken only while the copy has the size, and the mtime where the receipt records one, of the
+    // file the provider staged; any other copy, and a receipt without a hash, is read and hashed as before. The stat guard of
+    // Transfers.withLocalHash then drops either hash if the copy changed meanwhile.
+    private fun withDownloadedHash(
         entry: SyncEntry,
         local: Path,
-        mtime: Long,
-        size: Long,
-    ): SyncEntry = Transfers.withLocalHash(entry, local, mtime to size, provider.hashAlgorithm(), log)
+        stats: Pair<Long, Long>,
+        receipt: DownloadReceipt,
+        tally: FileEventTally,
+    ): SyncEntry {
+        val (mtime, size) = stats
+        val streamed =
+            receipt.plaintextSha256?.takeIf {
+                receipt.stagedSize == size && (receipt.stagedMtimeMillis == null || receipt.stagedMtimeMillis == mtime)
+            }
+        return Transfers.withLocalHash(entry, local, stats, provider.hashAlgorithm(), log, streamed) { fromProvider, ms ->
+            FileEvents.event(FileEvents.Phase.HASH_DONE, entry.path, bytes = size, ms = ms, tally = tally,
+                extra = listOf("via" to if (fromProvider) "provider" else "file"))
+        }
+    }
 
     companion object {
         /** The mount front-end of [host]: one per host, built on the first call. */
