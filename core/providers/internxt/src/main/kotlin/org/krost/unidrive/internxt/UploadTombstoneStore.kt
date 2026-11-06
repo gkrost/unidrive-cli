@@ -60,24 +60,42 @@ internal class UploadTombstoneStore(
 ) {
     /**
      * Read the tombstone at [pathHash] if present. Returns null when the
-     * sidecar is absent, malformed, or its schema discriminator doesn't
-     * match the current shape (a future schema bump will route the old
-     * shape into discard rather than try to parse it).
+     * sidecar is absent, malformed, unreadable right now, or its schema
+     * discriminator doesn't match the current shape (a future schema bump
+     * will route the old shape into discard rather than try to parse it).
+     * Callers that must tell "not readable at the moment" apart from "not a
+     * tombstone at all" read [readTombstone].
      */
-    fun read(pathHash: String): UploadTombstone? {
+    fun read(pathHash: String): UploadTombstone? =
+        when (val read = readTombstone(pathHash)) {
+            is TombstoneRead.Parsed -> read.tombstone
+            else -> null
+        }
+
+    /**
+     * The typed read behind [read]. "Unreadable" — the file is there but the
+     * read threw (an IO error, on Windows a sharing violation while another
+     * writer holds it) — stays apart from "malformed" — the bytes are there
+     * but not a tombstone. Only a malformed one is garbage the cleanup pass
+     * may discard; an unreadable one may belong to an upload that is
+     * rewriting it this instant.
+     */
+    fun readTombstone(pathHash: String): TombstoneRead {
         val jsonPath = tombstoneDir.resolve("$pathHash.json")
-        if (!Files.exists(jsonPath)) return null
+        if (!Files.exists(jsonPath)) return TombstoneRead.Absent
         val raw =
             try {
                 Files.readString(jsonPath)
-            } catch (_: Exception) {
-                return null
+            } catch (e: java.io.IOException) {
+                return TombstoneRead.Unreadable(e)
+            } catch (e: SecurityException) {
+                return TombstoneRead.Unreadable(e)
             }
         return try {
             val parsed = json.decodeFromString(UploadTombstone.serializer(), raw)
-            if (parsed.schema != UploadTombstone.CURRENT_SCHEMA) null else parsed
+            if (parsed.schema != UploadTombstone.CURRENT_SCHEMA) TombstoneRead.ForeignSchema else TombstoneRead.Parsed(parsed)
         } catch (_: Exception) {
-            null
+            TombstoneRead.Malformed
         }
     }
 
@@ -163,8 +181,20 @@ internal class UploadTombstoneStore(
      * tombstones from old kills doesn't accumulate them indefinitely.
      * Bounded by the directory listing size — typical accounts will see
      * single-digit entries here.
+     *
+     * The pass deletes only what it has proof to delete: the sidecar of
+     * [inFlightPathHashes] (the uploads this process is running) is skipped,
+     * one younger than [graceMs] — counted from the sidecar file's mtime, so
+     * it covers unparseable sidecars too — is left for a later pass (it may
+     * be mid-rewrite), and one that cannot be read right now is left alone.
+     * A sidecar that parsed as garbage past the grace period is still
+     * discarded, as before.
      */
-    fun gc(maxAgeMs: Long) {
+    fun gc(
+        maxAgeMs: Long,
+        inFlightPathHashes: Set<String> = emptySet(),
+        graceMs: Long = InternxtConfig.TOMBSTONE_GC_GRACE_MS,
+    ) {
         if (!Files.isDirectory(tombstoneDir)) return
         val nowMillis = System.currentTimeMillis()
         val entries =
@@ -176,23 +206,38 @@ internal class UploadTombstoneStore(
                 return
             }
         for (path in entries) {
-            val name = path.fileName.toString()
-            if (!name.endsWith(".json")) continue
-            val pathHash = name.removeSuffix(".json")
-            val tomb = read(pathHash) ?: run {
-                // Unparseable / mismatched schema — kill the pair.
-                discard(pathHash)
-                continue
-            }
-            val ageMs = nowMillis - tomb.tombstoneWrittenAtMillis
-            val localStillExists =
-                try {
-                    Files.exists(java.nio.file.Paths.get(tomb.localPath))
-                } catch (_: Exception) {
-                    false
+            // A delete that loses a race with a process holding the file must not fail the
+            // upload this pass runs under; the entry is judged again on the next pass.
+            runCatching {
+                val name = path.fileName.toString()
+                if (!name.endsWith(".json")) return@runCatching
+                val pathHash = name.removeSuffix(".json")
+                if (pathHash in inFlightPathHashes) return@runCatching
+                val fileAgeMs =
+                    runCatching { nowMillis - Files.getLastModifiedTime(path).toMillis() }
+                        .getOrDefault(Long.MAX_VALUE)
+                if (fileAgeMs < graceMs) return@runCatching
+                when (val read = readTombstone(pathHash)) {
+                    is TombstoneRead.Unreadable -> return@runCatching
+                    is TombstoneRead.Malformed, is TombstoneRead.ForeignSchema -> {
+                        // Not a tombstone at all — kill the pair.
+                        discard(pathHash)
+                    }
+                    is TombstoneRead.Parsed -> {
+                        val tomb = read.tombstone
+                        val ageMs = nowMillis - tomb.tombstoneWrittenAtMillis
+                        val localStillExists =
+                            try {
+                                Files.exists(java.nio.file.Paths.get(tomb.localPath))
+                            } catch (_: Exception) {
+                                false
+                            }
+                        if (ageMs > maxAgeMs || !localStillExists) {
+                            discard(pathHash)
+                        }
+                    }
+                    else -> {}
                 }
-            if (ageMs > maxAgeMs || !localStillExists) {
-                discard(pathHash)
             }
         }
     }
@@ -291,6 +336,30 @@ internal class UploadTombstoneStore(
             return buffer.array().copyOf(buffer.position())
         }
     }
+}
+
+/**
+ * What a read of a tombstone sidecar found. "Unreadable" — the file is there
+ * but could not be read right now — stays apart from "malformed" — the bytes
+ * are there but not a tombstone of any shape: only the malformed one is
+ * garbage a cleanup pass may delete, while the unreadable one may belong to
+ * an upload that is rewriting it this instant.
+ */
+internal sealed interface TombstoneRead {
+    /** No sidecar on disk. */
+    data object Absent : TombstoneRead
+
+    /** The sidecar is on disk but reading it threw (an IO error, on Windows a sharing violation). */
+    data class Unreadable(val cause: Exception) : TombstoneRead
+
+    /** The sidecar's bytes do not parse as a tombstone. */
+    data object Malformed : TombstoneRead
+
+    /** The sidecar parses, but its schema discriminator is not the current shape. */
+    data object ForeignSchema : TombstoneRead
+
+    /** A current-shape tombstone. */
+    data class Parsed(val tombstone: UploadTombstone) : TombstoneRead
 }
 
 /**

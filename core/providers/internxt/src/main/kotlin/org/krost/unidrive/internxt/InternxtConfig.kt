@@ -80,6 +80,15 @@ data class InternxtConfig(
 
         const val URL_TTL_MS: Long = 10L * 60L * 1000L
 
+        /**
+         * The tombstone GC (the inline pass at the top of each upload) skips sidecars younger
+         * than this, counted from the sidecar file's mtime — the only age an unparseable
+         * sidecar has. A sidecar being rewritten this moment can briefly fail to read or
+         * parse, and the pass must not take that moment as proof of garbage; a malformed
+         * sidecar older than the grace period is still discarded.
+         */
+        const val TOMBSTONE_GC_GRACE_MS: Long = 10L * 60L * 1000L
+
         /** Page size of the cursor listings `/files/sync` and `/folders/sync`; 1000 is the most they take. */
         const val SYNC_PAGE_SIZE: Int = 1000
     }

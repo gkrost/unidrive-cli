@@ -4,6 +4,7 @@ import java.nio.file.AccessDeniedException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.FileTime
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -122,5 +123,49 @@ class UploadTombstoneStoreWriteTest {
         Files.writeString(dir.resolve("h5.json"), old)
         assertNull(store.read("h5")?.bridgeFileId)
         assertNotNull(store.read("h5"), "the older sidecar is still readable")
+    }
+
+    // #412: read() folds "cannot read the file right now" (an IO error, on Windows a sharing
+    // violation while another writer holds it) and "the bytes are not a tombstone" into one null,
+    // and gc deleted the pair on either. Only a proven-malformed sidecar may be discarded.
+    // A directory standing in for the sidecar makes Files.readString throw on every platform.
+    @Test
+    fun `a sidecar that cannot be read right now is left in place`() {
+        val store = UploadTombstoneStore(dir)
+        Files.createDirectories(dir.resolve("h-unreadable.json"))
+        Files.write(dir.resolve("h-unreadable.enc"), ByteArray(8))
+
+        store.gc(Long.MAX_VALUE)
+
+        assertTrue(Files.exists(dir.resolve("h-unreadable.json")), "an unreadable sidecar is not garbage the pass may delete")
+        assertTrue(Files.exists(dir.resolve("h-unreadable.enc")), "and the staged ciphertext stays with it")
+    }
+
+    @Test
+    fun `a malformed sidecar younger than the grace period is skipped`() {
+        val store = UploadTombstoneStore(dir)
+        Files.writeString(dir.resolve("h-young.json"), "{ torn sidecar")
+        Files.write(dir.resolve("h-young.enc"), ByteArray(8))
+
+        // Everything is stale on paper under this age; only the grace period may protect the pair.
+        store.gc(0L)
+
+        assertTrue(Files.exists(dir.resolve("h-young.json")), "a young sidecar may be mid-rewrite; a later pass judges it")
+        assertTrue(Files.exists(dir.resolve("h-young.enc")), "and the staged ciphertext stays with it")
+    }
+
+    @Test
+    fun `a malformed sidecar older than the grace period is still discarded`() {
+        val store = UploadTombstoneStore(dir)
+        Files.writeString(dir.resolve("h-garbage.json"), "{ torn sidecar")
+        Files.write(dir.resolve("h-garbage.enc"), ByteArray(8))
+        // Two hours old: past any grace period the cleanup applies, so the garbage is judged.
+        val age = System.currentTimeMillis() - 2L * 60L * 60L * 1000L
+        Files.setLastModifiedTime(dir.resolve("h-garbage.json"), FileTime.fromMillis(age))
+
+        store.gc(Long.MAX_VALUE)
+
+        assertFalse(Files.exists(dir.resolve("h-garbage.json")), "a proven-malformed sidecar is still discarded")
+        assertFalse(Files.exists(dir.resolve("h-garbage.enc")), "and its staged ciphertext goes with it")
     }
 }
