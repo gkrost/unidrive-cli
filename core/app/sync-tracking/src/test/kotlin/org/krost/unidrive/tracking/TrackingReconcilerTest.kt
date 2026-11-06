@@ -344,6 +344,68 @@ class TrackingReconcilerTest {
             "auto-match adopted row: remote size change after adoption must produce DownloadRemote, got $action",
         )
     }
+
+    // ── conflict-policy cases ──
+
+    /** KEEP_BOTH turns the untracked content-mismatch collision into an automated resolution signal. */
+    @Test
+    fun `keep-both turns the untracked content-mismatch collision into a resolution action`() {
+        val recKeep = TrackingReconciler(conflictPolicy = TsConflictPolicy.KEEP_BOTH)
+        val a = recKeep.reconcile("/p", local(true, hash = "L"), remote(true, hash = "R"), track = null)
+        assertTrue(a is ReconcileAction.ResolveKeepBoth, "got $a")
+    }
+
+    /** KEEP_BOTH turns the tracked both-changed collision into an automated resolution signal. */
+    @Test
+    fun `keep-both turns the tracked both-changed collision into a resolution action`() {
+        val recKeep = TrackingReconciler(conflictPolicy = TsConflictPolicy.KEEP_BOTH)
+        val a = recKeep.reconcile("/p", local(true, "NEWL"), remote(true, "NEWR", "rh"), track())
+        assertTrue(a is ReconcileAction.ResolveKeepBoth, "got $a")
+    }
+
+    /**
+     * A delete-meets-edit stays a collision even under KEEP_BOTH: a resolution
+     * must never resurrect a deleted path.
+     */
+    @Test
+    fun `keep-both keeps delete-meets-edit a collision`() {
+        val recKeep = TrackingReconciler(conflictPolicy = TsConflictPolicy.KEEP_BOTH)
+        val a = recKeep.reconcile("/p", local(false), remote(true, "NEW", "rh"), track())
+        assertTrue(
+            a is ReconcileAction.ReportCollision,
+            "a resolution must never resurrect a deleted path, got $a",
+        )
+    }
+
+    /**
+     * The default policy (no argument) must produce byte-for-byte the plan
+     * current main produces: every collision site stays ReportCollision. Pinned
+     * by comparing the default constructor against an explicit REPORT across
+     * the case table.
+     */
+    @Test
+    fun `default policy reproduces the report plan exactly`() {
+        val default = TrackingReconciler()
+        val explicit = TrackingReconciler(conflictPolicy = TsConflictPolicy.REPORT)
+        val cases =
+            listOf(
+                Triple("untracked-both-present-mismatch", local(true, "L"), remote(true, "re", "rh") to null),
+                Triple("tracked-both-changed", local(true, "NEWL"), remote(true, "NEWR", "rh") to track()),
+                Triple("tracked-local-gone-remote-changed", local(false), remote(true, "NEW", "rh") to track()),
+                Triple("tracked-local-changed", local(true, "NEW"), remote(true, "re", "rh") to track()),
+                Triple("tracked-remote-changed", local(true, "lh"), remote(true, "NEW", "rh") to track()),
+                Triple("untracked-pure-local", local(true), remote(false) to null),
+                Triple("untracked-pure-remote", local(false), remote(true) to null),
+            )
+        for ((label, localObs, rest) in cases) {
+            val (remoteObs, trackObs) = rest
+            assertEquals(
+                default.reconcile("/p", localObs, remoteObs, trackObs),
+                explicit.reconcile("/p", localObs, remoteObs, trackObs),
+                "default and explicit REPORT must agree on $label",
+            )
+        }
+    }
 }
 
 /** BatchGuard tests. */

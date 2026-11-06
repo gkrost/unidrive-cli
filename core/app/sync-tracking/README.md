@@ -243,9 +243,19 @@ BACKLOG entry once `:app:sync-tracking` has provider-integration parity:
 - **Move / rename detection.** A rename today shows up as one delete + one
   download. Real implementation requires the inode/file-id matching
   layer hinted at by `LocalObservation.inode` and `RemoteObservation.remoteFileId`.
-- **Conflict resolution policy.** Collisions are reported with
-  `ReconcileAction.ReportCollision`; the user must `ts claim` a winner.
-  No `KEEP_BOTH` / `LOCAL_WINS` / `REMOTE_WINS` automation yet.
+- **Conflict resolution policy (partial).** Collisions are reported with
+  `ReconcileAction.ReportCollision` (default `--conflict=report`); the user
+  must `ts claim` a winner. `--conflict=keep-both` automates keep-both at the
+  two collision sites: the local bytes are preserved as a conflict copy next
+  to the canonical path (`name (conflict copy).ext`, bounded rename attempts),
+  uploaded and tracked as their own path, while the canonical path adopts the
+  pre-existing remote (create-collision) or syncs to the remote it kept
+  (tracked both-changed). The canonical row always records the remote it kept,
+  never the copy's id/hash/etag — recording the copy's identity would turn the
+  safeguard into a deferred local overwrite. A local delete that met a remote
+  edit stays a collision: a resolution never resurrects a deleted path. No
+  `LOCAL_WINS` / `REMOTE_WINS` automation yet (`ts claim` / `ts unclaim`
+  provide those shapes by hand).
 - **Files-on-demand / placeholders.** Every reconciliation downloads
   fully or not at all. Placeholder support is platform-tier work per
   [docs/adr/multi-platform.md](../../../docs/adr/multi-platform.md).

@@ -159,4 +159,77 @@ sealed class ReconcileAction {
      * `unidrive ts claim <path>` to choose a winner. (Spec Amendment 2.)
      */
     data class ReportCollision(override val path: String, val reason: String) : ReconcileAction()
+
+    /**
+     * A collision the configured [TsConflictPolicy] resolves automatically as
+     * keep-both. The reconciler only decides — it cannot allocate the
+     * conflict-copy name, because the taken-name check is IO. The engine
+     * applies it: the local bytes are preserved under a conflict-copy path
+     * next to [path], uploaded and tracked as their own path; the canonical
+     * path is synced to the remote it kept.
+     *
+     * The invariant the resolution establishes: no cross-attribution of bytes
+     * to rows. The canonical row records the remote it kept — never the copy's
+     * id/hash/etag, which would make the next pass read the canonical path as
+     * remotely changed and download the old remote over the local bytes.
+     */
+    data class ResolveKeepBoth(override val path: String, val reason: String) : ReconcileAction()
+}
+
+/**
+ * Conflict-resolution vocabulary for the tracking-set engine. Ts-local and
+ * sealed on purpose: the legacy engine's `ConflictPolicy` enum carries
+ * variants (`LOCAL_WINS` / `REMOTE_WINS`) this engine does not automate
+ * (`ts claim` provides the local-wins shape by hand, `ts unclaim` + `ts sync`
+ * the remote-wins shape), and mapping the two vocabularies together would
+ * couple this module to the legacy engine's retirement path.
+ */
+sealed interface TsConflictPolicy {
+    /**
+     * Report every collision and take no automated action (the default, and
+     * the only behaviour before conflict policy existed). The user resolves
+     * with `ts claim` / `ts unclaim`.
+     */
+    data object REPORT : TsConflictPolicy
+
+    /**
+     * Keep both versions: at the untracked create-collision the local bytes
+     * are uploaded under a conflict-copy path while the canonical path adopts
+     * the pre-existing remote; at a tracked both-changed collision the local
+     * edit survives as the conflict copy and the canonical path syncs to the
+     * remote. Delete-meets-edit stays a reported collision under this policy
+     * too — a resolution never resurrects a deleted path.
+     */
+    data object KEEP_BOTH : TsConflictPolicy
+}
+
+/** How many `(conflict copy n)` names [conflictCopyPath] tries before it refuses. */
+internal const val KEEP_BOTH_MAX_NAME_ATTEMPTS: Int = 1000
+
+/**
+ * The keep-both conflict-copy path for [path]: `dir/stem (conflict copy).ext`,
+ * then `dir/stem (conflict copy 2).ext`, … while [isTaken] says the name is in
+ * use. The extension is taken from the file name only, so a dot in a folder
+ * name never splits the path, and the stem is cut (on a code-point boundary)
+ * so the whole name stays within the 255-UTF-16-unit component limit. Throws
+ * [IllegalStateException] rather than reuse a taken name once
+ * [KEEP_BOTH_MAX_NAME_ATTEMPTS] are spent.
+ */
+internal inline fun conflictCopyPath(
+    path: String,
+    isTaken: (String) -> Boolean,
+): String {
+    val cut = path.lastIndexOf('/')
+    val dir = if (cut >= 0) path.substring(0, cut + 1) else ""
+    val leaf = path.substring(cut + 1)
+    val ext = leaf.substringAfterLast('.', "")
+    val stem = if (ext.isNotEmpty()) leaf.substringBeforeLast('.') else leaf
+    val dotExt = if (ext.isNotEmpty()) ".$ext" else ""
+    for (n in 1..KEEP_BOTH_MAX_NAME_ATTEMPTS) {
+        val counter = if (n == 1) "" else " $n"
+        val tail = " (conflict copy)$counter$dotExt"
+        val candidate = "$dir${org.krost.unidrive.io.NameLimit.fitStem(stem, tail.length)}$tail"
+        if (!isTaken(candidate)) return candidate
+    }
+    error("no free conflict-copy name for $path after $KEEP_BOTH_MAX_NAME_ATTEMPTS attempts")
 }

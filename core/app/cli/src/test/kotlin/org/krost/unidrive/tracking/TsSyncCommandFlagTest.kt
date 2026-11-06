@@ -70,4 +70,32 @@ class TsSyncCommandFlagTest {
         val exit = parseExitCode("--auto-match", "name")
         assertTrue(exit == 0, "--auto-match=name should parse cleanly, got exit $exit")
     }
+
+    @Test
+    fun `ts sync has --conflict flag`() {
+        val options = tsSyncSpec().options().map { it.longestName() }
+        assertTrue("--conflict" in options, "ts sync must expose --conflict; options=$options")
+    }
+
+    @Test
+    fun `ts sync conflict option has a description`() {
+        val opt = tsSyncSpec().findOption("--conflict")
+        assertNotNull(opt, "--conflict option must be registered")
+        assertTrue(
+            opt.description().isNotEmpty(),
+            "--conflict must have a non-empty description",
+        )
+    }
+
+    @Test
+    fun `ts sync --conflict keep-both parses cleanly`() {
+        val exit = parseExitCode("--conflict", "keep-both")
+        assertTrue(exit == 0, "--conflict=keep-both should parse cleanly, got exit $exit")
+    }
+
+    @Test
+    fun `ts sync --conflict report parses cleanly`() {
+        val exit = parseExitCode("--conflict", "report")
+        assertTrue(exit == 0, "--conflict=report should parse cleanly, got exit $exit")
+    }
 }

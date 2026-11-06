@@ -5,12 +5,15 @@ import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.cli.ext.CliExtension
 import org.krost.unidrive.cli.ext.CliExtensionRegistrar
 import org.krost.unidrive.cli.ext.CliServices
+import org.krost.unidrive.io.Os
+import org.krost.unidrive.sync.ConflictLog
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
 
 /**
  * CLI surface for the tracking-set engine.
@@ -162,6 +165,21 @@ class TsSyncCommand : Runnable {
     )
     var autoMatchCli: String = "off"
 
+    @Option(
+        names = ["--conflict"],
+        description = [
+            "How collisions resolve.",
+            "  report    (default) — surface a collision, touch nothing; the user",
+            "              resolves with 'unidrive ts claim <path>'.",
+            "  keep-both — keep both versions: the local edit is preserved as a",
+            "              conflict copy next to the canonical path ('name (conflict copy).ext'),",
+            "              uploaded and tracked as its own path, while the canonical path",
+            "              syncs to the remote it kept. A local delete that met a remote",
+            "              edit stays a collision — a resolution never resurrects a deleted path.",
+        ],
+    )
+    var conflictCli: String = "report"
+
     override fun run() {
         System.err.println(
             "EXPERIMENTAL: tracking-set engine is not yet the default sync engine. " +
@@ -178,6 +196,16 @@ class TsSyncCommand : Runnable {
                         "--auto-match must be one of off|size|name; got '$autoMatchCli'",
                     )
             }
+        val conflictPolicy =
+            when (conflictCli.lowercase()) {
+                "report", "" -> TsConflictPolicy.REPORT
+                "keep-both" -> TsConflictPolicy.KEEP_BOTH
+                else ->
+                    throw picocli.CommandLine.ParameterException(
+                        picocli.CommandLine(TsSyncCommand()),
+                        "--conflict must be one of report|keep-both; got '$conflictCli'",
+                    )
+            }
         val ctx = TsContext.build(parent.servicesRef, profile)
         Files.createDirectories(ctx.configDir)
         val tracking = SqliteTrackingSet(ctx.trackingDb)
@@ -185,6 +213,27 @@ class TsSyncCommand : Runnable {
         try {
             val provider = ctx.services.createProvider(ctx.profileName)
             runBlocking { provider.authenticateAndLog() }
+            // The conflict journal follows the legacy convention the `unidrive conflicts`
+            // command reads (same split as SyncCommand): conflicts.jsonl in the profile's
+            // provider config dir, backups under the profile data dir.
+            val conflictDataDir =
+                if (Os.isWindows()) {
+                    val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
+                    Paths.get(localAppData, "unidrive", ctx.profileName)
+                } else {
+                    Paths.get(
+                        System.getenv("HOME") ?: System.getProperty("user.home"),
+                        ".local",
+                        "share",
+                        "unidrive",
+                        ctx.profileName,
+                    )
+                }
+            val conflictLog =
+                ConflictLog(
+                    logFile = ctx.configDir.resolve("conflicts.jsonl"),
+                    backupDir = conflictDataDir.resolve("conflict-backups"),
+                )
             val engine =
                 TrackingEngine(
                     provider = provider,
@@ -194,6 +243,8 @@ class TsSyncCommand : Runnable {
                     dryRun = dryRun,
                     excludePatterns = ctx.excludePatterns,
                     autoMatch = autoMatch,
+                    conflictPolicy = conflictPolicy,
+                    conflictLog = conflictLog,
                 )
             val report = engine.syncOnce()
             renderReport(report, dryRun)
@@ -246,6 +297,7 @@ class TsSyncCommand : Runnable {
             is ReconcileAction.PropagateLocalDelete -> "del-remote"
             is ReconcileAction.PropagateRemoteDelete -> "del-local"
             is ReconcileAction.ReportCollision -> "collision"
+            is ReconcileAction.ResolveKeepBoth -> "keep-both"
         }
 }
 

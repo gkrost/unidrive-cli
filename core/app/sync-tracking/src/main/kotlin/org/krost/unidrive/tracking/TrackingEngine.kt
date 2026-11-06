@@ -48,6 +48,9 @@ import java.util.UUID
  * Anything else surfaces as `ReportCollision` — the user must
  * `unidrive ts claim <path>` to assign a winner.
  */
+// One parameter per engine dependency — each is optional with a safe default,
+// and grouping them would invent a config object no second consumer shares.
+@Suppress("LongParameterList")
 class TrackingEngine(
     private val provider: CloudProvider,
     private val trackingSet: TrackingSet,
@@ -57,11 +60,24 @@ class TrackingEngine(
     private val dryRun: Boolean = false,
     private val excludePatterns: List<String> = emptyList(),
     autoMatch: AutoMatchMode = AutoMatchMode.OFF,
+    conflictPolicy: TsConflictPolicy = TsConflictPolicy.REPORT,
+    /**
+     * The conflict journal (JSONL + backup dir) for both conflict-recording
+     * sites: the race-preservation backups and the keep-both audit trail. The
+     * location is the caller's — the CLI supplies the legacy convention the
+     * `unidrive conflicts` command reads (conflicts.jsonl in the profile's
+     * provider config dir, backups under the profile data dir). Null (the
+     * default, e.g. a claim-only construction) means no journal: a conflict
+     * still leaves the user's file in place, but nothing is backed up or
+     * journalled.
+     */
+    private val conflictLog: ConflictLog? = null,
 ) {
     private val reconciler: TrackingReconciler =
         reconciler
             ?: TrackingReconciler(
                 autoMatch,
+                conflictPolicy,
                 remoteHashMatches = { path, remoteHash ->
                     HashVerifier.matches(
                         syncRoot.resolve(stripLeadingSlash(path)),
@@ -250,6 +266,7 @@ class TrackingEngine(
                         is ReconcileAction.UploadLocal -> applyUpload(action)
                         is ReconcileAction.PropagateLocalDelete -> applyPropagateLocalDelete(action)
                         is ReconcileAction.PropagateRemoteDelete -> applyPropagateRemoteDelete(action)
+                        is ReconcileAction.ResolveKeepBoth -> applyKeepBoth(action)
                     }
                 } catch (e: Exception) {
                     log.warn("Apply failed for ${action.path}: ${e.message}")
@@ -386,6 +403,140 @@ class TrackingEngine(
             out += current
         }
         return out
+    }
+
+    /**
+     * Automated keep-both resolution of a [ReconcileAction.ResolveKeepBoth]
+     * (the [TsConflictPolicy.KEEP_BOTH] shape of the two collision sites).
+     *
+     * The local bytes are preserved as a conflict copy next to the canonical
+     * path — `stem (conflict copy).ext` with bounded rename attempts — and
+     * uploaded, so the copy becomes its own tracked path and the next pass
+     * does not rediscover it as an untracked both-exist collision. Then:
+     *
+     *  - untracked create-collision (no row at the canonical path): the
+     *    pre-existing remote is adopted as-is — the canonical row records the
+     *    UNCHANGED remote's id/etag with the local bytes it holds, never the
+     *    copy's identity. Recording the copy's identity there would make the
+     *    next pass read the path as remotely changed and download the old
+     *    remote over the local bytes — the deferred-overwrite trap.
+     *  - tracked both-changed: the remote is downloaded onto the canonical
+     *    path (metadata read before the bytes, hash/size verified), and the
+     *    row records the remote actually written.
+     *
+     * Crash-safety decomposes into the existing Pending* primitives: the copy
+     * upload persists a `PendingUpload` row before any IO, the canonical
+     * download persists `PendingDownload` before the transfer, so an
+     * interrupted resolution re-derives per the reconciler's pending-recovery
+     * short-circuits into a collision at worst — never a delete or an
+     * overwrite of bytes the rows don't account for.
+     */
+    private suspend fun applyKeepBoth(action: ReconcileAction.ResolveKeepBoth): AppliedAction {
+        val path = action.path
+        val local = observeLocal(path)
+        if (!local.exists) return AppliedAction(action, ApplyOutcome.SKIPPED, "local copy vanished before the resolution")
+        val remote = observeRemote(path)
+        if (!remote.exists) return AppliedAction(action, ApplyOutcome.SKIPPED, "remote copy vanished before the resolution")
+
+        // 1. Allocate the copy path. A name is taken when it is occupied locally,
+        //    remotely, or in the tracking set — the next pass must not collide on it.
+        val copyPath =
+            conflictCopyPath(path) { candidate ->
+                Files.exists(syncRoot.resolve(stripLeadingSlash(candidate))) ||
+                    trackingSet.lookup(candidate) != null ||
+                    observeRemote(candidate).exists
+            }
+
+        // 2. Crash-safety: the copy's PendingUpload row goes down BEFORE any IO.
+        trackingSet.upsert(
+            TrackingRecord(
+                path = copyPath,
+                providerId = provider.id,
+                remoteFileId = null,
+                state = TrackState.PendingUpload,
+                localHash = null,
+                localSize = null,
+                remoteEtag = null,
+                remoteSize = null,
+                lastSynced = Instant.now(),
+            ),
+        )
+
+        // 3. Preserve the local bytes as the copy, locally.
+        val copyLocal = syncRoot.resolve(stripLeadingSlash(copyPath))
+        Files.createDirectories(copyLocal.parent ?: syncRoot)
+        // No REPLACE_EXISTING: the taken-name check said the path was free; if that
+        // raced, failing here leaves a resumable PendingUpload row, never a clobber.
+        Files.copy(syncRoot.resolve(stripLeadingSlash(path)), copyLocal)
+
+        // 4. Upload the copy and record its row against its own observations. The
+        //    local snapshot is read BEFORE the transfer (an edit while the bytes
+        //    are in flight stays a local change), and the landing is verified: a
+        //    provider that auto-renames or merges the upload must not leave the
+        //    row recording a path the bytes never reached.
+        for (dir in ancestorDirsToRoot(copyPath).reversed()) { // shallowest-first
+            try {
+                provider.createFolder(dir)
+            } catch (e: Exception) {
+                log.debug("createFolder {} raised (likely already exists): {}", dir, e.message)
+            }
+        }
+        val localCopyObs = observeLocal(copyPath)
+        provider.upload(copyLocal, copyPath, existingRemoteId = null)
+        val remoteCopyObs = observeRemote(copyPath)
+        if (!remoteCopyObs.exists) {
+            throw ProviderException("conflict copy upload of $path did not land at $copyPath")
+        }
+        trackingSet.adopt(copyPath, provider.id, localCopyObs, remoteCopyObs)
+
+        // 5. The canonical side.
+        val existing = trackingSet.lookup(path)
+        if (existing == null) {
+            // Untracked create-collision: adopt the UNCHANGED remote at the
+            // canonical path, with the local bytes the path actually holds.
+            trackingSet.adopt(path, provider.id, local, remote)
+        } else {
+            // Tracked both-changed: download the remote onto the canonical path.
+            // The local edit is already preserved at the copy, so this overwrite
+            // is the resolution, not a loss. PendingDownload before the transfer.
+            trackingSet.upsert(existing.copy(state = TrackState.PendingDownload, lastSynced = Instant.now()))
+            val dest = syncRoot.resolve(stripLeadingSlash(path))
+            // The remote's identity is read BEFORE the bytes (same discipline as
+            // applyDownload): the row records the version that was actually written.
+            val meta = provider.getMetadata(path)
+            val staged = dest.resolveSibling(".${dest.fileName}.unidrive-download-${UUID.randomUUID()}")
+            try {
+                val written = provider.download(path, staged)
+                val matchesMetadata =
+                    HashVerifier.verify(staged, meta.hash, provider.hashAlgorithm()) && written == meta.size
+                if (!matchesMetadata) {
+                    throw ProviderException(
+                        "conflict resolution download of $path does not match the metadata read before the " +
+                            "transfer (hash ${meta.hash}, size ${meta.size}); wrote $written bytes",
+                    )
+                }
+                Files.move(staged, dest, StandardCopyOption.REPLACE_EXISTING)
+            } finally {
+                Files.deleteIfExists(staged)
+            }
+            val l = observeLocal(path)
+            val r =
+                RemoteObservation(
+                    exists = true,
+                    remoteFileId = meta.id,
+                    etag = meta.hash,
+                    size = meta.size,
+                    hash = meta.hash,
+                    serverMtime = meta.modified,
+                )
+            trackingSet.adopt(path, provider.id, l, r)
+        }
+
+        // 6. Audit trail. The copy path itself is the preserved version — the
+        //    journal entry needs no backup copy of its own.
+        conflictLog?.record(path, "kept-as-conflict-copy", "kept-canonical", "KEEP_BOTH", null)
+
+        return AppliedAction(action, ApplyOutcome.SUCCESS, "kept both: local edit preserved at $copyPath")
     }
 
     private suspend fun applyPropagateLocalDelete(action: ReconcileAction.PropagateLocalDelete): AppliedAction {
@@ -801,9 +952,8 @@ class TrackingEngine(
     /** Keep a durable conflict backup while leaving the user's current file in place. */
     private fun preserveConflict(path: String, local: Path, reason: String) {
         if (!Files.isRegularFile(local)) return
-        val stateDir = syncRoot.parent.resolve(".unidrive-conflicts")
-        ConflictLog(stateDir.resolve("conflicts.jsonl"), stateDir.resolve("backups"))
-            .record(path, "local-changed", "remote-action-pending", reason, local)
+        conflictLog?.record(path, "local-changed", "remote-action-pending", reason, local)
+            ?: log.debug("No conflict journal supplied; the conflict at {} is not backed up or journalled", path)
     }
 
     private suspend fun observeRemote(path: String): RemoteObservation =

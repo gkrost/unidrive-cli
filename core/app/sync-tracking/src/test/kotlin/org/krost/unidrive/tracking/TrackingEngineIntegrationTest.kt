@@ -15,6 +15,7 @@ import kotlin.test.assertTrue
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.HashAlgorithm
 import org.krost.unidrive.QuickXorHash
+import org.krost.unidrive.sync.ConflictLog
 
 /**
  * End-to-end integration test for the tracking-set engine.
@@ -60,7 +61,11 @@ class TrackingEngineIntegrationTest {
         dryRun: Boolean = false,
         guard: BatchGuard = BatchGuard(),
         tracking: TrackingSet,
-    ) = TrackingEngine(provider, tracking, syncRoot, batchGuard = guard, dryRun = dryRun)
+        conflictLog: ConflictLog? = null,
+    ) = TrackingEngine(provider, tracking, syncRoot, batchGuard = guard, dryRun = dryRun, conflictLog = conflictLog)
+
+    /** The journal location the tests inject: temp paths inside the work dir. */
+    private fun tempConflictLog() = ConflictLog(workDir.resolve("conflicts.jsonl"), workDir.resolve("conflict-backups"))
 
     /**
      * The regression test. Reproduces the .safe/ shape:
@@ -771,15 +776,18 @@ class TrackingEngineIntegrationTest {
             val edited = "user edit during delta".toByteArray()
             provider.afterDelta = { Files.write(local, edited) }
 
+            val conflictLog = tempConflictLog()
             val report = engine(
                 tracking = second,
                 guard = BatchGuard(maxDeleteRatio = 1.0, maxDeleteAbsolute = Int.MAX_VALUE),
+                conflictLog = conflictLog,
             ).syncOnce()
             assertContentEquals(edited, Files.readAllBytes(local))
             assertEquals(TrackState.TrackedSynced, second.lookup(path)?.state, "skipped delete must leave tracking row available for collision review")
             assertTrue(report.applied.any { it.outcome == ApplyOutcome.SKIPPED && it.note?.contains("preserved conflict copy") == true })
-            val backupDir = syncRoot.parent.resolve(".unidrive-conflicts/backups")
+            val backupDir = workDir.resolve("conflict-backups")
             assertTrue(Files.isDirectory(backupDir) && Files.list(backupDir).use { it.findAny().isPresent }, "divergent bytes must be backed up")
+            assertTrue(Files.exists(workDir.resolve("conflicts.jsonl")), "the injected journal records the preserved conflict")
         } finally {
             second.close()
         }
@@ -806,10 +814,10 @@ class TrackingEngineIntegrationTest {
             val edited = "user edit during transfer".toByteArray()
             provider.beforeDownload = { Files.write(local, edited) }
 
-            val report = engine(tracking = second).syncOnce()
+            val report = engine(tracking = second, conflictLog = tempConflictLog()).syncOnce()
             assertContentEquals(edited, Files.readAllBytes(local))
             assertTrue(report.applied.any { it.outcome == ApplyOutcome.SKIPPED && it.note?.contains("preserved conflict copy") == true })
-            val backupDir = syncRoot.parent.resolve(".unidrive-conflicts/backups")
+            val backupDir = workDir.resolve("conflict-backups")
             assertTrue(Files.isDirectory(backupDir) && Files.list(backupDir).use { it.findAny().isPresent })
         } finally {
             second.close()
@@ -1449,6 +1457,297 @@ class TrackingEngineIntegrationTest {
             )
         } finally {
             tracking.close()
+        }
+    }
+
+    // ── Conflict policy: keep-both (the epic's create-collision paragraph) ──
+
+    private fun sha256Hex(bytes: ByteArray): String =
+        java.security.MessageDigest
+            .getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+
+    /**
+     * The automated keep-both resolution replaces the manual `ts claim` step
+     * for a tracked both-changed collision: the local edit survives as a
+     * conflict copy (locally and remotely), the canonical path syncs to the
+     * remote it kept, and the next pass is a no-op.
+     */
+    @Test
+    fun `keep-both on a tracked both-changed collision keeps the local edit as a conflict copy and syncs the canonical path to the remote`() {
+        provider.files["/doc.txt"] = "v1".toByteArray()
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            engine(tracking = tracking).syncOnce()
+        } finally {
+            tracking.close()
+        }
+
+        Files.write(syncRoot.resolve("doc.txt"), "local-edit".toByteArray())
+        val remoteEdit = "remote-edit".toByteArray()
+        provider.files["/doc.txt"] = remoteEdit
+
+        val tracking2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report =
+                TrackingEngine(provider, tracking2, syncRoot, conflictPolicy = TsConflictPolicy.KEEP_BOTH, conflictLog = tempConflictLog()).syncOnce()
+
+            assertEquals(
+                listOf("/doc.txt"),
+                report.plan.filterIsInstance<ReconcileAction.ResolveKeepBoth>().map { it.path },
+                "the both-changed collision must resolve as keep-both, plan=${report.plan}",
+            )
+            assertTrue(
+                report.applied.all { it.outcome == ApplyOutcome.SUCCESS },
+                "the resolution must apply cleanly, was ${report.applied}",
+            )
+            assertTrue(
+                Files.readString(workDir.resolve("conflicts.jsonl")).contains("KEEP_BOTH"),
+                "the resolution is journalled in the injected journal",
+            )
+            assertEquals(
+                0,
+                report.plan.count {
+                    it is ReconcileAction.PropagateLocalDelete || it is ReconcileAction.PropagateRemoteDelete
+                },
+                "a resolution issues no deletes; plan=${report.plan}",
+            )
+
+            // Canonical synced to the remote it kept; the local edit survives as the copy.
+            assertEquals("remote-edit", Files.readString(syncRoot.resolve("doc.txt")))
+            assertEquals("local-edit", Files.readString(syncRoot.resolve("doc (conflict copy).txt")))
+            assertEquals("remote-edit", provider.files["/doc.txt"]?.decodeToString())
+            assertEquals("local-edit", provider.files["/doc (conflict copy).txt"]?.decodeToString())
+
+            val third = TrackingEngine(provider, tracking2, syncRoot, conflictPolicy = TsConflictPolicy.KEEP_BOTH).syncOnce()
+            assertEquals(0, third.plan.size, "resolved paths must converge to a no-op; plan=${third.plan}")
+            assertEquals(0, third.collisions.size)
+        } finally {
+            tracking2.close()
+        }
+    }
+
+    /**
+     * The invariant the epic calls "record the upload result correctly": the
+     * canonical path's row reflects the remote it kept — its id and its etag —
+     * never the conflict copy's id/hash/etag. Recording the copy's identity at
+     * the canonical path would make the next pass read the path as remotely
+     * changed and pull the old remote over the local bytes: the safeguard
+     * becomes a deferred local overwrite.
+     */
+    @Test
+    fun `the canonical path's row records the remote it kept, never the conflict copy's identity`() {
+        provider.files["/doc.txt"] = "v1".toByteArray()
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            engine(tracking = tracking).syncOnce()
+        } finally {
+            tracking.close()
+        }
+
+        val localEdit = "local-edit".toByteArray()
+        Files.write(syncRoot.resolve("doc.txt"), localEdit)
+        val remoteEdit = "remote-edit".toByteArray()
+        provider.files["/doc.txt"] = remoteEdit
+
+        val tracking2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            TrackingEngine(provider, tracking2, syncRoot, conflictPolicy = TsConflictPolicy.KEEP_BOTH).syncOnce()
+
+            val canonical = tracking2.lookup("/doc.txt")!!
+            val copy = tracking2.lookup("/doc (conflict copy).txt")!!
+            assertEquals(TrackState.TrackedSynced, canonical.state)
+            assertEquals(TrackState.TrackedSynced, copy.state)
+
+            // Canonical row: the remote that was kept (and the bytes now on disk, which are its bytes).
+            assertEquals("hash-${sha256Hex(remoteEdit)}", canonical.remoteFileId, "canonical row must record the kept remote's id")
+            assertEquals(sha256Hex(remoteEdit), canonical.remoteEtag, "canonical row must record the kept remote's etag")
+            assertEquals(sha256Hex(remoteEdit), canonical.localHash)
+
+            // Copy row: the local edit's own identity, at its own path.
+            assertEquals("hash-${sha256Hex(localEdit)}", copy.remoteFileId)
+            assertEquals(sha256Hex(localEdit), copy.remoteEtag)
+            assertEquals(sha256Hex(localEdit), copy.localHash)
+
+            assertTrue(canonical.remoteFileId != copy.remoteFileId, "the two rows must not share a remote identity")
+            assertTrue(canonical.remoteEtag != copy.remoteEtag, "the canonical row must not record the copy's hash/etag")
+        } finally {
+            tracking2.close()
+        }
+    }
+
+    /**
+     * The epic's create-collision paragraph: a locally-created file that meets
+     * a pre-existing remote at the same path resolves under keep-both by
+     * uploading the local bytes to a distinct copy path (its own tracked path)
+     * and adopting the pre-existing remote at the canonical path — the local
+     * file at the canonical path is never overwritten.
+     */
+    @Test
+    fun `a create-collision under keep-both uploads the local copy to a distinct path and adopts the pre-existing remote at the canonical path`() {
+        val localBytes = "local-created".toByteArray()
+        val remoteBytes = "pre-existing-remote".toByteArray()
+        Files.write(syncRoot.resolve("new.txt"), localBytes)
+        provider.files["/new.txt"] = remoteBytes
+        val remoteId = "hash-${sha256Hex(remoteBytes)}"
+
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = TrackingEngine(provider, tracking, syncRoot, conflictPolicy = TsConflictPolicy.KEEP_BOTH).syncOnce()
+
+            assertEquals(
+                listOf("/new.txt"),
+                report.plan.filterIsInstance<ReconcileAction.ResolveKeepBoth>().map { it.path },
+                "the create-collision must resolve as keep-both, plan=${report.plan}",
+            )
+            assertTrue(report.applied.all { it.outcome == ApplyOutcome.SUCCESS }, "was ${report.applied}")
+
+            // Both versions survive: the pre-existing remote at the canonical path, the local bytes at the copy path.
+            assertEquals("pre-existing-remote", provider.files["/new.txt"]?.decodeToString())
+            assertEquals("local-created", provider.files["/new (conflict copy).txt"]?.decodeToString())
+            assertEquals("local-created", Files.readString(syncRoot.resolve("new.txt")))
+            assertEquals("local-created", Files.readString(syncRoot.resolve("new (conflict copy).txt")))
+
+            // The canonical row reflects the UNCHANGED remote, never the copy's identity.
+            val canonical = tracking.lookup("/new.txt")!!
+            val copy = tracking.lookup("/new (conflict copy).txt")!!
+            assertEquals(TrackState.TrackedSynced, canonical.state)
+            assertEquals(remoteId, canonical.remoteFileId, "canonical row must record the pre-existing remote's id")
+            assertEquals(sha256Hex(remoteBytes), canonical.remoteEtag, "canonical row must record the pre-existing remote's etag")
+            assertEquals(sha256Hex(localBytes), canonical.localHash, "canonical row's local snapshot is the local bytes it holds")
+            assertEquals(TrackState.TrackedSynced, copy.state)
+            assertTrue(canonical.remoteFileId != copy.remoteFileId)
+
+            // The copy is its own tracked path: the next pass must not rediscover
+            // it as an untracked both-exist collision at the copy path.
+            val second = TrackingEngine(provider, tracking, syncRoot, conflictPolicy = TsConflictPolicy.KEEP_BOTH).syncOnce()
+            assertEquals(0, second.plan.size, "plan=${second.plan}")
+            assertEquals(0, second.collisions.size)
+        } finally {
+            tracking.close()
+        }
+    }
+
+    /**
+     * Crash-safety of the resolution itself: a kill mid-resolution leaves
+     * Pending* rows that re-derive per the reconciler's pending-recovery
+     * short-circuits — into the upload of the interrupted copy and a fresh
+     * keep-both resolution of the canonical path (a collision at worst), never
+     * a download over the local bytes and never a delete.
+     */
+    @Test
+    fun `an interrupted keep-both re-derives to a collision, never a download over local bytes`() {
+        provider.files["/doc.txt"] = "v1".toByteArray()
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            engine(tracking = tracking).syncOnce()
+        } finally {
+            tracking.close()
+        }
+
+        Files.write(syncRoot.resolve("doc.txt"), "local-edit".toByteArray())
+        provider.files["/doc.txt"] = "remote-edit".toByteArray()
+
+        // Interrupt the resolution: the copy upload dies mid-flight. Crash shape:
+        // PendingUpload row at the copy path, copy bytes on disk, canonical untouched.
+        provider.duringUpload = { error("simulated crash mid-resolution") }
+        val tracking2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = TrackingEngine(provider, tracking2, syncRoot, conflictPolicy = TsConflictPolicy.KEEP_BOTH).syncOnce()
+            assertEquals(
+                ApplyOutcome.FAILED,
+                report.applied.single { it.action is ReconcileAction.ResolveKeepBoth }.outcome,
+                "was ${report.applied}",
+            )
+            val copyRow = tracking2.lookup("/doc (conflict copy).txt")
+            assertNotNull(copyRow, "the interrupted resolution must leave the copy's row for re-derivation")
+            assertEquals(TrackState.PendingUpload, copyRow.state)
+            // Nothing overwrote the local edit while the resolution was in flight.
+            assertEquals("local-edit", Files.readString(syncRoot.resolve("doc.txt")))
+            assertEquals("local-edit", Files.readString(syncRoot.resolve("doc (conflict copy).txt")))
+        } finally {
+            tracking2.close()
+        }
+
+        // Resume: the pending copy re-derives to its upload, the canonical re-derives
+        // to a keep-both resolution — never a download over local bytes, never a delete.
+        val tracking3 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report = TrackingEngine(provider, tracking3, syncRoot, conflictPolicy = TsConflictPolicy.KEEP_BOTH).syncOnce()
+            assertEquals(
+                listOf("/doc (conflict copy).txt"),
+                report.plan.filterIsInstance<ReconcileAction.UploadLocal>().map { it.path },
+                "the interrupted copy upload must re-derive to UploadLocal, plan=${report.plan}",
+            )
+            assertEquals(
+                listOf("/doc.txt"),
+                report.plan.filterIsInstance<ReconcileAction.ResolveKeepBoth>().map { it.path },
+                "the interrupted canonical resolution must re-derive to a keep-both resolution, plan=${report.plan}",
+            )
+            assertEquals(
+                0,
+                report.plan.count {
+                    it is ReconcileAction.DownloadRemote ||
+                        it is ReconcileAction.PropagateLocalDelete ||
+                        it is ReconcileAction.PropagateRemoteDelete
+                },
+                "an interrupted resolution must never re-derive to a download or a delete; plan=${report.plan}",
+            )
+            // The re-derived resolution applies within this pass: the canonical
+            // path reached the remote it kept via a keep-both resolution (never a
+            // plain download), and the local edit's copy survives alongside it.
+            assertEquals("remote-edit", Files.readString(syncRoot.resolve("doc.txt")))
+            assertEquals("local-edit", Files.readString(syncRoot.resolve("doc (conflict copy).txt")))
+
+            // And the resumed state converges.
+            val after = TrackingEngine(provider, tracking3, syncRoot, conflictPolicy = TsConflictPolicy.KEEP_BOTH).syncOnce()
+            assertEquals(0, after.plan.size, "plan=${after.plan}")
+        } finally {
+            tracking3.close()
+        }
+    }
+
+    /**
+     * Owner decision: delete-meets-edit stays a reported collision even under
+     * KEEP_BOTH — a resolution never resurrects a deleted path.
+     */
+    @Test
+    fun `a local delete that met a remote edit stays a collision under keep-both`() {
+        provider.files["/doc.txt"] = "hello".toByteArray()
+        val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            engine(tracking = tracking).syncOnce()
+        } finally {
+            tracking.close()
+        }
+
+        Files.delete(syncRoot.resolve("doc.txt"))
+        val remoteEdit = "edited on another device".toByteArray()
+        provider.files["/doc.txt"] = remoteEdit
+
+        val permissive = BatchGuard(maxDeleteRatio = 1.0, maxDeleteAbsolute = Int.MAX_VALUE)
+        val tracking2 = SqliteTrackingSet(dbPath).also { it.initialize() }
+        try {
+            val report =
+                TrackingEngine(provider, tracking2, syncRoot, batchGuard = permissive, conflictPolicy = TsConflictPolicy.KEEP_BOTH).syncOnce()
+            assertTrue(
+                report.plan.single() is ReconcileAction.ReportCollision,
+                "a resolution must never resurrect a deleted path; plan=${report.plan}",
+            )
+            assertEquals(
+                0,
+                report.plan.count { it is ReconcileAction.ResolveKeepBoth },
+                "delete-meets-edit must not resolve as keep-both",
+            )
+            assertTrue(provider.deletedPaths.isEmpty(), "the remote edit must not be deleted; deleted ${provider.deletedPaths}")
+            assertContentEquals(remoteEdit, provider.files["/doc.txt"])
+            assertFalse(
+                Files.exists(syncRoot.resolve("doc (conflict copy).txt")),
+                "no conflict copy is created for a deleted path",
+            )
+        } finally {
+            tracking2.close()
         }
     }
 }
