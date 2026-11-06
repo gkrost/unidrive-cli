@@ -49,6 +49,8 @@ internal object MoveRecord {
                     remoteVersion = moved.version,
                     remoteModified = moved.modified ?: row.remoteModified,
                     remoteContentId = moved.contentId ?: row.remoteContentId,
+                    // gkrost/unidrive-cli#414: a move keeps the item's id, so its stored object moves with the answer.
+                    storedObject = moved.storedObject ?: row.storedObject,
                 )
             // A move gives the item a new write token (OneDrive's eTag moves with the name): the next edit is based on it.
             before.remoteVersion != null && moved.version != before.remoteVersion -> row.copy(remoteVersion = moved.version)

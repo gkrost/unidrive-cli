@@ -138,6 +138,32 @@ class StateDatabaseTest {
         assertEquals(100L, loaded.remoteSize)
     }
 
+    // gkrost/unidrive-cli#414: hint_size is written as a 64-bit number and read as one. A 32-bit read flips the size of
+    // a 2 GiB object negative, and the row's download hint then declares a wrong size (the download falls back to the
+    // metadata call, and the seeded stored object's size is wrong).
+    @Test
+    fun `a stored object of two gigabytes and more reads back with its size`() {
+        val twoGigabytesPlusOne = 2L * 1024 * 1024 * 1024 + 1
+        db.upsertEntry(
+            entry("/big.bin", remoteSize = twoGigabytesPlusOne).copy(
+                storedObject = org.krost.unidrive.StoredObject(
+                    id = "object-a",
+                    bucket = "bucket-1",
+                    encoding = "03-aes",
+                    size = twoGigabytesPlusOne,
+                    modifiedRaw = "2026-01-01T00:00:00.000Z",
+                    updatedAt = Instant.parse("2026-01-01T00:00:00Z"),
+                ),
+            ),
+        )
+
+        val hint = assertNotNull(db.getEntry("/big.bin")?.storedObject)
+
+        assertEquals(twoGigabytesPlusOne, hint.size)
+        assertEquals("object-a", hint.id)
+        assertEquals("2026-01-01T00:00:00.000Z", hint.modifiedRaw, "the time string the answer sent, verbatim")
+    }
+
     @Test
     fun `get nonexistent entry returns null`() {
         assertNull(db.getEntry("/nope"))

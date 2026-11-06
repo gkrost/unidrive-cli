@@ -145,6 +145,8 @@ internal class RenameRollForward(
                 remoteSize = item.size,
                 remoteModified = item.modified,
                 remoteContentId = item.contentId,
+                // gkrost/unidrive-cli#414: the item is the row's own id, so its stored object moves with the answer.
+                storedObject = item.storedObject ?: row.storedObject,
             ),
         )
     }

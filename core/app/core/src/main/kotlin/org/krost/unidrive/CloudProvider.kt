@@ -505,6 +505,17 @@ interface CloudProvider {
     val reportsContentIds: Boolean get() = false
 
     /**
+     * gkrost/unidrive-cli#414: hands the provider what an earlier answer said about the stored object of the item [remoteId]
+     * names, for the engine to seed a download with ([StoredObject]; the row in state.db kept it over a daemon restart).
+     * A provider that keeps no download hint ignores it. The seed never replaces an answer of this run: the engine hands it
+     * over just before a download, and the provider reads only what no answer of its own has described.
+     */
+    fun seedStoredObject(
+        remoteId: String,
+        storedObject: StoredObject?,
+    ) {}
+
+    /**
      * Provider-specific status fields to render in `unidrive status`
      * after the shared fields (quota, tracked files, etc.). Empty
      * list (the default) means this provider contributes no extras.

@@ -756,6 +756,9 @@ class MountEngine private constructor(
             hash = entry.remoteHash,
             mimeType = null,
             version = entry.remoteVersion,
+            // gkrost/unidrive-cli#414: the row's stored object rides to the download, which seeds the provider's hint
+            // from it — this is the read that a daemon restart has no listing ahead of it.
+            storedObject = entry.downloadHint,
         )
         Files.createDirectories(cachePath.parent)
         // archive#318: download to a temp sibling and atomically swap it in, so a handle
@@ -954,7 +957,9 @@ class MountEngine private constructor(
                     "whose id the row takes",
                 path,
             )
-            return Fetched(Transfers.downloadByIdOrPathWithHash(provider, item.copy(id = live.id, size = live.size), remotePath, staged, tally = tally, retryHistory = downloadEventRetries), live)
+            // gkrost/unidrive-cli#414: the item is re-pointed at another id, so the row's stored object (the stale id's)
+            // is dropped: a stored object seeds only the id whose answer named it.
+            return Fetched(Transfers.downloadByIdOrPathWithHash(provider, item.copy(id = live.id, size = live.size, storedObject = null), remotePath, staged, tally = tally, retryHistory = downloadEventRetries), live)
         }
     }
 
@@ -983,8 +988,10 @@ class MountEngine private constructor(
     }
 
     // The row with the cloud identity of [live], the item its bytes were read from; unchanged when there is none.
+    // gkrost/unidrive-cli#414: the hint follows the item's id — [live] names it, or the row keeps none (an old id's
+    // stored object must not seed a download of the new one).
     private fun SyncEntry.adopting(live: CloudItem?): SyncEntry =
-        live?.let { copy(remoteId = it.id, remoteHash = it.hash, remoteVersion = it.version, remoteModified = it.modified ?: remoteModified, remoteContentId = it.contentId) } ?: this
+        live?.let { copy(remoteId = it.id, remoteHash = it.hash, remoteVersion = it.version, remoteModified = it.modified ?: remoteModified, remoteContentId = it.contentId, storedObject = it.storedObject) } ?: this
 
     /**
      * The directory that holds this profile's hydration cache (every cache file lives below it, laid
@@ -1405,6 +1412,8 @@ class MountEngine private constructor(
             // base matches it. A skipped upload keeps the token the cloud still holds.
             remoteVersion = result.version,
             remoteContentId = result.contentId,
+            // gkrost/unidrive-cli#414: the upload answer is one of the two answers the download hint comes from.
+            storedObject = result.storedObject,
             remoteSize = result.size,
             remoteModified = result.modified,
             localMtime = mtime,
@@ -1527,6 +1536,9 @@ class MountEngine private constructor(
                     // A version the row knows to be stale is no base for a write: unknown until a delivery brings it.
                     remoteVersion = current?.version,
                     remoteContentId = if (current != null) current.contentId else row.remoteContentId,
+                    // gkrost/unidrive-cli#414: [current] is the row's own item (same id), so its stored object moves
+                    // onto the row; with none asked, the row keeps its own.
+                    storedObject = current?.storedObject ?: row.storedObject,
                     remoteSize = current?.size ?: row.remoteSize,
                     remoteModified = current?.modified ?: row.remoteModified,
                     isHydrated = false,
@@ -1586,6 +1598,7 @@ class MountEngine private constructor(
                 parentUuid = copy.parentId,
                 cacheBacked = true,
                 remoteContentId = copy.contentId,
+                storedObject = copy.storedObject,
             )
         db.upsertEntry(withSentHash(row, target, sent))
         return true
@@ -1928,6 +1941,7 @@ class MountEngine private constructor(
             // The move gave the item a new write token: the next edit is based on it.
             remoteVersion = moved.version,
             remoteContentId = moved.contentId ?: landed.item.contentId,
+            storedObject = moved.storedObject ?: landed.item.storedObject,
             remoteSize = moved.size,
             remoteModified = moved.modified,
             localMtime = mtime,

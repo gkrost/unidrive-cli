@@ -17,6 +17,20 @@ import java.nio.file.Path
  * callers pass their logger so the log lines keep their logger name.
  */
 object Transfers {
+    /**
+     * gkrost/unidrive-cli#414: hands the provider what the row kept of the item's stored object, before an id-addressed
+     * download. The row's hint survives a daemon restart (state.db), the provider's in-memory one does not, so this is
+     * what lets a post-restart download skip the metadata call it used to pay per file. The provider ignores it when an
+     * answer of its own run already describes the id, and the download still falls back to that call when the hinted
+     * object is gone.
+     */
+    private fun seedStoredObject(
+        provider: CloudProvider,
+        item: CloudItem,
+    ) {
+        if (item.id.isNotEmpty()) provider.seedStoredObject(item.id, item.storedObject)
+    }
+
     /** Download [item] to [destination]: by id when the item has one (the fast path), else by [remotePath]. */
     suspend fun downloadByIdOrPath(
         provider: CloudProvider,
@@ -25,6 +39,7 @@ object Transfers {
         destination: Path,
     ): Long =
         if (item.id.isNotEmpty()) {
+            seedStoredObject(provider, item)
             provider.downloadById(item.id, remotePath, destination)
         } else {
             provider.download(remotePath, destination)
@@ -46,6 +61,7 @@ object Transfers {
         FileEvents.event(FileEvents.Phase.DOWNLOAD_START, eventPath, bytes = item.size, tally = tally)
         try {
             val receipt = if (item.id.isNotEmpty()) {
+                seedStoredObject(provider, item)
                 provider.downloadByIdWithHash(item.id, remotePath, destination, targetMtimeMillis)
             } else {
                 provider.downloadWithHash(remotePath, destination, targetMtimeMillis)

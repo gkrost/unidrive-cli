@@ -620,6 +620,17 @@ class InternxtProvider(
         return downloadWithFileUuid(metadata.id, remotePath, destination, targetMtimeMillis)
     }
 
+    // gkrost/unidrive-cli#414: the row in state.db kept what an answer of an earlier run said about this file's stored
+    // object; the engine hands it over right before a download, so the one below reads the row's object instead of paying
+    // the meta call the restart would otherwise cost per file. [FileContentHints.seed] keeps an answer of this run.
+    override fun seedStoredObject(
+        remoteId: String,
+        storedObject: StoredObject?,
+    ) {
+        val hint = storedObject ?: return
+        api.fileHints.seed(remoteId, hint)
+    }
+
     // gkrost/unidrive-cli#392: a file a Drive answer of this run already described (a listing, the sync pages, an upload) is
     // read by that description, without the meta call that used to open every download (one sequential Drive round trip
     // per file). A hint can only be older than the server's row, never older than what the engine was told, so it reads the
@@ -4148,7 +4159,7 @@ class InternxtProvider(
             when {
                 row.isFolder -> folders[row.id] = row.toResumedFolder()
                 stream != null -> stream.resumed(row)
-                else -> files[row.id] = row.toResumedFile()
+                else -> files[row.id] = row.resumedFile(resume.marker.startedAt)
             }
         }
         for (row in resume.ancestors) ancestors[row.id] = row.toResumedAncestor()
@@ -5371,6 +5382,29 @@ class InternxtProvider(
             }
         }
 
+        /**
+         * gkrost/unidrive-cli#414: the stored object an answer names ([CloudItem.storedObject], [CloudProvider.seedStoredObject]),
+         * what a download of the file reads without the meta call. The same shape [FileContentHints] keeps for the run: a live
+         * row (not removed, not deleted, not trashed) with a bridge fileId, a bucket and a size. Null otherwise, the way an
+         * answer that names no usable stored object leaves a fence.
+         */
+        internal fun internxtStoredObject(file: InternxtFile): StoredObject? {
+            if (file.status != "EXISTS" || file.removed || file.deleted) return null
+            val id = file.fileId?.takeIf { it.isNotBlank() } ?: return null
+            val fileBucket = file.bucket?.takeIf { it.isNotBlank() } ?: return null
+            val size = file.size?.toLongOrNull() ?: return null
+            return StoredObject(
+                id = id,
+                bucket = fileBucket,
+                encoding = file.encryptVersion,
+                size = size,
+                // The time string as the answer sent it (the version token is built from it, archive#1039), not the
+                // parsed Instant: its toString() drops a zero fraction and the row's token would flip form.
+                modifiedRaw = file.modificationTime,
+                updatedAt = tryParseInternxtInstant(file.updatedAt),
+            )
+        }
+
         internal fun InternxtFile.isLive(): Boolean = status == "EXISTS" && !isTombstoned()
 
         // The rows of a page to keep and the ones to drop. A page asked for without the status filter holds rows of
@@ -5501,6 +5535,7 @@ class InternxtProvider(
                 // root rows store parent_uuid=NULL.
                 parentId = file.folderUuid,
                 contentId = internxtContentId(file),
+                storedObject = internxtStoredObject(file),
             )
         }
 
@@ -5567,6 +5602,7 @@ class InternxtProvider(
                 deleted = file.isTombstoned(),
                 parentId = file.folderUuid,
                 contentId = internxtContentId(file),
+                storedObject = internxtStoredObject(file),
             )
         }
 
@@ -5989,6 +6025,15 @@ class InternxtProvider(
                 updatedAt = null,
             )
         }
+
+        // The file a resumed gather that holds its files takes from [row] (see [resumeFrom]): the staged payload's file
+        // when it names this enumeration (the gather id the staging carries, the instant it began, which the marker
+        // keeps across a resume — see [GatherStream]) — it names the stored object (the bucket, the encryptVersion and
+        // the updatedAt the ordering guard compares) exactly as the page it was staged from did, the way the hand-over
+        // ([GatherStream.fileOf]) takes it. A payload of another enumeration, or no payload (a row a holding gather or
+        // an earlier version staged), is rebuilt from the row alone, whose columns carry no bucket.
+        internal fun CloudItem.resumedFile(startedAt: String): InternxtFile =
+            stagedFilePayloadOf(this)?.takeIf { it.gather == startedAt }?.file ?: toResumedFile()
 
         internal fun CloudItem.toResumedFolder(): InternxtFolder =
             InternxtFolder(

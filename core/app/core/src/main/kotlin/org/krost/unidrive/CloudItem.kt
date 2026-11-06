@@ -65,4 +65,9 @@ data class CloudItem(
     // hash of what was sent (SyncEntry.localHash) without a second read of the file. Null for every item a provider did not
     // hash while sending, and for every item that is not the answer of an upload; the engine then hashes the file itself.
     val sentSha256: String? = null,
+    // gkrost/unidrive-cli#414: where the item's bytes live in the provider's storage, so the engine can keep it with the row
+    // (state.db) and a download after a restart seeds the provider's in-memory hint from the row instead of paying the
+    // metadata call again. Null for an item whose answer named no stored object, and for every provider that names none.
+    // See [StoredObject].
+    val storedObject: StoredObject? = null,
 )
