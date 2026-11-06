@@ -93,6 +93,26 @@ internal class MemProvider : CloudProvider {
 
     override suspend fun downloadById(remoteId: String, remotePath: String, destination: Path): Long = download(remotePath, destination)
 
+    // gkrost/unidrive-cli#392: when set, a download answers this receipt for the file it staged (a provider that hashes the
+    // plaintext while it writes it); unset, the plain receipt of the CloudProvider default.
+    @Volatile var receiptFor: ((remotePath: String, staged: Path) -> org.krost.unidrive.DownloadReceipt)? = null
+
+    override suspend fun downloadWithHash(
+        remotePath: String,
+        destination: Path,
+        targetMtimeMillis: Long?,
+    ): org.krost.unidrive.DownloadReceipt {
+        val bytes = download(remotePath, destination)
+        return receiptFor?.invoke(remotePath, destination) ?: org.krost.unidrive.DownloadReceipt(bytes)
+    }
+
+    override suspend fun downloadByIdWithHash(
+        remoteId: String,
+        remotePath: String,
+        destination: Path,
+        targetMtimeMillis: Long?,
+    ): org.krost.unidrive.DownloadReceipt = downloadWithHash(remotePath, destination, targetMtimeMillis)
+
     override suspend fun upload(
         localPath: Path,
         remotePath: String,
