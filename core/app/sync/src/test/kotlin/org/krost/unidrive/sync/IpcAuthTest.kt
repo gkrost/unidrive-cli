@@ -327,7 +327,7 @@ class IpcAuthTest {
     fun `the verb classes are the exact wire strings`() {
         val read =
             setOf(
-                "daemon.status", "hydration.list", "hydration.last_synced", "hydration.subscribe", "sync.subscribe", "hydration.open_read",
+                "daemon.status", "hydration.list", "hydration.last_synced", "hydration.stat", "hydration.subscribe", "sync.subscribe", "hydration.open_read",
                 "history.list", "history.subscribe", "metrics.query", "ignore.explain", "view.page",
             )
         val write =
