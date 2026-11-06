@@ -178,6 +178,7 @@ class CloudRelocator(
         targetPath: String,
         knownTotalSize: Long? = null,
         knownTotalFiles: Int? = null,
+        manifest: MigrationManifest? = null,
     ): Flow<MigrateEvent> =
         // UD-289: channelFlow (vs flow) lets concurrent file-transfer
         // coroutines call send() safely. Pre-fix the walk processed
@@ -271,6 +272,7 @@ class CloudRelocator(
                     val newTarget = if (targetPrefix == "/") "/$itemName" else "$targetPrefix/$itemName"
 
                     if (item.isFolder) {
+                        manifest?.recordVisitedFolder(item.path, item.id)
                         try {
                             target.createFolder(newTarget)
                         } catch (e: CancellationException) {
@@ -295,6 +297,12 @@ class CloudRelocator(
                             )
                         }
                         if (existing != null && !existing.isFolder && isEquivalent(item, existing)) {
+                            manifest?.recordSkippedEquivalent(
+                                item.path,
+                                item.id,
+                                newTarget,
+                                hashEquivalent = item.hash != null && existing.hash != null && item.hash == existing.hash,
+                            )
                             skippedFiles.incrementAndGet()
                             skippedSize.addAndGet(item.size)
                             emitProgress()
@@ -319,7 +327,8 @@ class CloudRelocator(
                                         withContext(Dispatchers.IO) {
                                             source.download(newSource, tempFile)
                                         }
-                                    target.upload(tempFile, newTarget)
+                                    val uploaded = target.upload(tempFile, newTarget)
+                                    manifest?.recordTransferred(item.path, item.id, newTarget, uploaded.id)
                                     migratedFiles.incrementAndGet()
                                     migratedSize.addAndGet(size)
                                     emitProgress()
@@ -367,6 +376,10 @@ class CloudRelocator(
                         e.message,
                         e,
                     )
+                    // gkrost/unidrive-cli#61: the walk itself failed, so the run is not clean — mark it
+                    // failed the same way a per-file failure is. Without this a mid-walk loss reported
+                    // errorCount == 0 and the delete pass could not tell.
+                    errorCount.incrementAndGet()
                     emitMutex.withLock {
                         send(
                             MigrateEvent.Error(

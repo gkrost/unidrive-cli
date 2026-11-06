@@ -8,6 +8,7 @@ import org.krost.unidrive.io.ByteUnit
 import org.krost.unidrive.io.formatSizePrecise
 import org.krost.unidrive.sync.CloudRelocator
 import org.krost.unidrive.sync.MigrateEvent
+import org.krost.unidrive.sync.MigrationManifest
 import org.krost.unidrive.sync.RelocateMdc
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
@@ -29,6 +30,15 @@ internal const val RELOCATE_DISABLED_MESSAGE =
     "relocate is disabled: it can overwrite or delete files that were never migrated " +
         "(gkrost/unidrive-cli#56, #61, #62, #63). Nothing was read or changed. " +
         "Copy the data with the provider's own tools until these are fixed."
+
+/**
+ * What one migrate run reported: its `Completed` event (null when the flow ended without one) and every
+ * `Error` event. The delete gate reads it with the manifest to decide whether the source may be deleted.
+ */
+internal data class MigrationOutcome(
+    val completed: MigrateEvent.Completed?,
+    val errors: List<MigrateEvent.Error>,
+)
 
 @Command(
     name = "relocate",
@@ -250,6 +260,10 @@ class RelocateCommand : Runnable {
         println("  to:   $toProvider:$targetPath")
         println()
 
+        val manifest = MigrationManifest()
+        var completedEvent: MigrateEvent.Completed? = null
+        val errorEvents = mutableListOf<MigrateEvent.Error>()
+
         // UD-269: register a shutdown hook so CTRL-C / SIGTERM produces a
         // visible abort summary, a logged INFO line, and tempDir cleanup —
         // instead of the pre-fix silent JVM exit that left
@@ -289,7 +303,7 @@ class RelocateCommand : Runnable {
         Runtime.getRuntime().addShutdownHook(shutdownHook)
         try {
             runBlocking(MDCContext()) {
-                relocator.migrate(sourcePath, targetPath, sourceSize, sourceCount).collect { event ->
+                relocator.migrate(sourcePath, targetPath, sourceSize, sourceCount, manifest).collect { event ->
                     when (event) {
                         is MigrateEvent.Started -> {
                             println("Migrating ${event.totalFiles} files (${formatSize(event.totalSize)})...")
@@ -319,9 +333,11 @@ class RelocateCommand : Runnable {
                             }
                             println("  errors: ${event.errorCount}")
                             println("  time:   ${event.durationMs / 1000}s")
+                            completedEvent = event
                         }
                         is MigrateEvent.Error -> {
                             System.err.println("\nError: ${event.message}")
+                            errorEvents.add(event)
                         }
                     }
                 }
@@ -333,55 +349,181 @@ class RelocateCommand : Runnable {
         }
 
         if (deleteSource) {
-            print("\nDelete source files? Type 'yes' to confirm: ")
-            val confirm = readlnOrNull()
-            if (confirm != "yes") {
-                println("Aborted")
-                return
-            }
-            println("Deleting source files...")
             runBlocking(MDCContext()) {
-                val deletedFiles = deleteSourceRecursive(fromProviderObj, sourcePath)
-                println("Deleted $deletedFiles files")
+                deleteSourceAfterMigration(fromProviderObj, manifest, completedEvent, errorEvents, sourcePath)
             }
         }
     }
 
-    internal suspend fun deleteSourceRecursive(
+    /**
+     * The `--delete-source` pass: gate on the migration outcome, confirm, then delete exactly the
+     * manifest (gkrost/unidrive-cli#61). The gate runs before the prompt, so the user is never
+     * asked to confirm a deletion that will not happen.
+     */
+    private suspend fun deleteSourceAfterMigration(
         provider: CloudProvider,
-        prefix: String,
+        manifest: MigrationManifest,
+        completedEvent: MigrateEvent.Completed?,
+        errorEvents: List<MigrateEvent.Error>,
+        sourcePath: String,
+    ) {
+        val outcome = MigrationOutcome(completedEvent, errorEvents)
+        val problems = deleteGateProblems(manifest, outcome)
+        if (problems.isNotEmpty()) {
+            System.err.println()
+            System.err.println("Not deleting the source; the migration did not complete cleanly:")
+            problems.forEach { System.err.println("  - $it") }
+            System.err.println()
+            error("delete-source refused: nothing was deleted")
+        }
+        print("\nDelete source files? Type 'yes' to confirm: ")
+        val confirm = readlnOrNull()
+        if (confirm != "yes") {
+            println("Aborted")
+            return
+        }
+        println("Deleting source files...")
+        val deletedFiles = deleteMigratedSource(provider, manifest, sourcePath, outcome)
+        println("Deleted $deletedFiles files")
+        println(
+            "Only the files the migration transferred were deleted; " +
+                "anything created on the source during the migration was left in place.",
+        )
+    }
+
+    /**
+     * Why the source must not be deleted after a migration (gkrost/unidrive-cli#61). Empty means every
+     * pre-flight-counted file is in the manifest as transferred or hash-proven equivalent, no error was
+     * reported, and the walk reached the whole tree.
+     */
+    internal fun deleteGateProblems(
+        manifest: MigrationManifest,
+        outcome: MigrationOutcome,
+    ): List<String> {
+        val problems = mutableListOf<String>()
+        val completed = outcome.completed
+        if (completed == null) {
+            problems.add("the migration never completed")
+            return problems
+        }
+        if (completed.errorCount > 0) {
+            problems.add("${completed.errorCount} file(s) failed to migrate")
+        }
+        for (error in outcome.errors) {
+            problems.add(error.message)
+        }
+        if (completed.doneFiles != completed.totalFiles) {
+            problems.add(
+                "the walk reached ${completed.doneFiles} of ${completed.totalFiles} files, " +
+                    "so part of the tree was never migrated",
+            )
+        }
+        val proven =
+            manifest.entries.values.count { entry ->
+                entry.outcome == MigrationManifest.Outcome.TRANSFERRED ||
+                    (
+                        entry.outcome == MigrationManifest.Outcome.SKIPPED_EQUIVALENT &&
+                            entry.hashEquivalent
+                    )
+            }
+        for (entry in manifest.entries.values) {
+            if (entry.outcome == MigrationManifest.Outcome.SKIPPED_EQUIVALENT &&
+                !entry.hashEquivalent
+            ) {
+                problems.add(
+                    "${entry.sourcePath} was skipped on equal size alone, with no hash to prove it " +
+                        "(gkrost/unidrive-cli#62 tracks the hash comparison that would)",
+                )
+            }
+        }
+        if (proven != completed.totalFiles) {
+            problems.add("only $proven of ${completed.totalFiles} files are proven migrated")
+        }
+        return problems
+    }
+
+    /**
+     * Delete exactly what the migration recorded in [manifest], by id — never a drive walk, never a
+     * string prefix (gkrost/unidrive-cli#61). The root is normalized, resolved through the provider's
+     * own metadata, and compared with a path boundary. A gate refusal or any failed delete throws;
+     * nothing is deleted unless the gate passes, and a failed file leaves the rest of the pass running
+     * so the report names every casualty.
+     */
+    internal suspend fun deleteMigratedSource(
+        provider: CloudProvider,
+        manifest: MigrationManifest,
+        sourcePath: String,
+        outcome: MigrationOutcome,
     ): Int {
-        var deleted = 0
-        var page = provider.delta(null)
-        while (true) {
-            for (item in page.items) {
-                if (item.path.startsWith(prefix) && !item.isFolder) {
-                    try {
-                        provider.delete(item.path)
-                        deleted++
-                    } catch (e: Exception) {
-                        System.err.println("Warning: could not delete ${item.path}: ${e.message}")
-                    }
-                }
-            }
-            // The cursor is never null; the provider says "last page" with hasMore = false.
-            if (!page.hasMore) break
-            page = provider.delta(page.cursor)
+        val problems = deleteGateProblems(manifest, outcome)
+        if (problems.isNotEmpty()) {
+            error("delete-source refused: nothing was deleted; " + problems.joinToString("; "))
         }
-        // Delete folders bottom-up
-        page = provider.delta(null)
+        require(sourcePath.startsWith("/")) { "--source-path must be an absolute path: $sourcePath" }
+        val askedRoot = sourcePath.trimEnd('/').ifEmpty { "/" }
+        val resolved = provider.getMetadata(askedRoot)
+        val boundaryRoot = resolved.path.trimEnd('/').ifEmpty { "/" }
+
+        val failures = mutableListOf<String>()
+        var deletedFiles = 0
+        for (entry in manifest.entries.values) {
+            if (!inSubtree(entry.sourcePath, boundaryRoot)) continue
+            if (deleteByIdReporting(provider, entry.sourceId, entry.sourcePath, "file", failures)) deletedFiles++
+        }
         val folders =
-            page.items
-                .filter { it.isFolder && it.path.startsWith(prefix) }
-                .sortedByDescending { it.path.count { c -> c == '/' } }
-        for (folder in folders) {
-            try {
-                provider.delete(folder.path)
-            } catch (e: Exception) {
-                // Ignore - probably not empty
-            }
+            manifest.folders.entries
+                .filter { inSubtree(it.key, boundaryRoot) }
+                .sortedByDescending { it.key.count { c -> c == '/' } }
+        for ((path, id) in folders) {
+            deleteFolderWithRetry(provider, id, path, failures)
         }
-        return deleted
+        // The drive root itself is not deletable; anything else the migration was rooted at goes last.
+        if (boundaryRoot != "/") {
+            deleteByIdReporting(provider, resolved.id, boundaryRoot, "folder", failures)
+        }
+        if (failures.isNotEmpty()) {
+            error(
+                "delete-source failed for ${failures.size} item(s); everything else was deleted; " +
+                    failures.joinToString("; "),
+            )
+        }
+        return deletedFiles
+    }
+
+    // The boundary of the delete pass: the resolved root itself and everything under it, never a
+    // prefix without the separator (a root of /docs must not match /docs-old).
+    private fun inSubtree(
+        path: String,
+        root: String,
+    ): Boolean = if (root == "/") path.startsWith("/") else path == root || path.startsWith("$root/")
+
+    // Returns true when the item was deleted; records a failure otherwise. Cancellation is never swallowed.
+    private suspend fun deleteByIdReporting(
+        provider: CloudProvider,
+        id: String,
+        path: String,
+        kind: String,
+        failures: MutableList<String>,
+    ): Boolean {
+        val result = runCatching { provider.deleteById(id, path) }
+        val failure = result.exceptionOrNull() ?: return true
+        if (failure is kotlinx.coroutines.CancellationException) throw failure
+        failures.add("$kind $path: ${failure.message}")
+        return false
+    }
+
+    // A folder that still holds an undeleted child is expected to fail once; retry, then report.
+    private suspend fun deleteFolderWithRetry(
+        provider: CloudProvider,
+        id: String,
+        path: String,
+        failures: MutableList<String>,
+    ) {
+        val firstFailure = runCatching { provider.deleteById(id, path) }.exceptionOrNull() ?: return
+        if (firstFailure is kotlinx.coroutines.CancellationException) throw firstFailure
+        val secondFailure = runCatching { provider.deleteById(id, path) }.exceptionOrNull() ?: return
+        if (secondFailure is kotlinx.coroutines.CancellationException) throw secondFailure
+        failures.add("folder $path: ${secondFailure.message}")
     }
 
     // A negative count (a quota that is over) was printed as plain bytes here, and still is; the sign-keeping format is StatusAudit's.

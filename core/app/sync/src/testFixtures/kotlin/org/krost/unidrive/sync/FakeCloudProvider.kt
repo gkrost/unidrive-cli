@@ -340,6 +340,18 @@ class FakeCloudProvider : CloudProvider {
     // archive#419: per-path variant of deleteThrow (not single-use), for failing one specific delete.
     val deleteThrowByPath = mutableMapOf<String, Throwable>()
 
+    // UD-225b shape, for deletes: the (remoteId, remotePath) of every id-addressed delete call,
+    // so tests can verify a caller deletes by id and not by re-resolving the path.
+    val deleteByIdCalls = mutableListOf<Pair<String, String>>() // (remoteId, remotePath)
+
+    override suspend fun deleteById(
+        remoteId: String,
+        remotePath: String,
+    ) {
+        deleteByIdCalls.add(remoteId to remotePath)
+        delete(remotePath)
+    }
+
     override suspend fun delete(remotePath: String, ifMatchETag: String?) {
         deleteThrowByPath[remotePath]?.let { throw it }
         deleteThrow?.also { deleteThrow = null; throw it }
