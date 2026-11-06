@@ -109,9 +109,10 @@ OneDrive's Personal Vault (German "Persönlicher Tresor") is not synced: the dri
 zero-size stub, and the provider filters that stub out of every listing surface (`listChildren`, the delta walk, the shared-delta walk;
 `OneDriveProvider.noteAndSkipVault`, `DriveItem.isPersonalVault` — a deletion tombstone short-circuits the check, so a vault deleted in the
 cloud still propagates its delete). Content access is not available through Graph at all, so there is nothing to sync even without the filter.
-A full delta walk does **not** carry the vault: Microsoft excludes it from the delta feed entirely (measured live, gkrost/unidrive-cli#405 —
-a complete walk of a drive whose root listing carries the stub returned no vault entry), which is why the `children` filter is the load-bearing
-one. The stub's shape is the filter's signature: no folder/file/package facet, size 0, and a name from the vault locale list or any non-blank
+A full delta walk did **not** carry the vault on the drive measured for gkrost/unidrive-cli#405 (one personal account, complete walk,
+no decode failures): the stub appeared in `root/children` but never in delta. That exclusion is an observation on one drive, not a
+documented Microsoft guarantee — which is why the `children` filter is treated as the load-bearing one and the capture instrument
+reports a walk with decode skips or a page cap as INCOMPLETE rather than concluding absence. The stub's shape is the filter's signature: no folder/file/package facet, size 0, and a name from the vault locale list or any non-blank
 name; an ordinary folder that merely shares a vault display name has a real folder facet and is synced normally. The skips are counted per
 daemon run and surface in `daemon.status` under `provider_health.skipped` (`EntrySkipReporting`; present only while a run skipped something).
 A package (a OneNote notebook, the `package` facet) is left out of the listings by the same mechanism, so the engine never tries to download it.

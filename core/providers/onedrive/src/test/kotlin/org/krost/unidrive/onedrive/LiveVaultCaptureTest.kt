@@ -50,7 +50,12 @@ class LiveVaultCaptureTest {
         val vaultName = DriveItem.VAULT_NAMES.any { it.equals(item.name, ignoreCase = true) }
         val vaultSignature = item.isPersonalVault
         val stubShape = !hasFolder && !hasFile && !hasPackage && zeroSize && !isTombstone
-        val isVaultEntry = (vaultName || stubShape) && !isTombstone
+
+        // A name-only match is an observation (a real folder/file carrying a vault display name is
+        // retained by the provider), never an expected skip: the provider's exclusions follow its
+        // actual rules — the vault signature, and the package rule (a package that is not a tombstone).
+        val isVaultCandidate = !isTombstone && (vaultName || stubShape)
+        val isExpectedSkip = vaultSignature || (hasPackage && !isTombstone)
     }
 
     private lateinit var service: GraphApiService
@@ -72,8 +77,11 @@ class LiveVaultCaptureTest {
                 Token(accessToken = accessToken, tokenType = "Bearer", expiresAt = Long.MAX_VALUE)
             } else {
                 val profileDir = Paths.get(configDir).resolve(profile)
+                // Read-only on purpose (gkrost/unidrive-cli#407 review): a diagnostic must not
+                // rewrite the profile's token.json (the migration a plain load() would run) or
+                // touch its permissions as a side effect of reading it.
                 val stored =
-                    CredentialStore(profileDir, "token.json", Token.serializer(), protector = protector).load()
+                    CredentialStore(profileDir, "token.json", Token.serializer(), protector = protector).load(migrate = false)
                         ?: throw AssertionError("the profile holds no stored token; sign in once first")
                 if (System.currentTimeMillis() >= stored.expiresAt - 60_000)
                     OAuthService(OneDriveConfig(tokenPath = profileDir, credentialProtector = protector)).refreshToken(
@@ -103,13 +111,17 @@ class LiveVaultCaptureTest {
             summarize("root/children", rawShapes)
 
             // The delta walk, capped; a stub the listings carry should surface here too, unchanged by the lock.
+            // Entries that fail to decode are counted (they are never classified): a walk with decode skips is
+            // reported as incomplete, because a moved vault shape could hide inside them (gkrost/unidrive-cli#407 review).
             var link: String? = null
             val deltaShapes = mutableListOf<Shape>()
             var deltaPages = 0
+            var deltaDecodeSkips = 0
             var deltaComplete = false
             while (deltaPages < 100) {
                 val result = service.getDelta(link, fromLatest = false, readOnly = true)
                 deltaShapes += result.items.map { Shape(it) }
+                deltaDecodeSkips += result.skippedIds.size + result.skippedWithoutId
                 deltaPages++
                 link = result.nextLink
                 if (link == null) {
@@ -117,15 +129,25 @@ class LiveVaultCaptureTest {
                     break
                 }
             }
-            summarize("delta (${if (deltaComplete) "complete" else "capped at $deltaPages pages"})", deltaShapes)
+            val deltaLabel =
+                when {
+                    !deltaComplete -> "capped at $deltaPages pages, INCOMPLETE"
+                    deltaDecodeSkips > 0 -> "$deltaPages pages, $deltaDecodeSkips entries failed to decode, INCOMPLETE"
+                    else -> "$deltaPages pages, fully decoded, COMPLETE"
+                }
+            summarize("delta ($deltaLabel)", deltaShapes)
+            println("vault-capture: delta decode skips = $deltaDecodeSkips (vault absence is inconclusive while any entry failed to decode)")
 
             // The provider's own filter, end to end: what the engine really sees of this drive.
             // CloudItem has no Graph facets, so the filter's proof is the count: the engine's listing is
-            // the raw one minus the entries the provider skips (the vault and the packages).
+            // the raw one minus the entries the provider's own rules skip (its vault signature and its
+            // package rule). A vault CANDIDATE that those rules retain (a real folder carrying a vault
+            // display name) stays visible, on purpose (gkrost/unidrive-cli#407 review).
             val filtered = provider.listChildren("/")
-            val skipped = rawShapes.count { it.isVaultEntry || (it.hasPackage && !it.isTombstone) }
-            assertEquals(raw.size - skipped, filtered.size, "the engine's listing is the raw one minus the skipped entries")
-            println("vault-capture: provider filter held (raw ${raw.size} entries -> engine ${filtered.size}, skipped $skipped)")
+            val expectedSkips = rawShapes.count { it.isExpectedSkip }
+            val candidates = rawShapes.count { it.isVaultCandidate }
+            assertEquals(raw.size - expectedSkips, filtered.size, "the engine's listing is the raw one minus the entries the provider's rules skip")
+            println("vault-capture: provider filter held (raw ${raw.size} entries -> engine ${filtered.size}, skipped $expectedSkips, vault candidates observed $candidates)")
 
             // The owner's local record, file names included: never printed, only written when asked for.
             System.getenv("UNIDRIVE_VAULT_CAPTURE_DIR")?.let { capturePath ->
@@ -140,7 +162,7 @@ class LiveVaultCaptureTest {
         source: String,
         shapes: List<Shape>,
     ) {
-        val vaultEntries = shapes.filter { it.isVaultEntry }
+        val vaultEntries = shapes.filter { it.isVaultCandidate }
         println(
             "vault-capture: $source — ${shapes.size} entries; folders=${shapes.count { it.hasFolder }} files=${shapes.count { it.hasFile }} " +
                 "packages=${shapes.count { it.hasPackage }} tombstones=${shapes.count { it.isTombstone }} " +
