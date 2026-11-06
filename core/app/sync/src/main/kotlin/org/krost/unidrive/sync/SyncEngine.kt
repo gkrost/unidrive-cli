@@ -2994,6 +2994,9 @@ open class SyncEngine(
                 remoteHash = item.hash,
                 remoteVersion = item.version,
                 remoteContentId = item.contentId ?: row.remoteContentId,
+                // gkrost/unidrive-cli#414: the delivered item's stored object moves with the version the row takes;
+                // an item that names none keeps the row's (a metadata-only touch need not carry one).
+                storedObject = item.storedObject ?: row.storedObject,
                 remoteSize = item.size,
                 remoteModified = item.modified,
                 localMtime = item.modified?.toEpochMilli() ?: row.localMtime,
@@ -3314,6 +3317,9 @@ open class SyncEngine(
                 isPinned = false,
                 isHydrated = true,
                 lastSynced = Instant.now(),
+                // gkrost/unidrive-cli#414: the upload answer is one of the two answers the download hint comes from;
+                // with it on the row, a download of this file after a restart skips the metadata call.
+                storedObject = result.storedObject,
             ).let { withSentHash(it, localPath, sent, result.sentSha256) }, // archive#396: hashless providers get the SHA-256 of the bytes just sent
         )
         FileEvents.event(

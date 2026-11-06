@@ -1,5 +1,6 @@
 package org.krost.unidrive.internxt
 
+import org.krost.unidrive.StoredObject
 import org.krost.unidrive.internxt.model.InternxtFile
 import org.krost.unidrive.internxt.model.tryParseInternxtInstant
 import java.time.Instant
@@ -49,6 +50,33 @@ internal class FileContentHints(
     }
 
     fun recordAll(files: Iterable<InternxtFile>) = files.forEach(::record)
+
+    /**
+     * gkrost/unidrive-cli#414: seeds the hint the row in state.db kept over a daemon restart ([CloudProvider.seedStoredObject],
+     * handed over by the engine right before a download). Only an id no answer of this run has described gets one: an answer
+     * of this run is never older than what the engine was told, so it wins over the row's. The row's `updatedAt` rides on,
+     * so the seeded entry is ordered against later answers exactly as a recorded one is.
+     */
+    fun seed(
+        uuid: String,
+        storedObject: StoredObject,
+    ) {
+        val hint = InternxtFile(
+            uuid = uuid,
+            fileId = storedObject.id,
+            size = storedObject.size.toString(),
+            bucket = storedObject.bucket,
+            encryptVersion = storedObject.encoding,
+            // The time string as the answer sent it, so the version token the receipt names (and the row's write token
+            // after it) is the one a fresh answer builds: a rebuild from the parsed Instant flips the form (archive#1039).
+            modificationTime = storedObject.modifiedRaw,
+            updatedAt = storedObject.updatedAt?.toString(),
+        )
+        synchronized(entries) {
+            if (entries.containsKey(uuid)) return
+            entries[uuid] = Entry(hint, storedObject.updatedAt)
+        }
+    }
 
     /** The stored object the last answer named for [uuid], or null when there is no usable one. */
     fun get(uuid: String): InternxtFile? = synchronized(entries) { entries[uuid]?.file }

@@ -658,7 +658,13 @@ class StateDatabase(
                     remote_version       TEXT,
                     mount_deleted_at     TEXT,
                     remote_content_id    TEXT,
-                    pending_local        TEXT
+                    pending_local        TEXT,
+                    hint_file_id         TEXT,
+                    hint_bucket          TEXT,
+                    hint_encrypt_version TEXT,
+                    hint_size            INTEGER,
+                    hint_modified        TEXT,
+                    hint_updated_at      TEXT
                 )
             """,
             )
@@ -841,6 +847,18 @@ class StateDatabase(
             // NULL = nothing pending. Same additive pattern, no schema_version bump: every older row reads as nothing pending.
             if (!columnExists("sync_entries", "pending_local")) {
                 stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN pending_local TEXT")
+            }
+            // gkrost/unidrive-cli#414: the download hint the row carries (SyncEntry.storedObject): the stored object of
+            // the version the row records, so a download after a daemon restart seeds the provider's in-memory hint from
+            // the row and skips the metadata call it would otherwise pay per file. Unlike the additive columns above,
+            // these bump SCHEMA_VERSION (now 4, the #269/#337 rule): a build that does not know them resets them on every
+            // INSERT OR REPLACE, and the row's downloads would pay the call again without anything saying so. The six
+            // columns move as one tuple: they are written in lockstep with the version the row takes, and a tuple missing
+            // its fileId (the pre-#414 default) reads as none known.
+            for (hint in HINT_COLUMNS) {
+                if (!columnExists("sync_entries", hint)) {
+                    stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN $hint")
+                }
             }
             stmt.executeUpdate(
                 "CREATE INDEX IF NOT EXISTS idx_sync_entries_mount_deleted_at ON sync_entries(mount_deleted_at) " +
@@ -1140,17 +1158,36 @@ class StateDatabase(
                 stmt.setString(19, entry.editBase)
                 stmt.setString(20, entry.remoteVersion)
                 stmt.setString(21, entry.remoteContentId)
+                // gkrost/unidrive-cli#414: the download hint moves with the version, written by every upsert (an older
+                // build would reset it — that is what the schema bump protects).
+                entry.storedObject.let { hint ->
+                    if (hint == null) {
+                        stmt.setString(22, null)
+                        stmt.setString(23, null)
+                        stmt.setString(24, null)
+                        stmt.setNull(25, java.sql.Types.BIGINT)
+                        stmt.setString(26, null)
+                        stmt.setString(27, null)
+                    } else {
+                        stmt.setString(22, hint.id)
+                        stmt.setString(23, hint.bucket)
+                        stmt.setString(24, hint.encoding)
+                        stmt.setLong(25, hint.size)
+                        stmt.setString(26, hint.modifiedRaw)
+                        stmt.setString(27, hint.updatedAt?.toString())
+                    }
+                }
                 // pending_local is carried by every upsert and cleared only when the action lands or the row is
                 // trashed. A touch or a same-path merge must not forget a remote change the next delta will not send.
                 // The sub-select misses a path change, so that row stays unmarked until the failure path writes it.
-                stmt.setString(22, storedId)
-                stmt.setString(23, entry.path)
+                stmt.setString(28, storedId)
+                stmt.setString(29, entry.path)
                 if (keepMarks) {
                     // The sub-selects read the row this statement replaces, before it is replaced.
-                    stmt.setString(24, storedId)
-                    stmt.setString(25, entry.path)
-                    stmt.setString(26, storedId)
-                    stmt.setString(27, entry.path)
+                    stmt.setString(30, storedId)
+                    stmt.setString(31, entry.path)
+                    stmt.setString(32, storedId)
+                    stmt.setString(33, entry.path)
                 }
                 stmt.executeUpdate()
             }
@@ -3262,6 +3299,22 @@ class StateDatabase(
             editBase = getString("edit_base"),
             remoteVersion = getString("remote_version"),
             remoteContentId = getString("remote_content_id"),
+            // gkrost/unidrive-cli#414: the hint tuple reads as one stored object; a tuple without its fileId (the
+            // pre-#414 shape) reads as none known. hint_size is nullable, so read it before testing it, and read it
+            // as the 64-bit number it is written as (a 32-bit read flips a 2 GiB object's size negative).
+            storedObject =
+                getString("hint_file_id")?.let { fileId ->
+                    getLong("hint_size").let { size ->
+                        org.krost.unidrive.StoredObject(
+                            id = fileId,
+                            bucket = getString("hint_bucket") ?: return@let null,
+                            encoding = getString("hint_encrypt_version"),
+                            size = size,
+                            modifiedRaw = getString("hint_modified"),
+                            updatedAt = getString("hint_updated_at")?.let { IsoInstants.parse(it) },
+                        )
+                    }
+                },
         )
     }
 
@@ -3434,8 +3487,9 @@ class StateDatabase(
                 "(remote_id, parent_uuid, path, remote_path, remote_hash, remote_size, remote_modified, " +
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
                 "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
+                "hint_file_id, hint_bucket, hint_encrypt_version, hint_size, hint_modified, hint_updated_at, " +
                 "pending_local) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
                 "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'))"
 
         // The same, with the refusal stamp and the name block of the row it replaces carried over (see upsertEntry).
@@ -3445,10 +3499,15 @@ class StateDatabase(
                 "(remote_id, parent_uuid, path, remote_path, remote_hash, remote_size, remote_modified, " +
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
                 "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
-                "pending_local, upload_refused, name_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+                "hint_file_id, hint_bucket, hint_encrypt_version, hint_size, hint_modified, hint_updated_at, " +
+                "pending_local, upload_refused, name_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
                 "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT upload_refused FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT name_block FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'))"
+
+        /** The download hint's columns (gkrost/unidrive-cli#414), moved as one tuple wherever the row is written. */
+        private val HINT_COLUMNS =
+            listOf("hint_file_id", "hint_bucket", "hint_encrypt_version", "hint_size", "hint_modified", "hint_updated_at")
 
         /** `path` starts with the bound prefix, exactly (see [bindPrefix]): two parameters, both the prefix. A scan. */
         private const val UNDER_PREFIX = "substr(path, 1, length(?)) = ?"
@@ -3614,7 +3673,12 @@ class StateDatabase(
         // name_block or an upload_refused went back to NULL. Such a build refuses a file stamped 3 at open (the guard in
         // bootstrapSchema); a file at 2 gets the columns it lacks and is stamped 3, its rows kept. A column that an older
         // build's upsert would reset bumps this number; a table of its own (rename_intents and the like) does not.
-        internal const val SCHEMA_VERSION: Int = 3
+        // 4 (gkrost/unidrive-cli#414): the download hint's six columns (hint_file_id through hint_updated_at,
+        // see createTables), by the same rule: they carry meaning — the stored object a download after a daemon restart
+        // seeds its hint from — and a build that knows 3 resets them on every upsert, so the row's download would pay the
+        // metadata call again. A build that knows 3 refuses a file stamped 4; a file at 3 gets the columns it lacks and is
+        // stamped 4, its rows kept.
+        internal const val SCHEMA_VERSION: Int = 4
         internal const val SCHEMA_VERSION_KEY: String = "schema_version"
 
         // The keys of the resumable-scan checkpoint, read and written through

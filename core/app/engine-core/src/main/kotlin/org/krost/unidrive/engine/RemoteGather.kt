@@ -1497,6 +1497,9 @@ class RemoteGather(
                         isHydrated = false,
                         lastSynced = Instant.now(),
                         remoteContentId = item.contentId,
+                        // gkrost/unidrive-cli#414: the delivered item's stored object rides onto the row, so a download
+                        // of it after a restart seeds the provider's hint from the row.
+                        storedObject = item.storedObject,
                     )
                 } else {
                     existing.copy(
@@ -1506,6 +1509,8 @@ class RemoteGather(
                         // The write token moves with the delivered version (null from a provider without one).
                         remoteVersion = item.version,
                         remoteContentId = mergedContentId(existing, item),
+                        // The hint follows the version too; an item that names none keeps the row's.
+                        storedObject = item.storedObject ?: existing.storedObject,
                         remoteSize = item.size,
                         remoteModified = item.modified,
                         // lastSynced stays (a delivery syncs nothing, and the reap guard reads an edit as a cache

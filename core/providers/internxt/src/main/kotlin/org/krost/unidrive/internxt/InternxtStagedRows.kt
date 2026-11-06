@@ -37,6 +37,10 @@ internal fun stagedModificationTime(hash: String?): String? {
 // a file read back without it built the item of the held gather with a null contentId. The payload names the gather it
 // belongs to ([StagedFilePayload.gather], the instant the enumeration began,
 // which a resume keeps), so the rows an earlier, abandoned listing left in the same scan are not taken for this one's.
+// gkrost/unidrive-cli#414: the payload also carries what the download hint reads off the item (the bucket, the
+// encryptVersion and the updatedAt the ordering guard compares): a file handed over from the staging names its stored
+// object, exactly as the page it was staged from did. Rows of an earlier payload read these as null, and their items name
+// none — a download of one takes the meta call, as before.
 
 @Serializable
 internal class StagedFilePayload(
@@ -60,9 +64,12 @@ internal fun stagedFilePayload(
                 plainName = file.plainName,
                 type = file.type,
                 size = file.size,
+                bucket = file.bucket,
+                encryptVersion = file.encryptVersion,
                 folderUuid = file.folderUuid,
                 creationTime = file.creationTime,
                 modificationTime = file.modificationTime,
+                updatedAt = file.updatedAt,
             ),
         ),
     )

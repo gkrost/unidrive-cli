@@ -1,5 +1,6 @@
 package org.krost.unidrive.sync.model
 
+import org.krost.unidrive.StoredObject
 import java.time.Instant
 
 data class SyncEntry(
@@ -79,7 +80,22 @@ data class SyncEntry(
     // content hash. Written with [remoteHash] wherever the row takes an item's version. Null = the provider names none, or none is
     // known yet (every row from before the column, until its item is delivered, read or uploaded again).
     val remoteContentId: String? = null,
+    // gkrost/unidrive-cli#414: the stored object of the version the row records ([org.krost.unidrive.CloudItem.storedObject];
+    // Internxt: the bridge fileId, bucket, encryptVersion and the two timestamps), so a download of the row seeds the
+    // provider's in-memory hint from it after a daemon restart instead of paying the metadata call again. Written wherever
+    // the row takes an item's version. Null = none known (every row from before the columns, until its item is delivered
+    // or uploaded again). Read through [downloadHint], which an alive row only answers.
+    val storedObject: StoredObject? = null,
 ) {
+    /**
+     * The stored object a download of this row may be seeded with ([org.krost.unidrive.CloudProvider.seedStoredObject]):
+     * [storedObject], but only while the row is alive. A trashed or deleted row leaves a fence — its columns stay, but
+     * nothing seeds a download from them, and the download's metadata call decides as before. A computed property, like
+     * [isPendingUpload].
+     */
+    val downloadHint: StoredObject?
+        get() = storedObject?.takeIf { status == EntryStatus.EXISTS && !isFolder }
+
     /**
      * The token a write of this row's file is based on, the one rule for the whole engine: the provider's own
      * [remoteVersion] when the row has one, else [remoteHash]. `hydration.list` hands it out as `etag`, the edit
