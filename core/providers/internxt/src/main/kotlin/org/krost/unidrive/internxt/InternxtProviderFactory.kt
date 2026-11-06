@@ -43,8 +43,13 @@ class InternxtProviderFactory(
             // shard GET) and the upload's IV-pinning hazard above does not apply to it. None of them holds a permit of
             // the service's budgets: the Drive meta call is paced only (no spacing until a throttle, then 500 ms, 1 s in
             // a storm) and the Bridge budget is pace-only too. The bench of 2026-11-05 ran 4 at once with no throttle;
-            // the reference client does about 10 small files a second. 8 small ones at once; large files stay at 2.
+            // the reference client does about 10 small files a second. 8 small ones at once.
             maxConcurrentSmallDownloads = 8,
+            // gkrost/unidrive-cli#392: large downloads were held to the upload cap of 2 above since #403; the engine ran 4
+            // before that without a throttle, and 4 is the Bridge budget's audited width (InternxtApiService's
+            // bridgeBudget, maxConcurrency 4, the reference client's Bottleneck). So 4 at once; a throttle narrows every
+            // download back to the 2 of maxConcurrentTransfers for 60 s.
+            maxConcurrentLargeDownloads = 4,
         )
 
     override fun create(

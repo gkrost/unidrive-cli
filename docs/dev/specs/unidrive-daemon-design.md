@@ -520,8 +520,10 @@ The reply also carries `transfer_budget` (additive, gkrost/unidrive-cli#392; the
 | Download | Permits it takes | At once |
 |---|---|---|
 | a file below 1 MiB (the row's size) | one of the whole pool | `maxConcurrentSmallDownloads` |
-| a file of 1 MiB or more, or of unknown size | one of the large pool, then one of the whole pool | the provider's `maxConcurrentTransfers` |
-| any file, for 60 s after a throttle | as a large one | `maxConcurrentTransfers` |
+| a file of 1 MiB or more, or of unknown size | one of the large pool, then one of the whole pool | the provider's `maxConcurrentLargeDownloads` (Internxt 4, every other provider its `maxConcurrentTransfers`) |
+| any file that starts in the 60 s after a throttle | one of the throttle pool, then as a large one | `maxConcurrentTransfers` (Internxt 2) |
+
+The large-file width is its own value because a provider's `maxConcurrentTransfers` can be a cap for the uploads alone: Internxt's 2 guards the IV-pinning upload race, which a download does not have, and 4 is the width of its Bridge budget (the reference client's). A throttle narrows to `maxConcurrentTransfers` rather than to the large-file width: the provider asked the daemon to slow down, and that is the width audited as safe with it. A download that already runs when the throttle arrives finishes; the large ones in flight still count against the large pool. `transfer_budget` keeps its meaning (the small-file width, or `maxConcurrentTransfers` while throttled).
 
 A daemon that does not send the field is older than #392: a client keeps its own default. The uploads do not use this budget: they share the provider's `maxConcurrentTransfers` with the sync pass, as before.
 
