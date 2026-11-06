@@ -173,15 +173,33 @@ class GraphApiService(
     private val urlMisses = java.util.concurrent.atomic.AtomicLong()
     private val urlBatches = java.util.concurrent.atomic.AtomicLong()
 
-    private suspend fun itemForDownload(id: String): DriveItem {
-        if (SharedItemId.isShared(id)) return fetchItem(id)
+    // The read-ahead claims a batch is flying for, by id: a download whose id is claimed takes the batch's answer instead of
+    // reading Graph again (the claim took the id out of the pending set, so a plain miss could not see the fetch coming).
+    private val inFlightBatch =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<DownloadUrlCache.HeldEntry?>>()
+
+    /** What itemForDownload brought: the item to read by, and the cache entry it was held as (a download puts that back). */
+    private data class DownloadItem(val item: DriveItem, val held: DownloadUrlCache.HeldEntry?)
+
+    private suspend fun itemForDownload(id: String): DownloadItem {
+        if (SharedItemId.isShared(id)) return DownloadItem(fetchItem(id), null)
         val held = downloadUrls.fresh(id)
         val now = System.currentTimeMillis()
         val burst = now - lastDownloadAtMs.getAndSet(now) < PREFETCH_BURST_MS
-        val parent = held?.parentReference?.id ?: downloadUrls.pendingParent(id)
+        val parent = held?.item?.parentReference?.id ?: downloadUrls.pendingParent(id)
         if (held != null) urlHits.incrementAndGet() else urlMisses.incrementAndGet()
         if (burst && parent != null) startPrefetch(parent, id) else if (held == null) downloadUrls.markRead(id)
-        return held ?: fetchItem(id).also { downloadUrls.put(listOf(it)) }
+        if (held == null) inFlightBatch[id]?.let { claimed ->
+            // The batch is already reading this id: take its answer; null (it failed or was throttled) reads Graph below.
+            claimed.await()?.let { return DownloadItem(it.item, it) }
+        }
+        if (held != null) return DownloadItem(held.item, held)
+        // The stamp was captured before the read: an observation that lands while it flies makes this one stale. The entry
+        // rides back as `held`, so the download holds it out while it runs and puts it back when it succeeds.
+        val expected = downloadUrls.revision(id)
+        val fresh = fetchItem(id)
+        val published = downloadUrls.put(listOf(fresh), mapOf(id to expected))
+        return DownloadItem(fresh, published[id])
     }
 
     // Tests wait for the read-ahead to settle between downloads.
@@ -191,36 +209,48 @@ class GraphApiService(
         parent: String,
         current: String,
     ) {
-        if (downloadUrls.prefetchedUnused >= PREFETCH_AHEAD_MAX) return
         if (prefetchInFlight.incrementAndGet() > PREFETCH_STREAMS) {
             prefetchInFlight.decrementAndGet()
             return
         }
-        val ids = downloadUrls.claimSiblings(parent, current, PREFETCH_BATCH)
-        if (ids.isEmpty()) {
+        val claims = downloadUrls.claimSiblings(parent, current, PREFETCH_BATCH, PREFETCH_AHEAD_MAX)
+        if (claims.isEmpty()) {
             prefetchInFlight.decrementAndGet()
             return
         }
+        val expected = claims.associate { it.id to it.revision }
+        val answers = claims.associate { it.id to kotlinx.coroutines.CompletableDeferred<DownloadUrlCache.HeldEntry?>() }
+        claims.forEach { inFlightBatch[it.id] = answers.getValue(it.id) }
         prefetchScope.launch {
+            // The put settles every claim's reservation (published ones turn into unused entries, the rest give the room
+            // back); a batch that never answered one releases them all here.
+            var answered = false
             try {
-                downloadUrls.put(fetchBatch(ids), prefetched = true)
+                val published = downloadUrls.put(fetchBatch(claims.map { it.id }), expected, prefetched = true)
+                answered = true
+                published.forEach { (id, entry) -> answers.getValue(id).complete(entry) }
                 val n = urlBatches.incrementAndGet()
                 log.debug(
                     "download URL cache: hits={} misses={} batches={} (last batch {} items)",
-                    urlHits.get(), urlMisses.get(), n, ids.size,
+                    urlHits.get(), urlMisses.get(), n, claims.size,
                 )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 // The ids stay out of the pending set: their downloads read Graph one by one, as without the prefetch.
-                log.debug("download URL prefetch of {} items failed: {}", ids.size, e.javaClass.simpleName)
+                log.debug("download URL prefetch of {} items failed: {}", claims.size, e.javaClass.simpleName)
             } finally {
+                answers.values.forEach { it.complete(null) }
+                claims.forEach { inFlightBatch.remove(it.id, answers.getValue(it.id)) }
+                if (!answered) downloadUrls.releaseClaims(claims)
                 prefetchInFlight.decrementAndGet()
             }
         }
     }
 
-    // One `POST /$batch` of GET /items/{id}; an answer that is not a 200 with an item is left out (its download reads it alone).
+    // One `POST /$batch` of GET /items/{id}; an answer that is not a 200 with an item is left out (its download reads it
+    // alone), and a throttled one brakes the shared budget for its Retry-After: Graph can answer the batch envelope 200
+    // while individual requests inside it are throttled, and the transport sees only the envelope.
     private suspend fun fetchBatch(ids: List<String>): List<DriveItem> {
         val body =
             buildJsonObject {
@@ -238,12 +268,51 @@ class GraphApiService(
             }.toString()
         val response = authenticatedRequest("$baseUrl/\$batch", HttpMethod.Post, body)
         val responses = json.parseToJsonElement(response.bodyAsText()).jsonObject["responses"]?.jsonArray ?: return emptyList()
-        return responses.mapNotNull { r ->
-            val obj = r as? JsonObject ?: return@mapNotNull null
-            if (obj["status"]?.jsonPrimitive?.intOrNull != 200) return@mapNotNull null
-            val item = obj["body"] ?: return@mapNotNull null
-            runCatching { json.decodeFromJsonElement(DriveItem.serializer(), item) }.getOrNull()
+        var throttled = 0
+        var maxRetryAfterMs = 0L
+        val items =
+            responses.mapNotNull { r ->
+                val obj = r as? JsonObject ?: return@mapNotNull null
+                when (obj["status"]?.jsonPrimitive?.intOrNull) {
+                    200 -> {
+                        val item = obj["body"] ?: return@mapNotNull null
+                        runCatching { json.decodeFromJsonElement(DriveItem.serializer(), item) }.getOrNull()
+                    }
+                    429, 503 -> {
+                        throttled++
+                        subrequestRetryAfterMs(obj)?.let { maxRetryAfterMs = maxOf(maxRetryAfterMs, it) }
+                        null
+                    }
+                    else -> null
+                }
+            }
+        if (throttled > 0) {
+            val waitMs = boundedThrottleWaitMs(maxRetryAfterMs.takeIf { it > 0 }, DEFAULT_BACKOFF_START_MS)
+            log.warn(
+                "Graph batch: {} of {} items throttled — braking the shared budget {}ms; their downloads read one by one",
+                throttled,
+                ids.size,
+                waitMs,
+            )
+            throttleBudget.recordThrottle(waitMs)
         }
+        return items
+    }
+
+    // The Retry-After of a throttled batch subresponse: its own header, else the seconds named in its body; null when it
+    // names none (the caller's fallback applies).
+    private fun subrequestRetryAfterMs(response: JsonObject): Long? {
+        val header =
+            (response["headers"] as? JsonObject)
+                ?.entries
+                ?.firstOrNull { it.key.equals("Retry-After", ignoreCase = true) }
+                ?.value?.jsonPrimitive?.contentOrNull
+                ?.let { parseRetryAfterHeader(it) }
+        if (header != null) return header
+        val body = response["body"] as? JsonObject ?: return null
+        return body["retryAfterSeconds"]?.jsonPrimitive?.longOrNull
+            ?: body["error"]?.jsonObject?.get("retryAfterSeconds")?.jsonPrimitive?.longOrNull
+            ?: body["error"]?.jsonObject?.get("innerError")?.jsonObject?.get("retryAfterSeconds")?.jsonPrimitive?.longOrNull
     }
 
     suspend fun getItemById(id: String): DriveItem = fetchItem(id)
@@ -410,7 +479,8 @@ class GraphApiService(
     ): DownloadedFile {
         // A fresh URL held for the item spares the metadata GET (#417): the item carries the malware and package facets and
         // the hashes the receipt names, so the refusals run on it exactly as on a live read.
-        var item = itemForDownload(itemId).also { refuseIfMalware(it, itemId) }.also { refuseIfPackage(it, itemId) }
+        val source = itemForDownload(itemId)
+        var item = source.item.also { refuseIfMalware(it, itemId) }.also { refuseIfPackage(it, itemId) }
         // Held out of the cache while this download runs, put back when it succeeds: a download that fails (a stale URL, a
         // changed file) leaves no entry for the retry to trust, which then reads Graph.
         downloadUrls.forget(itemId)
@@ -488,7 +558,10 @@ class GraphApiService(
 
                 when (outcome) {
                     DownloadOutcome.Done -> {
-                        downloadUrls.put(listOf(item))
+                        // The borrowed entry goes back as it was borrowed — same observation, original fetch time, and only
+                        // if nothing observed the id anew while this download ran (that download must not restore an older
+                        // version over it). A re-resolved item is already published by its arm below.
+                        source.held?.let { downloadUrls.putBack(it) }
                         return DownloadedFile(downloadedBytes, item)
                     }
                     DownloadOutcome.RetryAuth -> {
@@ -526,8 +599,9 @@ class GraphApiService(
                             outcome.statusCode,
                             itemId,
                         )
+                        val expected = downloadUrls.revision(itemId)
                         val fresh = fetchItem(itemId).also { refuseIfMalware(it, itemId) }
-                        downloadUrls.put(listOf(fresh))
+                        downloadUrls.put(listOf(fresh), mapOf(itemId to expected))
                         item = fresh
                         url = fresh.downloadUrl ?: "${itemUrl(itemId)}/content"
                         authNeeded = fresh.downloadUrl == null
@@ -576,8 +650,9 @@ class GraphApiService(
                         itemId,
                         e.message,
                     )
+                    val expected = downloadUrls.revision(itemId)
                     val fresh = fetchItem(itemId).also { refuseIfMalware(it, itemId) }
-                    downloadUrls.put(listOf(fresh))
+                    downloadUrls.put(listOf(fresh), mapOf(itemId to expected))
                     item = fresh
                     url = fresh.downloadUrl ?: "${itemUrl(itemId)}/content"
                     authNeeded = fresh.downloadUrl == null
@@ -674,6 +749,8 @@ class GraphApiService(
 
         val body = response.bodyAsText()
         val item = json.decodeFromString<DriveItem>(body)
+        // The content changed: any held download URL for this id serves the old bytes from now on (#417).
+        downloadUrls.invalidate(itemId ?: item.id)
         // A content-PUT cannot carry the fileSystemInfo facet inline; round-tripping
         // local mtime/ctime requires a follow-up PATCH on the just-created item.
         return if (fileSystemInfo != null) patchFileSystemInfo(itemId ?: item.id, fileSystemInfo) else item
@@ -926,6 +1003,7 @@ class GraphApiService(
                 null
             }
         sessionStore.delete(remotePath)
+        uploadedItem?.let { downloadUrls.invalidate(itemId ?: it.id) }
         return uploadedItem ?: throw GraphApiException("Upload session completed but no DriveItem returned")
     }
 

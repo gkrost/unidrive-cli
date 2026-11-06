@@ -4,11 +4,15 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.RemoteContentRefusedDownloadException
+import org.krost.unidrive.http.HttpRetryBudget
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -30,11 +34,23 @@ class OneDriveListingDownloadUrlTest {
     private val dir = Files.createTempDirectory("od-417-")
     private val clock = AtomicLong(1_000_000L)
     private val byId = AtomicInteger()
+    private val byIdIds = CopyOnWriteArrayList<String>()
     private val content = AtomicInteger()
     private val batchSizes = CopyOnWriteArrayList<Int>()
     private val contentStatus = ArrayDeque<HttpStatusCode>()
     private var failBatch = false
     private val malwareInBatch = mutableSetOf<String>()
+    private val throttledInBatch = mutableSetOf<String>()
+
+    // The hash a live `GET /items/{id}` answers with, so a test can move the file to a new version mid-run.
+    private var liveHash: (String) -> String = { "QX$it" }
+
+    // Gates that hold a response body back until a test releases it: a transfer or a batch that is in flight while the
+    // test moves the world under it. Suspending, so the request coroutine waits without blocking a thread.
+    private var contentArrived: CompletableDeferred<Unit>? = null
+    private var pauseContent: CompletableDeferred<Unit>? = null
+    private var batchArrived: CompletableDeferred<Unit>? = null
+    private var pauseBatch: CompletableDeferred<Unit>? = null
 
     @AfterTest
     fun cleanup() {
@@ -44,60 +60,93 @@ class OneDriveListingDownloadUrlTest {
     private fun item(
         id: String,
         dl: String? = "https://cdn.example/$id",
-        extra: String = """"file":{"hashes":{"quickXorHash":"QX$id"}},"parentReference":{"id":"P"}""",
-    ) = """{"id":"$id","name":"$id.bin","size":4,$extra${dl?.let { ""","@microsoft.graph.downloadUrl":"$it"""" } ?: ""}}"""
+        parent: String = "P",
+        hash: String = "QX$id",
+        extra: String? = null,
+    ): String {
+        val meta = extra ?: "\"file\":{\"hashes\":{\"quickXorHash\":\"$hash\"}},\"parentReference\":{\"id\":\"$parent\"}"
+        val url = dl?.let { ",\"@microsoft.graph.downloadUrl\":\"$it\"" } ?: ""
+        return "{\"id\":\"$id\",\"name\":\"$id.bin\",\"size\":4,$meta$url}"
+    }
 
     // children: items with URLs; delta: the same files without URLs (as Graph answers); /items/{id} and $batch: live, with URLs.
     private fun engine(
         children: List<String> = emptyList(),
         delta: List<String> = emptyList(),
-    ) = MockEngine { request ->
-        val url = request.url.toString()
-        when {
-            url.contains("/children") -> respond("""{"value":[${children.joinToString(",")}]}""", HttpStatusCode.OK, json)
-            url.contains("/delta") ->
-                respond("""{"value":[${delta.joinToString(",")}],"@odata.deltaLink":"d"}""", HttpStatusCode.OK, json)
-            url.endsWith("/\$batch") -> {
-                val text = (request.body as TextContent).text
-                val ids = Regex("/me/drive/items/([^\"]+)").findAll(text).map { it.groupValues[1] }.toList()
-                batchSizes += ids.size
-                if (failBatch) {
-                    respond("{}", HttpStatusCode.InternalServerError, json)
-                } else {
-                    val responses =
-                        ids.mapIndexed { i, id ->
-                            val extra =
-                                if (id in malwareInBatch) {
-                                    """"file":{},"malware":{"description":"x"},"parentReference":{"id":"P"}"""
-                                } else {
-                                    """"file":{"hashes":{"quickXorHash":"QX$id"}},"parentReference":{"id":"P"}"""
-                                }
-                            """{"id":"${i + 1}","status":200,"body":${item(id, dl = "https://cdn.example/$id-b", extra = extra)}}"""
-                        }
-                    respond("""{"responses":[${responses.joinToString(",")}]}""", HttpStatusCode.OK, json)
+    ): MockEngine {
+        // The parent each listing named for an id: the batch answers carry it (the mount's prefetch claims group by it).
+        val listedParents =
+            (children + delta)
+                .mapNotNull { json ->
+                    Regex("\\\"id\\\":\\\"([^\\\"]+)\\\".*?\\\"parentReference\\\":\\{\\\"id\\\":\\\"([^\\\"]+)\\\"\\}")
+                        .find(json)?.groupValues?.let { it[1] to it[2] }
                 }
-            }
+                .toMap()
+        return MockEngine { request ->
+            val url = request.url.toString()
+            when {
+                url.contains("/children") -> respond("""{"value":[${children.joinToString(",")}]}""", HttpStatusCode.OK, json)
+                url.contains("/delta") ->
+                    respond("""{"value":[${delta.joinToString(",")}],"@odata.deltaLink":"d"}""", HttpStatusCode.OK, json)
+                request.method == HttpMethod.Put && url.contains("/items/") -> {
+                    val id = url.substringAfter("/items/").substringBefore("/content")
+                    respond(item(id, dl = "https://cdn.example/$id-up", hash = "QX-up"), HttpStatusCode.OK, json)
+                }
+                url.endsWith("/\$batch") -> {
+                    batchArrived?.complete(Unit)
+                    pauseBatch?.await()
+                    val text = (request.body as TextContent).text
+                    val ids = Regex("/me/drive/items/([^\"]+)").findAll(text).map { it.groupValues[1] }.toList()
+                    batchSizes += ids.size
+                    if (failBatch) {
+                        respond("{}", HttpStatusCode.InternalServerError, json)
+                    } else {
+                        val responses =
+                            ids.mapIndexed { i, id ->
+                                val parent = listedParents[id] ?: "P"
+                                val extra =
+                                    if (id in malwareInBatch) {
+                                        """"file":{},"malware":{"description":"x"},"parentReference":{"id":"$parent"}"""
+                                    } else {
+                                        """"file":{"hashes":{"quickXorHash":"QX$id"}},"parentReference":{"id":"$parent"}"""
+                                    }
+                                if (id in throttledInBatch) {
+                                    """{"id":"${i + 1}","status":429,"headers":{"Retry-After":"7"},"body":{"retryAfterSeconds":9}}"""
+                                } else {
+                                    """{"id":"${i + 1}","status":200,"body":${item(id, dl = "https://cdn.example/$id-b", extra = extra)}}"""
+                                }
+                            }
+                        respond("""{"responses":[${responses.joinToString(",")}]}""", HttpStatusCode.OK, json)
+                    }
+                }
             url.contains("/me/drive/items/") -> {
                 byId.incrementAndGet()
                 val id = url.substringAfter("/items/")
-                respond(item(id, dl = "https://cdn.example/$id-live"), HttpStatusCode.OK, json)
+                byIdIds += id
+                respond(item(id, dl = "https://cdn.example/$id-live", hash = liveHash(id)), HttpStatusCode.OK, json)
             }
             url.startsWith("https://cdn.example/") -> {
                 content.incrementAndGet()
+                contentArrived?.complete(Unit)
+                pauseContent?.await()
                 val status = contentStatus.removeFirstOrNull() ?: HttpStatusCode.OK
                 respond(if (status == HttpStatusCode.OK) "DATA" else "", status, bytes)
             }
             else -> error("unexpected URL: $url")
+            }
         }
     }
 
-    private fun api(engine: MockEngine) =
-        GraphApiService(
-            config = OneDriveConfig(),
-            httpClient = HttpClient(engine),
-            tokenProvider = { _, _ -> "tok" },
-            downloadUrls = DownloadUrlCache({ clock.get() }),
-        )
+    private fun api(
+        engine: MockEngine,
+        throttleBudget: HttpRetryBudget = HttpRetryBudget(maxConcurrency = 8),
+    ) = GraphApiService(
+        config = OneDriveConfig(),
+        httpClient = HttpClient(engine),
+        tokenProvider = { _, _ -> "tok" },
+        downloadUrls = DownloadUrlCache({ clock.get() }),
+        throttleBudget = throttleBudget,
+    )
 
     private fun settle(g: GraphApiService) {
         val until = System.currentTimeMillis() + 5_000
@@ -162,7 +211,7 @@ class OneDriveListingDownloadUrlTest {
 
             for (id in ids) p.downloadByIdWithHash(id, "/$id.bin", dir.resolve("$id.2.out"))
 
-            assertEquals(metadataAfterFirst, byId.get() + batchSizes.size, "no metadata request in the second pin; singles=${byId.get()} batches=$batchSizes")
+            assertEquals(metadataAfterFirst, byId.get() + batchSizes.size, "no metadata request in the second pin; singles=${byId.get()} batches=$batchSizes read=${byIdIds}")
             assertEquals(60, content.get())
             p.close()
         }
@@ -178,6 +227,165 @@ class OneDriveListingDownloadUrlTest {
 
             assertEquals(1, byId.get(), "metadata GETs by id")
             assertEquals(1, content.get())
+            p.close()
+        }
+
+    @Test
+    fun `a reused URL keeps its original expiry`() =
+        runTest {
+            val p = OneDriveProvider(OneDriveConfig(), graphApi = api(engine(children = listOf(item("id-1")))))
+            p.listChildren("/")
+            p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("a.out"))
+
+            clock.addAndGet(44 * 60 * 1000L)
+            p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("b.out"))
+            assertEquals(0, byId.get(), "minute 44 of 45: reused without a metadata GET")
+
+            clock.addAndGet(2 * 60 * 1000L)
+            p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("c.out"))
+            assertEquals(1, byId.get(), "minute 46 after the fetch: the reuse did not stretch the expiry")
+            assertEquals(3, content.get())
+            p.close()
+        }
+
+    @Test
+    fun `a download finishing after a delta update does not restore the old version`() =
+        runTest {
+            val arrived = CompletableDeferred<Unit>()
+            val gate = CompletableDeferred<Unit>()
+            contentArrived = arrived
+            pauseContent = gate
+            val g =
+                api(
+                    engine(
+                        children = listOf(item("id-1")),
+                        delta = listOf(item("id-1", dl = null, hash = "QX-new")),
+                    ),
+                )
+            liveHash = { "QX-new" }
+            val p = OneDriveProvider(OneDriveConfig(), graphApi = g)
+            p.listChildren("/")
+
+            val first = async { p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("1.out")) }
+            arrived.await() // the transfer is running on the held URL
+            g.getDelta() // the delta reports the change while it runs
+            gate.complete(Unit) // let it finish
+            first.await()
+
+            val second = p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("2.out"))
+            assertEquals("quickxor:QX-new|4", second.contentId, "the next download read the new version, not the restored old one")
+            assertEquals(1, byId.get())
+
+            val third = p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("3.out"))
+            assertEquals("quickxor:QX-new|4", third.contentId)
+            assertEquals(1, byId.get(), "the fresh URL stayed cached for the pin")
+            assertEquals(3, content.get())
+            p.close()
+        }
+
+    @Test
+    fun `a successful upload invalidates the held URL, the next download reads the new version`() =
+        runTest {
+            val g = api(engine(children = listOf(item("id-1"))))
+            val p = OneDriveProvider(OneDriveConfig(), graphApi = g)
+            p.listChildren("/")
+
+            liveHash = { "QX-up" }
+            g.uploadSimple("/id-1.bin", "NEW".toByteArray(), itemId = "id-1", conflictBehavior = "replace")
+
+            val receipt = p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("a.out"))
+            assertEquals("quickxor:QX-up|4", receipt.contentId, "the download read the uploaded version live")
+            assertEquals(1, byId.get(), "the held URL of the old version was not reused")
+            assertEquals(1, content.get())
+            p.close()
+        }
+
+    @Test
+    fun `a throttled batch item brakes the shared budget and leaves the siblings cached`() =
+        runTest {
+            val budget = HttpRetryBudget(maxConcurrency = 8)
+            throttledInBatch += "id-3"
+            val g = api(engine(delta = ids(6).map { item(it, dl = null) }), budget)
+            val p = OneDriveProvider(OneDriveConfig(), graphApi = g)
+            g.getDelta()
+            for (id in ids(2)) {
+                p.downloadByIdWithHash(id, "/$id.bin", dir.resolve("$id.out"))
+                settle(g)
+            }
+            assertTrue(batchSizes.contains(4), "the burst batch read the other four: $batchSizes")
+
+            p.downloadByIdWithHash("id-3", "/id-3.bin", dir.resolve("3.out"))
+            assertEquals(3, byId.get(), "the two pre-burst files and the throttled one read Graph one by one")
+            assertTrue(budget.currentSpacingMs() > 0, "the 429 inside the 200 envelope reached the shared budget")
+
+            val metadataAfter = byId.get() + batchSizes.size
+            p.downloadByIdWithHash("id-4", "/id-4.bin", dir.resolve("4a.out"))
+            p.downloadByIdWithHash("id-4", "/id-4.bin", dir.resolve("4b.out"))
+            assertEquals(metadataAfter, byId.get() + batchSizes.size, "the successful siblings stayed cached; singles=${byId.get()} batches=$batchSizes read=$byIdIds")
+            assertEquals(5, content.get())
+            p.close()
+        }
+
+    @Test
+    fun `a download arriving during its batch waits for the batch instead of reading Graph again`() =
+        runTest {
+            val arrived = CompletableDeferred<Unit>()
+            val gate = CompletableDeferred<Unit>()
+            batchArrived = arrived
+            pauseBatch = gate
+            val g = api(engine(delta = ids(4).map { item(it, dl = null) }))
+            val p = OneDriveProvider(OneDriveConfig(), graphApi = g)
+            g.getDelta()
+
+            p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("1.out"))
+            assertEquals(1, byId.get())
+
+            val second = async { p.downloadByIdWithHash("id-2", "/id-2.bin", dir.resolve("2.out")) }
+            arrived.await() // the batch of [id-3, id-4] is in flight
+            val third = async { p.downloadByIdWithHash("id-3", "/id-3.bin", dir.resolve("3.out")) }
+            gate.complete(Unit) // a foreground read arrives while the batch has not answered
+            second.await()
+            third.await()
+
+            assertEquals(listOf(2), batchSizes)
+            assertEquals(2, byId.get(), "id-3 took the batch's answer, not a second metadata GET")
+            assertEquals(3, content.get())
+
+            p.downloadByIdWithHash("id-4", "/id-4.bin", dir.resolve("4.out"))
+            assertEquals(2, byId.get(), "the batch's entry for id-4 stayed cached")
+            assertEquals(4, content.get())
+            p.close()
+        }
+
+    @Test
+    fun `expired read-ahead frees the budget for a later folder`() =
+        runTest {
+            val folderA = (1..65).map { "a-$it" }
+            val g =
+                api(
+                    engine(
+                        delta = folderA.map { item(it, dl = null, parent = "A") } +
+                            listOf("b-1", "b-2", "b-3").map { item(it, dl = null, parent = "B") },
+                    ),
+                )
+            val p = OneDriveProvider(OneDriveConfig(), graphApi = g)
+            g.getDelta()
+
+            for (id in folderA.take(6)) {
+                p.downloadByIdWithHash(id, "/$id.bin", dir.resolve("$id.out"))
+                settle(g)
+            }
+            assertTrue(batchSizes.sum() >= 60, "the folder A burst filled the read-ahead budget: $batchSizes")
+            val batchesAfterFolderA = batchSizes.size
+
+            clock.addAndGet(46 * 60 * 1000L) // every read-ahead entry expires
+            for (id in listOf("b-1", "b-2", "b-3")) {
+                p.downloadByIdWithHash(id, "/$id.bin", dir.resolve("$id.out"))
+                settle(g)
+            }
+            assertTrue(batchSizes.size > batchesAfterFolderA, "the expired read-ahead was pruned, the folder B burst still earned a batch: $batchSizes")
+            assertEquals(3, byId.get(), "only a-1 (before the burst), a-6 (the budget was full) and b-1 read one by one")
+            assertEquals(9, content.get())
             p.close()
         }
 
