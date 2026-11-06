@@ -120,6 +120,11 @@ class InternxtProvider(
     // internal and var only so a test can hand in a store whose rename misbehaves (archive#1203); nothing else assigns it.
     internal var tombstoneStore = UploadTombstoneStore(config.tokenPath.resolve("upload-tombstones"))
 
+    // The path hashes of the uploads this provider is running right now, so the inline tombstone
+    // GC at the top of one upload never judges the tombstone of another upload of this process:
+    // the pass runs while that upload may be rewriting its sidecar, a moment it can fail to read.
+    private val inFlightUploadHashes: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
     // Internxt notifications (socket.io). Only a process that consumes remote-change
     // hints (onRemoteChangeHint, today `sync --watch`) opens the socket: a one-shot
     // `status` / `ls` / `sync` has no use for it and must not reach the endpoint.
@@ -1219,24 +1224,32 @@ class InternxtProvider(
         // gkrost/unidrive-cli#393: the encrypt pass is the one read of the source; the SHA-256 of the plaintext it saw is handed to the
         // engine on the result, which would otherwise read the whole file again to record it.
         val sourceSha256 = java.util.concurrent.atomic.AtomicReference<String?>(null)
-        return try {
-            val item = uploadUnclassified(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress, sourceSha256)
-            sourceSha256.get()?.let { item.copy(sentSha256 = it) } ?: item
-        } catch (e: InternxtApiException) {
-            if (e.statusCode == PLAN_LIMIT_STATUS) {
-                throw org.krost.unidrive.PlanLimitException(
+        // Registered before the upload can run the tombstone GC, dropped when the attempt is over
+        // (failed or done): the GC of any other upload must not judge this one's sidecar.
+        val pathHash = UploadTombstoneStore.pathHash(localPath.toAbsolutePath().toString())
+        inFlightUploadHashes.add(pathHash)
+        try {
+            return try {
+                val item = uploadUnclassified(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress, sourceSha256)
+                sourceSha256.get()?.let { item.copy(sentSha256 = it) } ?: item
+            } catch (e: InternxtApiException) {
+                if (e.statusCode == PLAN_LIMIT_STATUS) {
+                    throw org.krost.unidrive.PlanLimitException(
+                        "Internxt refused the upload of $remotePath (${e.statusCode}): ${e.message}",
+                        detail = serverSentence(e.message),
+                        cause = e,
+                        requestId = e.requestId,
+                    )
+                }
+                if (e.statusCode !in PERMANENT_UPLOAD_STATUS) throw e
+                throw org.krost.unidrive.PermanentUploadFailureException(
                     "Internxt refused the upload of $remotePath (${e.statusCode}): ${e.message}",
-                    detail = serverSentence(e.message),
                     cause = e,
                     requestId = e.requestId,
                 )
             }
-            if (e.statusCode !in PERMANENT_UPLOAD_STATUS) throw e
-            throw org.krost.unidrive.PermanentUploadFailureException(
-                "Internxt refused the upload of $remotePath (${e.statusCode}): ${e.message}",
-                cause = e,
-                requestId = e.requestId,
-            )
+        } finally {
+            inFlightUploadHashes.remove(pathHash)
         }
     }
 
@@ -1285,8 +1298,9 @@ class InternxtProvider(
         // Inline GC sweep for stale tombstones (missing-local or > RESUME_TTL_MS
         // old). Bounded by the directory listing size — typical accounts see
         // single-digit entries. Runs once per upload() call regardless of which
-        // path is being uploaded.
-        withContext(Dispatchers.IO) { tombstoneStore.gc(InternxtConfig.RESUME_TTL_MS) }
+        // path is being uploaded; the in-flight hashes keep it off the tombstones
+        // of the uploads this provider is running right now.
+        withContext(Dispatchers.IO) { tombstoneStore.gc(InternxtConfig.RESUME_TTL_MS, inFlightUploadHashes) }
 
         val pathHashStr = UploadTombstoneStore.pathHash(localPath.toAbsolutePath().toString())
         val tempFile = tombstoneStore.ciphertextPath(pathHashStr)

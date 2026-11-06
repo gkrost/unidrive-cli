@@ -10,6 +10,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -2464,6 +2465,172 @@ class InternxtApiServiceTest {
                 tmp.toFile().deleteRecursively()
             }
         }
+
+    // #412: the inline tombstone GC at the top of every upload used to read ANY failure to
+    // read a sidecar as "malformed garbage" and delete the pair — including the sidecar of
+    // another upload that is still running against the same profile. A sidecar mid-rewrite
+    // can briefly fail to read (a torn non-atomic move, a Windows sharing violation): while
+    // upload A is stalled inside its PUT, its sidecar is corrupted on disk to stand in for
+    // that moment, and upload B runs its cleanup pass. A's pair must survive, and A's next
+    // attempt must still resume from it.
+    @Test
+    fun `a running upload's tombstone survives another upload's cleanup and the upload resumes`() =
+        kotlinx.coroutines.test.runTest {
+            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-concurrent-")
+            val localA = java.nio.file.Files.createTempFile(tmp, "src-a-", ".bin").also { p ->
+                java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
+            }
+            val localB = java.nio.file.Files.createTempFile(tmp, "src-b-", ".bin").also { p ->
+                java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
+            }
+            try {
+                val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
+                val pathHashA = UploadTombstoneStore.pathHash(localA.toAbsolutePath().toString())
+                val sidecarA = store.ciphertextPath(pathHashA).resolveSibling("$pathHashA.json")
+                val pinnedIndexA = "aa".repeat(32)
+                val now = System.currentTimeMillis()
+                store.write(
+                    pathHashA,
+                    UploadTombstone(
+                        localPath = localA.toAbsolutePath().toString(),
+                        localMtimeMillis = java.nio.file.Files.getLastModifiedTime(localA).toMillis(),
+                        localSize = 32L,
+                        bucket = tombstoneBucket,
+                        folderUuid = "root-folder-uuid",
+                        plainName = localA.fileName.toString().substringBeforeLast('.'),
+                        ext = "bin",
+                        indexBytesHex = pinnedIndexA,
+                        contentFingerprintHex = UploadTombstoneStore.contentFingerprint(localA),
+                        shardUuid = "shard-uuid-in-flight",
+                        bridgePutUrl = "https://shard-a.invalid/put",
+                        encryptedSize = 48L,
+                        hashHex = "1a".repeat(32),
+                        stage = UploadTombstone.Stage.PUT_PENDING,
+                        startedAtMillis = now,
+                        tombstoneWrittenAtMillis = now,
+                    ),
+                )
+                seedEnc(store, pathHashA, 48L)
+
+                val wire = ConcurrentCleanupWire(pinnedIndexA)
+                val provider = newProviderRooted(tmp, wire.engine())
+
+                val aOutcome = CompletableDeferred<Throwable?>()
+                launch {
+                    aOutcome.complete(
+                        try {
+                            provider.upload(localA, "/${localA.fileName}", existingRemoteId = null, onProgress = null)
+                            null
+                        } catch (e: Exception) {
+                            e
+                        }
+                    )
+                }
+                wire.aPutArrived.await()
+                assertTrue(
+                    java.nio.file.Files.exists(sidecarA) && java.nio.file.Files.exists(store.ciphertextPath(pathHashA)),
+                    "setup: A is stalled mid-PUT with its pair on disk",
+                )
+                // Stand in for the unreadable-torn-write moment: A's sidecar on disk now fails to parse,
+                // while A holds the resume state in memory and is still running.
+                java.nio.file.Files.writeString(sidecarA, "{ torn sidecar")
+
+                provider.upload(localB, "/${localB.fileName}", existingRemoteId = null, onProgress = null)
+
+                assertTrue(java.nio.file.Files.exists(sidecarA), "B's cleanup must not delete the running upload's sidecar")
+                assertTrue(
+                    java.nio.file.Files.exists(store.ciphertextPath(pathHashA)),
+                    "B's cleanup must not delete the running upload's staged ciphertext",
+                )
+
+                wire.releaseAPut.complete(Unit)
+                val aError = aOutcome.await()
+                kotlin.test.assertNotNull(aError, "A's first attempt ends in the injected finish failure")
+
+                // The resume point survived B's cleanup: the next attempt for A's path picks the
+                // tombstone back up at PUT_DONE — no fresh shard session, no second PUT, pinned index.
+                provider.upload(localA, "/${localA.fileName}", existingRemoteId = null, onProgress = null)
+
+                assertEquals(1, wire.startCalls.get(), "both A attempts resume; only B cold-starts a shard session")
+                assertEquals(1, wire.putCallsA.get(), "the PUT_DONE resume skips the PUT")
+                assertEquals(pinnedIndexA, wire.capturedFinishIndexes.last(), "A's second attempt resumes the pinned indexBytes")
+                assertEquals(2, wire.capturedFinishIndexes.count { it == pinnedIndexA }, "A finished twice on the same pinned index")
+            } finally {
+                java.nio.file.Files.deleteIfExists(localA)
+                java.nio.file.Files.deleteIfExists(localB)
+                tmp.toFile().deleteRecursively()
+            }
+        }
+
+    // The wire for the concurrent-cleanup test: A's PUT stalls on [releaseAPut] and its first
+    // finish answers 400 (non-transient, so the attempt ends with the tombstone at PUT_DONE);
+    // B is a plain cold-start success on its own shard. Finishes are told apart by the index
+    // the tombstone pinned for A.
+    private class ConcurrentCleanupWire(private val pinnedIndexA: String) {
+        val startCalls = AtomicInteger(0)
+        val putCallsA = AtomicInteger(0)
+        val putCallsB = AtomicInteger(0)
+        val aFinishCalls = AtomicInteger(0)
+        val aPutArrived = CompletableDeferred<Unit>()
+        val releaseAPut = CompletableDeferred<Unit>()
+        val capturedFinishIndexes = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+        fun engine(): io.ktor.client.engine.mock.MockEngine =
+            io.ktor.client.engine.mock.MockEngine { request ->
+                val url = request.url.toString()
+                when {
+                    url == "https://shard-a.invalid/put" -> {
+                        putCallsA.incrementAndGet()
+                        aPutArrived.complete(Unit)
+                        releaseAPut.await()
+                        respond("", io.ktor.http.HttpStatusCode.OK)
+                    }
+                    url == "https://shard-b.invalid/put" -> {
+                        putCallsB.incrementAndGet()
+                        respond("", io.ktor.http.HttpStatusCode.OK)
+                    }
+                    url.startsWith("https://api.internxt.com/v2/buckets/") && url.contains("/files/start") -> {
+                        startCalls.incrementAndGet()
+                        respond(
+                            content = """{"uploads":[{"index":0,"uuid":"shard-uuid-b","url":"https://shard-b.invalid/put"}]}""",
+                            status = io.ktor.http.HttpStatusCode.OK,
+                            headers = io.ktor.http.headersOf("Content-Type", "application/json"),
+                        )
+                    }
+                    url.startsWith("https://api.internxt.com/v2/buckets/") && url.contains("/files/finish") -> {
+                        val text =
+                            when (val b = request.body) {
+                                is io.ktor.http.content.ByteArrayContent -> String(b.bytes(), Charsets.UTF_8)
+                                is io.ktor.http.content.TextContent -> b.text
+                                else -> error("unexpected finishUpload body type: ${b.javaClass}")
+                            }
+                        val index = Json.parseToJsonElement(text).jsonObject["index"]!!.jsonPrimitive.content
+                        capturedFinishIndexes.add(index)
+                        if (index == pinnedIndexA && aFinishCalls.incrementAndGet() == 1) {
+                            respond(
+                                content = """{"error":"bad request"}""",
+                                status = io.ktor.http.HttpStatusCode.BadRequest,
+                                headers = io.ktor.http.headersOf("Content-Type", "application/json"),
+                            )
+                        } else {
+                            respond(
+                                content = """{"id":"bridge-fileId","index":"$index","bucket":"test-bucket","name":"enc-name"}""",
+                                status = io.ktor.http.HttpStatusCode.OK,
+                                headers = io.ktor.http.headersOf("Content-Type", "application/json"),
+                            )
+                        }
+                    }
+                    url.startsWith("https://gateway.internxt.com/drive/files") && request.method == io.ktor.http.HttpMethod.Post -> {
+                        respond(
+                            content = """{"uuid":"file-uuid","plainName":"concurrent","type":"bin","size":"32","bucket":"test-bucket","fileId":"bridge-fileId","status":"EXISTS"}""",
+                            status = io.ktor.http.HttpStatusCode.OK,
+                            headers = io.ktor.http.headersOf("Content-Type", "application/json"),
+                        )
+                    }
+                    else -> error("unexpected URL hit by the concurrent-cleanup test: $url ($request.method)")
+                }
+            }
+    }
 
     // -----------------------------------------------------------------
     // keep_overwritten destructive-overwrite guard. Same provider-with-
