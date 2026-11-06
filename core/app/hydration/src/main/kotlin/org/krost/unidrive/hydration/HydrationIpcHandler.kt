@@ -346,6 +346,7 @@ class HydrationIpcHandler(
             "hydration.last_synced",
             "hydration.matches_local",
             "hydration.list",
+            "hydration.stat",
             "hydration.mkdir",
             "hydration.unlink",
             "hydration.rmdir",
@@ -358,6 +359,8 @@ class HydrationIpcHandler(
 
         /** A file the client does not upload for its twin, recorded and cleared (gkrost/unidrive-cli#24); also the daemon.status capability. */
         const val REFUSE_NAME = "hydration.refuse_name"
+        /** One row's state without listing the folder (gkrost/unidrive-cli#415); also the daemon.status capability. */
+        const val STAT = "hydration.stat"
 
         /** One page of a read-only view for a front-end's own list (the Recents list's "more" button). */
         const val VIEW_PAGE = "view.page"
@@ -506,6 +509,15 @@ class HydrationIpcHandler(
                 when (val r = hydration.list(prefix)) {
                     is ListResult.Ok -> serialiseListEntries(r.entries)
                     is ListResult.Failed -> reply(ok = false, error = r.error.message)
+                }
+            }
+            "hydration.stat" -> {
+                val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
+                when (val r = hydration.stat(path)) {
+                    // The entry's fields at the top level, with ok:true in front — one row of the list shape,
+                    // not the entries array (gkrost/unidrive-cli#415).
+                    is StatResult.Ok -> serialiseStatOk(r.entry)
+                    is StatResult.Failed -> reply(ok = false, error = r.error.message)
                 }
             }
             "hydration.mkdir" -> {
@@ -732,31 +744,37 @@ private fun serialiseListEntries(entries: List<ListResult.Entry>): String {
     val sb = StringBuilder("""{"ok":true,"entries":[""")
     for ((i, e) in entries.withIndex()) {
         if (i > 0) sb.append(',')
-        sb.append("{\"path\":").append(jsonEsc(e.path))
-            .append(",\"size\":").append(e.size)
-            .append(",\"mtime_ms\":").append(e.mtimeEpochMillis)
-            .append(",\"hydrated\":").append(e.isHydrated)
-            .append(",\"folder\":").append(e.isFolder)
-            .append(",\"remote_modified_ms\":").append(e.remoteModifiedEpochMillis?.toString() ?: "null")
-            .append(",\"remote_id\":").append(e.remoteId?.let { jsonEsc(it) } ?: "null")
-            .append(",\"etag\":").append(e.etag?.let { jsonEsc(it) } ?: "null")
-        // gkrost/unidrive-cli#171: additive, beside the etag, and only where the row names its bytes (daemon.status
-        // capability `hydration.list_content_id`).
-        if (e.contentId != null) sb.append(",\"content_id\":").append(jsonEsc(e.contentId))
-        sb.append(",\"pending_upload\":").append(e.pendingUpload)
-            .append(",\"error\":").append(e.hasError)
-        if (e.excluded) sb.append(",\"excluded\":true")
-        if (e.readOnly) sb.append(",\"read_only\":true")
-        if (e.trashRoot) sb.append(",\"trash_root\":true")
-        if (e.backupsRoot) sb.append(",\"backups_root\":true")
-        if (e.blocked != null) sb.append(",\"blocked\":").append(jsonEsc(e.blocked))
-        if (e.view != null) sb.append(",\"view\":").append(jsonEsc(e.view))
-        if (e.viewTarget != null) sb.append(",\"view_target\":").append(jsonEsc(e.viewTarget))
-        sb.append('}')
+        sb.append('{').append(serialiseListEntry(e)).append('}')
     }
     sb.append("]}")
     return sb.toString()
 }
+
+// One row of the list shape without its braces: the list verb wraps it in an entries array,
+// hydration.stat answers it as {"ok":true,<fields>} (gkrost/unidrive-cli#415).
+internal fun serialiseListEntry(e: ListResult.Entry): String =
+    "\"path\":" + jsonEsc(e.path) +
+        "," + "\"size\":" + e.size +
+        "," + "\"mtime_ms\":" + e.mtimeEpochMillis +
+        "," + "\"hydrated\":" + e.isHydrated +
+        "," + "\"folder\":" + e.isFolder +
+        "," + "\"remote_modified_ms\":" + (e.remoteModifiedEpochMillis?.toString() ?: "null") +
+        "," + "\"remote_id\":" + (e.remoteId?.let { jsonEsc(it) } ?: "null") +
+        "," + "\"etag\":" + (e.etag?.let { jsonEsc(it) } ?: "null") +
+        (e.contentId?.let { "," + "\"content_id\":" + jsonEsc(it) } ?: "") +
+        "," + "\"pending_upload\":" + e.pendingUpload +
+        "," + "\"error\":" + e.hasError +
+        (if (e.excluded) "," + "\"excluded\":true" else "") +
+        (if (e.readOnly) "," + "\"read_only\":true" else "") +
+        (if (e.trashRoot) "," + "\"trash_root\":true" else "") +
+        (if (e.backupsRoot) "," + "\"backups_root\":true" else "") +
+        (e.blocked?.let { "," + "\"blocked\":" + jsonEsc(it) } ?: "") +
+        (e.view?.let { "," + "\"view\":" + jsonEsc(it) } ?: "") +
+        (e.viewTarget?.let { "," + "\"view_target\":" + jsonEsc(it) } ?: "")
+
+// hydration.stat's reply: ok in front of the same fields the list entries carry (gkrost/unidrive-cli#415).
+private fun serialiseStatOk(e: ListResult.Entry): String =
+    """{"ok":true,""" + serialiseListEntry(e) + "}"
 
 fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
     is HydrationEvent.Hydrating  -> """{"event":"hydrating","path":${jsonEsc(e.path)}}"""

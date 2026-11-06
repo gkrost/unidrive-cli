@@ -53,6 +53,7 @@ internal class ScriptedHydration : Hydration {
         return LastSyncedResult.Ok(1234567890123L)
     }
 
+    override suspend fun stat(path: String): StatResult = StatResult.Failed(HydrationError.NotFound)
     override suspend fun list(prefix: String): ListResult {
         calls += HydrationCall("list", listOf(prefix))
         return list

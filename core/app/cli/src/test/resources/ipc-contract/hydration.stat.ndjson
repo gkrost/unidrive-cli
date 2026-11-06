@@ -1,0 +1,10 @@
+{"verb":"hydration.stat","path":"/docs/report.txt"}
+{"ok":true,"path":"/docs/report.txt","size":42,"mtime_ms":1234567890123,"hydrated":true,"folder":false,"remote_modified_ms":1234567890000,"remote_id":"rid-report","etag":"etag-report","content_id":"obj-report|42","pending_upload":false,"error":false}
+{"verb":"hydration.stat","path":"/docs/draft.txt"}
+{"ok":true,"path":"/docs/draft.txt","size":7,"mtime_ms":1234567890123,"hydrated":true,"folder":false,"remote_modified_ms":null,"remote_id":null,"etag":null,"pending_upload":true,"error":true}
+{"verb":"hydration.stat","path":"/docs"}
+{"ok":true,"path":"/docs","size":0,"mtime_ms":1234567890123,"hydrated":false,"folder":true,"remote_modified_ms":1234567890000,"remote_id":"rid-sub","etag":null,"pending_upload":false,"error":false}
+{"verb":"hydration.stat","path":"/missing.txt"}
+{"ok":false,"error":"not_found"}
+{"verb":"hydration.stat"}
+{"ok":false,"error":"missing_path"}

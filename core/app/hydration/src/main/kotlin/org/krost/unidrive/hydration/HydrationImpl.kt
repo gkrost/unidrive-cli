@@ -2647,6 +2647,19 @@ class HydrationImpl(
         }
     }
 
+    override suspend fun stat(path: String): StatResult =
+        try {
+            // The row store is the answer, deterministically: a stat of a row that is not there is `not_found`,
+            // and the client falls back to a listing — the verb is the fast path, not a second listing.
+            val normalised = PathNormalizer.nfc(path.trimEnd('/').let { if (it.isEmpty()) "/" else it })
+            val row = stateDb.getEntryCaseInsensitive(normalised) ?: return StatResult.Failed(HydrationError.NotFound)
+            StatResult.Ok(listEntryMaker()(row))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            StatResult.Failed(HydrationError.Generic(e.message ?: "stat failed"))
+        }
+
     override suspend fun viewPage(
         kind: String,
         offset: Int,

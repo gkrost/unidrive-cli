@@ -92,6 +92,14 @@ interface Hydration {
     suspend fun list(prefix: String): ListResult
 
     /**
+     * One row's state without listing its folder (gkrost/unidrive-cli#415): after an upload the client needs the
+     * uploaded row's fields — the remote modified time for the placeholder convert, size, content id — and listing
+     * the whole parent folder per uploaded file made that O(n) per file, O(n²) per folder. Answered from the row
+     * store; a path with no row is refused as `not_found` and the caller falls back to a listing.
+     */
+    suspend fun stat(path: String): StatResult
+
+    /**
      * Whether the plain file [localPath] holds exactly the bytes of the cloud copy of [path], proven WITHOUT downloading that copy
      * (`hydration.matches_local`, archive#1219). The caller reads the answer as: [MatchesLocalResult.Same] (a real comparison
      * found them equal: adopt the file, upload nothing), [MatchesLocalResult.Differs] (a real comparison found them different), or
@@ -236,6 +244,12 @@ sealed class ViewPageResult {
     data object UnknownView : ViewPageResult()
 
     data class Failed(val error: HydrationError) : ViewPageResult()
+}
+
+/** The answer of `hydration.stat` (gkrost/unidrive-cli#415): the same shape as one `hydration.list` entry. */
+sealed class StatResult {
+    data class Ok(val entry: ListResult.Entry) : StatResult()
+    data class Failed(val error: HydrationError) : StatResult()
 }
 
 sealed class ListResult {

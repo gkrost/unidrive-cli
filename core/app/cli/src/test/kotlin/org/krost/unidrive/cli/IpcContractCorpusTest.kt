@@ -29,6 +29,7 @@ import org.krost.unidrive.hydration.HydrationError
 import org.krost.unidrive.hydration.HydrationEvent
 import org.krost.unidrive.hydration.HydrationImpl
 import org.krost.unidrive.hydration.HydrationIpcHandler
+import org.krost.unidrive.hydration.StatResult
 import org.krost.unidrive.hydration.LastSyncedResult
 import org.krost.unidrive.hydration.ListResult
 import org.krost.unidrive.hydration.RefuseNameResult
@@ -1455,6 +1456,40 @@ class IpcContractCorpusTest {
             }
         }
 
+        // gkrost/unidrive-cli#415: one row, the same shapes the list fixture pins; a row the fake does not know is not_found.
+        override suspend fun stat(path: String): StatResult =
+            when (path) {
+                "/docs/report.txt" -> StatResult.Ok(
+                    ListResult.Entry(
+                        "/docs/report.txt", 42, FIXED_MTIME_MS, isHydrated = true, isFolder = false,
+                        remoteModifiedEpochMillis = FIXED_REMOTE_MS, remoteId = "rid-report", etag = "etag-report",
+                        contentId = "obj-report|42",
+                        pendingUpload = false, hasError = false,
+                    ),
+                )
+                "/docs/draft.txt" -> StatResult.Ok(
+                    ListResult.Entry(
+                        "/docs/draft.txt", 7, FIXED_MTIME_MS, isHydrated = true, isFolder = false,
+                        remoteModifiedEpochMillis = null, remoteId = null, etag = null,
+                        pendingUpload = true, hasError = true,
+                    ),
+                )
+                "/docs" -> StatResult.Ok(
+                    ListResult.Entry(
+                        "/docs", 0, FIXED_MTIME_MS, isHydrated = false, isFolder = true,
+                        remoteModifiedEpochMillis = FIXED_REMOTE_MS, remoteId = "rid-sub", etag = null,
+                        pendingUpload = false, hasError = false,
+                    ),
+                )
+                "/docs/sub" -> StatResult.Ok(
+                    ListResult.Entry(
+                        "/docs/sub", 0, FIXED_MTIME_MS, isHydrated = false, isFolder = true,
+                        remoteModifiedEpochMillis = FIXED_REMOTE_MS, remoteId = "rid-sub", etag = null,
+                        pendingUpload = false, hasError = false,
+                    ),
+                )
+                else -> StatResult.Failed(HydrationError.NotFound)
+            }
         override suspend fun list(prefix: String): ListResult =
             if (prefix == "/docs") {
                 ListResult.Ok(

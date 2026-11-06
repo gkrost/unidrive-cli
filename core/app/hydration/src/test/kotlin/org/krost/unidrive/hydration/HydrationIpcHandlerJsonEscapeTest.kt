@@ -115,6 +115,7 @@ class HydrationIpcHandlerJsonEscapeTest {
             return LastSyncedResult.Ok(1L)
         }
 
+        override suspend fun stat(path: String): StatResult = StatResult.Failed(HydrationError.NotFound)
         override suspend fun list(prefix: String): ListResult {
             calls += Call("list", listOf(prefix))
             return ListResult.Ok(emptyList())

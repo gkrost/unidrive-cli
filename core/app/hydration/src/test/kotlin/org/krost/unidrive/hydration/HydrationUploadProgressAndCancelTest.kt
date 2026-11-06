@@ -346,6 +346,7 @@ class HydrationUploadProgressAndCancelTest {
         override suspend fun hydrate(path: String): HydrateResult = HydrateResult.Ok
         override suspend fun dehydrate(path: String): DehydrateResult = DehydrateResult.Ok
         override suspend fun lastSynced(path: String): LastSyncedResult = LastSyncedResult.Unknown("unknown_path")
+        override suspend fun stat(path: String): StatResult = StatResult.Failed(HydrationError.NotFound)
         override suspend fun list(prefix: String): ListResult = ListResult.Ok(emptyList())
         override suspend fun mkdir(path: String): MkdirResult = MkdirResult.Ok
         override suspend fun unlink(path: String, permanent: Boolean): UnlinkResult = UnlinkResult.Ok
