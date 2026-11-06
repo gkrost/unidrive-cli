@@ -110,4 +110,17 @@ class HydrationDownloadBudgetTest {
             assertEquals(12, fake.downloadByIdCalls.size, "every file came down once")
             assertEquals(4, peak.get(), "12 cold opens at once run 4 at a time, the budget of an unknown provider")
         }
+
+    @Test
+    fun `large cold hydrations of an unknown provider keep the transfer cap`() =
+        runTest {
+            // gkrost/unidrive-cli#392 (G1): a provider that names no large-file width runs large files at its transfer cap.
+            val paths = (1..6).map { "/large-$it.bin" }
+            paths.forEach { seed(it, ByteArray(2 shl 20) { b -> b.toByte() }) }
+
+            paths.map { async { engine.ensureHydrated(it) } }.awaitAll()
+
+            assertEquals(6, fake.downloadByIdCalls.size, "every file came down once")
+            assertEquals(4, peak.get(), "6 large cold opens run 4 at a time, the cap of an unknown provider")
+        }
 }

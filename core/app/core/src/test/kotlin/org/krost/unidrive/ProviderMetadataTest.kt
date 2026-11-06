@@ -188,6 +188,26 @@ class ProviderMetadataTest {
         assertEquals(200L, meta.minRequestSpacingMs)
     }
 
+    @Test
+    fun `392 - the download widths default to maxConcurrentTransfers`() {
+        val meta =
+            ProviderMetadata(
+                id = "widths",
+                displayName = "X",
+                description = "d",
+                authType = "a",
+                encryption = "e",
+                jurisdiction = "j",
+                gdprCompliant = true,
+                cloudActExposure = false,
+                signupUrl = null,
+                tier = "Local",
+                maxConcurrentTransfers = 3,
+            )
+        assertEquals(3, meta.maxConcurrentSmallDownloads)
+        assertEquals(3, meta.maxConcurrentLargeDownloads, "a provider that sets no large-file width runs as before")
+    }
+
     // UD-810 audit: deleted `ProviderMetadata data class equality and copy`,
     // `ShareInfo stores all fields`, `ShareInfo defaults` — all three tested
     // Kotlin's data-class generated machinery (equals/copy/getter/default-args),

@@ -282,12 +282,13 @@ class HydrationImpl(
     init {
         // gkrost/unidrive-cli#72: the limits that shape the upload queue are fixed values, not profile settings; the log says which ones run.
         log.info(
-            "hydration limits: transfer budget {}, download budget {} small / {} large (below / from {} bytes), " +
-                "upload queue depth {}, upload attempts {}, cache access grace {} s",
+            "hydration limits: transfer budget {}, download budget {} small / {} large (below / from {} bytes) / {} " +
+                "throttled, upload queue depth {}, upload attempts {}, cache access grace {} s",
             mount.transferBudgetSize,
             mount.downloadBudget.smallPermits,
             mount.downloadBudget.largePermits,
             mount.downloadBudget.smallThresholdBytes,
+            mount.downloadBudget.throttledPermits,
             uploadQueueDepth,
             maxUploadAttempts,
             cacheAccessGraceMs / 1000,

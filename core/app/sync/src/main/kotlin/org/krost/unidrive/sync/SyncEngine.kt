@@ -382,6 +382,8 @@ open class SyncEngine(
             maxConcurrentTransfers = providerMetadata?.maxConcurrentTransfers ?: 4,
             // gkrost/unidrive-cli#392: the small-file width of the hydration downloads' budget (the guard's downloadBudget).
             maxConcurrentSmallDownloads = providerMetadata?.maxConcurrentSmallDownloads ?: 4,
+            // gkrost/unidrive-cli#392: the large-file width of the same budget; uploads keep maxConcurrentTransfers.
+            maxConcurrentLargeDownloads = providerMetadata?.maxConcurrentLargeDownloads ?: 4,
             matchesGlob = { path, pattern -> Reconciler.matchesGlob(path, pattern) },
             ignore = uploadIgnore,
             trash = trashNamespace,

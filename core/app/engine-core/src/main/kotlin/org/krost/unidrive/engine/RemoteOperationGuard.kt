@@ -51,8 +51,11 @@ class RemoteOperationGuard(
     // isReadOnlyPath asks of them costs nothing.
     val views: ViewNamespaces = ViewNamespaces.NONE,
     // gkrost/unidrive-cli#392: how many small hydration downloads run at once (ProviderMetadata.maxConcurrentSmallDownloads);
-    // large ones stay at [maxConcurrentTransfers]. See [downloadBudget].
+    // large ones run at [maxConcurrentLargeDownloads]. See [downloadBudget].
     val maxConcurrentSmallDownloads: Int = maxConcurrentTransfers,
+    // gkrost/unidrive-cli#392: how many large hydration downloads run at once (ProviderMetadata.maxConcurrentLargeDownloads).
+    // Not [maxConcurrentTransfers]: that is the uploads' cap, and a provider can need it for the uploads alone.
+    val maxConcurrentLargeDownloads: Int = maxConcurrentTransfers,
 ) {
     /** The namespaces whose items are rows placed under a root of their own: the trash, then the backups (which yield to it). */
     val placedNamespaces: List<PlacedNamespace> get() = listOf(trash, backups)
@@ -119,10 +122,15 @@ class RemoteOperationGuard(
 
     /**
      * gkrost/unidrive-cli#392: the hydration downloads' own budget, by size (see [DownloadBudget]). Separate from
-     * [transferBudget]: a read never waits behind the uploads, and the uploads keep their cap.
+     * [transferBudget]: a read never waits behind the uploads, and the uploads keep their cap. While the provider
+     * throttles, every download narrows to [maxConcurrentTransfers], the provider's audited conservative width.
      */
     val downloadBudget: DownloadBudget =
-        DownloadBudget(smallPermits = maxConcurrentSmallDownloads, largePermits = maxConcurrentTransfers)
+        DownloadBudget(
+            smallPermits = maxConcurrentSmallDownloads,
+            largePermits = maxConcurrentLargeDownloads,
+            throttledPermits = maxConcurrentTransfers,
+        )
 
     /**
      * Run [block] holding one permit of the per-provider transfer budget. The

@@ -14,15 +14,18 @@ import java.util.concurrent.atomic.AtomicLong
  * fills the line with a few. So:
  *
  * - every download takes a permit of the whole pool ([smallPermits], `transfer_budget` in `daemon.status`);
- * - a download of [smallThresholdBytes] or more first takes a permit of the large pool ([largePermits], the provider's
- *   `maxConcurrentTransfers`), so big files never run more at once than before the small pool existed;
- * - for [throttleQuietMs] after the provider throttled ([noteThrottle]: a 429 or a Retry-After), a small download takes
- *   the large pool's permit too: the concurrency falls back to [largePermits] until the provider has been quiet that
- *   long. The per-request back-off of the provider's `HttpRetryBudget` is unchanged and runs inside each download.
+ * - a download of [smallThresholdBytes] or more (or of unknown size) first takes a permit of the large pool
+ *   ([largePermits], the provider's `maxConcurrentLargeDownloads`; not its `maxConcurrentTransfers`, which can be a cap
+ *   for the uploads alone, as Internxt's is), so big files cannot crowd the small ones out;
+ * - for [throttleQuietMs] after the provider throttled ([noteThrottle]: a 429 or a Retry-After), every download that
+ *   starts takes a permit of the throttle pool ([throttledPermits], the provider's `maxConcurrentTransfers`) and the
+ *   large pool's: the concurrency falls back to the provider's audited conservative width, below the large-file width
+ *   where that is wider, until the provider has been quiet that long. A download already running finishes. The
+ *   per-request back-off of the provider's `HttpRetryBudget` is unchanged and runs inside each download.
  *
- * The large permit is taken before the whole-pool one, so a large download that waits for its turn holds no slot a
- * small one could use; a small one never takes a large permit while it holds a whole-pool one, so the two orders
- * cannot wait for each other.
+ * The permits are always taken in the same order (throttle, large, whole pool) and a download never takes one while it
+ * holds a later one, so no two downloads can wait for each other; a large download that waits for its turn holds no
+ * slot a small one could use.
  *
  * Separate from [RemoteOperationGuard.transferBudget] (the uploads and the sync pass): hydration downloads never took
  * a permit of that one, and a read must not wait behind an upload burst.
@@ -30,6 +33,7 @@ import java.util.concurrent.atomic.AtomicLong
 class DownloadBudget(
     val smallPermits: Int,
     val largePermits: Int,
+    val throttledPermits: Int = largePermits,
     val smallThresholdBytes: Long = SMALL_FILE_THRESHOLD_BYTES,
     private val throttleQuietMs: Long = THROTTLE_QUIET_MS,
     private val clock: () -> Long = System::currentTimeMillis,
@@ -37,16 +41,18 @@ class DownloadBudget(
     init {
         require(smallPermits >= 1) { "smallPermits must be at least 1, was $smallPermits" }
         require(largePermits >= 1) { "largePermits must be at least 1, was $largePermits" }
+        require(throttledPermits >= 1) { "throttledPermits must be at least 1, was $throttledPermits" }
     }
 
     // The whole pool is never smaller than the large one: a large download needs a permit of each.
     private val all = Semaphore(maxOf(smallPermits, largePermits))
     private val large = Semaphore(largePermits)
+    private val throttled = Semaphore(throttledPermits)
 
     // Sentinel well below any clock, so a test clock starting at 0 does not read as "throttled at 0".
     private val lastThrottleAtMs = AtomicLong(Long.MIN_VALUE / 2)
 
-    /** The provider throttled a request (429 or Retry-After): small downloads fall back to the large pool for a while. */
+    /** The provider throttled a request (429 or Retry-After): downloads fall back to [throttledPermits] for a while. */
     fun noteThrottle() {
         lastThrottleAtMs.set(clock())
     }
@@ -55,18 +61,25 @@ class DownloadBudget(
     val isThrottled: Boolean get() = clock() - lastThrottleAtMs.get() < throttleQuietMs
 
     /**
-     * How many hydration downloads a client should run at once now: [smallPermits], or [largePermits] while
-     * [isThrottled]. `daemon.status` reports it as `transfer_budget`.
+     * How many hydration downloads a client should run at once now: [smallPermits] (the whole pool), or the throttled
+     * width while [isThrottled]. `daemon.status` reports it as `transfer_budget`.
      */
-    val recommended: Int get() = if (isThrottled) largePermits else maxOf(smallPermits, largePermits)
+    val recommended: Int get() = if (isThrottled) minOf(throttledPermits, largePermits) else maxOf(smallPermits, largePermits)
 
     /** Runs the download of a file of [sizeBytes] (the size the row knows; null = unknown, counted as large) under its permits. */
     suspend fun <T> withPermit(
         sizeBytes: Long?,
         block: suspend () -> T,
     ): T {
-        val needsLarge = sizeBytes == null || sizeBytes >= smallThresholdBytes || isThrottled
-        return if (needsLarge) large.withPermit { all.withPermit { block() } } else all.withPermit { block() }
+        val throttledNow = isThrottled
+        val needsLarge = sizeBytes == null || sizeBytes >= smallThresholdBytes || throttledNow
+        suspend fun sized(): T =
+            if (needsLarge) {
+                large.withPermit { all.withPermit { block() } }
+            } else {
+                all.withPermit { block() }
+            }
+        return if (throttledNow) throttled.withPermit { sized() } else sized()
     }
 
     companion object {
