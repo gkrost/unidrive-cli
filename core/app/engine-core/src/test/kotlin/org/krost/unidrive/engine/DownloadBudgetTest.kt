@@ -118,6 +118,52 @@ class DownloadBudgetTest {
         }
 
     @Test
+    fun `a large download queued before a throttle runs at the throttled width once the running ones end`() =
+        runTest {
+            val budget = internxtLike()
+            // Four large downloads hold the whole large pool; four more queue behind them, admitted before any throttle.
+            val running = (1..4).map { async { budget.withPermit(large) { delay(2_000) } } }
+            val queuedPeak = Peak()
+            val queued = (1..4).map { async { budget.withPermit(large) { queuedPeak.hold(1_000) } } }
+            delay(100)
+            budget.noteThrottle()
+            (running + queued).awaitAll()
+            assertEquals(2, queuedPeak.value, "the queued ones take the throttled width, not the quiet-time width of 4")
+            // The running four end at 2 s; the queued four run two at a time: done at 4 s.
+            assertEquals(4_000, currentTime)
+        }
+
+    @Test
+    fun `a download admitted during a throttle waits for the throttled width, counting the downloads admitted before it`() =
+        runTest {
+            val budget = internxtLike()
+            // Four large downloads started before the throttle; one ends at 1 s, three run on until 10 s.
+            val running = listOf(1_000L, 10_000L, 10_000L, 10_000L).map { ms -> async { budget.withPermit(large) { delay(ms) } } }
+            delay(100)
+            budget.noteThrottle()
+            var startedAt = -1L
+            val fresh = async { budget.withPermit(large) { startedAt = currentTime; delay(1_000) } }
+            (running + fresh).awaitAll()
+            // At 1 s three downloads still hold their slots, which is above the throttled width of 2: the fresh one waits until 10 s.
+            assertEquals(10_000L, startedAt)
+        }
+
+    @Test
+    fun `a waiting download that is cancelled holds no slot and does not run`() =
+        runTest {
+            val budget = DownloadBudget(smallPermits = 1, largePermits = 1, clock = { currentTime })
+            val first = async { budget.withPermit(small) { delay(1_000) } }
+            var cancelledRan = false
+            val waiter = async { budget.withPermit(small) { cancelledRan = true } }
+            delay(10)
+            waiter.cancel()
+            first.await()
+            assertEquals("ran", budget.withPermit(small) { "ran" })
+            assertFalse(cancelledRan, "the cancelled waiter never ran")
+            assertEquals(1_000, currentTime)
+        }
+
+    @Test
     fun `a provider without a small-file width runs as before`() =
         runTest {
             val budget = DownloadBudget(smallPermits = 4, largePermits = 4, clock = { currentTime })

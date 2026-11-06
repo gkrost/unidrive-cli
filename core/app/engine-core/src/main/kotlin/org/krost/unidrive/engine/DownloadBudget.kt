@@ -1,7 +1,7 @@
 package org.krost.unidrive.engine
 
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 import org.krost.unidrive.http.AttemptOutcome
 import org.krost.unidrive.http.RequestMetricsSink
 import java.util.concurrent.atomic.AtomicLong
@@ -17,15 +17,16 @@ import java.util.concurrent.atomic.AtomicLong
  * - a download of [smallThresholdBytes] or more (or of unknown size) first takes a permit of the large pool
  *   ([largePermits], the provider's `maxConcurrentLargeDownloads`; not its `maxConcurrentTransfers`, which can be a cap
  *   for the uploads alone, as Internxt's is), so big files cannot crowd the small ones out;
- * - for [throttleQuietMs] after the provider throttled ([noteThrottle]: a 429 or a Retry-After), every download that
- *   starts takes a permit of the throttle pool ([throttledPermits], the provider's `maxConcurrentTransfers`) and the
- *   large pool's: the concurrency falls back to the provider's audited conservative width, below the large-file width
- *   where that is wider, until the provider has been quiet that long. A download already running finishes. The
- *   per-request back-off of the provider's `HttpRetryBudget` is unchanged and runs inside each download.
+ * - for [throttleQuietMs] after the provider throttled ([noteThrottle]: a 429 or a Retry-After), a download is admitted
+ *   only while the number of downloads running, all of them, the ones admitted before the throttle too, is below
+ *   [throttledPermits] (the provider's `maxConcurrentTransfers`): the concurrency falls back to the provider's audited
+ *   conservative width, below the large-file width where that is wider, until the provider has been quiet that long.
+ *   Downloads already running finish; nothing new is started above the throttled width. The per-request back-off of
+ *   the provider's `HttpRetryBudget` is unchanged and runs inside each download.
  *
- * The permits are always taken in the same order (throttle, large, whole pool) and a download never takes one while it
- * holds a later one, so no two downloads can wait for each other; a large download that waits for its turn holds no
- * slot a small one could use.
+ * Admission is one decision under one lock: the throttle state is read, and the running downloads counted, at the moment
+ * a slot is granted, and waiting downloads are re-checked when a download ends, when a throttle is noted and when the
+ * quiet window runs out. A waiting download that is cancelled gives up its place and holds no slot.
  *
  * Separate from [RemoteOperationGuard.transferBudget] (the uploads and the sync pass): hydration downloads never took
  * a permit of that one, and a read must not wait behind an upload burst.
@@ -44,10 +45,11 @@ class DownloadBudget(
         require(throttledPermits >= 1) { "throttledPermits must be at least 1, was $throttledPermits" }
     }
 
-    // The whole pool is never smaller than the large one: a large download needs a permit of each.
-    private val all = Semaphore(maxOf(smallPermits, largePermits))
-    private val large = Semaphore(largePermits)
-    private val throttled = Semaphore(throttledPermits)
+    // Admission state, read and changed only under [lock]. Every download that holds a slot is counted, in all of them.
+    private val lock = Any()
+    private var activeAll = 0
+    private var activeLarge = 0
+    private val waiters = ArrayList<CompletableDeferred<Unit>>()
 
     // Sentinel well below any clock, so a test clock starting at 0 does not read as "throttled at 0".
     private val lastThrottleAtMs = AtomicLong(Long.MIN_VALUE / 2)
@@ -55,6 +57,7 @@ class DownloadBudget(
     /** The provider throttled a request (429 or Retry-After): downloads fall back to [throttledPermits] for a while. */
     fun noteThrottle() {
         lastThrottleAtMs.set(clock())
+        wakeWaiters()
     }
 
     /** True while a throttle was seen less than [throttleQuietMs] ago. */
@@ -71,15 +74,61 @@ class DownloadBudget(
         sizeBytes: Long?,
         block: suspend () -> T,
     ): T {
-        val throttledNow = isThrottled
-        val needsLarge = sizeBytes == null || sizeBytes >= smallThresholdBytes || throttledNow
-        suspend fun sized(): T =
-            if (needsLarge) {
-                large.withPermit { all.withPermit { block() } }
-            } else {
-                all.withPermit { block() }
+        val large = sizeBytes == null || sizeBytes >= smallThresholdBytes
+        acquire(large)
+        try {
+            return block()
+        } finally {
+            release(large)
+        }
+    }
+
+    // Caller holds [lock]. The whole pool is never smaller than the large one (a large download needs a slot of each). While
+    // throttled, the whole pool is the throttled width, counted over every download running, and a large download still
+    // respects the large-file width.
+    private fun admits(large: Boolean): Boolean {
+        val total =
+            if (isThrottled) minOf(throttledPermits, maxOf(smallPermits, largePermits)) else maxOf(smallPermits, largePermits)
+        return activeAll < total && (!large || activeLarge < largePermits)
+    }
+
+    private suspend fun acquire(large: Boolean) {
+        while (true) {
+            val signal = CompletableDeferred<Unit>()
+            var quietLeftMs: Long? = null
+            synchronized(lock) {
+                if (admits(large)) {
+                    activeAll++
+                    if (large) activeLarge++
+                    return
+                }
+                waiters += signal
+                // While throttled the answer changes with time alone: wake up when the quiet window ends.
+                if (isThrottled) quietLeftMs = throttleQuietMs - (clock() - lastThrottleAtMs.get())
             }
-        return if (throttledNow) throttled.withPermit { sized() } else sized()
+            try {
+                val left = quietLeftMs
+                if (left != null) withTimeoutOrNull(left.coerceAtLeast(1)) { signal.await() } else signal.await()
+            } finally {
+                synchronized(lock) { waiters.remove(signal) }
+            }
+        }
+    }
+
+    private fun release(large: Boolean) {
+        synchronized(lock) {
+            activeAll--
+            if (large) activeLarge--
+        }
+        wakeWaiters()
+    }
+
+    // Every waiter re-checks admission; one that still does not fit waits again.
+    private fun wakeWaiters() {
+        synchronized(lock) {
+            waiters.forEach { it.complete(Unit) }
+            waiters.clear()
+        }
     }
 
     companion object {
