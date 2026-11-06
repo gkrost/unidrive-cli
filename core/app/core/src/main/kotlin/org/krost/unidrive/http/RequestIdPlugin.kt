@@ -1,15 +1,27 @@
 package org.krost.unidrive.http
 
+import io.ktor.client.call.HttpClientCall
 import io.ktor.client.plugins.api.Send
 import io.ktor.client.plugins.api.createClientPlugin
 import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.statement.HttpReceivePipeline
+import io.ktor.client.statement.HttpResponse
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpProtocolVersion
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.Headers
 import io.ktor.http.contentLength
 import io.ktor.util.AttributeKey
+import io.ktor.util.date.GMTDate
+import io.ktor.utils.io.ByteReadChannel
 import kotlinx.coroutines.Job
+import kotlinx.io.Buffer
+import kotlinx.io.Source
 import org.slf4j.LoggerFactory
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.CoroutineContext
 
 /**
  * UD-255: correlation id for every outbound HTTP request.
@@ -28,6 +40,18 @@ import java.util.UUID
  * via [requestId].
  */
 val RequestIdKey: AttributeKey<String> = AttributeKey("unidrive.requestId")
+
+/** Nanotime the request was created at (its `→` line), from which [QueuedMsKey] is measured. */
+private val CreatedNanosKey: AttributeKey<Long> = AttributeKey("unidrive.requestCreatedNanos")
+
+/** Milliseconds the request waited locally from its creation to its send; travels to the `←` line as `queued=<ms>`. */
+private val QueuedMsKey: AttributeKey<Long> = AttributeKey("unidrive.requestQueuedMs")
+
+/**
+ * The reply of this attempt whose size was unknown when the response arrived; its body is counted
+ * as the client reads it, and the `←` line is logged once the count is final.
+ */
+private val CountedKey: AttributeKey<CountedReply> = AttributeKey("unidrive.countedReply")
 
 /**
  * Accessor for the correlation id assigned to a request. Returns `null`
@@ -50,6 +74,7 @@ fun HttpRequestBuilder.requestId(): String? = attributes.getOrNull(RequestIdKey)
  * in-flight registry, which do not depend on the tap.
  */
 @Suppress("TooGenericExceptionCaught") // the failure is classified, recorded and rethrown unchanged
+@OptIn(io.ktor.utils.io.InternalAPI::class) // the counted reply replaces the response body (see CountedReply)
 val RequestId =
     createClientPlugin("UnidriveRequestId", ::RequestIdConfig) {
         val log = LoggerFactory.getLogger("org.krost.unidrive.http.RequestId")
@@ -67,6 +92,11 @@ val RequestId =
         on(Send) { request ->
             val startedAtMs = System.currentTimeMillis()
             val startNanos = System.nanoTime()
+            // gkrost/unidrive-cli#416: the request may have waited locally before this hook ran; the wait
+            // from its creation to its send travels to the reply line as `queued=<ms>`.
+            val queuedMs =
+                request.attributes.getOrNull(CreatedNanosKey)?.let { nanosToMs(System.nanoTime() - it) } ?: 0L
+            request.attributes.put(QueuedMsKey, queuedMs)
             val method = request.method.value
             val endpointClass = endpoints.classify(method, request.url.host, "/" + request.url.encodedPathSegments.joinToString("/"))
             val retryKey = RetryTracker.keyOf(method + ' ' + request.url.buildString())
@@ -129,9 +159,15 @@ val RequestId =
             val status = response.status.value
             val throttled = status == HttpStatusCode.TooManyRequests.value || response.headers.contains(HttpHeaders.RetryAfter)
             val bytesUp = call.request.content.contentLength
+            val counted = call.request.attributes.getOrNull(CountedKey)
             fun finish(cause: Throwable?) {
                 val outcome = if (cause == null) AttemptOutcome.ofStatus(status) else AttemptOutcome.ofFailure(cause)
-                report(outcome, headersMs, bytesUp, if (cause == null) response.contentLength() else null, throttled)
+                // gkrost/unidrive-cli#416: a reply without Content-Length contributes the bytes the client
+                // read; a failed attempt leaves the size unknown. The reply line of a failed counted body
+                // is logged here if the body's own end did not get to it.
+                val bytesDown = if (cause == null) response.contentLength() ?: counted?.bytesRead() else null
+                if (cause != null) counted?.logUnknown()
+                report(outcome, headersMs, bytesUp, bytesDown, throttled)
             }
             val job = response.coroutineContext[Job]
             if (job == null) finish(null) else job.invokeOnCompletion { finish(it) }
@@ -140,6 +176,7 @@ val RequestId =
 
         onRequest { request, _ ->
             val id = UUID.randomUUID().toString().take(8)
+            request.attributes.put(CreatedNanosKey, System.nanoTime())
             request.attributes.put(RequestIdKey, id)
             request.headers.append("X-Unidrive-Request-Id", id)
             log.debug(
@@ -153,8 +190,11 @@ val RequestId =
         onResponse { response ->
             val request = response.call.request
             val id = request.attributes.getOrNull(RequestIdKey)
+            val queuedMs = request.attributes.getOrNull(QueuedMsKey) ?: 0L
+            // The total now runs from the request's creation, so the local wait it includes is told apart
+            // as `queued=<ms>` (gkrost/unidrive-cli#416) and the engine's own time is what remains.
             val elapsed =
-                response.responseTime.timestamp - response.requestTime.timestamp
+                response.responseTime.timestamp - response.requestTime.timestamp + queuedMs
             val status = response.status.value
             // archive#644: the profile travels in the message itself, independent of the thread's MDC (hydration
             // downloads and other worker threads have none), so a shared log splits per account. The server's
@@ -164,11 +204,12 @@ val RequestId =
             // UD-773: append payload byte counts to the close line so log analysers can
             // derive bytes/sec throughput per provider/host instead of just ops/sec. Goes
             // AFTER the `(Nms)` chunk so existing regexes that end at `\d+ms\)` still match.
-            // up = request body size, dn = response body size; `?` when Content-Length is
-            // absent (streaming bodies). Suppress the entire segment when both are zero
-            // (most metadata calls on streamed paths) to keep the log readable.
+            // up = request body size, dn = response body size; a reply without Content-Length has no size
+            // yet (gkrost/unidrive-cli#416): its line is logged when the body has been read, which is when
+            // the size becomes known, and `?` only when it never does. Suppress the entire segment when
+            // both counts are zero (most metadata calls on streamed paths) to keep the log readable.
             val upBytes = request.content.contentLength
-            val dnBytes = response.contentLength()
+            val dnBytes = response.contentLength() ?: return@onResponse
             val sizeSegment = formatSizeSegment(upBytes, dnBytes)
             val profileSegment = profile?.let { " [$it]" } ?: ""
             val serverId = serverRequestIdHeaders.firstNotNullOfOrNull { response.headers[it] }
@@ -176,26 +217,76 @@ val RequestId =
             val level = if (status >= HttpStatusCode.BadRequest.value) "WARN" else "DEBUG"
             if (level == "WARN") {
                 log.warn(
-                    "← req={}{}{} {} {} ({}ms){}",
+                    "← req={}{}{} {} {} ({}ms) queued={}ms{}",
                     id ?: "--------",
                     profileSegment,
                     srvSegment,
                     status,
                     response.status.description,
                     elapsed,
+                    queuedMs,
                     sizeSegment,
                 )
             } else {
                 log.debug(
-                    "← req={}{}{} {} ({}ms){}",
+                    "← req={}{}{} {} ({}ms) queued={}ms{}",
                     id ?: "--------",
                     profileSegment,
                     srvSegment,
                     status,
                     elapsed,
+                    queuedMs,
                     sizeSegment,
                 )
             }
+        }
+
+        // gkrost/unidrive-cli#416: a reply whose size is not in the headers gets its body wrapped in a
+        // counting channel, so the `←` line can name the size the client actually read. The counting
+        // channel replaces the reply's body for everything downstream of this phase, including the
+        // attempt metrics, which read the same counter when the body has been consumed.
+        client.receivePipeline.intercept(HttpReceivePipeline.Before) { response ->
+            if (response.contentLength() != null) return@intercept
+            val request = response.call.request
+            val status = response.status.value
+            val warn = status >= HttpStatusCode.BadRequest.value
+            val queuedMs = request.attributes.getOrNull(QueuedMsKey) ?: 0L
+            val elapsedMs = response.responseTime.timestamp - response.requestTime.timestamp
+            val upBytes = request.content.contentLength
+            val profileSegment = profile?.let { " [$it]" } ?: ""
+            val serverId = serverRequestIdHeaders.firstNotNullOfOrNull { response.headers[it] }
+            val srvSegment = serverId?.let { " srv=$it" } ?: ""
+            val id = request.attributes.getOrNull(RequestIdKey) ?: "--------"
+            val counted =
+                CountedReply(response.rawContent) { dn ->
+                    val sizeSegment = formatCountedSizeSegment(upBytes, dn)
+                    if (warn) {
+                        log.warn(
+                            "← req={}{}{} {} {} ({}ms) queued={}ms{}",
+                            id,
+                            profileSegment,
+                            srvSegment,
+                            status,
+                            response.status.description,
+                            elapsedMs + queuedMs,
+                            queuedMs,
+                            sizeSegment,
+                        )
+                    } else {
+                        log.debug(
+                            "← req={}{}{} {} ({}ms) queued={}ms{}",
+                            id,
+                            profileSegment,
+                            srvSegment,
+                            status,
+                            elapsedMs + queuedMs,
+                            queuedMs,
+                            sizeSegment,
+                        )
+                    }
+                }
+            request.attributes.put(CountedKey, counted)
+            subject = CountedHttpResponse(response, counted.channel)
         }
     }
 
@@ -259,4 +350,119 @@ internal fun formatSizeSegment(
 internal fun redact(url: String): String {
     val q = url.indexOf('?')
     return if (q < 0) url else url.substring(0, q) + "?<redacted>"
+}
+
+/**
+ * The size segment of a counted reply's line. The line exists to name the body's size: when the
+ * transfer died before one could be established, `?` takes the place the count would have had (the
+ * plain suppression rules would otherwise drop the whole segment).
+ */
+internal fun formatCountedSizeSegment(
+    up: Long?,
+    dn: Long?,
+): String = if (dn == null) " up=${up ?: "?"} dn=?" else formatSizeSegment(up, dn)
+
+/**
+ * The reply of one attempt whose size the headers did not name (gkrost/unidrive-cli#416). Its [channel]
+ * counts the bytes as the client reads them, and [onDone] fires once with the final count, or null when
+ * the transfer died before a size could be established. The `←` line is logged from that callback, so it
+ * appears when the size becomes known instead of when the headers arrive.
+ */
+internal class CountedReply(
+    private val delegate: ByteReadChannel,
+    private val onDone: (Long?) -> Unit,
+) {
+    private val logged = AtomicBoolean(false)
+
+    val channel = CountingByteReadChannel(delegate, ::check)
+
+    /** Bytes the channel has pulled from the wire so far; the final count once the body is done. */
+    fun bytesRead(): Long = channel.bytesRead()
+
+    /** The attempt ended without the body completing (failure, cancel); the size stays unknown. */
+    fun logUnknown() {
+        if (logged.compareAndSet(false, true)) onDone(null)
+    }
+
+    private fun check() {
+        when {
+            delegate.closedCause != null -> logUnknown()
+            delegate.isClosedForRead -> if (logged.compareAndSet(false, true)) onDone(channel.bytesRead())
+        }
+    }
+}
+
+/**
+ * A [ByteReadChannel] that pulls the arriving body into a [Source] it hands out as the read side, and
+ * counts the pulled bytes. The consumer reads the staged buffer exactly as it would read the body, and
+ * at the end of the body everything pulled has been consumed, so the count is the body's size. Pure
+ * pass-through otherwise: no extra coroutine, and the pull runs only as far as the consumer's reads
+ * demand. [onProgress] fires at each step of the consumer's read loop (the end-of-body check among
+ * them), which is where the owner learns that the body is done.
+ */
+@OptIn(io.ktor.utils.io.InternalAPI::class)
+internal class CountingByteReadChannel(
+    private val delegate: ByteReadChannel,
+    private val onProgress: () -> Unit,
+) : ByteReadChannel {
+    private val pulled = AtomicLong()
+    private val staged = Buffer()
+
+    fun bytesRead(): Long = pulled.get()
+
+    override val readBuffer: Source get() = staged
+
+    override val closedCause: Throwable? get() = delegate.closedCause
+
+    override val isClosedForRead: Boolean
+        get() {
+            val done = delegate.isClosedForRead && staged.exhausted()
+            if (done) onProgress()
+            return done
+        }
+
+    override suspend fun awaitContent(atLeast: Int): Boolean {
+        while (true) {
+            val moved = delegate.readBuffer.transferTo(staged)
+            if (moved > 0) pulled.addAndGet(moved)
+            if (staged.size >= atLeast) return true
+            if (delegate.isClosedForRead) {
+                onProgress()
+                return staged.size >= atLeast
+            }
+            delegate.awaitContent(atLeast)
+        }
+    }
+
+    override fun cancel(cause: Throwable?) {
+        delegate.cancel(cause)
+        onProgress()
+    }
+}
+
+/**
+ * The reply of a counted body: everything of the original response, with the body replaced by the
+ * counting channel. Keeping the delegate's times and context preserves the engine-side latency the
+ * reply line reports.
+ */
+@OptIn(io.ktor.utils.io.InternalAPI::class)
+private class CountedHttpResponse(
+    private val delegate: HttpResponse,
+    private val content: ByteReadChannel,
+) : HttpResponse() {
+    override val call: HttpClientCall get() = delegate.call
+
+    override val status: HttpStatusCode get() = delegate.status
+
+    override val version: HttpProtocolVersion get() = delegate.version
+
+    override val requestTime: GMTDate get() = delegate.requestTime
+
+    override val responseTime: GMTDate get() = delegate.responseTime
+
+    override val rawContent: ByteReadChannel get() = content
+
+    override val headers: Headers get() = delegate.headers
+
+    override val coroutineContext: CoroutineContext get() = delegate.coroutineContext
 }

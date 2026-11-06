@@ -6,18 +6,25 @@ import ch.qos.logback.core.read.ListAppender
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.plugins.api.Send
+import io.ktor.client.plugins.api.createClientPlugin
 import io.ktor.client.request.get
 import io.ktor.client.request.request
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import kotlin.test.Test
@@ -201,7 +208,10 @@ class RequestIdPluginTest {
                     client.get("https://example.invalid/a")
                 }
             val close = lines.last { it.startsWith("←") }
-            assertTrue(Regex("""^← req=[^ ]+ 200 \(\d+ms\)( up=\S+ dn=\S+)?$""").matches(close), "the old close line, unchanged: $close")
+            assertTrue(
+                Regex("""^← req=[^ ]+ 200 \(\d+ms\) queued=\d+ms( up=\S+ dn=\S+)?$""").matches(close),
+                "the old close line with only queued added: $close",
+            )
             assertTrue(" [" !in close && " srv=" !in close, "no new segments: $close")
             client.close()
         }
@@ -232,7 +242,10 @@ class RequestIdPluginTest {
                     withoutHeader.get("https://example.invalid/b")
                 }.last { it.startsWith("←") }
             assertTrue(" srv=srv-abc-123 " in " $withLines", "the server id is on the line: $withLines")
-            assertTrue(Regex("""^← req=[^ ]+ \[alpha\] srv=srv-abc-123 200 \(\d+ms\)( up=\S+ dn=\S+)?$""").matches(withLines), "full shape: $withLines")
+            assertTrue(
+                Regex("""^← req=[^ ]+ \[alpha\] srv=srv-abc-123 200 \(\d+ms\) queued=\d+ms( up=\S+ dn=\S+)?$""").matches(withLines),
+                "full shape: $withLines",
+            )
             assertTrue(" srv=" !in withoutLines, "no header, no segment: $withoutLines")
             withHeader.close()
             withoutHeader.close()
@@ -363,4 +376,104 @@ class RequestIdPluginTest {
             assertEquals(emptyList(), inFlight.snapshot(), "the failed attempt is closed")
             client.close()
         }
+
+    // gkrost/unidrive-cli#416: a reply whose Content-Length is absent logs the size the client read,
+    // not ?, so metadata GETs stop falling out of the byte accounting. The line is logged when the
+    // body has been read, which is when the size becomes known.
+    @Test
+    fun `a JSON reply logs its counted size instead of a question mark`() =
+        runTest {
+            val body = """{"name":"unidrive","items":[1,2,3]}"""
+            val engine =
+                MockEngine { _ ->
+                    respond(
+                        content = ByteReadChannel(body),
+                        status = HttpStatusCode.OK,
+                        headers = headersOf("Content-Type", "application/json"),
+                    )
+                }
+            val client = HttpClient(engine) { install(RequestId) }
+            val lines =
+                capturedLines {
+                    assertEquals(body.length, client.get("https://example.invalid/drive/items/abc").bodyAsText().length)
+                }
+            val close = lines.last { it.startsWith("←") }
+            assertTrue("dn=${body.length}" in close, "the read body size is on the line: $close")
+            assertTrue("dn=?" !in close, "a known size does not log ?: $close")
+            client.close()
+        }
+
+    // gkrost/unidrive-cli#416: the local wait from the request's creation to its send is its own number
+    // next to the total, so a rise in the total can be split into local queueing and server time.
+    private val sendDelayPlugin =
+        createClientPlugin("send-delay") {
+            on(Send) { request ->
+                delay(150)
+                proceed(request)
+            }
+        }
+
+    @Test
+    fun `a request delayed before its send logs queued at or above the delay and at most the total`() =
+        runBlocking {
+            val client =
+                HttpClient(responding()) {
+                    install(sendDelayPlugin)
+                    install(RequestId)
+                }
+            val lines = capturedLines { client.get("https://example.invalid/a") }
+            val close = lines.last { it.startsWith("←") }
+            val queued = Regex(""" queued=(\d+)ms""").find(close)?.groupValues?.get(1)?.toLong()
+            assertNotNull(queued, "queued is on the line: $close")
+            assertTrue(queued >= 150, "queued covers the delay before the send: $close")
+            val total = Regex("""\((\d+)ms\)""").find(close)?.groupValues?.get(1)?.toLong()
+            assertNotNull(total, "the total is on the line: $close")
+            assertTrue(queued <= total, "queued does not exceed the total: $close")
+            client.close()
+        }
+
+    // gkrost/unidrive-cli#416: a body the client reads to the end reports its counted size, and a
+    // body that dies mid-transfer reports unknown; the reply line renders unknown as dn=? (which the
+    // plain suppression rules would otherwise drop when the request has no body either).
+    @Test
+    @OptIn(io.ktor.utils.io.InternalAPI::class)
+    fun `a counted reply reports its count when the body is read and unknown when it dies`() =
+        runTest {
+            suspend fun countedBody(content: String, complete: Boolean): Triple<CountedReply, ByteChannel, Channel<Long?>> {
+                val wire = ByteChannel(autoFlush = true)
+                wire.writeBuffer.write(content.encodeToByteArray(), 0, content.length)
+                if (complete) wire.flushAndClose() // the whole body arrives and the transfer ends
+                else wire.flush() // some bytes arrived, the body stays open
+                val ended = Channel<Long?>(1)
+                val counted =
+                    CountedReply(wire) { dn -> ended.trySend(dn) }
+                return Triple(counted, wire, ended)
+            }
+
+            val (readable, readableWire, readableEnd) = countedBody("abc", complete = true)
+            assertEquals(3, readable.channel.readAvailable(ByteArray(3), 0, 3))
+            // The read loops of a body consumer end by this check, which is where the reply learns
+            // that its size is final.
+            assertTrue(readable.channel.isClosedForRead, "nothing is left after the whole body")
+            withTimeout(1000L) {
+                assertEquals(3L, readableEnd.receive(), "the count when the body is read to the end")
+            }
+            readableWire.cancel(null)
+
+            val (dying, dyingWire, dyingEnd) = countedBody("abc", complete = false)
+            assertEquals(2, dying.channel.readAvailable(ByteArray(2), 0, 2))
+            // The client cancels the channel it holds, which is the counting one, as it would in a
+            // request whose body dies mid-transfer.
+            dying.channel.cancel(java.io.IOException("reset mid-body"))
+            withTimeout(1000L) { assertNull(dyingEnd.receive(), "no size when the body dies mid-transfer") }
+            dyingWire.cancel(null)
+        }
+
+    @Test
+    fun `the counted segment renders dn as a question mark when the size is unknown`() {
+        assertEquals(" up=? dn=?", formatCountedSizeSegment(null, null))
+        assertEquals(" up=0 dn=?", formatCountedSizeSegment(0L, null))
+        assertEquals(" up=? dn=7", formatCountedSizeSegment(null, 7L))
+        assertEquals(" up=0 dn=35", formatCountedSizeSegment(0L, 35L))
+    }
 }
