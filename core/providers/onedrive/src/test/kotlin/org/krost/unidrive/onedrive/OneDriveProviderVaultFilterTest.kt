@@ -91,6 +91,76 @@ class OneDriveProviderVaultFilterTest {
         }
 
     @Test
+    fun `a zero-byte package is excluded as a package, never counted as a vault`() =
+        runTest {
+            // A OneNote notebook is a named zero-byte entry with neither folder nor file
+            // facet — the vault shape plus a package facet. It reaches the package handler,
+            // so the counters name it as a package and no vault notice is warranted
+            // (gkrost/unidrive-cli#407 review).
+            val body =
+                """
+                {
+                  "value": [
+                    {
+                      "id": "notebook",
+                      "name": "My Notebook",
+                      "size": 0,
+                      "package": {"type": "oneNotePackage"},
+                      "parentReference": {"path": "/drive/root:"}
+                    }
+                  ]
+                }
+                """.trimIndent()
+
+            val provider = mockedProvider(body)
+            val children = provider.listChildren("/")
+
+            assertEquals(0, children.size, "the package must be filtered out of the listing")
+            val skipped = provider.skippedEntries()
+            assertEquals(0L, skipped.vault, "a package is not a vault")
+            assertEquals(1L, skipped.packageEntries, "the package is counted as a package")
+            provider.close()
+        }
+
+    @Test
+    fun `a real folder carrying a vault display name stays visible while the stub is skipped`() =
+        runTest {
+            // The capture's filter check must separate vault CANDIDATES (any name match) from expected
+            // SKIPS (the signature and the package rule): a folder with a real folder facet is retained
+            // however its name reads (gkrost/unidrive-cli#407 review).
+            val body =
+                """
+                {
+                  "value": [
+                    {
+                      "id": "vault-stub",
+                      "name": "Personal Vault",
+                      "size": 0,
+                      "parentReference": {"path": "/drive/root:"}
+                    },
+                    {
+                      "id": "ordinary-folder",
+                      "name": "Personal Vault backup",
+                      "size": 0,
+                      "folder": {"childCount": 2},
+                      "parentReference": {"path": "/drive/root:"}
+                    }
+                  ]
+                }
+                """.trimIndent()
+
+            val provider = mockedProvider(body)
+            val children = provider.listChildren("/")
+
+            assertEquals(1, children.size, "only the stub is filtered; the vault-named folder stays")
+            assertEquals("Personal Vault backup", children.single().name)
+            val skipped = provider.skippedEntries()
+            assertEquals(1L, skipped.vault, "the stub is the only vault skip")
+            assertEquals(0L, skipped.packageEntries)
+            provider.close()
+        }
+
+    @Test
     fun `the skip counts name what the filter left out`() =
         runTest {
             // The same mixed payload: one vault stub is skipped, nothing else.
