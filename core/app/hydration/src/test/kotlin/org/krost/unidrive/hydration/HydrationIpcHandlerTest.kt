@@ -266,6 +266,52 @@ class HydrationIpcHandlerTest {
         assertEquals("""{"ok":false,"error":"missing_path"}""", reply.trim())
     }
 
+    // gkrost/unidrive-cli#415: one row without the folder listing. The reply's `entry` is byte-for-byte the
+    // entry hydration.list answers for the same path (one serializer writes both), so a client reuses its
+    // list-entry parser.
+    @Test
+    fun `stat verb answers one row with the fields the listing writes`() = runTest {
+        val env = HydrationTestEnv()
+        env.stateDb.insertFolderEntry("/docs")
+        env.stateDb.insertHydratedEntry("/docs/foo.txt", localSize = 42)
+        val handler = HydrationIpcHandler(env.hydration)
+
+        val stat = handler.handle("conn1", """{"verb":"hydration.stat","path":"/docs/foo.txt"}""")
+        val list = handler.handle("conn1", """{"verb":"hydration.list","prefix":"/docs"}""")
+
+        val entry = list.substringAfter("\"entries\":[").removeSuffix("]}")
+        assertEquals("""{"ok":true,"entry":$entry}""", stat.trim())
+        assertTrue(entry.contains("\"path\":\"/docs/foo.txt\""), "the row's path: $entry")
+        assertTrue(entry.contains("\"size\":42"), "the row's size: $entry")
+        assertTrue(entry.contains("\"remote_modified_ms\":"), "the row's remote modified time: $entry")
+    }
+
+    @Test
+    fun `stat for a path with no row answers unknown_path`() = runTest {
+        val env = HydrationTestEnv()
+        val handler = HydrationIpcHandler(env.hydration)
+
+        val reply = handler.handle("conn1", """{"verb":"hydration.stat","path":"/nope.txt"}""")
+
+        assertEquals("""{"ok":false,"error":"unknown_path"}""", reply.trim())
+    }
+
+    @Test
+    fun `stat is read-only - the same answer again and the listing unchanged`() = runTest {
+        val env = HydrationTestEnv()
+        env.stateDb.insertFolderEntry("/docs")
+        env.stateDb.insertHydratedEntry("/docs/foo.txt", localSize = 42)
+        val handler = HydrationIpcHandler(env.hydration)
+
+        val first = handler.handle("conn1", """{"verb":"hydration.stat","path":"/docs/foo.txt"}""")
+        val second = handler.handle("conn1", """{"verb":"hydration.stat","path":"/docs/foo.txt"}""")
+        val after = handler.handle("conn1", """{"verb":"hydration.list","prefix":"/docs"}""")
+
+        assertEquals(first, second, "the same row twice")
+        val entry = after.substringAfter("\"entries\":[").removeSuffix("]}")
+        assertEquals("""{"ok":true,"entry":$entry}""", first.trim(), "the row is as the listing still shows it")
+    }
+
     @Test
     fun `unknown verb returns unknown_verb error`() = runTest {
         val env = HydrationTestEnv()

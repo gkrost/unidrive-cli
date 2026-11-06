@@ -37,6 +37,7 @@ import org.krost.unidrive.hydration.MkdirResult
 import org.krost.unidrive.hydration.OpenResult
 import org.krost.unidrive.hydration.RenameResult
 import org.krost.unidrive.hydration.RmdirResult
+import org.krost.unidrive.hydration.StatResult
 import org.krost.unidrive.hydration.UnlinkResult
 import org.krost.unidrive.hydration.ViewPageResult
 import org.krost.unidrive.hydration.serialiseHydrationEvent
@@ -1560,6 +1561,17 @@ class IpcContractCorpusTest {
             } else {
                 ListResult.Ok(emptyList())
             }
+
+        // stat (gkrost/unidrive-cli#415): the one row a path names, exactly the entry `list` answers for it —
+        // the corpus line for stat is the corpus's own list entry under `entry`. /missing... has no row.
+        override suspend fun stat(path: String): StatResult {
+            val parent = path.substringBeforeLast('/', missingDelimiterValue = "").ifEmpty { "/" }
+            return (list(parent) as? ListResult.Ok)
+                ?.entries
+                ?.firstOrNull { it.path == path }
+                ?.let { StatResult.Ok(it) }
+                ?: StatResult.Unknown(HydrationError.UNKNOWN_PATH_TOKEN)
+        }
 
         override suspend fun mkdir(path: String): MkdirResult =
             when {

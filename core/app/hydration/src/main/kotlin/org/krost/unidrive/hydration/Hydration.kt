@@ -92,6 +92,14 @@ interface Hydration {
     suspend fun list(prefix: String): ListResult
 
     /**
+     * The one row [path] names (`hydration.stat`, gkrost/unidrive-cli#415), exactly as [list] answers it — the same
+     * field names and shapes, so a client reads one row without listing its folder. [StatResult.Unknown] when there
+     * is no row for the path; nothing is fetched from the provider for it (a row the first scan has not brought in
+     * has no row to stat). The default is "no row" for a front-end without a state behind it.
+     */
+    suspend fun stat(path: String): StatResult = StatResult.Unknown("not_supported")
+
+    /**
      * Whether the plain file [localPath] holds exactly the bytes of the cloud copy of [path], proven WITHOUT downloading that copy
      * (`hydration.matches_local`, archive#1219). The caller reads the answer as: [MatchesLocalResult.Same] (a real comparison
      * found them equal: adopt the file, upload nothing), [MatchesLocalResult.Differs] (a real comparison found them different), or
@@ -300,6 +308,17 @@ sealed class ListResult {
         // Null for the view's root folder and for every other row; only serialized on the wire when set.
         val viewTarget: String? = null,
     )
+}
+
+/** The answer of `hydration.stat` (gkrost/unidrive-cli#415): one row as [ListResult] writes it, or no row. */
+sealed class StatResult {
+    /** The row the path names: the entry [ListResult.Ok] holds for it, the same fields and shapes. */
+    data class Ok(val entry: ListResult.Entry) : StatResult()
+
+    /** No row for the path; [reason] is the wire token (`unknown_path`). */
+    data class Unknown(val reason: String) : StatResult()
+
+    data class Failed(val error: HydrationError) : StatResult()
 }
 
 sealed class MkdirResult {

@@ -73,6 +73,35 @@ internal class HydrationViews(
     }
 
     /**
+     * The entry of [path] as the view's listing writes it, or null when [path] has no row of its own in the views
+     * (its root, or a name the view does not list): the verb then answers from the rows, as for any real path.
+     * [rowOf] reads the real row of a path below a folder alias.
+     */
+    suspend fun stat(
+        path: String,
+        entryOf: (SyncEntry) -> ListResult.Entry,
+        rowOf: suspend (String) -> SyncEntry?,
+    ): ListResult.Entry? {
+        val at = namespaces.locate(path) ?: return null
+        val directory = mount.views ?: return null
+        return when (val resolved = directory.resolve(path)) {
+            is ViewResolution.Entry -> resolved.entry.listed(entryOf)
+            is ViewResolution.Below ->
+                rowOf(resolved.realPath)?.let { row ->
+                    entryOf(row).copy(
+                        path = resolved.aliasPath,
+                        remoteId = ViewNamespaces.entryKey(at.kind, row.remoteId ?: row.path),
+                        readOnly = true,
+                        trashRoot = false,
+                        view = ViewNamespaces.wireName(at.kind),
+                        viewTarget = row.path,
+                    )
+                }
+            is ViewResolution.Root, ViewResolution.NotFound -> null
+        }
+    }
+
+    /**
      * The root folder of every view the profile shows, for the listing of the top level. The roots are worked out again
      * first, from the top-level rows as they are now, so that a real folder with a root's name has been seen. Nothing here
      * waits for the provider.

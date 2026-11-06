@@ -2647,6 +2647,24 @@ class HydrationImpl(
         }
     }
 
+    // gkrost/unidrive-cli#415: one row without the folder listing — the entry `list` answers for the path, read
+    // from the row state.db holds. Nothing is fetched from the provider (that round trip is what the verb exists
+    // to spare): a row the first scan has not brought in answers unknown_path, like lastSynced and matchesLocal.
+    override suspend fun stat(path: String): StatResult =
+        try {
+            val entryOf = listEntryMaker()
+            // A path in a view answers as the view's listing writes it: the view's own path and key, the real
+            // item's attributes, where it really is. The view's root and a name the view does not list have no
+            // row of their own: unknown_path.
+            views.stat(path, entryOf, stateDb::getEntry)?.let { return StatResult.Ok(it) }
+            val entry = stateDb.getEntry(path) ?: return StatResult.Unknown(HydrationError.UNKNOWN_PATH_TOKEN)
+            StatResult.Ok(entryOf(entry))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            StatResult.Failed(HydrationError.Generic(e.message ?: "stat failed"))
+        }
+
     override suspend fun viewPage(
         kind: String,
         offset: Int,
