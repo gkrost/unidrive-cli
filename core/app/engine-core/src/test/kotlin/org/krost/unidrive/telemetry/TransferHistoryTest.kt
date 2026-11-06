@@ -1,6 +1,9 @@
 package org.krost.unidrive.telemetry
 
+import org.junit.experimental.categories.Category
 import org.krost.unidrive.io.OwnerOnly
+import org.krost.unidrive.testing.Flaky
+import org.krost.unidrive.testing.FlakyTests
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
@@ -390,6 +393,17 @@ class TransferHistoryTest {
         assertTrue(byPath.values.none { it.result == TransferResult.RUNNING })
     }
 
+    // gkrost/unidrive-cli#390: the burst stalled twice on Windows CI (issue #390's first record, then PR #423's
+    // run of 2026-11-06) without a related change either time — the writer froze at ~43k/46k of 50k written for
+    // 60 s, and even with the process-pause crediting above the run cannot tell a dead writer thread from a
+    // starved one. Quarantined until the issue says why the writer stops and holds a fix.
+    @Category(FlakyTests::class)
+    @Flaky(
+        issue = 390,
+        reason = "the 50000-row burst stalls on Windows CI without a related change: the writer stops consuming " +
+            "the queue for 60s and the run cannot tell a dead writer thread from a starved one",
+        firstFailure = "https://github.com/gkrost/unidrive-cli/actions/runs/41848318771/job/126637645236",
+    )
     @Test
     fun `a burst of 50000 rows goes through the queue without dropping`() {
         val total = 50_000
