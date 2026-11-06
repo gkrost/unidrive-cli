@@ -183,6 +183,12 @@ class DownloadUrlCache(
             HeldEntry(entry.item, revisionOf(id), entry.readAtMs)
         }
 
+    /**
+     * Retires whatever batch claim is out for [id]: the id's stamp moves on, so a later answer of that batch is stale for it. Answers
+     * the new stamp, which a direct read of the id publishes against.
+     */
+    fun supersede(id: String): Long = synchronized(lock) { observe(id) }
+
     /** Drops the entry for [id]: a download with it failed. */
     fun forget(id: String) = synchronized(lock) { dropEntry(id) }
 

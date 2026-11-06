@@ -188,10 +188,13 @@ class GraphApiService(
         val held = downloadUrls.fresh(id)
         val parent = held?.item?.parentReference?.id ?: downloadUrls.pendingParent(id)
         if (held != null) urlHits.incrementAndGet() else urlMisses.incrementAndGet()
-        // The first download of a folder starts the read-ahead of the whole folder (up to the budget); every later one tops
-        // it up when downloads have used enough of it for a full batch.
-        if (parent != null) startPrefetch(parent, id)
+        // Demand-driven read-ahead: a lone open reserves nothing. The second download of a folder within DEMAND_WINDOW_MS is
+        // the evidence of a pin (its workers start together), and starts the read-ahead of the whole folder up to the budget;
+        // later downloads top it up when enough of it is used for a full batch.
+        if (parent != null && folderDemand(parent)) startPrefetch(parent, id)
         if (held == null) downloadUrls.markRead(id)
+        // Set when the wait ran out: the revision the batch's claim was retired at, which the direct read publishes against.
+        var supersededAt: Long? = null
         if (held == null) inFlightBatch[id]?.let { claimed ->
             // The batch is already reading this id: take its answer, but not for longer than a single read would take
             // (#417: one batch answer was held up for 15 s inside the HTTP client while every worker waited on it). Null
@@ -204,12 +207,16 @@ class GraphApiService(
                 return DownloadItem(answer.item, answer)
             }
             urlWaitGaveUp.incrementAndGet()
+            // Retire the batch's claim BEFORE the direct read starts: the stamp moves on, so the batch's late answer for this id
+            // is stale and cannot advance it under the read, which publishes against the stamp taken here (a delta or listing
+            // observation after this point still makes it stale, as it should).
+            supersededAt = downloadUrls.supersede(id)
             log.debug("download URL cache: a download stopped waiting for its claimed batch after {} ms and reads Graph itself", waitedMs)
         }
         if (held != null) return DownloadItem(held.item, held)
         // The stamp was captured before the read: an observation that lands while it flies makes this one stale. The entry
         // rides back as `held`, so the download holds it out while it runs and puts it back when it succeeds.
-        val expected = downloadUrls.revision(id)
+        val expected = supersededAt ?: downloadUrls.revision(id)
         val fresh = fetchItem(id)
         val published = downloadUrls.put(listOf(fresh), mapOf(id to expected))
         return DownloadItem(fresh, published[id])
@@ -218,13 +225,35 @@ class GraphApiService(
     // Tests wait for the read-ahead to settle between downloads.
     internal fun prefetchIdle(): Boolean = prefetchInFlight.get() == 0
 
+    // The second download of a folder inside the window, or any later one: the read-ahead is earned by observed demand.
+    private val recentFolderReads =
+        object : LinkedHashMap<String, Long>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > DEMAND_FOLDERS_MAX
+        }
+
+    private fun folderDemand(parent: String): Boolean {
+        val now = System.nanoTime()
+        val previous = synchronized(recentFolderReads) { recentFolderReads.put(parent, now) }
+        return previous != null && (now - previous) / 1_000_000 < DEMAND_WINDOW_MS
+    }
+
+    // Batch POSTs in flight, a limit of its own beside the URL budget: partial batches of many small folders must not
+    // outnumber what the read-ahead is worth beside the foreground fallback reads on the shared client.
+    private val batchSlots = java.util.concurrent.Semaphore(PREFETCH_AHEAD_MAX / PREFETCH_BATCH)
+
     private fun startPrefetch(
         parent: String,
         current: String,
     ) {
-        val claims = downloadUrls.claimSiblings(parent, current, PREFETCH_AHEAD_MAX, PREFETCH_AHEAD_MAX, PREFETCH_BATCH)
-        // Full batches of 20, all in flight at once; the claim is cut to the budget, so no more than three fly.
-        claims.chunked(PREFETCH_BATCH).forEach { launchBatch(it) }
+        // A request slot is taken before a claim is made, so a claim never exists without a batch to answer it.
+        while (batchSlots.tryAcquire()) {
+            val claims = downloadUrls.claimSiblings(parent, current, PREFETCH_BATCH, PREFETCH_AHEAD_MAX, PREFETCH_BATCH)
+            if (claims.isEmpty()) {
+                batchSlots.release()
+                return
+            }
+            launchBatch(claims) // releases the slot when the batch ends: answered, failed or cancelled
+        }
     }
 
     private fun launchBatch(claims: List<DownloadUrlCache.PendingClaim>) {
@@ -258,6 +287,7 @@ class GraphApiService(
                 claims.forEach { inFlightBatch.remove(it.id, answers.getValue(it.id)) }
                 if (!answered) downloadUrls.releaseClaims(claims)
                 prefetchInFlight.decrementAndGet()
+                batchSlots.release()
             }
         }
     }
@@ -1715,6 +1745,10 @@ class GraphApiService(
         // #417: read-ahead in batches of 20, at most three batches' worth (60 URLs) ahead of the downloads.
         private const val PREFETCH_BATCH = 20
         private const val PREFETCH_AHEAD_MAX = 60
+
+        // Two downloads in one folder this close are a pin, not an open; the demand bookkeeping keeps this many folders.
+        private const val DEMAND_WINDOW_MS = 2_000L
+        private const val DEMAND_FOLDERS_MAX = 256
 
         // How long a download waits for the batch that claimed its id before it reads the item itself: about the p90 of a
         // single GET /items/{id} (260 ms median, 400 to 700 ms p90 measured), far under a batch of 20 (1.7 to 2.4 s).
