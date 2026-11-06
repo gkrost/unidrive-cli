@@ -8,7 +8,9 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import org.krost.unidrive.AuthenticationException
@@ -158,6 +160,90 @@ class GraphApiService(
     private fun itemUrl(id: String): String {
         val shared = SharedItemId.parse(id) ?: return "$baseUrl/me/drive/items/$id"
         return "$baseUrl/drives/${shared.driveId.encodeURLPathPart()}/items/${shared.itemId.encodeURLPathPart()}"
+    }
+
+
+    // --- #417: download URLs. A children listing carries them, a delta page does not (measured), so the URLs of the files a
+    // delta named are read ahead 20 per `POST /$batch` once downloads show a burst (a pin), off the downloads' critical path.
+
+    private val prefetchScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    private val prefetchInFlight = java.util.concurrent.atomic.AtomicInteger()
+    private val lastDownloadAtMs = java.util.concurrent.atomic.AtomicLong(0)
+    private val urlHits = java.util.concurrent.atomic.AtomicLong()
+    private val urlMisses = java.util.concurrent.atomic.AtomicLong()
+    private val urlBatches = java.util.concurrent.atomic.AtomicLong()
+
+    private suspend fun itemForDownload(id: String): DriveItem {
+        if (SharedItemId.isShared(id)) return fetchItem(id)
+        val held = downloadUrls.fresh(id)
+        val now = System.currentTimeMillis()
+        val burst = now - lastDownloadAtMs.getAndSet(now) < PREFETCH_BURST_MS
+        val parent = held?.parentReference?.id ?: downloadUrls.pendingParent(id)
+        if (held != null) urlHits.incrementAndGet() else urlMisses.incrementAndGet()
+        if (burst && parent != null) startPrefetch(parent, id) else if (held == null) downloadUrls.markRead(id)
+        return held ?: fetchItem(id).also { downloadUrls.put(listOf(it)) }
+    }
+
+    // Tests wait for the read-ahead to settle between downloads.
+    internal fun prefetchIdle(): Boolean = prefetchInFlight.get() == 0
+
+    private fun startPrefetch(
+        parent: String,
+        current: String,
+    ) {
+        if (downloadUrls.prefetchedUnused >= PREFETCH_AHEAD_MAX) return
+        if (prefetchInFlight.incrementAndGet() > PREFETCH_STREAMS) {
+            prefetchInFlight.decrementAndGet()
+            return
+        }
+        val ids = downloadUrls.claimSiblings(parent, current, PREFETCH_BATCH)
+        if (ids.isEmpty()) {
+            prefetchInFlight.decrementAndGet()
+            return
+        }
+        prefetchScope.launch {
+            try {
+                downloadUrls.put(fetchBatch(ids), prefetched = true)
+                val n = urlBatches.incrementAndGet()
+                log.debug(
+                    "download URL cache: hits={} misses={} batches={} (last batch {} items)",
+                    urlHits.get(), urlMisses.get(), n, ids.size,
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The ids stay out of the pending set: their downloads read Graph one by one, as without the prefetch.
+                log.debug("download URL prefetch of {} items failed: {}", ids.size, e.javaClass.simpleName)
+            } finally {
+                prefetchInFlight.decrementAndGet()
+            }
+        }
+    }
+
+    // One `POST /$batch` of GET /items/{id}; an answer that is not a 200 with an item is left out (its download reads it alone).
+    private suspend fun fetchBatch(ids: List<String>): List<DriveItem> {
+        val body =
+            buildJsonObject {
+                putJsonArray("requests") {
+                    ids.forEachIndexed { i, id ->
+                        add(
+                            buildJsonObject {
+                                put("id", (i + 1).toString())
+                                put("method", "GET")
+                                put("url", "/me/drive/items/$id")
+                            },
+                        )
+                    }
+                }
+            }.toString()
+        val response = authenticatedRequest("$baseUrl/\$batch", HttpMethod.Post, body)
+        val responses = json.parseToJsonElement(response.bodyAsText()).jsonObject["responses"]?.jsonArray ?: return emptyList()
+        return responses.mapNotNull { r ->
+            val obj = r as? JsonObject ?: return@mapNotNull null
+            if (obj["status"]?.jsonPrimitive?.intOrNull != 200) return@mapNotNull null
+            val item = obj["body"] ?: return@mapNotNull null
+            runCatching { json.decodeFromJsonElement(DriveItem.serializer(), item) }.getOrNull()
+        }
     }
 
     suspend fun getItemById(id: String): DriveItem = fetchItem(id)
@@ -322,9 +408,12 @@ class GraphApiService(
         itemId: String,
         destPath: Path,
     ): DownloadedFile {
-        // A fresh URL from a listing spares the metadata GET (#417). The listing's item carries the malware and package
-        // facets and the hashes the receipt names, so the refusals run on it exactly as on a live read; an entry is used once.
-        var item = (downloadUrls.take(itemId) ?: fetchItem(itemId)).also { refuseIfMalware(it, itemId) }.also { refuseIfPackage(it, itemId) }
+        // A fresh URL held for the item spares the metadata GET (#417): the item carries the malware and package facets and
+        // the hashes the receipt names, so the refusals run on it exactly as on a live read.
+        var item = itemForDownload(itemId).also { refuseIfMalware(it, itemId) }.also { refuseIfPackage(it, itemId) }
+        // Held out of the cache while this download runs, put back when it succeeds: a download that fails (a stale URL, a
+        // changed file) leaves no entry for the retry to trust, which then reads Graph.
+        downloadUrls.forget(itemId)
         var downloadedBytes = 0L
         var url = item.downloadUrl ?: "${itemUrl(itemId)}/content"
         var authNeeded = item.downloadUrl == null
@@ -398,7 +487,10 @@ class GraphApiService(
                     }
 
                 when (outcome) {
-                    DownloadOutcome.Done -> return DownloadedFile(downloadedBytes, item)
+                    DownloadOutcome.Done -> {
+                        downloadUrls.put(listOf(item))
+                        return DownloadedFile(downloadedBytes, item)
+                    }
                     DownloadOutcome.RetryAuth -> {
                         log.info("Got 401 on download itemId={} — forcing token refresh and retrying once", itemId)
                         authRefreshed = true
@@ -435,6 +527,7 @@ class GraphApiService(
                             itemId,
                         )
                         val fresh = fetchItem(itemId).also { refuseIfMalware(it, itemId) }
+                        downloadUrls.put(listOf(fresh))
                         item = fresh
                         url = fresh.downloadUrl ?: "${itemUrl(itemId)}/content"
                         authNeeded = fresh.downloadUrl == null
@@ -484,6 +577,7 @@ class GraphApiService(
                         e.message,
                     )
                     val fresh = fetchItem(itemId).also { refuseIfMalware(it, itemId) }
+                    downloadUrls.put(listOf(fresh))
                     item = fresh
                     url = fresh.downloadUrl ?: "${itemUrl(itemId)}/content"
                     authNeeded = fresh.downloadUrl == null
@@ -1526,6 +1620,12 @@ class GraphApiService(
         // A 10,000-page listing is ten million children (999 a page): far above any folder this holds a link into (#82 F).
         private const val MAX_PAGES = 10_000
 
+        // #417: a download within this long of the previous one is a burst (a pin), which earns the read-ahead.
+        private const val PREFETCH_BURST_MS = 3_000L
+        private const val PREFETCH_BATCH = 20
+        private const val PREFETCH_STREAMS = 2
+        private const val PREFETCH_AHEAD_MAX = 60
+
         // The waits before the retries of one chunk (archive#1175: a dropped connection is retried as a chunk, not as an attempt).
         private val CHUNK_RETRY_DELAYS_MS = listOf(2_000L, 4_000L, 8_000L)
 
@@ -1706,6 +1806,7 @@ class GraphApiService(
     }
 
     override fun close() {
+        prefetchScope.cancel()
         httpClient.close()
     }
 }
