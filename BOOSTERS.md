@@ -45,13 +45,13 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 |---|---|---|
 | `file.hashes.quickXorHash`/`sha1Hash`/`sha256Hash` | used | `OneDriveProvider` prefers `quickXorHash`, falls back to `sha256Hash`; `hashAlgorithm()` is QuickXor |
 | `fileSystemInfo` round-trip | used | `GraphApiService.patchFileSystemInfo`, `FileSystemInfo` in `DriveItem.kt` |
-| `malware` facet skip download | gap | archive#153 |
+| `malware` facet skip download | used | `GraphApiService.refuseIfMalware` (archive#153) |
 | `quota` facet on `/me/drive` | used | `GraphApiService.getQuota` |
 
 ### Batch / throttle
 | Capability | Status | Key refs |
 |---|---|---|
-| `$batch` max 20, `dependsOn` ordering | gap | archive#124 |
+| `$batch`, 20 subrequests, no `dependsOn` | partial | the delta-named URL read-ahead sends 20 `GET items/{id}` per `POST /$batch`; a throttled subresponse brakes the shared budget with its `Retry-After` (archive#124) |
 | Per-inner 429 retry inside batch | gap | |
 | `Retry-After` strict + pause-all-threads on 429 | used | `HttpRetryBudget` (`:app:core`) |
 | Per-tenant concurrency calibration | gap | archive#130 |
@@ -100,7 +100,7 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 | Capability | Status | Key refs |
 |---|---|---|
 | Two-layer: metadata + blob bridge | used | `InternxtApiService.startUpload`/`finishUpload`, `createFile`/`replaceFile` |
-| Multipart at ≥100 MiB threshold | gap | `InternxtConfig.MULTIPART_*` constants unconsumed, archive#578 |
+| Multipart at ≥100 MiB threshold | used | `InternxtConfig.uploadCutoffMb` (100 MiB) / `uploadChunkMb` / `uploadConcurrency`; `InternxtApiService.startMultipartUpload`, `InternxtProvider.multipartUploadEntry` (archive#578) |
 | File size cap | used | `InternxtProvider.maxFileSizeBytes` (`GET /files/limits`) |
 | Resumable upload protocol | API gap | client-side only: `UploadTombstoneStore` |
 | Hash-based dedup | API gap | |
@@ -151,23 +151,21 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 ## Adopt next — ranked
 
 High — correctness or large efficiency win:
-1. Internxt multipart upload (archive#578)
-2. OneDrive lifecycle webhook events + notification endpoint (archive#111)
-3. Internxt WebSocket gateway: verify the live endpoint (archive#244)
+1. OneDrive lifecycle webhook events + notification endpoint (archive#111)
+2. Internxt WebSocket gateway: verify the live endpoint (archive#244)
 
 Medium — efficiency:
-4. OneDrive `Range` parallel-segment download (archive#125)
-5. OneDrive `If-None-Match` + cTag conditional GET (archive#126)
-6. OneDrive `$select` slim delta payload (archive#127)
-7. OneDrive `$batch` with `dependsOn` + per-inner 429 retry (archive#124)
-8. OneDrive `createUploadSession` 416 branch
-9. OneDrive `conflictBehavior` user-selectable
-10. OneDrive `createLink` client-side dedupe (archive#129)
-11. OneDrive per-tenant concurrency calibration (archive#130)
-12. OneDrive `HttpRetryBudget` per-provider override (archive#131)
+3. OneDrive `Range` parallel-segment download (archive#125)
+4. OneDrive `If-None-Match` + cTag conditional GET (archive#126)
+5. OneDrive `$select` slim delta payload (archive#127)
+6. OneDrive `$batch` with `dependsOn` + per-inner 429 retry (archive#124)
+7. OneDrive `createUploadSession` 416 branch
+8. OneDrive `conflictBehavior` user-selectable
+9. OneDrive `createLink` client-side dedupe (archive#129)
+10. OneDrive per-tenant concurrency calibration (archive#130)
+11. OneDrive `HttpRetryBudget` per-provider override (archive#131)
 
 Low — guards and UX:
-13. OneDrive `malware` facet skip (archive#153)
-14. OneDrive `fileSize` precheck → early 507 (archive#154)
-15. Internxt `encryptVersion` legacy `02-rsa` support
-16. Document Internxt API limitations
+12. OneDrive `fileSize` precheck → early 507 (archive#154)
+13. Internxt `encryptVersion` legacy `02-rsa` support
+14. Document Internxt API limitations

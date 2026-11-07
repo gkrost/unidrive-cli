@@ -11,7 +11,7 @@ import java.util.Base64
 /**
  * UD-010: shared JWT body parsing for the three sites that previously
  * each rolled their own base64url-decode + claim-extract:
- *   - `OneDriveProviderFactory.extractJwtClaim` (regex over the body)
+ *   - `OneDriveProviderFactory` (regex over the body)
  *   - `InternxtProviderFactory.checkCredentialHealth` (exp regex)
  *   - `AuthService.isJwtExpired` (exp via kotlinx-serialization)
  *

@@ -17,9 +17,8 @@ import java.nio.file.Path
  *
  * Every method that "acts on the current profile" inside Main is mediated
  * here by temporarily setting [Main.provider] to the requested profile
- * name and restoring it afterwards. This mirrors the pattern that
- * BenchmarkCommand.runSingleProfile used to run by hand, lifted into
- * one place.
+ * name and restoring it afterwards: the save/set/restore discipline a
+ * multi-profile caller needs, in one place.
  *
  * ## Multi-profile-per-JVM is safe (UD-213 resolved)
  *
@@ -30,8 +29,7 @@ import java.nio.file.Path
  * the first profile. [withProfile] now calls
  * [Main.invalidateProfileCaches] around each save/set/restore boundary,
  * so it is safe to invoke this facade repeatedly against different
- * profiles inside a single JVM (e.g. for benchmark `--all` or any other
- * multi-profile extension).
+ * profiles inside a single JVM (any multi-profile extension).
  */
 internal class CliServicesImpl(
     private val main: Main,

@@ -33,10 +33,11 @@ for the history.
 
 How long an IPC connection may go without sending a request before
 `IpcServer` closes it (no line is written; the client reads end of stream).
-Never closed for being idle: a `sync.subscribe` subscriber, and a connection
+Never closed for being idle: a `sync.subscribe` subscriber, a connection
 that has used any `hydration.*` verb (a mount client: its open handles and
-its event subscription live on its connections). Time spent waiting for a
-reply does not count.
+its event subscription live on its connections), and a connection that has
+used `history.subscribe` (its snapshot stream lives on the connection).
+Time spent waiting for a reply does not count.
 
 - **Default:** `1800000` (30 minutes)
 - **`0`** switches the idle close off.

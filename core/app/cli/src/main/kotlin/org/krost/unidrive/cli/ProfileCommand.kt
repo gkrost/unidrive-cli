@@ -630,7 +630,7 @@ class ProfileRemoveCommand : Callable<Int> {
 
 // ── Pure utility functions (testable) ────────────────────────────────────────
 //
-// UD-216: the helpers below used to live here but are now shared with the MCP
+// UD-216: the helpers listed here used to live in this file but are now shared with the MCP
 // server. They moved to org.krost.unidrive.sync.ProfileConfigEditor so
 // :app:mcp can use them without dragging :app:cli into its classpath. Import
 // site kept identical for test and source callers.

@@ -51,7 +51,7 @@ Every request takes a slot from the shared `HttpRetryBudget`. A 500, 503 (SlowDo
 ## Hash and time
 
 - **Hash:** `HashAlgorithm.Md5Hex` on the ETag. A multipart ETag (`<hex>-<n>`) is not an MD5, and verification skips it. Neither is an SSE-KMS or SSE-C ETag, which the listing cannot tell apart.
-- **Time:** an item's `modified` is S3's `LastModified` wherever the item comes from. A listing carries no user metadata, and the engine compares the time it recorded, so the time read from a listing and the one read after an upload must be the same. The provider writes `x-amz-meta-mtime` but does not read it back yet.
+- **Time:** an item's `modified` is S3's `LastModified` wherever the item comes from. A listing carries no user metadata, and the engine compares the time it recorded, so the time read from a listing and the one read after an upload must be the same. The provider writes `x-amz-meta-mtime`, and a `HEAD` reads it back (`S3Api.head`); `move` carries it to the copy.
 
 ## Tests
 
@@ -61,5 +61,4 @@ Every request takes a slot from the shared `HttpRetryBudget`. A 500, 503 (SlowDo
 ## Not yet
 
 - **Opt-in runs on AWS and Scaleway:** the same cases against a real vendor, gated on keys in the environment.
-- **Reading back `x-amz-meta-mtime`:** a HEAD per object, or an engine-side decision on which time to compare.
 - **Quota:** none (`hasQuota = false`); a bucket has no plan to report.
