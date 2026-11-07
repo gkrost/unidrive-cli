@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.krost.unidrive.Capability
 import org.krost.unidrive.CloudItem
@@ -51,6 +52,11 @@ class DaemonQuotaFetchTest {
         override var isAuthenticated = true
         val calls = mutableListOf<String>()
         var failCheckWith: Exception? = null
+        var closed = false
+
+        override fun close() {
+            closed = true
+        }
 
         override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
         override suspend fun authenticate() {
@@ -93,7 +99,7 @@ class DaemonQuotaFetchTest {
     private fun monitor() =
         QuotaSnapshotMonitor(
             quotaRefreshMs = 15 * 60_000L,
-            providerFactory = { error("the fetch takes the provider it is handed") },
+            provider = { null },
             db = { db },
         )
 
@@ -133,5 +139,45 @@ class DaemonQuotaFetchTest {
         assertFailsWith<CancellationException> { runBlocking { monitor.refreshQuotaSnapshotWith(provider) } }
 
         assertEquals(listOf("checkCredentials"), provider.calls)
+    }
+
+    // gkrost/unidrive-cli#442: the refresh goes through the daemon's own provider, which it must not close.
+    @Test
+    fun `a triggered refresh uses the daemon's provider and leaves it open`() {
+        val daemonProvider = QuotaProvider()
+        val monitor =
+            QuotaSnapshotMonitor(quotaRefreshMs = 15 * 60_000L, provider = { daemonProvider }, db = { db })
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
+        try {
+            monitor.maybeTriggerQuotaRefresh(clientCount = 1, scope = scope)
+            val deadline = System.currentTimeMillis() + 10_000
+            while (monitor.quotaSnapshot?.stale != false && System.currentTimeMillis() < deadline) Thread.sleep(20)
+
+            assertEquals(listOf("checkCredentials", "quota"), daemonProvider.calls)
+            assertEquals(false, monitor.quotaSnapshot?.stale)
+            assertEquals(false, daemonProvider.closed, "the daemon's provider outlives the refresh")
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `a refresh before the daemon has a provider fetches nothing and frees its flag`() {
+        var provider: QuotaProvider? = null
+        val monitor = QuotaSnapshotMonitor(quotaRefreshMs = 15 * 60_000L, provider = { provider }, db = { db })
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
+        try {
+            monitor.maybeTriggerQuotaRefresh(clientCount = 1, scope = scope)
+            Thread.sleep(300)
+            assertNull(monitor.quotaSnapshot)
+
+            val late = QuotaProvider().also { provider = it }
+            monitor.maybeTriggerQuotaRefresh(clientCount = 1, scope = scope)
+            val deadline = System.currentTimeMillis() + 10_000
+            while (monitor.quotaSnapshot?.stale != false && System.currentTimeMillis() < deadline) Thread.sleep(20)
+            assertEquals(listOf("checkCredentials", "quota"), late.calls)
+        } finally {
+            scope.cancel()
+        }
     }
 }
