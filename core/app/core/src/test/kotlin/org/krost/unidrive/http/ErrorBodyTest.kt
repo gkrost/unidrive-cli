@@ -19,7 +19,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.async
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -181,11 +180,13 @@ class ErrorBodyTest {
             // a streamed call: get() would buffer the whole body first
             withTimeout(30_000) {
                 HttpClient(engine).prepareGet("https://example.invalid/").execute { response ->
-                    val reading = async(Dispatchers.Default) { readBoundedErrorBody(response) }
+                    var outcome: Result<String>? = null
+                    val reading = launch(Dispatchers.Default) { outcome = runCatching { readBoundedErrorBody(response) } }
                     withContext(Dispatchers.Default) { delay(500) } // the read is waiting for the rest by now
                     reading.cancel()
                     reading.join()
-                    assertTrue(reading.isCancelled, "the read ended as cancelled, not with a string")
+                    // a job that was cancelled reports "cancelled" even when its body returned a value: look at what it returned
+                    assertTrue(outcome?.exceptionOrNull() is kotlinx.coroutines.CancellationException, "the read ended as cancelled, got $outcome")
                 }
             }
             Unit
