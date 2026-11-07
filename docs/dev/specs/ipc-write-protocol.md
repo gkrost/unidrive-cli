@@ -41,8 +41,12 @@ code. Request/reply byte shapes are pinned by the golden corpus under
   tokens are the stable cross-repo contract listed in §7.
 - Events flow only on connections that have issued `hydration.subscribe`.
   Each subscriber has a bounded queue (capacity 64); when it overflows the
-  oldest event is dropped and one `{"event":"lost","since_last":N}` sentinel
-  precedes the next deliverable event. A client must treat `lost` as
+  oldest event that is not an outcome is dropped and one
+  `{"event":"lost","since_last":N}` sentinel precedes the next deliverable
+  event. Outcomes (`completed`, and `failed` without `retry_scheduled:true`)
+  are never dropped: the queue holds them beyond 64 (up to 4096, then the
+  oldest goes), so a `lost` never hides how a transfer ended. Progress, state
+  and `view.invalidated` events can still be lost. A client must treat `lost` as
   "resync your per-file state from `hydration.list`".
 - The daemon serves at most 32 connections at a time by default
   (`UNIDRIVE_IPC_MAX_CLIENTS`, `docs/env-vars.md`). A connection over that
