@@ -17,10 +17,16 @@ import kotlinx.coroutines.sync.withLock
  * concurrency slot, and a transfer that is only waiting for its slot never
  * blocks one that is ready to send.
  *
+ * The time-line runs on a monotonic clock. The wall clock steps (an NTP
+ * correction, a resume from sleep): after a step back the booked slots would lie
+ * that far in the future and every transfer would wait for it.
+ *
  * @param maxBytesPerSecond Maximum combined byte rate (bytes/s). Must be > 0.
+ * @param monotonicMillis Milliseconds on a clock that never steps back; a test injects its own.
  */
 class BandwidthPacer(
     private val maxBytesPerSecond: Long,
+    private val monotonicMillis: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
     init {
         require(maxBytesPerSecond > 0) { "maxBytesPerSecond must be positive" }
@@ -30,7 +36,7 @@ class BandwidthPacer(
     // concurrent transfers must serialize, or two of them would book the same
     // slot and the aggregate would burst past the cap.
     private val gate = Mutex()
-    private var nextFreeMs = System.currentTimeMillis()
+    private var nextFreeMs = monotonicMillis()
 
     /**
      * Reserve [bytes] worth of line time and delay until this transfer's slot
@@ -41,7 +47,7 @@ class BandwidthPacer(
         if (bytes <= 0) return
         val waitMs =
             gate.withLock {
-                val now = System.currentTimeMillis()
+                val now = monotonicMillis()
                 val startMs = maxOf(now, nextFreeMs)
                 nextFreeMs = startMs + bytes * 1000L / maxBytesPerSecond
                 startMs - now
