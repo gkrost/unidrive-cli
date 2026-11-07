@@ -20,6 +20,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentLength
+import io.ktor.http.content.OutgoingContent
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import kotlinx.serialization.json.JsonElement
@@ -39,10 +40,15 @@ import org.krost.unidrive.http.RequestMetricsSink
 import org.krost.unidrive.http.RequestMetricsTap
 import org.krost.unidrive.http.parseRetryAfterHeader
 import org.krost.unidrive.http.RetryOutcome
+import org.krost.unidrive.http.UploadProgress
+import org.krost.unidrive.http.UploadTimeoutPolicy
+import org.krost.unidrive.http.UploadWatchdogException
+import org.krost.unidrive.http.UploadWatchdogLimits
 import org.krost.unidrive.http.readBoundedErrorBody
 import org.krost.unidrive.http.retrying
 import org.krost.unidrive.http.truncateErrorBody
 import org.krost.unidrive.http.throttleWaitMs
+import org.krost.unidrive.http.withUploadWatchdog
 import org.krost.unidrive.http.writeStagedDownload
 import java.nio.file.Path
 
@@ -76,6 +82,7 @@ class DropboxApi(
     private val accessToken: suspend (forceRefresh: Boolean, rejectedToken: String?) -> String,
     engine: HttpClientEngine? = null,
     private val budget: HttpRetryBudget = HttpRetryBudget(maxConcurrency = MAX_CONCURRENCY),
+    private val uploadWatchdog: UploadWatchdogLimits = UploadWatchdogLimits.DEFAULT,
 ) : AutoCloseable {
     private val log = org.slf4j.LoggerFactory.getLogger(DropboxApi::class.java)
     private val json = org.krost.unidrive.UnidriveJson
@@ -132,6 +139,43 @@ class DropboxApi(
             }
         return parseOrThrow(response, endpoint)
     }
+
+    /**
+     * An upload-style call on the content host whose body of [sizeBytes] bytes is sent under the write-progress
+     * watchdog. Dropbox is silent until the whole body is in, so the socket timeout cannot tell a slow upload from a stuck
+     * one: the watchdog cuts the request when no body byte was written for the idle window, or when Dropbox did not
+     * answer within the response wait after the last byte. The request and socket timeouts are raised to an outer net
+     * behind it. [body] is built afresh for every attempt around that attempt's progress record.
+     */
+    suspend fun contentWatched(
+        endpoint: String,
+        args: JsonElement,
+        sizeBytes: Long,
+        body: (UploadProgress) -> OutgoingContent,
+    ): JsonObject {
+        val response =
+            send("${config.contentBase}/$endpoint", watchedBytes = sizeBytes) { progress ->
+                header(API_ARG, headerSafeJson(args))
+                timeout {
+                    val outer = outerLimitMs(sizeBytes)
+                    requestTimeoutMillis = outer
+                    socketTimeoutMillis = outer
+                }
+                contentType(ContentType.Application.OctetStream)
+                setBody(body(progress!!))
+            }
+        return parseOrThrow(response, endpoint)
+    }
+
+    private fun responseWaitMs(sizeBytes: Long): Long = UploadTimeoutPolicy.computeResponseWaitMs(sizeBytes, uploadWatchdog.responseWaitFloorMs)
+
+    private fun outerLimitMs(sizeBytes: Long): Long =
+        UploadTimeoutPolicy.computeWatchedOuterLimitMs(
+            fileSize = sizeBytes,
+            minThroughputBytesPerSecond = UploadTimeoutPolicy.DEFAULT_MIN_THROUGHPUT_BYTES_PER_SECOND,
+            idleWindowMs = uploadWatchdog.idleWindowMs,
+            responseWaitMs = responseWaitMs(sizeBytes),
+        )
 
     /**
      * Downloads [path] (a path or an `id:`) to [destination] through a sibling staging file that is moved over it only
@@ -210,7 +254,8 @@ class DropboxApi(
 
     private suspend fun send(
         endpoint: String,
-        configure: HttpRequestBuilder.() -> Unit,
+        watchedBytes: Long? = null,
+        configure: HttpRequestBuilder.(UploadProgress?) -> Unit,
     ): HttpResponse {
         var rejectedToken: String? = null
         return budget.retrying { refreshed, retries ->
@@ -218,13 +263,34 @@ class DropboxApi(
             val rejected = rejectedToken
             rejectedToken = null
             val token = accessToken(rejected != null, rejected)
-            val response =
+            // One progress record per attempt: a replay after a 401 or a throttle starts its idle clock afresh.
+            val progress = watchedBytes?.let { UploadProgress(it) }
+            val request: suspend () -> HttpResponse = {
                 httpClient.request {
                     url(endpoint)
                     method = HttpMethod.Post
                     bearerAuth(token)
                     pathRoot?.let { header(PATH_ROOT, it) }
-                    configure()
+                    configure(progress)
+                }
+            }
+            val response =
+                if (progress == null) {
+                    request()
+                } else {
+                    try {
+                        withUploadWatchdog(
+                            progress = progress,
+                            idleWindowMs = uploadWatchdog.idleWindowMs,
+                            responseWaitMs = responseWaitMs(progress.totalBytes),
+                            tickMs = uploadWatchdog.tickMs,
+                            what = "Dropbox upload (${endpoint.substringAfter("/2/")})",
+                            block = request,
+                        )
+                    } catch (e: UploadWatchdogException) {
+                        log.warn("{} ({})", e.message, e.reason)
+                        throw e
+                    }
                 }
             when {
                 response.status == HttpStatusCode.Unauthorized && !refreshed -> {
