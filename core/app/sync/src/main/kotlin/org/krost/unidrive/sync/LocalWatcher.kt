@@ -247,6 +247,18 @@ class LocalWatcher(
                         }
                         return FileVisitResult.CONTINUE
                     }
+
+                    override fun visitFileFailed(
+                        file: Path,
+                        exc: IOException,
+                    ): FileVisitResult {
+                        // One entry the walk cannot read (an ACL-denied folder, "System Volume Information"
+                        // at a drive root) must not kill the whole watch: the scanner tolerates the same
+                        // entry. Log and go on; what sits under it stays unwatched until a create in a
+                        // watched parent registers it.
+                        log.warn("Cannot watch {}: {} ({})", file, exc.javaClass.simpleName, exc.message)
+                        return FileVisitResult.CONTINUE
+                    }
                 },
             )
         } catch (e: IOException) {
