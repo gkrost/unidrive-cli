@@ -322,3 +322,13 @@ internal fun ignoreHealthJson(heldBack: List<HeldBackDir>): JsonObject =
     }
 
 internal const val HELD_BACK_ITEMS_CAP = 20
+
+/**
+ * `ipc` (gkrost/unidrive-cli#460): `requests` holds, per verb, how many requests its handler was given since the daemon
+ * started (the [org.krost.unidrive.sync.IpcServer.requestCounts] reading). A verb not asked yet is absent (0); a request
+ * the authentication gate answered or refused, or one for an unknown verb, is not counted. Names verbs only, never a path.
+ */
+internal fun ipcStatusJson(requestCounts: Map<String, Long>): JsonObject =
+    buildJsonObject {
+        put("requests", buildJsonObject { requestCounts.forEach { (verb, n) -> put(verb, n) } })
+    }

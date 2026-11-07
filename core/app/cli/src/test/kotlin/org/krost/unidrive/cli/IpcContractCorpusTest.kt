@@ -1732,7 +1732,10 @@ private fun assertJsonMatches(expected: JsonElement, actual: JsonElement, at: St
             assertEquals(expected.keys, actual.keys, "$at: key set mismatch")
             for ((key, value) in expected) {
                 val actualValue = actual.getValue(key)
-                if (key in VOLATILE_FIELDS) {
+                if (key == "ipc") {
+                    assertIpcCountersShape(value, "$at.$key (corpus)")
+                    assertIpcCountersShape(actualValue, "$at.$key")
+                } else if (key in VOLATILE_FIELDS) {
                     assertVolatileShape(value, actualValue, "$at.$key")
                 } else {
                     assertJsonMatches(value, actualValue, "$at.$key")
@@ -1752,6 +1755,25 @@ private fun assertJsonMatches(expected: JsonElement, actual: JsonElement, at: St
             assertEquals(expected.content, actual.content, "$at: value mismatch")
         }
     }
+}
+
+// daemon.status `ipc` (gkrost/unidrive-cli#460): per-verb request counts since the daemon started, so the numbers depend on
+// what the replay asked before (a test that waits for a state asks daemon.status until it holds). Pinned: the object holds
+// exactly `requests`, every key there is a verb the daemon knows (IpcAuth.VERB_CLASSES), and every value a non-negative
+// integer; and a daemon.status reply counts itself.
+private fun assertIpcCountersShape(element: JsonElement, at: String) {
+    assertTrue(element is JsonObject && element.keys == setOf("requests"), "$at: must be {\"requests\":{...}}, got $element")
+    val requests = element.getValue("requests")
+    assertTrue(requests is JsonObject, "$at.requests: expected an object, got $requests")
+    for ((verb, count) in requests) {
+        assertTrue(verb in IpcAuth.VERB_CLASSES.keys, "$at.requests: '$verb' is not a verb the daemon registers")
+        val n = (count as? JsonPrimitive)?.takeUnless { it.isString }?.content?.toLongOrNull()
+        assertTrue(n != null && n >= 0, "$at.requests.$verb: expected a non-negative integer, got $count")
+    }
+    assertTrue(
+        ((requests["daemon.status"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L) >= 1L,
+        "$at.requests: a daemon.status reply counts itself: $requests",
+    )
 }
 
 // Volatile fields carry run- or machine-dependent values (uuids, uptimes,

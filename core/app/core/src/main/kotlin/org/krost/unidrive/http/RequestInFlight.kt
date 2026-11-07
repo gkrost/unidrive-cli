@@ -20,9 +20,13 @@ class RequestInFlight(
 ) {
     private val started = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
 
+    // gkrost/unidrive-cli#460: every attempt ever opened, per class (a retry is an attempt of its own).
+    private val opened = ConcurrentHashMap<String, java.util.concurrent.atomic.LongAdder>()
+
     /** Opens one in-flight entry for [endpointClass]; the returned handle closes it. */
     fun started(endpointClass: String): AutoCloseable {
         val atNanos = nowNanos()
+        opened.computeIfAbsent(endpointClass) { java.util.concurrent.atomic.LongAdder() }.increment()
         started.computeIfAbsent(endpointClass) { ConcurrentLinkedQueue() }.add(atNanos)
         return AutoCloseable { started[endpointClass]?.remove(atNanos) }
     }
@@ -39,6 +43,12 @@ class RequestInFlight(
                 InFlightRequests(clazz, times.size, (oldestAgeNanos / 1_000_000L).coerceAtLeast(0))
             }.sortedBy { it.endpointClass }
         }
+
+    /**
+     * gkrost/unidrive-cli#460: how many attempts each endpoint class has opened since this client was made, sorted by
+     * class (daemon.status's `requests.total`): a retry counts again, an attempt still open counts already.
+     */
+    fun totals(): Map<String, Long> = opened.entries.associateTo(sortedMapOf()) { it.key to it.value.sum() }
 }
 
 /** The requests of one endpoint class that are open now, and how long the oldest of them has been in flight. */
@@ -56,4 +66,6 @@ data class InFlightRequests(
 data class RequestStatusSnapshot(
     val inFlight: List<InFlightRequests>,
     val freeSlots: Map<String, Int>,
+    /** gkrost/unidrive-cli#460: attempts per endpoint class since the client was made ([RequestInFlight.totals]). */
+    val totals: Map<String, Long> = emptyMap(),
 )
