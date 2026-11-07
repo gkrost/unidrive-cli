@@ -1330,6 +1330,53 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         }
     }
 
+    /**
+     * #500: one page of the provider's trash, `GET /storage/trash/paginated`. The server sorts files and folders
+     * apart (`type` is mandatory) and caps [limit] at 50 (drive-server-wip `TrashController`); `root=true` is what
+     * the official SDK sends. A read has no effect to repeat, so the full transient ladder retries it.
+     */
+    internal suspend fun trashPage(
+        type: String,
+        limit: Int,
+        offset: Long,
+    ): InternxtTrashPage {
+        require(type == "files" || type == "folders") { "type must be 'files' or 'folders'; got $type" }
+        val body =
+            authenticatedGet(
+                "$baseUrl/storage/trash/paginated?limit=$limit&offset=$offset&type=$type&root=true",
+                socketTimeoutMs = listingSocketTimeoutMs,
+            )
+        return json.decodeFromString<InternxtTrashPage>(body)
+    }
+
+    /**
+     * #500: empty the whole trash, `DELETE /storage/trash/all`. A repeat of a 5xx whose origin committed empties an
+     * already emptying trash, so the server errors are retried. The server answers `EmptyTrashResult`
+     * (drive-server-wip `TrashUseCases`): a trash of more than 10,000 items is enqueued and answered
+     * `status: "processing"`, a smaller one is deleted inline and answered `status: "completed"` — the status
+     * travels back as-is, null when the body does not carry one.
+     */
+    internal suspend fun emptyTrash(): String? {
+        var status: String? = null
+        retryOnTransient(retryServerErrors = true) {
+            withAuthRetry { creds ->
+                budgeted(driveBudget) {
+                    val response = httpClient.delete("$baseUrl/storage/trash/all") {
+                        applyAuth(creds)
+                    }
+                    checkResponse(response)
+                    status =
+                        kotlinx.serialization.json.Json.parseToJsonElement(response.bodyAsText())
+                            .let { it as? kotlinx.serialization.json.JsonObject }
+                            ?.get("status")
+                            ?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                            ?.content
+                }
+            }
+        }
+        return status
+    }
+
     suspend fun deleteFolder(uuid: String) {
         // 404 is treated as already-gone (idempotent delete) — short-circuits
         // before checkResponse so retryOnTransient never sees it as transient. The repeat of a
