@@ -187,7 +187,7 @@ class DaemonRuntime(
     private val cleanupDone = java.util.concurrent.CountDownLatch(1)
 
     @Volatile private var lifecycleActive = false
-    private var startedAtMs: Long = 0
+    @Volatile private var startedAtMs: Long = 0
 
     /**
      * Runs the lifecycle until [close]. gkrost/unidrive-cli#225: it runs in [logContext], so the serve scope and every
@@ -283,9 +283,7 @@ class DaemonRuntime(
             // dedicated SupervisorJob that we cancel before the scope exits.
             // The scope inherits the daemon's logContext from start() (gkrost/unidrive-cli#225).
             val serveJob = kotlinx.coroutines.SupervisorJob()
-            val serveScope = kotlinx.coroutines.CoroutineScope(
-                kotlin.coroutines.coroutineContext + serveJob,
-            )
+            val serveScope = serveScopeOf(kotlin.coroutines.coroutineContext, serveJob)
             // A profile signed in before ids were kept has no account_id (AccountOwner): one identity call with the
             // credentials this start just authenticated with records it. Off the start's path and bounded: a failed or slow
             // call logs one line, the daemon serves either way and the next start tries again.
@@ -414,7 +412,7 @@ class DaemonRuntime(
                 // remote→state.db refresh for mount view consumers. Constructed before the
                 // hydration verbs so the subscribe-triggered enumerate (below) can reuse its
                 // shared in-flight guard.
-                val enumerateHandler = EnumerateRpcHandler(mount, serveScope, server::emit, paused = { pause.isPaused })
+                val enumerateHandler = EnumerateRpcHandler(OffLoopEnumeration(mount), serveScope, server::emit, paused = { pause.isPaused })
 
                 // refresh.run handler (spec §4.2). Pass serveScope so refresh
                 // jobs are cancelled when the daemon shuts down. Pass db so
@@ -1089,6 +1087,19 @@ class DaemonRuntime(
          * itself carries it with [org.krost.unidrive.MdcSnapshot].
          */
         internal fun logContext(profileName: String): MDCContext = MDCContext(mapOf("build" to BuildInfo.COMMIT, "profile" to profileName))
+
+        /**
+         * The serve scope: the daemon's launches (enumerations, event writers, pollers) run on [kotlinx.coroutines.Dispatchers.Default],
+         * not on the event loop of the `runBlocking` that calls [start]. That loop is one thread, which the shutdown's
+         * `closeSignal.await()` also needs: a blocking span on it would stall every writer and the stop. The IPC handlers
+         * already run on their own pool, so no state here relied on that single thread. Blocking JDBC and file work still
+         * goes through `withContext(Dispatchers.IO)` at its call site, so it does not hold a Default thread.
+         */
+        internal fun serveScopeOf(
+            parent: kotlin.coroutines.CoroutineContext,
+            job: kotlinx.coroutines.Job,
+        ): kotlinx.coroutines.CoroutineScope =
+            kotlinx.coroutines.CoroutineScope(parent + job + kotlinx.coroutines.Dispatchers.Default)
 
         /**
          * The scope the mount's hydration uploads and replays run in: a scope of its own (the shutdown joins it apart from

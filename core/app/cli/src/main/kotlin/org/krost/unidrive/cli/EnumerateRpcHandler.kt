@@ -27,6 +27,17 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * [engine] is the daemon's MountEngine (archive#560 U3); either front-end runs the same enumeration.
  */
+/**
+ * Runs the enumeration on [kotlinx.coroutines.Dispatchers.IO]. Its reap, settle and cursor work is blocking JDBC and file
+ * stats with no suspension point, so on the caller's dispatcher it would hold that thread for the whole pass.
+ */
+internal class OffLoopEnumeration(
+    private val delegate: EnumerationEntryPoint,
+) : EnumerationEntryPoint {
+    override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { delegate.enumerateRemoteIntoState(reset) }
+}
+
 class EnumerateRpcHandler(
     private val engine: EnumerationEntryPoint,
     private val scope: CoroutineScope,
