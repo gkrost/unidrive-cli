@@ -1369,6 +1369,29 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
             false
         }
 
+    /**
+     * Refuses a body that was cut off. Ktor's readAvailable answers -1 for a channel the engine closed with a failure (a
+     * connection reset in the middle of the body), exactly as for a clean end; the failure is only in closedCause and is
+     * rethrown as what it is. A host that closes the connection cleanly (no reset) before the announced length arrived
+     * leaves no closedCause either, so the shortfall against the response's own Content-Length is the same dropped
+     * transfer. Both are retryable IOExceptions: neither is taken for a shorter stored object (which the caller
+     * quarantines) nor, with no declared size, published truncated.
+     */
+    private fun requireBodyEnded(
+        channel: ByteReadChannel,
+        announcedLength: Long?,
+        contentEncoding: String?,
+        ciphertextBytes: Long,
+        destination: Path,
+    ) {
+        channel.closedCause?.let { throw it }
+        if (announcedLength != null && contentEncoding == null && ciphertextBytes != announcedLength) {
+            throw java.io.IOException(
+                "Connection to the storage host ended after $ciphertextBytes of $announcedLength bytes for ${destination.fileName}",
+            )
+        }
+    }
+
     /** Streams encrypted bytes through [cipher] to [destination], hashing plaintext before atomic publication. */
     @Suppress("ThrowsCount") // The baseline entry predates target mtime and the streamed content receipt.
     internal suspend fun downloadFileStreaming(
@@ -1415,7 +1438,8 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                     // the post-download guard would refuse it after the whole transfer too. An absent
                     // header (chunked) or an unknown declared size (0) stays with that post-download
                     // completeness guard, as before.
-                    response.headers[HttpHeaders.ContentLength]?.toLongOrNull()?.let { contentLength ->
+                    val announcedLength = response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
+                    announcedLength?.let { contentLength ->
                         if (expectedSize != null && expectedSize > 0 && contentLength != expectedSize) {
                             val comparison = if (contentLength < expectedSize) "shorter" else "longer"
                             throw RemoteIncompleteDownloadException(
@@ -1453,6 +1477,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                                         written += decrypted.size
                                     }
                                 }
+                                requireBodyEnded(channel, announcedLength, response.headers[HttpHeaders.ContentEncoding], ciphertextBytes, destination)
                                 // A stream whose length differs from the declared size (it ended short or ran long, with
                                 // no Content-Length to refuse it up front) is refused while it is still staged: the move
                                 // below would otherwise replace the previous local copy with the wrong bytes. Before the
