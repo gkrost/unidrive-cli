@@ -282,6 +282,21 @@ class HydrationImplRenameTest {
         assertEquals("/renamed.txt", provider.lastMoveTo)
     }
 
+    // #452: the local rename is recorded in state.db before its cache copy moves; the record goes once the row and the
+    // copy are both at the new name, so nothing is owed afterwards.
+    @Test
+    fun local_rename_leaves_no_rename_record_owed() = runTest {
+        val (impl, provider, db) = freshEnv()
+        seedNeverUploadedFile(db, "/repro.txt.part", localSize = 42L)
+
+        assertEquals(RenameResult.Ok, impl.rename("/repro.txt.part", "/repro.txt"))
+
+        assertTrue(db.renameIntents().isEmpty(), "the finished local rename must not keep a record")
+        assertNull(db.getEntry("/repro.txt.part"))
+        assertEquals(42L, db.getEntry("/repro.txt")?.localSize)
+        assertNull(provider.lastMoveFrom, "provider.move must NOT be called for a never-uploaded file")
+    }
+
     // ── replace flag (editors' safe-save: temp file renamed over the target) ──
 
     @Test

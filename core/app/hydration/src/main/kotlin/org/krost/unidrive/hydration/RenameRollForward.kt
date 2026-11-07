@@ -15,6 +15,8 @@ import java.util.concurrent.ConcurrentHashMap
  * are both at the new path. Once the cloud moved, the rename stands: when the cache copy cannot follow at once (a sharing
  * violation, something in its way), the cloud and the row keep the new name and the record says that the copy still has to
  * move. When the daemon stopped between the cloud move and the row's, the record names the item to look for at the new path.
+ * #452: a rename of a never-uploaded item is recorded the same way, before its cache copy moves — its only copy is the cache
+ * copy, so a stop between that move and the row's repath must not strand it; its settle asks no cloud ([RenameIntent.local]).
  *
  * [settleAll] finishes what the records still owe at the daemon's start, before the replay looks for cache copies; [blocks]
  * does it for the records that name a path (at either end, or a folder above or below one) before a verb on that path, which
@@ -97,10 +99,16 @@ internal class RenameRollForward(
         settling.withLock {
             if (owed[intent.oldPath] != intent) return@withLock // finished by another caller meanwhile
             try {
-                // The rename's row still at the old path: the daemon stopped before the row followed the cloud's move, or
-                // before the move.
-                if (rowStayed(intent) && !rollRowForward(intent)) return@withLock
-                if (intent.ghost) adoptGhostItem(intent)
+                if (intent.local) {
+                    // A genuinely-local rename: nothing was ever in the cloud, so the row that stayed at the old path is
+                    // the rename's own (its id is the row's local one) and follows the copy here; nothing is adopted.
+                    if (rowStayed(intent)) stateDb.renamePrefix(intent.oldPath, intent.newPath)
+                } else {
+                    // The rename's row still at the old path: the daemon stopped before the row followed the cloud's move, or
+                    // before the move.
+                    if (rowStayed(intent) && !rollRowForward(intent)) return@withLock
+                    if (intent.ghost) adoptGhostItem(intent)
+                }
                 moveCopy(intent)
             } catch (e: CancellationException) {
                 throw e
@@ -183,11 +191,3 @@ internal class RenameRollForward(
             emptyList()
         }
 }
-
-// Whether [path] is one end of the rename, or a folder above or below one.
-private fun RenameIntent.names(path: String): Boolean = related(path, oldPath) || related(path, newPath)
-
-private fun related(
-    a: String,
-    b: String,
-): Boolean = a == b || a == "/" || b == "/" || a.startsWith("$b/") || b.startsWith("$a/")

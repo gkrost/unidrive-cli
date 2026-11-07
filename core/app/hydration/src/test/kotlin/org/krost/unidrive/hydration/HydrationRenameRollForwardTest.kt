@@ -12,6 +12,7 @@ import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.sync.model.RenameIntent
 import org.krost.unidrive.sync.model.SyncEntry
 import java.nio.file.Files
 import java.nio.file.Path
@@ -199,6 +200,14 @@ class HydrationRenameRollForwardTest {
             bytes: String,
         ) {
             drive.seed(path, id, bytes)
+            seedLocal(path, bytes)
+        }
+
+        // A file written through the mount whose upload never landed: the row has no id and the cache copy is its only copy.
+        fun seedLocal(
+            path: String,
+            bytes: String,
+        ) {
             val cache = cache(path)
             Files.createDirectories(cache.parent)
             Files.writeString(cache, bytes)
@@ -337,5 +346,77 @@ class HydrationRenameRollForwardTest {
         assertIs<OpenResult.Ok>(read)
         assertEquals("ghost bytes", Files.readString(read.cachePath))
         assertTrue(Files.notExists(rig.cache("/g.txt")))
+    }
+
+    // #452: a never-uploaded file's only copy is its cache copy. The live rename moves the copy before the row follows it,
+    // so a daemon stopped (or a DB write failed) in between left the bytes at the new name beside a row still at the old
+    // one — the start read the row as gone and dropped it, stranding the file for good. The stop's aftermath is crafted
+    // here: the copy moved, the row did not follow, the record was kept.
+    @Test
+    fun `a stop between a local rename's copy move and its row's repath is finished at the start, and the file is not stranded`() = runTest {
+        val rig = Rig(this)
+        rig.seedLocal("/t.txt", "only copy")
+        rig.db.recordRenameIntent(RenameIntent("/t.txt", "/r.txt", null, false))
+        Files.move(rig.cache("/t.txt"), rig.cache("/r.txt"))
+
+        val restarted = rig.restart()
+        restarted.impl.replayPendingUploads()
+        advanceUntilIdle()
+
+        assertNull(restarted.db.getEntry("/t.txt"), "the row followed the copy")
+        assertEquals("only copy", rig.drive.content["/r.txt"], "the only copy reached the cloud under the new name")
+        assertTrue(Files.notExists(restarted.cache("/t.txt")), "no copy is left behind at the old name")
+        assertTrue(restarted.db.renameIntents().isEmpty(), "nothing is still owed")
+    }
+
+    // #452: the live local rename answers failed when its copy cannot follow, keeps row and bytes whole at the old name,
+    // and the record it kept finishes the rename once the way is free.
+    @Test
+    fun `a local rename whose cache copy cannot follow answers failed, and its record finishes the rename later`() = runTest {
+        val rig = Rig(this)
+        rig.seedLocal("/t.txt", "only copy")
+        rig.blockCacheMoveTo("/r.txt")
+
+        assertIs<RenameResult.Failed>(rig.impl.rename("/t.txt", "/r.txt"))
+
+        assertEquals("only copy", Files.readString(rig.cache("/t.txt")), "nothing moved: the copy is still at its name")
+        assertNotNull(rig.db.getEntry("/t.txt"), "the row is still at its name")
+        assertTrue(rig.db.renameIntents().isNotEmpty(), "the record keeps the rename owed")
+
+        rig.unblock("/r.txt")
+        val restarted = rig.restart()
+        restarted.impl.replayPendingUploads()
+        advanceUntilIdle()
+
+        assertTrue(Files.notExists(restarted.cache("/t.txt")), "the copy followed once it could")
+        assertEquals("only copy", rig.drive.content["/r.txt"], "the rename finished: the file uploads under the new name")
+        assertTrue(restarted.db.renameIntents().isEmpty(), "nothing is still owed")
+    }
+
+    // #452: while a record still owes a local rename its copy's move, the row must not be judged gone — its copy sits at
+    // the rename's other end, and dropping the row would strand it there. A file holds the place the copy would move into
+    // (the destination itself stays absent: a present path would answer the row's gone-check true and hide the case).
+    @Test
+    fun `a pending row a still-owed local rename names is not dropped as gone while its copy cannot follow`() = runTest {
+        val rig = Rig(this)
+        rig.seedLocal("/t.txt", "only copy")
+        rig.db.recordRenameIntent(RenameIntent("/t.txt", "/s/r.txt", null, false))
+        rig.db.renamePrefix("/t.txt", "/s/r.txt")
+        Files.createDirectories(rig.cache("/s").parent)
+        Files.writeString(rig.cache("/s"), "in the way")
+
+        val restarted = rig.restart()
+        restarted.impl.replayPendingUploads()
+
+        assertNotNull(restarted.db.getEntry("/s/r.txt"), "the row is not judged gone while the record owes its copy's move")
+        assertTrue(restarted.db.renameIntents().isNotEmpty(), "the record stays until the copy can follow")
+
+        Files.delete(rig.cache("/s"))
+        val settled = rig.restart()
+        settled.impl.replayPendingUploads()
+        advanceUntilIdle()
+
+        assertEquals("only copy", rig.drive.content["/s/r.txt"], "the copy followed once it could and uploaded at its row's path")
+        assertTrue(settled.db.renameIntents().isEmpty(), "nothing is still owed")
     }
 }
