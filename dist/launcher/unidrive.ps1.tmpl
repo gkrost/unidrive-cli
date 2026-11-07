@@ -118,7 +118,7 @@ $javaArgs += @('-jar', '@JAR@')
 # without one (a PATH shim such as Oracle's javapath) is asked once with `java -version`. Windows has no
 # /usr/lib/jvm convention, so there is no folder scan; the bundled image, which follows the runtime release
 # train, beats any PATH java. The chosen runtime goes to the FRONT of PATH and the invocation below keeps its
-# plain `& java`, so a stale JDK below 21 dies on this floor message instead of a bare class-file-version
+# plain `& java`, so a stale JDK below 25 dies on this floor message instead of a bare class-file-version
 # error. Nothing found falls through to that invocation, which reports the missing runtime itself.
 # `1.8.0_x` is Java 8 (the pre-9 scheme): the leading `1.` is dropped.
 function Get-JavaMajor([string]$javaPath) {
@@ -154,15 +154,11 @@ if (-not $javaBin) { $javaBin = (Get-Command java -ErrorAction SilentlyContinue)
 if ($javaBin) {
     $major = Get-JavaMajor $javaBin
     if ($major -eq 0) {
-        [Console]::Error.WriteLine("unidrive: could not read the Java version of $javaBin; the Java 21 floor was not checked.")
+        [Console]::Error.WriteLine("unidrive: could not read the Java version of $javaBin; the Java 25 floor was not checked.")
     }
-    if ($major -gt 0 -and $major -lt 21) {
-        [Console]::Error.WriteLine("unidrive: needs Java 21 or newer, found Java $major at $javaBin. Set UNIDRIVE_JAVA to a newer java.exe.")
+    if ($major -gt 0 -and $major -lt 25) {
+        [Console]::Error.WriteLine("unidrive: needs Java 25 or newer, found Java $major at $javaBin. Set UNIDRIVE_JAVA to a newer java.exe.")
         exit 1
-    }
-    # Long-runners only (they armed the GC log above); a one-shot command is not worth the noise.
-    if ($major -gt 0 -and $major -lt 25 -and $gcAt -ge 0) {
-        [Console]::Error.WriteLine("unidrive: running on Java $major; Java 25 or newer uses noticeably less CPU (set UNIDRIVE_JAVA to a newer java.exe).")
     }
     $env:PATH = (Split-Path -Parent $javaBin) + ';' + $env:PATH
 }
