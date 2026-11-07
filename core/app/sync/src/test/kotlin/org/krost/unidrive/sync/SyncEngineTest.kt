@@ -713,6 +713,39 @@ class SyncEngineTest {
             assertEquals(1, db.recovery.trashedEntries().size, "the tombstone is untouched")
         }
 
+    // #448: the un-trash pre-pass flips the row to EXISTS while planning; the refill download is only planned. A
+    // refresh skips transfers, so the row stayed hydrated with no local file, and the next sync read the missing
+    // file as a local delete and sent the just-restored file back to the recycle bin.
+    @Test
+    fun `#448 a file restored in the cloud and refreshed before its download is downloaded by the next sync, not deleted`() =
+        runTest {
+            provider.files["/restored.txt"] = ByteArray(100)
+            provider.deltaItems = listOf(cloudItem("/restored.txt", size = 100))
+            engine.syncOnce()
+            assertTrue(Files.exists(syncRoot.resolve("restored.txt")))
+            assertEquals(true, db.getEntry("/restored.txt")?.isHydrated, "the downloaded row is hydrated")
+
+            provider.deltaItems = listOf(cloudItem("/restored.txt", deleted = true))
+            provider.deltaCursor = "cursor-2"
+            engine.syncOnce()
+            assertFalse(Files.exists(syncRoot.resolve("restored.txt")))
+            assertEquals(1, db.recovery.trashedEntries().size, "the deleted row is a TRASHED tombstone")
+
+            // The user restores the file in the cloud; a refresh plans the refill but runs no transfer.
+            provider.deltaItems = listOf(cloudItem("/restored.txt", size = 100))
+            provider.deltaCursor = "cursor-3"
+            engine.syncOnce(skipTransfers = true)
+            assertFalse(Files.exists(syncRoot.resolve("restored.txt")), "a refresh downloads nothing")
+
+            // The delta has nothing new; the next sync must refill the file, never delete it remotely.
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-4"
+            engine.syncOnce()
+
+            assertTrue(provider.deletedPaths.isEmpty(), "the restored file must not be deleted again; deleted ${provider.deletedPaths}")
+            assertEquals(100L, Files.size(syncRoot.resolve("restored.txt")), "the restored file must be downloaded")
+        }
+
     @Test
     fun `a remote delete whose path escapes the sync root never trashes the file outside it`() =
         runTest {
@@ -2160,6 +2193,41 @@ class SyncEngineTest {
 
             assertTrue(reporter.warnings.none { it.startsWith("Failed:") }, "a stop is no failed action; warnings=${reporter.warnings}")
             assertFalse(provider.deletedPaths.contains("/b.txt"), "the pass stopped, it must not go on to the next action")
+
+        }
+    fun `an emptied remote directory that still exists locally is NOT reaped`() =
+        runTest {
+            val now = Instant.parse("2026-01-01T00:00:00Z")
+            db.upsertEntry(trackedRow("/dir", isFolder = true))
+            db.upsertEntry(
+                org.krost.unidrive.sync.model.SyncEntry(
+                    path = "/dir/only.txt",
+                    remoteId = "id-only",
+                    remoteHash = "h",
+                    remoteSize = 10,
+                    remoteModified = now,
+                    localMtime = now.toEpochMilli(),
+                    localSize = 10,
+                    isFolder = false,
+                    isPinned = false,
+                    isHydrated = true,
+                    lastSynced = now,
+                ),
+            )
+            db.setSyncState("delta_cursor", "existing-cursor")
+            provider.deltaItems = emptyList()
+            provider.childrenByParent["/dir"] = emptyList()
+            // The user deleted the file but kept the folder.
+            Files.createDirectories(syncRoot.resolve("dir"))
+            Files.writeString(syncRoot.resolve("other.txt"), "keep")
+
+            engineWithDirection(SyncDirection.BIDIRECTIONAL).syncOnce(dryRun = false)
+
+            assertTrue(provider.deletedPaths.contains("/dir/only.txt"), "the file must be deleted")
+            assertFalse(
+                provider.deletedPaths.contains("/dir"),
+                "a folder the user kept must NOT be reaped; deleted=${provider.deletedPaths}",
+            )
         }
 
     @Test
@@ -3493,6 +3561,40 @@ class SyncEngineTest {
                 "MODIFIED-local /modified.txt must be uploaded exactly once across the " +
                     "multi-page gather; got $modifiedUploads (all uploads: ${provider.uploadedPaths})",
             )
+        }
+
+    @Test
+    fun `new local file and folder are planned once across a multi page gather`() =
+        runTest {
+            // gkrost/unidrive-cli#449: resolveSlice reads the FULL localChanges map on every delta page, so a NEW-local
+            // file and folder absent from every page's remote delta come back as Upload / CreateRemoteFolder once per
+            // page. A NEW upload is held out of the per-page executor (archive#200(b)), so the claim set above never
+            // sees it; every copy goes to scan-end. Invariant: one upload per new file, one create per new folder.
+            db.setSyncState("delta_cursor", "baseline-cursor")
+            Files.write(syncRoot.resolve("new.txt"), ByteArray(7) { 0x42 })
+            Files.createDirectories(syncRoot.resolve("newdir"))
+            Files.write(syncRoot.resolve("newdir/inner.txt"), ByteArray(4) { 0x43 })
+
+            // Four pages, none carrying the new paths; each holds one unrelated item so the slice is non-empty.
+            provider.deltaPages =
+                (1..4).map { n -> listOf(cloudItem("/other-page$n.txt", size = 5)) to "page$n-cursor" }
+            (1..4).forEach { n -> provider.files["/other-page$n.txt"] = ByteArray(5) }
+
+            val streamingEngine =
+                SyncEngine(
+                    provider = provider,
+                    db = db,
+                    syncRoot = syncRoot,
+                    conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                    reporter = ProgressReporter.Silent,
+                    streamingReconciliation = true,
+                )
+            streamingEngine.syncOnce()
+
+            assertTrue(provider.deltaCalls >= 3, "expected a multi-page gather (got deltaCalls=${provider.deltaCalls})")
+            assertEquals(1, provider.uploadAttempts.count { it == "/new.txt" }, "uploads: ${provider.uploadAttempts}")
+            assertEquals(1, provider.uploadAttempts.count { it == "/newdir/inner.txt" }, "uploads: ${provider.uploadAttempts}")
+            assertEquals(1, provider.createdFolders.count { it == "/newdir" }, "folders: ${provider.createdFolders}")
         }
 
     @Test

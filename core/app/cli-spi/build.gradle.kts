@@ -3,7 +3,7 @@ plugins {
 }
 
 kotlin {
-    jvmToolchain(21)
+    jvmToolchain(25)
 }
 
 // The CLI extension SPI (package org.krost.unidrive.cli.ext): the contract

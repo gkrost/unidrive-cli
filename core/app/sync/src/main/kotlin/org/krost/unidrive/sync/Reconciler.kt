@@ -250,8 +250,6 @@ class Reconciler(
             for ((path, item) in remoteChangesLocal) {
                 if (item.deleted) continue
                 trashedByRemoteId[item.id] ?: continue
-                if (!db.setStatusExists(item.id)) continue
-                resurrectedPaths.add(path)
                 // Check local presence at the cloud's CURRENT path (the
                 // trashed row's stored path may differ in a rename-during-
                 // trash edge case; v1 is last-write-wins so the cloud path
@@ -261,7 +259,12 @@ class Reconciler(
                 // archive#526: an unresolvable local name plans the download; its apply quarantines
                 // the row (archive#230) instead of aborting the resurrection pass.
                 val localPath = safeResolveLocalOrNull(syncRoot, path)
-                if (!item.isFolder && (localPath == null || !Files.isRegularFile(localPath))) {
+                val needsRefill = !item.isFolder && (localPath == null || !Files.isRegularFile(localPath))
+                // #448: a refill that does not run this pass must not leave a hydrated row with no file — the next
+                // pass would read it as a local delete and trash the restored file again. Unhydrated, it is re-planned.
+                if (!db.setStatusExists(item.id, unhydrate = needsRefill)) continue
+                resurrectedPaths.add(path)
+                if (needsRefill) {
                     resurrectedActions.add(SyncAction.DownloadContent(path, item))
                 }
                 // Local copy present + hash matches → no-op (main loop's

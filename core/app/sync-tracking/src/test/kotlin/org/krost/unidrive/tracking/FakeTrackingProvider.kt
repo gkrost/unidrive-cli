@@ -104,11 +104,18 @@ class FakeTrackingProvider : CloudProvider {
      */
     var incrementalAware: Boolean = false
 
+    /**
+     * When set, an incremental delta lists [incrementalChanges] and [incrementalDeletes] only if it is resumed from
+     * exactly this cursor, like a real provider: a cursor that moved past a change no longer reports it.
+     */
+    var incrementalOnlyFromCursor: String? = null
+
     /** Path→bytes to report as CHANGED on an incremental (non-null cursor) delta. */
     val incrementalChanges: MutableMap<String, ByteArray> = mutableMapOf()
 
     /** Paths to report as DELETED on an incremental (non-null cursor) delta. */
     val incrementalDeletes: MutableList<String> = mutableListOf()
+    private val deletedBytes: MutableMap<String, ByteArray> = mutableMapOf()
 
     /**
      * archive#401 test hook: live items appended to the delta page verbatim. The [files]
@@ -337,6 +344,13 @@ class FakeTrackingProvider : CloudProvider {
     ): CloudItem {
         val bytes = Files.readAllBytes(localPath)
         duringUpload?.also { duringUpload = null; it() }
+        if (ifMatchETag != null) {
+            val current = files[remotePath]
+            val currentTag = current?.let { itemHashOverride?.invoke(it) ?: sha256Hex(it) }
+            if (reportsItemVersions || (currentTag != null && currentTag != ifMatchETag)) {
+                throw RemoteConflictException("simulated 412: $remotePath changed since $ifMatchETag")
+            }
+        }
         files[remotePath] = bytes
         uploadedPaths += remotePath
         return itemFor(remotePath, bytes)
@@ -437,15 +451,16 @@ class FakeTrackingProvider : CloudProvider {
         }
         val passComplete = deltaComplete && !throttledThisPass
 
-        val items =
-            if (incrementalAware && cursor != null) {
+        val listed =
+            if (servesIncrementalChanges(cursor)) {
                 // Incremental delta: only changed + explicitly-deleted items.
                 // Apply the seeded mutations to the backing store so a
                 // follow-on download/adopt round-trips faithfully, then emit
                 // exactly those items — every untouched tracked path is omitted.
                 val deletedItems =
                     incrementalDeletes.map { path ->
-                        val bytes = files.remove(path)
+                        // A replayed tombstone keeps the id of the object it deleted.
+                        val bytes = files.remove(path)?.also { deletedBytes[path] = it } ?: deletedBytes[path]
                         itemFor(path, bytes ?: ByteArray(0)).copy(deleted = true)
                     }
                 val changedItems =
@@ -454,12 +469,18 @@ class FakeTrackingProvider : CloudProvider {
                         itemFor(path, bytes)
                     }
                 deletedItems + changedItems
+            } else if (incrementalAware && cursor != null) { // a cursor past the changes
+                emptyList()
             } else {
                 files.entries.map { (path, bytes) -> itemFor(path, bytes) }
-            } + extraDeltaItems
+            }
+        val items = listed + extraDeltaItems
         afterDelta?.also { afterDelta = null; it() }
         return DeltaPage(items = items, cursor = nextCursor, hasMore = false, complete = passComplete)
     }
+
+    private fun servesIncrementalChanges(cursor: String?): Boolean =
+        incrementalAware && cursor != null && incrementalOnlyFromCursor.let { it == null || it == cursor }
 
     override suspend fun quota(): QuotaInfo = QuotaInfo(total = 1_000_000, used = 0, remaining = 1_000_000)
 

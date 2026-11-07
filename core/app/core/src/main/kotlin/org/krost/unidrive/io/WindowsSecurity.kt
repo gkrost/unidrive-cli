@@ -9,6 +9,7 @@ import java.lang.foreign.MemorySegment
 import java.lang.foreign.SymbolLookup
 import java.lang.foreign.ValueLayout
 import java.lang.invoke.MethodHandle
+import java.nio.charset.StandardCharsets
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 
@@ -18,9 +19,6 @@ import java.nio.file.Path
  * Administrators). `AclFileAttributeView` is not enough: it names SYSTEM and Administrators only
  * through localized account names, and it does not re-derive the entries of the files already in a
  * folder; `SetNamedSecurityInfoW` does.
- *
- * Only FFM members whose signatures are the same in JDK 21 (compile toolchain) and JDK 22+ (the
- * packaged runtime) are used; wide strings are therefore copied char by char.
  */
 internal object WindowsSecurity {
     const val ADMINISTRATORS_SID = "S-1-5-32-544"
@@ -316,23 +314,9 @@ internal object WindowsSecurity {
         }
 
     /** A NUL-terminated UTF-16 copy of [s]. */
-    private fun Arena.wide(s: String): MemorySegment {
-        val segment = allocate((s.length + 1) * 2L, 2)
-        for (i in s.indices) segment.set(ValueLayout.JAVA_CHAR, i * 2L, s[i])
-        segment.set(ValueLayout.JAVA_CHAR, s.length * 2L, Char(0))
-        return segment
-    }
+    private fun Arena.wide(s: String): MemorySegment = allocateFrom(s, StandardCharsets.UTF_16LE)
 
     /** The NUL-terminated UTF-16 string at [pointer] (memory owned by Windows). */
-    private fun readWide(pointer: MemorySegment): String {
-        val segment = pointer.reinterpret(Int.MAX_VALUE.toLong())
-        val text = StringBuilder()
-        var offset = 0L
-        while (true) {
-            val c = segment.get(ValueLayout.JAVA_CHAR, offset)
-            if (c == Char(0)) return text.toString()
-            text.append(c)
-            offset += 2
-        }
-    }
+    private fun readWide(pointer: MemorySegment): String =
+        pointer.reinterpret(Int.MAX_VALUE.toLong()).getString(0, StandardCharsets.UTF_16LE)
 }

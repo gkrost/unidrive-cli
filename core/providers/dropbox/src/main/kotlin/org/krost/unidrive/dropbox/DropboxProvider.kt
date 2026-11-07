@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -44,7 +45,9 @@ import org.krost.unidrive.TokenRevocation
 import org.krost.unidrive.dropbox.DropboxApi.Companion.obj
 import org.krost.unidrive.dropbox.DropboxItems.Companion.apiPath
 import org.krost.unidrive.http.UploadTimeoutPolicy
-import org.krost.unidrive.http.streamingFileBody
+import org.krost.unidrive.http.UploadWatchdogLimits
+import org.krost.unidrive.http.progressTrackingBody
+import org.krost.unidrive.http.progressTrackingFileBody
 import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.nio.file.Path
@@ -70,6 +73,7 @@ import java.util.Collections
 class DropboxProvider(
     private val config: DropboxConfig,
     engine: HttpClientEngine? = null,
+    uploadWatchdog: UploadWatchdogLimits = UploadWatchdogLimits.DEFAULT,
 ) : CloudProvider {
     override val id = "dropbox"
     override val displayName = "Dropbox"
@@ -78,7 +82,7 @@ class DropboxProvider(
     override val caseSensitivity: CaseSensitivity get() = CaseSensitivity.INSENSITIVE_PRESERVING
 
     private val log = org.slf4j.LoggerFactory.getLogger(DropboxProvider::class.java)
-    private val api: DropboxApi = DropboxApi(config, { force, rejected -> auth.accessToken(force, rejected) }, engine)
+    private val api: DropboxApi = DropboxApi(config, { force, rejected -> auth.accessToken(force, rejected) }, engine, uploadWatchdog = uploadWatchdog)
 
     // archive#867: upload sessions in flight, so an interrupted big upload resumes at the committed offset.
     private val sessionStore = DropboxSessionStore(config.tokenPath)
@@ -288,9 +292,7 @@ class DropboxProvider(
         val meta =
             try {
                 if (size <= config.simpleUploadMaxBytes) {
-                    api.content("files/upload", commit, UploadTimeoutPolicy.computeRequestTimeoutMs(size)) {
-                        streamingFileBody(localPath, size)
-                    }
+                    api.contentWatched("files/upload", commit, size) { progressTrackingFileBody(localPath, size, it) }
                 } else {
                     uploadInSession(remotePath, localPath, size, commit, onProgress)
                 }
@@ -394,11 +396,11 @@ class DropboxProvider(
         offsetCorrected: Boolean,
     ): Long? {
         try {
-            api.content(
+            api.contentWatched(
                 "files/upload_session/append_v2",
                 obj("cursor" to obj("session_id" to sessionId, "offset" to offset), "close" to false),
-                UploadTimeoutPolicy.computeRequestTimeoutMs(chunk.size.toLong()),
-            ) { chunk }
+                chunk.size.toLong(),
+            ) { progressTrackingBody(chunk, it) }
             return null
         } catch (e: DropboxApiException) {
             val correct = correctOffsetOf(e)
@@ -533,6 +535,7 @@ class DropboxProvider(
     ): CloudItem = relocate(if (remoteId.startsWith("id:")) remoteId else apiPath(fromPath), apiPath(toPath), apiPath(fromPath))
 
     // Dropbox compares names without case, so a rename that changes only the case goes through a temporary name.
+    @Suppress("TooGenericExceptionCaught") // whatever fails the second move, the item is put back and the failure is rethrown unchanged
     private suspend fun relocate(
         from: String,
         to: String,
@@ -542,7 +545,19 @@ class DropboxProvider(
         if (fromPath != to && fromPath.equals(to, ignoreCase = true)) {
             val parked = "${to.substringBeforeLast('/')}/.unidrive-case-${java.util.UUID.randomUUID().toString().take(8)}"
             moveOnce(from, parked)
-            return moveOnce(parked, to)
+            try {
+                return moveOnce(parked, to)
+            } catch (e: Throwable) {
+                // The item must not stay under the hidden name: the next delta would read it as a delete plus a new file.
+                withContext(NonCancellable) {
+                    try {
+                        moveOnce(parked, fromPath)
+                    } catch (rollback: Exception) {
+                        log.warn("Dropbox case rename failed and the item could not be put back; it is left at '{}'", parked, rollback)
+                    }
+                }
+                throw e
+            }
         }
         return moveOnce(from, to)
     }

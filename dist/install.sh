@@ -110,11 +110,11 @@ java_ok=0
 for cand in "${UNIDRIVE_JAVA:-}" "$(command -v java || true)" /usr/lib/jvm/*/bin/java; do
     if [[ -n "${cand}" && -x "${cand}" ]]; then
         major="$("${cand}" -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1)"
-        if [[ -n "${major}" && "${major}" -ge 21 ]]; then java_ok=1; break; fi
+        if [[ -n "${major}" && "${major}" -ge 25 ]]; then java_ok=1; break; fi
     fi
 done
 if [[ "${java_ok}" == "0" ]]; then
-    echo "WARNING: no Java 21+ runtime found; unidrive will not start until one is installed" >&2
+    echo "WARNING: no Java 25+ runtime found; unidrive will not start until one is installed" >&2
     echo "         (Debian/Ubuntu: sudo apt install openjdk-25-jre-headless) or UNIDRIVE_JAVA is set." >&2
 fi
 

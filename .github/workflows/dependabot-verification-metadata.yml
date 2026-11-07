@@ -52,11 +52,11 @@ jobs:
       # POMs and BOMs it has already parsed, see core/gradle.properties). The wrapper is still validated.
       - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
 
-      - name: Set up JDK 21
+      - name: Set up JDK 25
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
 
       - name: Regenerate verification metadata
         working-directory: core

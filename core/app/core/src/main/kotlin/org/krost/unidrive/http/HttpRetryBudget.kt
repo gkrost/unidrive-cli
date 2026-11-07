@@ -42,7 +42,8 @@ import java.util.concurrent.atomic.AtomicLong
  *  1. **Circuit breaker.** When ≥ [stormThreshold] throttles land inside [stormWindowMs],
  *     [awaitSlot] blocks all new request starts until `max(retryAfter) × 1.2` has elapsed.
  *     Coroutines already past [awaitSlot] run to completion — we don't cancel in-flight work.
- *  2. **Concurrency halving.** Each storm halves [currentConcurrency] (floor = 1). It is the number of
+ *  2. **Concurrency halving.** Each storm halves [currentConcurrency] once (floor = 1); further throttles inside
+ *     [stormWindowMs] of that cut do not halve again. It is the number of
  *     permits [withPermit] hands out, so a caller that bounds its requests through it shrinks with the storm.
  *     [awaitSlot] alone takes no permit.
  *  3. **Adaptive token bucket.** [awaitSlot] enforces a minimum gap between successive
@@ -89,6 +90,7 @@ class HttpRetryBudget(
     // starts at t=0 doesn't collide with a real event recorded at t=0. UD-200.
     private val lastThrottleEventMs = AtomicLong(Long.MIN_VALUE)
     private val lastRecoveryAtMs = AtomicLong(Long.MIN_VALUE)
+    private val lastHalvingAtMs = AtomicLong(Long.MIN_VALUE)
 
     // Priority-lane admission watermark. Background callers spin (suspend, not
     // busy-wait) on `delay(yieldWindowMs)` increments until no foreground slot
@@ -180,8 +182,12 @@ class HttpRetryBudget(
         if (recentThrottles.size >= stormThreshold) {
             val hint = lastRetryAfterInWindowMs.get().coerceAtLeast(minSpacingMs)
             val backoffMs = (hint * stormBackoffFactor).toLong()
-            val wasHalved =
-                concurrency.updateAndGet { current -> maxOf(1, current / 2) }
+            // A storm is one cut: throttles arriving while it lasts do not halve again. Only one at least
+            // [stormWindowMs] after the last cut can (and it then needs a fresh [stormThreshold] in its window).
+            val lastCut = lastHalvingAtMs.get()
+            val cut = (lastCut == Long.MIN_VALUE || now - lastCut >= stormWindowMs) && lastHalvingAtMs.compareAndSet(lastCut, now)
+            val previous = concurrency.get()
+            val reduced = if (cut) concurrency.updateAndGet { current -> maxOf(1, current / 2) } else previous
             globalResumeAfter.updateAndGet { maxOf(it, now + backoffMs) }
             log.warn(
                 "UD-232 throttle storm: {} × 429/503 in {}ms — pausing new requests {}ms, " +
@@ -189,8 +195,8 @@ class HttpRetryBudget(
                 recentThrottles.size,
                 stormWindowMs,
                 backoffMs,
-                maxConcurrency,
-                wasHalved,
+                previous,
+                reduced,
             )
         }
     }

@@ -53,6 +53,12 @@ interface TrackingSet {
     /** All currently-tracked paths (any state, including Pending*). Used to drive reconcile + ts status. */
     fun paths(): Set<String>
 
+    /** The tracked paths of [providerId] whose row names [remoteFileId], by the remote-id index (no scan of the set). */
+    fun pathsByRemoteId(
+        providerId: String,
+        remoteFileId: String,
+    ): List<String>
+
     /** Count by state — used by `ts status`. */
     fun countsByState(): Map<TrackState, Int>
 
@@ -335,6 +341,23 @@ class SqliteTrackingSet(
         val c = conn ?: error("not initialized")
         val out = mutableSetOf<String>()
         c.prepareStatement("SELECT path FROM tracking_entries").use { ps ->
+            ps.executeQuery().use { rs ->
+                while (rs.next()) out += rs.getString(1)
+            }
+        }
+        return out
+    }
+
+    @Synchronized
+    override fun pathsByRemoteId(
+        providerId: String,
+        remoteFileId: String,
+    ): List<String> {
+        val c = conn ?: error("not initialized")
+        val out = mutableListOf<String>()
+        c.prepareStatement("SELECT path FROM tracking_entries WHERE provider_id = ? AND remote_file_id = ?").use { ps ->
+            ps.setString(1, providerId)
+            ps.setString(2, remoteFileId)
             ps.executeQuery().use { rs ->
                 while (rs.next()) out += rs.getString(1)
             }

@@ -13,7 +13,7 @@ the service — that step is yours.
 An upgrade is safe over a running install: active `unidrive*.service` units are stopped before the jar is
 replaced and started again afterwards, and the jar is unlinked and copied to a fresh file rather than
 overwritten in place. A daemon or mount started by hand keeps running the previous jar; the installer lists
-it so you can restart it. It also warns when no Java 21+ runtime is found.
+it so you can restart it. It also warns when no Java 25+ runtime is found.
 
 The co-daemon (`unidrive-mount`) that `unidrive mount` and `unidrive-mount@.service` start is looked up at
 the first executable of `~/.local/lib/unidrive/unidrive-mount` (this installer, the per-user tarball, a
@@ -22,11 +22,10 @@ from `UNIDRIVE_MOUNT_BIN` (no fallback; a missing file is refused with exit 78 n
 
 ## Prerequisites
 
-- Java 21+ runtime (JRE is enough; JDK only required to build); Java 25+ recommended
+- Java 25+ runtime (JRE is enough; JDK 25 only required to build)
   (Debian/Ubuntu: `sudo apt install openjdk-25-jre-headless`). The launcher uses `java` on
   `$PATH` when it is 25+, else the newest 25+ JDK under `/usr/lib/jvm`, else `java` on `$PATH`;
-  `UNIDRIVE_JAVA=/path/to/bin/java` overrides the choice. Long-running commands warn on Java
-  21–24, and every command warns while a running daemon still uses a Java runtime that a package
+  `UNIDRIVE_JAVA=/path/to/bin/java` overrides the choice; Java below 25 is refused. Every command warns while a running daemon still uses a Java runtime that a package
   upgrade has since replaced (restart it with `unidrive -p <profile> daemon stop`).
 - `~/.local/bin` on your `$PATH`.
 - For Internxt profiles: `libsecret-tools` (`sudo apt install libsecret-tools` on Debian/Ubuntu) and an unlocked Secret Service collection available to the user's systemd session. Internxt authentication and sync fail closed when it is missing or locked; credentials are not written in plaintext.

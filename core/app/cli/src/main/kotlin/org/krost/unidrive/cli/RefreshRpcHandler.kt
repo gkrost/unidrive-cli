@@ -104,7 +104,7 @@ class RefreshRpcHandler(
                             log.info("refresh.run routed to enumerate (mount client connected): job_id=$jobId reset=$reset")
                             // enumerateRemoteIntoState converts provider failures into EnumerateResult(ok=false)
                             // rather than throwing, so a false result must be surfaced — not emitted as success.
-                            val result = engine.enumerateRemoteIntoState(reset)
+                            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { engine.enumerateRemoteIntoState(reset) }
                             if (result.ok && result.skipped && reset) {
                                 // archive#1037: another pass held the single-flight flag, so the cursor reset never ran. A plain
                                 // refresh is served by that pass; a reset is not, and "done" would leave an operator who
@@ -123,22 +123,25 @@ class RefreshRpcHandler(
                                 """{"event":"refresh.done","job_id":"$jobId","ok":false,"error":"provider_error","message":$msg}"""
                             }
                         } else {
-                            if (reset) {
-                                // Rows that still await upload, and rows whose local copy holds an edit the cloud has
-                                // not seen, are not part of what a reset rebuilds from the cloud: keep them. A write
-                                // can precede open_write and its upload/error bookkeeping, even on a never-read row.
-                                val kept =
-                                    db.resetKeepingPending { row ->
-                                        keepGuards.holdsUnsyncedEdit(row.path, row)
-                                    }
-                                log.info(
-                                    "refresh.run reset=true: cleared state.db (kept {} row(s) holding unsynced content) " +
-                                        "before re-enumerating: job_id={}",
-                                    kept,
-                                    jobId,
-                                )
+                            // Blocking JDBC and a sync_root scan: off the caller's dispatcher.
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                if (reset) {
+                                    // Rows that still await upload, and rows whose local copy holds an edit the cloud has
+                                    // not seen, are not part of what a reset rebuilds from the cloud: keep them. A write
+                                    // can precede open_write and its upload/error bookkeeping, even on a never-read row.
+                                    val kept =
+                                        db.resetKeepingPending { row ->
+                                            keepGuards.holdsUnsyncedEdit(row.path, row)
+                                        }
+                                    log.info(
+                                        "refresh.run reset=true: cleared state.db (kept {} row(s) holding unsynced content) " +
+                                            "before re-enumerating: job_id={}",
+                                        kept,
+                                        jobId,
+                                    )
+                                }
+                                engine.syncOnce(skipTransfers = true, skipRemoteGather = false)
                             }
-                            engine.syncOnce(skipTransfers = true, skipRemoteGather = false)
                             """{"event":"refresh.done","job_id":"$jobId","ok":true}"""
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
@@ -157,13 +160,14 @@ class RefreshRpcHandler(
                         val token = if (e is IllegalStateException) "engine_guard" else "provider_error"
                         val msg = jsonString(e.message?.let(UrlRedaction::redact))
                         """{"event":"refresh.done","job_id":"$jobId","ok":false,"error":"$token","message":$msg}"""
-                    } finally {
-                        inFlight.set(null)
                     }
                     // Fan terminal event to all sync.subscribe subscribers via the
                     // existing broadcast channel. emit() is non-blocking trySend; the
                     // broadcastJob loop in IpcServer filters by syncSubscribers set.
                     runCatching { emit(terminalEvent) }
+                    // Only now is the slot free: a request accepted between the two would have its client read this
+                    // refresh's refresh.done as its own (gkrost/unidrive-cli#442).
+                    inFlight.set(null)
                 }
             } catch (t: Throwable) {
                 // launch itself failed (e.g. scope already cancelled): release the
@@ -177,6 +181,8 @@ class RefreshRpcHandler(
         // resurrecting a stale in-flight entry (which would wrongly reject the next
         // request as busy and make awaitInFlight join a completed job).
         inFlight.compareAndSet(placeholder, RefreshJob(jobId, launched))
+        // A job that ends without reaching the line above (cancelled, or failed with an Error) still frees its slot.
+        launched.invokeOnCompletion { inFlight.updateAndGet { if (it?.id == jobId) null else it } }
         return """{"ok":true,"job_id":"$jobId"}"""
     }
 

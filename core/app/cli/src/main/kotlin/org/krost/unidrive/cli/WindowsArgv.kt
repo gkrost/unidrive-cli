@@ -8,6 +8,7 @@ import java.lang.foreign.MemorySegment
 import java.lang.foreign.SymbolLookup
 import java.lang.foreign.ValueLayout
 import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
 
 /**
  * archive#487: on Windows the JVM's launcher hands `main` its arguments converted to the ANSI code page, so every character
@@ -97,16 +98,8 @@ object WindowsArgv {
     }
 
     // A NUL-terminated UTF-16 string. Bounded: a command line is at most 32,767 characters.
-    private fun readWide(pointer: MemorySegment): String {
-        val segment = pointer.reinterpret(MAX_COMMAND_LINE_CHARS * 2L)
-        val sb = StringBuilder()
-        for (i in 0 until MAX_COMMAND_LINE_CHARS) {
-            val c = segment.get(ValueLayout.JAVA_CHAR_UNALIGNED, i * 2L)
-            if (c == '\u0000') break
-            sb.append(c)
-        }
-        return sb.toString()
-    }
+    private fun readWide(pointer: MemorySegment): String =
+        pointer.reinterpret(MAX_COMMAND_LINE_CHARS * 2L).getString(0, StandardCharsets.UTF_16LE)
 
     private const val MAX_COMMAND_LINE_CHARS = 32_767
 }

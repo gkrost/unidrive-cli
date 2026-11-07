@@ -221,4 +221,64 @@ class HydrationSubscribeTest {
         // any spurious writer invocations after disconnect.
         assertTrue(writer.linesFor("conn1").none { it.contains("after.txt") })
     }
+
+    private fun completed(i: Int) = HydrationEvent.Completed("/c$i", "h$i", HydrationEvent.Completed.Direction.UPLOAD, ok = true)
+
+    @Test
+    fun `a flood of progress events never costs a subscriber its completed or final failed events`() = runTest {
+        val handler = newHandler()
+        val writer = FakeWriter()
+        val gate = CompletableDeferred<Unit>()
+        writer.gate = gate
+        handler.start(this) { id, line -> writer.write(id, line) }
+        handler.handle("conn1", """{"verb":"hydration.subscribe"}""")
+        // The writer takes the first event and parks on the gate: everything after it queues up.
+        handler.dispatchEvent(HydrationEvent.Hydrating("/p0"))
+        advanceUntilIdle()
+
+        val capacity = HydrationIpcHandler.SUBSCRIBER_QUEUE_CAPACITY
+        // Outcomes first, so a drop-oldest policy would hit them first, then far more progress than the queue holds.
+        handler.dispatchEvent(completed(1))
+        handler.dispatchEvent(HydrationEvent.Failed("/f", HydrationError.Generic("boom"), retryScheduled = false))
+        handler.dispatchEvent(HydrationEvent.Failed("/r", HydrationError.Generic("again"), retryScheduled = true))
+        for (i in 1..(capacity * 3)) {
+            handler.dispatchEvent(HydrationEvent.Uploading("/p$i", "h$i", i.toLong(), 1000L))
+        }
+        handler.dispatchEvent(completed(2))
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        val out = writer.linesFor("conn1")
+        assertTrue(out.any { it.contains(""""event":"completed","path":"/c1"""") }, "the early completed survives the flood")
+        assertTrue(out.any { it.contains(""""event":"completed","path":"/c2"""") }, "the late completed is delivered")
+        assertTrue(out.any { it.contains(""""event":"failed","path":"/f"""") }, "a failed that is not retried survives")
+        assertTrue(out.none { it.contains(""""path":"/r"""") }, "a failed that will be retried is progress, and dropped first")
+        assertTrue(out.any { it.startsWith("""{"event":"lost"""") }, "the lost sentinel still reports the dropped progress")
+        assertTrue(out.size <= 1 + 1 + capacity + 2, "the queue stays bounded by capacity plus outcomes, was ${out.size}")
+
+        handler.onSubscriberDisconnect("conn1")
+    }
+
+    @Test
+    fun `a queue full of outcomes keeps them all up to the hard cap`() = runTest {
+        val handler = newHandler()
+        val writer = FakeWriter()
+        val gate = CompletableDeferred<Unit>()
+        writer.gate = gate
+        handler.start(this) { id, line -> writer.write(id, line) }
+        handler.handle("conn1", """{"verb":"hydration.subscribe"}""")
+        handler.dispatchEvent(HydrationEvent.Hydrating("/p0"))
+        advanceUntilIdle()
+
+        val n = HydrationIpcHandler.SUBSCRIBER_QUEUE_CAPACITY * 4
+        for (i in 1..n) handler.dispatchEvent(completed(i))
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        val out = writer.linesFor("conn1")
+        assertEquals(n, out.count { it.contains(""""event":"completed"""") })
+        assertTrue(out.none { it.startsWith("""{"event":"lost"""") })
+
+        handler.onSubscriberDisconnect("conn1")
+    }
 }

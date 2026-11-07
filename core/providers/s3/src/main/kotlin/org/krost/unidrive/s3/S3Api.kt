@@ -14,11 +14,9 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpMethod
+import io.ktor.http.content.OutgoingContent
 import io.ktor.http.contentLength
 import io.ktor.http.isSuccess
-import io.ktor.utils.io.writeFully
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.HttpDefaults
 import org.krost.unidrive.ProviderException
@@ -29,13 +27,18 @@ import org.krost.unidrive.http.RequestId
 import org.krost.unidrive.http.RetryOutcome
 import org.krost.unidrive.http.RequestMetricsSink
 import org.krost.unidrive.http.RequestMetricsTap
+import org.krost.unidrive.http.UploadProgress
 import org.krost.unidrive.http.UploadTimeoutPolicy
+import org.krost.unidrive.http.UploadWatchdogException
+import org.krost.unidrive.http.UploadWatchdogLimits
 import org.krost.unidrive.http.parseRetryAfterHeader
 import org.krost.unidrive.http.readBoundedErrorBody
 import org.krost.unidrive.http.retrying
-import org.krost.unidrive.http.streamingFileBody
 import org.krost.unidrive.http.truncateErrorBody
+import org.krost.unidrive.http.progressTrackingFileBody
+import org.krost.unidrive.http.progressTrackingFileRangeBody
 import org.krost.unidrive.http.throttleWaitMs
+import org.krost.unidrive.http.withUploadWatchdog
 import org.krost.unidrive.http.writeStagedDownload
 import org.krost.unidrive.s3.SigV4Signer.Companion.uriEncode
 import org.w3c.dom.Element
@@ -95,6 +98,7 @@ class S3Api(
     engine: HttpClientEngine? = null,
     clock: () -> Instant = Instant::now,
     private val budget: HttpRetryBudget = HttpRetryBudget(maxConcurrency = MAX_CONCURRENCY),
+    private val uploadWatchdog: UploadWatchdogLimits = UploadWatchdogLimits.DEFAULT,
 ) : AutoCloseable {
     private val log = org.slf4j.LoggerFactory.getLogger(S3Api::class.java)
     private val signer = SigV4Signer(config.accessKey, config.secretKey, config.region, clock)
@@ -216,8 +220,10 @@ class S3Api(
         val size = file?.let { Files.size(it) } ?: 0L
         val headers = meta.mapKeys { "x-amz-meta-${it.key}" } + conditionHeaders(ifMatch, ifNoneMatch)
         val response =
-            send(HttpMethod.Put, key, emptyList(), headers, SigV4Signer.UNSIGNED_PAYLOAD, timeoutMs = UploadTimeoutPolicy.computeRequestTimeoutMs(size)) {
-                if (file != null) streamingFileBody(file, size) else ByteArray(0)
+            if (file != null) {
+                send(HttpMethod.Put, key, emptyList(), headers, SigV4Signer.UNSIGNED_PAYLOAD, watched = WatchedBody(size) { progressTrackingFileBody(file, size, it) })
+            } else {
+                send(HttpMethod.Put, key, emptyList(), headers, SigV4Signer.UNSIGNED_PAYLOAD) { ByteArray(0) }
             }
         return requireOk(response, "PUT").headers["ETag"]?.trim('"')
     }
@@ -249,8 +255,8 @@ class S3Api(
                 listOf("partNumber" to number.toString(), "uploadId" to uriEncode(uploadId)),
                 mapOf("Content-MD5" to Base64.getEncoder().encodeToString(md5)),
                 SigV4Signer.UNSIGNED_PAYLOAD,
-                timeoutMs = UploadTimeoutPolicy.computeRequestTimeoutMs(length),
-            ) { rangeBody(file, offset, length) }
+                watched = WatchedBody(length) { progressTrackingFileRangeBody(file, offset, length, it) },
+            )
         return requireOk(response).headers["ETag"]?.trim('"') ?: throw ProviderException("S3 accepted part $number without an ETag")
     }
 
@@ -398,22 +404,18 @@ class S3Api(
         query: List<Pair<String, String>> = emptyList(),
         headers: Map<String, String> = emptyMap(),
         payloadHash: String = SigV4Signer.EMPTY_SHA256,
-        timeoutMs: Long? = null,
+        watched: WatchedBody? = null,
         body: (() -> Any)? = null,
     ): HttpResponse =
         budget.retrying { _, retries ->
             val response =
-                httpClient.request {
-                    signed(method, key, query, headers, payloadHash)
-                    // The socket timeout is a read-idle timer that runs from the start of the request, and S3 is silent
-                    // until the body is in: left at 60 s it cuts every upload a slow uplink needs longer than that for (archive#1058).
-                    if (timeoutMs != null) {
-                        timeout {
-                            requestTimeoutMillis = timeoutMs
-                            socketTimeoutMillis = timeoutMs
-                        }
+                if (watched != null) {
+                    watchedRequest(watched, method, key, query, headers, payloadHash)
+                } else {
+                    httpClient.request {
+                        signed(method, key, query, headers, payloadHash)
+                        if (body != null) setBody(body())
                     }
-                    if (body != null) setBody(body())
                 }
             if (isRetryable(response.status.value) && retries < MAX_ATTEMPTS) {
                 val waitMs = backoffMs(response, retries)
@@ -424,6 +426,56 @@ class S3Api(
                 RetryOutcome.Done(response)
             }
         }
+
+    /** An upload body of [size] bytes, built afresh for every attempt around that attempt's progress record. */
+    private class WatchedBody(
+        val size: Long,
+        val body: (UploadProgress) -> OutgoingContent,
+    )
+
+    // A body upload under the write-progress watchdog: S3 is silent until the whole body is in, so the socket timeout
+    // cannot tell a slow upload from a stuck one. The watchdog cuts the request when no body byte was written for the
+    // idle window, or when S3 did not answer within the response wait after the last byte; the request and socket
+    // timeouts are raised to an outer net behind it (the same scheme as the other providers' data-plane PUTs).
+    private suspend fun watchedRequest(
+        watched: WatchedBody,
+        method: HttpMethod,
+        key: String?,
+        query: List<Pair<String, String>>,
+        headers: Map<String, String>,
+        payloadHash: String,
+    ): HttpResponse {
+        val progress = UploadProgress(watched.size)
+        val responseWaitMs = UploadTimeoutPolicy.computeResponseWaitMs(watched.size, uploadWatchdog.responseWaitFloorMs)
+        val outerLimitMs =
+            UploadTimeoutPolicy.computeWatchedOuterLimitMs(
+                fileSize = watched.size,
+                minThroughputBytesPerSecond = UploadTimeoutPolicy.DEFAULT_MIN_THROUGHPUT_BYTES_PER_SECOND,
+                idleWindowMs = uploadWatchdog.idleWindowMs,
+                responseWaitMs = responseWaitMs,
+            )
+        try {
+            return withUploadWatchdog(
+                progress = progress,
+                idleWindowMs = uploadWatchdog.idleWindowMs,
+                responseWaitMs = responseWaitMs,
+                tickMs = uploadWatchdog.tickMs,
+                what = "S3 upload of '${key ?: "(bucket)"}'",
+            ) {
+                httpClient.request {
+                    signed(method, key, query, headers, payloadHash)
+                    timeout {
+                        requestTimeoutMillis = outerLimitMs
+                        socketTimeoutMillis = outerLimitMs
+                    }
+                    setBody(watched.body(progress))
+                }
+            }
+        } catch (e: UploadWatchdogException) {
+            log.warn("{} ({})", e.message, e.reason)
+            throw e
+        }
+    }
 
     private fun conditionHeaders(
         ifMatch: String?,
@@ -540,33 +592,6 @@ class S3Api(
         private fun Element.text(tag: String): String? = children(tag).firstOrNull()?.textContent
     }
 }
-
-/** [length] bytes of [file] from [offset], read afresh for every attempt. */
-internal fun rangeBody(
-    file: Path,
-    offset: Long,
-    length: Long,
-): io.ktor.http.content.OutgoingContent =
-    object : io.ktor.http.content.OutgoingContent.WriteChannelContent() {
-        override val contentLength: Long = length
-        override val contentType: io.ktor.http.ContentType = io.ktor.http.ContentType.Application.OctetStream
-
-        override suspend fun writeTo(channel: io.ktor.utils.io.ByteWriteChannel) {
-            withContext(Dispatchers.IO) {
-                java.io.RandomAccessFile(file.toFile(), "r").use { raf ->
-                    raf.seek(offset)
-                    val buf = ByteArray(64 * 1024)
-                    var left = length
-                    while (left > 0) {
-                        val n = raf.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
-                        if (n <= 0) throw java.io.IOException("'$file' became shorter while it was uploaded")
-                        channel.writeFully(buf, 0, n)
-                        left -= n
-                    }
-                }
-            }
-        }
-    }
 
 internal fun s3HttpClient(
     tap: RequestMetricsTap,

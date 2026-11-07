@@ -206,7 +206,7 @@ subprojects {
             // regardless of which JDK drives the Gradle daemon.
             javaLauncher.set(
                 toolchainService.launcherFor {
-                    languageVersion = org.gradle.jvm.toolchain.JavaLanguageVersion.of(21)
+                    languageVersion = org.gradle.jvm.toolchain.JavaLanguageVersion.of(25)
                 },
             )
         }
@@ -235,7 +235,7 @@ subprojects {
     }
 
     tasks.withType<JavaCompile>().configureEach {
-        options.release.set(21)
+        options.release.set(25)
         // Report-only lint for the few Java sources: no -Werror, the gate stays `check`.
         options.compilerArgs.add("-Xlint:all")
     }
@@ -244,7 +244,7 @@ subprojects {
         if (plugins.hasPlugin("org.jetbrains.kotlin.jvm")) {
             extensions.configure<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension> {
                 compilerOptions {
-                    jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+                    jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_25)
                 }
                 // kotlinx-coroutines-test (runTest, StandardTestDispatcher, advanceUntilIdle, currentTime, ...)
                 // is still marked experimental and the tests use it throughout: one opt-in for the test

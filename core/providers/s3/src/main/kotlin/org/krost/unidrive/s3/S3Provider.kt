@@ -45,12 +45,13 @@ class S3Provider(
     val config: S3Config,
     engine: HttpClientEngine? = null,
     clock: () -> Instant = Instant::now,
+    uploadWatchdog: org.krost.unidrive.http.UploadWatchdogLimits = org.krost.unidrive.http.UploadWatchdogLimits.DEFAULT,
 ) : CloudProvider {
     override val id = "s3"
     override val displayName = "S3 / S3-compatible"
 
     private val log = org.slf4j.LoggerFactory.getLogger(S3Provider::class.java)
-    private val api = S3Api(config, engine, clock)
+    private val api = S3Api(config, engine, clock, uploadWatchdog = uploadWatchdog)
     private val uploads = MultipartStore(config.tokenPath.resolve("s3-uploads"))
 
     override var isAuthenticated: Boolean = false
@@ -353,8 +354,28 @@ class S3Provider(
                 }
                 api.delete(key)
             }
+            // gkrost/unidrive-cli#447: a guarded delete is a file delete, and the file is gone already, which is what a
+            // delete wants (as on Dropbox and OneDrive). Keys under a same-named prefix are another tree: never touch them.
+            ifMatchETag != null -> return
             // No object: a folder (every key below it goes, as a folder delete does on the other providers), or nothing.
             else -> deleteTree("$key/")
+        }
+    }
+
+    // gkrost/unidrive-cli#447: the engines delete a synced item by its id, which says what it is: a folder id ends in '/'
+    // (folderItem), a file id is the object's key (fileItem). A file id never takes the folder path, so a file that is gone
+    // already is done instead of turning into a delete of the keys under a same-named prefix. The id decides, not
+    // [remotePath] (archive#402: the id is the item the engine tracks); S3 has no rename, so the two name the same key.
+    override suspend fun deleteById(
+        remoteId: String,
+        remotePath: String,
+    ) {
+        val key = remoteId.trimEnd('/')
+        if (key.isEmpty()) throw ProviderException("Refusing to delete the whole bucket")
+        if (remoteId.endsWith('/')) {
+            deleteTree("$key/")
+        } else if (api.head(key) != null) {
+            api.delete(key)
         }
     }
 
@@ -362,6 +383,12 @@ class S3Provider(
     override suspend fun deletePermanently(remotePath: String) {
         delete(remotePath, null)
     }
+
+    // The default goes by the path (delete without a guard), which would take the folder path for a gone file: go by the id.
+    override suspend fun deletePermanentlyById(
+        remoteId: String,
+        remotePath: String,
+    ) = deleteById(remoteId, remotePath)
 
     private suspend fun deleteTree(prefix: String) = deleteKeys(allKeys(prefix), prefix)
 

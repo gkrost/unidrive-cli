@@ -161,22 +161,51 @@ internal fun runRefresh(
 
     // Issue refresh.run (with optional reset flag — F9 fix).
     lines.writeLine(if (reset) """{"verb":"refresh.run","reset":true}""" else """{"verb":"refresh.run"}""")
-    var replied = false
+    val events = RefreshEvents(out, err)
     while (true) {
         val line = (lines.readLine() as? IpcLineRead.Line)?.text ?: return daemonClosed(err)
+        events.onLine(line)?.let { return it }
+    }
+}
+
+/** The events of one refresh: those of another job (a refresh a second client started) are not ours. */
+private class RefreshEvents(
+    private val out: (String) -> Unit,
+    private val err: (String) -> Unit,
+) {
+    private var replied = false
+    private var jobId: String? = null
+
+    // An event that comes before the reply cannot be matched to our job yet: it is held and judged once the reply names it.
+    private val early = ArrayList<Pair<String, kotlinx.serialization.json.JsonObject>>()
+
+    /** Null: keep reading. Otherwise the exit code. */
+    fun onLine(line: String): Int? {
         val json = line.asJsonObjectOrNull()
-        if (json == null || !json.containsKey("event")) {
-            if (replied) continue
-            replied = true
-            if (json?.isOkReply() != true) {
-                err("unidrive refresh: daemon rejected refresh.run: $line")
-                return 1
-            }
-            continue
+        if (json != null && json.containsKey("event")) {
+            if (!replied) early.add(line to json) else return accept(line, json)
+            return null
         }
+        if (replied) return null
+        replied = true
+        if (json?.isOkReply() != true) {
+            err("unidrive refresh: daemon rejected refresh.run: $line")
+            return 1
+        }
+        jobId = (json["job_id"] as? JsonPrimitive)?.content
+        for ((l, j) in early) accept(l, j)?.let { return it }
+        return null
+    }
+
+    private fun accept(
+        line: String,
+        json: kotlinx.serialization.json.JsonObject,
+    ): Int? {
+        val eventJob = (json["job_id"] as? JsonPrimitive)?.content
+        if (eventJob != null && jobId != null && eventJob != jobId) return null
         // Print progress events as they arrive (one per line)
         out(line)
-        if ((json["event"] as? JsonPrimitive)?.content != "refresh.done") continue
+        if ((json["event"] as? JsonPrimitive)?.content != "refresh.done") return null
         if (json.isOkReply()) return 0
         // archive#1037: a reset that met a running enumeration (the daemon's own poll, say) did not run.
         if ((json["error"] as? JsonPrimitive)?.content == "busy") {
