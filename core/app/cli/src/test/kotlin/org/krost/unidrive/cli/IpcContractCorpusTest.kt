@@ -1079,6 +1079,18 @@ class IpcContractCorpusTest {
     }
 
     /**
+     * gkrost/unidrive-cli#445: a mount daemon names `hydration.cancel_read`, the capability that says `hydration.cancel` reads a
+     * `handle_id` and a cancelled download stops. Pinned in the idle `daemon.status` corpus.
+     */
+    @Test
+    fun daemon_status_names_the_cancel_read_capability() {
+        val (_, idleReply) = loadPairs("daemon.status").single()
+        val idle = Json.parseToJsonElement(idleReply) as JsonObject
+        assertEquals("hydration.cancel_read", CANCEL_READ_CAPABILITY)
+        assertTrue(JsonPrimitive(CANCEL_READ_CAPABILITY) in (idle.getValue("capabilities") as JsonArray), "a mount daemon names hydration.cancel_read")
+    }
+
+    /**
      * `sessions/notifications-connected.ndjson` (archive#111): the `daemon.status` of a daemon whose provider has a connected
      * remote-change channel (OneDrive's socket.io endpoint) that has rotated twice. The corpus stub has no channel (the
      * idle `daemon.status.ndjson` says `unsupported`), so the transcript is pinned against the serialiser of
