@@ -2,7 +2,9 @@ package org.krost.unidrive.http
 
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
+import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readAvailable
+import kotlinx.coroutines.CancellationException
 
 /**
  * UD-234 / UD-336: collapse non-JSON HTTP error bodies (HTML error pages,
@@ -44,22 +46,38 @@ public fun truncateErrorBody(body: String): String {
  * want raw bytes should use `response.bodyAsText()` directly with a
  * provider-side size guard.
  *
- * On any exception (channel already consumed, network died), returns
- * `<body unavailable>` rather than throwing — diagnostic paths shouldn't
+ * On any exception but a cancellation (channel already consumed, network died),
+ * returns `<body unavailable>` rather than throwing — diagnostic paths shouldn't
  * crash the wrapping flow.
  *
  * Originally OneDrive-private at `GraphApiService.readBoundedErrorBody`;
  * lifted to `:app:core` under UD-336 (UD-334 Part A).
  */
+@Suppress("TooGenericExceptionCaught") // a diagnostic read: any failure but a cancellation is "unavailable"
 public suspend fun readBoundedErrorBody(
     response: HttpResponse,
     maxBytes: Int = 4096,
 ): String =
     try {
-        val channel = response.bodyAsChannel()
-        val buf = ByteArray(maxBytes)
-        val read = channel.readAvailable(buf, 0, maxBytes).coerceAtLeast(0)
-        truncateErrorBody(String(buf, 0, read, Charsets.UTF_8))
+        readBoundedText(response.bodyAsChannel(), maxBytes)
+    } catch (e: CancellationException) {
+        throw e // a cancelled caller is cancelled, not handed a string
     } catch (_: Exception) {
         "<body unavailable>"
     }
+
+// readAvailable answers with whatever is buffered once there is a byte, not with maxBytes: a body that arrives in several
+// segments (a throttle answer with its retry hint at the end) needs a loop up to the bound or the end.
+internal suspend fun readBoundedText(
+    channel: ByteReadChannel,
+    maxBytes: Int,
+): String {
+    val buf = ByteArray(maxBytes)
+    var filled = 0
+    while (filled < maxBytes) {
+        val read = channel.readAvailable(buf, filled, maxBytes - filled)
+        if (read < 0) break
+        filled += read
+    }
+    return truncateErrorBody(String(buf, 0, filled, Charsets.UTF_8))
+}
