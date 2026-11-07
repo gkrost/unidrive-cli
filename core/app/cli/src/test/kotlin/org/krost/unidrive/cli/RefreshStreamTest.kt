@@ -119,4 +119,28 @@ class RefreshStreamTest {
             assertTrue(outcome.err.single().contains("""{"ok":false,"error":"paused"}"""))
         }
     }
+
+    // gkrost/unidrive-cli#442: the broadcast carries every client's refresh.done; only the one with our job_id is ours.
+    @Test
+    fun `a refresh_done of another job, before or after the reply, is not ours`() {
+        val foreign = """{"event":"refresh.done","job_id":"other","ok":false,"error":"provider_error","message":"x"}"""
+        val fake = FakeIpcDaemon()
+        fake
+            .on("sync.subscribe") { _, _ -> """{"ok":true}""" }
+            .on("refresh.run") { conn, _ ->
+                fake.server.scheduleAfterReply(conn) {
+                    fake.server.writeToConnection(conn, foreign)
+                    kotlinx.coroutines.delay(200)
+                    fake.server.writeToConnection(conn, done)
+                }
+                foreign + "\n" + """{"ok":true,"job_id":"j"}"""
+            }
+            .start()
+            .use { daemon ->
+                val outcome = run(daemon)
+
+                assertEquals(0, outcome.exit)
+                assertEquals(listOf(done), outcome.out)
+            }
+    }
 }
