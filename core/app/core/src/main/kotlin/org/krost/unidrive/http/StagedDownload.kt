@@ -5,7 +5,11 @@ import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.RemoteIncompleteDownloadException
+import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.stagingSiblingName
+import org.krost.unidrive.io.withLocalIoRetry
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -30,12 +34,38 @@ private const val STAGING_SUFFIX = ".unidrive-tmp"
  *
  * Returns the number of bytes written.
  */
-@Suppress("TooGenericExceptionCaught") // whatever fails, the staging file goes and the failure is rethrown unchanged
 suspend fun writeStagedDownload(
     channel: ByteReadChannel,
     destination: Path,
     declaredBytes: Long?,
     what: String,
+): Long = writeStagedDownload(channel, destination, declaredBytes, what, StagedDownloadSteps())
+
+/**
+ * The steps of [writeStagedDownload] that touch the disk, replaceable so a test can hold the destination locked for a
+ * moment (which Java's own file opens cannot do on Windows) and see that the data was forced to disk before the move.
+ *
+ * The finished staging file reaches the disk (`force(false)`: the data, not the metadata) before it is moved over the
+ * destination, so a power loss cannot leave the destination with its new name and a zero-filled body. The move is
+ * retried while another process holds the destination for a moment (antivirus, the indexer; `withLocalIoRetry`): the
+ * download is complete by then and must not be thrown away for a lock that clears.
+ */
+internal class StagedDownloadSteps(
+    val force: (FileChannel) -> Unit = { it.force(false) },
+    val move: (Path, Path) -> Unit = { from, to ->
+        Files.move(from, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    },
+    val windows: Boolean = Os.isWindows(),
+    val delayMs: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
+)
+
+@Suppress("TooGenericExceptionCaught") // whatever fails, the staging file goes and the failure is rethrown unchanged
+internal suspend fun writeStagedDownload(
+    channel: ByteReadChannel,
+    destination: Path,
+    declaredBytes: Long?,
+    what: String,
+    steps: StagedDownloadSteps,
 ): Long =
     withContext(Dispatchers.IO) {
         Files.createDirectories(destination.parent)
@@ -43,15 +73,18 @@ suspend fun writeStagedDownload(
         val staging = destination.parent.resolve(stagingSiblingName(destination.fileName.toString(), STAGING_SUFFIX))
         try {
             val written =
-                Files.newOutputStream(staging, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING).use { out ->
+                FileChannel.open(staging, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING).use { out ->
                     val buf = ByteArray(STAGED_DOWNLOAD_BUFFER_BYTES)
                     var n = 0L
                     while (true) {
                         val r = channel.readAvailable(buf)
                         if (r <= 0) break
-                        out.write(buf, 0, r)
+                        val bytes = ByteBuffer.wrap(buf, 0, r)
+                        while (bytes.hasRemaining()) out.write(bytes)
                         n += r
                     }
+                    // Only a body that is complete is worth the flush; a failed one is deleted below.
+                    steps.force(out)
                     n
                 }
             // Ktor's readAvailable answers -1 for a channel that the engine closed with a failure (a connection reset in
@@ -65,10 +98,11 @@ suspend fun writeStagedDownload(
                     declaredBytes = declaredBytes,
                 )
             }
-            Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            withLocalIoRetry(delayMs = steps.delayMs, windows = steps.windows) { steps.move(staging, destination) }
             written
         } catch (e: Exception) {
-            Files.deleteIfExists(staging)
+            // A cleanup that fails (the same scanner holds the staging file) must not replace the failure that matters.
+            runCatching { Files.deleteIfExists(staging) }.exceptionOrNull()?.let(e::addSuppressed)
             throw e
         }
     }
