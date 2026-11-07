@@ -2557,14 +2557,23 @@ class StateDatabase(
      * Not over another alive row: a file created at the path since it was trashed holds the partial unique index, and the
      * flip would fail with a constraint violation that every pass repeats. False then, like for no such row; the item the
      * cloud reports is merged at its path as any delivery is.
+     *
+     * #448: [unhydrate] also clears `is_hydrated` in the same statement, for a restored file whose local copy is gone.
+     * The refill download is only planned; when it does not run in this pass (refresh, safeguard, interrupt), a
+     * hydrated row with no file would read as a local delete next pass and send the restored file back to the trash.
+     * Unhydrated, the row is re-planned as a download by the unhydrated-row recovery.
      */
-    fun setStatusExists(remoteId: String): Boolean =
+    fun setStatusExists(
+        remoteId: String,
+        unhydrate: Boolean = false,
+    ): Boolean =
         locked("setStatusExists") {
             if (remoteId.startsWith("local:")) return false
             beginWrite()
+            val hydration = if (unhydrate) ", is_hydrated=0" else ""
             conn
                 .prepareStatement(
-                    "UPDATE sync_entries SET status='EXISTS', pending_local=NULL WHERE remote_id=? AND status='TRASHED' " +
+                    "UPDATE sync_entries SET status='EXISTS', pending_local=NULL$hydration WHERE remote_id=? AND status='TRASHED' " +
                         "AND NOT EXISTS (SELECT 1 FROM sync_entries o WHERE o.path = sync_entries.path AND o.status='EXISTS')",
                 ).use { stmt ->
                     stmt.setString(1, remoteId)

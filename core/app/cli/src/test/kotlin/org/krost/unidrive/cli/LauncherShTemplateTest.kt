@@ -8,12 +8,10 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The Linux launcher runs unidrive on the system's JDK and prefers Java 25+ (the JVM runtime spike, archive#624,
- * measured Java 21 at ~30 % more CPU to a ready daemon). The template is rendered like the deploys render it
+ * The Linux launcher runs unidrive on the system's JDK and requires Java 25+ (the jar is compiled for it). The template is rendered like the deploys render it
  * and run by the real bash against fake JDKs: each fake `java` prints which JDK it is and its arguments.
  */
 class LauncherShTemplateTest {
@@ -112,29 +110,18 @@ class LauncherShTemplateTest {
     fun `UNIDRIVE_JAVA wins over every other candidate`() {
         val jvm = dir.resolve("jvm")
         fakeJdk(jvm, "jdk-25", "25.0.4")
-        val chosen = fakeJdk(dir.resolve("elsewhere"), "jdk-21-explicit", "21.0.12")
+        val chosen = fakeJdk(dir.resolve("elsewhere"), "jdk-25-explicit", "25.0.4")
         val r = run(null, "status", env = mapOf("UNIDRIVE_JAVA" to chosen.toString()))
-        assertEquals("jdk-21-explicit", r.java)
+        assertEquals("jdk-25-explicit", r.java)
     }
 
     @Test
-    fun `only a Java 21 runs, and only a long-running command warns about it`() {
-        val j21 = fakeJdk(dir.resolve("jvm"), "jdk-21", "21.0.12")
-        val oneShot = run(j21, "status")
-        assertEquals("jdk-21", oneShot.java)
-        assertFalse(oneShot.stderr.contains("Java 25"), "a one-shot command must not warn: ${oneShot.stderr}")
-        val daemon = run(j21, "daemon", "run")
-        assertEquals("jdk-21", daemon.java)
-        assertTrue(daemon.stderr.contains("running on Java 21; Java 25 or newer"), daemon.stderr)
-    }
-
-    @Test
-    fun `a Java older than 21 is refused with an actionable message`() {
-        val j17 = fakeJdk(dir.resolve("jvm"), "jdk-17", "17.0.9")
+    fun `a Java older than 25 is refused with an actionable message`() {
+        val j17 = fakeJdk(dir.resolve("jvm"), "jdk-21", "21.0.12")
         val r = run(j17, "status")
         assertEquals(1, r.exit)
         assertEquals(null, r.java, "java must not be started")
-        assertTrue(r.stderr.contains("needs Java 21 or newer, found Java 17"), r.stderr)
+        assertTrue(r.stderr.contains("needs Java 25 or newer, found Java 21"), r.stderr)
     }
 
     // -Xms64m: JDK <= 25 otherwise commit 1/64 of RAM as the initial heap; the spike measured a one-shot

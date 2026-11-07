@@ -1392,14 +1392,18 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         }
     }
 
-    /** Streams encrypted bytes through [cipher] to [destination], hashing plaintext before atomic publication. */
+    /**
+     * Streams encrypted bytes through [cipher] to [destination], hashing plaintext before atomic publication.
+     * [expectedShardHash] has no default: null publishes the content without the ciphertext check, so each caller states
+     * it (the provider passes null only under `allow_unverified_shard_hash`).
+     */
     @Suppress("ThrowsCount") // The baseline entry predates target mtime and the streamed content receipt.
     internal suspend fun downloadFileStreaming(
         downloadUrl: String,
         cipher: javax.crypto.Cipher,
         destination: Path,
         expectedSize: Long? = null,
-        expectedShardHash: ShardHashExpectation.Checkable? = null,
+        expectedShardHash: ShardHashExpectation.Checkable?,
         targetMtimeMillis: Long? = null,
         onProgress: ((Long) -> Unit)? = null,
     ): InternxtDownloadedContent {

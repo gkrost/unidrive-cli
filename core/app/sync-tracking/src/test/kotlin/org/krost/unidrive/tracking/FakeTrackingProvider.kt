@@ -337,6 +337,13 @@ class FakeTrackingProvider : CloudProvider {
     ): CloudItem {
         val bytes = Files.readAllBytes(localPath)
         duringUpload?.also { duringUpload = null; it() }
+        if (ifMatchETag != null) {
+            val current = files[remotePath]
+            val currentTag = current?.let { itemHashOverride?.invoke(it) ?: sha256Hex(it) }
+            if (reportsItemVersions || (currentTag != null && currentTag != ifMatchETag)) {
+                throw RemoteConflictException("simulated 412: $remotePath changed since $ifMatchETag")
+            }
+        }
         files[remotePath] = bytes
         uploadedPaths += remotePath
         return itemFor(remotePath, bytes)

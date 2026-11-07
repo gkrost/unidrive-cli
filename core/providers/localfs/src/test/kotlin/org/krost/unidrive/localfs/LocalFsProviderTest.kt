@@ -352,7 +352,7 @@ class LocalFsProviderTest {
                 cloud.toFile().setReadOnly()
 
                 p.upload(src, "/ro.txt")
-                p.upload(src, "/ro.txt")
+                p.upload(src, "/ro.txt", existingRemoteId = "/ro.txt")
                 p.download("/c.txt", dest)
                 p.download("/c.txt", dest)
 
@@ -401,6 +401,59 @@ class LocalFsProviderTest {
 
             assertEquals("the old remote", Files.readString(root.resolve("r.txt")))
             Files.list(root).use { names -> assertEquals(listOf("r.txt"), names.map { it.fileName.toString() }.toList()) }
+        }
+
+    @Test
+    fun a_create_onto_a_file_that_appeared_since_the_plan_is_refused_and_keeps_the_other_file() =
+        runTest {
+            val root = newRoot()
+            val p = LocalFsProvider(root)
+            p.authenticate()
+            Files.writeString(root.resolve("report.docx"), "somebody else's")
+            val src = Files.createTempFile("src", ".txt")
+            Files.writeString(src, "mine")
+
+            assertFailsWith<org.krost.unidrive.RemoteConflictException> { p.upload(src, "/report.docx") }
+
+            assertEquals("somebody else's", Files.readString(root.resolve("report.docx")))
+            Files.list(root).use { names -> assertEquals(listOf("report.docx"), names.map { it.fileName.toString() }.toList()) }
+        }
+
+    @Test
+    fun the_create_fallback_move_refuses_a_taken_name_and_publishes_onto_a_free_name() =
+        runTest {
+            val p = LocalFsProvider(newRoot())
+            p.authenticate()
+
+            val staging = Files.createTempFile("localfs-staging", ".txt")
+            Files.writeString(staging, "mine")
+            val target = Files.createTempFile("localfs-target", ".txt")
+            Files.writeString(target, "somebody else's")
+
+            // The fallback for file systems without hard links: an atomic move here would replace the taken name.
+            assertFailsWith<org.krost.unidrive.RemoteConflictException> { p.moveNoReplace(staging, target) }
+            assertEquals("somebody else's", Files.readString(target), "the taken file's bytes are unchanged")
+
+            Files.delete(target)
+            p.moveNoReplace(staging, target)
+            assertEquals("mine", Files.readString(target), "a free name is published")
+        }
+
+    @Test
+    fun a_create_onto_a_free_name_and_a_replace_of_a_known_file_still_write() =
+        runTest {
+            val root = newRoot()
+            val p = LocalFsProvider(root)
+            p.authenticate()
+            val src = Files.createTempFile("src", ".txt")
+            Files.writeString(src, "v1")
+            p.upload(src, "/n.txt")
+            assertEquals("v1", Files.readString(root.resolve("n.txt")))
+
+            Files.writeString(src, "v2")
+            p.upload(src, "/n.txt", existingRemoteId = "/n.txt")
+            assertEquals("v2", Files.readString(root.resolve("n.txt")))
+            Files.list(root).use { names -> assertEquals(listOf("n.txt"), names.map { it.fileName.toString() }.toList()) }
         }
 
     // ---- archive#1057: a move never overwrites ----

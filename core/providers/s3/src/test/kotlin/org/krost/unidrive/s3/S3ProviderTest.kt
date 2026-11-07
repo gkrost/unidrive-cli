@@ -291,6 +291,58 @@ class S3ProviderTest {
             assertTrue(fake.objects.isEmpty())
         }
 
+    // gkrost/unidrive-cli#447: a guarded delete is a file delete. With the object gone it is done, and keys below a
+    // same-named prefix are another tree that a file delete must not reach (S3 has no trash).
+    @Test
+    fun `a guarded delete of a file that is gone leaves the keys under a same-named prefix`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("a/report/x", "1")
+            fake.put("a/report/y", "2")
+            val provider = provider(fake)
+
+            provider.delete("/a/report", ifMatchETag = "\"etag\"")
+
+            assertEquals(listOf("a/report/x", "a/report/y"), fake.objects.keys.toList())
+            assertTrue(fake.requests.none { it.method == HttpMethod.Delete || it.query.containsKey("delete") })
+        }
+
+    // gkrost/unidrive-cli#447: the engines delete by id without an ETag. A file id is the key, a folder id ends in '/':
+    // a file id whose object is gone is done, and never reaches the keys under a same-named prefix.
+    @Test
+    fun `an id-addressed delete of a file that is gone leaves the keys under a same-named prefix`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("a/report/x", "1")
+            fake.put("a/report/y", "2")
+            val provider = provider(fake)
+
+            provider.deleteById("a/report", "/a/report")
+            provider.deletePermanentlyById("a/report", "/a/report")
+
+            assertEquals(listOf("a/report/x", "a/report/y"), fake.objects.keys.toList())
+            assertTrue(fake.requests.none { it.method == HttpMethod.Delete || it.query.containsKey("delete") })
+        }
+
+    @Test
+    fun `an id-addressed delete removes a file by its key and a folder by its subtree`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("docs/", "")
+            fake.put("docs/a.txt", "1")
+            fake.put("docs/sub/b.txt", "2")
+            fake.put("keep.txt", "3")
+            fake.put("gone.txt", "4")
+            val provider = provider(fake)
+
+            provider.deleteById("docs/", "/docs")
+            assertEquals(listOf("gone.txt", "keep.txt"), fake.objects.keys.toList())
+            provider.deleteById("gone.txt", "/gone.txt")
+            assertEquals(listOf("keep.txt"), fake.objects.keys.toList())
+            provider.deletePermanentlyById("keep.txt", "/keep.txt")
+            assertTrue(fake.objects.isEmpty())
+        }
+
     @Test
     fun `a permanent delete of a folder or a file removes the keys, the capability is declared`() =
         runTest {
