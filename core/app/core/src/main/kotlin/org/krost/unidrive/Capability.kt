@@ -29,6 +29,13 @@ sealed class Capability {
     object PermanentDelete : Capability()
 
     /**
+     * The provider exposes its own trash to the engine: [CloudProvider.listTrash] answers it, [CloudProvider.emptyTrash]
+     * empties it and [CloudProvider.purgeTrash] purges items from it for good (#500). Not the local trash emulation of
+     * `TrashManager` — that one every provider has by construction.
+     */
+    object RemoteTrash : Capability()
+
+    /**
      * The provider tells the items of the account's backup devices apart ([CloudItem.backup]) and lists them, marked, when
      * the engine asks for them ([ScanContext.backups]); without the question it leaves them out of every listing.
      */
