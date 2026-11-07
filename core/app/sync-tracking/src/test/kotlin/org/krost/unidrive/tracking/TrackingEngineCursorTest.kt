@@ -170,7 +170,7 @@ class TrackingEngineCursorTest {
                 second.applied.none { it.action is ReconcileAction.UploadLocal && it.outcome == ApplyOutcome.SUCCESS },
                 "the second pass must not upload over the remote edit: ${second.applied}",
             )
-            assertEquals("baseline", provider.files["/a.txt"]?.decodeToString(), "the remote content is untouched — no upload ran over it")
+            assertEquals("remote edit", provider.files["/a.txt"]?.decodeToString(), "the remote edit survives — no upload ran over it")
             assertEquals("c1", tracking.loadDeltaCursor())
         } finally {
             tracking.close()
