@@ -9,6 +9,7 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.api.Send
 import io.ktor.client.plugins.api.createClientPlugin
 import io.ktor.client.request.get
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.request
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpMethod
@@ -17,6 +18,8 @@ import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readAvailable
+import kotlinx.coroutines.CompletableJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -472,10 +475,10 @@ class RequestIdPluginTest {
 
     // gkrost/unidrive-cli#416: a successful attempt whose body the caller never reads (a delete's 204
     // among the callers) still pairs its → with exactly one ←, and the line names the body's size,
-    // not ?: the reply is counted to its end behind the caller's back by the body saving, and the
-    // attempt's own end is the last resort when nothing else got to it.
+    // not ?. On today's Ktor this is the body saving's doing (it reads the body to its end behind the
+    // caller's back), so this test does not reach the attempt-end fallback: the streamed test below does.
     @Test
-    fun `a reply without Content-Length whose body is never read still logs its line`() =
+    fun `a reply without Content-Length whose body is never read still logs its line through the body saving`() =
         runTest {
             val engine =
                 MockEngine { _ ->
@@ -501,11 +504,12 @@ class RequestIdPluginTest {
             client.close()
         }
 
-    // gkrost/unidrive-cli#416: when a successful attempt ends before the body was read to its end,
-    // the reply line still logs, naming the count so far — and nothing logs twice for one reply.
+    // gkrost/unidrive-cli#416: CountedReply on its own: logCountSoFar names the count so far, and a later
+    // end or failure of the same reply logs nothing again. That the attempt's end calls it is pinned by
+    // the streamed test below.
     @Test
     @OptIn(io.ktor.utils.io.InternalAPI::class)
-    fun `a successful attempt's end logs the count so far exactly once`() =
+    fun `CountedReply logCountSoFar logs the count so far exactly once`() =
         runTest {
             val wire = ByteChannel(autoFlush = true)
             wire.writeBuffer.write("abc".encodeToByteArray(), 0, 3)
@@ -521,6 +525,47 @@ class RequestIdPluginTest {
             counted.logUnknown()
             assertNull(ended.tryReceive().getOrNull(), "no second line for the same reply")
             wire.cancel(null)
+        }
+
+    // gkrost/unidrive-cli#416 (review of #428): the attempt's own successful end is what logs the reply line of a
+    // body nobody read to its end. With today's Ktor the body saving drains a plain call's body first, so the
+    // case is driven here directly: a streamed reply whose body is still open, and the response's own job
+    // completed successfully — what `finish(null)` is attached to. Without that call there is no ← line at
+    // all until the body ends; with it there is exactly one, with the count so far.
+    @Test
+    @OptIn(io.ktor.utils.io.InternalAPI::class)
+    fun `an attempt that ends successfully with its body still open logs its line with the count so far`() =
+        runBlocking {
+            val wire = ByteChannel(autoFlush = true)
+            wire.writeBuffer.write("abc".encodeToByteArray(), 0, 3)
+            wire.flush() // bytes arrived, the body stays open, nothing reads it
+            val engine =
+                MockEngine { _ ->
+                    respond(content = wire, status = HttpStatusCode.OK, headers = headersOf("Content-Type", "application/json"))
+                }
+            val client = HttpClient(engine) { install(RequestId) }
+            // Without the attempt-end call nothing is logged while the body stays open (the only line would
+            // come later, from the body's cancel, as dn=?); with it the line is there at the attempt's end.
+            var atAttemptEnd: List<String> = emptyList()
+            val all =
+                capturedLines {
+                    client.prepareGet("https://example.invalid/drive/items/abc").execute { response ->
+                        val job = response.coroutineContext[Job]
+                        assertTrue(job is CompletableJob, "the response's job can be completed by the test: $job")
+                        atAttemptEnd =
+                            capturedLines {
+                                assertTrue(job.complete(), "the attempt's job completes successfully")
+                                job.join()
+                            }
+                    }
+                }
+            val atEnd = atAttemptEnd.filter { it.startsWith("←") }
+            assertEquals(1, atEnd.size, "the attempt's end logs the reply line while the body is still open: $atAttemptEnd")
+            assertTrue("200" in atEnd.single(), "the status is on the line: ${atEnd.single()}")
+            assertTrue("dn=?" !in atEnd.single(), "the count so far, not unknown: ${atEnd.single()}")
+            assertEquals(1, all.count { it.startsWith("←") }, "and no second line when the body ends later: $all")
+            wire.cancel(null)
+            client.close()
         }
 
     @Test
