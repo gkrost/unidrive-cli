@@ -2333,6 +2333,10 @@ open class SyncEngine(
         remoteGather.loadTwins()
         val buffer = StreamingReconcileBuffer()
         val safeAccumulator = mutableListOf<SyncAction>()
+        // gkrost/unidrive-cli#449: the same full localChanges map re-plans every local change on every page, and a NEW
+        // upload or a CreateRemoteFolder never reaches the executor claim below, so each page added another copy for
+        // scan-end to apply. Accumulate a planned action once; an action that differs (a fresher remote version) is kept.
+        val accumulatedOnce = HashSet<SyncAction>()
         // resolveSlice processes the full localChanges map on every delta page,
         // so a MODIFIED-local file absent from a given page's remote delta
         // re-emits its Upload (and likewise a DownloadContent can recur across
@@ -2581,7 +2585,7 @@ open class SyncEngine(
                                 landedRemoteId = buffer::landedIdAt,
                             )
                         val safeNow = buffer.classify(pageActions)
-                        safeAccumulator.addAll(safeNow)
+                        safeNow.filterTo(safeAccumulator) { accumulatedOnce.add(it) }
                         for (action in safeNow) {
                             if (action is SyncAction.DownloadContent || action is SyncAction.Upload) {
                                 // archive#200(b): a NEW-local upload must NOT dispatch mid-gather —
