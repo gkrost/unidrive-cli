@@ -4,10 +4,22 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.request.get
+import io.ktor.client.request.prepareGet
+import io.ktor.client.statement.HttpStatement
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.async
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -125,7 +137,71 @@ class ErrorBodyTest {
             )
         }
 
+    @Test
+    fun `readBoundedErrorBody reads a body that arrives in several pieces to its end`() =
+        runTest {
+            val response = mockResponseWithChannel { ch ->
+                ch.writeFully("""{"error":{"retry_after":""".toByteArray())
+                ch.flush()
+                delay(200)
+                ch.writeFully("""30}}""".toByteArray())
+                ch.close()
+            }
+
+            assertEquals("""{"error":{"retry_after":30}}""", readBoundedErrorBody(response))
+        }
+
+    @Test
+    fun `readBoundedErrorBody stops at maxBytes when the body arrives in pieces`() =
+        runTest {
+            val response = mockResponseWithChannel { ch ->
+                ch.writeFully("""{"a":"1234""".toByteArray())
+                ch.flush()
+                delay(200)
+                ch.writeFully("5678901234567890\"}".toByteArray())
+                ch.close()
+            }
+
+            assertEquals("""{"a":"12345678""", readBoundedErrorBody(response, maxBytes = 14))
+        }
+
+    @Test
+    fun `readBoundedErrorBody lets a cancellation through instead of answering unavailable`() =
+        runBlocking {
+            val engine =
+                MockEngine {
+                    val ch = ByteChannel()
+                    CoroutineScope(Dispatchers.Default).launch {
+                        ch.writeFully("""{"partial":""".toByteArray())
+                        ch.flush()
+                        delay(30_000) // the rest does not come while the test runs
+                    }
+                    respond(content = ch, status = HttpStatusCode.OK, headers = headersOf("Content-Type", "text/plain"))
+                }
+            // a streamed call: get() would buffer the whole body first
+            withTimeout(30_000) {
+                HttpClient(engine).prepareGet("https://example.invalid/").execute { response ->
+                    val reading = async(Dispatchers.Default) { readBoundedErrorBody(response) }
+                    withContext(Dispatchers.Default) { delay(500) } // the read is waiting for the rest by now
+                    reading.cancel()
+                    reading.join()
+                    assertTrue(reading.isCancelled, "the read ended as cancelled, not with a string")
+                }
+            }
+            Unit
+        }
+
     // Helpers ---------------------------------------------------------------
+
+    private suspend fun mockResponseWithChannel(writer: suspend (ByteChannel) -> Unit): HttpResponse {
+        val engine =
+            MockEngine {
+                val ch = ByteChannel()
+                CoroutineScope(Dispatchers.Default).launch { writer(ch) }
+                respond(content = ch, status = HttpStatusCode.OK, headers = headersOf("Content-Type", "text/plain"))
+            }
+        return HttpClient(engine).get("https://example.invalid/")
+    }
 
     private suspend fun mockResponseWithBody(body: String): HttpResponse {
         val engine =
