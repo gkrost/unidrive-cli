@@ -381,6 +381,24 @@ class RequestIdPluginTest {
             client.close()
         }
 
+    // gkrost/unidrive-cli#460: every attempt counts once in its class's total, the ones that ended included, so
+    // daemon.status's `requests.total` says how many calls a client made, not only which are open.
+    @Test
+    fun `every attempt counts once in its class's total and stays counted after it ends`() =
+        runBlocking {
+            val inFlight = RequestInFlight()
+            val engine = MockEngine { _ -> respond("ok", HttpStatusCode.OK) }
+            val client =
+                HttpClient(engine) {
+                    install(RequestId) { this.inFlight = inFlight }
+                }
+            assertEquals(emptyMap(), inFlight.totals(), "nothing counted before the first call")
+            repeat(3) { client.get("https://example.invalid/a") }
+            assertEquals(mapOf("GET external" to 3L), inFlight.totals(), "three calls, three attempts")
+            assertEquals(emptyList(), inFlight.snapshot(), "and none of them is open")
+            client.close()
+        }
+
     // gkrost/unidrive-cli#416: a reply whose Content-Length is absent logs the size the client read,
     // not ?, so metadata GETs stop falling out of the byte accounting. The line is logged when the
     // body has been read, which is when the size becomes known.

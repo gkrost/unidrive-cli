@@ -137,6 +137,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         org.krost.unidrive.http.RequestStatusSnapshot(
             requestInFlight.snapshot(),
             mapOf("drive" to driveBudget.freeSlots(), "bridge" to bridgeBudget.freeSlots()),
+            requestInFlight.totals(),
         )
 
     /**
