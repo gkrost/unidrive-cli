@@ -361,10 +361,33 @@ class S3Provider(
         }
     }
 
+    // gkrost/unidrive-cli#447: the engines delete a synced item by its id, which says what it is: a folder id ends in '/'
+    // (folderItem), a file id is the object's key (fileItem). A file id never takes the folder path, so a file that is gone
+    // already is done instead of turning into a delete of the keys under a same-named prefix. The id decides, not
+    // [remotePath] (archive#402: the id is the item the engine tracks); S3 has no rename, so the two name the same key.
+    override suspend fun deleteById(
+        remoteId: String,
+        remotePath: String,
+    ) {
+        val key = remoteId.trimEnd('/')
+        if (key.isEmpty()) throw ProviderException("Refusing to delete the whole bucket")
+        if (remoteId.endsWith('/')) {
+            deleteTree("$key/")
+        } else if (api.head(key) != null) {
+            api.delete(key)
+        }
+    }
+
     // archive#1178: S3 has no trash; delete already deletes the object (or the tree below a folder key) for good.
     override suspend fun deletePermanently(remotePath: String) {
         delete(remotePath, null)
     }
+
+    // The default goes by the path (delete without a guard), which would take the folder path for a gone file: go by the id.
+    override suspend fun deletePermanentlyById(
+        remoteId: String,
+        remotePath: String,
+    ) = deleteById(remoteId, remotePath)
 
     private suspend fun deleteTree(prefix: String) = deleteKeys(allKeys(prefix), prefix)
 
