@@ -992,9 +992,24 @@ class HydrationImpl(
             }
             // The path is no longer pinned by its upload: the budget may have been waiting for that.
             requestEviction()
-            completed?.let { _events.emit(it) }
+            completed?.let { _events.emit(withLandedRow(it)) }
         }
         slot.jobs.add(worker)
+    }
+
+    // gkrost/unidrive-cli#437: the row an upload committed, read once the slot is released (so pending_upload is settled), and
+    // sent with the event: the client otherwise lists the row to learn its etag, time and content id. A row that cannot be
+    // read leaves the event as it was before the field existed.
+    private fun withLandedRow(c: HydrationEvent.Completed): HydrationEvent.Completed {
+        if (!c.wantsEntry) return c
+        val entry =
+            try {
+                stateDb.getEntry(c.path)?.let { statEntryOf(it) }
+            } catch (e: Exception) {
+                log.debug("completed event of {} sent without its row: {}", c.path, e.message)
+                null
+            }
+        return c.copy(entry = entry, wantsEntry = false)
     }
 
     // Gives back one submission's count on [slot]; the last one removes every map entry still pointing at the slot.
@@ -1130,6 +1145,8 @@ class HydrationImpl(
                     handleId = handleId,
                     direction = HydrationEvent.Completed.Direction.UPLOAD,
                     ok = true,
+                    skipped = !outcome.sent,
+                    wantsEntry = true,
                 )
             } catch (e: CancellationException) {
                 throw e
