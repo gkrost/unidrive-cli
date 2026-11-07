@@ -3,9 +3,11 @@ package org.krost.unidrive.http
 import io.ktor.http.ContentType
 import io.ktor.http.content.OutgoingContent
 import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.cancel
 import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -28,12 +30,15 @@ import java.nio.file.Path
  * fix automatically. Future providers that need streaming uploads
  * call this helper instead of pasting the block.
  *
- * **The flushAndClose contract.** The `runCatching { channel.flushAndClose() }`
- * lives in a `finally` block specifically so that a secondary close-
- * failure (e.g. the channel was already broken when we tried to write)
- * doesn't shadow the original IO-loop cause. The original exception
- * propagates; the close failure is silently swallowed (it would
- * otherwise mask the real problem from the caller's catch).
+ * **The close contract.** A body that was written in full ends with `flushAndClose()`. Any failure of the loop
+ * (cancellation, a read error, a file that changed size) aborts the channel with that cause instead
+ * (`channel.cancel(cause)`): a normal close would present the short body as a finished one, and the PUT's terminating
+ * chunk frame would tell the server that all of it arrived. The abort is wrapped in `runCatching` so that a failure of
+ * the channel itself cannot shadow the original cause (UD-287); the original exception is rethrown.
+ *
+ * **The declared length.** Exactly `fileSize` bytes are written. A file that is shorter by the time it is read, or has
+ * more bytes than declared, fails with an `IOException` ("file changed during upload") rather than sending a body that
+ * disagrees with its Content-Length.
  *
  * **Backpressure.** Ktor's `ByteWriteChannel.writeFully(buf, 0, n)`
  * suspends when the underlying transport is slow — the producer
@@ -60,22 +65,30 @@ public fun streamingFileBody(
         override val contentLength: Long = fileSize
         override val contentType: ContentType = contentType
 
+        @Suppress("TooGenericExceptionCaught") // whatever fails, the request is aborted with that cause and it is rethrown
         override suspend fun writeTo(channel: ByteWriteChannel) {
             try {
                 withContext(Dispatchers.IO) {
                     Files.newInputStream(localPath).use { input ->
                         val buf = ByteArray(64 * 1024)
-                        var n: Int
-                        while (input.read(buf).also { n = it } != -1) {
+                        var sent = 0L
+                        // Exactly the declared length: the file may be saved to while it uploads. A shorter file would leave
+                        // the server waiting for bytes, a longer one would put bytes past the Content-Length on the wire.
+                        while (sent < fileSize) {
+                            val n = input.read(buf, 0, minOf(buf.size.toLong(), fileSize - sent).toInt())
+                            if (n < 0) throw IOException("file changed during upload: read $sent of $fileSize bytes")
                             channel.writeFully(buf, 0, n)
+                            sent += n
                         }
+                        if (input.read() != -1) throw IOException("file changed during upload: more than the declared $fileSize bytes")
                     }
                 }
-            } finally {
-                // UD-287: secondary close-failure must not shadow the
-                // original IO-loop cause. runCatching swallows close
-                // errors so the caller's catch sees the real problem.
-                runCatching { channel.flushAndClose() }
+                channel.flushAndClose()
+            } catch (e: Throwable) {
+                // An aborted body, not a normal end: a normal close would present a short body as a finished one
+                // (the cause reaches the caller as the request's failure). A close that fails must not shadow the cause.
+                runCatching { channel.cancel(e) }
+                throw e
             }
         }
     }

@@ -94,6 +94,61 @@ class StreamingUploadTest {
             )
         }
 
+    private suspend fun writeFailing(
+        content: ByteArray,
+        declared: Long,
+    ): Pair<IOException, ByteChannel> {
+        val tmp = createTempFile(content)
+        try {
+            val body = streamingFileBody(tmp, declared) as OutgoingContent.WriteChannelContent
+            val channel = ByteChannel(autoFlush = true)
+            val e =
+                kotlin.test.assertFailsWith<IOException> { body.writeTo(channel) }
+            return e to channel
+        } finally {
+            Files.deleteIfExists(tmp)
+        }
+    }
+
+    @Test
+    fun `a file that shrank after the length was declared fails and aborts the body`() =
+        runTest {
+            val (e, channel) = writeFailing(ByteArray(100), declared = 300L)
+
+            assertTrue(e.message!!.contains("read 100 of 300"), e.message)
+            assertTrue(channel.closedCause != null, "the body is aborted with the cause, not ended as if it were complete")
+        }
+
+    @Test
+    fun `a file that grew after the length was declared fails and never sends the extra bytes as part of the body`() =
+        runTest {
+            val (e, channel) = writeFailing(ByteArray(300), declared = 100L)
+
+            assertTrue(e.message!!.contains("more than the declared 100"), e.message)
+            assertTrue(channel.closedCause != null, "the body is aborted with the cause")
+        }
+
+    @Test
+    fun `a file of exactly the declared length is written whole`() =
+        runTest {
+            val payload = ByteArray(150_000) { (it % 251).toByte() }
+            val tmp = createTempFile(payload)
+            try {
+                val body = streamingFileBody(tmp, payload.size.toLong()) as OutgoingContent.WriteChannelContent
+                val channel = ByteChannel(autoFlush = true)
+                val received =
+                    coroutineScope {
+                        val drain = async { channel.readByteArray(payload.size) }
+                        body.writeTo(channel)
+                        drain.await()
+                    }
+                assertTrue(payload.contentEquals(received))
+                assertTrue(channel.closedCause == null)
+            } finally {
+                Files.deleteIfExists(tmp)
+            }
+        }
+
     private fun createTempFile(content: ByteArray): Path {
         val p = Files.createTempFile("ud342-upload", ".bin")
         Files.write(p, content)
