@@ -5,6 +5,12 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 
+// gkrost/unidrive-cli#419: the engine calls a provider from several threads at once (the relocator downloads up to
+// four files in parallel on Dispatchers.IO), so every call history and the file store a transfer writes are
+// thread-safe. A plain ArrayList loses entries under concurrent add, or throws ArrayIndexOutOfBoundsException from its
+// grow step, which is what made RelocateCommandTest fail now and then. Reads after the run need no lock.
+private fun <T> syncList(): MutableList<T> = java.util.Collections.synchronizedList(ArrayList())
+
 // The in-memory provider the engine tests drive. A test fixture (java-test-fixtures) so the mount
 // front-end's tests in :app:hydration build their SyncEngine host on the same fake as the mirror
 // tests here, without a test dependency from this module on :app:hydration.
@@ -16,7 +22,7 @@ class FakeCloudProvider : CloudProvider {
     var supportsFastBootstrap = false
     var deltaFromLatestCalls = 0
     var deltaCalls = 0
-    val deltaCursorArguments = mutableListOf<String?>()
+    val deltaCursorArguments: MutableList<String?> = syncList()
 
     // archive#396: null = hashless provider (Internxt-style, the default); set before the
     // engine is constructed to stand in for a hash-capable one (OneDrive-style).
@@ -61,11 +67,11 @@ class FakeCloudProvider : CloudProvider {
     // path always returns hasMore=false). Each entry is (items, cursor).
     var deltaPages: List<Pair<List<CloudItem>, String>> = emptyList()
     private var deltaPageIndex = 0
-    val uploadedPaths = mutableListOf<String>()
-    val uploadAttempts = mutableListOf<String>()
+    val uploadedPaths: MutableList<String> = syncList()
+    val uploadAttempts: MutableList<String> = syncList()
     val uploadThrowByPath = mutableMapOf<String, Throwable>()
-    val deletedPaths = mutableListOf<String>()
-    val files = mutableMapOf<String, ByteArray>()
+    val deletedPaths: MutableList<String> = syncList()
+    val files: MutableMap<String, ByteArray> = java.util.concurrent.ConcurrentHashMap()
 
     // archive#123: created-folder order, captured under the bounded-concurrency
     // create-folder run. Thread-safe because createFolder runs from
@@ -119,7 +125,7 @@ class FakeCloudProvider : CloudProvider {
 
     // archive#419: every listChildren() path, and per-path exceptions to throw from it, so a
     // reaper test can prove which directories were probed and simulate a 404 on one.
-    val listChildrenCalls = mutableListOf<String>()
+    val listChildrenCalls: MutableList<String> = syncList()
     val listChildrenThrow = mutableMapOf<String, Throwable>()
 
     override suspend fun listChildren(path: String): List<CloudItem> {
@@ -188,8 +194,8 @@ class FakeCloudProvider : CloudProvider {
     // engine takes the fast/robust path when the action carries a remoteId.
     // Default base impl in CloudProvider delegates to download(); this
     // override lets us count both call paths distinctly.
-    val downloadByIdCalls = mutableListOf<Pair<String, String>>() // (remoteId, remotePath)
-    val downloadByPathCalls = mutableListOf<String>()
+    val downloadByIdCalls: MutableList<Pair<String, String>> = syncList() // (remoteId, remotePath)
+    val downloadByPathCalls: MutableList<String> = syncList()
     // The wall-clock start of each downloadByIdWithHash call, by remote path: the
     // bandwidth tests assert on the provider's own accounting (transfer starts
     // spaced by the shared budget), not on spans measured around the engine.
@@ -259,7 +265,7 @@ class FakeCloudProvider : CloudProvider {
 
     // gkrost/unidrive-cli#57: (remotePath, ifMatchETag) of every upload attempt, and a stand-in for a provider with conditional
     // writes: when it answers true for (remotePath, existingRemoteId, ifMatchETag) the upload is refused as a conflict.
-    val uploadIfMatches = mutableListOf<Pair<String, String?>>()
+    val uploadIfMatches: MutableList<Pair<String, String?>> = syncList()
     var refuseUpload: ((remotePath: String, existingRemoteId: String?, ifMatchETag: String?) -> Boolean)? = null
 
     // archive#417: when set, upload() reports this as the item's modified time (what a real
@@ -342,7 +348,7 @@ class FakeCloudProvider : CloudProvider {
 
     // UD-225b shape, for deletes: the (remoteId, remotePath) of every id-addressed delete call,
     // so tests can verify a caller deletes by id and not by re-resolving the path.
-    val deleteByIdCalls = mutableListOf<Pair<String, String>>() // (remoteId, remotePath)
+    val deleteByIdCalls: MutableList<Pair<String, String>> = syncList() // (remoteId, remotePath)
 
     override suspend fun deleteById(
         remoteId: String,
@@ -386,7 +392,7 @@ class FakeCloudProvider : CloudProvider {
         )
     }
 
-    val movedPaths = mutableListOf<Pair<String, String>>() // (fromPath, toPath)
+    val movedPaths: MutableList<Pair<String, String>> = syncList() // (fromPath, toPath)
 
     // gkrost/unidrive-cli#64 item 3: a move answers like a real provider's. A source that is not there and a
     // target that already exists are refused; a moved item keeps its id and, for a file, its bytes and size;
