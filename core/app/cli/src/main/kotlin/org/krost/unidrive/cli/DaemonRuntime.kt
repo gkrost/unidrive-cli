@@ -176,7 +176,7 @@ class DaemonRuntime(
     // archive#655: the daemon's quota snapshot for daemon.status (`quota`). It reads the cache and persists
     // through this runtime's database — the one the lifecycle opens and cleanup closes — and shares the
     // provider factory.
-    private val quotaMonitor = QuotaSnapshotMonitor(quotaRefreshMs = quotaRefreshMs, providerFactory = providerFactory, db = { db })
+    private val quotaMonitor = QuotaSnapshotMonitor(quotaRefreshMs = quotaRefreshMs, provider = { servingProvider }, db = { db })
 
     private var ipcServer: IpcServer? = null
     private val closeSignal = CompletableDeferred<Unit>()
@@ -188,6 +188,10 @@ class DaemonRuntime(
 
     @Volatile private var lifecycleActive = false
     private var startedAtMs: Long = 0
+
+    // The provider this daemon serves with, once it is built: the quota refresh uses it rather than building a second
+    // instance with a token state of its own (gkrost/unidrive-cli#442).
+    @Volatile private var servingProvider: CloudProvider? = null
 
     /**
      * Runs the lifecycle until [close]. gkrost/unidrive-cli#225: it runs in [logContext], so the serve scope and every
@@ -248,6 +252,7 @@ class DaemonRuntime(
             val backups =
                 BackupsNamespace(backupsFolderName, enabled = showBackups && providerShowsBackups(cloud), rootAlways = backupsRootAlways)
             val provider = ReadOnlyTrashProvider(cloud, trash, viewNamespaces, backups)
+            servingProvider = provider
             // archive#578: the flag wins over the profile key, same shape as --poll-interval.
             uploadConcurrencyOverride?.let { n ->
                 if (!provider.overrideUploadConcurrency(n)) {
@@ -1026,6 +1031,7 @@ class DaemonRuntime(
     private fun cleanup() {
         runCatching { ipcServer?.close() }
         ipcServer = null
+        servingProvider = null
         runCatching { quotaMonitor.retryQuotaPersist(db) }
         runCatching { db?.close() }
         db = null
