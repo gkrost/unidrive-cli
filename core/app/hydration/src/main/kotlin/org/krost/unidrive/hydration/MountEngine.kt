@@ -1150,11 +1150,12 @@ class MountEngine private constructor(
      * Returns the freed bytes, or null when the copy was protected or could not be removed. A row whose
      * local file WAS the cache copy is marked not hydrated (the local bytes are gone; the next open
      * refills them from the remote).
-     * [onUnhydrated] is invoked for the first kind, so the hydration layer can publish the event.
+     * [onUnhydrated] is invoked for the first kind, so the hydration layer can publish the event;
+     * it may suspend (gkrost/unidrive-cli#452: the layer's emit waits for event-buffer room).
      */
     suspend fun evictCacheCopy(
         path: String,
-        onUnhydrated: (String) -> Unit = {},
+        onUnhydrated: suspend (String) -> Unit = {},
     ): Long? =
         hydrateMutexes.computeIfAbsent(path) { Mutex() }.withLock {
             // archive#728: one row read decides both the classification and the baseline question below: this

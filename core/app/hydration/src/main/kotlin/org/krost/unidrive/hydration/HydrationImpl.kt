@@ -26,6 +26,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
@@ -968,18 +969,25 @@ class HydrationImpl(
                     // cancelUpload (or daemon shutdown) aborted this submission
                     // while queued, mid-transfer, or in a retry backoff: the
                     // handle's correlation must end with a cause, not hang.
-                    // tryEmit — a cancelled coroutine can no longer suspend.
                     // archive#652: neither a success nor a failure: the row, if the transfer had started, ends interrupted.
                     tx?.finish(TransferResult.INTERRUPTED, errorClass = "cancelled", attempted = tx.hasStarted)
-                    _events.tryEmit(
-                        HydrationEvent.Completed(
-                            path = path,
-                            handleId = handleId,
-                            direction = HydrationEvent.Completed.Direction.UPLOAD,
-                            ok = false,
-                            error = HydrationError.Cancelled,
-                        ),
-                    )
+                    // gkrost/unidrive-cli#452: this completed is terminal — cancelUpload promises it to
+                    // every aborted submission — so tryEmit must not run it: with the event buffer full
+                    // a tryEmit returns false and the event is lost before any subscriber queue, leaving
+                    // the client's handle waiting for good. emit waits for buffer room; the coroutine is
+                    // already cancelled, so the wait runs under NonCancellable and ends once the
+                    // collector consumes or, on daemon stop, its subscription goes.
+                    withContext(NonCancellable) {
+                        _events.emit(
+                            HydrationEvent.Completed(
+                                path = path,
+                                handleId = handleId,
+                                direction = HydrationEvent.Completed.Direction.UPLOAD,
+                                ok = false,
+                                error = HydrationError.Cancelled,
+                            ),
+                        )
+                    }
                     throw e
                 }
             } finally {
@@ -1893,7 +1901,10 @@ class HydrationImpl(
         if (inUse(path)) return
         if (stateDb.getEntry(path)?.isPinned == true) return
         if (mount.cacheDisposition(path) != CacheDisposition.DISPOSABLE) return
-        val bytes = mount.evictCacheCopy(path) { _events.tryEmit(HydrationEvent.Dehydrated(it)) }
+        // gkrost/unidrive-cli#452: the event changes the subscriber's view of the path, so it must
+        // not go through tryEmit: with the event buffer full a tryEmit drops it before any
+        // subscriber queue. emit waits for buffer room instead of losing it.
+        val bytes = mount.evictCacheCopy(path) { _events.emit(HydrationEvent.Dehydrated(it)) }
         if (bytes != null) forgetCacheFile(path)
     }
 
@@ -2143,7 +2154,9 @@ class HydrationImpl(
             if (inUse(f.path)) continue
             if (rows[f.path]?.isPinned == true) continue // a pinned row's copy is never dropped (#404)
             if (mount.cacheDisposition(f.path, rows[f.path]) != CacheDisposition.DISPOSABLE) continue
-            val bytes = mount.evictCacheCopy(f.path) { _events.tryEmit(HydrationEvent.Dehydrated(it)) }
+            // gkrost/unidrive-cli#452: as in reclaimOnLastClose — the event must not be dropped
+            // by a full buffer before any subscriber queue; emit waits for room instead.
+            val bytes = mount.evictCacheCopy(f.path) { _events.emit(HydrationEvent.Dehydrated(it)) }
             if (bytes == null) continue
             freed += bytes
             evicted += f.path
