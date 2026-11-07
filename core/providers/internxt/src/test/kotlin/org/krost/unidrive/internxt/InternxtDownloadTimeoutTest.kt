@@ -56,7 +56,7 @@ class InternxtDownloadTimeoutTest {
                     val received =
                         runBlocking {
                             api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = expectedSize,
-                                onProgress = { progress += it })
+                                expectedShardHash = null, onProgress = { progress += it })
                         }
                     assertEquals(totalBytes, progress.last())
                     assertTrue(progress.zipWithNext().all { (before, after) -> after > before })
@@ -93,7 +93,7 @@ class InternxtDownloadTimeoutTest {
             mockService(client).use { api ->
                 val e =
                     assertFailsWith<InternxtDownloadBudgetExhaustedException> {
-                        api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = 4096L)
+                        api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = 4096L, expectedShardHash = null)
                     }
                 assertTrue(e is java.io.IOException, "stays an IOException: a later sync pass still retries it")
                 assertTrue(e.cause is HttpRequestTimeoutException)
