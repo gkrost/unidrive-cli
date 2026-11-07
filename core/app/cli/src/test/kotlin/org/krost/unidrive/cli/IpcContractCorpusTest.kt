@@ -593,6 +593,14 @@ class IpcContractCorpusTest {
         )
     }
 
+    // gkrost/unidrive-cli#437: `events/completed-upload-entry.ndjson`, a landed upload's completed event with its row and `skipped`.
+    @Test
+    fun completed_upload_entry_event_matches_the_serialiser() {
+        val row = ListResult.Entry("/docs/report.docx", 5, 1000, true, false, 2000, "r1", "e1", "c1")
+        val event = HydrationEvent.Completed("/docs/report.docx", "h1", HydrationEvent.Completed.Direction.UPLOAD, ok = true, entry = row, skipped = true)
+        assertJsonMatches(Json.parseToJsonElement(loadEventLine("completed-upload-entry")), Json.parseToJsonElement(serialiseHydrationEvent(event)), "events/completed-upload-entry")
+    }
+
     /** `events/view.invalidated-recents.ndjson` is the line the daemon's serialiser makes of the event the view's cache sends. */
     @Test
     fun view_invalidated_event_matches_the_serialiser() {

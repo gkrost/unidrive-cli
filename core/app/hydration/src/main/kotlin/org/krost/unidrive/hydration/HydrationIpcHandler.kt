@@ -839,7 +839,17 @@ fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
     is HydrationEvent.Completed -> {
         val direction = if (e.direction == HydrationEvent.Completed.Direction.UPLOAD) "upload" else "download"
         val base = """{"event":"completed","path":${jsonEsc(e.path)},"handle_id":${jsonEsc(e.handleId)},"direction":"$direction","ok":${e.ok}"""
-        if (e.ok) "$base}" else "$base,\"error\":${errorEsc(e.error?.message ?: "unknown")}}"
+        if (e.ok) {
+            val sb = StringBuilder(base)
+            if (e.skipped) sb.append(",\"skipped\":true")
+            if (e.entry != null) {
+                sb.append(",\"entry\":")
+                appendListEntry(sb, e.entry)
+            }
+            sb.append('}').toString()
+        } else {
+            "$base,\"error\":${errorEsc(e.error?.message ?: "unknown")}}"
+        }
     }
     is HydrationEvent.Paused -> {
         val base = """{"event":"paused","reason":${jsonEsc(e.reason)},"since_ms":${e.sinceMs},"auto":${e.auto}"""
