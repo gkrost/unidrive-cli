@@ -21,6 +21,7 @@
     <ID>InstanceOfCheckForException:IpcAuthClient.kt$IpcAuthClient$e !is IpcAuthException</ID>
     <ID>InstanceOfCheckForException:IpcAuthClient.kt$IpcAuthClient$e is IOException</ID>
     <ID>InstanceOfCheckForException:SyncEngine.kt$SyncEngine$e is CancellationException</ID>
+    <ID>LargeClass:Reconciler.kt$Reconciler</ID>
     <ID>LargeClass:ReconcilerTest.kt$ReconcilerTest</ID>
     <ID>LargeClass:SyncEngine.kt$SyncEngine : MountHostEnumerationEntryPoint</ID>
     <ID>LargeClass:SyncEngineTest.kt$SyncEngineTest</ID>
