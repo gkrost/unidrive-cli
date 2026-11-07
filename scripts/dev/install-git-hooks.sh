@@ -1,22 +1,26 @@
 #!/usr/bin/env sh
-# install-git-hooks.sh: install the repository's pre-push hook (scripts/dev/git-hooks/pre-push) into this clone.
+# install-git-hooks.sh: install the merged-PR pre-push check (scripts/dev/git-hooks/merged-pr-guard.sh) into this clone.
 #
-# The installed file is a one-line shim that runs the tracked hook, so a later change to the hook needs no reinstall.
-# A pre-push hook that was there before (and is not this shim) is kept as pre-push.chained and still runs after the guard.
-# Hooks are shared by all worktrees of a clone: installing once covers them all.
-# With core.hooksPath set, git reads hooks from that folder instead: the script installs there and says so.
+# The installer copies the guard into the clone's hooks folder and writes a pre-push hook that runs that copy. The copy
+# matters: hooks are shared by every worktree of a clone, and most branches do not carry the script, so a hook that ran
+# the checked-out branch's file would break their pushes. Run the installer again to pick up a newer guard.
+# A pre-push hook that was there before (and is not ours) is kept as pre-push.chained and still runs after the guard.
+# With core.hooksPath set, git reads hooks from that folder instead: the script installs there and says so, except into a
+# folder inside the work tree (tracked hooks are never moved or overwritten; wire the guard into them instead).
 #
-# Uninstall: delete the pre-push shim; rename pre-push.chained back to pre-push if there is one.
+#   sh scripts/dev/install-git-hooks.sh          (any clone of the repository; also works when run from another checkout)
+# Uninstall: delete pre-push and merged-pr-guard.sh from the hooks folder; rename pre-push.chained back to pre-push if present.
 set -eu
 
+guard_src="$(cd "$(dirname "$0")" && pwd)/git-hooks/merged-pr-guard.sh"
+[ -f "$guard_src" ] || { echo "install-git-hooks: $guard_src not found" >&2; exit 1; }
+
 repo=$(git rev-parse --show-toplevel)
-hooks=$(git rev-parse --git-path hooks)
+hooks=$(git rev-parse --git-common-dir)/hooks
 case "$hooks" in /*|[A-Za-z]:*) ;; *) hooks="$repo/$hooks" ;; esac
 custom=$(git config --get core.hooksPath || true)
 if [ -n "$custom" ]; then
     case "$custom" in /*|[A-Za-z]:*) hooks="$custom" ;; *) hooks="$repo/$custom" ;; esac
-    # A hooks folder inside the work tree holds tracked hooks: never move or overwrite them. Their pre-push calls the
-    # merged-PR check itself where the repository wires it (scripts/hooks/pre-push in the engine).
     case "$hooks/" in
         "$repo"/*)
             echo "install-git-hooks: core.hooksPath points into the work tree ($custom): git already runs the tracked hooks there."
@@ -27,7 +31,7 @@ if [ -n "$custom" ]; then
 fi
 mkdir -p "$hooks"
 
-marker='# unidrive pre-push shim'
+marker='# unidrive merged-PR pre-push hook'
 target="$hooks/pre-push"
 if [ -f "$target" ] && ! grep -q "$marker" "$target"; then
     if [ -e "$hooks/pre-push.chained" ]; then
@@ -38,10 +42,19 @@ if [ -f "$target" ] && ! grep -q "$marker" "$target"; then
     echo "kept the existing pre-push hook as pre-push.chained (it runs after the merged-PR check)"
 fi
 
+cp "$guard_src" "$hooks/merged-pr-guard.sh"
 cat > "$target" <<EOF
 #!/usr/bin/env sh
-$marker
-exec sh "\$(git rev-parse --show-toplevel)/scripts/dev/git-hooks/pre-push" "\$@"
+$marker (installed by scripts/dev/install-git-hooks.sh; reinstall to update)
+# 1. merged-pr-guard.sh (copied next to this file): refuse a push to a branch whose PR is merged or closed.
+# 2. pre-push.chained, the hook that was here before, if any. Both get git's arguments and the same stdin.
+hooks=\$(dirname "\$0")
+input=\$(cat)
+printf '%s\n' "\$input" | sh "\$hooks/merged-pr-guard.sh" "\$@" || exit 1
+if [ -x "\$hooks/pre-push.chained" ]; then
+    printf '%s\n' "\$input" | "\$hooks/pre-push.chained" "\$@" || exit 1
+fi
+exit 0
 EOF
 chmod +x "$target"
-echo "installed: $target -> scripts/dev/git-hooks/pre-push (merged-PR check)"
+echo "installed: $target (merged-PR check, guard copied to $hooks/merged-pr-guard.sh)"
