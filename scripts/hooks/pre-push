@@ -10,7 +10,17 @@
 # If gitleaks is not installed the push is refused. To push anyway
 # (for example on a machine without gitleaks), set
 # UNIDRIVE_SKIP_SECRET_SCAN=1 for that one push.
+#
+# First, scripts/dev/git-hooks/merged-pr-guard.sh refuses a push to a branch whose PR is already merged or closed: such a
+# commit reaches no PR and never main (see that script; it fails open without gh).
 set -euo pipefail
+
+guard="$(git rev-parse --show-toplevel)/scripts/dev/git-hooks/merged-pr-guard.sh"
+if [ -f "$guard" ]; then
+    input=$(cat)
+    printf '%s\n' "$input" | sh "$guard" "$@" || exit 1
+fi
+
 cd "$(dirname "$0")/../.."
 
 if ! command -v gitleaks >/dev/null 2>&1; then
