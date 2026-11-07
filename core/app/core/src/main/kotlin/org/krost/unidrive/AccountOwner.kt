@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
@@ -35,7 +36,7 @@ object AccountOwner {
         /** No id is stored (a new profile, or one signed in before ids were kept): store, then [record] the user. */
         ADOPT,
 
-        /** An id is stored and the provider gave none, or none that could be read: nothing can be compared. */
+        /** Nothing can be compared: an id is stored and the provider gave none, or none that could be read, or the stored file cannot be read. */
         UNVERIFIED,
 
         /** An id is stored and the user is another one. */
@@ -45,8 +46,16 @@ object AccountOwner {
     /** The stored id, or null when none was stored or the file cannot be read. */
     fun read(profileDir: Path): String? =
         try {
-            Files.readString(profileDir.resolve(FILE_NAME), Charsets.UTF_8).trim().takeIf { it.isNotEmpty() }
+            readStored(profileDir)
         } catch (_: IOException) {
+            null
+        }
+
+    /** The stored id, or null when none is stored (no file, or a blank one); a file that cannot be read throws. */
+    private fun readStored(profileDir: Path): String? =
+        try {
+            Files.readString(profileDir.resolve(FILE_NAME), Charsets.UTF_8).trim().takeIf { it.isNotEmpty() }
+        } catch (_: NoSuchFileException) {
             null
         }
 
@@ -55,7 +64,13 @@ object AccountOwner {
         profileDir: Path,
         signedIn: String?,
     ): Verdict {
-        val stored = read(profileDir) ?: return Verdict.ADOPT
+        val stored =
+            try {
+                readStored(profileDir)
+            } catch (_: IOException) {
+                // A file that cannot be read says nothing about which user is stored: refuse rather than adopt.
+                return Verdict.UNVERIFIED
+            } ?: return Verdict.ADOPT
         val user = signedIn?.trim()?.takeIf { it.isNotEmpty() } ?: return Verdict.UNVERIFIED
         // Graph ids are GUID-like and compared without case; ids of two users differ in more than case.
         return if (stored.equals(user, ignoreCase = true)) Verdict.SAME else Verdict.CHANGED
