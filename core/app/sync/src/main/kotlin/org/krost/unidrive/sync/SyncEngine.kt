@@ -3011,10 +3011,18 @@ open class SyncEngine(
     // local mtime follows the remote's (what the download would have set), the row records the
     // delivered metadata, and no transfer runs. The pin, hydration and quarantine marks stay:
     // the touch learns nothing new about a quarantined identifier — its own delivery ends that.
-    private fun applyTouchMetadata(action: SyncAction.TouchMetadata) {
+    // Internal for the metadata-touch placement test (as applyDownload for the download-placement test).
+    internal fun applyTouchMetadata(action: SyncAction.TouchMetadata) {
         val item = action.remoteItem
-        placeholder.restoreMtime(action.path, item.modified)
         val row = db.getEntry(action.path) ?: return
+        val localPath = placeholder.resolveLocal(action.path)
+        // gkrost/unidrive-cli#451: an edit that landed between the scan and this touch must not be touched
+        // over — a same-size rewrite (a database, a vault file) would vanish: the mtime reset below plus the
+        // baseline this touch records would read as synced at the next scan, and a later cloud change would
+        // download over the edit. The touch is skipped whole: the row keeps its baseline, the next pass
+        // re-derives both the touch and the edit. A file that moved away has nothing to touch either.
+        if (!Files.isRegularFile(localPath) || editedSinceScan(localPath, row)) return
+        placeholder.restoreMtime(action.path, item.modified)
         db.upsertEntry(
             row.copy(
                 remoteId = item.id,
