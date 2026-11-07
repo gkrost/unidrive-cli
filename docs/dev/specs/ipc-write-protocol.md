@@ -587,6 +587,11 @@ and `completed ok:false` with the `cancelled` token, a `hydrate` sends `failed` 
 nobody waits for it any more: its partial bytes are removed, the entry stays not hydrated and shows no `error`, and its
 history row ends `interrupted`. While another request still waits, the download goes on for it.
 
+An engine that does all of this lists `hydration.cancel_read` in the `daemon.status` `capabilities`, so a client tells an
+engine that reads the `handle_id` of a cancel and stops an unwaited download from one that reads the path alone (the
+listing is the only way to tell: such an engine answers the same `{"ok":true,"cancelled":false}`). Pinned by the capability
+list of `daemon.status.ndjson`.
+
 A connection that closes while it waits ends its own waits the same way: the daemon watches the connection of a request
 that runs longer than a moment, so a client that goes away (or shuts down its sending side) during a long download is
 noticed at once, not when the download ends. Requests the client sends while one runs are answered after it, in order.

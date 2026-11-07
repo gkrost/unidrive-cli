@@ -166,6 +166,8 @@ import java.util.concurrent.atomic.AtomicLong
  *                         token, hydrate with the failed event). The download stops when nobody waits for it any more: its
  *                         partial bytes go, the row stays not hydrated and without an error. A connection that closes
  *                         ends its own waits the same way.
+ *                         daemon.status lists "hydration.cancel_read" in capabilities on an engine that does this, so a client
+ *                         tells "handle_id on cancel is understood" from an engine that reads the path alone.
  *
  *   Upload progress: while a client-written file uploads, the stream carries
  *   {"event":"uploading","path":"...","handle_id":"...","bytes_done":N,"bytes_total":M}
