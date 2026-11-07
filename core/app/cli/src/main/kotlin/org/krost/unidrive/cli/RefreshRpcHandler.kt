@@ -157,13 +157,14 @@ class RefreshRpcHandler(
                         val token = if (e is IllegalStateException) "engine_guard" else "provider_error"
                         val msg = jsonString(e.message?.let(UrlRedaction::redact))
                         """{"event":"refresh.done","job_id":"$jobId","ok":false,"error":"$token","message":$msg}"""
-                    } finally {
-                        inFlight.set(null)
                     }
                     // Fan terminal event to all sync.subscribe subscribers via the
                     // existing broadcast channel. emit() is non-blocking trySend; the
                     // broadcastJob loop in IpcServer filters by syncSubscribers set.
                     runCatching { emit(terminalEvent) }
+                    // Only now is the slot free: a request accepted between the two would have its client read this
+                    // refresh's refresh.done as its own (gkrost/unidrive-cli#442).
+                    inFlight.set(null)
                 }
             } catch (t: Throwable) {
                 // launch itself failed (e.g. scope already cancelled): release the
@@ -177,6 +178,8 @@ class RefreshRpcHandler(
         // resurrecting a stale in-flight entry (which would wrongly reject the next
         // request as busy and make awaitInFlight join a completed job).
         inFlight.compareAndSet(placeholder, RefreshJob(jobId, launched))
+        // A job that ends without reaching the line above (cancelled, or failed with an Error) still frees its slot.
+        launched.invokeOnCompletion { inFlight.updateAndGet { if (it?.id == jobId) null else it } }
         return """{"ok":true,"job_id":"$jobId"}"""
     }
 
