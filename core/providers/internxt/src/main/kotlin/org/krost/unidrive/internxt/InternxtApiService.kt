@@ -1329,6 +1329,86 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         }
     }
 
+    /**
+     * #500: one page of the provider's trash, `GET /storage/trash/paginated`. The server sorts files and folders
+     * apart (`type` is mandatory) and caps [limit] at 50 (drive-server-wip `TrashController`); `root=true` is what
+     * the official SDK sends. A read has no effect to repeat, so the full transient ladder retries it.
+     */
+    internal suspend fun trashPage(
+        type: String,
+        limit: Int,
+        offset: Long,
+    ): InternxtTrashPage {
+        require(type == "files" || type == "folders") { "type must be 'files' or 'folders'; got $type" }
+        val body =
+            authenticatedGet(
+                "$baseUrl/storage/trash/paginated?limit=$limit&offset=$offset&type=$type&root=true",
+                socketTimeoutMs = listingSocketTimeoutMs,
+            )
+        return json.decodeFromString<InternxtTrashPage>(body)
+    }
+
+    /**
+     * #500: empty the whole trash, `DELETE /storage/trash/all`. A repeat of a 5xx whose origin committed empties an
+     * already emptying trash, so the server errors are retried.
+     */
+    internal suspend fun emptyTrash() {
+        retryOnTransient(retryServerErrors = true) {
+            withAuthRetry { creds ->
+                budgeted(driveBudget) {
+                    val response = httpClient.delete("$baseUrl/storage/trash/all") {
+                        applyAuth(creds)
+                    }
+                    checkResponse(response)
+                }
+            }
+        }
+    }
+
+    /**
+     * #500: purge items from the trash for good, `DELETE /storage/trash` with `DeleteItemsDto`'s
+     * `{items: [{uuid, type}]}`. Server-capped at 50 per call — this method does not split. A uuid the server
+     * no longer holds in the trash is skipped silently by the server's own lookup (drive-server-wip
+     * `TrashController.deleteItems` gathers only the rows it finds), so a repeat of a 5xx whose origin
+     * committed is a smaller, still-correct purge: the server errors are retried.
+     */
+    internal suspend fun purgeTrashItems(items: List<Pair<String, String>>) {
+        require(items.isNotEmpty()) { "purgeTrashItems requires at least one item" }
+        require(items.size <= 50) { "purgeTrashItems is server-capped at 50; got ${items.size}" }
+        require(items.all { it.second == "file" || it.second == "folder" }) {
+            "type must be 'file' or 'folder'; got ${items.map { it.second }.distinct()}"
+        }
+        retryOnTransient(retryServerErrors = true) {
+            withAuthRetry { creds ->
+                budgeted(driveBudget) {
+                    val requestBody =
+                        kotlinx.serialization.json.buildJsonObject {
+                            put(
+                                "items",
+                                kotlinx.serialization.json.buildJsonArray {
+                                    items.forEach { (uuid, type) ->
+                                        add(
+                                            kotlinx.serialization.json.buildJsonObject {
+                                                put("uuid", kotlinx.serialization.json.JsonPrimitive(uuid))
+                                                put("type", kotlinx.serialization.json.JsonPrimitive(type))
+                                            },
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    val response =
+                        httpClient.delete("$baseUrl/storage/trash") {
+                            applyAuth(creds)
+                            contentType(ContentType.Application.Json)
+                            setBody(requestBody.toString())
+                        }
+                    checkResponse(response)
+                }
+            }
+        }
+    }
+
     suspend fun deleteFolder(uuid: String) {
         // 404 is treated as already-gone (idempotent delete) — short-circuits
         // before checkResponse so retryOnTransient never sees it as transient. The repeat of a

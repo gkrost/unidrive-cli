@@ -138,11 +138,11 @@ variants as the fallback plan for oversized folders.
 | Endpoint | Verb | Status | Provider site | Notes |
 |---|---|---|---|---|
 | `/storage/trash/add` | POST | ✅ | `InternxtApiService.kt` `trashItems` | UD-367: routine sync-driven deletes route through here. Body shape `{items: [{uuid, type:"file"|"folder"}]}` per `MoveItemsToTrashDto`; server-capped at 50 items per call. |
-| `/storage/trash/paginated` | GET | ◯ | — | Could feed a `unidrive trash list --remote` operator command. |
-| `/storage/trash` | DELETE | ◯ | — | Bulk purge by id list. |
-| `/storage/trash/all` | DELETE | ◯ | — | Empty entire trash. |
-| `/storage/trash/all/request` | DELETE | ◯ | — | Async empty-trash request (subset of `/all` semantics — needs spec follow-up if surfaced). |
-| `/storage/trash/file/{fileId}` | DELETE | ◯ | — | Permanent purge of one trashed file. Could feed `unidrive trash purge --remote --id …`. |
+| `/storage/trash/paginated` | GET | ✅ | `InternxtApiService.kt` `trashPage` → provider `listTrash` | #500: the remote trash listing (`trash list --remote`). `limit` (server cap 50) + `offset` + mandatory `type=files\|folders` + `root=true` (what the official SDK sends); answers `{result: [File/Folder row + parent + expiresAt]}` per drive-server-wip `TrashController`. Files and folders come in separate walks. |
+| `/storage/trash` | DELETE | ✅ | `InternxtApiService.kt` `purgeTrashItems` → provider `purgeTrash` | #500: purge by uuid list (`DeleteItemsDto`, server cap 50 per call, 202). The server looks the uuids up and silently skips ones it no longer holds, so a repeat of a 5xx whose origin committed is a smaller, still-correct purge. Preferred over the two single-item endpoints below: they are keyed by the deprecated numeric id. |
+| `/storage/trash/all` | DELETE | ✅ | `InternxtApiService.kt` `emptyTrash` → provider `emptyTrash` | #500: empty the whole trash (`trash purge --remote --all`). |
+| `/storage/trash/all/request` | DELETE | ◯ | — | Same server-side use case as `/all` (drive-server-wip wires both to `emptyTrash`); not surfaced. |
+| `/storage/trash/file/{fileId}` | DELETE | ◯ | — | Permanent purge of one trashed file, keyed by the deprecated numeric id; superseded by the uuid bulk purge. |
 | `/storage/trash/folder/{folderId}` | DELETE | ◯ | — | Same for folders. |
 | `/workspaces/{workspaceId}/trash` | GET / DELETE | ◯ | — | Workspace-scoped variants — out of scope until unidrive grows workspace support. |
 
