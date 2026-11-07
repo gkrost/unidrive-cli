@@ -1,5 +1,6 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import java.nio.file.Path
@@ -13,11 +14,15 @@ internal class ScriptedHydration : Hydration {
     val cache: Path = Paths.get("/cache/unidrive/hydration/docs/report.txt")
     var open: OpenResult = OpenResult.Ok(cache)
     var create: CreateResult = CreateResult.Ok(cache, "h-2")
+    var mkdir: MkdirResult = MkdirResult.Ok
     var list: ListResult = ListResult.Ok(emptyList())
     var matches: MatchesLocalResult = MatchesLocalResult.Same("quickxor")
     var viewPage: ViewPageResult = ViewPageResult.UnknownView
     var cleared = false
     var cancelled = false
+
+    /** When set, mkdir suspends until it completes: a test's way to hold the verb mid-call (gkrost/unidrive-cli#452). */
+    var mkdirGate: CompletableDeferred<Unit>? = null
 
     override suspend fun openForRead(connectionId: String, handleId: String, path: String): OpenResult {
         calls += HydrationCall("open_read", listOf(connectionId, handleId, path))
@@ -80,7 +85,8 @@ internal class ScriptedHydration : Hydration {
 
     override suspend fun mkdir(path: String): MkdirResult {
         calls += HydrationCall("mkdir", listOf(path))
-        return MkdirResult.Ok
+        mkdirGate?.await()
+        return mkdir
     }
 
     override suspend fun unlink(path: String, permanent: Boolean): UnlinkResult {

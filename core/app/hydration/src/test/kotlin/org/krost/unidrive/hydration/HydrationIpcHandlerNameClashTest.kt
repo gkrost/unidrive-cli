@@ -1,5 +1,8 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
 import kotlin.test.Test
@@ -121,6 +124,43 @@ class HydrationIpcHandlerNameClashTest {
         assertTrue(r.call("unlink", "path" to "/$nfc").contains("\"ok\":true"))
 
         assertTrue(r.call("create", "path" to "/$nfd").contains("\"ok\":true"), "the clash is resolved")
+    }
+
+    // gkrost/unidrive-cli#452: the guard used to check before the verb and record only after it, so two concurrent
+    // verbs naming one folder by the two spellings both passed the check and both ran. The spelling is now claimed
+    // (a putIfAbsent) before the verb: the second request clashes while the first is still inside its verb.
+    @Test
+    fun `two concurrent verbs naming one folder by the two spellings cannot both run`() = runTest {
+        val dirNfc = "/dir" + String(intArrayOf(0xE9), 0, 1)
+        val dirNfd = "/dire" + String(intArrayOf(0x301), 0, 1)
+        val fake = ScriptedHydration()
+        val gate = CompletableDeferred<Unit>()
+        fake.mkdirGate = gate
+        val handler = HydrationIpcHandler(fake)
+
+        val first = async { handler.handle("conn1", """{"verb":"hydration.mkdir","path":"$dirNfc"}""") }
+        runCurrent() // the first verb is inside its mkdir, parked on the gate, its spelling claimed
+        val second = async { handler.handle("conn2", """{"verb":"hydration.mkdir","path":"$dirNfd"}""") }
+        runCurrent() // the second request answers here, before the first verb has finished
+        gate.complete(Unit)
+
+        assertTrue(first.await().contains("\"ok\":true"))
+        assertEquals("""{"ok":false,"error":"name_clash"}""", second.await().trim())
+        assertEquals(1, fake.calls.size, "only the first spelling's folder create ran: ${fake.calls}")
+    }
+
+    // A verb that fails after its claim must give the claim back, or the other spelling stays refused for nothing.
+    @Test
+    fun `a verb that fails leaves no claim behind`() = runTest {
+        val fake = ScriptedHydration()
+        fake.create = CreateResult.PathExists
+        val handler = HydrationIpcHandler(fake)
+
+        assertEquals("""{"ok":false,"error":"path_exists"}""", handler.handle("conn1", """{"verb":"hydration.create","path":"/$nfc"}""").trim())
+
+        fake.create = CreateResult.Ok(fake.cache, "h-1")
+        assertTrue(handler.handle("conn2", """{"verb":"hydration.create","path":"/$nfd"}""").contains("\"ok\":true"))
+        assertEquals("""{"ok":false,"error":"name_clash"}""", handler.handle("conn1", """{"verb":"hydration.create","path":"/$nfc"}""").trim())
     }
 
     private fun kotlinx.coroutines.test.TestScope.advanceUntilIdleForUploads() = testScheduler.advanceUntilIdle()

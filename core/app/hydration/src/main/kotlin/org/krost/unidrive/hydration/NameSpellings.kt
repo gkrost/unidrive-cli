@@ -29,12 +29,45 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
     /** True when [rawPath] names a name or a folder above it by another spelling than the one recorded for it. */
     fun clashes(rawPath: String): Boolean = walk(rawPath) { nfc, raw -> seen[nfc]?.let { it != raw } == true }
 
-    /** Remembers the spelling [rawPath] uses for every name in it that could have a twin. */
-    fun record(rawPath: String) {
-        walk(rawPath) { nfc, raw ->
-            if (seen.putIfAbsent(nfc, raw) == null) store?.record(nfc, raw)
-            false
+    /**
+     * Atomically claims the spelling [rawPath] uses for every name in it that could have a twin, before the verb
+     * runs: each claim is a [ConcurrentHashMap.putIfAbsent] — the check and the reservation in one step — so two
+     * verbs naming one name by different spellings cannot both pass the guard however their calls interleave
+     * (gkrost/unidrive-cli#452). Answers null when a recorded spelling clashes, with nothing of this call left
+     * behind; otherwise the claimed (NFC prefix, raw prefix) pairs, for [commit] when the verb succeeds and
+     * [rollback] when it does not: a failed verb must not leave its spelling claimed, or the other spelling stays
+     * refused for nothing. The claim is the memory half only — the store is written on success, by [commit].
+     */
+    fun claim(rawPath: String): List<Pair<String, String>>? {
+        val claimed = ArrayList<Pair<String, String>>()
+        val clash = walk(rawPath) { nfc, raw ->
+            val known = seen.putIfAbsent(nfc, raw)
+            if (known == null) {
+                claimed += nfc to raw
+                false
+            } else {
+                known != raw
+            }
         }
+        if (clash) {
+            rollback(claimed)
+            return null
+        }
+        return claimed
+    }
+
+    /** Persists a succeeded verb's claim: the store is written for every claimed name this map still holds. */
+    fun commit(claim: List<Pair<String, String>>) {
+        val persisted = store ?: return
+        for ((nfc, raw) in claim) {
+            seen.putIfAbsent(nfc, raw)
+            if (seen[nfc] == raw) persisted.record(nfc, raw)
+        }
+    }
+
+    /** Takes a failed verb's claim back: only entries that still hold the claimed spelling are removed. */
+    fun rollback(claim: List<Pair<String, String>>) {
+        for ((nfc, raw) in claim) seen.remove(nfc, raw)
     }
 
     /** The name at [rawPath] and everything below it is gone (or has moved away): its spellings are free again. */
