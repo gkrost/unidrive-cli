@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -533,6 +534,7 @@ class DropboxProvider(
     ): CloudItem = relocate(if (remoteId.startsWith("id:")) remoteId else apiPath(fromPath), apiPath(toPath), apiPath(fromPath))
 
     // Dropbox compares names without case, so a rename that changes only the case goes through a temporary name.
+    @Suppress("TooGenericExceptionCaught") // whatever fails the second move, the item is put back and the failure is rethrown unchanged
     private suspend fun relocate(
         from: String,
         to: String,
@@ -542,7 +544,19 @@ class DropboxProvider(
         if (fromPath != to && fromPath.equals(to, ignoreCase = true)) {
             val parked = "${to.substringBeforeLast('/')}/.unidrive-case-${java.util.UUID.randomUUID().toString().take(8)}"
             moveOnce(from, parked)
-            return moveOnce(parked, to)
+            try {
+                return moveOnce(parked, to)
+            } catch (e: Throwable) {
+                // The item must not stay under the hidden name: the next delta would read it as a delete plus a new file.
+                withContext(NonCancellable) {
+                    try {
+                        moveOnce(parked, fromPath)
+                    } catch (rollback: Exception) {
+                        log.warn("Dropbox case rename failed and the item could not be put back; it is left at '{}'", parked, rollback)
+                    }
+                }
+                throw e
+            }
         }
         return moveOnce(from, to)
     }
