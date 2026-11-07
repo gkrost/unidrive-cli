@@ -382,7 +382,16 @@ class TrackingEngine(
         // Snapshot BEFORE the upload: an edit saved while the bytes are in flight
         // must still read as a local change on the next pass, not as synced.
         val l = observeLocal(path)
-        val uploaded = provider.upload(src, path, existingRemoteId = existing?.remoteFileId)
+        // A replace carries the etag the pass saw, like the delete does: a version saved in the cloud after the
+        // scan is refused instead of overwritten. A provider with its own write token guards a replace itself.
+        val ifMatch = existing?.takeIf { it.remoteFileId != null }?.remoteEtag?.takeUnless { provider.reportsItemVersions }
+        val uploaded =
+            try {
+                provider.upload(src, path, existingRemoteId = existing?.remoteFileId, ifMatchETag = ifMatch)
+            } catch (_: RemoteConflictException) {
+                if (existing != null) trackingSet.upsert(existing)
+                return AppliedAction(action, ApplyOutcome.SKIPPED, "remote changed after scan; upload refused, left as a collision")
+            }
         val r = observeRemote(path).copy(remoteFileId = uploaded.id, etag = uploaded.hash, hash = uploaded.hash, size = uploaded.size)
         trackingSet.adopt(path, provider.id, l, r)
         return AppliedAction(action, ApplyOutcome.SUCCESS, null)
