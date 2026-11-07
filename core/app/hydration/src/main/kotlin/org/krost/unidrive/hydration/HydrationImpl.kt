@@ -41,6 +41,7 @@ import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.engine.CachePaths
 import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.RemoteEnumeration
+import org.krost.unidrive.engine.Transfers
 import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.moveFile
@@ -2601,6 +2602,13 @@ class HydrationImpl(
         // event has arrived.
         if (uploadSlots.containsKey(path)) return DehydrateResult.Busy
 
+        // gkrost/unidrive-cli#452: refuse while a download of the path is in flight too. Its waiter holds no
+        // handle yet — openForRead registers one only after the download returns — so the open-set above does
+        // not see it, and a "free up space" in that window deleted the file the client was about to be handed.
+        // The delete itself then also sits under the path's hydration lock ([MountEngine.forceEvictCacheCopy]),
+        // so no hydration of the same path interleaves with it either.
+        if (downloads.waiterCount(path) > 0) return DehydrateResult.Busy
+
         // archive#301/#136: a pending upload (remoteId == null && isHydrated) has NO remote
         // copy at all — the cache is the only copy of the file. Dehydrate is
         // meaningless for it until the upload lands (which flips remoteId), so
@@ -2616,19 +2624,22 @@ class HydrationImpl(
 
         return try {
             val cachePath = mount.resolveCachePath(path)
-            val bytes = runCatching { Files.size(cachePath) }.getOrNull()
-            val started = System.nanoTime()
-            val deleted = java.nio.file.Files.deleteIfExists(cachePath)
-            if (deleted) {
-                val tally = FileEventTally()
-                FileEvents.event(FileEvents.Phase.CACHE_EVICT, path, bytes = bytes,
-                    ms = (System.nanoTime() - started) / 1_000_000, tally = tally, extra = listOf("reason" to "dehydrate"))
-                FileEvents.summary("mount-dehydrate", tally)
-            }
+            // gkrost/unidrive-cli#452: the delete goes through the engine's locked delete: no delete in the middle
+            // of a hydration of the same path, and nothing deleted that is not the copy vetted above. Null means
+            // nothing was deleted; the exists-check tells a copy that was already gone (fine: the row is marked
+            // not hydrated either way) from one the delete could not take (an error, or the copy changed under
+            // the lock) — the old deleteIfExists answered Ok for the first and Failed for the second too.
+            val freed = mount.forceEvictCacheCopy(path, observed = Transfers.statBeforeUpload(cachePath))
             forgetCacheFile(path)
-            stateDb.markUnhydrated(path)
-            _events.emit(HydrationEvent.Dehydrated(path))
-            DehydrateResult.Ok
+            if (freed == null && Files.exists(cachePath)) {
+                val err = HydrationError.Generic("dehydrate failed")
+                _events.emit(HydrationEvent.Failed(path, err))
+                DehydrateResult.Failed(err)
+            } else {
+                stateDb.markUnhydrated(path)
+                _events.emit(HydrationEvent.Dehydrated(path))
+                DehydrateResult.Ok
+            }
         } catch (e: Exception) {
             val err = HydrationError.Generic(e.message ?: "dehydrate failed")
             _events.emit(HydrationEvent.Failed(path, err))
