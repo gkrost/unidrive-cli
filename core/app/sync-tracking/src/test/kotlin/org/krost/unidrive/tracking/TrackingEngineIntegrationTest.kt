@@ -952,7 +952,7 @@ class TrackingEngineIntegrationTest {
         val permissive = BatchGuard(maxDeleteRatio = 1.0, maxDeleteAbsolute = Int.MAX_VALUE)
         val tracking2 = SqliteTrackingSet(dbPath).also { it.initialize() }
         try {
-            val report = engine(tracking = tracking2, guard = permissive, dryRun = true).syncOnce()
+            val report = engine(tracking = tracking2, guard = permissive, dryRun = false).syncOnce()
 
             assertFalse(report.remoteEnumerationComplete, "failed recovery must mark the pass incomplete")
             assertEquals(
