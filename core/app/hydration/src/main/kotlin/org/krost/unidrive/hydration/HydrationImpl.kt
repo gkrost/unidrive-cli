@@ -1358,7 +1358,8 @@ class HydrationImpl(
     /**
      * One transfer attempt under the stall watchdog (archive#613): runs the
      * transfer-permit wait and the transfer itself, and cancels both when [uploadStallTimeoutMs]
-     * elapses with no byte progress from the provider. The wait for the permit, the provider's
+     * elapses with no byte progress from the provider. The clock starts once the permit is held:
+     * a queued upload has not stalled. The provider's
      * pre-transfer work (its identical-bytes check, its resume bookkeeping) and the transfer all
      * suspend with no timeout of their own — a single lost wakeup there held the path's slot for
      * the daemon's lifetime, with no provider request, no failure, no event. Every attempt is now
@@ -1408,7 +1409,9 @@ class HydrationImpl(
             onProgress(done, total)
         }
         return coroutineScope {
-            val watcher = launch {
+            // Lazy: the clock starts once the permit is held. An upload queued behind others for a permit has made no
+            // request to stall, and must not burn a rung of the retry ladder for waiting its turn.
+            val watcher = launch(start = CoroutineStart.LAZY) {
                 while (true) {
                     try {
                         withTimeout(uploadStallTimeoutMs) { kicks.receive() }
@@ -1423,6 +1426,7 @@ class HydrationImpl(
                 mount.withTransferPermit {
                     drainableTransfer {
                         onPermitAcquired()
+                        watcher.start()
                         transfer.begin()
                         tx?.started()
                         holdingPermit(path) {
