@@ -465,7 +465,7 @@ A provider that rejects the credentials turns the state to `expired` without wai
 |---|---|
 | `in_flight` | one entry per endpoint class with calls open now: `count` is how many are open, `oldest_ms` how long the oldest has been. A request whose answer never comes stays here - this is the state a stalled transfer is diagnosed from. A class names an endpoint (`GET /drive/files`), never a path or an id |
 | `free_slots` | per throttle budget, the permits still free (Internxt: `drive`, `bridge`). 0 means every permit of that budget is held - a call that waits for a permit waits there, and the in-flight entries above say for what |
-| `total` | additive (gkrost/unidrive-cli#460). Per endpoint class, the attempts the provider's HTTP client opened since the daemon started: a retry counts again, an attempt still open counts already. A class not called yet is absent (0). It says how many calls a change saved, which `in_flight` cannot. A daemon older than #460 does not send it |
+| `total` | additive (gkrost/unidrive-cli#460). Per endpoint class, the attempts the provider's HTTP client opened since the daemon started: a retry counts again, an attempt still open counts already. A class not called yet is absent (0). It says how many calls a change saved, which `in_flight` cannot. A daemon older than #460 does not send it, and neither does a provider that sends no `requests` object at all: the field lives inside `requests`, so its absence alone says nothing about the daemon's age. An attempt counts from its send: a call still waiting for a permit or queued locally is not counted yet (`free_slots` shows the wait) |
 
 The reading is taken when the reply is built; it never blocks and never asks the provider anything.
 

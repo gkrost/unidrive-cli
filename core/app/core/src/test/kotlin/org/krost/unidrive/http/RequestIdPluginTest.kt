@@ -12,6 +12,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.prepareGet
 import io.ktor.client.request.request
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
@@ -396,6 +397,32 @@ class RequestIdPluginTest {
             repeat(3) { client.get("https://example.invalid/a") }
             assertEquals(mapOf("GET external" to 3L), inFlight.totals(), "three calls, three attempts")
             assertEquals(emptyList(), inFlight.snapshot(), "and none of them is open")
+            client.close()
+        }
+
+    // The KDoc's rule, pinned on the totals side: a redirect (like a provider-level retry) is a further request
+    // through the plugin's send hook, so it counts again — one logical call, two attempts.
+    @Test
+    fun `a redirect counts as a second attempt in its class's total`() =
+        runBlocking {
+            val inFlight = RequestInFlight()
+            val sends = java.util.concurrent.atomic.AtomicInteger()
+            val engine =
+                MockEngine { _ ->
+                    if (sends.incrementAndGet() == 1) {
+                        respond("", HttpStatusCode.Found, headers = headersOf(HttpHeaders.Location, "https://example.invalid/b"))
+                    } else {
+                        respond("ok", HttpStatusCode.OK)
+                    }
+                }
+            val client =
+                HttpClient(engine) {
+                    install(RequestId) { this.inFlight = inFlight }
+                    followRedirects = true
+                }
+            client.get("https://example.invalid/a")
+            assertEquals(mapOf("GET external" to 2L), inFlight.totals(), "the redirect is its own attempt")
+            assertEquals(emptyList(), inFlight.snapshot(), "and neither of the two stays open")
             client.close()
         }
 
