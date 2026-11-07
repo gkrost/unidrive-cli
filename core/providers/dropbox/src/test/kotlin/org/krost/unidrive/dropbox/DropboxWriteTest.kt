@@ -433,6 +433,26 @@ class DropboxWriteTest {
         }
 
     @Test
+    fun `a case rename whose second move fails puts the item back under its old name`() =
+        runTest {
+            var moveNo = 0
+            fake.on("files/move_v2") { call ->
+                moveNo++
+                if (moveNo == 2) {
+                    Answer(status = 409, body = """{"error_summary":"to/conflict/.."}""")
+                } else {
+                    Answer(body = """{"metadata":${file(call.args!!["to_path"]!!.jsonPrimitive.content, "id:1")}}""")
+                }
+            }
+
+            assertFailsWith<ProviderException> { provider.moveById("id:1", "/Docs/a.txt", "/Docs/A.txt") }
+
+            val moves = fake.callsTo("files/move_v2").map { it.args!!["from_path"]!!.jsonPrimitive.content to it.args!!["to_path"]!!.jsonPrimitive.content }
+            assertEquals(3, moves.size)
+            assertEquals(moves[0].second to "/Docs/a.txt", moves[2], "the parked item goes back to where it was")
+        }
+
+    @Test
     fun `creating a folder that is there already answers the folder`() =
         runTest {
             fake.json("files/create_folder_v2", """{"error_summary":"path/conflict/folder/.."}""", status = 409)
