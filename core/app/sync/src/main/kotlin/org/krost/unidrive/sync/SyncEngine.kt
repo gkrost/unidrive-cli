@@ -2012,6 +2012,8 @@ open class SyncEngine(
      *    deleted on this pass are candidates — never an arbitrary sweep of
      *    remote directories.
      *  - **Deepest-first**, so a nested empty tree collapses bottom-up.
+     *  - **A kept folder stays.** A directory that still exists locally is not
+     *    a candidate: the user emptied it but did not delete it.
      *  - **Best-effort.** A provider error on one directory is logged and
      *    skipped; it never fails the pass.
      *  - **Already gone is not a failure (archive#419).** A directory this pass's own
@@ -2037,6 +2039,13 @@ open class SyncEngine(
                 .filterNot { it in alreadyDeleted }
                 .sortedByDescending { it.count { ch -> ch == '/' } }
         for (dir in candidates) {
+            // A folder the user emptied but kept is not a shell: deleting it remotely
+            // would lose its remote id, shares and metadata, and the next scan would
+            // re-create it as new.
+            if (Files.isDirectory(placeholder.resolveLocal(dir))) {
+                log.debug("Not reaping {}: the folder still exists locally", dir)
+                continue
+            }
             try {
                 val children = provider.listChildren(dir).filterNot { it.deleted }
                 if (children.isNotEmpty()) continue
