@@ -249,7 +249,9 @@ class LocalFsProvider(
     /**
      * Puts the finished [staging] file at [to] only if nothing is there. A hard link fails atomically when the name is
      * taken, on every platform (a plain rename replaces silently on POSIX); where the file system has no hard links the
-     * move without REPLACE_EXISTING is the fallback, which Windows refuses atomically and POSIX checks up front.
+     * move without REPLACE_EXISTING is the fallback, which refuses a taken name. That move must not carry ATOMIC_MOVE:
+     * an atomic move replaces an existing destination unless REPLACE_EXISTING is refused — which it cannot be together
+     * with ATOMIC_MOVE — so it would silently overwrite the file that appeared since the plan.
      */
     private fun placeWithoutReplacing(
         staging: Path,
@@ -274,12 +276,13 @@ class LocalFsProvider(
         if (!linked) throw nameTaken(to)
     }
 
-    private fun moveNoReplace(
+    // internal for the no-replace regression test: the move both fallback paths of [placeWithoutReplacing] end in.
+    internal fun moveNoReplace(
         staging: Path,
         to: Path,
     ) {
         try {
-            Files.move(staging, to, StandardCopyOption.ATOMIC_MOVE)
+            Files.move(staging, to)
         } catch (e: FileAlreadyExistsException) {
             throw nameTaken(to).also { it.addSuppressed(e) }
         }

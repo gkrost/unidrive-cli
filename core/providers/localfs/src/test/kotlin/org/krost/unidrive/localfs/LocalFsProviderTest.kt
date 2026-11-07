@@ -420,6 +420,26 @@ class LocalFsProviderTest {
         }
 
     @Test
+    fun the_create_fallback_move_refuses_a_taken_name_and_publishes_onto_a_free_name() =
+        runTest {
+            val p = LocalFsProvider(newRoot())
+            p.authenticate()
+
+            val staging = Files.createTempFile("localfs-staging", ".txt")
+            Files.writeString(staging, "mine")
+            val target = Files.createTempFile("localfs-target", ".txt")
+            Files.writeString(target, "somebody else's")
+
+            // The fallback for file systems without hard links: an atomic move here would replace the taken name.
+            assertFailsWith<org.krost.unidrive.RemoteConflictException> { p.moveNoReplace(staging, target) }
+            assertEquals("somebody else's", Files.readString(target), "the taken file's bytes are unchanged")
+
+            Files.delete(target)
+            p.moveNoReplace(staging, target)
+            assertEquals("mine", Files.readString(target), "a free name is published")
+        }
+
+    @Test
     fun a_create_onto_a_free_name_and_a_replace_of_a_known_file_still_write() =
         runTest {
             val root = newRoot()
