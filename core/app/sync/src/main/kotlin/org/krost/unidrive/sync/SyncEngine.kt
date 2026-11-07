@@ -1761,8 +1761,17 @@ open class SyncEngine(
             }
             db.commitBatch()
             batchCommitted = true
+        } catch (e: Exception) {
+            // The pass stops early (the failure cap, an auth failure, a stop). The actions applied so far already
+            // changed the cloud and the disk, so their rows are kept: a rollback would leave state.db describing the
+            // world before them, and the next pass would re-derive every one as a new, moved or conflicting item.
+            // The failed action's own writes are no different from those of a failure the pass continues past.
+            runCatching { db.commitBatch() }
+                .onSuccess { batchCommitted = true }
+                .onFailure { e.addSuppressed(it) }
+            throw e
         } finally {
-            // Whatever ends the pass without the commit (an Error too, not only an Exception) rolls the transaction back.
+            // An Error (out of memory, stack overflow), or a commit that failed, rolls the transaction back.
             if (!batchCommitted) db.rollbackBatch()
         }
 
