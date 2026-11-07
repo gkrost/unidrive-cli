@@ -4,10 +4,11 @@ import org.krost.unidrive.io.Os
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcEndpoint
+import org.krost.unidrive.sync.IpcLineClient
+import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.slf4j.LoggerFactory
 import java.io.IOException
-import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -32,6 +33,9 @@ object DaemonAutospawn {
 
     const val DEFAULT_WAIT_TIMEOUT_MS: Long = 60_000
 
+    /** Who holds the profile lock; the tests' seam for the sidecar and the process table. */
+    @Volatile internal var lockCheck: (String, Path) -> DaemonLockCheck = { name, dir -> checkDaemonLock(name, dir.resolve(".lock.pid")) }
+
     /**
      * Makes sure the profile's daemon is running: probes the socket, spawns the daemon when nothing
      * answers, and waits for the socket to appear. Returns true when a daemon is serving (pre-existing
@@ -51,6 +55,17 @@ object DaemonAutospawn {
         spawn: (List<String>, Path) -> Unit = ::defaultSpawn,
     ): Boolean {
         if (probe(profileName, socketPath)) return true
+        // Nothing valid answered. A live holder of the profile lock is not "no daemon": a second JVM would only lose the
+        // lock and exit (gkrost/unidrive-cli#442). A daemon that holds it is busy or still starting: wait for it. Any
+        // other live holder (a `sync --watch`, say) is named, and nothing is spawned over it.
+        when (val lock = lockCheck(profileName, configDir)) {
+            is DaemonLockCheck.Running -> return waitForDaemon(profileName, socketPath, waitTimeoutMs, probe, configDir.resolve("daemon-spawn.log"))
+            is DaemonLockCheck.Refused -> {
+                System.err.println("unidrive: the daemon for profile '$profileName' cannot be started: ${lock.message}")
+                return false
+            }
+            is DaemonLockCheck.NotRunning -> Unit
+        }
         val jar =
             runCatching { locateJar() }.getOrNull().also {
                 if (it == null) {
@@ -84,23 +99,16 @@ object DaemonAutospawn {
             )
             return false
         }
-        val deadline = System.currentTimeMillis() + waitTimeoutMs
-        while (System.currentTimeMillis() < deadline) {
-            if (probe(profileName, socketPath)) return true
-            Thread.sleep(200)
-        }
-        System.err.println(
-            "unidrive: the daemon for profile '$profileName' did not come up within ${waitTimeoutMs / 1000} s. " +
-                "Its output: $logFile. Start it in a terminal to see the error: `unidrive -p $profileName daemon run`.",
-        )
-        return false
+        return waitForDaemon(profileName, socketPath, waitTimeoutMs, probe, logFile)
     }
 
     /**
      * Whether a daemon is actually serving the socket: the file alone lies (a kill -9'd daemon leaves
-     * it behind), so one real authenticated round-trip decides. Anything that fails to connect,
-     * authenticate or reply reads as "not running" — the lock sorts a live daemon from a stale socket
-     * for the (re)start either way.
+     * it behind), so one real authenticated round-trip decides. The reply must be a whole line that says
+     * `ok:true` and carries a `protocol_version`: a host that answers `unknown_verb` (a `sync --watch` serves only
+     * `sync.subscribe`) is not a daemon. `daemon.status` is a read verb, so the probe asks with read scope. Anything
+     * that fails to connect, authenticate or reply in time reads as "not serving"; the caller then looks at the
+     * profile lock before it believes the daemon is absent.
      */
     fun daemonAnswers(
         profileName: String,
@@ -110,28 +118,13 @@ object DaemonAutospawn {
     ): Boolean {
         if (!Files.exists(socketPath)) return false
         return try {
-            val channel =
-                IpcAuthClient.connect(
-                    IpcEndpoint(socketPath, configDir, profileName),
-                    IpcAuth.Scope.FULL,
-                )
-            try {
+            IpcAuthClient.connect(IpcEndpoint(socketPath, configDir, profileName), IpcAuth.Scope.READ).use { channel ->
                 channel.configureBlocking(false)
-                val deadline = System.nanoTime() + replyTimeoutMs * 1_000_000
-                val request = ByteBuffer.wrap(("""{"verb":"daemon.status"}""" + "\n").toByteArray())
-                val buffer = ByteBuffer.allocate(64 * 1024)
-                while (System.nanoTime() < deadline) {
-                    if (request.hasRemaining()) channel.write(request)
-                    if (!request.hasRemaining()) {
-                        val read = channel.read(buffer)
-                        if (read > 0) return true
-                        if (read < 0) return false
-                    }
-                    Thread.sleep(10)
-                }
-                false
-            } finally {
-                channel.close()
+                val deadline = System.currentTimeMillis() + replyTimeoutMs
+                val lines = IpcLineClient(channel)
+                if (!lines.writeLine("""{"verb":"daemon.status"}""", deadline)) return false
+                val reply = (lines.readLine(deadline) as? IpcLineRead.Line)?.text?.asJsonObjectOrNull()
+                reply?.isOkReply() == true && reply.containsKey("protocol_version")
             }
         } catch (_: IOException) {
             false
@@ -292,3 +285,22 @@ private val FILE_SAFE_PROFILE = Regex("[A-Za-z0-9_-]+")
  *  for objects (11). */
 internal fun heapDumpFileName(profileName: String): String =
     if (FILE_SAFE_PROFILE.matches(profileName)) "heap-$profileName.hprof" else "heap-default.hprof"
+
+private fun waitForDaemon(
+    profileName: String,
+    socketPath: Path,
+    waitTimeoutMs: Long,
+    probe: (String, Path) -> Boolean,
+    logFile: Path,
+): Boolean {
+    val deadline = System.currentTimeMillis() + waitTimeoutMs
+    while (System.currentTimeMillis() < deadline) {
+        if (probe(profileName, socketPath)) return true
+        Thread.sleep(200)
+    }
+    System.err.println(
+        "unidrive: the daemon for profile '$profileName' did not come up within ${waitTimeoutMs / 1000} s. " +
+            "Its output: $logFile. Start it in a terminal to see the error: `unidrive -p $profileName daemon run`.",
+    )
+    return false
+}

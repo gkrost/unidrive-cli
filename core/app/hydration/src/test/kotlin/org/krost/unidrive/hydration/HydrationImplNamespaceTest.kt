@@ -1,5 +1,7 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.Capability
@@ -25,6 +27,7 @@ class HydrationImplNamespaceTest {
         override var isAuthenticated = true
 
         var lastCreatedFolder: String? = null
+        val createdFolders = java.util.Collections.synchronizedList(mutableListOf<String>())
         var lastDeletedPath: String? = null
         var throwOnCreate: Throwable? = null
         var throwOnDelete: Throwable? = null
@@ -45,6 +48,7 @@ class HydrationImplNamespaceTest {
         }
         override suspend fun createFolder(path: String): CloudItem {
             lastCreatedFolder = path
+            createdFolders.add(path)
             throwOnCreate?.also { throwOnCreate = null; throw it }
             return CloudItem(
                 id = "rid-$path",
@@ -85,6 +89,55 @@ class HydrationImplNamespaceTest {
         )
         val hydration = HydrationImpl(syncEngine = engine, stateDb = db)
         return Env(hydration, provider, db, engine)
+    }
+
+    // gkrost/unidrive-cli#445: mkdir -p.
+    @Test
+    fun mkdirParents_makes_every_missing_folder_above_and_answers_existed_the_second_time() = runTest {
+        val (impl, provider, db) = freshEnv()
+
+        assertEquals(MkdirResult.Ok, impl.mkdirParents("/a/b/c"))
+
+        assertEquals(listOf("/a", "/a/b", "/a/b/c"), provider.createdFolders)
+        assertTrue(listOf("/a", "/a/b", "/a/b/c").all { db.getEntry(it)?.isFolder == true })
+        assertEquals(MkdirResult.Existed, impl.mkdirParents("/a/b/c"))
+        assertEquals(MkdirResult.Existed, impl.mkdirParents("/a/b"))
+        assertEquals(3, provider.createdFolders.size, "the provider is not asked again for a folder that is there")
+    }
+
+    @Test
+    fun mkdirParents_refuses_a_file_at_the_path_or_above_it() = runTest {
+        val (impl, provider, db) = freshEnv()
+        db.upsertEntry(
+            org.krost.unidrive.sync.model.SyncEntry(
+                path = "/f", remoteId = "rid-f", remoteHash = null, remoteSize = 1L, remoteModified = Instant.parse("2026-05-24T09:00:00Z"), localMtime = null, localSize = null,
+                isFolder = false, isPinned = false, isHydrated = false, lastSynced = Instant.parse("2026-05-24T09:00:00Z"),
+            ),
+        )
+
+        assertEquals(MkdirResult.Failed(HydrationError.Generic("path_is_file")), impl.mkdirParents("/f"))
+        assertEquals(MkdirResult.Failed(HydrationError.Generic("path_is_file")), impl.mkdirParents("/f/sub"))
+        assertTrue(provider.createdFolders.isEmpty())
+    }
+
+    @Test
+    fun mkdirParents_of_two_paths_under_one_parent_makes_the_parent_once() = runTest {
+        val (impl, provider, _) = freshEnv()
+
+        val results = listOf("/p/x", "/p/y", "/p/x").map { async { impl.mkdirParents(it) } }.awaitAll()
+
+        assertTrue(results.all { it == MkdirResult.Ok || it == MkdirResult.Existed }, results.toString())
+        assertEquals(listOf("/p", "/p/x", "/p/y"), provider.createdFolders.sorted())
+    }
+
+    @Test
+    fun plain_mkdir_is_unchanged_and_asks_the_provider_even_for_a_folder_that_is_there() = runTest {
+        val (impl, provider, _) = freshEnv()
+
+        assertEquals(MkdirResult.Ok, impl.mkdir("/dup"))
+        assertEquals(MkdirResult.Ok, impl.mkdir("/dup"))
+
+        assertEquals(listOf("/dup", "/dup"), provider.createdFolders)
     }
 
     @Test

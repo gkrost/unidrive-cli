@@ -38,6 +38,54 @@ class HydrationTruncateDuringDownloadTest {
         assertEquals("my edit", Files.readString(begin.cachePath), "the finished download did not replace the edit")
     }
 
+    // gkrost/unidrive-cli#438: a download that fails its integrity check removed the cache copy outside the swap lock and
+    // without the edit check: an edit begun meanwhile, whose truncated copy is its only copy, was destroyed.
+    @Test
+    fun `a download that fails its integrity check does not delete the copy of an edit begun meanwhile`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this, verifyIntegrity = true)
+        env.providerForTest.hashAlgorithmValue = org.krost.unidrive.HashAlgorithm.Sha256Hex
+        env.stateDb.insertUnhydratedEntry("/q/f.txt", remoteSize = 5, remoteHash = "not-the-hash-of-the-bytes")
+        env.syncEngine.seedRemoteContent("/q/f.txt", "cloud")
+        val stall = MinimalFakeProvider.DownloadStall(partialBytes = 2)
+        env.providerForTest.downloadStall = stall
+        val read = async { env.hydration.openForRead("conn1", "h1", "/q/f.txt") }
+        stall.reached.await()
+
+        val begin = env.hydration.openWriteBegin("conn1", "/q/f.txt", handleId = "h2")
+        assertIs<OpenResult.Ok>(begin)
+        Files.writeString(begin.cachePath, "my edit")
+        stall.gate.complete(Unit)
+        assertIs<OpenResult.Failed>(read.await(), "the download itself failed its check")
+
+        assertNotNull(env.stateDb.editBaseOf("/q/f.txt"), "the edit is still noted as unsynced")
+        assertEquals("my edit", Files.readString(begin.cachePath), "the failed download did not delete the edit's copy")
+    }
+
+    @Test
+    fun `a download that fails its integrity check does not delete the copy of a row that replaced it meanwhile`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this, verifyIntegrity = true)
+        env.providerForTest.hashAlgorithmValue = org.krost.unidrive.HashAlgorithm.Sha256Hex
+        env.stateDb.insertUnhydratedEntry("/q/f.txt", remoteSize = 5, remoteHash = "not-the-hash-of-the-bytes")
+        env.syncEngine.seedRemoteContent("/q/f.txt", "cloud")
+        val stall = MinimalFakeProvider.DownloadStall(partialBytes = 2)
+        env.providerForTest.downloadStall = stall
+        val read = async { env.hydration.openForRead("conn1", "h1", "/q/f.txt") }
+        stall.reached.await()
+
+        // The old row goes while its download runs; a created local-only row takes the path and its cache copy is
+        // written. The stale download's integrity failure must not touch that replacement's copy: it can be its only one.
+        env.stateDb.deleteRow("/q/f.txt")
+        env.stateDb.insertLocalOnlyHydratedEntry("/q/f.txt")
+        val replacementCache = env.syncEngine.resolveCachePath("/q/f.txt")
+        Files.createDirectories(replacementCache.parent)
+        Files.writeString(replacementCache, "replacement")
+
+        stall.gate.complete(Unit)
+        assertIs<OpenResult.Failed>(read.await(), "the stale download fails its check")
+
+        assertEquals("replacement", Files.readString(replacementCache), "the stale download did not delete the replacement's copy")
+    }
+
     @Test
     fun `a truncate that lands while a finished download takes the cache copy's place stays noted as an edit`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this)

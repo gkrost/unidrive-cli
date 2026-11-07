@@ -61,6 +61,61 @@ class InstallShTest {
         }
     }
 
+    /**
+     * Runs only install.sh's Java-check block, with a fake [version]-reporting `java` first on PATH (and as
+     * UNIDRIVE_JAVA when [asUnidriveJava]): the probe's answer must follow the launcher's floor, not its warning text.
+     * The test is skipped on a host that keeps a real Java 25+ under /usr/lib/jvm, where a 21-only scenario cannot be
+     * constructed because the probe's glob would find it.
+     */
+    private fun runJavaProbe(version: String, asUnidriveJava: Boolean): String {
+        java.io.File("/usr/lib/jvm").listFiles()?.forEach { jvm ->
+            val hostJava = jvm.resolve("bin/java").toPath()
+            if (Files.isExecutable(hostJava)) {
+                val p = ProcessBuilder(hostJava.toString(), "-version").redirectErrorStream(true).start()
+                val out = p.inputStream.readAllBytes().decodeToString()
+                p.waitFor()
+                val major = Regex("""version "(\d+)""").find(out)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                assumeTrue("the host has Java $major under /usr/lib/jvm; a 21-only installation cannot be constructed here", major < 25)
+            }
+        }
+        val lines = Files.readAllLines(installScript())
+        val start = lines.indexOfFirst { it.startsWith("java_ok=0") }
+        val end = lines.subList(maxOf(start, 0), lines.size).indexOfFirst { it == "fi" }
+        assertTrue(start >= 0 && end > start, "the Java-check block was found in install.sh")
+        val probe = dir.resolve("probe.sh")
+        Files.writeString(
+            probe,
+            lines.subList(start, start + end + 1).joinToString("\n") + "\n" + """echo "java_ok=${'$'}{java_ok}"""" + "\n",
+        )
+        val fake = dir.resolve("bin").resolve("java")
+        Files.writeString(fake, "#!/bin/sh\necho 'openjdk version \"$version\" 2025-01-01' >&2\n")
+        fake.toFile().setExecutable(true)
+        val pb = ProcessBuilder("bash", probe.toString()).redirectErrorStream(true)
+        pb.environment()["PATH"] = "${dir.resolve("bin")}:/usr/bin:/bin"
+        if (asUnidriveJava) pb.environment()["UNIDRIVE_JAVA"] = fake.toString() else pb.environment().remove("UNIDRIVE_JAVA")
+        val p = pb.start()
+        val out = p.inputStream.readAllBytes().decodeToString()
+        assertTrue(p.waitFor(60, TimeUnit.SECONDS), "probe timed out")
+        assertEquals(0, p.exitValue(), out)
+        return out
+    }
+
+    // gkrost/unidrive-cli#498: the warning says Java 25+, so the probe must require it — a Java 21-24 runtime is not
+    // enough for the launcher, and the install may restart services into a daemon that then refuses to start.
+    @Test
+    fun the_java_probe_warns_when_only_java_21_is_found() {
+        val out = runJavaProbe(version = "21.0.9", asUnidriveJava = false)
+        assertTrue(out.contains("WARNING: no Java 25+ runtime found"), "the missing-runtime warning printed: $out")
+        assertTrue(out.contains("java_ok=0"), "the probe did not accept Java 21: $out")
+    }
+
+    @Test
+    fun the_java_probe_accepts_java_25_without_a_warning() {
+        val out = runJavaProbe(version = "25", asUnidriveJava = true)
+        assertTrue(!out.contains("WARNING"), "no warning printed for Java 25: $out")
+        assertTrue(out.contains("java_ok=1"), "the probe accepted Java 25: $out")
+    }
+
     private fun installScript(): Path {
         var d: Path? = Path.of(System.getProperty("user.dir")).toAbsolutePath()
         while (d != null) {

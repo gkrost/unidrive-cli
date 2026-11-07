@@ -3,7 +3,7 @@ plugins {
 }
 
 kotlin {
-    jvmToolchain(21)
+    jvmToolchain(25)
 }
 
 // archive#560 (4A.2): the primitives the mirror engine (:app:sync) and the mount

@@ -1688,6 +1688,9 @@ open class SyncEngine(
                             e,
                         )
                         throw e
+                    } catch (e: CancellationException) {
+                        // A stop is not a failure of this action: no failure count, log line or failure-log entry.
+                        throw e
                     } catch (e: Exception) {
                         consecutiveFailures++
                         passOneFailures.incrementAndGet()
@@ -2021,6 +2024,8 @@ open class SyncEngine(
      *    deleted on this pass are candidates — never an arbitrary sweep of
      *    remote directories.
      *  - **Deepest-first**, so a nested empty tree collapses bottom-up.
+     *  - **A kept folder stays.** A directory that still exists locally is not
+     *    a candidate: the user emptied it but did not delete it.
      *  - **Best-effort.** A provider error on one directory is logged and
      *    skipped; it never fails the pass.
      *  - **Already gone is not a failure (archive#419).** A directory this pass's own
@@ -2046,12 +2051,21 @@ open class SyncEngine(
                 .filterNot { it in alreadyDeleted }
                 .sortedByDescending { it.count { ch -> ch == '/' } }
         for (dir in candidates) {
+            // A folder the user emptied but kept is not a shell: deleting it remotely
+            // would lose its remote id, shares and metadata, and the next scan would
+            // re-create it as new.
+            if (Files.isDirectory(placeholder.resolveLocal(dir))) {
+                log.debug("Not reaping {}: the folder still exists locally", dir)
+                continue
+            }
             try {
                 val children = provider.listChildren(dir).filterNot { it.deleted }
                 if (children.isNotEmpty()) continue
                 provider.delete(dir)
                 db.getEntry(dir)?.let { db.deleteEntry(dir) }
                 log.debug("Reaped empty remote directory: {}", dir)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 if (isRemoteNotFound(e)) {
                     log.debug("Remote directory already gone, nothing to reap: {}", dir)
@@ -2342,6 +2356,10 @@ open class SyncEngine(
         remoteGather.loadTwins()
         val buffer = StreamingReconcileBuffer()
         val safeAccumulator = mutableListOf<SyncAction>()
+        // gkrost/unidrive-cli#449: the same full localChanges map re-plans every local change on every page, and a NEW
+        // upload or a CreateRemoteFolder never reaches the executor claim below, so each page added another copy for
+        // scan-end to apply. Accumulate a planned action once; an action that differs (a fresher remote version) is kept.
+        val accumulatedOnce = HashSet<SyncAction>()
         // resolveSlice processes the full localChanges map on every delta page,
         // so a MODIFIED-local file absent from a given page's remote delta
         // re-emits its Upload (and likewise a DownloadContent can recur across
@@ -2590,7 +2608,7 @@ open class SyncEngine(
                                 landedRemoteId = buffer::landedIdAt,
                             )
                         val safeNow = buffer.classify(pageActions)
-                        safeAccumulator.addAll(safeNow)
+                        safeNow.filterTo(safeAccumulator) { accumulatedOnce.add(it) }
                         for (action in safeNow) {
                             if (action is SyncAction.DownloadContent || action is SyncAction.Upload) {
                                 // archive#200(b): a NEW-local upload must NOT dispatch mid-gather —
@@ -3806,6 +3824,8 @@ open class SyncEngine(
     private suspend fun moveSourceStillRemote(fromPath: String): Boolean =
         try {
             remoteItemIfPresent(fromPath) != null
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             log.debug(
                 "#421: probing the move source {} failed ({}); guarding the delete anyway",
@@ -4162,6 +4182,9 @@ open class SyncEngine(
                                 org.krost.unidrive.requestIdSuffix(e),
                                 e,
                             )
+                            throw e
+                        } catch (e: CancellationException) {
+                            // A sibling's auth failure or a stop cancels this create; it did not fail.
                             throw e
                         } catch (e: Exception) {
                             failedPaths.add(normalizeTrackedPath(action.path))

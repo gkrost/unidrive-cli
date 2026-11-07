@@ -46,7 +46,7 @@ public object OwnerOnlyAtomicWrite {
         beforeCommit: (Path) -> Unit = {},
         verify: (Path) -> Unit = {},
     ) {
-        replace(target, produce, onUnrestricted, beforeCommit, verify, OwnerOnly::restrictFile)
+        replace(target, produce, onUnrestricted, beforeCommit, verify, Steps())
     }
 
     public fun replace(
@@ -56,18 +56,32 @@ public object OwnerOnlyAtomicWrite {
         beforeCommit: (Path) -> Unit = {},
         verify: (Path) -> Unit = {},
     ) {
-        replace(target, { bytes }, onUnrestricted, beforeCommit, verify, OwnerOnly::restrictFile)
+        replace(target, { bytes }, onUnrestricted, beforeCommit, verify, Steps())
     }
 
-    /** [replace] with the restriction step replaced, so a test can make it fail the way a FAT volume does. */
+    /**
+     * The steps of [replace] that touch the file system, replaceable by a test: [restrict] can fail the way a FAT volume
+     * does, [lockRetry] wraps the move (a test can hold it to a few tries), [move] can fail the way a held file does.
+     */
+    internal class Steps(
+        val restrict: (Path) -> OwnerOnly.Outcome = OwnerOnly::restrictFile,
+        val lockRetry: (() -> Unit) -> Unit = { withLocalIoRetryBlocking(it) },
+        val move: (Path, Path, Boolean) -> Unit = ::moveOver,
+    )
+
+    /** [replace] with the steps replaced, so a test can make it fail. */
+    @Suppress("TooGenericExceptionCaught") // whatever fails, the temp file goes and the failure is rethrown unchanged
     internal fun replace(
         target: Path,
         produce: () -> ByteArray,
         onUnrestricted: ((OwnerOnly.Outcome) -> Unit)?,
         beforeCommit: (Path) -> Unit,
         verify: (Path) -> Unit,
-        restrict: (Path) -> OwnerOnly.Outcome,
+        steps: Steps,
     ) {
+        val restrict = steps.restrict
+        val lockRetry = steps.lockRetry
+        val move = steps.move
         val tmp = createTempFile(target, onUnrestricted, restrict)
         try {
             val bytes = produce()
@@ -78,14 +92,33 @@ public object OwnerOnlyAtomicWrite {
             }
             beforeCommit(tmp)
             verify(tmp)
-            try {
-                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-            } catch (_: AtomicMoveNotSupportedException) {
-                log.warn("Filesystem rejected ATOMIC_MOVE at {} — falling back to non-atomic replace", target)
-                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
+            // The target may be held open for a moment by a scanner, the indexer or a reader (Windows): retry the move
+            // instead of failing a save whose bytes are already on disk (archive#802).
+            lockRetry {
+                try {
+                    move(tmp, target, true)
+                } catch (_: AtomicMoveNotSupportedException) {
+                    log.warn("Filesystem rejected ATOMIC_MOVE at {} — falling back to non-atomic replace", target)
+                    move(tmp, target, false)
+                }
             }
-        } finally {
-            Files.deleteIfExists(tmp)
+        } catch (e: Throwable) {
+            // A temp file that cannot be deleted (the same scanner holds it) must not replace the failure that matters.
+            runCatching { Files.deleteIfExists(tmp) }.exceptionOrNull()?.let(e::addSuppressed)
+            throw e
+        }
+        Files.deleteIfExists(tmp)
+    }
+
+    private fun moveOver(
+        from: Path,
+        to: Path,
+        atomic: Boolean,
+    ) {
+        if (atomic) {
+            Files.move(from, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } else {
+            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING)
         }
     }
 

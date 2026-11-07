@@ -176,7 +176,7 @@ class DaemonRuntime(
     // archive#655: the daemon's quota snapshot for daemon.status (`quota`). It reads the cache and persists
     // through this runtime's database — the one the lifecycle opens and cleanup closes — and shares the
     // provider factory.
-    private val quotaMonitor = QuotaSnapshotMonitor(quotaRefreshMs = quotaRefreshMs, providerFactory = providerFactory, db = { db })
+    private val quotaMonitor = QuotaSnapshotMonitor(quotaRefreshMs = quotaRefreshMs, provider = { servingProvider }, db = { db })
 
     private var ipcServer: IpcServer? = null
     private val closeSignal = CompletableDeferred<Unit>()
@@ -187,7 +187,11 @@ class DaemonRuntime(
     private val cleanupDone = java.util.concurrent.CountDownLatch(1)
 
     @Volatile private var lifecycleActive = false
-    private var startedAtMs: Long = 0
+    @Volatile private var startedAtMs: Long = 0
+
+    // The provider this daemon serves with, once it is built: the quota refresh uses it rather than building a second
+    // instance with a token state of its own (gkrost/unidrive-cli#442).
+    @Volatile private var servingProvider: CloudProvider? = null
 
     /**
      * Runs the lifecycle until [close]. gkrost/unidrive-cli#225: it runs in [logContext], so the serve scope and every
@@ -248,6 +252,7 @@ class DaemonRuntime(
             val backups =
                 BackupsNamespace(backupsFolderName, enabled = showBackups && providerShowsBackups(cloud), rootAlways = backupsRootAlways)
             val provider = ReadOnlyTrashProvider(cloud, trash, viewNamespaces, backups)
+            servingProvider = provider
             // archive#578: the flag wins over the profile key, same shape as --poll-interval.
             uploadConcurrencyOverride?.let { n ->
                 if (!provider.overrideUploadConcurrency(n)) {
@@ -283,9 +288,7 @@ class DaemonRuntime(
             // dedicated SupervisorJob that we cancel before the scope exits.
             // The scope inherits the daemon's logContext from start() (gkrost/unidrive-cli#225).
             val serveJob = kotlinx.coroutines.SupervisorJob()
-            val serveScope = kotlinx.coroutines.CoroutineScope(
-                kotlin.coroutines.coroutineContext + serveJob,
-            )
+            val serveScope = serveScopeOf(kotlin.coroutines.coroutineContext, serveJob)
             // A profile signed in before ids were kept has no account_id (AccountOwner): one identity call with the
             // credentials this start just authenticated with records it. Off the start's path and bounded: a failed or slow
             // call logs one line, the daemon serves either way and the next start tries again.
@@ -414,7 +417,7 @@ class DaemonRuntime(
                 // remote→state.db refresh for mount view consumers. Constructed before the
                 // hydration verbs so the subscribe-triggered enumerate (below) can reuse its
                 // shared in-flight guard.
-                val enumerateHandler = EnumerateRpcHandler(mount, serveScope, server::emit, paused = { pause.isPaused })
+                val enumerateHandler = EnumerateRpcHandler(OffLoopEnumeration(mount), serveScope, server::emit, paused = { pause.isPaused })
 
                 // refresh.run handler (spec §4.2). Pass serveScope so refresh
                 // jobs are cancelled when the daemon shuts down. Pass db so
@@ -715,7 +718,10 @@ class DaemonRuntime(
                                 }
                             val slotsJson =
                                 status.freeSlots.entries.sortedBy { it.key }.joinToString(",") { "${ndjsonString(it.key)}:${it.value}" }
-                            ""","requests":{"in_flight":$inFlightJson,"free_slots":{$slotsJson}}"""
+                            // total (gkrost/unidrive-cli#460): attempts per endpoint class since the daemon started.
+                            val totalJson =
+                                status.totals.entries.joinToString(",") { "${ndjsonString(it.key)}:${it.value}" }
+                            ""","requests":{"in_flight":$inFlightJson,"free_slots":{$slotsJson},"total":{$totalJson}}"""
                         } ?: ""
                     // credential_health (archive#586): the last offline check, or `expired` at once when the provider rejected the
                     // credentials after the check (a transfer or an enumeration failed authentication and nothing worked since).
@@ -735,9 +741,10 @@ class DaemonRuntime(
                     // `hydration.list_live` (gkrost/unidrive-cli#27): hydration.list reads a folder from the cloud while the first scan has not brought it in.
                     // `hydration.list_content_id` (gkrost/unidrive-cli#171): a hydration.list file entry names its bytes (`content_id`) where the row does.
                     // `hydration.stat` (gkrost/unidrive-cli#415): the daemon answers one row without the folder listing.
+                    // `hydration.cancel_read` (gkrost/unidrive-cli#23): hydration.cancel with a handle_id ends that open_read, and a download nobody waits for stops.
                     val capabilitiesJson = (
                         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-                            (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY)) +
+                            (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY)) +
                             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page"))
                     ).joinToString(",", "[", "]") { ndjsonString(it) }
                     // quota (archive#655): the account's storage plan snapshot. Absent entirely for
@@ -801,6 +808,9 @@ class DaemonRuntime(
                         // gkrost/unidrive-cli#392: how many hydration downloads a client should run at once (the download
                         // budget's small-file width, the transfer cap for a while after a throttle). Additive, read-only.
                         ",\"transfer_budget\":${mount.downloadBudget.recommended}" +
+                        // ipc (gkrost/unidrive-cli#460): the requests each verb's handler served since the daemon started, so a
+                        // client's change of verbs can be checked on a live daemon. Additive, read-only, always present.
+                        ",\"ipc\":${ipcStatusJson(server.requestCounts())}" +
                         "}"
                 }
 
@@ -1026,6 +1036,7 @@ class DaemonRuntime(
     private fun cleanup() {
         runCatching { ipcServer?.close() }
         ipcServer = null
+        servingProvider = null
         runCatching { quotaMonitor.retryQuotaPersist(db) }
         runCatching { db?.close() }
         db = null
@@ -1083,6 +1094,19 @@ class DaemonRuntime(
          * itself carries it with [org.krost.unidrive.MdcSnapshot].
          */
         internal fun logContext(profileName: String): MDCContext = MDCContext(mapOf("build" to BuildInfo.COMMIT, "profile" to profileName))
+
+        /**
+         * The serve scope: the daemon's launches (enumerations, event writers, pollers) run on [kotlinx.coroutines.Dispatchers.Default],
+         * not on the event loop of the `runBlocking` that calls [start]. That loop is one thread, which the shutdown's
+         * `closeSignal.await()` also needs: a blocking span on it would stall every writer and the stop. The IPC handlers
+         * already run on their own pool, so no state here relied on that single thread. Blocking JDBC and file work still
+         * goes through `withContext(Dispatchers.IO)` at its call site, so it does not hold a Default thread.
+         */
+        internal fun serveScopeOf(
+            parent: kotlin.coroutines.CoroutineContext,
+            job: kotlinx.coroutines.Job,
+        ): kotlinx.coroutines.CoroutineScope =
+            kotlinx.coroutines.CoroutineScope(parent + job + kotlinx.coroutines.Dispatchers.Default)
 
         /**
          * The scope the mount's hydration uploads and replays run in: a scope of its own (the shutdown joins it apart from

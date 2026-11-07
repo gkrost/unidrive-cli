@@ -142,6 +142,13 @@ interface Hydration {
 
     suspend fun mkdir(path: String): MkdirResult
 
+    /**
+     * gkrost/unidrive-cli#445: `mkdir -p`. Every missing folder above [path] is made, and a folder that is there already is an
+     * answer ([MkdirResult.Existed]), not a provider conflict. A file at [path] or above it is `path_is_file`. Concurrent calls
+     * for one path share one run. The default is the plain [mkdir], for a front-end that does not make parents.
+     */
+    suspend fun mkdirParents(path: String): MkdirResult = mkdir(path)
+
     /** [permanent] (archive#1178): delete for good, bypassing the provider's trash (`rm --permanent`); the provider must declare [org.krost.unidrive.Capability.PermanentDelete]. */
     suspend fun unlink(
         path: String,
@@ -325,6 +332,9 @@ sealed class MkdirResult {
     data object Ok : MkdirResult()
     data class Failed(val error: HydrationError) : MkdirResult()
     data object ParentNotFound : MkdirResult()
+
+    /** gkrost/unidrive-cli#445: `mkdirParents` found the folder there already (`"existed":true`). */
+    data object Existed : MkdirResult()
 }
 
 sealed class UnlinkResult {

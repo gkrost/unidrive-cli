@@ -93,8 +93,8 @@ fi
 dump_profile="default"
 [[ -n "${gc_profile:-}" ]] && dump_profile="$gc_profile"
 diag_args+=("-XX:HeapDumpPath=$diag_dir/heap-$dump_profile.hprof")
-# Java runtime: Linux runs unidrive on the system's JDK, not a bundled one. Java 25+ is preferred: the JVM
-# runtime spike (archive#624) measured Java 21 at ~30 % more CPU to a ready daemon than Java 25. Order:
+# Java runtime: Linux runs unidrive on the system's JDK, not a bundled one. Java 25 is the floor (the jar is
+# compiled for it; an older java would die with a bare class-file-version error). Order:
 # UNIDRIVE_JAVA; else `java` on PATH when it is 25+; else the newest 25+ JDK under UNIDRIVE_JVM_DIR
 # (default /usr/lib/jvm); else `java` on PATH. Versions come from the JDK's `release` file, so choosing
 # costs no extra JVM start. The daemon a command autospawns runs on this same java (its java.home).
@@ -126,13 +126,9 @@ if [[ -z "$java_bin" ]]; then
     exit 1
 fi
 major="$(java_major "$java_bin")"
-if [[ -n "$major" && "$major" -lt 21 ]]; then
-    echo "unidrive: needs Java 21 or newer, found Java $major at $java_bin. Install openjdk-25-jre-headless or set UNIDRIVE_JAVA." >&2
+if [[ -n "$major" && "$major" -lt 25 ]]; then
+    echo "unidrive: needs Java 25 or newer, found Java $major at $java_bin. Install openjdk-25-jre-headless or set UNIDRIVE_JAVA." >&2
     exit 1
-fi
-if [[ -n "$major" && "$major" -lt 25 && "${#diag_args[@]}" -gt 2 ]]; then
-    # Long-runners only (they armed the GC log above): a one-shot command is not worth the noise.
-    echo "unidrive: running on Java $major; Java 25 or newer uses noticeably less CPU (Debian/Ubuntu: sudo apt install openjdk-25-jre-headless)." >&2
 fi
 # A JDK package upgrade replaces the runtime under a running daemon, and classes or native libraries it
 # loads later then come from the new files. Say so on every command until that daemon is restarted.

@@ -41,8 +41,12 @@ code. Request/reply byte shapes are pinned by the golden corpus under
   tokens are the stable cross-repo contract listed in §7.
 - Events flow only on connections that have issued `hydration.subscribe`.
   Each subscriber has a bounded queue (capacity 64); when it overflows the
-  oldest event is dropped and one `{"event":"lost","since_last":N}` sentinel
-  precedes the next deliverable event. A client must treat `lost` as
+  oldest event that is not an outcome is dropped and one
+  `{"event":"lost","since_last":N}` sentinel precedes the next deliverable
+  event. Outcomes (`completed`, and `failed` without `retry_scheduled:true`)
+  are never dropped: the queue holds them beyond 64 (up to 4096, then the
+  oldest goes), so a `lost` never hides how a transfer ended. Progress, state
+  and `view.invalidated` events can still be lost. A client must treat `lost` as
   "resync your per-file state from `hydration.list`".
 - The daemon serves at most 32 connections at a time by default
   (`UNIDRIVE_IPC_MAX_CLIENTS`, `docs/env-vars.md`). A connection over that
@@ -239,6 +243,21 @@ hydration.rmdir   {path[,recursive][,permanent]} -> {"ok":true} | {"ok":false,"e
 `hydrating`/`hydrated` for it; `hydration.rmdir` refuses non-empty folders
 (`not_empty`, unless `"recursive":true`, section 3.7). Both refuse out-of-scope paths.
 
+**`mkdir -p` (`"parents":true`, gkrost/unidrive-cli#445).** `{"verb":"hydration.mkdir","path":"/a/b/c","parents":true}`
+makes every missing folder above the path, then the folder, and is idempotent:
+
+```
+{"ok":true}                              the folder was made (and the missing ones above it)
+{"ok":true,"existed":true}               the folder was there already; nothing was asked of the provider
+{"ok":false,"error":"path_is_file"}      a file is at the path or above it
+```
+
+The other refusals are those of the plain verb (`outside_scope`, `read_only`, `invalid_path`, `name_clash`). Calls for one
+path at the same time share one run, and two paths below one missing parent make it once. Without `parents` nothing
+changes: the plain verb makes one folder, and a folder that is there is the provider's answer. An engine that does not
+know the field ignores it, so a client that gets `parent_not_found` (and no `existed` on success) knows it must make the
+parents itself. Pinned by `hydration.mkdir.ndjson`.
+
 ### 3.9 Two spellings of one name (`name_clash`)
 
 The engine keys every path in NFC, so `caf` + U+00E9 and `cafe` + U+0301 are one row and one cloud path. A client
@@ -375,7 +394,7 @@ is listed.
 | `skipped` | `{"event":"skipped","path":…}` | excluded name: accepted, deliberately never uploaded |
 | `dehydrated` | `{"event":"dehydrated","path":…}` | cache copy freed |
 | `failed` | `{"event":"failed","path":…,"error":"…"[,"retry_scheduled":true\|false]}` | attempt failed; uploads say whether the daemon will retry |
-| `completed` | `{"event":"completed","path":…,"handle_id":…,"direction":"upload\|download","ok":true\|false[,"error":"…"]}` | handle-scoped outcome — the in-sync signal |
+| `completed` | `{"event":"completed","path":…,"handle_id":…,"direction":"upload\|download","ok":true\|false[,"error":"…"]}` | handle-scoped outcome — the in-sync signal. An upload that landed (`ok:true`) also carries, additively, `entry` (the row as state.db holds it once the upload's slot is released, in the exact shape of the `hydration.stat` entry: `etag`, `remote_id`, `remote_modified_ms`, `size`, `content_id`, `pending_upload:false`, …) and, when the cloud already held these bytes and nothing was sent, `"skipped":true` (the entry is then the unchanged row). No `entry` for a download, a failure, a kept-both conflict (the row at `path` is then the cloud's version) or a row that cannot be read: a client falls back to `hydration.stat`. A reader that ignores unknown members parses the event as before. Pinned by `events/completed-upload-entry.ndjson` |
 | `view.invalidated` | `{"event":"view.invalidated","paths":[…][,"moved":[{"from":…,"to":…}]]}` or `{"event":"view.invalidated","full":true}` | `full:true` stands alone, without `paths` (more than 256 changed paths, or the tracked scope was reshaped: drop every cache); otherwise `paths` is present. Enumeration changed the view, or `hydration.unlink` / `hydration.rmdir` removed `paths` (a delete through the daemon, e.g. `unidrive rm`, archive#1199); drop readdir/getattr caches |
 | `lost` | `{"event":"lost","since_last":N}` | your queue overflowed; resync from `hydration.list` |
 
@@ -568,6 +587,11 @@ and `completed ok:false` with the `cancelled` token, a `hydrate` sends `failed` 
 nobody waits for it any more: its partial bytes are removed, the entry stays not hydrated and shows no `error`, and its
 history row ends `interrupted`. While another request still waits, the download goes on for it.
 
+An engine that does all of this lists `hydration.cancel_read` in the `daemon.status` `capabilities`, so a client tells an
+engine that reads the `handle_id` of a cancel and stops an unwaited download from one that reads the path alone (the
+listing is the only way to tell: such an engine answers the same `{"ok":true,"cancelled":false}`). Pinned by the capability
+list of `daemon.status.ndjson`.
+
 A connection that closes while it waits ends its own waits the same way: the daemon watches the connection of a request
 that runs longer than a moment, so a client that goes away (or shuts down its sending side) during a long download is
 noticed at once, not when the download ends. Requests the client sends while one runs are answered after it, in order.
@@ -649,7 +673,7 @@ noticed at once, not when the download ends. Requests the client sends while one
 | `unknown_path` | row-lookup verbs | no such row (ENOENT) |
 | `parent_not_found` | create, mkdir | parent row missing or not a folder |
 | `path_exists` | create | row already exists (EEXIST) |
-| `new_path_exists` | rename | destination exists and replace was not asked, or it was asked and the destination or the source is a folder (replace overwrites a file with a file only) |
+| `new_path_exists` | rename | destination exists and replace was not asked, or it was asked and the destination or the source is a folder (replace overwrites a file with a file only); also when the provider refuses the move with HTTP 409 (the name is taken in the cloud although no row stood at it), where an older engine answered the provider's free text |
 | `old_path_not_found` / `new_parent_not_found` | rename | row/parent missing |
 | `path_is_folder` / `path_is_file` | unlink/rmdir/open_write_begin | wrong kind |
 | `not_empty` | rmdir | folder still has children (plain), or a file below holds bytes only this computer has (recursive, archive#1035) |

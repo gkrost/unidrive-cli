@@ -172,7 +172,7 @@ profile folder makes the daemon write every live coroutine to
 the Linux launcher uses `java` on `PATH` when it is 25 or newer, else the newest
 25+ JDK under `UNIDRIVE_JVM_DIR` (default `/usr/lib/jvm`), else `java` on `PATH`;
 the Windows launcher prefers the bundled runtime image a platform package ships
-in a `runtime-image` folder next to the launcher, else next to the fat jar, else `java` on `PATH`. Both refuse Java below 21. See
+in a `runtime-image` folder next to the launcher, else next to the fat jar, else `java` on `PATH`. Both refuse Java below 25. See
 `dist/README.md` and `README.md`.
 
 ### `UNIDRIVE_ASCII`

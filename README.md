@@ -26,7 +26,7 @@ Multi-platform cloud-sync core. Pure JVM, zero telemetry. Modular SPI for Intern
 
 ## Build
 
-JDK 21+ and Linux with `systemd --user` for the packaged daemon. Internxt uses the host's native credential store: Linux requires an unlocked Secret Service and `secret-tool` (`libsecret-tools`), Windows uses user-scoped DPAPI, and macOS uses the user's login Keychain (macOS is not supported or tested in CI yet). Unsupported platforms and unavailable or locked stores fail closed without writing plaintext credentials; that is the Internxt rule. OneDrive's and Dropbox's tokens (Dropbox also its pending sign-in) use the same stores on Windows (DPAPI) and macOS (Keychain), and a token file written earlier is protected the first time it is read; on Linux they stay in `token.json` in the profile folder, written atomically and readable by the current user only, not encrypted (see [`SECURITY.md`](SECURITY.md)). The Gradle wrapper lives in `core/`.
+JDK 25+ and Linux with `systemd --user` for the packaged daemon. Internxt uses the host's native credential store: Linux requires an unlocked Secret Service and `secret-tool` (`libsecret-tools`), Windows uses user-scoped DPAPI, and macOS uses the user's login Keychain (macOS is not supported or tested in CI yet). Unsupported platforms and unavailable or locked stores fail closed without writing plaintext credentials; that is the Internxt rule. OneDrive's and Dropbox's tokens (Dropbox also its pending sign-in) use the same stores on Windows (DPAPI) and macOS (Keychain), and a token file written earlier is protected the first time it is read; on Linux they stay in `token.json` in the profile folder, written atomically and readable by the current user only, not encrypted (see [`SECURITY.md`](SECURITY.md)). The Gradle wrapper lives in `core/`.
 
 ```bash
 cd core && ./gradlew :app:cli:shadowJar    # build fat JAR → core/app/cli/build/libs/unidrive-*.jar
@@ -54,11 +54,11 @@ JDK's release (the `check-runtime-jdk` job, a full Zulu JDK on Linux). The
 packaged launcher once against it. Launchers honour
 `UNIDRIVE_XMX` (bare size, e.g. `512m`, `2g`; default `2g`) and pin
 `-Djdk.net.unixdomain.tmpdir` to the host's temp directory. The Linux launcher
-picks the runtime itself (`UNIDRIVE_JAVA` overrides; Java 25+ preferred, below
-21 refused). The Windows launcher honours `UNIDRIVE_JAVA`, prefers the bundled
+picks the runtime itself (`UNIDRIVE_JAVA` overrides; Java 25+ required, below
+25 refused). The Windows launcher honours `UNIDRIVE_JAVA`, prefers the bundled
 runtime image a platform package ships (a `runtime-image` folder next to the
 launcher, else next to the fat jar), falls back to
-`java` on `PATH`, and refuses Java below 21. Launchers and the
+`java` on `PATH`, and refuses Java below 25. Launchers and the
 CLI's auto-spawn write post-mortem diagnostics — fatal-crash `hs_err` logs, OOM
 heap dumps, the daemon's bounded GC log — into `%LOCALAPPDATA%\unidrive\diagnostics`
 (Windows) or `~/.local/share/unidrive/diagnostics` (Linux), overridable with

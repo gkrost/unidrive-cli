@@ -14,3 +14,13 @@
 {"ok":false,"error":"read_only"}
 {"verb":"hydration.mkdir","path":"/Recents"}
 {"ok":false,"error":"read_only"}
+{"verb":"hydration.mkdir","path":"/docs/new/deeper","parents":true}
+{"ok":true}
+{"verb":"hydration.mkdir","path":"/docs","parents":true}
+{"ok":true,"existed":true}
+{"verb":"hydration.mkdir","path":"/docs/report.txt/sub","parents":true}
+{"ok":false,"error":"path_is_file"}
+{"verb":"hydration.mkdir","path":"/docs/../newdir","parents":true}
+{"ok":false,"error":"invalid_path"}
+{"verb":"hydration.mkdir","path":"/Papierkorb/Old/newdir","parents":true}
+{"ok":false,"error":"read_only"}

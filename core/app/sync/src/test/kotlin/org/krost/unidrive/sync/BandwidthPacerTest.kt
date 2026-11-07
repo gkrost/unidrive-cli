@@ -13,6 +13,35 @@ import kotlin.test.assertTrue
 
 class BandwidthPacerTest {
     @Test
+    fun `the schedule follows the injected monotonic clock, not the wall clock`() =
+        runBlocking {
+            // 1 KB/s: a 2048 B transfer books 2 s of line time. The injected clock then moves 5 s on,
+            // so the line is free again and the next transfer starts at once. Booked against the wall
+            // clock (which a test cannot move) the second pace would have waited for the first slot.
+            val clock = java.util.concurrent.atomic.AtomicLong(1_000_000)
+            val pacer = BandwidthPacer(maxBytesPerSecond = 1024, monotonicMillis = clock::get)
+            pacer.pace(2048)
+            clock.addAndGet(5_000)
+            val start = System.nanoTime()
+            pacer.pace(1)
+            val waitedMs = (System.nanoTime() - start) / 1_000_000
+            assertTrue(waitedMs < 500, "the line was free on the injected clock, waited ${waitedMs}ms")
+        }
+
+    @Test
+    fun `a transfer waits for the slots booked ahead of it on the injected clock`() =
+        runBlocking {
+            // 10 KB/s: 1024 B books ~100 ms. With the clock standing still the second pace waits for it.
+            val clock = java.util.concurrent.atomic.AtomicLong(1_000_000)
+            val pacer = BandwidthPacer(maxBytesPerSecond = 10_240, monotonicMillis = clock::get)
+            pacer.pace(1024)
+            val start = System.nanoTime()
+            pacer.pace(1024)
+            val waitedMs = (System.nanoTime() - start) / 1_000_000
+            assertTrue(waitedMs in 80..1000, "the second transfer waits for the first slot, waited ${waitedMs}ms")
+        }
+
+    @Test
     fun `concurrent paces draw from one shared budget`() =
         runBlocking {
             // Four 2048 B transfers at 1 KB/s (1024 B/s): the shared budget gives

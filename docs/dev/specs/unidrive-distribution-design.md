@@ -14,7 +14,7 @@
 
 UniDrive consists today of two source repos:
 
-- **`unidrive`** — JVM (Kotlin, Gradle composite, JDK 21+). Produces a fat
+- **`unidrive`** — JVM (Kotlin, Gradle composite, JDK 25+). Produces a fat
   shadowJar. Ships the `unidrive` CLI and sync engine.
 - **`unidrive-mount-linux`** — Rust (Cargo, edition 2024). Produces a single
   binary `unidrive-mount`. Kernel ≥ 6.9 and libfuse ≥ 3.16 hard floors. FUSE
@@ -295,7 +295,7 @@ share an IPC contract and are co-released; splitting gains nothing.
 ```
 Package: unidrive
 Architecture: amd64 arm64
-Depends: openjdk-21-jre-headless | java-runtime-headless (>= 21),
+Depends: openjdk-25-jre-headless | java-runtime-headless (>= 25),
          libfuse3-3 (>= 3.16),
          fuse3
 Recommends: systemd
@@ -303,8 +303,8 @@ Suggests: kde-cli-tools
 Description: Multi-cloud sync daemon with sparse hydration (FUSE)
 ```
 
-The alternative `java-runtime-headless (>= 21)` is the standard Debian
-virtual package (provided by all conforming JREs); `java21-runtime` is
+The alternative `java-runtime-headless (>= 25)` is the standard Debian
+virtual package (provided by all conforming JREs); `java25-runtime` is
 **not** a standard virtual package and would not resolve on Ubuntu 24.04 /
 Debian 12 — confirmed prior to spec finalisation against the Debian
 java-common documentation. Implementation must verify with
@@ -358,7 +358,7 @@ License:        ASL 2.0
 URL:            https://unidrive.krost.org
 BuildArch:      x86_64 aarch64
 
-Requires:       java-21-openjdk-headless
+Requires:       java-25-openjdk-headless
 Requires:       fuse3-libs >= 3.16
 Requires:       fuse3
 ```
@@ -393,7 +393,7 @@ pkgver=X.Y.Z
 pkgrel=1
 arch=('x86_64' 'aarch64')
 license=('Apache')
-depends=('java-runtime>=21' 'fuse3>=3.16')
+depends=('java-runtime>=25' 'fuse3>=3.16')
 url='https://unidrive.krost.org'
 
 source=("https://github.com/<owner>/<dist-repo>/releases/download/vX.Y.Z/unidrive-X.Y.Z-linux-${CARCH}.tar.gz"
@@ -431,20 +431,17 @@ contributor who proposes to own the platform-tier code.
 
 ### §4.6 Cross-channel concerns
 
-- **Java 21 (only) for MVP** across all four channels. The
+- **Java 25 (only) for MVP** across all four channels (the jar is compiled for
+  class-file version 69, so an older runtime cannot start it). The
   `--enable-native-access=ALL-UNNAMED` flag from the current install.sh must
   be preserved in every channel's wrapper script. Failure mode this avoids:
-  silent `IllegalAccessException` at runtime when a future JDK tightens
-  FFI policy.
+  restricted-method warnings, and later refusals, for the engine's FFM calls
+  and for sqlite-jdbc's JNI library load.
 
-  **Shelf life:** the `ALL-UNNAMED` form is JDK 21–22 syntax. JDK 22+
-  prefers `--enable-native-access=<module-name>`; later JDKs may deprecate
-  or remove `ALL-UNNAMED` entirely. MVP pins to JDK 21 (the LTS that
-  Ubuntu 24.04, Debian 12, Fedora 40, and RHEL 10 all ship as
-  `openjdk-21-jre-headless`/equivalent). When a target distro defaults to
-  JDK 23+, the wrapper script must detect `java --version` and select the
-  correct flag form — filed as a BACKLOG design constraint in
-  <dist-repo>.
+  **Shelf life:** `ALL-UNNAMED` is still the only supported form for code on
+  the class path (the fat jar runs in the unnamed module) on JDK 25 to 27.
+  Whether a target distro ships a GA OpenJDK 25 package must be checked per
+  channel before a package is cut.
 - **Per-user state is never touched by packaging.** `~/.config/unidrive/`,
   `~/.local/share/unidrive/`, `~/.cache/unidrive/` are created by
   `unidrive auth` and the running daemon. Install creates none of them.
@@ -945,7 +942,7 @@ Filed as design constraints in <dist-repo>'s `BACKLOG.md`, not work items:
 - **Reproducible builds.** Rust tarballs aren't byte-reproducible
   (timestamp-in-objects). Achievable but expensive; defer.
 - **Multi-arch beyond amd64/arm64.** No `riscv64`, no `armv7l`. JVM JAR runs
-  on any arch with Java 21; the Rust binary doesn't ship for those.
+  on any arch with Java 25; the Rust binary doesn't ship for those.
 - **`--version` build-info enrichment.** Per §3.5.
 - **In-app auto-update.** Each channel uses its native one (`apt update`,
   `dnf update`, AUR helpers). No bespoke updater. Matches the "user

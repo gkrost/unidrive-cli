@@ -317,16 +317,9 @@ open class AuthService(
 
     /**
      * archive#865: a real interactive terminal on stdin, not merely a Console handle. JDK 22+ hands out a
-     * Console even when the streams are redirected (its isTerminal() then answers false), so the
-     * method is consulted reflectively; on the JDK 21 toolchain it does not exist and console
-     * presence is the answer (a console exists only when input and output are a terminal).
+     * Console even when the streams are redirected (its isTerminal() then answers false).
      */
-    private fun hasInteractiveTerminal(): Boolean {
-        val console = System.console() ?: return false
-        return runCatching {
-            java.io.Console::class.java.getMethod("isTerminal").invoke(console) as Boolean
-        }.getOrNull() ?: true
-    }
+    private fun hasInteractiveTerminal(): Boolean = System.console()?.isTerminal == true
 
     /**
      * Interactive email / password / 2FA sign-in, for a human on a terminal (`unidrive auth`).

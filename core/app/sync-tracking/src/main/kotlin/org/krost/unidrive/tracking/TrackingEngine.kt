@@ -181,6 +181,8 @@ class TrackingEngine(
 
             val applied = if (dryRun) emptyList() else applyActions(effectivePlan)
 
+            if (!dryRun) commitDeltaCursor(remoteEnum, applied, verdict)
+
             // After file deletes land, reap any remote directory they emptied (and
             // retry any directory whose reap was deferred on an earlier pass). The
             // engine tracks files only (folders are skipped in enumeration), so a
@@ -252,6 +254,34 @@ class TrackingEngine(
     /** Remove [path] from the tracking set. */
     fun unclaim(path: String) {
         trackingSet.remove(path)
+    }
+
+    /**
+     * The delta cursor moves only after the plan ran, and never on a dry run. A cursor saved before the apply
+     * step would drop a remote edit whose download failed (the next incremental delta no longer lists it) and
+     * the tombstones of deletes the batch guard held back. Holding the cursor replays them; the pass stays
+     * idempotent because every action re-derives from observations.
+     */
+    private fun commitDeltaCursor(
+        remoteEnum: RemoteEnumResult,
+        applied: List<AppliedAction>,
+        verdict: BatchGuard.Verdict,
+    ) {
+        if (!remoteEnum.complete) return
+        when {
+            applied.any { it.outcome == ApplyOutcome.FAILED } ->
+                log.warn("Holding the delta cursor: an action failed, so the next pass replays the delta.")
+            applied.any { it.outcome == ApplyOutcome.SKIPPED && it.action !is ReconcileAction.NoOp } ->
+                log.warn(
+                    "Holding the delta cursor: an action was skipped with its remote observation unresolved " +
+                        "(a collision, or a change that landed mid-apply), so the next pass replays the delta; " +
+                        "advancing past an unresolved collision would let the next pass upload over the other " +
+                        "editor's bytes.",
+                )
+            verdict is BatchGuard.Verdict.Deny ->
+                log.warn("Holding the delta cursor: the batch guard held deletes back, so the next pass replays them.")
+            else -> trackingSet.saveDeltaCursor(remoteEnum.endCursor)
+        }
     }
 
     private suspend fun applyActions(plan: List<ReconcileAction>): List<AppliedAction> {
@@ -382,7 +412,16 @@ class TrackingEngine(
         // Snapshot BEFORE the upload: an edit saved while the bytes are in flight
         // must still read as a local change on the next pass, not as synced.
         val l = observeLocal(path)
-        val uploaded = provider.upload(src, path, existingRemoteId = existing?.remoteFileId)
+        // A replace carries the etag the pass saw, like the delete does: a version saved in the cloud after the
+        // scan is refused instead of overwritten. A provider with its own write token guards a replace itself.
+        val ifMatch = existing?.takeIf { it.remoteFileId != null }?.remoteEtag?.takeUnless { provider.reportsItemVersions }
+        val uploaded =
+            try {
+                provider.upload(src, path, existingRemoteId = existing?.remoteFileId, ifMatchETag = ifMatch)
+            } catch (_: RemoteConflictException) {
+                if (existing != null) trackingSet.upsert(existing)
+                return AppliedAction(action, ApplyOutcome.SKIPPED, "remote changed after scan; upload refused, left as a collision")
+            }
         val r = observeRemote(path).copy(remoteFileId = uploaded.id, etag = uploaded.hash, hash = uploaded.hash, size = uploaded.size)
         trackingSet.adopt(path, provider.id, l, r)
         return AppliedAction(action, ApplyOutcome.SUCCESS, null)
@@ -836,7 +875,7 @@ class TrackingEngine(
                 "Delta cursor expired ({}); clearing it and re-enumerating the full inventory.",
                 e.message,
             )
-            trackingSet.saveDeltaCursor(null)
+            if (!dryRun) trackingSet.saveDeltaCursor(null)
             try {
                 walkDelta(cursor = null, incremental = false)
             } catch (e2: ProviderException) {
@@ -848,8 +887,9 @@ class TrackingEngine(
 
     /**
      * Walk the provider delta from [cursor], accumulating remote observations.
-     * Persists the cursor the walk ends on iff the walk saw the full inventory
-     * (`complete == true`). A mid-loop [ProviderException] marks the pass
+     * Reports the cursor the walk ends on in [RemoteEnumResult.endCursor]; it is
+     * persisted by [syncOnce], and only after the plan was applied (never on a
+     * dry run). A mid-loop [ProviderException] marks the pass
      * incomplete (deletes suppressed upstream) and leaves the prior persisted
      * cursor untouched. A [DeltaCursorExpiredException] is NOT swallowed here —
      * it propagates to [enumerateRemote] which drives the full-resync recovery.
@@ -920,23 +960,13 @@ class TrackingEngine(
             log.warn("Remote enumeration failed mid-loop; marking pass incomplete: ${e.message}")
             complete = false
         }
-        // Only advance the persisted cursor on a pass that saw the full
-        // inventory. An incomplete pass leaves the prior cursor in place so
-        // the next pass re-enumerates safely (preserves the delete-suppression
-        // backup path's safety contract).
-        if (complete) {
-            trackingSet.saveDeltaCursor(nextCursor)
-        }
-        return RemoteEnumResult(out, complete, incremental)
+        // An incomplete pass never advances the cursor (syncOnce saves it only for a complete one), so the
+        // next pass re-enumerates safely (preserves the delete-suppression backup path's safety contract).
+        return RemoteEnumResult(out, complete, incremental, nextCursor)
     }
 
-    private fun trackedPathForRemoteId(remoteId: String): String? {
-        val matches =
-            trackingSet.paths().mapNotNull { path ->
-                trackingSet.lookup(path)?.takeIf { it.providerId == provider.id && it.remoteFileId == remoteId }?.path
-            }.distinct()
-        return matches.singleOrNull()
-    }
+    private fun trackedPathForRemoteId(remoteId: String): String? =
+        trackingSet.pathsByRemoteId(provider.id, remoteId).distinct().singleOrNull()
 
     private fun isUsableFilePath(path: String): Boolean =
         path.isNotBlank() && path != "/" && !path.endsWith('/') && !path.split('/').any { it == ".." }
@@ -1060,4 +1090,6 @@ private data class RemoteEnumResult(
      * be incremental yet incomplete, or full yet complete.
      */
     val incremental: Boolean,
+    /** The cursor the walk ended on; saved by [TrackingEngine.syncOnce] once the plan was applied. */
+    val endCursor: String? = null,
 )

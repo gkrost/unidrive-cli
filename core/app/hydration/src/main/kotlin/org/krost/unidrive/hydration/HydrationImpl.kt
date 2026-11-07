@@ -393,7 +393,12 @@ class HydrationImpl(
         val tx: TransferHandle?,
     )
 
-    private val downloads = SharedDownloads<SharedRead>(recoveryUploadScope.coroutineContext[Job])
+    // gkrost/unidrive-cli#438: a download whose last caller left as it finished has no caller to end its history row.
+    private val downloads =
+        SharedDownloads<SharedRead>(
+            recoveryUploadScope.coroutineContext[Job],
+            onUnclaimed = { it.tx.endDownloadFailed(CancellationException("the last caller stopped waiting")) },
+        )
 
     /**
      * gkrost/unidrive-cli#23: the gap between two `downloading` events of one waiting request (about two a second, the most a
@@ -489,6 +494,9 @@ class HydrationImpl(
         // gkrost/unidrive-cli#182: the name a replaced file has while the source takes its name ([parkingPathFor]).
         private const val REPLACE_PARKING_SUFFIX = ".unidrive-replaced"
         private const val REPLACE_PARKING_ATTEMPTS = 100
+        private const val PATH_IS_FILE_TOKEN = "path_is_file"
+        private const val HTTP_CONFLICT = 409
+        private const val PROVIDER_CAUSE_DEPTH = 5
 
         /** Default bound on uploads waiting to run (see [uploadQueueDepth]). */
         const val DEFAULT_UPLOAD_QUEUE_DEPTH = 256
@@ -992,9 +1000,24 @@ class HydrationImpl(
             }
             // The path is no longer pinned by its upload: the budget may have been waiting for that.
             requestEviction()
-            completed?.let { _events.emit(it) }
+            completed?.let { _events.emit(withLandedRow(it)) }
         }
         slot.jobs.add(worker)
+    }
+
+    // gkrost/unidrive-cli#437: the row an upload committed, read once the slot is released (so pending_upload is settled), and
+    // sent with the event: the client otherwise lists the row to learn its etag, time and content id. A row that cannot be
+    // read leaves the event as it was before the field existed.
+    private fun withLandedRow(c: HydrationEvent.Completed): HydrationEvent.Completed {
+        if (!c.wantsEntry) return c
+        val entry =
+            try {
+                stateDb.getEntry(c.path)?.let { statEntryOf(it) }
+            } catch (e: Exception) {
+                log.debug("completed event of {} sent without its row: {}", c.path, e.message)
+                null
+            }
+        return c.copy(entry = entry, wantsEntry = false)
     }
 
     // Gives back one submission's count on [slot]; the last one removes every map entry still pointing at the slot.
@@ -1130,6 +1153,8 @@ class HydrationImpl(
                     handleId = handleId,
                     direction = HydrationEvent.Completed.Direction.UPLOAD,
                     ok = true,
+                    skipped = !outcome.sent,
+                    wantsEntry = true,
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -1358,7 +1383,8 @@ class HydrationImpl(
     /**
      * One transfer attempt under the stall watchdog (archive#613): runs the
      * transfer-permit wait and the transfer itself, and cancels both when [uploadStallTimeoutMs]
-     * elapses with no byte progress from the provider. The wait for the permit, the provider's
+     * elapses with no byte progress from the provider. The clock starts once the permit is held:
+     * a queued upload has not stalled. The provider's
      * pre-transfer work (its identical-bytes check, its resume bookkeeping) and the transfer all
      * suspend with no timeout of their own — a single lost wakeup there held the path's slot for
      * the daemon's lifetime, with no provider request, no failure, no event. Every attempt is now
@@ -1408,7 +1434,9 @@ class HydrationImpl(
             onProgress(done, total)
         }
         return coroutineScope {
-            val watcher = launch {
+            // Lazy: the clock starts once the permit is held. An upload queued behind others for a permit has made no
+            // request to stall, and must not burn a rung of the retry ladder for waiting its turn.
+            val watcher = launch(start = CoroutineStart.LAZY) {
                 while (true) {
                     try {
                         withTimeout(uploadStallTimeoutMs) { kicks.receive() }
@@ -1423,6 +1451,7 @@ class HydrationImpl(
                 mount.withTransferPermit {
                     drainableTransfer {
                         onPermitAcquired()
+                        watcher.start()
                         transfer.begin()
                         tx?.started()
                         holdingPermit(path) {
@@ -2768,6 +2797,45 @@ class HydrationImpl(
         }.getOrDefault(recorded)
     }
 
+    // gkrost/unidrive-cli#445: one run per path; a second caller of the same path waits for the first's answer.
+    private val mkdirFlights = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<MkdirResult>>()
+
+    override suspend fun mkdirParents(path: String): MkdirResult {
+        val key = path.trimEnd('/').let { if (it == "") "/" else it }
+        if (key == "/") return MkdirResult.Existed
+        val mine = kotlinx.coroutines.CompletableDeferred<MkdirResult>()
+        mkdirFlights.putIfAbsent(key, mine)?.let { return it.await() }
+        try {
+            val result = makeFolderChain(key)
+            mine.complete(result)
+            return result
+        } catch (e: CancellationException) {
+            // The waiters do not share this caller's cancellation: they are told the run ended.
+            mine.complete(MkdirResult.Failed(HydrationError.Cancelled))
+            throw e
+        } catch (e: Exception) {
+            mine.complete(MkdirResult.Failed(HydrationError.Generic(e.message ?: "mkdir failed")))
+            throw e
+        } finally {
+            mkdirFlights.remove(key, mine)
+        }
+    }
+
+    // The folders above [key] first (each through its own run, so two paths under one parent make it once), then [key] itself.
+    private suspend fun makeFolderChain(key: String): MkdirResult {
+        val parent = key.substringBeforeLast('/').ifEmpty { "/" }
+        when (val above = mkdirParents(parent)) {
+            MkdirResult.Ok, MkdirResult.Existed -> Unit
+            is MkdirResult.Failed -> return above
+            MkdirResult.ParentNotFound -> return above
+        }
+        val row = stateDb.getEntry(key)
+        if (row != null && row.status == org.krost.unidrive.sync.model.EntryStatus.EXISTS) {
+            return if (row.isFolder) MkdirResult.Existed else MkdirResult.Failed(HydrationError.Generic(PATH_IS_FILE_TOKEN))
+        }
+        return mkdir(key)
+    }
+
     override suspend fun mkdir(path: String): MkdirResult {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
         providerRefusal(normalised)?.let { return MkdirResult.Failed(it) }
@@ -2881,6 +2949,8 @@ class HydrationImpl(
             // content is another device's file and stays).
             val ghost = try {
                 mount.ghostItemOrNull(normalised)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // Transient remote-probe failure: fail the unlink rather than
                 // hard-delete the row and orphan a ghost's cloud copy.
@@ -3132,6 +3202,8 @@ class HydrationImpl(
                 registerHandle(connectionId, handleId, normalised)
             }
             OpenResult.Ok(cachePath, excluded = mount.isExcludedPath(normalised))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             OpenResult.Failed(HydrationError.Generic(e.message ?: "open_write_begin failed"))
         }
@@ -3604,6 +3676,8 @@ class HydrationImpl(
             // of other size or content is another device's file, left where it is.
             val ghost = try {
                 mount.ghostItemOrNull(oldNorm)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // Transient remote-probe failure: fail the rename rather than risk a
                 // local-only rename that would silently skip a ghost's cloud move.
@@ -3723,8 +3797,12 @@ class HydrationImpl(
             throw e
         } catch (e: Exception) {
             renames.abandon(intent)
-            RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
+            // gkrost/unidrive-cli#445: a provider's 409 on a move is "the name is taken" (new_path_exists), not free text a client matches.
+            if (isProviderConflict(e)) RenameResult.NewPathExists else RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
         }
+
+    private fun isProviderConflict(e: Throwable): Boolean =
+        generateSequence(e) { it.cause }.take(PROVIDER_CAUSE_DEPTH).any { it is org.krost.unidrive.ProviderException && it.httpStatus == HTTP_CONFLICT }
 
     // archive#319: move a live upload slot from the old to the new path across a rename,
     // so dehydrate's busy check, the replace-rename refusal, and list's

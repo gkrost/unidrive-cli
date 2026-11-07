@@ -5,7 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.yield
+import kotlinx.coroutines.withTimeout
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
@@ -276,11 +276,10 @@ class RefreshRoutingTest {
         val first = handler.handle("conn-1", """{"verb":"refresh.run"}""")
         assertTrue(first.contains("\"ok\":true"), "first refresh must be accepted: $first")
 
-        // Yield until the launched job has actually entered the engine (gated open).
-        repeat(200) {
-            if (engine.enumerateCalled) return@repeat
-            yield()
-        }
+        // Wait until the launched job has actually entered the engine (gated open): the entry signal is completed
+        // inside the engine, so the worker's progress is observed, not hoped for by yielding this event loop — a
+        // worker on another dispatcher never runs because of a yield.
+        withTimeout(10_000) { engine.entered.await() }
         assertTrue(engine.enumerateCalled, "first refresh must be in flight before the busy check")
 
         val second = handler.handle("conn-2", """{"verb":"refresh.run"}""")
@@ -369,20 +368,21 @@ class RefreshRoutingTest {
 
         handler.handle("conn-1", """{"verb":"refresh.run"}""")
 
-        // Wait until the refresh has actually suspended inside the engine (gated open).
-        repeat(200) {
-            if (engine.enumerateCalled) return@repeat
-            yield()
-        }
-        assertTrue(engine.enumerateCalled, "refresh must be in flight before the close")
+        try {
+            // Wait until the refresh has actually suspended inside the engine (gated open), on the engine's own
+            // entry signal — a worker on another dispatcher never runs because this event loop yields.
+            withTimeout(10_000) { engine.entered.await() }
+            assertTrue(engine.enumerateCalled, "refresh must be in flight before the close")
 
-        // Simulate daemon close: cancel the daemon scope (same shape EnumeratePollerTest
-        // uses) while the refresh is suspended. The gate is never completed; the
-        // in-flight refresh resumes with CancellationException.
-        scope.cancel()
-        repeat(200) {
-            if (emitted.isNotEmpty()) return@repeat
-            yield()
+            // Simulate daemon close: cancel the daemon scope (same shape EnumeratePollerTest
+            // uses) while the refresh is suspended. The gate is never completed; the
+            // in-flight refresh resumes with CancellationException. The terminal event is
+            // awaited on the in-flight job's completion, not on a yield count.
+            scope.cancel()
+            withTimeout(10_000) { handler.awaitInFlight() }
+        } finally {
+            // A failed assertion must not leave the gated worker alive.
+            scope.cancel()
         }
 
         val ev = emitted.single()

@@ -593,6 +593,14 @@ class IpcContractCorpusTest {
         )
     }
 
+    // gkrost/unidrive-cli#437: `events/completed-upload-entry.ndjson`, a landed upload's completed event with its row and `skipped`.
+    @Test
+    fun completed_upload_entry_event_matches_the_serialiser() {
+        val row = ListResult.Entry("/docs/report.docx", 5, 1000, true, false, 2000, "r1", "e1", "c1")
+        val event = HydrationEvent.Completed("/docs/report.docx", "h1", HydrationEvent.Completed.Direction.UPLOAD, ok = true, entry = row, skipped = true)
+        assertJsonMatches(Json.parseToJsonElement(loadEventLine("completed-upload-entry")), Json.parseToJsonElement(serialiseHydrationEvent(event)), "events/completed-upload-entry")
+    }
+
     /** `events/view.invalidated-recents.ndjson` is the line the daemon's serialiser makes of the event the view's cache sends. */
     @Test
     fun view_invalidated_event_matches_the_serialiser() {
@@ -1076,6 +1084,18 @@ class IpcContractCorpusTest {
         val idle = Json.parseToJsonElement(idleReply) as JsonObject
         assertTrue(JsonPrimitive(RUNNING_UPLOADS_CAPABILITY) in (idle.getValue("capabilities") as JsonArray), "a mount daemon names uploads.running")
         assertJsonMatches(expected, JsonObject(idle + ("uploads" to health)), "uploads-running: the rest of the reply")
+    }
+
+    /**
+     * gkrost/unidrive-cli#445: a mount daemon names `hydration.cancel_read`, the capability that says `hydration.cancel` reads a
+     * `handle_id` and a cancelled download stops. Pinned in the idle `daemon.status` corpus.
+     */
+    @Test
+    fun daemon_status_names_the_cancel_read_capability() {
+        val (_, idleReply) = loadPairs("daemon.status").single()
+        val idle = Json.parseToJsonElement(idleReply) as JsonObject
+        assertEquals("hydration.cancel_read", CANCEL_READ_CAPABILITY)
+        assertTrue(JsonPrimitive(CANCEL_READ_CAPABILITY) in (idle.getValue("capabilities") as JsonArray), "a mount daemon names hydration.cancel_read")
     }
 
     /**
@@ -1581,6 +1601,14 @@ class IpcContractCorpusTest {
                 else -> MkdirResult.Ok
             }
 
+        // mkdir with "parents":true (gkrost/unidrive-cli#445): /docs is there, /docs/report.txt is a file, anything else is made.
+        override suspend fun mkdirParents(path: String): MkdirResult =
+            when {
+                path == "/docs" -> MkdirResult.Existed
+                path == "/docs/report.txt" || path.startsWith("/docs/report.txt/") -> MkdirResult.Failed(HydrationError.Generic("path_is_file"))
+                else -> mkdir(path)
+            }
+
         override suspend fun unlink(path: String, permanent: Boolean): UnlinkResult =
             when {
                 readOnly(path) -> UnlinkResult.Failed(HydrationError.ReadOnly)
@@ -1732,7 +1760,10 @@ private fun assertJsonMatches(expected: JsonElement, actual: JsonElement, at: St
             assertEquals(expected.keys, actual.keys, "$at: key set mismatch")
             for ((key, value) in expected) {
                 val actualValue = actual.getValue(key)
-                if (key in VOLATILE_FIELDS) {
+                if (key == "ipc") {
+                    assertIpcCountersShape(value, "$at.$key (corpus)")
+                    assertIpcCountersShape(actualValue, "$at.$key")
+                } else if (key in VOLATILE_FIELDS) {
                     assertVolatileShape(value, actualValue, "$at.$key")
                 } else {
                     assertJsonMatches(value, actualValue, "$at.$key")
@@ -1752,6 +1783,25 @@ private fun assertJsonMatches(expected: JsonElement, actual: JsonElement, at: St
             assertEquals(expected.content, actual.content, "$at: value mismatch")
         }
     }
+}
+
+// daemon.status `ipc` (gkrost/unidrive-cli#460): per-verb request counts since the daemon started, so the numbers depend on
+// what the replay asked before (a test that waits for a state asks daemon.status until it holds). Pinned: the object holds
+// exactly `requests`, every key there is a verb the daemon knows (IpcAuth.VERB_CLASSES), and every value a non-negative
+// integer; and a daemon.status reply counts itself.
+private fun assertIpcCountersShape(element: JsonElement, at: String) {
+    assertTrue(element is JsonObject && element.keys == setOf("requests"), "$at: must be {\"requests\":{...}}, got $element")
+    val requests = element.getValue("requests")
+    assertTrue(requests is JsonObject, "$at.requests: expected an object, got $requests")
+    for ((verb, count) in requests) {
+        assertTrue(verb in IpcAuth.VERB_CLASSES.keys, "$at.requests: '$verb' is not a verb the daemon registers")
+        val n = (count as? JsonPrimitive)?.takeUnless { it.isString }?.content?.toLongOrNull()
+        assertTrue(n != null && n >= 0, "$at.requests.$verb: expected a non-negative integer, got $count")
+    }
+    assertTrue(
+        ((requests["daemon.status"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L) >= 1L,
+        "$at.requests: a daemon.status reply counts itself: $requests",
+    )
 }
 
 // Volatile fields carry run- or machine-dependent values (uuids, uptimes,
