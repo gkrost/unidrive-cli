@@ -2195,6 +2195,8 @@ class SyncEngineTest {
             assertFalse(provider.deletedPaths.contains("/b.txt"), "the pass stopped, it must not go on to the next action")
 
         }
+    @Test
+
     fun `an emptied remote directory that still exists locally is NOT reaped`() =
         runTest {
             val now = Instant.parse("2026-01-01T00:00:00Z")
@@ -2228,6 +2230,48 @@ class SyncEngineTest {
                 provider.deletedPaths.contains("/dir"),
                 "a folder the user kept must NOT be reaped; deleted=${provider.deletedPaths}",
             )
+        }
+
+    @Test
+    fun `a pass that stops in Pass 1 keeps the rows of the actions it already applied`() =
+        runTest {
+            val now = Instant.parse("2026-01-01T00:00:00Z")
+            val names = listOf("a.txt", "b.txt", "c.txt", "z.txt")
+            for (name in names) {
+                db.upsertEntry(
+                    SyncEntry(
+                        path = "/$name",
+                        remoteId = "id-$name",
+                        remoteHash = "h",
+                        remoteSize = 10,
+                        remoteModified = now,
+                        localMtime = now.toEpochMilli(),
+                        localSize = 10,
+                        isFolder = false,
+                        isPinned = false,
+                        isHydrated = true,
+                        lastSynced = now,
+                    ),
+                )
+            }
+            db.setSyncState("delta_cursor", "existing-cursor")
+            provider.deltaItems = emptyList()
+            Files.writeString(syncRoot.resolve("other.txt"), "keep")
+            // The local copies are gone, so each tracked file plans a DeleteRemote. One of them hits an auth failure.
+            provider.deleteThrowByPath["/z.txt"] = AuthenticationException("Token expired")
+
+            assertFailsWith<AuthenticationException> {
+                engineWithDirection(SyncDirection.BIDIRECTIONAL).syncOnce(dryRun = false)
+            }
+
+            val deletedOnCloud = provider.deletedPaths.toSet()
+            assertTrue(deletedOnCloud.isNotEmpty(), "the pass must have applied some deletes first")
+            for (path in deletedOnCloud) {
+                assertEquals(null, db.getEntry(path), "$path was deleted on the cloud, its row must not come back")
+            }
+            for (name in names) {
+                if ("/$name" !in deletedOnCloud) assertNotNull(db.getEntry("/$name"), "/$name was not deleted, its row stays")
+            }
         }
 
     @Test
