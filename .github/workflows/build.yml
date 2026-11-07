@@ -138,6 +138,21 @@ jobs:
         working-directory: core
         run: ./gradlew check --no-daemon
 
+      # gkrost/unidrive-cli#419: a stable test that fails here left only its console line; the stack went to the
+      # report, which nothing uploaded. Uploaded on failure only.
+      - name: Upload test reports on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-linux
+          path: |
+            core/app/*/build/reports/tests/test
+            core/app/*/build/test-results/test
+            core/providers/*/build/reports/tests/test
+            core/providers/*/build/test-results/test
+          if-no-files-found: ignore
+          retention-days: 14
+
       # Advisory: the quarantined (flaky) tests, which `check` does not run (docs/dev/testing-flaky-policy.md). The step
       # cannot fail the job: continue-on-error, a time box, and flakyTest itself ignores their failures. What happened
       # goes to the job summary, one ::warning:: per failed test, and the artifact below.
@@ -206,6 +221,21 @@ jobs:
       - name: Gradle check (runtime JDK)
         working-directory: core
         run: ./gradlew check --no-daemon -PunidriveTestJvm=27
+
+      # gkrost/unidrive-cli#419: a stable test that fails here left only its console line; the stack went to the
+      # report, which nothing uploaded. Uploaded on failure only.
+      - name: Upload test reports on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-runtime-jdk
+          path: |
+            core/app/*/build/reports/tests/test
+            core/app/*/build/test-results/test
+            core/providers/*/build/reports/tests/test
+            core/providers/*/build/test-results/test
+          if-no-files-found: ignore
+          retention-days: 14
 
       # Advisory: the quarantined (flaky) tests, which `check` does not run (docs/dev/testing-flaky-policy.md). The step
       # cannot fail the job: continue-on-error, a time box, and flakyTest itself ignores their failures. What happened
@@ -380,6 +410,21 @@ jobs:
         working-directory: core
         shell: bash
         run: ./gradlew check --no-daemon
+
+      # gkrost/unidrive-cli#419: a stable test that fails here left only its console line; the stack went to the
+      # report, which nothing uploaded. Uploaded on failure only.
+      - name: Upload test reports on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-windows
+          path: |
+            core/app/*/build/reports/tests/test
+            core/app/*/build/test-results/test
+            core/providers/*/build/reports/tests/test
+            core/providers/*/build/test-results/test
+          if-no-files-found: ignore
+          retention-days: 14
 
       # Advisory: the quarantined (flaky) tests, which `check` does not run (docs/dev/testing-flaky-policy.md). The step
       # cannot fail the job: continue-on-error, a time box, and flakyTest itself ignores their failures. What happened
