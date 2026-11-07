@@ -713,6 +713,39 @@ class SyncEngineTest {
             assertEquals(1, db.recovery.trashedEntries().size, "the tombstone is untouched")
         }
 
+    // #448: the un-trash pre-pass flips the row to EXISTS while planning; the refill download is only planned. A
+    // refresh skips transfers, so the row stayed hydrated with no local file, and the next sync read the missing
+    // file as a local delete and sent the just-restored file back to the recycle bin.
+    @Test
+    fun `#448 a file restored in the cloud and refreshed before its download is downloaded by the next sync, not deleted`() =
+        runTest {
+            provider.files["/restored.txt"] = ByteArray(100)
+            provider.deltaItems = listOf(cloudItem("/restored.txt", size = 100))
+            engine.syncOnce()
+            assertTrue(Files.exists(syncRoot.resolve("restored.txt")))
+            assertEquals(true, db.getEntry("/restored.txt")?.isHydrated, "the downloaded row is hydrated")
+
+            provider.deltaItems = listOf(cloudItem("/restored.txt", deleted = true))
+            provider.deltaCursor = "cursor-2"
+            engine.syncOnce()
+            assertFalse(Files.exists(syncRoot.resolve("restored.txt")))
+            assertEquals(1, db.recovery.trashedEntries().size, "the deleted row is a TRASHED tombstone")
+
+            // The user restores the file in the cloud; a refresh plans the refill but runs no transfer.
+            provider.deltaItems = listOf(cloudItem("/restored.txt", size = 100))
+            provider.deltaCursor = "cursor-3"
+            engine.syncOnce(skipTransfers = true)
+            assertFalse(Files.exists(syncRoot.resolve("restored.txt")), "a refresh downloads nothing")
+
+            // The delta has nothing new; the next sync must refill the file, never delete it remotely.
+            provider.deltaItems = emptyList()
+            provider.deltaCursor = "cursor-4"
+            engine.syncOnce()
+
+            assertTrue(provider.deletedPaths.isEmpty(), "the restored file must not be deleted again; deleted ${provider.deletedPaths}")
+            assertEquals(100L, Files.size(syncRoot.resolve("restored.txt")), "the restored file must be downloaded")
+        }
+
     @Test
     fun `a remote delete whose path escapes the sync root never trashes the file outside it`() =
         runTest {
