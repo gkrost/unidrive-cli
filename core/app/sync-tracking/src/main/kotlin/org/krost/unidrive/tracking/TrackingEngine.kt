@@ -965,13 +965,8 @@ class TrackingEngine(
         return RemoteEnumResult(out, complete, incremental, nextCursor)
     }
 
-    private fun trackedPathForRemoteId(remoteId: String): String? {
-        val matches =
-            trackingSet.paths().mapNotNull { path ->
-                trackingSet.lookup(path)?.takeIf { it.providerId == provider.id && it.remoteFileId == remoteId }?.path
-            }.distinct()
-        return matches.singleOrNull()
-    }
+    private fun trackedPathForRemoteId(remoteId: String): String? =
+        trackingSet.pathsByRemoteId(provider.id, remoteId).distinct().singleOrNull()
 
     private fun isUsableFilePath(path: String): Boolean =
         path.isNotBlank() && path != "/" && !path.endsWith('/') && !path.split('/').any { it == ".." }
