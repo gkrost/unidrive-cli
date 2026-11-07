@@ -18,6 +18,7 @@ import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -267,6 +268,20 @@ class HydrationImplGhostGuardTest {
             assertTrue(result is UnlinkResult.Failed, "a transient probe failure must fail the unlink, not hard-delete the row")
             assertNull(provider.lastDeletePath, "no cloud delete attempted on a transient probe failure")
             assertNotNull(db.getEntry("/maybe-ghost.deb"), "row must remain so the op can be retried")
+        }
+
+    // gkrost/unidrive-cli#438: a cancelled caller is not a failed probe; the cancellation goes on instead of becoming a reply.
+    @Test
+    fun `a cancellation during the probe ends the rename and the unlink instead of failing them`() =
+        runTest {
+            val env = freshEnv()
+            val (hydration, provider, db) = env
+            env.seedLocalGhostRow("/maybe-ghost.deb")
+            provider.transientError = kotlinx.coroutines.CancellationException("the caller went away")
+
+            assertFailsWith<kotlinx.coroutines.CancellationException> { hydration.rename("/maybe-ghost.deb", "/renamed.deb") }
+            assertFailsWith<kotlinx.coroutines.CancellationException> { hydration.unlink("/maybe-ghost.deb") }
+            assertNotNull(db.getEntry("/maybe-ghost.deb"), "the row stays")
         }
 
     @Test

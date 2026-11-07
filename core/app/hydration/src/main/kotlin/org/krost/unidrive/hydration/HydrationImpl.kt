@@ -2881,6 +2881,8 @@ class HydrationImpl(
             // content is another device's file and stays).
             val ghost = try {
                 mount.ghostItemOrNull(normalised)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // Transient remote-probe failure: fail the unlink rather than
                 // hard-delete the row and orphan a ghost's cloud copy.
@@ -3132,6 +3134,8 @@ class HydrationImpl(
                 registerHandle(connectionId, handleId, normalised)
             }
             OpenResult.Ok(cachePath, excluded = mount.isExcludedPath(normalised))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             OpenResult.Failed(HydrationError.Generic(e.message ?: "open_write_begin failed"))
         }
@@ -3604,6 +3608,8 @@ class HydrationImpl(
             // of other size or content is another device's file, left where it is.
             val ghost = try {
                 mount.ghostItemOrNull(oldNorm)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // Transient remote-probe failure: fail the rename rather than risk a
                 // local-only rename that would silently skip a ghost's cloud move.
