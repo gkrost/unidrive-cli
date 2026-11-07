@@ -135,4 +135,45 @@ class TrackingEngineCursorTest {
             tracking.close()
         }
     }
+
+    @Test
+    fun `an unresolved collision holds the cursor so the next pass cannot upload over the remote edit`() {
+        // A collision skipped with its remote observation unresolved is not a consumed delta: with the cursor
+        // saved anyway, the next pass's incremental listing no longer names the path, the unchanged remote is
+        // synthesized from the tracking row's baseline, and the local edit uploads straight over the other
+        // editor's bytes. Holding the cursor replays the delta, so the collision is asked for again.
+        Files.writeString(syncRoot.resolve("a.txt"), "baseline")
+        provider.files["/a.txt"] = "baseline".toByteArray()
+        val tracking = open()
+        try {
+            engine(tracking).syncOnce()
+            assertEquals("c1", tracking.loadDeltaCursor())
+
+            Files.writeString(syncRoot.resolve("a.txt"), "local edit")
+            provider.nextCursor = "c2"
+            provider.incrementalOnlyFromCursor = "c1"
+            provider.incrementalChanges["/a.txt"] = "remote edit".toByteArray()
+
+            val first = engine(tracking).syncOnce()
+            assertTrue(
+                first.applied.any { it.action is ReconcileAction.ReportCollision && it.outcome == ApplyOutcome.SKIPPED },
+                "the both-sides change reports a collision: ${first.applied}",
+            )
+            assertEquals("c1", tracking.loadDeltaCursor(), "an unresolved collision must hold the cursor")
+
+            val second = engine(tracking).syncOnce()
+            assertTrue(
+                second.applied.any { it.action is ReconcileAction.ReportCollision && it.outcome == ApplyOutcome.SKIPPED },
+                "the held cursor replays the delta, so the collision is reported again: ${second.applied}",
+            )
+            assertTrue(
+                second.applied.none { it.action is ReconcileAction.UploadLocal && it.outcome == ApplyOutcome.SUCCESS },
+                "the second pass must not upload over the remote edit: ${second.applied}",
+            )
+            assertEquals("baseline", provider.files["/a.txt"]?.decodeToString(), "the remote content is untouched — no upload ran over it")
+            assertEquals("c1", tracking.loadDeltaCursor())
+        } finally {
+            tracking.close()
+        }
+    }
 }

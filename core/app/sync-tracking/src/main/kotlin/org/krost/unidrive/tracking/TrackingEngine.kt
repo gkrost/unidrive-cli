@@ -271,6 +271,13 @@ class TrackingEngine(
         when {
             applied.any { it.outcome == ApplyOutcome.FAILED } ->
                 log.warn("Holding the delta cursor: an action failed, so the next pass replays the delta.")
+            applied.any { it.outcome == ApplyOutcome.SKIPPED && it.action !is ReconcileAction.NoOp } ->
+                log.warn(
+                    "Holding the delta cursor: an action was skipped with its remote observation unresolved " +
+                        "(a collision, or a change that landed mid-apply), so the next pass replays the delta; " +
+                        "advancing past an unresolved collision would let the next pass upload over the other " +
+                        "editor's bytes.",
+                )
             verdict is BatchGuard.Verdict.Deny ->
                 log.warn("Holding the delta cursor: the batch guard held deletes back, so the next pass replays them.")
             else -> trackingSet.saveDeltaCursor(remoteEnum.endCursor)
