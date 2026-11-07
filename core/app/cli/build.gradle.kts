@@ -358,6 +358,25 @@ tasks.register("runtimeImage") {
             outDir.absolutePath,
         )
 
+        // The default CDS archive (classes.jsa) of the image's own module set. Without it the image starts with
+        // no class data sharing at all, and every one-shot command loads and links the JDK's classes cold.
+        // jlink's --generate-cds-archive would write four archives (compressed oops and compact headers
+        // on/off, about 14 MB each); only the default variant is ever mapped (a heap above 32 GB or
+        // -XX:-UseCompactObjectHeaders would pick another and run without sharing), so this dumps that one
+        // with the image's own JVM, which ties it to the runtime's header mode and GC.
+        run(outDir.resolve("bin/java${if (hostIsWindows) ".exe" else ""}").absolutePath, "-Xshare:dump")
+
+        // The archive must exist and the JVM must be willing to map it: -Xshare:on fails the start instead of
+        // falling back to no sharing, so an image that silently lost its archive breaks the build here.
+        val cdsArchive = outDir.resolve(if (hostIsWindows) "bin/server/classes.jsa" else "lib/server/classes.jsa")
+        if (!cdsArchive.isFile) {
+            throw GradleException("The runtime image at ${outDir.absolutePath} has no CDS archive at ${cdsArchive.absolutePath}.")
+        }
+        val shared = run(outDir.resolve("bin/java${if (hostIsWindows) ".exe" else ""}").absolutePath, "-Xshare:on", "-version")
+        if (!shared.contains("sharing")) {
+            throw GradleException("The runtime image does not start with its CDS archive (-Xshare:on -version): $shared")
+        }
+
         // Redistribution ships the runtime's licenses: OpenJDK GPLv2 with
         // Classpath Exception plus per-module third-party notices. jlink
         // copies module legal/ directories into the image by default; a
