@@ -11,6 +11,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -136,32 +137,63 @@ class ErrorBodyTest {
             )
         }
 
+    // A streamed call: a buffered get() would deliver the whole body before readBoundedErrorBody is entered, so the
+    // split could not catch a read that takes only the first buffered chunk. The writer holds the rest back behind a
+    // gate until the read is waiting for it.
     @Test
     fun `readBoundedErrorBody reads a body that arrives in several pieces to its end`() =
-        runTest {
-            val response = mockResponseWithChannel { ch ->
-                ch.writeFully("""{"error":{"retry_after":""".toByteArray())
-                ch.flush()
-                delay(200)
-                ch.writeFully("""30}}""".toByteArray())
-                ch.close()
+        runBlocking {
+            val rest = CompletableDeferred<Unit>()
+            val engine =
+                MockEngine {
+                    val ch = ByteChannel()
+                    CoroutineScope(Dispatchers.Default).launch {
+                        ch.writeFully("""{"error":{"retry_after":""".toByteArray())
+                        ch.flush()
+                        rest.await() // the tail comes only once the read is waiting for it
+                        ch.writeFully("""30}}""".toByteArray())
+                        ch.close()
+                    }
+                    respond(content = ch, status = HttpStatusCode.OK, headers = headersOf("Content-Type", "text/plain"))
+                }
+            HttpClient(engine).prepareGet("https://example.invalid/").execute { response ->
+                var outcome: String? = null
+                val reading = launch(Dispatchers.Default) { outcome = runCatching { readBoundedErrorBody(response) }.getOrNull() }
+                withContext(Dispatchers.Default) { delay(500) } // the read has the first piece and waits for the rest by now
+                assertTrue(reading.isActive, "the read waits for the rest of the body instead of answering the first piece")
+                rest.complete(Unit)
+                reading.join()
+                assertEquals("""{"error":{"retry_after":30}}""", outcome)
             }
-
-            assertEquals("""{"error":{"retry_after":30}}""", readBoundedErrorBody(response))
+            Unit
         }
 
     @Test
     fun `readBoundedErrorBody stops at maxBytes when the body arrives in pieces`() =
-        runTest {
-            val response = mockResponseWithChannel { ch ->
-                ch.writeFully("""{"a":"1234""".toByteArray())
-                ch.flush()
-                delay(200)
-                ch.writeFully("5678901234567890\"}".toByteArray())
-                ch.close()
+        runBlocking {
+            val rest = CompletableDeferred<Unit>()
+            val engine =
+                MockEngine {
+                    val ch = ByteChannel()
+                    CoroutineScope(Dispatchers.Default).launch {
+                        ch.writeFully("""{"a":"1234""".toByteArray())
+                        ch.flush()
+                        rest.await() // the tail comes only once the read is waiting for it
+                        ch.writeFully("5678901234567890\"}".toByteArray())
+                        ch.close()
+                    }
+                    respond(content = ch, status = HttpStatusCode.OK, headers = headersOf("Content-Type", "text/plain"))
+                }
+            HttpClient(engine).prepareGet("https://example.invalid/").execute { response ->
+                var outcome: String? = null
+                val reading = launch(Dispatchers.Default) { outcome = runCatching { readBoundedErrorBody(response, maxBytes = 14) }.getOrNull() }
+                withContext(Dispatchers.Default) { delay(500) } // the read has the first piece and waits for the rest by now
+                assertTrue(reading.isActive, "the read waits for the rest of the body instead of answering the first piece")
+                rest.complete(Unit)
+                reading.join()
+                assertEquals("""{"a":"12345678""", outcome)
             }
-
-            assertEquals("""{"a":"12345678""", readBoundedErrorBody(response, maxBytes = 14))
+            Unit
         }
 
     @Test
@@ -193,16 +225,6 @@ class ErrorBodyTest {
         }
 
     // Helpers ---------------------------------------------------------------
-
-    private suspend fun mockResponseWithChannel(writer: suspend (ByteChannel) -> Unit): HttpResponse {
-        val engine =
-            MockEngine {
-                val ch = ByteChannel()
-                CoroutineScope(Dispatchers.Default).launch { writer(ch) }
-                respond(content = ch, status = HttpStatusCode.OK, headers = headersOf("Content-Type", "text/plain"))
-            }
-        return HttpClient(engine).get("https://example.invalid/")
-    }
 
     private suspend fun mockResponseWithBody(body: String): HttpResponse {
         val engine =
