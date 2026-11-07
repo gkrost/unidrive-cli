@@ -1581,6 +1581,14 @@ class IpcContractCorpusTest {
                 else -> MkdirResult.Ok
             }
 
+        // mkdir with "parents":true (gkrost/unidrive-cli#445): /docs is there, /docs/report.txt is a file, anything else is made.
+        override suspend fun mkdirParents(path: String): MkdirResult =
+            when {
+                path == "/docs" -> MkdirResult.Existed
+                path == "/docs/report.txt" || path.startsWith("/docs/report.txt/") -> MkdirResult.Failed(HydrationError.Generic("path_is_file"))
+                else -> mkdir(path)
+            }
+
         override suspend fun unlink(path: String, permanent: Boolean): UnlinkResult =
             when {
                 readOnly(path) -> UnlinkResult.Failed(HydrationError.ReadOnly)

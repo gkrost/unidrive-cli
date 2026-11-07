@@ -81,8 +81,13 @@ import java.util.concurrent.atomic.AtomicLong
  *                         {"ok":false,"error":"<msg>"}              EIO
  *               daemon.status lists "hydration.stat" in capabilities on an engine that answers it.
  *
- *   mkdir       request:  {"verb":"hydration.mkdir","path":"/foo"}
+ *   mkdir       request:  {"verb":"hydration.mkdir","path":"/foo"[,"parents":true]}
  *               reply:    {"ok":true}
+ *                         {"ok":true,"existed":true}                only with "parents":true: the folder was there already
+ *                         {"ok":false,"error":"path_is_file"}       only with "parents":true: a file is at the path or above it
+ *               "parents":true (gkrost/unidrive-cli#445) is mkdir -p: the missing folders above the path are made, and the call is
+ *               idempotent; concurrent calls for one path share one run. Without it nothing changes. An engine that does not know
+ *               the field ignores it (a missing parent is then parent_not_found, and the reply has no "existed").
  *                         {"ok":false,"error":"parent_not_found"}   ENOENT
  *                         {"ok":false,"error":"outside_scope"}      path outside the profile's sync_path set
  *                         {"ok":false,"error":"<msg>"}              EIO
@@ -529,10 +534,16 @@ class HydrationIpcHandler(
             "hydration.mkdir" -> {
                 val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 nameClash(rawPath(request, "path"))?.let { return it }
-                when (val r = hydration.mkdir(path)) {
+                // gkrost/unidrive-cli#445: "parents":true makes the folders above and answers a folder that is there as existed.
+                val parents = request.bool("parents") == true
+                when (val r = if (parents) hydration.mkdirParents(path) else hydration.mkdir(path)) {
                     is MkdirResult.Ok -> {
                         spellings.record(rawPath(request, "path"))
                         reply(ok = true)
+                    }
+                    MkdirResult.Existed -> {
+                        spellings.record(rawPath(request, "path"))
+                        """{"ok":true,"existed":true}"""
                     }
                     MkdirResult.ParentNotFound -> reply(ok = false, error = "parent_not_found")
                     is MkdirResult.Failed -> reply(ok = false, error = r.error.message)
