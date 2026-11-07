@@ -291,6 +291,22 @@ class S3ProviderTest {
             assertTrue(fake.objects.isEmpty())
         }
 
+    // gkrost/unidrive-cli#447: a guarded delete is a file delete. With the object gone it is done, and keys below a
+    // same-named prefix are another tree that a file delete must not reach (S3 has no trash).
+    @Test
+    fun `a guarded delete of a file that is gone leaves the keys under a same-named prefix`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("a/report/x", "1")
+            fake.put("a/report/y", "2")
+            val provider = provider(fake)
+
+            provider.delete("/a/report", ifMatchETag = "\"etag\"")
+
+            assertEquals(listOf("a/report/x", "a/report/y"), fake.objects.keys.toList())
+            assertTrue(fake.requests.none { it.method == HttpMethod.Delete || it.query.containsKey("delete") })
+        }
+
     @Test
     fun `a permanent delete of a folder or a file removes the keys, the capability is declared`() =
         runTest {

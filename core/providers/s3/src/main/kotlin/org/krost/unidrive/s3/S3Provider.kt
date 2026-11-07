@@ -353,6 +353,9 @@ class S3Provider(
                 }
                 api.delete(key)
             }
+            // gkrost/unidrive-cli#447: a guarded delete is a file delete, and the file is gone already, which is what a
+            // delete wants (as on Dropbox and OneDrive). Keys under a same-named prefix are another tree: never touch them.
+            ifMatchETag != null -> return
             // No object: a folder (every key below it goes, as a folder delete does on the other providers), or nothing.
             else -> deleteTree("$key/")
         }
