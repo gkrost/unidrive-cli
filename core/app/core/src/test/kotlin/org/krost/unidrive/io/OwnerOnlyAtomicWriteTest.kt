@@ -123,7 +123,7 @@ class OwnerOnlyAtomicWriteTest {
                 null,
                 {},
                 {},
-                { OwnerOnly.Outcome.Unsupported("a FAT volume") },
+                OwnerOnlyAtomicWrite.Steps(restrict = { OwnerOnly.Outcome.Unsupported("a FAT volume") }),
             )
         }
 
@@ -142,7 +142,7 @@ class OwnerOnlyAtomicWriteTest {
             { reported += it },
             {},
             {},
-            { OwnerOnly.Outcome.Failed("share refused the ACL") },
+            OwnerOnlyAtomicWrite.Steps(restrict = { OwnerOnly.Outcome.Failed("share refused the ACL") }),
         )
 
         assertEquals(listOf<OwnerOnly.Outcome>(OwnerOnly.Outcome.Failed("share refused the ACL")), reported)
@@ -157,5 +157,65 @@ class OwnerOnlyAtomicWriteTest {
         OwnerOnlyAtomicWrite.replace(target, "new".toByteArray(), onUnrestricted = { called = true })
 
         assertTrue(!called)
+    }
+
+    private fun replaceWith(
+        retry: (() -> Unit) -> Unit,
+        move: (Path, Path, Boolean) -> Unit,
+    ) = OwnerOnlyAtomicWrite.replace(
+        target,
+        { "new".toByteArray() },
+        null,
+        {},
+        {},
+        OwnerOnlyAtomicWrite.Steps(lockRetry = retry, move = move),
+    )
+
+    @Test
+    fun `a target that is held for a moment is retried and the save lands`() {
+        Files.writeString(target, "old")
+        var moves = 0
+
+        replaceWith(
+            retry = { action ->
+                var tries = 0
+                while (true) {
+                    try {
+                        action()
+                        break
+                    } catch (e: java.nio.file.AccessDeniedException) {
+                        if (++tries >= 3) throw e
+                    }
+                }
+            },
+            move = { from, to, _ ->
+                if (++moves <= 2) throw java.nio.file.AccessDeniedException(to.toString())
+                Files.move(from, to, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            },
+        )
+
+        assertEquals(3, moves)
+        assertEquals("new", Files.readString(target))
+        assertEquals(listOf("secret.toml"), folder())
+    }
+
+    @Test
+    fun `a temp file that cannot be deleted does not hide the failure of the move`() {
+        val e =
+            assertFailsWith<IOException> {
+                replaceWith(
+                    retry = { it() },
+                    move = { from, _, _ ->
+                        // the temp name becomes a folder that is not empty, so the cleanup's delete fails
+                        Files.delete(from)
+                        Files.createDirectory(from)
+                        Files.writeString(from.resolve("x"), "x")
+                        throw IOException("the move failed")
+                    },
+                )
+            }
+
+        assertEquals("the move failed", e.message)
+        assertEquals(1, e.suppressed.size, "the failed cleanup is attached, not thrown instead")
     }
 }
