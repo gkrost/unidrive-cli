@@ -804,7 +804,15 @@ class MountEngine private constructor(
                     // The surviving old cache may be corrupt-but-right-sized; removing
                     // it forces a clean re-download on the next open instead of
                     // serving it warm.
-                    Files.deleteIfExists(cachePath)
+                    // Under the swap lock and by the edit rule of the swap below: an edit that began while the bytes came
+                    // down owns the cache copy now (open_write_begin truncates it without this path's hydrate lock).
+                    cacheSwapLock(path).withLock {
+                        if (db.getEntry(path)?.editBase != null && entry.editBase == null) {
+                            log.info("integrity failure of {} leaves the cache copy: an edit began while the download ran", path)
+                        } else {
+                            Files.deleteIfExists(cachePath)
+                        }
+                    }
                     throw IllegalStateException("Integrity check failed for hydration cache: $path")
                 }
             }
