@@ -45,12 +45,13 @@ class S3Provider(
     val config: S3Config,
     engine: HttpClientEngine? = null,
     clock: () -> Instant = Instant::now,
+    uploadWatchdog: org.krost.unidrive.http.UploadWatchdogLimits = org.krost.unidrive.http.UploadWatchdogLimits.DEFAULT,
 ) : CloudProvider {
     override val id = "s3"
     override val displayName = "S3 / S3-compatible"
 
     private val log = org.slf4j.LoggerFactory.getLogger(S3Provider::class.java)
-    private val api = S3Api(config, engine, clock)
+    private val api = S3Api(config, engine, clock, uploadWatchdog = uploadWatchdog)
     private val uploads = MultipartStore(config.tokenPath.resolve("s3-uploads"))
 
     override var isAuthenticated: Boolean = false
