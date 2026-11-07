@@ -60,7 +60,7 @@ class InternxtDownloadCutOffTest {
                     val e =
                         assertFailsWith<IOException> {
                             runBlocking {
-                                api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = expectedSize)
+                                api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = expectedSize, expectedShardHash = null)
                             }
                         }
                     assertNotNull(e.message, "a dropped connection is a transport IOException, not a shorter stored object: $e")
@@ -105,7 +105,7 @@ class InternxtDownloadCutOffTest {
                             body.writeFully(chunk)
                             body.cancel(IOException("connection reset"))
                         }
-                        api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination)
+                        api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedShardHash = null)
                     }
                 }
             assertEquals("connection reset", e.message)
