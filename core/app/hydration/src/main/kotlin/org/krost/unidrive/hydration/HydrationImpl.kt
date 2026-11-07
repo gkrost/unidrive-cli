@@ -41,6 +41,7 @@ import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.engine.CachePaths
 import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.RemoteEnumeration
+import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.moveFile
@@ -2879,21 +2880,36 @@ class HydrationImpl(
                 return@getOrElse MkdirResult.Ok
             }
             val msg = e.message ?: ""
-            // Provider-side parent-missing detection by substring. Different
-            // providers word it differently:
-            // - OneDrive: GraphApiException("Create folder failed: 404 ...")
-            // - Internxt: ProviderException("Folder not found: <seg> in <path>")
-            // Both contain "not found" case-insensitively; OneDrive also
-            // carries the literal "404". Match any of those signals.
-            if (msg.contains("not found", ignoreCase = true) ||
-                msg.contains("404", ignoreCase = true)
-            ) {
-                _events.emit(HydrationEvent.Failed(normalised, HydrationError.Generic(msg)))
-                MkdirResult.ParentNotFound
-            } else {
-                val err = HydrationError.Generic(msg.ifBlank { "mkdir failed" })
-                _events.emit(HydrationEvent.Failed(normalised, err))
-                MkdirResult.Failed(err)
+            // gkrost/unidrive-cli#452: the provider's own answer classifies the failure, not the message text. The
+            // free-text match this replaces answered parent_not_found for any message mentioning 404 or "not found"
+            // — a OneDrive body embeds the response (request ids, quoted names), so a 409 or a 5xx could break
+            // mkdir -p callers. RemoteErrors.isNotFound is the one rule the engine classifies absence by.
+            when {
+                RemoteErrors.isNotFound(e) -> {
+                    _events.emit(HydrationEvent.Failed(normalised, HydrationError.Generic(msg)))
+                    MkdirResult.ParentNotFound
+                }
+                // A 409 on a create is "the name is taken" (the rule rename's new_path_exists follows): the folder
+                // is already in the cloud — adopt it, so the client answered existed can fill it at once. A file
+                // holding the name is path_is_file; a probe that cannot prove a folder leaves the provider's
+                // answer as the failure.
+                isProviderConflict(e) -> when (mount.existingFolderAt(normalised)) {
+                    is ExistingFolder.Adopted -> {
+                        _events.emit(HydrationEvent.Hydrated(normalised, bytes = 0L, fetched = true))
+                        MkdirResult.Existed
+                    }
+                    ExistingFolder.HeldByFile -> MkdirResult.Failed(HydrationError.Generic(PATH_IS_FILE_TOKEN))
+                    ExistingFolder.Unknown -> {
+                        val err = HydrationError.Generic(msg.ifBlank { "mkdir failed" })
+                        _events.emit(HydrationEvent.Failed(normalised, err))
+                        MkdirResult.Failed(err)
+                    }
+                }
+                else -> {
+                    val err = HydrationError.Generic(msg.ifBlank { "mkdir failed" })
+                    _events.emit(HydrationEvent.Failed(normalised, err))
+                    MkdirResult.Failed(err)
+                }
             }
         }
     }

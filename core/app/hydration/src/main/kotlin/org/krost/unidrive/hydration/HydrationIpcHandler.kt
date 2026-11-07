@@ -84,8 +84,12 @@ import java.util.concurrent.atomic.AtomicLong
  *
  *   mkdir       request:  {"verb":"hydration.mkdir","path":"/foo"[,"parents":true]}
  *               reply:    {"ok":true}
- *                         {"ok":true,"existed":true}                only with "parents":true: the folder was there already
- *                         {"ok":false,"error":"path_is_file"}       only with "parents":true: a file is at the path or above it
+ *                         {"ok":true,"existed":true}                the folder was there already; with "parents":true the
+ *                                                                   usual answer, and on any mkdir when the provider
+ *                                                                   refused the create with 409 and the folder the drive
+ *                                                                   has at the path was adopted into its row (gkrost/unidrive-cli#452)
+ *                         {"ok":false,"error":"path_is_file"}       a file is at the path or above it (with "parents":true,
+ *                                                                   or when the drive's 409 answers that a file holds the name)
  *               "parents":true (gkrost/unidrive-cli#445) is mkdir -p: the missing folders above the path are made, and the call is
  *               idempotent; concurrent calls for one path share one run. Without it nothing changes. An engine that does not know
  *               the field ignores it (a missing parent is then parent_not_found, and the reply has no "existed").

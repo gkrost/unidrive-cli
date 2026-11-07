@@ -33,12 +33,18 @@ class HydrationImplNamespaceTest {
         var throwOnDelete: Throwable? = null
         var children: List<CloudItem> = emptyList()
 
+        // gkrost/unidrive-cli#452: the item the metadata probe answers as already in the cloud at [itemAtPath]; null = absent.
+        var itemAt: CloudItem? = null
+
         override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
         override suspend fun authenticate() {}
         override suspend fun listChildren(path: String): List<CloudItem> = children
         // A never-uploaded local file is genuinely absent on the cloud — the
         // rename/unlink ghost-probe expects a typed not-found, not a generic error.
-        override suspend fun getMetadata(path: String): CloudItem = throw ProviderException("Item not found: $path")
+        override suspend fun getMetadata(path: String): CloudItem {
+            itemAt?.let { if (it.path == path) return it }
+            throw ProviderException("Item not found: $path")
+        }
         override suspend fun download(remotePath: String, destination: Path): Long = 0L
         override suspend fun downloadById(remoteId: String, remotePath: String, destination: Path): Long = 0L
         override suspend fun upload(localPath: Path, remotePath: String, existingRemoteId: String?, ifMatchETag: String?, onProgress: ((Long, Long) -> Unit)?): CloudItem = error("not used")
@@ -205,17 +211,83 @@ class HydrationImplNamespaceTest {
         assertEquals(RmdirResult.PathIsFile, result)
     }
 
+    // gkrost/unidrive-cli#452: the provider's own answer classifies a failed folder create. The free-text match this
+    // replaced ("404" or "not found" in the message) answered ENOENT for anything whose text mentioned them — a
+    // OneDrive body embeds the response (request ids, quoted names), so a 409, a 429 or a 503 could break mkdir -p.
     @Test
-    fun mkdir_detects_provider_parent_not_found_substring() = runTest {
-        // OneDrive wording: GraphApiException("Create folder failed: 404 ...")
+    fun mkdir_classifies_parent_gone_by_the_provider_answer_not_the_message_text() = runTest {
+        // OneDrive: a 404 on the create (GraphApiException carries the status).
         val (impl1, provider1, _) = freshEnv()
-        provider1.throwOnCreate = RuntimeException("Create folder failed: 404 Not Found - The resource could not be found.")
+        provider1.throwOnCreate = ProviderException("Create folder failed: 404 Not Found - The resource could not be found.", httpStatus = 404)
         assertEquals(MkdirResult.ParentNotFound, impl1.mkdir("/missing/child"))
 
         // Internxt wording: ProviderException("Folder not found: <seg> in <path>")
         val (impl2, provider2, _) = freshEnv()
-        provider2.throwOnCreate = RuntimeException("Folder not found: missing in /missing/child")
+        provider2.throwOnCreate = ProviderException("Folder not found: missing in /missing/child")
         assertEquals(MkdirResult.ParentNotFound, impl2.mkdir("/missing/child"))
+
+        // The local-directory provider's answer for a missing parent.
+        val (impl3, provider3, _) = freshEnv()
+        provider3.throwOnCreate = java.io.FileNotFoundException("/missing")
+        assertEquals(MkdirResult.ParentNotFound, impl3.mkdir("/missing/child"))
+
+        // A 503 whose body happens to mention "404" (a request id can): an error, not the parent gone.
+        val (impl4, provider4, _) = freshEnv()
+        provider4.throwOnCreate = ProviderException("503 Service Unavailable (request-id 404aabbc)", httpStatus = 503)
+        val refused = impl4.mkdir("/flaky")
+        assertTrue(refused is MkdirResult.Failed, "a 503 mentioning 404 is a failure, not parent_not_found: $refused")
+    }
+
+    // A 409 nameAlreadyExists is "the name is taken": the folder is already in the cloud. Its row is adopted, so the
+    // client answered existed can fill the folder, and the answer is existed, not an error or ENOENT.
+    @Test
+    fun mkdir_answers_existed_and_adopts_the_row_when_the_create_is_refused_with_409() = runTest {
+        val (impl, provider, db) = freshEnv()
+        provider.throwOnCreate = ProviderException("Create folder failed: 409 nameAlreadyExists (request-id 404aabbc)", httpStatus = 409)
+        provider.itemAt = CloudItem(
+            id = "rid-/dup", name = "dup", path = "/dup", size = 0L, isFolder = true,
+            modified = Instant.parse("2026-05-24T09:00:00Z"), created = null, hash = null, mimeType = null,
+        )
+
+        assertEquals(MkdirResult.Existed, impl.mkdir("/dup"))
+        val row = db.getEntry("/dup")
+        assertTrue(row != null && row.isFolder, "the folder's row is adopted")
+        assertEquals("rid-/dup", row?.remoteId, "the row names the folder the drive has")
+    }
+
+    // A folder the state.db already tracks with its id, created once more over the drive's 409: the row stands, the
+    // answer is existed, nothing is adopted twice.
+    @Test
+    fun mkdir_of_a_tracked_folder_refused_with_409_answers_existed_without_touching_the_row() = runTest {
+        val (impl, provider, db) = freshEnv()
+        db.upsertEntry(
+            org.krost.unidrive.sync.model.SyncEntry(
+                path = "/dup", remoteId = "rid-/dup", remoteHash = null, remoteSize = 0L,
+                remoteModified = Instant.parse("2026-05-24T09:00:00Z"), localMtime = null, localSize = null,
+                isFolder = true, isPinned = false, isHydrated = false, lastSynced = Instant.parse("2026-05-24T09:00:00Z"),
+            ),
+        )
+        provider.throwOnCreate = ProviderException("Create folder failed: 409 nameAlreadyExists", httpStatus = 409)
+        provider.itemAt = CloudItem(
+            id = "rid-/dup", name = "dup", path = "/dup", size = 0L, isFolder = true,
+            modified = Instant.parse("2026-05-24T09:00:00Z"), created = null, hash = null, mimeType = null,
+        )
+
+        assertEquals(MkdirResult.Existed, impl.mkdir("/dup"))
+        assertEquals("rid-/dup", db.getEntry("/dup")?.remoteId)
+    }
+
+    // A 409 because a FILE holds the name: not the folder's answer to give — path_is_file.
+    @Test
+    fun mkdir_refused_with_409_for_a_file_at_the_path_answers_path_is_file() = runTest {
+        val (impl, provider, _) = freshEnv()
+        provider.throwOnCreate = ProviderException("Create folder failed: 409 nameAlreadyExists", httpStatus = 409)
+        provider.itemAt = CloudItem(
+            id = "rid-/taken", name = "taken", path = "/taken", size = 5L, isFolder = false,
+            modified = Instant.parse("2026-05-24T09:00:00Z"), created = null, hash = null, mimeType = null,
+        )
+
+        assertEquals(MkdirResult.Failed(HydrationError.Generic("path_is_file")), impl.mkdir("/taken"))
     }
 
     @Test
