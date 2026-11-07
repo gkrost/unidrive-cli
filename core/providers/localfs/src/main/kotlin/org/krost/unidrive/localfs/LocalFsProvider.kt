@@ -10,6 +10,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
+import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.ScanContext
 import org.slf4j.LoggerFactory
 import java.io.FileNotFoundException
@@ -18,6 +19,7 @@ import java.nio.channels.FileChannel
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
@@ -202,7 +204,7 @@ class LocalFsProvider(
         localPath: Path,
         remotePath: String,
         existingRemoteId: String?,
-        // archive#291: a filesystem copy has no optimistic-concurrency token; the param is ignored.
+        // archive#291: a filesystem copy has no optimistic-concurrency token; a replace (existingRemoteId set) ignores it.
         ifMatchETag: String?,
         onProgress: ((Long, Long) -> Unit)?,
     ): CloudItem =
@@ -210,7 +212,9 @@ class LocalFsProvider(
             val dest = toLocal(remotePath)
             refuseVanishedRoot()
             dest.parent?.let { Files.createDirectories(it) }
-            withLocalIoRetry { copyDurably(localPath, dest) }
+            // A create (no id, no token) never replaces: a file that appeared at the name since the plan is somebody's data.
+            val create = existingRemoteId == null && ifMatchETag == null
+            withLocalIoRetry { copyDurably(localPath, dest, create) }
             val size = Files.size(dest)
             onProgress?.invoke(size, size)
             toItem(dest)
@@ -228,18 +232,61 @@ class LocalFsProvider(
     private fun copyDurably(
         from: Path,
         to: Path,
+        create: Boolean = false,
     ) {
         val staging = to.resolveSibling(stagingSiblingName(to.fileName.toString(), ".unidrive-tmp"))
         try {
             Files.copy(from, staging, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES)
             staging.toFile().setWritable(true)
             FileChannel.open(staging, StandardOpenOption.WRITE).use { it.force(true) }
-            Files.move(staging, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            if (create) placeWithoutReplacing(staging, to) else Files.move(staging, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
         } catch (e: Exception) {
             Files.deleteIfExists(staging)
             throw e
         }
     }
+
+    /**
+     * Puts the finished [staging] file at [to] only if nothing is there. A hard link fails atomically when the name is
+     * taken, on every platform (a plain rename replaces silently on POSIX); where the file system has no hard links the
+     * move without REPLACE_EXISTING is the fallback, which Windows refuses atomically and POSIX checks up front.
+     */
+    private fun placeWithoutReplacing(
+        staging: Path,
+        to: Path,
+    ) {
+        val linked =
+            !Files.exists(to, LinkOption.NOFOLLOW_LINKS) &&
+                try {
+                    Files.createLink(to, staging)
+                    Files.deleteIfExists(staging)
+                    true
+                } catch (_: FileAlreadyExistsException) {
+                    false
+                } catch (_: UnsupportedOperationException) {
+                    moveNoReplace(staging, to)
+                    true
+                } catch (_: IOException) {
+                    // no hard links on this file system, or the name was taken meanwhile: the move decides
+                    moveNoReplace(staging, to)
+                    true
+                }
+        if (!linked) throw nameTaken(to)
+    }
+
+    private fun moveNoReplace(
+        staging: Path,
+        to: Path,
+    ) {
+        try {
+            Files.move(staging, to, StandardCopyOption.ATOMIC_MOVE)
+        } catch (e: FileAlreadyExistsException) {
+            throw nameTaken(to).also { it.addSuppressed(e) }
+        }
+    }
+
+    private fun nameTaken(to: Path) =
+        RemoteConflictException("localfs: '${to.fileName}' appeared at the target since the upload was planned; it is not overwritten")
 
     override suspend fun delete(remotePath: String, ifMatchETag: String?) {
         withContext(Dispatchers.IO) { deleteRecursivelyNoFollow(toLocal(remotePath)) }
