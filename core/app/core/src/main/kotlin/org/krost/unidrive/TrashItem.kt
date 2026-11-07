@@ -13,3 +13,12 @@ data class TrashItem(
     val sizeBytes: Long? = null,
     val deletedAtMs: Long? = null,
 )
+
+/** What [CloudProvider.emptyTrash] did: the deletion ran inline, or the provider only enqueued it. */
+enum class TrashEmptyOutcome {
+    /** The provider reports the trash emptied. */
+    Completed,
+
+    /** The provider enqueued the deletion and answers before it has run; the quota follows when it finishes. */
+    Queued,
+}

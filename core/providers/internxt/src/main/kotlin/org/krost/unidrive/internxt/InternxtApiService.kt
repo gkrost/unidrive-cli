@@ -1350,9 +1350,13 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
 
     /**
      * #500: empty the whole trash, `DELETE /storage/trash/all`. A repeat of a 5xx whose origin committed empties an
-     * already emptying trash, so the server errors are retried.
+     * already emptying trash, so the server errors are retried. The server answers `EmptyTrashResult`
+     * (drive-server-wip `TrashUseCases`): a trash of more than 10,000 items is enqueued and answered
+     * `status: "processing"`, a smaller one is deleted inline and answered `status: "completed"` — the status
+     * travels back as-is, null when the body does not carry one.
      */
-    internal suspend fun emptyTrash() {
+    internal suspend fun emptyTrash(): String? {
+        var status: String? = null
         retryOnTransient(retryServerErrors = true) {
             withAuthRetry { creds ->
                 budgeted(driveBudget) {
@@ -1360,53 +1364,16 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                         applyAuth(creds)
                     }
                     checkResponse(response)
+                    status =
+                        kotlinx.serialization.json.Json.parseToJsonElement(response.bodyAsText())
+                            .let { it as? kotlinx.serialization.json.JsonObject }
+                            ?.get("status")
+                            ?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                            ?.content
                 }
             }
         }
-    }
-
-    /**
-     * #500: purge items from the trash for good, `DELETE /storage/trash` with `DeleteItemsDto`'s
-     * `{items: [{uuid, type}]}`. Server-capped at 50 per call — this method does not split. A uuid the server
-     * no longer holds in the trash is skipped silently by the server's own lookup (drive-server-wip
-     * `TrashController.deleteItems` gathers only the rows it finds), so a repeat of a 5xx whose origin
-     * committed is a smaller, still-correct purge: the server errors are retried.
-     */
-    internal suspend fun purgeTrashItems(items: List<Pair<String, String>>) {
-        require(items.isNotEmpty()) { "purgeTrashItems requires at least one item" }
-        require(items.size <= 50) { "purgeTrashItems is server-capped at 50; got ${items.size}" }
-        require(items.all { it.second == "file" || it.second == "folder" }) {
-            "type must be 'file' or 'folder'; got ${items.map { it.second }.distinct()}"
-        }
-        retryOnTransient(retryServerErrors = true) {
-            withAuthRetry { creds ->
-                budgeted(driveBudget) {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            put(
-                                "items",
-                                kotlinx.serialization.json.buildJsonArray {
-                                    items.forEach { (uuid, type) ->
-                                        add(
-                                            kotlinx.serialization.json.buildJsonObject {
-                                                put("uuid", kotlinx.serialization.json.JsonPrimitive(uuid))
-                                                put("type", kotlinx.serialization.json.JsonPrimitive(type))
-                                            },
-                                        )
-                                    }
-                                },
-                            )
-                        }
-                    val response =
-                        httpClient.delete("$baseUrl/storage/trash") {
-                            applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
-                        }
-                    checkResponse(response)
-                }
-            }
-        }
+        return status
     }
 
     suspend fun deleteFolder(uuid: String) {

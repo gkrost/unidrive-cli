@@ -5,6 +5,7 @@ import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.Capability
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.ProviderException
+import org.krost.unidrive.TrashEmptyOutcome
 import org.krost.unidrive.TrashItem
 import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.io.formatSize
@@ -209,8 +210,14 @@ class TrashPurgeCommand : Callable<Int> {
             val items = provider.listTrash()
             if (purgeAll) {
                 requireConsent("Empty the provider's whole remote trash (${items.size} item(s)) FOR GOOD? This cannot be undone.")
-                provider.emptyTrash()
-                println("Remote trash emptied (${items.size} item(s)).")
+                when (provider.emptyTrash()) {
+                    TrashEmptyOutcome.Completed -> println("Remote trash emptied (${items.size} item(s)).")
+                    TrashEmptyOutcome.Queued ->
+                        println(
+                            "Remote trash deletion queued (${items.size} item(s) at listing time); " +
+                                "the provider deletes in the background and the quota follows when it finishes.",
+                        )
+                }
             } else {
                 val selected = select(items)
                 requireConsent("Purge ${selected.size} item(s) FOR GOOD from the provider's remote trash? This cannot be undone.")

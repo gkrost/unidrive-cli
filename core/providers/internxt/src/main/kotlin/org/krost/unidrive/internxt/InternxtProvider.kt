@@ -21,6 +21,7 @@ import org.krost.unidrive.internxt.model.FolderContentResponse
 import org.krost.unidrive.internxt.model.InternxtCredentials
 import org.krost.unidrive.internxt.model.InternxtFile
 import org.krost.unidrive.internxt.model.InternxtFolder
+import org.krost.unidrive.internxt.model.InternxtTrashRow
 import org.krost.unidrive.internxt.model.MultipartPart
 import org.krost.unidrive.internxt.model.SharedByMe
 import org.krost.unidrive.internxt.model.tryParseInternxtInstant
@@ -2592,45 +2593,74 @@ class InternxtProvider(
     }
 
     // #500: the trash surface (Capability.RemoteTrash). The server sorts files and folders apart and caps every
-    // page at 50, so the listing walks both types by short page; the row cap only stops a server that answers
-    // full pages forever. The purge takes back the ids listTrash answered and chunks them at the server's cap.
+    // page at 50, so the listing walks both types by short page. There is no row cap: the SPI promises the whole
+    // listing (the CLI decides on it, `--path` needs it complete to refuse an ambiguous name), so a walk stops
+    // only at a short page; a server that stops making progress is an error, not a partial answer.
     override suspend fun listTrash(): List<TrashItem> {
         val rows = ArrayList<TrashItem>()
         for (type in listOf("files", "folders")) {
-            var offset = 0L
-            while (true) {
-                val page = api.trashPage(type, TRASH_PAGE_SIZE, offset)
-                for (row in page.result) {
-                    rows.add(
-                        TrashItem(
-                            id = row.uuid,
-                            isFolder = type == "folders",
-                            name = row.plainName ?: row.name ?: row.uuid,
-                            sizeBytes = row.size,
-                            deletedAtMs = (tryParseInternxtInstant(row.deletedAt) ?: tryParseInternxtInstant(row.updatedAt))
-                                ?.toEpochMilli(),
-                        ),
-                    )
-                    if (rows.size >= TRASH_MAX_ROWS) {
-                        log.warn("Internxt trash listing stopped at the row cap of $TRASH_MAX_ROWS; the rest is not shown")
-                        return rows
-                    }
-                }
-                if (page.result.size < TRASH_PAGE_SIZE) break
-                offset += page.result.size
-            }
+            walkTrashType(type, rows)
         }
         return rows
     }
 
-    override suspend fun emptyTrash() = api.emptyTrash()
-
-    override suspend fun purgeTrash(items: List<TrashItem>) {
-        require(items.isNotEmpty()) { "purgeTrash requires at least one item" }
-        for (chunk in items.chunked(TRASH_PURGE_CHUNK)) {
-            api.purgeTrashItems(chunk.map { it.id to if (it.isFolder) "folder" else "file" })
+    private suspend fun walkTrashType(
+        type: String,
+        rows: ArrayList<TrashItem>,
+    ) {
+        var offset = 0L
+        var previousFirstUuid: String? = null
+        while (true) {
+            val page = api.trashPage(type, TRASH_PAGE_SIZE, offset)
+            val first = page.result.firstOrNull()?.uuid
+            if (first != null && first == previousFirstUuid) {
+                throw ProviderException("the trash listing repeats itself at offset $offset ($type); refusing to answer a partial trash")
+            }
+            for (row in page.result) {
+                rows.add(row.toTrashItem(isFolder = type == "folders"))
+            }
+            if (page.result.size < TRASH_PAGE_SIZE) return
+            previousFirstUuid = first
+            offset += page.result.size
         }
     }
+
+    // The name is the listing's own reconstruction (see fileToCloudItem): plainName plus the type as the
+    // extension, so `report` + `pdf` lists as `report.pdf` and `--path` matches what the user sees. Folder
+    // rows carry no extension.
+    private fun InternxtTrashRow.toTrashItem(isFolder: Boolean): TrashItem {
+        val baseName = sanitizeName(plainName ?: name ?: uuid)
+        val name =
+            if (isFolder) {
+                baseName
+            } else {
+                val cleanType = type?.let { sanitizeName(it) }
+                if (!cleanType.isNullOrEmpty() && !baseName.endsWith(".$cleanType")) "$baseName.$cleanType" else baseName
+            }
+        return TrashItem(
+            id = uuid,
+            isFolder = isFolder,
+            name = name,
+            sizeBytes = size,
+            deletedAtMs = (tryParseInternxtInstant(deletedAt) ?: tryParseInternxtInstant(updatedAt))?.toEpochMilli(),
+        )
+    }
+
+    override suspend fun emptyTrash(): TrashEmptyOutcome =
+        if (api.emptyTrash() == "processing") TrashEmptyOutcome.Queued else TrashEmptyOutcome.Completed
+
+    // Selective purge is refused fail-closed (#506 review): the drive API's trash purge deletes by uuid with no
+    // TRASHED-status condition (drive-server-wip `file.repository.deleteFilesByUser` updates by user and uuid
+    // alone), so an item restored after the listing — including while the CLI waits for the confirmation, and
+    // including a uuid a repeated 5xx re-sends — would be deleted for good, not skipped. `emptyTrash` is safe:
+    // its server-side batch (deleteUserTrashedFilesBatch) selects TRASHED rows only. The refusal stands until
+    // the API grows a delete that is conditional on the trash status.
+    override suspend fun purgeTrash(items: List<TrashItem>): Unit =
+        throw ProviderException(
+            "selective purge is refused: the drive API deletes trash items by uuid with no trashed-status " +
+                "condition, so an item restored after the listing would be deleted for good; empty the whole " +
+                "trash with --all, or purge the item in the provider's own app",
+        )
 
     // archive#402: all but the leaf segment of [path] — the parent the by-id probes build
     // item paths against (error-message/path cosmetics only; the uuid is what selects).
@@ -4893,11 +4923,8 @@ class InternxtProvider(
         /** How many parent folders one poll verifies against their contents (see [reapLaggedDeletions]). */
         internal const val MAX_LAGGED_DELETION_PARENTS = 25
 
-        // The trash surface's shapes (see listTrash): the server's own page cap, the server's cap per purge call,
-        // and the row cap that stops a listing against a server that answers full pages forever.
+        // The trash surface's page size (see listTrash): the server's own cap per page of the paginated listing.
         internal const val TRASH_PAGE_SIZE = 50
-        internal const val TRASH_PURGE_CHUNK = 50
-        internal const val TRASH_MAX_ROWS = 20_000
 
         // Upper bound of objects remembered by shardHashReported (archive#940).
         private const val MAX_SHARD_HASH_REPORTS = 4096

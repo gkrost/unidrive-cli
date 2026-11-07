@@ -6,14 +6,16 @@ import kotlinx.serialization.Serializable
  * One row of `GET /storage/trash/paginated`'s `{result: [...]}` (drive-server-wip `TrashController.getTrashedFilesPaginated`,
  * #500): the file or folder row as the server stores it, plus the `parent` summary and the `expiresAt` the controller adds.
  * The server answers files and folders in separate pages (`type=files|folders` is mandatory), so [InternxtTrashRow] serves
- * both and the row's own `type` field is not the discriminator. Unknown keys are ignored ([InternxtJson]); a folder has no
- * `size` on the wire, and `deletedAt` may be absent, so both are nullable.
+ * both and the row's own [type] is not the discriminator but the file's EXTENSION (as in the normal listing, where the
+ * name is `plainName.type`). Unknown keys are ignored ([InternxtJson]); a folder has no `size` on the wire, and
+ * `deletedAt` may be absent, so both are nullable.
  */
 @Serializable
 internal data class InternxtTrashRow(
     val uuid: String,
     val plainName: String? = null,
     val name: String? = null,
+    val type: String? = null,
     val size: Long? = null,
     val deletedAt: String? = null,
     val updatedAt: String? = null,
