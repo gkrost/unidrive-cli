@@ -2160,6 +2160,42 @@ class SyncEngineTest {
         }
 
     @Test
+    fun `an emptied remote directory that still exists locally is NOT reaped`() =
+        runTest {
+            val now = Instant.parse("2026-01-01T00:00:00Z")
+            db.upsertEntry(trackedRow("/dir", isFolder = true))
+            db.upsertEntry(
+                org.krost.unidrive.sync.model.SyncEntry(
+                    path = "/dir/only.txt",
+                    remoteId = "id-only",
+                    remoteHash = "h",
+                    remoteSize = 10,
+                    remoteModified = now,
+                    localMtime = now.toEpochMilli(),
+                    localSize = 10,
+                    isFolder = false,
+                    isPinned = false,
+                    isHydrated = true,
+                    lastSynced = now,
+                ),
+            )
+            db.setSyncState("delta_cursor", "existing-cursor")
+            provider.deltaItems = emptyList()
+            provider.childrenByParent["/dir"] = emptyList()
+            // The user deleted the file but kept the folder.
+            Files.createDirectories(syncRoot.resolve("dir"))
+            Files.writeString(syncRoot.resolve("other.txt"), "keep")
+
+            engineWithDirection(SyncDirection.BIDIRECTIONAL).syncOnce(dryRun = false)
+
+            assertTrue(provider.deletedPaths.contains("/dir/only.txt"), "the file must be deleted")
+            assertFalse(
+                provider.deletedPaths.contains("/dir"),
+                "a folder the user kept must NOT be reaped; deleted=${provider.deletedPaths}",
+            )
+        }
+
+    @Test
     fun `remote directory with a surviving sibling is NOT reaped`() =
         runTest {
             val now = Instant.parse("2026-01-01T00:00:00Z")
