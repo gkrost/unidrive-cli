@@ -3493,6 +3493,40 @@ class SyncEngineTest {
         }
 
     @Test
+    fun `new local file and folder are planned once across a multi page gather`() =
+        runTest {
+            // gkrost/unidrive-cli#449: resolveSlice reads the FULL localChanges map on every delta page, so a NEW-local
+            // file and folder absent from every page's remote delta come back as Upload / CreateRemoteFolder once per
+            // page. A NEW upload is held out of the per-page executor (archive#200(b)), so the claim set above never
+            // sees it; every copy goes to scan-end. Invariant: one upload per new file, one create per new folder.
+            db.setSyncState("delta_cursor", "baseline-cursor")
+            Files.write(syncRoot.resolve("new.txt"), ByteArray(7) { 0x42 })
+            Files.createDirectories(syncRoot.resolve("newdir"))
+            Files.write(syncRoot.resolve("newdir/inner.txt"), ByteArray(4) { 0x43 })
+
+            // Four pages, none carrying the new paths; each holds one unrelated item so the slice is non-empty.
+            provider.deltaPages =
+                (1..4).map { n -> listOf(cloudItem("/other-page$n.txt", size = 5)) to "page$n-cursor" }
+            (1..4).forEach { n -> provider.files["/other-page$n.txt"] = ByteArray(5) }
+
+            val streamingEngine =
+                SyncEngine(
+                    provider = provider,
+                    db = db,
+                    syncRoot = syncRoot,
+                    conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                    reporter = ProgressReporter.Silent,
+                    streamingReconciliation = true,
+                )
+            streamingEngine.syncOnce()
+
+            assertTrue(provider.deltaCalls >= 3, "expected a multi-page gather (got deltaCalls=${provider.deltaCalls})")
+            assertEquals(1, provider.uploadAttempts.count { it == "/new.txt" }, "uploads: ${provider.uploadAttempts}")
+            assertEquals(1, provider.uploadAttempts.count { it == "/newdir/inner.txt" }, "uploads: ${provider.uploadAttempts}")
+            assertEquals(1, provider.createdFolders.count { it == "/newdir" }, "folders: ${provider.createdFolders}")
+        }
+
+    @Test
     fun `newer remote download on a later page is not dropped by the executor dedup`() =
         runTest {
             // Orthogonal to the upload-dedup invariant: the executor dedup must
