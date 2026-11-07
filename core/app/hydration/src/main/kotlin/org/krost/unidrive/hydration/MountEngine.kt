@@ -1567,7 +1567,14 @@ class MountEngine private constructor(
         )
         val size = sent?.second ?: Files.size(cachePath)
         val adopted = copyPath != path && db.getEntry(copyPath) == null && adoptKeptBothCopy(copyPath, cachePath, copy, sent)
-        if (!adopted) Files.deleteIfExists(cachePath)
+        // gkrost/unidrive-cli#452: a write that landed on the cache copy while the upload ran is not in `copy`
+        // (the provider stored the bytes as they were sent) and is nowhere else — deleting the copy here
+        // destroyed their only record. The same comparison the normal path makes before it rebaselines
+        // (changedMidUpload): a copy whose stats moved past what was sent is kept, and the row keeps the
+        // bytes as an unsynced edit based on the version the row now records (the winner's), so the next
+        // upload of them bases on the cloud's current version instead of conflicting again.
+        val changedMidUpload = !adopted && sent != null && statBeforeUpload(cachePath)?.let { it != sent } == true
+        if (!adopted && !changedMidUpload) Files.deleteIfExists(cachePath)
         db.getEntry(path)?.let { row ->
             val current = currentCloudItemOrNull(remotePath)?.takeIf { !it.isFolder && it.id == row.remoteId }
             db.upsertEntry(
@@ -1586,9 +1593,15 @@ class MountEngine private constructor(
                     localSize = null,
                     localHash = null,
                     cacheBacked = null,
-                    editBase = null,
+                    editBase = if (changedMidUpload) (current?.version ?: row.remoteVersion).orEmpty() else null,
                 ),
                 keepMarks = true,
+            )
+        }
+        if (changedMidUpload) {
+            log.warn(
+                "uploadFromCache: {} was written while it was being uploaded; the bytes the kept copy does not hold stay in the cache as an unsynced edit",
+                path,
             )
         }
         auditLog?.emit(
