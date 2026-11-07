@@ -41,4 +41,20 @@ class DaemonReplyLinesTest {
             assertTrue(requestDaemonShutdown(daemon.endpoint, timeoutMs = 5_000))
         }
     }
+
+    // gkrost/unidrive-cli#442: the command an operator runs against a stuck daemon must not hang with it.
+    @Test
+    fun `a daemon status request to a daemon that does not answer times out`() {
+        FakeIpcDaemon().on("daemon.status") { _, _ ->
+            kotlinx.coroutines.delay(60_000)
+            """{"ok":true}"""
+        }.start().use { daemon ->
+            val started = System.nanoTime()
+            val e = kotlin.test.assertFailsWith<IpcTimeoutException> { requestDaemonStatus(daemon.endpoint, timeoutMs = 300) }
+            val tookMs = (System.nanoTime() - started) / 1_000_000
+
+            assertTrue(tookMs < 10_000, "gave up at its deadline, took $tookMs ms")
+            assertTrue("did not answer within" in e.message.orEmpty(), e.message)
+        }
+    }
 }
