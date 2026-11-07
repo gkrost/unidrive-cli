@@ -226,6 +226,29 @@ class HydrationImplRenameTest {
         assertNull(provider.lastMoveFrom, "provider.move must not be called when destination exists")
     }
 
+    // gkrost/unidrive-cli#445: the provider answered 409 although no row stood at the destination (another device made it).
+    @Test
+    fun rename_returns_NewPathExists_when_the_provider_answers_409() = runTest {
+        val (impl, provider, db) = freshEnv()
+        seedFile(db, "/a.txt")
+        provider.throwOnMove = ProviderException("conflict", httpStatus = 409)
+
+        val result = impl.rename("/a.txt", "/b.txt")
+
+        assertEquals(RenameResult.NewPathExists, result)
+        assertNotNull(db.getEntry("/a.txt"), "nothing moved: the source row stays")
+        assertNull(db.getEntry("/b.txt"))
+    }
+
+    @Test
+    fun rename_keeps_other_provider_statuses_as_a_failure() = runTest {
+        val (impl, provider, db) = freshEnv()
+        seedFile(db, "/a.txt")
+        provider.throwOnMove = ProviderException("server error", httpStatus = 500)
+
+        assertTrue(impl.rename("/a.txt", "/b.txt") is RenameResult.Failed)
+    }
+
     // Regression test for the file-manager partial-rename (temp → final) EIO bug.
     // A never-uploaded file (remoteId == null) must be renamed purely locally —
     // no provider.move call — so the pending upload can proceed at the new path.

@@ -491,13 +491,10 @@ private suspend fun metadataOrNull(
 
 /**
  * The system console as a yes/no question, only when it is a real terminal. JDK 22+ hands out a [java.io.Console] even
- * when the streams are redirected, so [java.io.Console.isTerminal] decides there (called reflectively: the compile
- * toolchain is JDK 21); up to JDK 21 a console exists only on a terminal.
+ * when the streams are redirected, so [java.io.Console.isTerminal] decides.
  */
 internal fun systemConsoleConfirm(): ((String) -> Boolean)? {
     val console = System.console() ?: return null
-    val isTerminalMethod = java.io.Console::class.java.methods.firstOrNull { it.name == "isTerminal" && it.parameterCount == 0 }
-    val isTerminal = isTerminalMethod?.invoke(console) as? Boolean ?: true
-    if (!isTerminal) return null
+    if (!console.isTerminal) return null
     return { question -> console.readLine("%s [y/N] ", question)?.trim()?.lowercase() in setOf("y", "yes") }
 }

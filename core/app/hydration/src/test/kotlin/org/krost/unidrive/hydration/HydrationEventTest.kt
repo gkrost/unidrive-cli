@@ -219,4 +219,25 @@ class HydrationEventTest {
         assertEquals(false, failedUp.provesProviderReachable())
         assertEquals(false, HydrationEvent.Hydrating("/a").provesProviderReachable())
     }
+
+    // gkrost/unidrive-cli#437: additive fields of a landed upload; a consumer that ignores unknown members reads the old shape.
+    @Test
+    fun `completed upload success carries the row and the skipped flag when set`() {
+        val entry = ListResult.Entry(
+            path = "/a.txt", size = 5, mtimeEpochMillis = 1000, isHydrated = true, isFolder = false,
+            remoteModifiedEpochMillis = 2000, remoteId = "r1", etag = "e1", contentId = "c1",
+        )
+        val e = HydrationEvent.Completed("/a.txt", "h1", HydrationEvent.Completed.Direction.UPLOAD, ok = true, entry = entry, skipped = true)
+        assertEquals(
+            """{"event":"completed","path":"/a.txt","handle_id":"h1","direction":"upload","ok":true,"skipped":true,"entry":""" +
+                """{"path":"/a.txt","size":5,"mtime_ms":1000,"hydrated":true,"folder":false,"remote_modified_ms":2000,""" +
+                """"remote_id":"r1","etag":"e1","content_id":"c1","pending_upload":false,"error":false}}""",
+            serialiseHydrationEvent(e),
+        )
+        assertEquals(
+            """{"event":"completed","path":"/a.txt","handle_id":"h1","direction":"upload","ok":true}""",
+            serialiseHydrationEvent(HydrationEvent.Completed("/a.txt", "h1", HydrationEvent.Completed.Direction.UPLOAD, ok = true)),
+            "without a row the line is the one it always was",
+        )
+    }
 }

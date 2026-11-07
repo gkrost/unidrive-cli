@@ -36,8 +36,13 @@ private fun lockRetryVerdict(
         else -> null
     }
 
+/** The retry with the real clock and the real platform; [action]'s failure is handled as described above. */
+suspend fun <T> withLocalIoRetry(action: suspend () -> T): T = withLocalIoRetry(delayMs = { delay(it) }, windows = Os.isWindows(), action = action)
+
+// No default for [delayMs]: the compiler's IR lowering rejects a suspend-lambda default on a generic suspend function
+// as soon as a main-source caller exists ("has no continuation"), so the default lives in the overload above.
 suspend fun <T> withLocalIoRetry(
-    delayMs: suspend (Long) -> Unit = { delay(it) },
+    delayMs: suspend (Long) -> Unit,
     windows: Boolean = Os.isWindows(),
     action: suspend () -> T,
 ): T {

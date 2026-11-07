@@ -233,6 +233,37 @@ interface CloudProvider {
         remotePath: String,
     ) = deletePermanently(remotePath)
 
+    /**
+     * #500: the items of the provider's OWN trash, the whole of it (the provider pages internally). Not the local
+     * trash emulation of `TrashManager` — the items the provider's own deletes moved there, which count toward the
+     * quota where the provider says so (Internxt). Providers that declare [Capability.RemoteTrash] override this;
+     * the default throws [UnsupportedCapabilityException] so an unsupported provider is a typed refusal.
+     */
+    suspend fun listTrash(): List<TrashItem> =
+        throw UnsupportedCapabilityException(Capability.RemoteTrash, "Provider does not expose its trash")
+
+    /**
+     * #500: empty the provider's OWN trash for good. Never the default of any code path: only the operator verbs
+     * (`trash purge --remote --all`) reach it, behind their own confirmation. Answers [TrashEmptyOutcome]: a
+     * provider that only enqueues the deletion (Internxt's does above 10,000 items) answers [TrashEmptyOutcome.Queued],
+     * and the caller reports that, not a completion. Providers that declare [Capability.RemoteTrash] override this;
+     * the default throws [UnsupportedCapabilityException].
+     */
+    suspend fun emptyTrash(): TrashEmptyOutcome =
+        throw UnsupportedCapabilityException(Capability.RemoteTrash, "Provider cannot empty its trash")
+
+    /**
+     * #500: purge the given items from the provider's OWN trash for good; the [TrashItem.id]s are the ones
+     * [listTrash] answered, so a caller can only name items the provider itself holds in the trash. A provider
+     * whose API cannot keep that promise server-side — no delete conditional on the trash status — refuses here
+     * even when it declares [Capability.RemoteTrash] for its listing and emptying, rather than risk a restored
+     * item (Internxt does). Only the operator verbs (`trash purge --remote`) reach it, behind their own
+     * confirmation. Providers that declare [Capability.RemoteTrash] override this; the default throws
+     * [UnsupportedCapabilityException].
+     */
+    suspend fun purgeTrash(items: List<TrashItem>): Unit =
+        throw UnsupportedCapabilityException(Capability.RemoteTrash, "Provider cannot purge its trash")
+
     suspend fun createFolder(path: String): CloudItem
 
     /**

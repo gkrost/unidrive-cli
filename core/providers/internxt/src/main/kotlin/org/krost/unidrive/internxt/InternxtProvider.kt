@@ -21,6 +21,7 @@ import org.krost.unidrive.internxt.model.FolderContentResponse
 import org.krost.unidrive.internxt.model.InternxtCredentials
 import org.krost.unidrive.internxt.model.InternxtFile
 import org.krost.unidrive.internxt.model.InternxtFolder
+import org.krost.unidrive.internxt.model.InternxtTrashRow
 import org.krost.unidrive.internxt.model.MultipartPart
 import org.krost.unidrive.internxt.model.SharedByMe
 import org.krost.unidrive.internxt.model.tryParseInternxtInstant
@@ -235,6 +236,7 @@ class InternxtProvider(
             Capability.QuotaExact,
             Capability.FastBootstrap,
             Capability.PermanentDelete,
+            Capability.RemoteTrash,
             Capability.Backups,
             Capability.View(ViewKind.RECENTS),
             Capability.View(ViewKind.FAVORITES),
@@ -2590,6 +2592,76 @@ class InternxtProvider(
         }
     }
 
+    // #500: the trash surface (Capability.RemoteTrash). The server sorts files and folders apart and caps every
+    // page at 50, so the listing walks both types by short page. There is no row cap: the SPI promises the whole
+    // listing (the CLI decides on it, `--path` needs it complete to refuse an ambiguous name), so a walk stops
+    // only at a short page; a server that stops making progress is an error, not a partial answer.
+    override suspend fun listTrash(): List<TrashItem> {
+        val rows = ArrayList<TrashItem>()
+        for (type in listOf("files", "folders")) {
+            walkTrashType(type, rows)
+        }
+        return rows
+    }
+
+    private suspend fun walkTrashType(
+        type: String,
+        rows: ArrayList<TrashItem>,
+    ) {
+        var offset = 0L
+        var previousFirstUuid: String? = null
+        while (true) {
+            val page = api.trashPage(type, TRASH_PAGE_SIZE, offset)
+            val first = page.result.firstOrNull()?.uuid
+            if (first != null && first == previousFirstUuid) {
+                throw ProviderException("the trash listing repeats itself at offset $offset ($type); refusing to answer a partial trash")
+            }
+            for (row in page.result) {
+                rows.add(row.toTrashItem(isFolder = type == "folders"))
+            }
+            if (page.result.size < TRASH_PAGE_SIZE) return
+            previousFirstUuid = first
+            offset += page.result.size
+        }
+    }
+
+    // The name is the listing's own reconstruction (see fileToCloudItem): plainName plus the type as the
+    // extension, so `report` + `pdf` lists as `report.pdf` and `--path` matches what the user sees. Folder
+    // rows carry no extension.
+    private fun InternxtTrashRow.toTrashItem(isFolder: Boolean): TrashItem {
+        val baseName = sanitizeName(plainName ?: name ?: uuid)
+        val name =
+            if (isFolder) {
+                baseName
+            } else {
+                val cleanType = type?.let { sanitizeName(it) }
+                if (!cleanType.isNullOrEmpty() && !baseName.endsWith(".$cleanType")) "$baseName.$cleanType" else baseName
+            }
+        return TrashItem(
+            id = uuid,
+            isFolder = isFolder,
+            name = name,
+            sizeBytes = size,
+            deletedAtMs = (tryParseInternxtInstant(deletedAt) ?: tryParseInternxtInstant(updatedAt))?.toEpochMilli(),
+        )
+    }
+
+    override suspend fun emptyTrash(): TrashEmptyOutcome =
+        if (api.emptyTrash() == "processing") TrashEmptyOutcome.Queued else TrashEmptyOutcome.Completed
+
+    // Selective purge is refused fail-closed (#506 review): the drive API's trash purge deletes by uuid with no
+    // TRASHED-status condition (drive-server-wip `file.repository.deleteFilesByUser` updates by user and uuid
+    // alone), so an item restored after the listing — including while the CLI waits for the confirmation, and
+    // including a uuid a repeated 5xx re-sends — would be deleted for good, not skipped. `emptyTrash` is safe:
+    // its server-side batch (deleteUserTrashedFilesBatch) selects TRASHED rows only. The refusal stands until
+    // the API grows a delete that is conditional on the trash status.
+    override suspend fun purgeTrash(items: List<TrashItem>): Unit =
+        throw ProviderException(
+            "selective purge is refused: the drive API deletes trash items by uuid with no trashed-status " +
+                "condition, so an item restored after the listing would be deleted for good; empty the whole " +
+                "trash with --all, or purge the item in the provider's own app",
+        )
+
     // archive#402: all but the leaf segment of [path] — the parent the by-id probes build
     // item paths against (error-message/path cosmetics only; the uuid is what selects).
     private fun parentPathOf(path: String): String = "/" + pathSegments(path).dropLast(1).joinToString("/")
@@ -4851,6 +4923,9 @@ class InternxtProvider(
         /** How many parent folders one poll verifies against their contents (see [reapLaggedDeletions]). */
         internal const val MAX_LAGGED_DELETION_PARENTS = 25
 
+        // The trash surface's page size (see listTrash): the server's own cap per page of the paginated listing.
+        internal const val TRASH_PAGE_SIZE = 50
+
         // Upper bound of objects remembered by shardHashReported (archive#940).
         private const val MAX_SHARD_HASH_REPORTS = 4096
 
@@ -6115,6 +6190,7 @@ internal fun isLostResponse(e: java.io.IOException): Boolean {
 // A NotFoundWithNameMatch (a stale same-name entry that fails size/window) gets
 // one bounded re-list to absorb the bridge's eventual-consistency window.
 // Listing failures propagate to the caller, which maps them to its own error.
+// The callers pass the result through [verifyBridgeIndex] before adopting anything (#450).
 internal suspend fun reconcileLandedEntry(
     api: InternxtApiService,
     folderUuid: String,
@@ -6130,6 +6206,78 @@ internal suspend fun reconcileLandedEntry(
     kotlinx.coroutines.delay(RECONCILE_RELIST_DELAY_MS)
     val relisted = api.getFolderContents(folderUuid)
     return pickReconcileCandidate(relisted, plainName, ext, fileSize, window)
+}
+
+// gkrost/unidrive-cli#450: a listed row is adopted only when its bridge object carries
+// [indexHex], the per-upload index this attempt finished with. The listing is the Drive
+// folder, and a Drive row only appears after createFile/replaceFile, which run after
+// commitWithRetry returns: a name/type/size/window match alone is, in the same attempt,
+// another upload of the same file (an earlier save), and adopting it would point the file
+// back at that save's ciphertext; the run would report success.
+//
+// Keeps a Found/FoundDisambiguated only for the candidate whose bridge index is [indexHex]
+// (the youngest first, then its siblings); otherwise NotFoundWithNameMatch, which both callers
+// treat as "nothing of ours landed". The index is 32 random bytes drawn per upload, so a match
+// identifies our commit and nothing else. A failed bridge lookup counts as no match: adopting
+// an unproven row can silently revert an edit, while not adopting costs at most a retry or one
+// fresh upload session (the lost-response path re-throws, the 409 path refuses the exhausted
+// session and the caller starts one fresh session).
+private suspend fun verifyBridgeIndex(
+    api: InternxtApiService,
+    bucket: String,
+    indexHex: String,
+    reconciled: ReconcileResult,
+): ReconcileResult {
+    val chosen =
+        when (reconciled) {
+            is ReconcileResult.Found -> reconciled.bucketEntry
+            is ReconcileResult.FoundDisambiguated -> reconciled.bucketEntry
+            ReconcileResult.NotFoundNoNameMatch, ReconcileResult.NotFoundWithNameMatch -> return reconciled
+        }
+    val siblings = (reconciled as? ReconcileResult.FoundDisambiguated)?.siblingFileIds.orEmpty()
+    if (bridgeIndexIs(api, bucket, chosen.id, indexHex)) return reconciled
+    val ours = siblings.firstOrNull { bridgeIndexIs(api, bucket, it, indexHex) }
+    if (ours != null) {
+        finishUploadLog.warn(
+            "reconcile: the youngest candidate {} is another upload; adopting sibling fileId={} whose bridge index is ours",
+            chosen.id,
+            ours,
+        )
+        return ReconcileResult.Found(
+            org.krost.unidrive.internxt.model.BucketEntry(id = ours, index = indexHex, bucket = bucket),
+        )
+    }
+    finishUploadLog.warn(
+        "reconcile: no candidate among {} carries this upload's bridge index; not adopting another upload's entry",
+        listOf(chosen.id) + siblings,
+    )
+    return ReconcileResult.NotFoundWithNameMatch
+}
+
+private suspend fun bridgeIndexIs(
+    api: InternxtApiService,
+    bucket: String,
+    fileId: String,
+    indexHex: String,
+): Boolean =
+    try {
+        val info = api.getBridgeFileInfo(bucket, fileId)
+        info.id == fileId && info.index.equals(indexHex, ignoreCase = true)
+    } catch (e: InternxtApiException) {
+        bridgeLookupFailed(fileId, e)
+    } catch (e: java.io.IOException) {
+        bridgeLookupFailed(fileId, e)
+    } catch (e: IllegalArgumentException) {
+        // A body that does not decode (kotlinx SerializationException is one) proves nothing either.
+        bridgeLookupFailed(fileId, e)
+    }
+
+private fun bridgeLookupFailed(
+    fileId: String,
+    e: Exception,
+): Boolean {
+    finishUploadLog.warn("reconcile: bridge info for candidate fileId={} failed ({}); not adopting it", fileId, e.message)
+    return false
 }
 
 internal suspend fun commitWithRetry(
@@ -6182,7 +6330,12 @@ internal suspend fun commitWithRetry(
             )
             val reconciled =
                 try {
-                    reconcileLandedEntry(api, folderUuid, plainName, ext, fileSize, startedAt)
+                    verifyBridgeIndex(
+                        api,
+                        bucket,
+                        indexHex,
+                        reconcileLandedEntry(api, folderUuid, plainName, ext, fileSize, startedAt),
+                    )
                 } catch (ce: kotlinx.coroutines.CancellationException) {
                     throw ce
                 } catch (listingErr: Exception) {
@@ -6238,7 +6391,12 @@ internal suspend fun commitWithRetry(
 
             val reconciled =
                 try {
-                    reconcileLandedEntry(api, folderUuid, plainName, ext, fileSize, startedAt)
+                    verifyBridgeIndex(
+                        api,
+                        bucket,
+                        indexHex,
+                        reconcileLandedEntry(api, folderUuid, plainName, ext, fileSize, startedAt),
+                    )
                 } catch (ce: kotlinx.coroutines.CancellationException) {
                     throw ce
                 } catch (listingErr: Exception) {

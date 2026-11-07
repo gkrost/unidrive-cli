@@ -41,8 +41,12 @@ code. Request/reply byte shapes are pinned by the golden corpus under
   tokens are the stable cross-repo contract listed in §7.
 - Events flow only on connections that have issued `hydration.subscribe`.
   Each subscriber has a bounded queue (capacity 64); when it overflows the
-  oldest event is dropped and one `{"event":"lost","since_last":N}` sentinel
-  precedes the next deliverable event. A client must treat `lost` as
+  oldest event that is not an outcome is dropped and one
+  `{"event":"lost","since_last":N}` sentinel precedes the next deliverable
+  event. Outcomes (`completed`, and `failed` without `retry_scheduled:true`)
+  are never dropped: the queue holds them beyond 64 (up to 4096, then the
+  oldest goes), so a `lost` never hides how a transfer ended. Progress, state
+  and `view.invalidated` events can still be lost. A client must treat `lost` as
   "resync your per-file state from `hydration.list`".
 - The daemon serves at most 32 connections at a time by default
   (`UNIDRIVE_IPC_MAX_CLIENTS`, `docs/env-vars.md`). A connection over that
@@ -375,7 +379,7 @@ is listed.
 | `skipped` | `{"event":"skipped","path":…}` | excluded name: accepted, deliberately never uploaded |
 | `dehydrated` | `{"event":"dehydrated","path":…}` | cache copy freed |
 | `failed` | `{"event":"failed","path":…,"error":"…"[,"retry_scheduled":true\|false]}` | attempt failed; uploads say whether the daemon will retry |
-| `completed` | `{"event":"completed","path":…,"handle_id":…,"direction":"upload\|download","ok":true\|false[,"error":"…"]}` | handle-scoped outcome — the in-sync signal |
+| `completed` | `{"event":"completed","path":…,"handle_id":…,"direction":"upload\|download","ok":true\|false[,"error":"…"]}` | handle-scoped outcome — the in-sync signal. An upload that landed (`ok:true`) also carries, additively, `entry` (the row as state.db holds it once the upload's slot is released, in the exact shape of the `hydration.stat` entry: `etag`, `remote_id`, `remote_modified_ms`, `size`, `content_id`, `pending_upload:false`, …) and, when the cloud already held these bytes and nothing was sent, `"skipped":true` (the entry is then the unchanged row). No `entry` for a download, a failure, a kept-both conflict (the row at `path` is then the cloud's version) or a row that cannot be read: a client falls back to `hydration.stat`. A reader that ignores unknown members parses the event as before. Pinned by `events/completed-upload-entry.ndjson` |
 | `view.invalidated` | `{"event":"view.invalidated","paths":[…][,"moved":[{"from":…,"to":…}]]}` or `{"event":"view.invalidated","full":true}` | `full:true` stands alone, without `paths` (more than 256 changed paths, or the tracked scope was reshaped: drop every cache); otherwise `paths` is present. Enumeration changed the view, or `hydration.unlink` / `hydration.rmdir` removed `paths` (a delete through the daemon, e.g. `unidrive rm`, archive#1199); drop readdir/getattr caches |
 | `lost` | `{"event":"lost","since_last":N}` | your queue overflowed; resync from `hydration.list` |
 
@@ -654,7 +658,7 @@ noticed at once, not when the download ends. Requests the client sends while one
 | `unknown_path` | row-lookup verbs | no such row (ENOENT) |
 | `parent_not_found` | create, mkdir | parent row missing or not a folder |
 | `path_exists` | create | row already exists (EEXIST) |
-| `new_path_exists` | rename | destination exists and replace was not asked, or it was asked and the destination or the source is a folder (replace overwrites a file with a file only) |
+| `new_path_exists` | rename | destination exists and replace was not asked, or it was asked and the destination or the source is a folder (replace overwrites a file with a file only); also when the provider refuses the move with HTTP 409 (the name is taken in the cloud although no row stood at it), where an older engine answered the provider's free text |
 | `old_path_not_found` / `new_parent_not_found` | rename | row/parent missing |
 | `path_is_folder` / `path_is_file` | unlink/rmdir/open_write_begin | wrong kind |
 | `not_empty` | rmdir | folder still has children (plain), or a file below holds bytes only this computer has (recursive, archive#1035) |

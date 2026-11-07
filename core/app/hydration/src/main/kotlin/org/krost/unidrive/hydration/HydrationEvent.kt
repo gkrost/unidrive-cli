@@ -68,6 +68,8 @@ sealed class HydrationEvent {
      * Wire shape (NDJSON line on `hydration.subscribe`):
      *   - success: `{"event":"completed","path":"/a","handle_id":"h1","direction":"upload","ok":true}`
      *   - failure: `{"event":"completed","path":"/a","handle_id":"h1","direction":"upload","ok":false,"error":"<token>"}`
+     *   - success of an upload that landed (additive): `…,"ok":true,"entry":{<the `hydration.stat` entry of the row>}`, and
+     *     `"skipped":true` beside it when the cloud already held these bytes and nothing was sent
      */
     data class Completed(
         override val path: String,
@@ -77,6 +79,16 @@ sealed class HydrationEvent {
         val ok: Boolean,
         /** Failure token (stable wire token for typed errors, provider message for Generic). Null on success. */
         val error: HydrationError? = null,
+        /**
+         * An upload that landed: the row as state.db holds it once the upload's slot is released, in the shape of
+         * `hydration.stat`, so a client need not re-read it. Null for a download, a failure, a kept-both conflict
+         * (the row at [path] is then the cloud's version, not the edit) and when the row cannot be read.
+         */
+        val entry: ListResult.Entry? = null,
+        /** An upload that sent nothing because the cloud already held these bytes (the entry is then the unchanged row). */
+        val skipped: Boolean = false,
+        /** In-process only, never on the wire: the emitter reads [entry] when it sends the event, after the slot is released. */
+        val wantsEntry: Boolean = false,
     ) : HydrationEvent() {
         enum class Direction { DOWNLOAD, UPLOAD }
     }
@@ -198,5 +210,17 @@ fun HydrationEvent.provesProviderReachable(): Boolean =
     when (this) {
         is HydrationEvent.Hydrated -> fetched
         is HydrationEvent.Completed -> ok && direction == HydrationEvent.Completed.Direction.UPLOAD
+        else -> false
+    }
+
+/**
+ * True for an event that ends a transfer's story and that a subscriber cannot rebuild from later events: a
+ * [HydrationEvent.Completed], and a [HydrationEvent.Failed] the daemon will not retry. The subscriber queue never drops
+ * these on overflow; it drops progress and state events first.
+ */
+fun HydrationEvent.isTerminalForSubscriber(): Boolean =
+    when (this) {
+        is HydrationEvent.Completed -> true
+        is HydrationEvent.Failed -> retryScheduled != true
         else -> false
     }

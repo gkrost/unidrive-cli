@@ -37,11 +37,11 @@ jobs:
           # the Gradle build or the tests to pick up.
           persist-credentials: false
 
-      - name: Set up JDK 21
+      - name: Set up JDK 25
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
 
       # Cache ~/.gradle (same 429 rationale as build.yml; see
       # core/settings.gradle.kts for the mirror set).

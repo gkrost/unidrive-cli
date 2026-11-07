@@ -30,8 +30,7 @@ object CliEncoding {
      * when this differs; a value the JVM rejected falls back to [current]
      * rather than failing startup); attached to a real console the JVM default
      * is that console's code page and rebinding would mangle screen output —
-     * keep it (JDK 22+ could refine via `System.console().charset()`; the
-     * toolchain is 21). Redirected or piped — the case scripts see — is UTF-8.
+     * keep it. Redirected or piped — the case scripts see — is UTF-8.
      */
     fun charsetFor(
         attachedToConsole: Boolean,

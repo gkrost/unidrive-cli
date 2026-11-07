@@ -834,6 +834,7 @@ class DaemonRuntimeTest {
                             org.krost.unidrive.http.RequestStatusSnapshot(
                                 listOf(org.krost.unidrive.http.InFlightRequests("GET /drive/files", 2, 45_000)),
                                 mapOf("drive" to 0, "bridge" to 4),
+                                mapOf("GET /drive/files" to 7L, "PUT /bridge/shard" to 2L),
                             )
                     }
                 },
@@ -851,6 +852,11 @@ class DaemonRuntimeTest {
             assertEquals(45_000L, open["oldest_ms"]!!.jsonPrimitive.long)
             assertEquals(0, requests.jsonObject["free_slots"]!!.jsonObject["drive"]!!.jsonPrimitive.int)
             assertEquals(4, requests.jsonObject["free_slots"]!!.jsonObject["bridge"]!!.jsonPrimitive.int)
+            // gkrost/unidrive-cli#460: attempts per class since the start, as the provider counted them.
+            val total = requests.jsonObject["total"]!!.jsonObject
+            assertEquals(setOf("GET /drive/files", "PUT /bridge/shard"), total.keys)
+            assertEquals(7L, total["GET /drive/files"]!!.jsonPrimitive.long)
+            assertEquals(2L, total["PUT /bridge/shard"]!!.jsonPrimitive.long)
         } finally {
             runtime.close()
             daemonJob.join()
@@ -910,6 +916,49 @@ class DaemonRuntimeTest {
                 Json.parseToJsonElement(reply).jsonObject["requests"],
                 "no provider account, no field: $reply",
             )
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    // gkrost/unidrive-cli#460: daemon.status counts the requests each verb's handler served since the start, so a client's
+    // choice of verbs (one hydration.stat instead of a folder hydration.list) can be checked on a live daemon.
+    @Test
+    fun `daemon_status ipc requests move by exactly the calls made`() = runBlocking {
+        val runtime =
+            DaemonRuntime(
+                profileMode = ProfileMode.MOUNT,
+                profileName = "test_profile",
+                lockFile = lockFile,
+                dbPath = dbPath,
+                syncRoot = tempDir,
+                socketPath = socketPath,
+                providerFactory = { StubProvider() },
+            )
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath)
+        try {
+            fun counts(reply: String): Map<String, Long> =
+                Json.parseToJsonElement(reply).jsonObject["ipc"]!!.jsonObject["requests"]!!.jsonObject
+                    .mapValues { it.value.jsonPrimitive.long }
+
+            val before = counts(sendOneRequest("""{"verb":"daemon.status"}"""))
+            assertEquals(1L, before["daemon.status"], "a daemon.status reply counts itself: $before")
+            repeat(3) { sendOneRequest("""{"verb":"hydration.list","prefix":"/"}""") }
+            repeat(2) { sendOneRequest("""{"verb":"hydration.stat","path":"/nothing-here.txt"}""") }
+            // Not counted: a verb no handler serves (a client cannot add keys) and a line without a verb.
+            sendOneRequest("""{"verb":"no.such.verb"}""")
+            sendOneRequest("""{"no_verb":true}""")
+            val after = counts(sendOneRequest("""{"verb":"daemon.status"}"""))
+
+            val moved = (before.keys + after.keys).associateWith { (after[it] ?: 0L) - (before[it] ?: 0L) }.filterValues { it != 0L }
+            assertEquals(
+                mapOf("daemon.status" to 1L, "hydration.list" to 3L, "hydration.stat" to 2L),
+                moved,
+                "every call made, and only those: before=$before after=$after",
+            )
+            assertTrue("no.such.verb" !in after, "an unknown verb is not a key: $after")
         } finally {
             runtime.close()
             daemonJob.join()

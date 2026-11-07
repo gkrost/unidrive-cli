@@ -137,6 +137,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         org.krost.unidrive.http.RequestStatusSnapshot(
             requestInFlight.snapshot(),
             mapOf("drive" to driveBudget.freeSlots(), "bridge" to bridgeBudget.freeSlots()),
+            requestInFlight.totals(),
         )
 
     /**
@@ -1329,6 +1330,53 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         }
     }
 
+    /**
+     * #500: one page of the provider's trash, `GET /storage/trash/paginated`. The server sorts files and folders
+     * apart (`type` is mandatory) and caps [limit] at 50 (drive-server-wip `TrashController`); `root=true` is what
+     * the official SDK sends. A read has no effect to repeat, so the full transient ladder retries it.
+     */
+    internal suspend fun trashPage(
+        type: String,
+        limit: Int,
+        offset: Long,
+    ): InternxtTrashPage {
+        require(type == "files" || type == "folders") { "type must be 'files' or 'folders'; got $type" }
+        val body =
+            authenticatedGet(
+                "$baseUrl/storage/trash/paginated?limit=$limit&offset=$offset&type=$type&root=true",
+                socketTimeoutMs = listingSocketTimeoutMs,
+            )
+        return json.decodeFromString<InternxtTrashPage>(body)
+    }
+
+    /**
+     * #500: empty the whole trash, `DELETE /storage/trash/all`. A repeat of a 5xx whose origin committed empties an
+     * already emptying trash, so the server errors are retried. The server answers `EmptyTrashResult`
+     * (drive-server-wip `TrashUseCases`): a trash of more than 10,000 items is enqueued and answered
+     * `status: "processing"`, a smaller one is deleted inline and answered `status: "completed"` — the status
+     * travels back as-is, null when the body does not carry one.
+     */
+    internal suspend fun emptyTrash(): String? {
+        var status: String? = null
+        retryOnTransient(retryServerErrors = true) {
+            withAuthRetry { creds ->
+                budgeted(driveBudget) {
+                    val response = httpClient.delete("$baseUrl/storage/trash/all") {
+                        applyAuth(creds)
+                    }
+                    checkResponse(response)
+                    status =
+                        kotlinx.serialization.json.Json.parseToJsonElement(response.bodyAsText())
+                            .let { it as? kotlinx.serialization.json.JsonObject }
+                            ?.get("status")
+                            ?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                            ?.content
+                }
+            }
+        }
+        return status
+    }
+
     suspend fun deleteFolder(uuid: String) {
         // 404 is treated as already-gone (idempotent delete) — short-circuits
         // before checkResponse so retryOnTransient never sees it as transient. The repeat of a
@@ -1369,14 +1417,41 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
             false
         }
 
-    /** Streams encrypted bytes through [cipher] to [destination], hashing plaintext before atomic publication. */
+    /**
+     * Refuses a body that was cut off. Ktor's readAvailable answers -1 for a channel the engine closed with a failure (a
+     * connection reset in the middle of the body), exactly as for a clean end; the failure is only in closedCause and is
+     * rethrown as what it is. A host that closes the connection cleanly (no reset) before the announced length arrived
+     * leaves no closedCause either, so the shortfall against the response's own Content-Length is the same dropped
+     * transfer. Both are retryable IOExceptions: neither is taken for a shorter stored object (which the caller
+     * quarantines) nor, with no declared size, published truncated.
+     */
+    private fun requireBodyEnded(
+        channel: ByteReadChannel,
+        announcedLength: Long?,
+        contentEncoding: String?,
+        ciphertextBytes: Long,
+        destination: Path,
+    ) {
+        channel.closedCause?.let { throw it }
+        if (announcedLength != null && contentEncoding == null && ciphertextBytes != announcedLength) {
+            throw java.io.IOException(
+                "Connection to the storage host ended after $ciphertextBytes of $announcedLength bytes for ${destination.fileName}",
+            )
+        }
+    }
+
+    /**
+     * Streams encrypted bytes through [cipher] to [destination], hashing plaintext before atomic publication.
+     * [expectedShardHash] has no default: null publishes the content without the ciphertext check, so each caller states
+     * it (the provider passes null only under `allow_unverified_shard_hash`).
+     */
     @Suppress("ThrowsCount") // The baseline entry predates target mtime and the streamed content receipt.
     internal suspend fun downloadFileStreaming(
         downloadUrl: String,
         cipher: javax.crypto.Cipher,
         destination: Path,
         expectedSize: Long? = null,
-        expectedShardHash: ShardHashExpectation.Checkable? = null,
+        expectedShardHash: ShardHashExpectation.Checkable?,
         targetMtimeMillis: Long? = null,
         onProgress: ((Long) -> Unit)? = null,
     ): InternxtDownloadedContent {
@@ -1415,7 +1490,8 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                     // the post-download guard would refuse it after the whole transfer too. An absent
                     // header (chunked) or an unknown declared size (0) stays with that post-download
                     // completeness guard, as before.
-                    response.headers[HttpHeaders.ContentLength]?.toLongOrNull()?.let { contentLength ->
+                    val announcedLength = response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
+                    announcedLength?.let { contentLength ->
                         if (expectedSize != null && expectedSize > 0 && contentLength != expectedSize) {
                             val comparison = if (contentLength < expectedSize) "shorter" else "longer"
                             throw RemoteIncompleteDownloadException(
@@ -1453,6 +1529,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                                         written += decrypted.size
                                     }
                                 }
+                                requireBodyEnded(channel, announcedLength, response.headers[HttpHeaders.ContentEncoding], ciphertextBytes, destination)
                                 // A stream whose length differs from the declared size (it ended short or ran long, with
                                 // no Content-Length to refuse it up front) is refused while it is still staged: the move
                                 // below would otherwise replace the previous local copy with the wrong bytes. Before the

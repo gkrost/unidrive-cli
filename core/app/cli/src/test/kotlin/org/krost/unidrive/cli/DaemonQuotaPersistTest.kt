@@ -39,7 +39,7 @@ class DaemonQuotaPersistTest {
     private fun monitor() =
         QuotaSnapshotMonitor(
             quotaRefreshMs = 15 * 60_000L,
-            providerFactory = { error("no provider is opened here") },
+            provider = { null },
             db = { db },
         )
 

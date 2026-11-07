@@ -239,6 +239,8 @@ class InternxtUploadWritebackTest {
     private val lostResponseMsg = "Failed to parse HTTP response: the server prematurely closed the connection"
     private val preCommitConnectMsg = "Connection reset by peer"
 
+    @Volatile private var finishedIndex: String = ""
+
     // Builds a MockEngine whose upload pre-amble succeeds, whose finishUpload POST
     // fails with [finishIoMessage], whose folder-content GET returns folderFilesJson
     // (the finish-reconcile listing), and whose createFile POST succeeds returning
@@ -263,7 +265,19 @@ class InternxtUploadWritebackTest {
             // finishUpload POST → simulate the configured IO failure.
             url.contains("/v2/buckets/") && url.contains("/files/finish") -> {
                 finishPosts.incrementAndGet()
+                // The request reached the server: remember the index it committed under (#450).
+                finishedIndex = (request.body as io.ktor.http.content.TextContent).text
+                    .substringAfter("\"index\":\"").substringBefore("\"")
                 throw java.io.IOException(finishIoMessage)
+            }
+            // #450: the reconcile adopts a listed row only when its bridge object carries the finished index.
+            url.contains("/buckets/") && url.endsWith("/info") -> {
+                val fileId = url.substringAfter("/files/").substringBefore("/info")
+                respond(
+                    content = """{"bucket":"6928426c1a2316b856c9ab81","id":"$fileId","index":"$finishedIndex"}""",
+                    status = HttpStatusCode.OK,
+                    headers = headersOf("Content-Type", "application/json"),
+                )
             }
             // finish-reconcile listing.
             url.contains("/drive/folders/content/") -> {

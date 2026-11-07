@@ -124,4 +124,20 @@ class LsCommandWireTest {
             assertEquals(null, LsCommand().queryDaemonView(daemon.endpoint, "/"))
         }
     }
+
+    // gkrost/unidrive-cli#442: a daemon that never answers is no view; ls falls back to its live listing.
+    @Test
+    fun `a daemon that does not answer is no view and the wait is bounded`() {
+        FakeIpcDaemon().on("hydration.list") { _, _ ->
+            kotlinx.coroutines.delay(60_000)
+            reply()
+        }.start().use { daemon ->
+            val started = System.nanoTime()
+            val view = LsCommand().queryDaemonView(daemon.endpoint, "/", timeoutMs = 300)
+            val tookMs = (System.nanoTime() - started) / 1_000_000
+
+            assertEquals(null, view)
+            assertTrue(tookMs < 10_000, "gave up at its deadline, took $tookMs ms")
+        }
+    }
 }

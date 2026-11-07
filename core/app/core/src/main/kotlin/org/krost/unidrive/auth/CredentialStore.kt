@@ -62,8 +62,7 @@ public class CredentialStore<T>(
 
         return try {
             val raw = Files.readString(file)
-            val id = file.toAbsolutePath().normalize().toString()
-            val decoded = protector?.decode(id, raw)
+            val decoded = protector?.let { decodeWithAnyId(it, raw) }
             if (migrate && decoded != null && !decoded.protected) {
                 // Protect even malformed legacy content before parsing it. This removes any
                 // plaintext tokens from disk without making migration depend on valid JSON.
@@ -121,7 +120,7 @@ public class CredentialStore<T>(
         Files.createDirectories(dir)
         OwnerOnly.requireDirectory(dir)
         val previousReference = if (Files.exists(file)) Files.readString(file) else null
-        val id = file.toAbsolutePath().normalize().toString()
+        val id = canonicalId()
         val backend = protector
         var onDisk: String? = null
         var committed = false
@@ -138,8 +137,9 @@ public class CredentialStore<T>(
             committed = true
             OwnerOnly.requireFile(file)
             if (backend != null && previousReference != null) {
-                runCatching { backend.discard(id, previousReference) }
-                    .onFailure { log.warn("Could not remove the prior protected credential version for {}", file) }
+                // The prior version may be bound to either spelling (see candidateIds): discard under each.
+                val discarded = candidateIds().map { candidate -> runCatching { backend.discard(candidate, previousReference) } }
+                if (discarded.none { it.isSuccess }) log.warn("Could not remove the prior protected credential version for {}", file)
             }
         } finally {
             if (!committed && backend != null) {
@@ -151,7 +151,37 @@ public class CredentialStore<T>(
 
     /** Delete the credential file if it exists. No-op otherwise. */
     public fun delete() {
-        protector?.delete(file.toAbsolutePath().normalize().toString())
+        protector?.let { p -> candidateIds().forEach { p.delete(it) } }
         Files.deleteIfExists(file)
+    }
+
+    private fun literalId(): String = file.toAbsolutePath().normalize().toString()
+
+    /**
+     * The identity the protector binds the stored data to: the file's real path, so that a folder spelled in another case,
+     * by its 8.3 short name or through a junction or symlink is one identity (`normalize()` alone keeps the spelling).
+     * A file that does not exist yet takes its folder's real path, a folder that does not exist the literal path.
+     */
+    private fun canonicalId(): String =
+        runCatching { file.toRealPath().toString() }
+            .recoverCatching { dir.toRealPath().resolve(fileName).toString() }
+            .getOrElse { literalId() }
+
+    /** The canonical identity first, then the literal one that every file written before the canonical id is bound to. */
+    private fun candidateIds(): List<String> = listOf(canonicalId(), literalId()).distinct()
+
+    private fun decodeWithAnyId(
+        backend: CredentialProtector,
+        raw: String,
+    ): CredentialData {
+        var first: CredentialProtectionException? = null
+        for (id in candidateIds()) {
+            try {
+                return backend.decode(id, raw)
+            } catch (e: CredentialProtectionException) {
+                first = first ?: e
+            }
+        }
+        throw first ?: CredentialProtectionException("no credential identity for $file")
     }
 }
