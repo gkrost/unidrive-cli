@@ -10,8 +10,9 @@
 # A hit is a candidate, not a proven loss: the work may have reached main another way (a later PR, a cherry-pick). Check
 # each one's content against origin/main before re-filing it.
 #
-# Read-only apart from the temporary refs/remotes/origin-pr/* refs, which it deletes again. Needs gh (logged in) for (b).
-# Always exits 0.
+# Read-only apart from a unique temporary namespace under refs/remotes/ (unidrive-pr-scan-…), which it verifies unused
+# before it fetches and deletes again afterwards: nothing already in refs/remotes/ is touched, so a clone may track a
+# remote named origin-pr in peace. Needs gh (logged in) for (b). Always exits 0.
 set -u
 
 since=$(date -d '14 days ago' +%F 2>/dev/null || date -v-14d +%F 2>/dev/null || echo 1970-01-01)
@@ -26,10 +27,34 @@ slug=$(printf '%s\n' "$url" | sed -n -e 's#^git@github\.com:\(.*\)$#\1#p' -e 's#
 
 echo "merge-loss scan of $slug ($repo), since $since"
 git fetch -q --prune origin 2>/dev/null || echo "  (fetch failed; using the refs already here)"
+
+# The PR heads go into a per-run namespace under refs/remotes/, allocated until one is unused: a fixed name could sit on
+# top of legitimate remote-tracking refs (a remote named origin-pr), and the cleanup below deletes the whole namespace,
+# so anything it had not fetched itself would be lost. The namespace is under refs/remotes/ so that (a)'s
+# `--not --remotes` keeps treating commits that live only in a PR as pushed. The cleanup is registered before the
+# fetch, so even a scan killed mid-fetch leaves nothing behind.
+scan_ns=
+cleanup_pr_refs() {
+    [ -n "$scan_ns" ] || return 0
+    git for-each-ref --format='delete %(refname)' "refs/remotes/$scan_ns" | git update-ref --stdin 2>/dev/null || :
+}
 pr_refs_ok=1
-git fetch -q origin '+refs/pull/*/head:refs/remotes/origin-pr/*' 2>/dev/null || { pr_refs_ok=0; echo "  (could not fetch the PR heads: (a) may over-report)"; }
-cleanup() { git for-each-ref --format='delete %(refname)' refs/remotes/origin-pr | git update-ref --stdin 2>/dev/null; }
-trap cleanup EXIT
+tries=0
+while :; do
+    scan_ns="unidrive-pr-scan-$(date +%s)-$$-$((RANDOM % 10000))"
+    if [ -z "$(git for-each-ref --format='%(refname)' "refs/remotes/$scan_ns")" ]; then break; fi
+    tries=$((tries + 1))
+    if [ "$tries" -ge 10 ]; then
+        scan_ns=
+        pr_refs_ok=0
+        echo "  (no free temporary namespace for the PR heads: (a) may over-report)"
+        break
+    fi
+done
+if [ -n "$scan_ns" ]; then
+    trap cleanup_pr_refs EXIT
+    git fetch -q origin "+refs/pull/*/head:refs/remotes/$scan_ns/*" 2>/dev/null || { pr_refs_ok=0; echo "  (could not fetch the PR heads: (a) may over-report)"; }
+fi
 
 echo
 echo "(a) local commits on no remote ref and in no PR:"
