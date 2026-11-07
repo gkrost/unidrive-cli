@@ -420,7 +420,7 @@ The enumeration is answered from memory, never from state.db: a running attempt 
 | `uploads.next_try_at_ms` | additive (archive#1095). The earliest start of the next attempt over the `retrying` paths (epoch ms of the daemon's clock); `null` when `retrying` is `0`. It is the instant the path's history row carries as `next_try_at_ms` (section 4.8), so a status that polls needs no history read for "next try in 10 s". A value in the past is a retry that is due right now: the next reading drops it |
 | `uploads.oldest_pending_age_ms` | how long the oldest pending path has been waiting (ms), `null` when nothing is pending. A never-uploaded row waits since it was written, a dirty overwrite since its upload was submitted, so a stalled upload's age keeps growing from one status reply to the next |
 | `cache.bytes` | size of the profile's hydration cache directory (every regular file, protected or not: what the budget eviction counts) at the last walk; `null` until the first walk. A walk runs after the start and at most once per 10 s on a status request, never inside it |
-| `cache.budget_bytes` | `hydration_cache_max_bytes`; `null` when the profile has no budget (unlimited). `bytes` above the budget is possible: copies that are open, uploading, failed or modified are never evicted |
+| `cache.budget_bytes` | `hydration_cache_max_bytes`; `null` when the profile has no positive budget — without the key (or negative) the content cache is off (gkrost/unidrive-cli#406), and an explicit `0`, the unlimited budget, also reports `null`. `bytes` above the budget is possible: copies that are open, uploading, failed or modified are never evicted |
 | `provider_health.last_contact_ms` | epoch ms of the last time the provider answered: the later of the last completed enumeration (`enumeration.last_success_at_ms`) and the last mount-profile download or upload through the daemon that succeeded (a warm-cache serve is not a round trip). A mirror profile has no hydration layer, so only its enumerations stamp it. `null` until the first success since the daemon started. A failure or an outage never moves it, so a client words an outage as "last contact N minutes ago" |
 
 `uploads` is read from state.db at most once per second, and a status request waits for that read for 100 ms at most (1 s for the very first one): an enumeration's save holds the database for as long as it takes, and the reply serves the previous reading (its `oldest_pending_age_ms` carried forward to now) instead of stalling behind it. `retrying` and `next_try_at_ms` come from the daemon's memory (the upload slots) in the same reading: no new lock, and no database read of their own.
@@ -438,6 +438,20 @@ The enumeration is answered from memory, never from state.db: a running attempt 
 | `checked_at_ms` | epoch ms of the check this reading comes from, or of the rejection that turned it `expired`; `null` until the first check has finished |
 
 The value is the provider factory's offline check (`ProviderFactory.checkCredentialHealth`: token files and their expiry, no network call and no vault prompt), the same one `status` and `doctor` print. It never runs inside a status request: the daemon runs it once at start and again, off the request path, at most once per minute while status requests keep coming, and every reply serves the last result. Before the first result the state is `unknown`, never `ok`. A client shows "sign in again" for `expired`, `missing`, and `expiring` when `expires_in_ms` is small; `unknown` is "not known", not a problem.
+
+**The `auth` object** (additive, gkrost/unidrive-cli#387; the protocol version does not change) is the same credential-health reading read as a sign-in question, not a second check. It is always present.
+
+```json
+{"auth": {"state": "needs_sign_in", "reason": "expired", "profile_dir": "~/.config/unidrive/<profile>"}}
+```
+
+| field | meaning |
+|---|---|
+| `state` | `ok`: the credential is present and usable (a near expiry stays `ok`). `needs_sign_in`: the credential is missing or no longer works — a client shows "sign in again". `unknown`: no check has finished yet, or it found something it cannot classify |
+| `reason` | with `needs_sign_in`: `no_credentials` or `expired`; `null` otherwise |
+| `profile_dir` | the profile folder the check looked in |
+
+`profile list --json` carries the same answer for a client that cannot reach the daemon (`auth_reason`, `profile_dir`).
 
 A provider that rejects the credentials turns the state to `expired` without waiting for the next check: an enumeration or a download or upload that fails with an authentication error (a provider raises it only after its own token refresh has failed) newer than the last time the provider answered. A later success clears it. `missing` is not overridden by a rejection. Other operations (deletes, renames, folder creation) do not feed this signal yet.
 

@@ -7,8 +7,8 @@ Talks to Microsoft Graph v1.0 (`https://graph.microsoft.com/v1.0`) through `Grap
 | Endpoint | Method in `GraphApiService` | Notes |
 |---|---|---|
 | `GET /me/drive/root/delta` (+ `@odata.nextLink` / `@odata.deltaLink`) | `getDelta` | Cursor-replay retry on truncated bodies; cursor is opaque, treated as long-lived. |
-| `GET /me/drive/items/{id}/content` and pre-signed `@microsoft.graph.downloadUrl` | `downloadFile` | `downloadUrl` is short-lived (Microsoft: "might expire within minutes"); resolved via `getItemById` immediately before GET, never cached. Azure-CDN closes mid-stream on ~5 % of 1–500 MB files; same-URL retry. |
-| `GET /me/drive/items/{id}` | `getItemById` | Used to refresh `downloadUrl` right before a download. |
+| `GET /me/drive/items/{id}/content` and pre-signed `@microsoft.graph.downloadUrl` | `downloadFile` | `downloadUrl` is short-lived (Microsoft: "might expire within minutes"); remembered per item id in `DownloadUrlCache`: a listing's URL is reused while fresh (45 min, LRU 20 000), delta-named siblings are read ahead 20 per `$batch`, and only a cache miss pays a `GET /items/{id}` before the GET. Azure-CDN closes mid-stream on ~5 % of 1–500 MB files; same-URL retry. |
+| `GET /me/drive/items/{id}` | `getItemById` | The cache-miss path before a download; the read-ahead batches it 20 per `POST /$batch`. |
 | `GET /me/drive/root:/{path}` and `GET /me/drive/root` | `getItemByPath` | Resolves a path with the same name comparison the drive applies to siblings (see "Names the drive compares as equal"), so the provider accepts the answer only when it has exactly the name asked for. |
 | `GET /me/drive/root/children` and `:/{path}:/children` | `listChildren` | Paginated via `@odata.nextLink` with `$top=999`. |
 | `PUT /me/drive/root:/{path}:/content` | `uploadSimple` | ≤4 MiB payloads. |
@@ -20,7 +20,7 @@ Talks to Microsoft Graph v1.0 (`https://graph.microsoft.com/v1.0`) through `Grap
 | `POST /me/drive/items/{id}/createLink` | `createSharingLink` | |
 | `GET /me/drive/items/{id}/permissions` | `listPermissions` | |
 | `DELETE /me/drive/items/{id}/permissions/{permId}` | `deletePermission` | |
-| `GET /me/drive/sharedWithMe` | `listSharedWithMe` | Wired but not surfaced through `CloudProvider`. |
+| `GET /me/drive/sharedWithMe` | `listSharedWithMe` | Surfaced through `CloudProvider.deltaWithShared` (the `DeltaShared` capability); shared items are addressed by their shared id. |
 | `POST /subscriptions`, `PATCH`, `DELETE` | webhook lifecycle | |
 
 ## Names the drive compares as equal
@@ -59,9 +59,9 @@ What the provider does:
   The pre-signed `@microsoft.graph.downloadUrl` is fetched without the token, as before.
 - **A download is timed from its declared size.** `downloadFile` sets the request timeout from the item's size
   (`UploadTimeoutPolicy.computeRequestTimeoutMs`), so a large file on a slow link is not cut by the flat 10 minute
-  cap (`HttpDefaults.REQUEST_TIMEOUT_MS`). S3 and Dropbox downloads still run under that flat cap (gkrost/unidrive-cli#58).
+  cap (`HttpDefaults.REQUEST_TIMEOUT_MS`).
 - **Auth refresh** is per-call: `TokenManager.isNearExpiry(5 min)` is checked at each request; on 401 the token is force-refreshed once. Refresh is `withContext(NonCancellable)`-wrapped and mutex-serialised so sibling cancellation can't half-write the token to disk and a 401 storm produces exactly one refresh.
-- **The token at rest** is `token.json` in the profile folder, written atomically and readable by the current user only (`CredentialStore`). `OneDriveConfig.credentialProtector` (a `CredentialProtector`, null by default) lets an embedding front-end keep the token in a protected store instead: the file then holds an opaque reference, an existing plaintext `token.json` is rewritten protected when it is first loaded, and `OAuthService.deleteToken` (which `TokenManager.logout` calls) removes the protected copy with the file. It is a constructor parameter only: there is no profile key, environment variable or service-loader hook for it, and the CLI and `OneDriveProviderFactory` pass none, so a CLI profile keeps the owner-only plaintext file. (Internxt, by contrast, defaults to the host's native store.)
+- **The token at rest** is `token.json` in the profile folder, written atomically and readable by the current user only (`CredentialStore`). `OneDriveConfig.credentialProtector` (a `CredentialProtector`) keeps the token in a protected store instead: the file then holds an opaque reference, an existing plaintext `token.json` is rewritten protected when it is first loaded, and `OAuthService.deleteToken` (which `TokenManager.logout` calls) removes the protected copy with the file. `OneDriveConfig` itself defaults to null (no protection), but `OneDriveProviderFactory`, which the CLI and the daemon build every profile through, passes the host's native store where the host has one (Windows DPAPI, the macOS Keychain; `CredentialProtectors.atRestDefaultOrNull`). So a profile's token is protected at rest except on Linux, which keeps the owner-only plaintext file. There is no profile key, environment variable or service-loader hook that changes this; an embedding front-end can pass its own protector to the factory.
 - **Retry placement** is inline at the HTTP layer (`authenticatedRequest`, `downloadFile`); `SyncEngine` only sees `Done` or terminal exceptions.
 - **Throttle budget** (`HttpRetryBudget`): shared across coroutines on one `GraphApiService` with `maxConcurrency = 8`, 200 ms steady spacing post-throttle, 500 ms storm spacing. Storm trigger = 4 throttles in 20 s → halve concurrency, pause `Retry-After × 1.2`; recovery +1 permit per 5 min of clean traffic.
 - **Retry-After** is honoured header-first, then JSON-body fallback (`error.retryAfterSeconds`). Per-request cap 5 attempts / 5 min single backoff / 15 min cumulative. Download-only flake budget: 3 attempts × 2 s × 2ⁿ for mid-stream Azure-CDN drops.

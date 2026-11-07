@@ -89,10 +89,8 @@ object StatusAudit {
     /**
      * Human-readable bytes with one decimal place above 1 KiB.
      *
-     * UD-238: this formerly went by `formatBytesBinary`, which was a lie — the divisor
-     * is 2^30 (binary), not 10^9 (decimal-SI). Relabelled to IEC binary units
-     * (KiB/MiB/GiB) so the suffix matches the math. Numbers stay identical;
-     * only the label changes.
+     * UD-238: IEC binary units (KiB/MiB/GiB), so the suffix matches the
+     * binary divisor. Numbers stay identical; only the label changed.
      */
     fun formatBytesBinary(bytes: Long): String = formatSizePrecise(bytes)
 

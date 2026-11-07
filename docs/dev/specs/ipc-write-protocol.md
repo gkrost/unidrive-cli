@@ -211,13 +211,16 @@ errors: old_path_not_found / new_parent_not_found / new_path_exists /
 ### 3.7 Delete file / delete folder
 
 ```
-hydration.unlink {path}   -> {"ok":true} | {"ok":false,"error":"path_is_folder"} | ...
-hydration.rmdir   {path[,recursive]} -> {"ok":true} | {"ok":false,"error":"path_is_file"} |
+hydration.unlink {path[,permanent]}   -> {"ok":true} | {"ok":false,"error":"path_is_folder"} | ...
+hydration.rmdir   {path[,recursive][,permanent]} -> {"ok":true} | {"ok":false,"error":"path_is_file"} |
                                           {"ok":false,"error":"not_empty"} | ...
 ```
 
 - A never-uploaded file's row is hard-deleted (there is no cloud object to
   trash); otherwise the delete goes through the provider's trash.
+- `"permanent":true` (rm --permanent) deletes for good instead of trashing
+  (archive#1178); the provider must declare the permanent-delete capability,
+  or the answer is `permanent_unsupported`.
 - If the user deleted a file whose upload is still in flight, the client
   first issues `hydration.cancel {path}` (§5), then `unlink`.
 - `rmdir` is strict (archive#1035): a folder with alive rows below answers `not_empty`, before
@@ -347,6 +350,18 @@ the provider's name for the bytes of the version the row records:
   names no bytes.
 - Nothing else in the entry changes: `etag` stays the base for `base_etag`, and `remote_modified_ms` stays the cloud
   item's modified time (after a read, those of the version the read brought down, as above).
+
+**One row without a listing (`hydration.stat`, gkrost/unidrive-cli#415).** On an engine that lists `hydration.stat` in
+the `daemon.status` `capabilities`, the request `{"verb":"hydration.stat","path":"/foo.txt"}` answers the one entry
+`hydration.list` would give for that path, under `entry` with the same field names and shapes, so a client reuses its
+list-entry parser. The answer is read from the row state.db holds; nothing is fetched from the provider and no folder
+is listed.
+
+```
+{"ok":true,"entry":{...one hydration.list entry...}}
+{"ok":false,"error":"unknown_path"}   no row for the path
+{"ok":false,"error":"<msg>"}          EIO
+```
 
 ## 4. Events (subscription stream)
 
@@ -638,6 +653,7 @@ noticed at once, not when the download ends. Requests the client sends while one
 | `old_path_not_found` / `new_parent_not_found` | rename | row/parent missing |
 | `path_is_folder` / `path_is_file` | unlink/rmdir/open_write_begin | wrong kind |
 | `not_empty` | rmdir | folder still has children (plain), or a file below holds bytes only this computer has (recursive, archive#1035) |
+| `permanent_unsupported` | unlink, rmdir | `"permanent":true` was asked (section 3.7) and the provider cannot delete for good (no permanent-delete capability); nothing was touched |
 | `conflict` | open_write | base_etag no longer matches the row |
 | `invalid_path` | open_write (`cache_path`) | the cache path lies outside the profile's hydration cache folder, or is not a valid local path; refused before anything is queued |
 | `outside_scope` | create, mkdir, rename (both ends), open_write_begin | path outside the profile's sync_path set |

@@ -4,13 +4,13 @@ What every provider depends on, in one module. No provider-specific code lives h
 
 ## What lives here
 
-- **`org.krost.unidrive.CloudProvider`** — the SPI surface. `list`, `delta`, `download`, `upload`, `delete`, `move`, `quota`, etc. Implementations: `internxt`, `onedrive` and the offline-development `localfs`.
+- **`org.krost.unidrive.CloudProvider`** — the SPI surface. `list`, `delta`, `download`, `upload`, `delete`, `move`, `quota`, etc. Implementations: `internxt`, `onedrive`, `dropbox`, `s3`, and the offline-development `localfs`.
 - **`org.krost.unidrive.ProviderFactory` / `ProviderRegistry`** — `ServiceLoader`-based discovery. Each provider module ships a `META-INF/services/org.krost.unidrive.ProviderFactory` entry.
 - **`org.krost.unidrive.ProviderException`** — base exception with `requestId` field. Providers extract their server-correlation header into this field so cross-provider grep on `requestId=…` in `unidrive.log` finds the value regardless of which adapter raised it.
 - **`org.krost.unidrive.AuthenticationException`**, `CredentialHealth` — auth contract.
-- **`org.krost.unidrive.HashAlgorithm`** — `QuickXor` (OneDrive), `Md5Hex` (none currently use), `Sha256Hex` (Internxt). Provider declares its algorithm via `CloudProvider.hashAlgorithm()`.
+- **`org.krost.unidrive.HashAlgorithm`** — `QuickXor` (OneDrive), `Md5Hex` (S3, on the ETag), `Sha256Hex` (Internxt), `DropboxContentHash` (Dropbox). Provider declares its algorithm via `CloudProvider.hashAlgorithm()`.
 - **Shared HTTP helpers** under `org.krost.unidrive.http`:
-  - `HttpRetryBudget` — per-provider concurrency limiter + storm-tracking spacing + Retry-After-honouring backoff. OneDrive wires one, Internxt one per host (Drive REST, Bridge).
+  - `HttpRetryBudget` — per-provider concurrency limiter + storm-tracking spacing + Retry-After-honouring backoff. OneDrive wires one, Internxt one per host (Drive REST, Bridge), Dropbox one, S3 one.
   - `RequestId` — Ktor plugin that propagates a per-call correlation id into MDC for log lines that don't carry the response object.
   - `truncateErrorBody` — log-noise guard for HTML 5xx pages.
 - **`org.krost.unidrive.auth`** — `OAuthService` base, refresh-token persistence helpers, near-expiry detection helpers (`Token.isNearExpiry(thresholdMs)`).
@@ -21,9 +21,9 @@ What every provider depends on, in one module. No provider-specific code lives h
 Every token-bearing provider checks expiry **per-call**, not on a scheduler. The pattern:
 
 1. At each API call site, read credentials through a closure (`tokenProvider`, `credentialsProvider`) that returns either the cached token or triggers refresh if `isNearExpiry()` / `isJwtExpired()` returns true.
-2. On 401 mid-call, force-refresh once and replay the request; a second 401 is an auth failure (both providers).
+2. On 401 mid-call, force-refresh once and replay the request; a second 401 is an auth failure (OneDrive, Internxt, Dropbox).
 3. Refresh is mutex-serialised + double-checked so a 401 storm produces exactly one refresh.
-4. The refresh body is wrapped in `withContext(NonCancellable)` so sibling cancellation can't half-write the token to disk (`RefreshableTokenLatch`, both providers).
+4. The refresh body is wrapped in `withContext(NonCancellable)` so sibling cancellation can't half-write the token to disk (`RefreshableTokenLatch`, OneDrive, Internxt, Dropbox).
 
 This is strictly more robust than the wall-clock `setTimeout(refresh, exp - now - lead)` pattern other clients use — a suspended-then-resumed daemon either notices the token is expired on the next call (silent refresh) or hits a 401 (reactive refresh). There is no scheduled work that can misfire.
 
