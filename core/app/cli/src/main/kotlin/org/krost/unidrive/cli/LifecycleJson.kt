@@ -71,19 +71,11 @@ internal interface TerminalInput {
 
 /**
  * The system console as a [TerminalInput], only when it is a real terminal. JDK 22+ hands out a
- * [java.io.Console] even when the streams are redirected, so [java.io.Console.isTerminal] decides there; the
- * compile toolchain is JDK 21, which has no such method, so it is called reflectively. Up to JDK 21 a console
- * exists only when both input and output are a terminal, so its presence is the answer.
+ * [java.io.Console] even when the streams are redirected, so [java.io.Console.isTerminal] decides.
  */
 private fun systemTerminalInput(): TerminalInput? {
     val console = System.console() ?: return null
-    val isTerminal =
-        try {
-            java.io.Console::class.java.getMethod("isTerminal").invoke(console) as Boolean
-        } catch (_: NoSuchMethodException) {
-            true
-        }
-    if (!isTerminal) return null
+    if (!console.isTerminal) return null
     return object : TerminalInput {
         override fun readLine(): String? = console.readLine()
         override fun readPassword(): CharArray? = console.readPassword()
