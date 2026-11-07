@@ -297,6 +297,13 @@ tasks.matching { it.name == "verifyThirdPartyNotices" }.configureEach {
     mustRunAfter(copyCoroutineDebugAgent)
 }
 
+// The distribution tasks and the start scripts read build/libs too, so `assemble` (and `build`) hit the same
+// check. The agent jar stays in build/libs because the deploy steps below look for it there; only the order moves.
+val readsBuildLibs = setOf("distZip", "distTar", "shadowDistZip", "shadowDistTar", "startScripts", "startShadowScripts")
+tasks.matching { it.name in readsBuildLibs }.configureEach {
+    mustRunAfter(copyCoroutineDebugAgent)
+}
+
 // Bundles THIRD-PARTY-NOTICES.txt + the project LICENSE/NOTICE into the shadow jar and
 // guards them from `check`.
 apply(from = "../../gradle/notices.gradle.kts")
