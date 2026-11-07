@@ -29,7 +29,10 @@ internal class QuotaSnapshotMonitor(
     // renders from the cache only and never refreshes. `daemon run` passes the profile's
     // quota_refresh_minutes (default 15 min).
     private val quotaRefreshMs: Long,
-    private val providerFactory: () -> CloudProvider,
+    // The daemon's own provider instance (null before it is built and after it is closed): the refresh uses it and never
+    // closes it. A second instance would hold a token state of its own, refresh the same token and write the same file,
+    // and its throttling would reach neither the budget nor the request metrics.
+    private val provider: () -> CloudProvider?,
     // The daemon's state database, read at every use: it opens on the daemon's lifecycle and closes on its cleanup.
     private val db: () -> StateDatabase?,
 ) {
@@ -92,12 +95,7 @@ internal class QuotaSnapshotMonitor(
         scope.launch {
             try {
                 retryQuotaPersist(db())
-                val provider = providerFactory()
-                try {
-                    refreshQuotaSnapshotWith(provider)
-                } finally {
-                    provider.close()
-                }
+                provider()?.let { refreshQuotaSnapshotWith(it) }
             } catch (e: Exception) {
                 log.warn("quota refresh crashed: {}", e.message)
             } finally {
