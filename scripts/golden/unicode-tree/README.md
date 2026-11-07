@@ -112,7 +112,8 @@ The committed files under `expected/` are from the `golden-unicode-v1` suite and
 `v2` run has no committed expectation to compare against: run without `-Expected`, and if the run shows deviations worth
 accepting, write them up as rules in a new
 `expected/golden-unicode-v2@localfs@<engine>+<client>.tsv` — one accepted deviation per line, `tool`, `class`, `path`,
-`issue` tab-separated (the format `compare-expected.ps1` validates; an accepted deviation needs its issue named).
+`issue` and `note` tab-separated (the format `compare-expected.ps1` documents in its header; `note` is free text, and an
+accepted deviation needs its issue named).
 
 The steps by hand:
 

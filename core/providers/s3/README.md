@@ -61,4 +61,5 @@ Every request takes a slot from the shared `HttpRetryBudget`. A 500, 503 (SlowDo
 ## Not yet
 
 - **Opt-in runs on AWS and Scaleway:** the same cases against a real vendor, gated on keys in the environment.
+- **`x-amz-meta-mtime` as the item's time:** a `HEAD` reads it back, but only `move` uses it (to carry it to the copy); `modified` stays `LastModified` everywhere, so the engine never compares the file's own mtime. Using it needs a HEAD per listed object or an engine-side decision on which time to compare.
 - **Quota:** none (`hasQuota = false`); a bucket has no plan to report.
