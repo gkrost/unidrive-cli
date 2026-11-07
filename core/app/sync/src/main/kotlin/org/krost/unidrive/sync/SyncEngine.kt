@@ -3753,6 +3753,24 @@ open class SyncEngine(
                     baselineSize = observedSize,
                 )?.also { editsKeptAside.add(it) }
             }
+        if (keptLocalEdit == null && Files.isDirectory(localPath)) {
+            // The plan walked this folder at plan time; a file created since, or a subtree the walk could not
+            // read, is invisible to the DB-row re-check above (#451). Walk the folder again now: anything on
+            // disk the scan never reports (excluded, ignored, blocked, without a tracked row) holds the folder,
+            // the way an unreported member does at plan time, and the delete re-plans on the next pass against
+            // a fresh scan.
+            val unreported = firstUnreportedLocalEntry(syncRoot, action.path, trackedRowsUnder(action.path), ::skippedByScan)
+            if (unreported != null) {
+                if (unreported == action.path) {
+                    log.warn("Not deleting {}: the folder cannot be walked; the delete is retried on the next sync", action.path)
+                } else {
+                    log.warn("Not deleting {}: {} below it is not tracked; the delete is retried on the next sync", action.path, unreported)
+                }
+                reporter.onWarning("Skipped delete of ${action.path}: it holds content the plan does not track")
+                rememberUnappliedRemoteChange(action)
+                return
+            }
+        }
         if (keptLocalEdit == null) {
             withEchoSuppression(action.path) {
                 if (trashManager != null) {
@@ -3804,6 +3822,24 @@ open class SyncEngine(
         }
         return false
     }
+
+    // The apply-time half of the plan's folder walk (applyDeleteLocal): the alive rows with a remote id below
+    // [folderPath]. Everything else the walk finds on disk holds the folder, the way an unreported member does at
+    // plan time.
+    private fun trackedRowsUnder(folderPath: String): Set<String> =
+        db.getEntriesByPrefix(folderPath.trimEnd('/') + "/")
+            .filter { it.remoteId != null && it.status == EntryStatus.EXISTS }
+            .mapTo(HashSet()) { it.path }
+
+    // The scan's own skip rule, asked by the apply-time folder walk (applyDeleteLocal): excluded, ignored or a
+    // blocked NFC twin — the same question keepFoldersHoldingUnsyncedLocalContent asks at plan time.
+    private fun skippedByScan(
+        path: String,
+        isDir: Boolean,
+    ): Boolean =
+        planExcludePatterns.any { Reconciler.matchesGlob(path, it) } ||
+            ignoredByRules(path, isDir) ||
+            scanner.isUnderNfcCollision(path)
 
     // True when this pass already moved a conflict copy into [folderPath] or below it.
     private fun keptEditUnder(folderPath: String): Boolean {

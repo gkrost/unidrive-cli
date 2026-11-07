@@ -2263,7 +2263,10 @@ private fun foldersHoldingUnreportedLocalEntries(
 // and the scan never reports: an entry [skippedByScan] (excluded, ignored or blocked), or one without a tracked file
 // row (an alive row with a remote id). Null: everything below is tracked, the folder can go with its subtree. An
 // excluded directory ends the walk: the scan skips such a subtree whole, so nothing below it is reported either.
-private fun firstUnreportedLocalEntry(
+// A walk that cannot read its way through (#451: an unreadable subfolder, an entry gone mid-walk) refuses the
+// folder itself: what the walk cannot see may hold content the scan never reports, and null would read as
+// "everything tracked" and clear the folder for deletion.
+internal fun firstUnreportedLocalEntry(
     syncRoot: Path,
     folderPath: String,
     tracked: Set<String>,
@@ -2272,7 +2275,7 @@ private fun firstUnreportedLocalEntry(
     val folderLocal = safeResolveLocalOrNull(syncRoot, folderPath) ?: return null
     if (!Files.isDirectory(folderLocal)) return null
     var found: String? = null
-    runCatching {
+    try {
         Files.walkFileTree(
             folderLocal,
             object : java.nio.file.SimpleFileVisitor<Path>() {
@@ -2296,6 +2299,8 @@ private fun firstUnreportedLocalEntry(
                 ): java.nio.file.FileVisitResult = judge(file, isDir = false)
             },
         )
+    } catch (_: java.io.IOException) {
+        return folderPath
     }
     return found
 }

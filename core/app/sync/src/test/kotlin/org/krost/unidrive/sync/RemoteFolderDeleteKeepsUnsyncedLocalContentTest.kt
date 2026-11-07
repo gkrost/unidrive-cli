@@ -170,6 +170,43 @@ class RemoteFolderDeleteKeepsUnsyncedLocalContentTest {
             assertNewLocalFileKept()
         }
 
+    @Test
+    fun `a folder a remote tombstone deletes stays when a subtree cannot be walked`() {
+        val isWindows = System.getProperty("os.name", "").lowercase().contains("win")
+        org.junit.Assume.assumeFalse("POSIX-only test for the folder walk's unreadable subfolder", isWindows)
+        bothModes { eng ->
+            provider.files["/dir/a.txt"] = ByteArray(3)
+            provider.files["/dir/locked/inner.txt"] = ByteArray(3)
+            provider.deltaItems =
+                listOf(
+                    item("/dir", isFolder = true),
+                    item("/dir/a.txt", size = 3),
+                    item("/dir/locked", size = 0, isFolder = true),
+                    item("/dir/locked/inner.txt", size = 3),
+                )
+            provider.deltaCursor = "cursor-1"
+            eng.syncOnce()
+            val locked = syncRoot.resolve("dir/locked")
+            org.junit.Assume.assumeFalse("the account reads a chmod 000 folder (root)", Files.isReadable(locked))
+            Files.setPosixFilePermissions(locked, emptySet())
+
+            provider.files.clear()
+            provider.deltaItems =
+                listOf(
+                    item("/dir", isFolder = true, deleted = true),
+                    item("/dir/a.txt", deleted = true),
+                    item("/dir/locked", size = 0, isFolder = true, deleted = true),
+                    item("/dir/locked/inner.txt", deleted = true),
+                )
+            provider.deltaCursor = "cursor-2"
+            eng.syncOnce()
+
+            assertTrue(Files.isDirectory(locked), "the subtree the walk cannot read is not destroyed")
+            assertEquals(listOf("/dir"), provider.createdFolders.toList(), "the folder the remote deleted is created again: the walk refused the folder")
+            assertFalse(Files.exists(syncRoot.resolve("dir/a.txt")), "the tracked, readable sibling is still removed")
+        }
+    }
+
     private fun item(
         path: String,
         size: Long = 100,
