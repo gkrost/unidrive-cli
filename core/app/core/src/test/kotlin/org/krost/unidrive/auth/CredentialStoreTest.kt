@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import org.junit.Assume.assumeTrue
 import org.krost.unidrive.io.WindowsAclProbe
@@ -158,7 +159,7 @@ class CredentialStoreTest {
 
         assertNull(s.load())
         assertEquals("protected-test-value", Files.readString(path))
-        assertEquals(legacy, protector.storedValue(path.toAbsolutePath().normalize().toString()))
+        assertEquals(legacy, protector.storedValue(path.toRealPath().toString()))
     }
 
     @Test
@@ -341,4 +342,58 @@ class CredentialStoreTest {
 
     private fun tempFiles(): List<java.nio.file.Path> =
         Files.list(dir).use { s -> s.filter { it.fileName.toString().endsWith(".tmp") }.toList() }
+
+    /** Binds the data to the id like the real protectors: another id cannot decode it. */
+    private class BoundProtector : CredentialProtector {
+        val values = mutableMapOf<String, String>()
+
+        override fun protect(id: String, plaintext: String): String {
+            values[id] = plaintext
+            return "protected-test-value"
+        }
+
+        override fun decode(id: String, stored: String): CredentialData =
+            if (stored == "protected-test-value") {
+                CredentialData(values[id] ?: throw CredentialProtectionException("not bound to $id"), true)
+            } else {
+                CredentialData(stored, false)
+            }
+
+        override fun delete(id: String) {
+            values.remove(id)
+        }
+    }
+
+    private fun linkToDir(): Path {
+        val link = Files.createTempDirectory("unidrive-credstore-link").resolve("alias")
+        val made = runCatching { Files.createSymbolicLink(link, dir) }.isSuccess
+        assumeTrue("symbolic links cannot be created here", made)
+        return link
+    }
+
+    @Test
+    fun `a second spelling of the same folder decodes what the first one saved`() {
+        val alias = linkToDir()
+        val protector = BoundProtector()
+        val sample = Sample("secret-token", 123L)
+
+        CredentialStore(dir, "creds.json", serializer<Sample>(), protector = protector).save(sample)
+
+        assertEquals(sample, CredentialStore(alias, "creds.json", serializer<Sample>(), protector = protector).load())
+        alias.parent.toFile().deleteRecursively()
+    }
+
+    @Test
+    fun `a file bound to the literal path of an older install still loads`() {
+        val alias = linkToDir()
+        val protector = BoundProtector()
+        val sample = Sample("secret-token", 123L)
+        val viaAlias = CredentialStore(alias, "creds.json", serializer<Sample>(), protector = protector)
+        // what the code before the canonical id wrote: bound to the spelling it was reached by
+        val literal = alias.resolve("creds.json").toAbsolutePath().normalize().toString()
+        Files.writeString(dir.resolve("creds.json"), protector.protect(literal, Json.encodeToString(Sample.serializer(), sample)))
+
+        assertEquals(sample, viaAlias.load())
+        alias.parent.toFile().deleteRecursively()
+    }
 }
