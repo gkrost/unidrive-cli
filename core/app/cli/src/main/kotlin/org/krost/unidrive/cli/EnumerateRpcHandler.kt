@@ -121,16 +121,17 @@ class EnumerateRpcHandler(
                         put("error", "provider_error")
                         put("message", UrlRedaction.redact(e.message ?: ""))
                     }.toString()
-                } finally {
-                    inFlight.set(null)
                 }
             runCatching { emit(terminalEvent) }
+            // The slot is freed after the terminal event, not before (gkrost/unidrive-cli#442).
+            inFlight.set(null)
         }
         // Swap the placeholder for the real job, but only if the launched coroutine
         // hasn't already finished and cleared the slot to null — a CAS avoids
         // resurrecting a stale in-flight entry (which would wrongly reject the next
         // request as busy and make awaitInFlight join a completed job).
         inFlight.compareAndSet(placeholder, EnumerateJob(jobId, launched))
+        launched.invokeOnCompletion { inFlight.updateAndGet { if (it?.id == jobId) null else it } }
         return """{"ok":true,"job_id":"$jobId"}"""
     }
 
