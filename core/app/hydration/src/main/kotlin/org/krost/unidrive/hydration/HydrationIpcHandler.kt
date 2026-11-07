@@ -180,8 +180,9 @@ import java.util.concurrent.atomic.AtomicLong
  * (capacity 64). The single fan-out site (dispatchEvent) deals events to all
  * subscribers; per-subscriber writer coroutines drain their queue and push
  * NDJSON lines via the writer function. When a subscriber's queue is full the
- * dispatcher drops the OLDEST queued event and bumps a per-subscriber lost
- * counter; the writer emits one `{"event":"lost","since_last":N}` sentinel
+ * dispatcher drops the OLDEST queued event that is not an outcome (never a
+ * `completed`, nor a `failed` that is not retried) and bumps a per-subscriber
+ * lost counter; outcomes are kept beyond 64, up to a hard cap of 4096; the writer emits one `{"event":"lost","since_last":N}` sentinel
  * line ahead of the next deliverable event and resets the counter. The whole
  * registry plus writer-coroutine teardown is owned by this handler;
  * onSubscriberDisconnect(connectionId) is the production hook called from
@@ -207,9 +208,43 @@ class HydrationIpcHandler(
 
     private fun issueHandleId(): String = issuedHandlePrefix + issuedHandles.incrementAndGet()
 
+    /**
+     * One subscribed connection's queue. [events] is guarded by its own monitor; [wake] (conflated) tells the writer
+     * coroutine that [events] is not empty; closing [wake] ends the writer once it has drained [events].
+     */
+    private class SubscriberQueue {
+        val events = ArrayDeque<HydrationEvent>()
+        val wake = Channel<Unit>(Channel.CONFLATED)
+        val dropped = AtomicInteger(0)
+
+        /** Add [event]; when over capacity, drop the oldest event that is not terminal (see [isTerminalForSubscriber]). */
+        fun offer(event: HydrationEvent) {
+            synchronized(events) {
+                events.addLast(event)
+                if (events.size > SUBSCRIBER_QUEUE_CAPACITY) {
+                    val victim = events.indexOfFirst { !it.isTerminalForSubscriber() }
+                    if (victim >= 0) {
+                        events.removeAt(victim)
+                        dropped.incrementAndGet()
+                    } else if (events.size > SUBSCRIBER_TERMINAL_HARD_CAP) {
+                        // Only outcomes are queued and the reader is gone for good in all but name: bound the memory.
+                        events.removeFirst()
+                        dropped.incrementAndGet()
+                    }
+                }
+            }
+            wake.trySend(Unit)
+        }
+
+        fun poll(): HydrationEvent? = synchronized(events) { events.removeFirstOrNull() }
+
+        fun close() {
+            wake.close()
+        }
+    }
+
     private data class Subscriber(
-        val queue: Channel<HydrationEvent>,
-        val dropped: AtomicInteger,
+        val queue: SubscriberQueue,
         val job: Job,
     )
 
@@ -252,27 +287,14 @@ class HydrationIpcHandler(
 
     /**
      * Fan an event out to every registered subscriber. Non-suspending: each
-     * subscriber's bounded queue is fed via trySend; on overflow the oldest
-     * unsent event is drained and the subscriber's dropped counter increments.
+     * subscriber's queue is fed by offer; on overflow the oldest unsent event that is not
+     * terminal (see [isTerminalForSubscriber]) is dropped and the subscriber's dropped counter
+     * increments; terminal events are kept.
      * The single collector at the caller site drains hydration.events into here.
      */
     fun dispatchEvent(event: HydrationEvent) {
         for (sub in subscribers.values) {
-            offerWithDropOldest(sub, event)
-        }
-    }
-
-    private fun offerWithDropOldest(sub: Subscriber, event: HydrationEvent) {
-        while (true) {
-            val r = sub.queue.trySend(event)
-            if (r.isSuccess) return
-            if (r.isClosed) return
-            // Buffer full: drain one (the oldest) and retry. A concurrent writer
-            // drain shrinks the buffer too — either path frees a slot.
-            val drained = sub.queue.tryReceive()
-            if (drained.isSuccess) sub.dropped.incrementAndGet()
-            // If tryReceive itself failed (race with writer just emptied it), loop
-            // and retry trySend — the buffer now has room.
+            sub.queue.offer(event)
         }
     }
 
@@ -300,12 +322,17 @@ class HydrationIpcHandler(
         // Repeat-subscribe on the same connection: tear down the prior subscriber first
         // so we never have two writer coroutines competing on the same connection.
         subscribers.remove(connectionId)?.let { it.job.cancel(); it.queue.close() }
-        val queue = Channel<HydrationEvent>(capacity = SUBSCRIBER_QUEUE_CAPACITY)
-        val dropped = AtomicInteger(0)
+        val queue = SubscriberQueue()
         val job = scope.launch {
             try {
-                for (event in queue) {
-                    val lost = dropped.getAndSet(0)
+                while (true) {
+                    val event = queue.poll()
+                    if (event == null) {
+                        // Empty: wait for the next offer; a closed wake channel ends the writer.
+                        if (queue.wake.receiveCatching().isClosed) break
+                        continue
+                    }
+                    val lost = queue.dropped.getAndSet(0)
                     if (lost > 0) {
                         val ok = writer(connectionId, """{"event":"lost","since_last":$lost}""")
                         if (!ok) break
@@ -320,7 +347,7 @@ class HydrationIpcHandler(
                 queue.close()
             }
         }
-        subscribers[connectionId] = Subscriber(queue, dropped, job)
+        subscribers[connectionId] = Subscriber(queue, job)
     }
 
     companion object {
@@ -328,6 +355,9 @@ class HydrationIpcHandler(
         // extraBufferCapacity in HydrationImpl; the SharedFlow is the upstream
         // source and the queue is the per-subscriber smoothing layer.
         const val SUBSCRIBER_QUEUE_CAPACITY = 64
+
+        // The most outcomes (completed, failed for good) one subscriber's queue keeps when nothing else is left to drop.
+        const val SUBSCRIBER_TERMINAL_HARD_CAP = 4096
 
         // The longest name NTFS and the common Linux file systems hold, in UTF-16 units.
         private const val MAX_SEGMENT_UTF16_UNITS = 255

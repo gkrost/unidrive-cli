@@ -200,3 +200,15 @@ fun HydrationEvent.provesProviderReachable(): Boolean =
         is HydrationEvent.Completed -> ok && direction == HydrationEvent.Completed.Direction.UPLOAD
         else -> false
     }
+
+/**
+ * True for an event that ends a transfer's story and that a subscriber cannot rebuild from later events: a
+ * [HydrationEvent.Completed], and a [HydrationEvent.Failed] the daemon will not retry. The subscriber queue never drops
+ * these on overflow; it drops progress and state events first.
+ */
+fun HydrationEvent.isTerminalForSubscriber(): Boolean =
+    when (this) {
+        is HydrationEvent.Completed -> true
+        is HydrationEvent.Failed -> retryScheduled != true
+        else -> false
+    }
