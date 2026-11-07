@@ -494,6 +494,7 @@ class HydrationImpl(
         // gkrost/unidrive-cli#182: the name a replaced file has while the source takes its name ([parkingPathFor]).
         private const val REPLACE_PARKING_SUFFIX = ".unidrive-replaced"
         private const val REPLACE_PARKING_ATTEMPTS = 100
+        private const val PATH_IS_FILE_TOKEN = "path_is_file"
         private const val HTTP_CONFLICT = 409
         private const val PROVIDER_CAUSE_DEPTH = 5
 
@@ -2794,6 +2795,45 @@ class HydrationImpl(
         return runCatching {
             Files.size(mount.resolveCachePath(e.path)).coerceAtLeast(0L)
         }.getOrDefault(recorded)
+    }
+
+    // gkrost/unidrive-cli#445: one run per path; a second caller of the same path waits for the first's answer.
+    private val mkdirFlights = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<MkdirResult>>()
+
+    override suspend fun mkdirParents(path: String): MkdirResult {
+        val key = path.trimEnd('/').let { if (it == "") "/" else it }
+        if (key == "/") return MkdirResult.Existed
+        val mine = kotlinx.coroutines.CompletableDeferred<MkdirResult>()
+        mkdirFlights.putIfAbsent(key, mine)?.let { return it.await() }
+        try {
+            val result = makeFolderChain(key)
+            mine.complete(result)
+            return result
+        } catch (e: CancellationException) {
+            // The waiters do not share this caller's cancellation: they are told the run ended.
+            mine.complete(MkdirResult.Failed(HydrationError.Cancelled))
+            throw e
+        } catch (e: Exception) {
+            mine.complete(MkdirResult.Failed(HydrationError.Generic(e.message ?: "mkdir failed")))
+            throw e
+        } finally {
+            mkdirFlights.remove(key, mine)
+        }
+    }
+
+    // The folders above [key] first (each through its own run, so two paths under one parent make it once), then [key] itself.
+    private suspend fun makeFolderChain(key: String): MkdirResult {
+        val parent = key.substringBeforeLast('/').ifEmpty { "/" }
+        when (val above = mkdirParents(parent)) {
+            MkdirResult.Ok, MkdirResult.Existed -> Unit
+            is MkdirResult.Failed -> return above
+            MkdirResult.ParentNotFound -> return above
+        }
+        val row = stateDb.getEntry(key)
+        if (row != null && row.status == org.krost.unidrive.sync.model.EntryStatus.EXISTS) {
+            return if (row.isFolder) MkdirResult.Existed else MkdirResult.Failed(HydrationError.Generic(PATH_IS_FILE_TOKEN))
+        }
+        return mkdir(key)
     }
 
     override suspend fun mkdir(path: String): MkdirResult {

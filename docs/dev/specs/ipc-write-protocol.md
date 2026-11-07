@@ -243,6 +243,21 @@ hydration.rmdir   {path[,recursive][,permanent]} -> {"ok":true} | {"ok":false,"e
 `hydrating`/`hydrated` for it; `hydration.rmdir` refuses non-empty folders
 (`not_empty`, unless `"recursive":true`, section 3.7). Both refuse out-of-scope paths.
 
+**`mkdir -p` (`"parents":true`, gkrost/unidrive-cli#445).** `{"verb":"hydration.mkdir","path":"/a/b/c","parents":true}`
+makes every missing folder above the path, then the folder, and is idempotent:
+
+```
+{"ok":true}                              the folder was made (and the missing ones above it)
+{"ok":true,"existed":true}               the folder was there already; nothing was asked of the provider
+{"ok":false,"error":"path_is_file"}      a file is at the path or above it
+```
+
+The other refusals are those of the plain verb (`outside_scope`, `read_only`, `invalid_path`, `name_clash`). Calls for one
+path at the same time share one run, and two paths below one missing parent make it once. Without `parents` nothing
+changes: the plain verb makes one folder, and a folder that is there is the provider's answer. An engine that does not
+know the field ignores it, so a client that gets `parent_not_found` (and no `existed` on success) knows it must make the
+parents itself. Pinned by `hydration.mkdir.ndjson`.
+
 ### 3.9 Two spellings of one name (`name_clash`)
 
 The engine keys every path in NFC, so `caf` + U+00E9 and `cafe` + U+0301 are one row and one cloud path. A client
