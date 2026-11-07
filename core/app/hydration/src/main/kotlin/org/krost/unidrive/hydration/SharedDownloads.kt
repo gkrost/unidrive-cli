@@ -90,7 +90,12 @@ internal class SharedDownloads<T>(
         try {
             outcome =
                 select {
-                    shared.job.onAwait { Outcome.Done(it.getOrThrow()) }
+                    shared.job.onAwait {
+                        // Taking the result claims it: a reader that leaves later without it (cancelled after it) must
+                        // not hand to [onUnclaimed] a result another waiter already owns.
+                        shared.produced.getAndSet(null)
+                        Outcome.Done(it.getOrThrow())
+                    }
                     waiter.cancelled.onAwait { Outcome.Cancelled }
                 }
         } finally {
