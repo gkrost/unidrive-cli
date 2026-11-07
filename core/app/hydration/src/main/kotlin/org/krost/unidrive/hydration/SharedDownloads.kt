@@ -9,6 +9,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 
@@ -27,6 +28,9 @@ import kotlin.coroutines.EmptyCoroutineContext
  */
 internal class SharedDownloads<T>(
     private val parent: Job?,
+    // gkrost/unidrive-cli#438: a download that finished its work after its last waiter left has a result nobody takes. It
+    // is handed here, once, so that whatever the result stands for (a history row still running) can be ended.
+    private val onUnclaimed: (T) -> Unit = {},
 ) {
     /** One caller waiting for a download: the IPC connection it came from and, for an `open_read`, its handle id. */
     class Waiter(
@@ -47,7 +51,11 @@ internal class SharedDownloads<T>(
 
     private class Download<T>(
         val job: Deferred<Result<T>>,
+        val produced: AtomicReference<T?>,
     ) {
+        // Set once the last waiter has left without taking the result.
+        @Volatile var abandoned = false
+
         // Guarded by the monitor of the SharedDownloads that holds it.
         val waiters = LinkedHashSet<Waiter>()
     }
@@ -73,35 +81,48 @@ internal class SharedDownloads<T>(
         val shared =
             synchronized(this) {
                 val running = downloads[path]?.takeIf { !it.job.isCompleted }
-                val joined = running ?: Download(start(callerContext, download)).also { downloads[path] = it }
+                val joined = running ?: start(callerContext, download).also { downloads[path] = it }
                 joined.also { it.waiters += waiter }
             }
         shared.job.start()
         var abandoned: Job? = null
-        val outcome =
-            try {
+        var outcome: Outcome<T>? = null
+        try {
+            outcome =
                 select {
                     shared.job.onAwait { Outcome.Done(it.getOrThrow()) }
                     waiter.cancelled.onAwait { Outcome.Cancelled }
                 }
-            } finally {
-                abandoned = leave(path, shared, waiter)
-            }
+        } finally {
+            abandoned = leave(path, shared, waiter)
+            // The last waiter left without the result (cancelled, or its own coroutine ended): a download that already
+            // finished produced a result nobody takes. One that finishes while it unwinds hands it over itself (see start).
+            if (outcome !is Outcome.Done && shared.abandoned) shared.produced.getAndSet(null)?.let(onUnclaimed)
+        }
         if (outcome is Outcome.Cancelled) abandoned?.let { withTimeoutOrNull(ABANDONED_DOWNLOAD_WAIT_MS) { it.join() } }
-        return outcome
+        return outcome!!
     }
 
     // Lazy: started outside the monitor. runCatching: a failed child would cancel the parent scope (and every upload in it).
     private fun start(
         callerContext: CoroutineContext,
         download: suspend () -> T,
-    ): Deferred<Result<T>> {
+    ): Download<T> {
         // A parent that has ended (the daemon is stopping) is not inherited: the download would never start.
         val context = callerContext + (parent?.takeIf { it.isActive } ?: EmptyCoroutineContext)
-        return CoroutineScope(context).async(start = CoroutineStart.LAZY) { runCatching { download() } }
+        val produced = AtomicReference<T?>()
+        val holder = arrayOfNulls<Download<T>>(1)
+        val job =
+            CoroutineScope(context).async(start = CoroutineStart.LAZY) {
+                runCatching { download() }.also { result ->
+                    result.getOrNull()?.let { produced.set(it) }
+                    if (holder[0]?.abandoned == true) produced.getAndSet(null)?.let(onUnclaimed)
+                }
+            }
+        return Download(job, produced).also { holder[0] = it }
     }
 
-    // [waiter] stops waiting for [shared]. The last one out of a download that still runs cancels it; that job is returned.
+    // [waiter] stops waiting for [shared]. The last one out of a download that still runs cancels it.
     @Synchronized
     private fun leave(
         path: String,
@@ -111,6 +132,7 @@ internal class SharedDownloads<T>(
         shared.waiters -= waiter
         if (shared.waiters.isNotEmpty()) return null
         if (downloads[path] === shared) downloads.remove(path)
+        shared.abandoned = true
         if (shared.job.isCompleted) return null
         shared.job.cancel()
         return shared.job

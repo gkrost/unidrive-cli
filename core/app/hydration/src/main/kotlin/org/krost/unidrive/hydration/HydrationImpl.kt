@@ -393,7 +393,12 @@ class HydrationImpl(
         val tx: TransferHandle?,
     )
 
-    private val downloads = SharedDownloads<SharedRead>(recoveryUploadScope.coroutineContext[Job])
+    // gkrost/unidrive-cli#438: a download whose last caller left as it finished has no caller to end its history row.
+    private val downloads =
+        SharedDownloads<SharedRead>(
+            recoveryUploadScope.coroutineContext[Job],
+            onUnclaimed = { it.tx.endDownloadFailed(CancellationException("the last caller stopped waiting")) },
+        )
 
     /**
      * gkrost/unidrive-cli#23: the gap between two `downloading` events of one waiting request (about two a second, the most a
