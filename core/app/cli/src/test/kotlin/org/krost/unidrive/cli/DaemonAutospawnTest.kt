@@ -342,4 +342,74 @@ class DaemonAutospawnTest {
         val unrelated = spawn(windows = true, env = mapOf("JAVA_TOOL_OPTIONS" to "-Xshare:auto"))
         assertTrue("-Djavax.net.ssl.trustStoreType=Windows-ROOT" in unrelated, unrelated.toString())
     }
+
+    // gkrost/unidrive-cli#442: the probe reads the reply; a host that answers an error is not a daemon.
+    @Test
+    fun `a host that answers unknown_verb is not a daemon`() {
+        FakeIpcDaemon().on("daemon.status") { _, _ -> """{"ok":false,"error":"unknown_verb"}""" }.start().use { daemon ->
+            assertFalse(DaemonAutospawn.daemonAnswers("fake_profile", daemon.endpoint.socketPath, daemon.endpoint.tokenDir))
+        }
+    }
+
+    @Test
+    fun `an ok reply without a protocol version is not a daemon`() {
+        FakeIpcDaemon().on("daemon.status") { _, _ -> """{"ok":true}""" }.start().use { daemon ->
+            assertFalse(DaemonAutospawn.daemonAnswers("fake_profile", daemon.endpoint.socketPath, daemon.endpoint.tokenDir))
+        }
+    }
+
+    @Test
+    fun `an ok status reply with a protocol version is a daemon`() {
+        FakeIpcDaemon().on("daemon.status") { _, _ -> """{"ok":true,"protocol_version":1}""" }.start().use { daemon ->
+            assertTrue(DaemonAutospawn.daemonAnswers("fake_profile", daemon.endpoint.socketPath, daemon.endpoint.tokenDir))
+        }
+    }
+
+    @Test
+    fun `a busy daemon that holds the lock is waited for, not spawned over`() {
+        var probes = 0
+        var spawned = false
+        val ok =
+            withLock(DaemonLockCheck.Running(4242)) {
+            DaemonAutospawn.ensureDaemonRunning(
+                profileName = "p",
+                configDir = Files.createTempDirectory("autospawn-busy"),
+                probe = { _, _ -> ++probes > 3 },
+                locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
+                spawn = { _, _ -> spawned = true },
+            )
+            }
+        assertTrue(ok, "it answered once it was not busy")
+        assertFalse(spawned, "a second daemon would only lose the lock")
+    }
+
+    @Test
+    fun `a profile held by something that is not a daemon is not spawned over`() {
+        var spawned = false
+        val ok =
+            withLock(DaemonLockCheck.Refused("lock for profile 'p' is held by mode 'sync'")) {
+                DaemonAutospawn.ensureDaemonRunning(
+                    profileName = "p",
+                    configDir = Files.createTempDirectory("autospawn-sync-holder"),
+                    probe = { _, _ -> false },
+                    locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
+                    spawn = { _, _ -> spawned = true },
+                )
+            }
+        assertFalse(ok)
+        assertFalse(spawned)
+    }
+
+    private fun <T> withLock(
+        lock: DaemonLockCheck,
+        body: () -> T,
+    ): T {
+        val saved = DaemonAutospawn.lockCheck
+        DaemonAutospawn.lockCheck = { _, _ -> lock }
+        try {
+            return body()
+        } finally {
+            DaemonAutospawn.lockCheck = saved
+        }
+    }
 }

@@ -649,6 +649,11 @@ class InternxtApiServiceTest {
     private val sampleBucketEntryJson =
         """{"id":"bridge-fileId-1","index":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","bucket":"test-bucket","name":"enc-name"}"""
 
+    private fun bridgeInfoJson(
+        fileId: String,
+        index: String,
+    ) = """{"bucket":"test-bucket","id":"$fileId","index":"$index"}"""
+
     private val missingUploadsBodyShape =
         """{"statusCode":409,"message":"MissingUploadsError: shard upload missing for finish","error":"Conflict"}"""
 
@@ -744,6 +749,13 @@ class InternxtApiServiceTest {
                                 headers = io.ktor.http.headersOf("Content-Type", "application/json"),
                             )
                         }
+                        // #450: the listed row's bridge object carries this upload's index.
+                        url.endsWith("/buckets/test-bucket/files/bridge-fileId-2/info") ->
+                            respond(
+                                content = bridgeInfoJson("bridge-fileId-2", "00".repeat(32)),
+                                status = io.ktor.http.HttpStatusCode.OK,
+                                headers = io.ktor.http.headersOf("Content-Type", "application/json"),
+                            )
                         else -> error("unexpected URL: $url")
                     }
                 }
@@ -875,6 +887,13 @@ class InternxtApiServiceTest {
                                 headers = io.ktor.http.headersOf("Content-Type", "application/json"),
                             )
                         }
+                        // #450: the youngest row is this upload's commit (its bridge index is ours).
+                        url.endsWith("/buckets/test-bucket/files/bridge-fileId-NEW/info") ->
+                            respond(
+                                content = bridgeInfoJson("bridge-fileId-NEW", "00".repeat(32)),
+                                status = io.ktor.http.HttpStatusCode.OK,
+                                headers = io.ktor.http.headersOf("Content-Type", "application/json"),
+                            )
                         else -> error("unexpected URL: $url")
                     }
                 }
@@ -2285,6 +2304,13 @@ class InternxtApiServiceTest {
                                     headers = io.ktor.http.headersOf("Content-Type", "application/json"),
                                 )
                             }
+                            // #450: the reconciled row's bridge object carries the pinned index.
+                            url.endsWith("/files/bridge-fileId-reconciled/info") ->
+                                respond(
+                                    content = """{"bucket":"$tombstoneBucket","id":"bridge-fileId-reconciled","index":"$pinnedIndex"}""",
+                                    status = io.ktor.http.HttpStatusCode.OK,
+                                    headers = io.ktor.http.headersOf("Content-Type", "application/json"),
+                                )
                             url.startsWith("https://gateway.internxt.com/drive/files") && request.method == io.ktor.http.HttpMethod.Post -> {
                                 createCalls.incrementAndGet()
                                 respond(

@@ -10,15 +10,13 @@ import kotlinx.serialization.json.jsonObject
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
-import java.nio.file.StandardOpenOption
 
 /**
  * The resumable upload sessions of one provider, keyed by remote path, in one JSON file of the profile folder
  * (OneDrive's session URLs, Dropbox's session ids and offsets — #219). The providers keep their own entry shape and
  * expiry rules; this class is the file layer both had copied, with the defects of the copies fixed:
  *
- * - The file is written through a temporary file and an atomic move, so a crash mid-write can no longer tear it.
+ * - The file is written through a temporary file, synced, and an atomic move, so a crash mid-write can no longer tear it.
  * - A file that cannot be parsed is moved aside (the bytes stay for the post-mortem) and the store starts empty with
  *   one WARN. The copies read a torn file as empty and then silently wrote over it, which wiped every resumable
  *   session of the profile.
@@ -58,19 +56,20 @@ class ResumeSessionStore<T : Any>(
         return map
     }
 
-    /** Replaces the stored sessions with [map]; the write goes through a temporary file and an atomic move. */
+    /**
+     * Replaces the stored sessions with [map]. The write is [OwnerOnlyAtomicWrite]'s: a temporary file of its own name
+     * (two writers never share one), synced to disk before the atomic move (a power loss leaves the old file or the new
+     * one, never an empty one), and removed when the move fails.
+     */
     @Synchronized
     fun replace(map: Map<String, T>) {
         Files.createDirectories(storeDir)
-        val temp = storeFile.resolveSibling("$FILE_NAME.tmp")
-        Files.writeString(temp, json.encodeToString(mapSerializer, map), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)
-        try {
-            Files.move(temp, storeFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-            // A filesystem that rejects the atomic move (some Windows network shares): the window shrinks to the
-            // move, but the write is no longer a truncate in place.
-            Files.move(temp, storeFile, StandardCopyOption.REPLACE_EXISTING)
-        }
+        // The profile folder is owner-only (see above); a share that cannot restrict a file still gets the sessions.
+        OwnerOnlyAtomicWrite.replace(
+            storeFile,
+            json.encodeToString(mapSerializer, map).toByteArray(Charsets.UTF_8),
+            onUnrestricted = { outcome -> log.debug("upload session store {} could not be restricted to the owner: {}", storeFile, outcome) },
+        )
     }
 
     // The unreadable file goes next to where it was, with its bytes, instead of being overwritten silently.

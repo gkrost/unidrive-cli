@@ -118,6 +118,34 @@ internal class LoopbackServer(
             return read
         }
 
+        /**
+         * Answers 200 with a chunked body of [chunks] that never gets its terminating chunk: no Content-Length announces
+         * a length, so the only sign of the cut is how the stream ends.
+         */
+        fun respondChunkedUnterminated(
+            chunks: List<ByteArray>,
+            pauseMs: Long,
+        ) {
+            val head =
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n" +
+                    "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            val out = socket.getOutputStream()
+            out.write(head.toByteArray(Charsets.ISO_8859_1))
+            for (chunk in chunks) {
+                out.write("${Integer.toHexString(chunk.size)}\r\n".toByteArray(Charsets.ISO_8859_1))
+                out.write(chunk)
+                out.write("\r\n".toByteArray(Charsets.ISO_8859_1))
+                out.flush()
+                Thread.sleep(pauseMs)
+            }
+        }
+
+        /** Closes the connection with a reset (RST) instead of an orderly FIN: the abrupt drop of a dying storage host. */
+        fun reset() {
+            socket.setSoLinger(true, 0)
+            socket.close()
+        }
+
         /** True when the client closed the connection: the next read sees the end of the stream or a reset. */
         fun clientClosed(): Boolean =
             try {
@@ -143,15 +171,17 @@ internal class LoopbackServer(
 
         /**
          * Answers 200 with a body of [chunks] whose length the head announces, sending one chunk per [pauseMs]: a download
-         * that keeps moving but takes `chunks.size * pauseMs` to arrive.
+         * that keeps moving but takes `chunks.size * pauseMs` to arrive. A [declaredLength] larger than the chunks cuts the
+         * body off: the connection closes before the announced bytes arrived.
          */
         fun respondStreamed(
             chunks: List<ByteArray>,
             pauseMs: Long,
+            declaredLength: Long = chunks.sumOf { it.size }.toLong(),
         ) {
             val head =
                 "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n" +
-                    "Content-Length: ${chunks.sumOf { it.size }}\r\nConnection: close\r\n\r\n"
+                    "Content-Length: $declaredLength\r\nConnection: close\r\n\r\n"
             val out = socket.getOutputStream()
             out.write(head.toByteArray(Charsets.ISO_8859_1))
             out.flush()

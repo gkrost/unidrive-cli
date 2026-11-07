@@ -60,7 +60,7 @@ class InternxtShardRetryAfterTest {
 
             val e =
                 assertFailsWith<InternxtApiException> {
-                    api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = 16L)
+                    api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = 16L, expectedShardHash = null)
                 }
 
             assertEquals(429, e.statusCode)

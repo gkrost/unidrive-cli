@@ -38,7 +38,7 @@ plugins {
 }
 
 kotlin {
-    jvmToolchain(21)
+    jvmToolchain(25)
 }
 
 // The packaged distribution ships a jlink runtime image instead of
@@ -297,6 +297,13 @@ tasks.matching { it.name == "verifyThirdPartyNotices" }.configureEach {
     mustRunAfter(copyCoroutineDebugAgent)
 }
 
+// The distribution tasks and the start scripts read build/libs too, so `assemble` (and `build`) hit the same
+// check. The agent jar stays in build/libs because the deploy steps below look for it there; only the order moves.
+val readsBuildLibs = setOf("distZip", "distTar", "shadowDistZip", "shadowDistTar", "startScripts", "startShadowScripts")
+tasks.matching { it.name in readsBuildLibs }.configureEach {
+    mustRunAfter(copyCoroutineDebugAgent)
+}
+
 // Bundles THIRD-PARTY-NOTICES.txt + the project LICENSE/NOTICE into the shadow jar and
 // guards them from `check`.
 apply(from = "../../gradle/notices.gradle.kts")
@@ -333,7 +340,7 @@ tasks.register("runtimeImage") {
         // :app:cli:runtimeImage cannot build an image off a stale list.
         val jarPath = jarFile.get().asFile.absolutePath
         val jdepsOut =
-            run(tool("jdeps"), "--print-module-deps", "--multi-release", "21", "--ignore-missing-deps", "-q", jarPath)
+            run(tool("jdeps"), "--print-module-deps", "--multi-release", "25", "--ignore-missing-deps", "-q", jarPath)
         val actualModules = jdepsOut.substringAfterLast('\n', jdepsOut).trim()
         if (actualModules != jdepsModuleSet.joinToString(",")) {
             throw GradleException(
@@ -357,6 +364,25 @@ tasks.register("runtimeImage") {
             "--output",
             outDir.absolutePath,
         )
+
+        // The default CDS archive (classes.jsa) of the image's own module set. Without it the image starts with
+        // no class data sharing at all, and every one-shot command loads and links the JDK's classes cold.
+        // jlink's --generate-cds-archive would write four archives (compressed oops and compact headers
+        // on/off, about 14 MB each); only the default variant is ever mapped (a heap above 32 GB or
+        // -XX:-UseCompactObjectHeaders would pick another and run without sharing), so this dumps that one
+        // with the image's own JVM, which ties it to the runtime's header mode and GC.
+        run(outDir.resolve("bin/java${if (hostIsWindows) ".exe" else ""}").absolutePath, "-Xshare:dump")
+
+        // The archive must exist and the JVM must be willing to map it: -Xshare:on fails the start instead of
+        // falling back to no sharing, so an image that silently lost its archive breaks the build here.
+        val cdsArchive = outDir.resolve(if (hostIsWindows) "bin/server/classes.jsa" else "lib/server/classes.jsa")
+        if (!cdsArchive.isFile) {
+            throw GradleException("The runtime image at ${outDir.absolutePath} has no CDS archive at ${cdsArchive.absolutePath}.")
+        }
+        val shared = run(outDir.resolve("bin/java${if (hostIsWindows) ".exe" else ""}").absolutePath, "-Xshare:on", "-version")
+        if (!shared.contains("sharing")) {
+            throw GradleException("The runtime image does not start with its CDS archive (-Xshare:on -version): $shared")
+        }
 
         // Redistribution ships the runtime's licenses: OpenJDK GPLv2 with
         // Classpath Exception plus per-module third-party notices. jlink

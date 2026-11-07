@@ -138,11 +138,11 @@ variants as the fallback plan for oversized folders.
 | Endpoint | Verb | Status | Provider site | Notes |
 |---|---|---|---|---|
 | `/storage/trash/add` | POST | ✅ | `InternxtApiService.kt` `trashItems` | UD-367: routine sync-driven deletes route through here. Body shape `{items: [{uuid, type:"file"|"folder"}]}` per `MoveItemsToTrashDto`; server-capped at 50 items per call. |
-| `/storage/trash/paginated` | GET | ◯ | — | Could feed a `unidrive trash list --remote` operator command. |
-| `/storage/trash` | DELETE | ◯ | — | Bulk purge by id list. |
-| `/storage/trash/all` | DELETE | ◯ | — | Empty entire trash. |
-| `/storage/trash/all/request` | DELETE | ◯ | — | Async empty-trash request (subset of `/all` semantics — needs spec follow-up if surfaced). |
-| `/storage/trash/file/{fileId}` | DELETE | ◯ | — | Permanent purge of one trashed file. Could feed `unidrive trash purge --remote --id …`. |
+| `/storage/trash/paginated` | GET | ✅ | `InternxtApiService.kt` `trashPage` → provider `listTrash` | #500: the remote trash listing (`trash list --remote`). `limit` (server cap 50) + `offset` + mandatory `type=files\|folders` + `root=true` (what the official SDK sends); answers `{result: [File/Folder row + parent + expiresAt]}` per drive-server-wip `TrashController`. Files and folders come in separate walks, taken to completion (a repeating page is an error, not a partial answer). |
+| `/storage/trash` | DELETE | ◯ | — | Bulk purge by uuid list (`DeleteItemsDto`, cap 50, 202). **The provider refuses to call it** (fail-closed, #506 review): the server resolves the uuids with no TRASHED-status condition (`file.repository.deleteFilesByUser` updates by user and uuid alone), so an item restored after the listing — or a uuid a repeated 5xx re-sends — would be deleted for good, not skipped. Safe again only when the API grows a delete conditional on the trash status. |
+| `/storage/trash/all` | DELETE | ✅ | `InternxtApiService.kt` `emptyTrash` → provider `emptyTrash` | #500: empty the whole trash (`trash purge --remote --all`). Server-side safe: its batch (`deleteUserTrashedFilesBatch`) selects TRASHED rows only. Answers `EmptyTrashResult`: above 10,000 items the deletion is enqueued and answered `status: "processing"` — the CLI reports queued, not emptied. |
+| `/storage/trash/all/request` | DELETE | ◯ | — | Same server-side use case as `/all` (drive-server-wip wires both to `emptyTrash`); not surfaced. |
+| `/storage/trash/file/{fileId}` | DELETE | ◯ | — | Permanent purge of one trashed file, keyed by the deprecated numeric id, and subject to the same missing trash-status condition as the bulk purge; unused. |
 | `/storage/trash/folder/{folderId}` | DELETE | ◯ | — | Same for folders. |
 | `/workspaces/{workspaceId}/trash` | GET / DELETE | ◯ | — | Workspace-scoped variants — out of scope until unidrive grows workspace support. |
 

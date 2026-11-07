@@ -15,11 +15,8 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.engine.RemoteOperationGuard
 import org.krost.unidrive.sync.IpcAuth
-import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcAuthException
 import org.krost.unidrive.sync.IpcEndpoint
-import org.krost.unidrive.sync.IpcLineClient
-import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.StateDatabase
 import picocli.CommandLine.Command
@@ -142,20 +139,22 @@ class LsCommand : Callable<Int> {
      * `internal` so the ls-agrees-with-mount-view test can assert it returns the
      * same view `hydration.list` serves.
      */
-    internal fun queryDaemonView(endpoint: IpcEndpoint, normalized: String): List<ViewEntryParsed>? {
+    internal fun queryDaemonView(
+        endpoint: IpcEndpoint,
+        normalized: String,
+        timeoutMs: Long = DAEMON_VIEW_TIMEOUT_MS,
+    ): List<ViewEntryParsed>? {
         // hydration.list uses "prefix"; "/" and "" both mean root.
         val prefix = if (normalized == "/") "" else normalized
         return try {
-            // A read-scope connection: ls only lists (docs/dev/specs/ipc-authentication.md).
-            IpcAuthClient.connect(endpoint, IpcAuth.Scope.READ).use { channel ->
-                val lines = IpcLineClient(channel)
-                // buildJsonObject escapes what would end the request line (a newline in a path) and whatever else a
-                // JSON string must escape.
-                lines.writeLine(buildJsonObject { put("verb", "hydration.list"); put("prefix", prefix) }.toString())
-                val reply = (lines.readLine() as? IpcLineRead.Line)?.text?.asJsonObjectOrNull()
-                if (reply?.isOkReply() != true) return null
-                parseListEntries(reply)
-            }
+            // A read-scope connection: ls only lists (docs/dev/specs/ipc-authentication.md). buildJsonObject escapes
+            // what would end the request line (a newline in a path) and whatever else a JSON string must escape.
+            val request = buildJsonObject { put("verb", "hydration.list"); put("prefix", prefix) }.toString()
+            // A daemon that does not answer in time is no view: the live listing below answers.
+            val line = (ipcRequest(endpoint, IpcAuth.Scope.READ, request, timeoutMs) as? IpcReply.Line)?.text
+            val reply = line?.asJsonObjectOrNull()
+            if (reply?.isOkReply() != true) return null
+            parseListEntries(reply)
         } catch (e: IpcAuthException) {
             // Not answered without authentication; the live query below still answers.
             System.err.println("ls: ${e.message}; listing live instead")
@@ -342,6 +341,9 @@ class LsCommand : Callable<Int> {
  * socket and hydration verbs but is NOT the mount view, so `ls` must mirror the daemon's
  * state.db view only in this case (otherwise it does the documented live provider query).
  */
+/** How long `ls` waits for the daemon's `hydration.list` reply before it lists live instead. */
+internal const val DAEMON_VIEW_TIMEOUT_MS = 30_000L
+
 internal fun daemonHoldsLock(configDir: java.nio.file.Path): Boolean {
     val lockFile = configDir.resolve(".lock")
     val pidFile = lockFile.resolveSibling("${lockFile.fileName}.pid")

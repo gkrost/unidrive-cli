@@ -582,6 +582,50 @@ class HydrationUploadQueueTest {
         collector.cancel()
     }
 
+    // gkrost/unidrive-cli#438: the watchdog's clock starts at the transfer permit. An upload queued
+    // behind other transfers for longer than the window has not stalled and burns no retry rung.
+    @Test
+    fun `an upload that waits for a transfer permit longer than the watchdog window is not failed as stalled`() = runTest {
+        val env = HydrationTestEnv(
+            recoveryUploadScope = this,
+            maxUploadAttempts = 2,
+            uploadRetryDelaysMs = listOf(1L),
+            uploadStallTimeoutMs = 5_000L,
+        )
+        env.stateDb.insertCreatedRow("/q/queued.txt")
+        writeCache(env, "/q/queued.txt", "queued bytes")
+        val mount = MountEngine.over(env.engine)
+        val held = CompletableDeferred<Unit>()
+        val holders =
+            (1..mount.transferBudgetSize).map {
+                launch { mount.withTransferPermit { held.await() } }
+            }
+        runCurrent()
+        val events = mutableListOf<HydrationEvent>()
+        val collector = launch { env.hydration.events.collect { events.add(it) } }
+        yield()
+
+        assertIs<OpenResult.Ok>(
+            env.hydration.openForWrite("conn1", "h-queued", "/q/queued.txt", env.syncEngine.resolveCachePath("/q/queued.txt")),
+        )
+        advanceTimeBy(30_000L)
+        assertEquals(0, env.syncEngine.uploadAttempts(), "precondition: the upload has no transfer permit")
+        assertEquals(
+            0,
+            events.filterIsInstance<HydrationEvent.Failed>().size,
+            "waiting for a permit is not a stall",
+        )
+
+        held.complete(Unit)
+        holders.forEach { it.join() }
+        advanceUntilIdle()
+
+        assertEquals(1, env.syncEngine.uploadAttempts(), "one attempt carried the upload once the permit came")
+        assertEquals("queued bytes", env.syncEngine.remoteContentSeen("/q/queued.txt"))
+        assertTrue(events.filterIsInstance<HydrationEvent.Completed>().single().ok)
+        collector.cancel()
+    }
+
     @Test
     fun `full write sequence - create, write, open_write, completed, list settles`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this)

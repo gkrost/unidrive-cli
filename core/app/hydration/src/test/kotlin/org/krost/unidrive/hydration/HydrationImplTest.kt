@@ -579,6 +579,8 @@ internal class HydrationTestEnv(
      * parked upload into a stall. The stall tests opt in with a small window.
      */
     val uploadStallTimeoutMs: Long = 0L,
+    /** The mount checks every finished download against the hash the row records (`verify_integrity`). */
+    val verifyIntegrity: Boolean = false,
     /** Coalescing gap for `uploading` progress events (0 = emit every callback). */
     val uploadProgressMinIntervalMs: Long = 400,
     /** archive#493: delay of the replay of rows whose last upload failed; 0 = at once. */
@@ -657,6 +659,7 @@ internal class HydrationTestEnv(
             viewNamespaces = viewNamespaces,
             backupsNamespace = backups,
             viewInvalidationSink = { paths, _, _ -> viewInvalidations += paths },
+            verifyIntegrity = verifyIntegrity,
         )
 
         pause = MountEngine.over(engine).pause

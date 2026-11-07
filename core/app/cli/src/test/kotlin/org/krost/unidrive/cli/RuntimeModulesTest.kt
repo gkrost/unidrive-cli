@@ -29,7 +29,7 @@ class RuntimeModulesTest {
                 jdeps.absolutePath,
                 "--print-module-deps",
                 "--multi-release",
-                "21",
+                "25",
                 "--ignore-missing-deps",
                 "-q",
                 jar.absolutePath,

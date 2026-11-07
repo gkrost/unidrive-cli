@@ -40,10 +40,18 @@ class RecordingEngine(
     @Volatile var lastSyncOnceFlags: Pair<Boolean, Boolean>? = null
     val enumerateCount = java.util.concurrent.atomic.AtomicInteger(0)
 
+    /**
+     * Completed on entry to a gated entry point, before it suspends on the gate: a test awaits this (bounded)
+     * to know the launched worker is actually inside the engine, instead of yielding its own event loop and
+     * hoping — a worker on another dispatcher never runs because of a yield.
+     */
+    val entered: CompletableDeferred<Unit> = CompletableDeferred()
+
     override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult {
         enumerateCalled = true
         enumerateCount.incrementAndGet()
         lastReset = reset
+        entered.complete(Unit)
         gate?.await()
         enumerateFailure?.let { throw it }
         return enumerateResult
@@ -59,6 +67,7 @@ class RecordingEngine(
         syncOnceCalled = true
         lastReset = null
         lastSyncOnceFlags = skipTransfers to skipRemoteGather
+        entered.complete(Unit)
         gate?.await()
     }
 

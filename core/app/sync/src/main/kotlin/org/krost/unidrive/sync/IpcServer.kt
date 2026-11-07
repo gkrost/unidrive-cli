@@ -101,6 +101,11 @@ class IpcServer(
     private val clients = CopyOnWriteArrayList<ClientEntry>()
     private val channel = Channel<String>(capacity = 256)
     private val handlers = java.util.concurrent.ConcurrentHashMap<String, suspend (String, String) -> String>()
+
+    // gkrost/unidrive-cli#460: requests served per verb since this server was made (daemon.status `ipc.requests`). Only a
+    // request that reaches its registered handler counts, so the keys are registered verbs and nothing a client sends
+    // can add one; a request the authentication gate answers or refuses does not count.
+    private val servedByVerb = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.LongAdder>()
     private val closeListeners = CopyOnWriteArrayList<(String) -> Unit>()
     private var serverChannel: ServerSocketChannel? = null
 
@@ -271,6 +276,12 @@ class IpcServer(
      * full" and callers deciding whether to start work on the client's behalf must treat it as read.
      */
     fun scopeOf(connectionId: String): String? = authSessions[connectionId]?.scope?.wire
+
+    /**
+     * gkrost/unidrive-cli#460: the requests each verb's handler has been given since this server was made, sorted by
+     * verb; a verb not asked yet is absent. A reading taken now: it never blocks, and it holds no path or id.
+     */
+    fun requestCounts(): Map<String, Long> = servedByVerb.entries.associateTo(sortedMapOf()) { it.key to it.value.sum() }
 
     /**
      * Test-only accessor used by IpcSyncSubscriberSetTest to assert that
@@ -630,6 +641,8 @@ class IpcServer(
         val handler = verb?.let { handlers[it] }
         // Only a request that reaches its handler (the gate let it through) makes the connection idle-exempt.
         if (gate == null && handler != null && verb in idleExemptVerbs) clients.firstOrNull { it.channel === client }?.idleExempt = true
+        // Counted before the handler runs, so a daemon.status reply counts itself.
+        if (gate == null && handler != null && verb != null) servedByVerb.computeIfAbsent(verb) { java.util.concurrent.atomic.LongAdder() }.increment()
         var handlerThrew = false
         val reply = when {
             gate != null -> gate.json

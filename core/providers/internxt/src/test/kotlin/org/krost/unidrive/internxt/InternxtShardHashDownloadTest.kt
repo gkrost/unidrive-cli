@@ -197,6 +197,34 @@ class InternxtShardHashDownloadTest {
             assertTrue(Files.readAllBytes(destination).contentEquals(plaintext))
         }
 
+    // AES-CTR is malleable: one flipped ciphertext bit flips the same plaintext bit and decrypts without an error. The
+    // recorded hash is what refuses it, in either known shape, and the previous local copy stays untouched.
+    private fun assertTamperedObjectRefused(recordedFor: (ByteArray) -> String) {
+        val plaintext = "pay 100 to account 1".toByteArray()
+        val crypto = InternxtCrypto()
+        val indexBytes = InternxtCrypto.hexToBytes(index64)
+        val fileKey = crypto.deriveFileKey(crypto.deriveBucketKey(crypto.mnemonicToSeed(mnemonic), bucket), indexBytes)
+        val stored = crypto.createContentEncryptCipher(fileKey, indexBytes.copyOfRange(0, 16)).doFinal(plaintext)
+        recordedHash = recordedFor(stored)
+        shardBody = stored.copyOf().also { it[4] = (it[4].toInt() xor 0x01).toByte() }
+        declaredSize = plaintext.size.toString()
+        shardContentLength = shardBody.size.toString()
+        val provider = newProvider()
+        Files.write(destination, "previous copy".toByteArray())
+
+        assertFailsWith<RemoteContentRefusedDownloadException> { runTest { provider.downloadById(fileUuid, "/tampered.txt", destination) } }
+
+        assertEquals("previous copy", Files.readString(destination), "the tampered plaintext must not replace the local copy")
+        Files.delete(destination)
+        assertNothingLeft()
+    }
+
+    @Test
+    fun `a real encrypted object with a 40 hex shard hash is refused when one ciphertext bit is flipped`() = assertTamperedObjectRefused(::chainHex)
+
+    @Test
+    fun `a real encrypted object with a 64 hex shard hash is refused when one ciphertext bit is flipped`() = assertTamperedObjectRefused(::sha256Hex)
+
     @Test
     fun `a 40 hex shard hash that does not match refuses the content and does not call it a SHA-256 mismatch`() {
         recordedHash = "00".repeat(20)

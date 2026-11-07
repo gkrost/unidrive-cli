@@ -21,7 +21,8 @@ import kotlin.test.assertTrue
  * request, a throttle for a 429/503 answer (with its Retry-After), a success for a 2xx, and neither for anything else.
  *
  * The budget is observed through its state, with a clock that follows the test's virtual time: a storm threshold of 1
- * halves the concurrency at every recorded throttle (so `64 shr n` counts n throttles), the circuit's resume time shows
+ * and a storm window of 0 make every recorded throttle a storm of its own, which halves the concurrency once per throttle
+ * (so `64 shr n` counts n throttles; a longer window cuts once per storm instead), the circuit's resume time shows
  * the Retry-After that was handed over, a success after the quiet interval gives one permit back, and a call made while
  * the circuit is open completes only after it closes (the slot was awaited).
  */
@@ -71,6 +72,7 @@ class InternxtBudgetBookkeepingTest {
             HttpRetryBudget(
                 maxConcurrency = 64,
                 stormThreshold = 1,
+                stormWindowMs = 0L,
                 minSpacingMs = 0,
                 stormSpacingMs = 0,
                 recoveryCleanIntervalMs = 1_000,
