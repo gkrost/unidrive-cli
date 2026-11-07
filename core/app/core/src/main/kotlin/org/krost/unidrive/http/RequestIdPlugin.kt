@@ -49,7 +49,8 @@ private val QueuedMsKey: AttributeKey<Long> = AttributeKey("unidrive.requestQueu
 
 /**
  * The reply of this attempt whose size was unknown when the response arrived; its body is counted
- * as the client reads it, and the `←` line is logged once the count is final.
+ * as the client reads it, and the `←` line is logged once the count is final — or at the attempt's
+ * own end, with the count so far or unknown.
  */
 private val CountedKey: AttributeKey<CountedReply> = AttributeKey("unidrive.countedReply")
 
@@ -163,10 +164,12 @@ val RequestId =
             fun finish(cause: Throwable?) {
                 val outcome = if (cause == null) AttemptOutcome.ofStatus(status) else AttemptOutcome.ofFailure(cause)
                 // gkrost/unidrive-cli#416: a reply without Content-Length contributes the bytes the client
-                // read; a failed attempt leaves the size unknown. The reply line of a failed counted body
-                // is logged here if the body's own end did not get to it.
+                // read; a failed attempt leaves the size unknown. The reply line of a counted body whose
+                // own end did not get to it is logged here, so every attempt pairs its → with a ←: unknown
+                // for a failed attempt, the count so far for a successful one whose body the caller never
+                // read (a delete's 204 among them) — the same number the metric below reports.
                 val bytesDown = if (cause == null) response.contentLength() ?: counted?.bytesRead() else null
-                if (cause != null) counted?.logUnknown()
+                if (cause == null) counted?.logCountSoFar() else counted?.logUnknown()
                 report(outcome, headersMs, bytesUp, bytesDown, throttled)
             }
             val job = response.coroutineContext[Job]
@@ -206,7 +209,8 @@ val RequestId =
             // AFTER the `(Nms)` chunk so existing regexes that end at `\d+ms\)` still match.
             // up = request body size, dn = response body size; a reply without Content-Length has no size
             // yet (gkrost/unidrive-cli#416): its line is logged when the body has been read, which is when
-            // the size becomes known, and `?` only when it never does. Suppress the entire segment when
+            // the size becomes known, and `?` only when it never does — the attempt's own end is the last
+            // resort when nothing read the body. Suppress the entire segment when
             // both counts are zero (most metadata calls on streamed paths) to keep the log readable.
             val upBytes = request.content.contentLength
             val dnBytes = response.contentLength() ?: return@onResponse
@@ -364,9 +368,11 @@ internal fun formatCountedSizeSegment(
 
 /**
  * The reply of one attempt whose size the headers did not name (gkrost/unidrive-cli#416). Its [channel]
- * counts the bytes as the client reads them, and [onDone] fires once with the final count, or null when
- * the transfer died before a size could be established. The `←` line is logged from that callback, so it
- * appears when the size becomes known instead of when the headers arrive.
+ * counts the bytes as the client reads them, and [onDone] fires once: with the final count when the body
+ * is read to its end, with the count so far when a successful attempt ends first, or null when the
+ * transfer died before a size could be established. The `←` line is logged from that callback, so it
+ * appears when the size becomes known instead of when the headers arrive — and no later than the
+ * attempt's own end.
  */
 internal class CountedReply(
     private val delegate: ByteReadChannel,
@@ -382,6 +388,11 @@ internal class CountedReply(
     /** The attempt ended without the body completing (failure, cancel); the size stays unknown. */
     fun logUnknown() {
         if (logged.compareAndSet(false, true)) onDone(null)
+    }
+
+    /** The attempt succeeded with the body unread or partly read; the count so far is what the line names. */
+    fun logCountSoFar() {
+        if (logged.compareAndSet(false, true)) onDone(channel.bytesRead())
     }
 
     private fun check() {

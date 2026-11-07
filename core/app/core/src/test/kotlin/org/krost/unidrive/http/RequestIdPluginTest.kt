@@ -11,6 +11,7 @@ import io.ktor.client.plugins.api.createClientPlugin
 import io.ktor.client.request.get
 import io.ktor.client.request.request
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteChannel
@@ -467,6 +468,59 @@ class RequestIdPluginTest {
             dying.channel.cancel(java.io.IOException("reset mid-body"))
             withTimeout(1000L) { assertNull(dyingEnd.receive(), "no size when the body dies mid-transfer") }
             dyingWire.cancel(null)
+        }
+
+    // gkrost/unidrive-cli#416: a successful attempt whose body the caller never reads (a delete's 204
+    // among the callers) still pairs its → with exactly one ←, and the line names the body's size,
+    // not ?: the reply is counted to its end behind the caller's back by the body saving, and the
+    // attempt's own end is the last resort when nothing else got to it.
+    @Test
+    fun `a reply without Content-Length whose body is never read still logs its line`() =
+        runTest {
+            val engine =
+                MockEngine { _ ->
+                    respond(
+                        content = ByteReadChannel("gone"),
+                        status = HttpStatusCode.NoContent,
+                        headers = headersOf("Content-Type", "application/json"),
+                    )
+                }
+            val client = HttpClient(engine) { install(RequestId) }
+            val lines =
+                capturedLines {
+                    client.request("https://example.invalid/drive/items/abc") {
+                        method = HttpMethod.Delete
+                    }
+                    runCurrent() // the attempt ends with its body unread when the request completes
+                }
+            assertTrue(lines.any { it.startsWith("→") }, "the request line is there: $lines")
+            assertEquals(1, lines.count { it.startsWith("←") }, "one reply line for one request: $lines")
+            val close = lines.last { it.startsWith("←") }
+            assertTrue("204" in close, "the status is on the line: $close")
+            assertTrue("dn=4" in close, "the body's size is on the line, not ?: $close")
+            client.close()
+        }
+
+    // gkrost/unidrive-cli#416: when a successful attempt ends before the body was read to its end,
+    // the reply line still logs, naming the count so far — and nothing logs twice for one reply.
+    @Test
+    @OptIn(io.ktor.utils.io.InternalAPI::class)
+    fun `a successful attempt's end logs the count so far exactly once`() =
+        runTest {
+            val wire = ByteChannel(autoFlush = true)
+            wire.writeBuffer.write("abc".encodeToByteArray(), 0, 3)
+            wire.flush() // bytes arrived, the body stays open — nobody reads it
+            val ended = Channel<Long?>(1)
+            val counted = CountedReply(wire) { dn -> ended.trySend(dn) }
+
+            counted.logCountSoFar()
+            withTimeout(1000L) { assertEquals(0L, ended.receive(), "the count so far when the attempt ends first") }
+
+            // The body's own end and a later failure are both late: one reply, one line.
+            assertEquals(3, counted.channel.readAvailable(ByteArray(3), 0, 3))
+            counted.logUnknown()
+            assertNull(ended.tryReceive().getOrNull(), "no second line for the same reply")
+            wire.cancel(null)
         }
 
     @Test
