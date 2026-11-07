@@ -263,6 +263,8 @@ class DaemonStatusCommand : Runnable {
             if (reply != null) println(reply) else System.err.println("daemon closed the connection without a status reply")
         } catch (e: IpcAuthException) {
             System.err.println("daemon IPC authentication failed: ${e.message}")
+        } catch (e: IpcTimeoutException) {
+            System.err.println("${e.message}; it may be busy or stuck")
         } catch (e: java.io.IOException) {
             System.err.println("daemon socket unreachable: ${e.message}")
         }
@@ -271,16 +273,21 @@ class DaemonStatusCommand : Runnable {
 
 /**
  * One `daemon.status` round trip over a read-scope connection: the reply line, or null when the daemon answers no line.
- * The reply carries the enumeration object and the account quota, so it can run to many KiB. Throws
- * [IpcAuthException] and [java.io.IOException].
+ * The reply carries the enumeration object and the account quota, so it can run to many KiB. A daemon that does not
+ * answer within [timeoutMs] is an [IpcTimeoutException]. Throws [IpcAuthException] and [java.io.IOException].
  */
-internal fun requestDaemonStatus(endpoint: IpcEndpoint): String? =
+internal fun requestDaemonStatus(
+    endpoint: IpcEndpoint,
+    timeoutMs: Long = DAEMON_STATUS_TIMEOUT_MS,
+): String? =
     // daemon.status is a read verb: a read-scope connection (docs/dev/specs/ipc-authentication.md).
-    IpcAuthClient.connect(endpoint, IpcAuth.Scope.READ).use { channel ->
-        val lines = IpcLineClient(channel)
-        lines.writeLine("""{"verb":"daemon.status"}""")
-        (lines.readLine() as? IpcLineRead.Line)?.text
+    when (val reply = ipcRequest(endpoint, IpcAuth.Scope.READ, """{"verb":"daemon.status"}""", timeoutMs)) {
+        is IpcReply.Line -> reply.text
+        IpcReply.Closed -> null
+        IpcReply.TimedOut -> throw IpcTimeoutException(timeoutMs)
     }
+
+internal const val DAEMON_STATUS_TIMEOUT_MS = 10_000L
 
 // ── daemon stop ──────────────────────────────────────────────────────────────
 
