@@ -308,7 +308,7 @@ class LauncherTemplateTest {
     // 21 is refused with guidance (the floor, naming the minimum and UNIDRIVE_JAVA) instead of a bare
     // class-file-version error from whatever java is first on PATH.
     @Test
-    fun `a java older than 21 is refused with an actionable message`() {
+    fun `a java older than 25 is refused with an actionable message`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
         val jdks = Files.createTempDirectory("launcher-fake-jdks")
         try {
@@ -316,7 +316,7 @@ class LauncherTemplateTest {
             val (exit, output) = runResolution(mapOf("UNIDRIVE_JAVA" to stale.toString()), "status")
             assertEquals(1, exit, output)
             assertTrue("JAVA:jdk17" !in output, "the stale java must not be started: $output")
-            assertTrue(output.contains("needs Java 21 or newer, found Java 17"), output)
+            assertTrue(output.contains("needs Java 25 or newer, found Java 17"), output)
         } finally {
             jdks.toFile().deleteRecursively()
         }
@@ -327,10 +327,10 @@ class LauncherTemplateTest {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
         val jdks = Files.createTempDirectory("launcher-fake-jdks")
         try {
-            val chosen = fakeJdk(jdks, "jdk21-chosen", "21.0.12")
+            val chosen = fakeJdk(jdks, "jdk25-chosen", "25.0.4")
             val (exit, output) = runResolution(mapOf("UNIDRIVE_JAVA" to chosen.toString()), "status")
             assertEquals(0, exit, output)
-            assertTrue("JAVA:jdk21-chosen" in output, "UNIDRIVE_JAVA must be the java that runs: $output")
+            assertTrue("JAVA:jdk25-chosen" in output, "UNIDRIVE_JAVA must be the java that runs: $output")
         } finally {
             jdks.toFile().deleteRecursively()
         }
@@ -344,20 +344,20 @@ class LauncherTemplateTest {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
         val jdks = Files.createTempDirectory("launcher-fake-jdks")
         try {
-            val chosen = fakeJdk(jdks, "jdk21-chosen", "21.0.12")
-            val onPath = fakeJdk(jdks, "jdk21-path", "21.0.12")
+            val chosen = fakeJdk(jdks, "jdk25-chosen", "25.0.4")
+            val onPath = fakeJdk(jdks, "jdk25-path", "25.0.4")
             // the bundled image sits next to the rendered launcher
             val bundle = { dir: Path -> fakeJdk(dir, "runtime-image", "25.0.1"); Unit }
             val pathEnv = mapOf("PATH" to pathWith(onPath.parent))
 
             val (exit1, out1) = runResolution(pathEnv + ("UNIDRIVE_JAVA" to chosen.toString()), "status", beforeRun = bundle)
             assertEquals(0, exit1, out1)
-            assertTrue("JAVA:jdk21-chosen" in out1, "UNIDRIVE_JAVA must beat the bundled image: $out1")
+            assertTrue("JAVA:jdk25-chosen" in out1, "UNIDRIVE_JAVA must beat the bundled image: $out1")
 
             val (exit2, out2) = runResolution(pathEnv, "status", beforeRun = bundle)
             assertEquals(0, exit2, out2)
             assertTrue("JAVA:runtime-image" in out2, "the bundled image must beat the PATH java: $out2")
-            assertTrue("JAVA:jdk21-path" !in out2, "the PATH java must not run: $out2")
+            assertTrue("JAVA:jdk25-path" !in out2, "the PATH java must not run: $out2")
         } finally {
             jdks.toFile().deleteRecursively()
         }
@@ -368,7 +368,7 @@ class LauncherTemplateTest {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
         val jdks = Files.createTempDirectory("launcher-fake-jdks")
         try {
-            val onPath = fakeJdk(jdks, "jdk21-path", "21.0.12")
+            val onPath = fakeJdk(jdks, "jdk25-path", "25.0.4")
             val jarDir = Files.createDirectories(jdks.resolve("deploy"))
             fakeJdk(jarDir, "runtime-image", "25.0.1")
             val (exit, output) = runResolution(
@@ -388,7 +388,7 @@ class LauncherTemplateTest {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
         val jdks = Files.createTempDirectory("launcher-fake-jdks")
         try {
-            val onPath = fakeJdk(jdks, "jdk21-path", "21.0.12")
+            val onPath = fakeJdk(jdks, "jdk25-path", "25.0.4")
             val missing = jdks.resolve("nowhere/bin/java.cmd").toString()
             val (exit, output) = runResolution(
                 mapOf("UNIDRIVE_JAVA" to missing, "PATH" to pathWith(onPath.parent)),
@@ -440,7 +440,7 @@ class LauncherTemplateTest {
             val unreadable = fakeJdk(jdks, "mystery", null)
             val (exit, output) = runResolution(mapOf("PATH" to pathWith(unreadable.parent)), "status")
             assertEquals(0, exit, output)
-            assertTrue(output.contains("the Java 21 floor was not checked"), output)
+            assertTrue(output.contains("the Java 25 floor was not checked"), output)
             assertTrue("JAVA:mystery" in output, "the java still runs: $output")
         } finally {
             jdks.toFile().deleteRecursively()

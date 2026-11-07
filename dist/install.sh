@@ -114,7 +114,7 @@ for cand in "${UNIDRIVE_JAVA:-}" "$(command -v java || true)" /usr/lib/jvm/*/bin
     fi
 done
 if [[ "${java_ok}" == "0" ]]; then
-    echo "WARNING: no Java 21+ runtime found; unidrive will not start until one is installed" >&2
+    echo "WARNING: no Java 25+ runtime found; unidrive will not start until one is installed" >&2
     echo "         (Debian/Ubuntu: sudo apt install openjdk-25-jre-headless) or UNIDRIVE_JAVA is set." >&2
 fi
 

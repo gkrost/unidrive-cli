@@ -38,7 +38,7 @@ plugins {
 }
 
 kotlin {
-    jvmToolchain(21)
+    jvmToolchain(25)
 }
 
 // The packaged distribution ships a jlink runtime image instead of
@@ -333,7 +333,7 @@ tasks.register("runtimeImage") {
         // :app:cli:runtimeImage cannot build an image off a stale list.
         val jarPath = jarFile.get().asFile.absolutePath
         val jdepsOut =
-            run(tool("jdeps"), "--print-module-deps", "--multi-release", "21", "--ignore-missing-deps", "-q", jarPath)
+            run(tool("jdeps"), "--print-module-deps", "--multi-release", "25", "--ignore-missing-deps", "-q", jarPath)
         val actualModules = jdepsOut.substringAfterLast('\n', jdepsOut).trim()
         if (actualModules != jdepsModuleSet.joinToString(",")) {
             throw GradleException(
