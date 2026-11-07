@@ -2861,6 +2861,10 @@ class HydrationImpl(
             _events.emit(HydrationEvent.Hydrated(normalised, bytes = 0L, fetched = true))
             MkdirResult.Ok
         }.getOrElse { e ->
+            // gkrost/unidrive-cli#452 (extends #438 item 9): a cancelled caller is not a failed request — the
+            // cancellation goes on instead of becoming a failure reply, as unlink, rename and open_write_begin
+            // already rethrow it.
+            if (e is CancellationException) throw e
             // The drive refuses the folder by its name, or a folder above it: the folder is accepted here, so the client
             // can fill it, and reported as blocked; its subtree waits for it (see MountEngine.recordBlockedFolder).
             val blockedBy: HydrationError? =
@@ -3072,6 +3076,10 @@ class HydrationImpl(
             evictCacheTree(normalised)
             RmdirResult.Ok
         }.getOrElse { e ->
+            // gkrost/unidrive-cli#452 (extends #438 item 9): a cancelled caller is not a failed request — the
+            // cancellation goes on instead of becoming a failure reply, as unlink, rename and open_write_begin
+            // already rethrow it.
+            if (e is CancellationException) throw e
             // Typed signal first: a provider that raises FolderNotEmptyException
             // (directly or as the cause of a wrapping exception) maps to ENOTEMPTY
             // without depending on the provider's message text. The substring
