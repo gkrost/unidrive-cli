@@ -2160,6 +2160,41 @@ class SyncEngineTest {
         }
 
     @Test
+    fun `a cancel during Pass 1 stops the pass and is not reported as a failed action`() =
+        runTest {
+            val now = Instant.parse("2026-01-01T00:00:00Z")
+            for (name in listOf("a.txt", "b.txt")) {
+                db.upsertEntry(
+                    SyncEntry(
+                        path = "/$name",
+                        remoteId = "id-$name",
+                        remoteHash = "h",
+                        remoteSize = 10,
+                        remoteModified = now,
+                        localMtime = now.toEpochMilli(),
+                        localSize = 10,
+                        isFolder = false,
+                        isPinned = false,
+                        isHydrated = true,
+                        lastSynced = now,
+                    ),
+                )
+            }
+            db.setSyncState("delta_cursor", "existing-cursor")
+            provider.deltaItems = emptyList()
+            Files.writeString(syncRoot.resolve("other.txt"), "keep")
+            // The local copies are gone, so each tracked file plans a DeleteRemote; the stop arrives inside the first.
+            provider.deleteThrowByPath["/a.txt"] = kotlinx.coroutines.CancellationException("stopped")
+            val reporter = RecordingReporter()
+
+            assertFailsWith<kotlinx.coroutines.CancellationException> {
+                engineWithReporter(reporter).syncOnce(dryRun = false)
+            }
+
+            assertTrue(reporter.warnings.none { it.startsWith("Failed:") }, "a stop is no failed action; warnings=${reporter.warnings}")
+            assertFalse(provider.deletedPaths.contains("/b.txt"), "the pass stopped, it must not go on to the next action")
+
+        }
     fun `an emptied remote directory that still exists locally is NOT reaped`() =
         runTest {
             val now = Instant.parse("2026-01-01T00:00:00Z")

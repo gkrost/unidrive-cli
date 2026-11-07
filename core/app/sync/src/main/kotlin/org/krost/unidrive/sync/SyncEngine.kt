@@ -1688,6 +1688,9 @@ open class SyncEngine(
                             e,
                         )
                         throw e
+                    } catch (e: CancellationException) {
+                        // A stop is not a failure of this action: no failure count, log line or failure-log entry.
+                        throw e
                     } catch (e: Exception) {
                         consecutiveFailures++
                         passOneFailures.incrementAndGet()
@@ -2052,6 +2055,8 @@ open class SyncEngine(
                 provider.delete(dir)
                 db.getEntry(dir)?.let { db.deleteEntry(dir) }
                 log.debug("Reaped empty remote directory: {}", dir)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 if (isRemoteNotFound(e)) {
                     log.debug("Remote directory already gone, nothing to reap: {}", dir)
@@ -3810,6 +3815,8 @@ open class SyncEngine(
     private suspend fun moveSourceStillRemote(fromPath: String): Boolean =
         try {
             remoteItemIfPresent(fromPath) != null
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             log.debug(
                 "#421: probing the move source {} failed ({}); guarding the delete anyway",
@@ -4166,6 +4173,9 @@ open class SyncEngine(
                                 org.krost.unidrive.requestIdSuffix(e),
                                 e,
                             )
+                            throw e
+                        } catch (e: CancellationException) {
+                            // A sibling's auth failure or a stop cancels this create; it did not fail.
                             throw e
                         } catch (e: Exception) {
                             failedPaths.add(normalizeTrackedPath(action.path))
