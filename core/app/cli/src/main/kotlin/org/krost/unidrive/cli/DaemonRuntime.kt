@@ -715,7 +715,10 @@ class DaemonRuntime(
                                 }
                             val slotsJson =
                                 status.freeSlots.entries.sortedBy { it.key }.joinToString(",") { "${ndjsonString(it.key)}:${it.value}" }
-                            ""","requests":{"in_flight":$inFlightJson,"free_slots":{$slotsJson}}"""
+                            // total (gkrost/unidrive-cli#460): attempts per endpoint class since the daemon started.
+                            val totalJson =
+                                status.totals.entries.joinToString(",") { "${ndjsonString(it.key)}:${it.value}" }
+                            ""","requests":{"in_flight":$inFlightJson,"free_slots":{$slotsJson},"total":{$totalJson}}"""
                         } ?: ""
                     // credential_health (archive#586): the last offline check, or `expired` at once when the provider rejected the
                     // credentials after the check (a transfer or an enumeration failed authentication and nothing worked since).
@@ -801,6 +804,9 @@ class DaemonRuntime(
                         // gkrost/unidrive-cli#392: how many hydration downloads a client should run at once (the download
                         // budget's small-file width, the transfer cap for a while after a throttle). Additive, read-only.
                         ",\"transfer_budget\":${mount.downloadBudget.recommended}" +
+                        // ipc (gkrost/unidrive-cli#460): the requests each verb's handler served since the daemon started, so a
+                        // client's change of verbs can be checked on a live daemon. Additive, read-only, always present.
+                        ",\"ipc\":${ipcStatusJson(server.requestCounts())}" +
                         "}"
                 }
 

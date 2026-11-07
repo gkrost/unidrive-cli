@@ -458,13 +458,14 @@ A provider that rejects the credentials turns the state to `expired` without wai
 **The `requests` object** (additive, gkrost/unidrive-cli#74; the protocol version does not change) is the provider's own account of its HTTP calls, so a stalled transfer can be diagnosed from a status reply without reading the log. It is present only for a provider whose HTTP layer can account for its calls (Internxt today); absent otherwise, like `quota`.
 
 ```json
-{"requests": {"in_flight": [{"class": "GET /drive/files", "count": 2, "oldest_ms": 45123}], "free_slots": {"drive": 0, "bridge": 4}}}
+{"requests": {"in_flight": [{"class": "GET /drive/files", "count": 2, "oldest_ms": 45123}], "free_slots": {"drive": 0, "bridge": 4}, "total": {"GET /drive/files": 812, "PUT /bridge/shard": 40}}}
 ```
 
 | field | meaning |
 |---|---|
 | `in_flight` | one entry per endpoint class with calls open now: `count` is how many are open, `oldest_ms` how long the oldest has been. A request whose answer never comes stays here - this is the state a stalled transfer is diagnosed from. A class names an endpoint (`GET /drive/files`), never a path or an id |
 | `free_slots` | per throttle budget, the permits still free (Internxt: `drive`, `bridge`). 0 means every permit of that budget is held - a call that waits for a permit waits there, and the in-flight entries above say for what |
+| `total` | additive (gkrost/unidrive-cli#460). Per endpoint class, the attempts the provider's HTTP client opened since the daemon started: a retry counts again, an attempt still open counts already. A class not called yet is absent (0). It says how many calls a change saved, which `in_flight` cannot. A daemon older than #460 does not send it, and neither does a provider that sends no `requests` object at all: the field lives inside `requests`, so its absence alone says nothing about the daemon's age. An attempt counts from its send: a call still waiting for a permit or queued locally is not counted yet (`free_slots` shows the wait) |
 
 The reading is taken when the reply is built; it never blocks and never asks the provider anything.
 
@@ -540,6 +541,18 @@ The reply also carries `transfer_budget` (additive, gkrost/unidrive-cli#392; the
 The large-file width is its own value because a provider's `maxConcurrentTransfers` can be a cap for the uploads alone: Internxt's 2 guards the IV-pinning upload race, which a download does not have, and 4 is the width of its Bridge budget (the reference client's). A throttle narrows to `maxConcurrentTransfers` rather than to the large-file width: the provider asked the daemon to slow down, and that is the width audited as safe with it. A download that already runs when the throttle arrives finishes; the large ones in flight still count against the large pool. `transfer_budget` keeps its meaning (the small-file width, or `maxConcurrentTransfers` while throttled).
 
 A daemon that does not send the field is older than #392: a client keeps its own default. The uploads do not use this budget: they share the provider's `maxConcurrentTransfers` with the sync pass, as before.
+
+**The `ipc` object** (additive, gkrost/unidrive-cli#460; the protocol version does not change) counts the requests the daemon served, per verb, since it started. A client's choice of verbs can then be checked on a live daemon: a client that reads one row with `hydration.stat` instead of listing the folder with `hydration.list` shows it in these numbers, and a client build that still lists does not. It is always present, on mount and mirror profiles alike.
+
+```json
+{"ipc": {"requests": {"daemon.status": 41, "hydration.list": 12, "hydration.stat": 340}}}
+```
+
+| field | meaning |
+|---|---|
+| `requests` | per verb, how many requests its handler was given since the daemon started, counted before the handler runs (so a `daemon.status` reply counts itself, and a handler that fails or refuses a request still counts it). Not counted: a request the authentication gate answers or refuses (the handshake, the minimal `daemon.status` of an unauthenticated connection, a verb the connection's scope may not call), a verb no handler serves (`unknown_verb`) and a line without a verb (`missing_verb`); so every key is a verb this daemon registers, and nothing a client sends adds one. A verb not asked yet is absent (0). Verb names only, never a path or an id. Counts restart with the daemon |
+
+To check a client change, read `daemon.status` before and after the action and compare the two: the counts move by the calls made, and `daemon.status` by one for the second reading.
 
 ### 4.4 `sync.subscribe` (existing, unchanged semantics)
 
