@@ -225,26 +225,36 @@ class TrashPurgeCommand : Callable<Int> {
     private fun select(items: List<TrashItem>): List<TrashItem> {
         val chosen = LinkedHashMap<String, TrashItem>()
         for (id in ids) {
-            val found = items.filter { it.id == id }
-            val item =
-                found.singleOrNull() ?: throw LifecycleError(
-                    "not_in_trash",
-                    "id '$id' is not in the provider's trash${if (found.size > 1) " (reported ${found.size} times)" else ""}; see `trash list --remote`",
-                )
+            val item = byId(items, id)
             chosen[item.id] = item
         }
         for (name in paths) {
-            val found = items.filter { it.name == name }
-            when {
-                found.isEmpty() -> throw LifecycleError("not_in_trash", "no trash item is named '$name'; see `trash list --remote`")
-                found.size > 1 -> throw LifecycleError(
-                    "ambiguous_name",
-                    "${found.size} trash items are named '$name' (${found.joinToString(", ") { it.id }}); purge them by id",
-                )
-                else -> chosen[found[0].id] = found[0]
-            }
+            val item = byName(items, name)
+            chosen[item.id] = item
         }
         return chosen.values.toList()
+    }
+
+    /** The trash item with [id]; anything else (absent, or the wire reporting it twice) is refused. */
+    private fun byId(items: List<TrashItem>, id: String): TrashItem {
+        val found = items.filter { it.id == id }
+        return found.singleOrNull() ?: throw LifecycleError(
+            "not_in_trash",
+            "id '$id' is not in the provider's trash${if (found.size > 1) " (reported ${found.size} times)" else ""}; see `trash list --remote`",
+        )
+    }
+
+    /** The one trash item named [name]; absent and ambiguous are refused (an ambiguous name points at the ids). */
+    private fun byName(items: List<TrashItem>, name: String): TrashItem {
+        val found = items.filter { it.name == name }
+        return when (found.size) {
+            1 -> found[0]
+            0 -> throw LifecycleError("not_in_trash", "no trash item is named '$name'; see `trash list --remote`")
+            else -> throw LifecycleError(
+                "ambiguous_name",
+                "${found.size} trash items are named '$name' (${found.joinToString(", ") { it.id }}); purge them by id",
+            )
+        }
     }
 
     /** The ask, on the console; `--yes` skips it and a non-terminal run without `--yes` is refused. */
@@ -272,13 +282,7 @@ private fun <T> withRemoteTrashProvider(
     return try {
         runBlocking {
             provider.authenticateAndLog()
-            if (provider.capabilities().none { it is Capability.RemoteTrash }) {
-                throw LifecycleError(
-                    "remote_trash_unsupported",
-                    "the provider of this profile does not expose its trash to unidrive (no remote-trash capability); " +
-                        "empty it in the provider's own app",
-                )
-            }
+            requireRemoteTrash(provider)
             block(provider)
         }
     } catch (e: AuthenticationException) {
@@ -287,5 +291,16 @@ private fun <T> withRemoteTrashProvider(
         throw LifecycleError("remote_trash_failed", "the provider's trash could not be read or purged: ${e.message}", e)
     } finally {
         provider.close()
+    }
+}
+
+/** The typed refusal for a provider that does not expose its trash; a wire error is never the answer here. */
+private fun requireRemoteTrash(provider: CloudProvider) {
+    if (provider.capabilities().none { it is Capability.RemoteTrash }) {
+        throw LifecycleError(
+            "remote_trash_unsupported",
+            "the provider of this profile does not expose its trash to unidrive (no remote-trash capability); " +
+                "empty it in the provider's own app",
+        )
     }
 }
