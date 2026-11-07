@@ -7,6 +7,7 @@ import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.RemoteIncompleteDownloadException
 import java.io.IOException
+import java.nio.file.AccessDeniedException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -111,5 +112,89 @@ class StagedDownloadTest {
             writeStagedDownload(ByteReadChannel("x".toByteArray()), nested, 1L, "test download")
 
             assertEquals("x", Files.readString(nested))
+        }
+
+    private fun payload(): ByteReadChannel = ByteReadChannel("data".toByteArray())
+
+    @Test
+    fun `a destination that is locked for a moment is retried and the finished download lands`() =
+        runTest {
+            Files.writeString(destination, "old")
+            val delays = mutableListOf<Long>()
+            var attempts = 0
+            val steps =
+                StagedDownloadSteps(
+                    move = { from, to ->
+                        attempts++
+                        if (attempts <= 2) throw AccessDeniedException(to.toString())
+                        Files.move(from, to, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    },
+                    windows = true,
+                    delayMs = { delays += it },
+                )
+
+            assertEquals(4L, writeStagedDownload(payload(), destination, 4L, "test download", steps))
+
+            assertEquals(3, attempts)
+            assertEquals(listOf(100L, 300L), delays)
+            assertEquals("data", Files.readString(destination))
+            assertEquals(listOf("f.bin"), folder())
+        }
+
+    @Test
+    fun `a destination that stays locked fails with the lock and leaves the old file and no staging file`() =
+        runTest {
+            Files.writeString(destination, "old")
+            val steps = StagedDownloadSteps(move = { _, to -> throw AccessDeniedException(to.toString()) }, windows = true, delayMs = {})
+
+            assertFailsWith<AccessDeniedException> { writeStagedDownload(payload(), destination, 4L, "test download", steps) }
+
+            assertEquals("old", Files.readString(destination))
+            assertEquals(listOf("f.bin"), folder())
+        }
+
+    @Test
+    fun `the data is forced to disk once, after the last byte and before the move`() =
+        runTest {
+            val events = mutableListOf<String>()
+            val steps =
+                StagedDownloadSteps(
+                    force = { channel ->
+                        events += "force at ${channel.position()}"
+                        channel.force(false)
+                    },
+                    move = { from, to ->
+                        events += "move"
+                        Files.move(from, to, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    },
+                    windows = false,
+                )
+
+            writeStagedDownload(payload(), destination, 4L, "test download", steps)
+
+            assertEquals(listOf("force at 4", "move"), events)
+        }
+
+    @Test
+    fun `a staging file that cannot be deleted does not hide the failure that caused the cleanup`() =
+        runTest {
+            val steps =
+                StagedDownloadSteps(
+                    move = { from, _ ->
+                        // the staging name becomes a folder that is not empty, so the cleanup's delete fails
+                        Files.delete(from)
+                        Files.createDirectory(from)
+                        Files.writeString(from.resolve("x"), "x")
+                        throw IOException("the move failed")
+                    },
+                    windows = false,
+                )
+
+            val e = assertFailsWith<IOException> { writeStagedDownload(payload(), destination, 4L, "test download", steps) }
+
+            assertEquals("the move failed", e.message)
+            // the coroutine machinery may hand the caller a copy of the failure whose cause is the original
+            val original = generateSequence<Throwable>(e) { it.cause }.first { it.suppressed.isNotEmpty() }
+            assertEquals(1, original.suppressed.size, "the failed cleanup is attached, not thrown instead")
         }
 }
