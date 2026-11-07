@@ -133,7 +133,7 @@ import java.util.concurrent.atomic.AtomicLong
  *               reply:    {"ok":true}
  *                         {"ok":false,"error":"old_path_not_found"}    ENOENT
  *                         {"ok":false,"error":"new_parent_not_found"}  ENOENT
- *                         {"ok":false,"error":"new_path_exists"}       EEXIST
+ *                         {"ok":false,"error":"new_path_exists"}       EEXIST (also a provider 409 on the move, gkrost/unidrive-cli#445)
  *                         {"ok":false,"error":"outside_scope"}         either end outside the profile's sync_path set
  *                         {"ok":false,"error":"<msg>"}                 EIO
  *                         replace (OPTIONAL, default false) is POSIX

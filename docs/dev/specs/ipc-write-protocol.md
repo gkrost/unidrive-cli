@@ -653,7 +653,7 @@ noticed at once, not when the download ends. Requests the client sends while one
 | `unknown_path` | row-lookup verbs | no such row (ENOENT) |
 | `parent_not_found` | create, mkdir | parent row missing or not a folder |
 | `path_exists` | create | row already exists (EEXIST) |
-| `new_path_exists` | rename | destination exists and replace was not asked, or it was asked and the destination or the source is a folder (replace overwrites a file with a file only) |
+| `new_path_exists` | rename | destination exists and replace was not asked, or it was asked and the destination or the source is a folder (replace overwrites a file with a file only); also when the provider refuses the move with HTTP 409 (the name is taken in the cloud although no row stood at it), where an older engine answered the provider's free text |
 | `old_path_not_found` / `new_parent_not_found` | rename | row/parent missing |
 | `path_is_folder` / `path_is_file` | unlink/rmdir/open_write_begin | wrong kind |
 | `not_empty` | rmdir | folder still has children (plain), or a file below holds bytes only this computer has (recursive, archive#1035) |

@@ -494,6 +494,8 @@ class HydrationImpl(
         // gkrost/unidrive-cli#182: the name a replaced file has while the source takes its name ([parkingPathFor]).
         private const val REPLACE_PARKING_SUFFIX = ".unidrive-replaced"
         private const val REPLACE_PARKING_ATTEMPTS = 100
+        private const val HTTP_CONFLICT = 409
+        private const val PROVIDER_CAUSE_DEPTH = 5
 
         /** Default bound on uploads waiting to run (see [uploadQueueDepth]). */
         const val DEFAULT_UPLOAD_QUEUE_DEPTH = 256
@@ -3755,8 +3757,12 @@ class HydrationImpl(
             throw e
         } catch (e: Exception) {
             renames.abandon(intent)
-            RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
+            // gkrost/unidrive-cli#445: a provider's 409 on a move is "the name is taken" (new_path_exists), not free text a client matches.
+            if (isProviderConflict(e)) RenameResult.NewPathExists else RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
         }
+
+    private fun isProviderConflict(e: Throwable): Boolean =
+        generateSequence(e) { it.cause }.take(PROVIDER_CAUSE_DEPTH).any { it is org.krost.unidrive.ProviderException && it.httpStatus == HTTP_CONFLICT }
 
     // archive#319: move a live upload slot from the old to the new path across a rename,
     // so dehydrate's busy check, the replace-rename refusal, and list's
