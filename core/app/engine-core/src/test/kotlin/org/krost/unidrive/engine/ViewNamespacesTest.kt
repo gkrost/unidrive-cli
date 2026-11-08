@@ -191,6 +191,29 @@ class ViewNamespacesTest {
     }
 
     @Test
+    fun `a moved root keeps its previous path for the daemon's lifetime`() {
+        val top = mutableListOf<String>()
+        val v = views(recents(), known = { top })
+
+        assertEquals("/Recents", v.rootPath(ViewKind.RECENTS))
+        assertNull(v.previousRootPath(ViewKind.RECENTS), "a root that never moved has no previous path")
+
+        top += "Recents"
+        v.invalidate()
+        assertEquals("/Recents (2)", v.rootPath(ViewKind.RECENTS))
+        assertEquals("/Recents", v.previousRootPath(ViewKind.RECENTS), "the move names where the root was")
+
+        v.invalidate()
+        assertEquals("/Recents (2)", v.rootPath(ViewKind.RECENTS))
+        assertEquals("/Recents", v.previousRootPath(ViewKind.RECENTS), "kept past questions that move nothing")
+
+        top -= "Recents"
+        v.invalidate()
+        assertEquals("/Recents", v.rootPath(ViewKind.RECENTS))
+        assertEquals("/Recents (2)", v.previousRootPath(ViewKind.RECENTS), "the next move replaces it with that move's source")
+    }
+
+    @Test
     fun `a reply that must not wait for state db gets the root as last worked out, and reads nothing`() {
         val asked = AtomicInteger()
         val top = mutableListOf<String>()

@@ -62,6 +62,8 @@ sealed interface ViewResolution {
 }
 
 /** The state of one view for `daemon.status`: counts as of its last listing, the rest (whether the list was cut among it) as of now. */
+// The one wire object of a view's status; built with named arguments in the one place below.
+@Suppress("LongParameterList")
 class ViewStatus(
     val kind: ViewKind,
     val rootPath: String,
@@ -72,6 +74,9 @@ class ViewStatus(
     val asOfMs: Long?,
     val state: ViewState,
     val truncated: Boolean = false,
+    // The root's path before the engine moved it (`/Recents` before `/Recents (2)`), null while it never moved; kept for
+    // the daemon's lifetime, so a client that was away pairs the moved view with its old placeholder by identity.
+    val previousRootPath: String? = null,
 )
 
 /**
@@ -239,6 +244,7 @@ class ViewDirectory(
                 asOfMs = snapshot.asOfMs,
                 state = snapshot.state,
                 truncated = snapshot.truncated,
+                previousRootPath = namespaces.previousRootPath(kind),
             )
         }
 
