@@ -263,4 +263,59 @@ class TrashManagerTest {
         assertEquals("literal", literal.readText())
         assertEquals("slashed", slashed.readText())
     }
+
+    @Test
+    fun `a folder trashed in the same second as its child merges into the child's slot entry`() {
+        // The engine's deletes run deepest first, so a folder and its child can land in the same
+        // second's slot; the pinned stamp forces that here without racing the wall clock.
+        val now = Instant.parse("2030-01-01T00:00:00Z")
+        syncRoot.resolve("a/b").createDirectories()
+        Files.writeString(syncRoot.resolve("a/b/x.txt"), "x")
+        Files.writeString(syncRoot.resolve("a/y.txt"), "y")
+
+        val manager = TrashManager(syncRoot)
+        manager.trash("a/b", now) // deepest first: the slot now holds a/b/x.txt
+        manager.trash("a", now) // same slot: a plain move would refuse, the slot entry already exists
+
+        assertFalse(syncRoot.resolve("a").exists(), "the folder must be gone after trashing")
+        val items = manager.list()
+        assertEquals(
+            setOf("a/b/x.txt", "a/y.txt"),
+            items.map { it.originalPath }.toSet(),
+            "the trashed tree must stay whole under its original paths",
+        )
+        assertEquals("x", items.single { it.originalPath == "a/b/x.txt" }.trashPath.readText())
+        assertEquals("y", items.single { it.originalPath == "a/y.txt" }.trashPath.readText())
+    }
+
+    @Test
+    fun `a merged folder restores its children under their original paths`() {
+        val now = Instant.parse("2030-01-01T00:00:00Z")
+        syncRoot.resolve("a/b").createDirectories()
+        Files.writeString(syncRoot.resolve("a/b/x.txt"), "x")
+
+        val manager = TrashManager(syncRoot)
+        manager.trash("a/b", now)
+        manager.trash("a", now)
+
+        assertFalse(manager.restore("/a/y.txt"), "nothing was trashed at this path")
+        assertTrue(manager.restore("/a/b/x.txt"))
+        assertEquals("x", syncRoot.resolve("a/b/x.txt").readText())
+    }
+
+    @Test
+    fun `two unrelated paths trashed in the same second keep their own slot entries`() {
+        val now = Instant.parse("2030-01-01T00:00:00Z")
+        syncRoot.resolve("p.txt").writeText("p")
+        syncRoot.resolve("q.txt").writeText("q")
+
+        val manager = TrashManager(syncRoot)
+        manager.trash("p.txt", now)
+        manager.trash("q.txt", now)
+
+        assertEquals(
+            setOf("p.txt", "q.txt"),
+            manager.list().map { it.originalPath }.toSet(),
+        )
+    }
 }

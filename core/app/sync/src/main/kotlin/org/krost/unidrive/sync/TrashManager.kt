@@ -4,6 +4,7 @@ import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.engineRelative
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -17,14 +18,49 @@ class TrashManager(
     // The source and the trash key both come from the contained path: a remote name with `..`
     // segments must never move a file from outside the sync root, nor into a slot outside the trash.
     fun trash(relativePath: String): Path {
+        return trash(relativePath, Instant.now())
+    }
+
+    // Test seam: the stamp decides which second's slot the move lands in, so a test can pin it and
+    // force two calls into one slot (the engine's deletes run deepest first, so a folder and its
+    // child can trash within the same second).
+    internal fun trash(
+        relativePath: String,
+        now: Instant,
+    ): Path {
         val source = safeResolveLocal(syncRoot, relativePath)
-        val timestamp = UtcSecondStamp.encode(Instant.now().truncatedTo(ChronoUnit.SECONDS))
+        val timestamp = UtcSecondStamp.encode(now.truncatedTo(ChronoUnit.SECONDS))
         val dest = trashDir.resolve(timestamp).resolve(syncRoot.toAbsolutePath().normalize().relativize(source))
         dest.parent.createDirectories()
         if (source.exists()) {
-            Files.move(source, dest)
+            moveIntoSlot(source, dest)
         }
         return dest
+    }
+
+    // Deletes run deepest first, so a folder's child can land in this second's slot just before the
+    // folder itself does: the slot entry is already there and a plain move would refuse. Fold what
+    // the source still holds into that entry, so the trashed tree stays whole under its original
+    // paths. A name present on both sides (recreated inside the same second) still refuses; the
+    // delete is retried in a later second, whose slot is fresh.
+    private fun moveIntoSlot(
+        source: Path,
+        dest: Path,
+    ) {
+        if (!dest.exists()) {
+            Files.move(source, dest)
+            return
+        }
+        if (Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS) && !LinkedEntries.leadsElsewhere(source)) {
+            for (child in source.listDirectoryEntries()) {
+                moveIntoSlot(child, dest.resolve(child.fileName.toString()))
+            }
+            Files.delete(source)
+        } else {
+            // A file, link, or junction goes as the entry itself; only an entry that is already in
+            // the slot refuses, and a junction whose slot entry exists is one of those.
+            Files.move(source, dest)
+        }
     }
 
     data class TrashedItem(

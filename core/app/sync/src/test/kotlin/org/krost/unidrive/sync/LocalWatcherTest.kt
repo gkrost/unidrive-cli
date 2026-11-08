@@ -106,4 +106,57 @@ class LocalWatcherTest {
             val result = watcher.awaitChange(1.seconds)
             assertFalse(result, "awaitChange should return false when no changes within timeout")
         }
+
+    @Test
+    fun `start survives an unreadable subfolder`() {
+        // POSIX-only: a subdirectory with no permissions makes walkFileTree call visitFileFailed
+        // while it descends; Windows ACL semantics make this hard to set up portably, so guard
+        // the test the way the scanner's visitFileFailed test does.
+        org.junit.Assume.assumeFalse(
+            "POSIX-only test for visitFileFailed defence",
+            System.getProperty("os.name", "").lowercase().contains("win"),
+        )
+
+        val unreadable = syncRoot.resolve("blocked")
+        Files.createDirectory(unreadable)
+        Files.writeString(unreadable.resolve("hidden.txt"), "x")
+        // Strip read+execute permissions so the walk fails to enter the directory
+        Files.setPosixFilePermissions(unreadable, emptySet())
+
+        val guarded = LocalWatcher(syncRoot, debounceMs = 50L)
+        try {
+            guarded.start()
+            // The walk got past the blocked folder: siblings still register and report
+            Files.writeString(syncRoot.resolve("after-fail.txt"), "still watched")
+            Thread.sleep(500)
+            assertTrue(
+                guarded.drainChanges().any { it.contains("after-fail.txt") },
+                "expected the watcher to start and report changes below the unreadable folder",
+            )
+        } finally {
+            // Restore permissions so tearDown's cleanup can remove the temp dir
+            Files.setPosixFilePermissions(
+                unreadable,
+                java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"),
+            )
+            guarded.stop()
+        }
+    }
+
+    @Test
+    fun `a missing sync root fails the start instead of watching nothing`() {
+        // #515 review: the walk reports the missing root through visitFileFailed; swallowing it there let
+        // the watcher come up running with zero registrations and silently observe nothing. The root's own
+        // failure stays fatal (start's close-and-fail path), unlike an unreadable descendant. Cross-platform:
+        // a missing path fails the walk with NoSuchFileException, no ACL setup needed.
+        val missing = syncRoot.resolveSibling("unidrive-watch-missing-${System.nanoTime()}")
+        assertFalse(Files.exists(missing))
+        val missingWatcher = LocalWatcher(missing, debounceMs = 50L)
+        try {
+            assertFailsWith<java.io.IOException> { missingWatcher.start() }
+            assertFalse(Files.exists(missing), "the failed start must not create the root")
+        } finally {
+            missingWatcher.stop()
+        }
+    }
 }

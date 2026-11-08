@@ -1222,7 +1222,11 @@ data class SyncConfig(
                 verifyIntegrity = general.verify_integrity ?: false,
                 quotaRefreshMinutes = (general.quota_refresh_minutes ?: 15).coerceAtLeast(0),
                 useTrash = general.use_trash ?: true,
-                trashEmulation = profile?.trash_emulation ?: general.trash_emulation ?: false,
+                // No explicit key: on Windows the FreeDesktop fallback (~/.local/share/Trash) is
+                // neither the Recycle Bin nor purged by anything, and a root on another drive gets
+                // every deleted tree copied to C: first. The emulation keeps deletions in
+                // <syncRoot>/.unidrive-trash, retention-purged each pass; either key turns it off/on.
+                trashEmulation = profile?.trash_emulation ?: general.trash_emulation ?: Os.isWindows(),
                 trashRetentionDays = (profile?.trash_retention_days ?: general.trash_retention_days ?: 30).coerceAtLeast(1),
                 fileVersioning = profile?.file_versioning ?: general.file_versioning ?: false,
                 maxVersions = (profile?.max_versions ?: general.max_versions ?: 5).coerceAtLeast(1),
