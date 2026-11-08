@@ -11,8 +11,9 @@ import kotlin.test.assertNull
 
 /**
  * gkrost/unidrive-cli#57: a create must not replace an object that appeared after the plan. The PUT (or the multipart complete)
- * carries `If-None-Match: *`, and a taken key is a conflict. A vendor that does not implement the header answers 501 or
- * 400: the provider then checks with a HEAD first and stops sending it.
+ * carries `If-None-Match: *`, and a taken key is a conflict. A vendor that does not implement the header answers 501, or a 400
+ * whose code names the header: the provider then checks with a HEAD first and stops sending it. Any other 400 is a real
+ * failure, and a vendor that supports conditional writes never loses its guard to one.
  */
 class S3CreateGuardTest {
     private val dir = Files.createTempDirectory("s3-create-guard")
@@ -21,8 +22,9 @@ class S3CreateGuardTest {
     private fun provider(
         fake: FakeS3,
         threshold: Long = S3Config.MULTIPART_THRESHOLD,
+        vendor: S3Config.Vendor = S3Config.Vendor.of("http://localhost:9000"),
     ) = S3Provider(
-        S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", dir, multipartThreshold = threshold, minPartSize = mib),
+        S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", dir, multipartThreshold = threshold, minPartSize = mib, vendor = vendor),
         fake.engine,
     )
 
@@ -91,13 +93,42 @@ class S3CreateGuardTest {
         }
 
     @Test
-    fun `a vendor that answers 400 to the header falls back the same way`() =
+    fun `a 400 whose code names the header falls back like a 501`() =
         runTest {
             val fake = FakeS3()
-            fake.failures += Triple({ r: FakeS3.Request -> r.headers.containsKey("if-none-match") }, 400, "InvalidArgument")
+            fake.failures += Triple({ r: FakeS3.Request -> r.headers.containsKey("if-none-match") }, 400, "InvalidIfNoneMatch")
+            val s3 = provider(fake)
+
+            s3.upload(local("a.txt", "mine".toByteArray()), "/a.txt")
+            assertEquals("mine", fake.text("a.txt"))
+
+            fake.put("a.txt", "theirs")
+            assertFailsWith<RemoteConflictException> { s3.upload(local("a.txt", "mine again".toByteArray()), "/a.txt") }
+            assertEquals(listOf("*", null), puts(fake).map { it.headers["if-none-match"] }, "one refused attempt with it, one without")
+        }
+
+    @Test
+    fun `a 400 that is a real failure does not retire the guard`() =
+        runTest {
+            val fake = FakeS3()
+            fake.failures += Triple({ r: FakeS3.Request -> r.headers.containsKey("if-none-match") }, 400, "RequestTimeout")
+
+            assertFailsWith<S3Exception> { provider(fake).upload(local("a.txt", "mine".toByteArray()), "/a.txt") }
+            assertNull(fake.text("a.txt"), "a real 400 failure writes nothing and keeps the guard")
 
             provider(fake).upload(local("a.txt", "mine".toByteArray()), "/a.txt")
+            assertEquals("*", puts(fake).last().headers["if-none-match"], "the next create still carries the guard")
+        }
 
-            assertEquals("mine", fake.text("a.txt"))
+    @Test
+    fun `a vendor with conditional writes never retires the guard on a refused create`() =
+        runTest {
+            val fake = FakeS3()
+            fake.failures += Triple({ r: FakeS3.Request -> r.headers.containsKey("if-none-match") }, 400, "InvalidIfNoneMatch")
+
+            val s3 = provider(fake, vendor = S3Config.Vendor("aws", 10_000, conditionalWrites = true))
+
+            assertFailsWith<S3Exception> { s3.upload(local("a.txt", "mine".toByteArray()), "/a.txt") }
+            assertNull(fake.text("a.txt"))
         }
 }
