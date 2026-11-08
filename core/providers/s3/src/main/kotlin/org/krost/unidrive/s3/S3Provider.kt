@@ -507,8 +507,10 @@ class S3Provider(
         val there = keysWithEtags("$to/")
         for ((key, obj) in sources) {
             val target = "$to/" + key.removePrefix("$from/")
-            val etag = there[target] ?: continue
-            if (!sameBytes(obj.etag, etag)) {
+            // containsKey, not a null-safe get: an object without an ETag is present, and its bytes are
+            // unknown — the same side the file-move guard's sameBytes lands on, never a silent overwrite.
+            if (!there.containsKey(target)) continue
+            if (!sameBytes(obj.etag, there[target])) {
                 throw RemoteConflictException("'$target' is on S3 already; the move would replace its bytes")
             }
         }

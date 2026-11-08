@@ -51,6 +51,21 @@ class S3MoveConflictTest {
             assertEquals(listOf("d/a.txt", "e/a.txt"), fake.objects.keys.toList())
         }
 
+    // The listing of the destination can carry an object without an ETag; it is present all the same and its
+    // bytes are unknown, so the move refuses instead of treating the key as free.
+    @Test
+    fun `a folder move refuses a taken key whose listing carries no ETag`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("d/a.txt", "the source tree's bytes")
+            fake.putWithoutEtag("e/a.txt", "the other tree's bytes")
+
+            assertFailsWith<RemoteConflictException> { provider(fake).move("/d", "/e") }
+
+            assertEquals("the other tree's bytes", fake.text("e/a.txt"))
+            assertEquals(listOf("d/a.txt", "e/a.txt"), fake.objects.keys.toList())
+        }
+
     @Test
     fun `a folder move does not clobber a deeper key whose name collides`() =
         runTest {

@@ -27,7 +27,7 @@ class FakeS3(
     class Obj(
         val bytes: ByteArray?,
         val size: Long,
-        val etag: String,
+        val etag: String?,
         val meta: Map<String, String>,
         val lastModified: Instant,
         /** `x-amz-server-side-encryption` a HEAD answers with (a listing does not carry it). */
@@ -73,6 +73,15 @@ class FakeS3(
     ) {
         val bytes = content.toByteArray()
         objects[key] = Obj(bytes, bytes.size.toLong(), md5Hex(bytes), meta, nextTime())
+    }
+
+    /** An object the listing reports without an ETag, the way real S3 lists some archived objects. */
+    fun putWithoutEtag(
+        key: String,
+        content: String,
+    ) {
+        val bytes = content.toByteArray()
+        objects[key] = Obj(bytes, bytes.size.toLong(), null, emptyMap(), nextTime())
     }
 
     /** An object S3 reports with [size] but whose bytes the fake does not hold (for copies above 5 GiB). */
@@ -137,8 +146,8 @@ class FakeS3(
             r.method == HttpMethod.Head -> {
                 val obj = objects[r.key] ?: return respond("", HttpStatusCode.NotFound)
                 val headers =
-                    listOf(
-                        "ETag" to listOf("\"${obj.etag}\""),
+                    listOfNotNull(
+                        obj.etag?.let { "ETag" to listOf("\"$it\"") },
                         "Content-Length" to listOf(obj.size.toString()),
                         "Last-Modified" to listOf(DateTimeFormatter.RFC_1123_DATE_TIME.format(obj.lastModified.atZone(ZoneOffset.UTC))),
                     ) + obj.meta.map { "x-amz-meta-${it.key}" to listOf(it.value) } +
@@ -221,7 +230,8 @@ class FakeS3(
                         append("<CommonPrefixes><Prefix>${name(key)}</Prefix></CommonPrefixes>")
                     } else {
                         append("<Contents><Key>${name(key)}</Key><LastModified>${obj.lastModified}</LastModified>")
-                        append("<ETag>&quot;${obj.etag}&quot;</ETag><Size>${obj.size}</Size></Contents>")
+                        if (obj.etag != null) append("<ETag>&quot;${obj.etag}&quot;</ETag>")
+                        append("<Size>${obj.size}</Size></Contents>")
                     }
                 }
                 append("</ListBucketResult>")
