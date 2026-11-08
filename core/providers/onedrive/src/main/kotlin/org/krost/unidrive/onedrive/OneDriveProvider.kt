@@ -1,5 +1,6 @@
 package org.krost.unidrive.onedrive
 
+import kotlinx.coroutines.CancellationException
 import org.krost.unidrive.*
 import org.krost.unidrive.onedrive.model.DriveItem
 import org.krost.unidrive.onedrive.model.FileSystemInfo
@@ -319,6 +320,12 @@ class OneDriveProvider(
     private fun GraphApiException.isItemNotFound(): Boolean =
         message?.contains("\"code\":\"itemNotFound\"") == true
 
+    // A 404 that says the item is GONE. Not every 404 is: [itemAt] answers the name-confusion
+    // ("resolved to a different name") as a 404 too, and an unguarded replace there would overwrite
+    // the sibling the lookup resolved to — only a missing item may fall through to one (#453).
+    private fun GraphApiException.isItemGone(): Boolean =
+        statusCode == 404 && message?.contains("resolved to a different name") != true
+
     private fun GraphApiException.isInvalidRequest(): Boolean =
         statusCode == 400 && message?.contains("\"code\":\"invalidRequest\"") == true
 
@@ -433,9 +440,19 @@ class OneDriveProvider(
             // carried it, archive#113). Prefer the engine's PLAN-TIME eTag when supplied; otherwise fall
             // back to an at-upload-time fetch (closes the narrower fetch→PUT window, not the
             // engine's stale-view window — see archive#291 for the plan-time-persistence limitation).
+            // A failed lookup must not strip the guard (#453): a 503 after the client's retries, an
+            // I/O error or a name-confused 404 would send the PUT as an unconditional replace — a
+            // lost update waiting to happen. Only a GONE item (404) falls through to an unguarded
+            // write, because there is nothing left to guard; cancellation is never absorbed here.
             val guardETag =
                 ifMatchETag
-                    ?: runCatching { if (sharedId != null) graphApi.getItemById(sharedId) else itemAt(remotePath) }.getOrNull()?.eTag
+                    ?: try {
+                        (if (sharedId != null) graphApi.getItemById(sharedId) else itemAt(remotePath)).eTag
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: GraphApiException) {
+                        if (e.isItemGone()) null else throw e
+                    }
             return try {
                 if (sharedId != null) {
                     put("replace", guardETag, itemId = sharedId).toCloudItem().copy(id = sharedId, path = remotePath)

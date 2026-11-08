@@ -40,11 +40,14 @@ class OneDriveCreateCollisionTest {
         id: String,
         name: String,
         size: Long = 5,
-    ): String =
-        """
+        eTag: String? = null,
+    ): String {
+        val eTagField = if (eTag != null) ""","eTag":"$eTag"""" else ""
+        return """
         {"id":"$id","name":"$name","size":$size,"file":{"mimeType":"application/octet-stream"},
-         "parentReference":{"path":"/drive/root:"}}
+         "parentReference":{"path":"/drive/root:"}$eTagField}
         """.trimIndent()
+    }
 
     /** Build a real OneDriveProvider whose GraphApiService transport is the supplied MockEngine. */
     private fun providerWith(engine: MockEngine): OneDriveProvider {
@@ -146,6 +149,11 @@ class OneDriveCreateCollisionTest {
             val engine =
                 MockEngine { request ->
                     when {
+                        // The at-upload-time guard lookup: a healthy item, so the replace below is a
+                        // guarded one (#453 — an unparsable lookup answer now fails the upload instead
+                        // of silently stripping the guard).
+                        request.method == HttpMethod.Get && request.url.encodedPath.contains("/root:/") ->
+                            respond(driveItemJson("owned-id", "doc.txt", eTag = "etag-current"), HttpStatusCode.OK, jsonHeaders())
                         request.method == HttpMethod.Put && request.url.encodedPath.endsWith("/content") -> {
                             conflictBehaviors += request.url.parameters["@microsoft.graph.conflictBehavior"]
                             respond(driveItemJson("owned-id", "doc.txt"), HttpStatusCode.OK, jsonHeaders())
