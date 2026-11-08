@@ -648,6 +648,31 @@ class HydrationImpl(
             return OpenResult.Failed(error)
         }
         touch(path)
+        // A warm read is a row read and a stat, not a download: it is answered here, so none of the shared download's
+        // machinery (a deferred, a waiter, a progress ticker) spins up for it and no history handle starts. The locked
+        // re-check inside ensureHydrated still answers the cold path for a caller that raced past this check; a name the
+        // platform cannot hold resolves nowhere (runCatching), and the full path answers for it, as before.
+        if (runCatching { mount.servesFromLocalCopy(entry) }.getOrDefault(false)) {
+            try {
+                val cachePath = mount.resolveCachePath(path)
+                val bytes = java.nio.file.Files.size(cachePath)
+                _events.emit(HydrationEvent.Hydrating(path))
+                accountCacheFile(path, bytes)
+                _events.emit(HydrationEvent.Hydrated(path, bytes, fetched = false))
+                _events.emit(
+                    HydrationEvent.Completed(
+                        path = path,
+                        handleId = handleId,
+                        direction = HydrationEvent.Completed.Direction.DOWNLOAD,
+                        ok = true,
+                    ),
+                )
+                registerHandle(connectionId, handleId, path)
+                return OpenResult.Ok(cachePath, contentId = with(mount) { entry.copyContentId() }?.takeUnless { mount.isExcludedPath(path, false) })
+            } catch (_: java.io.IOException) {
+                // The copy vanished between the check and the serve: the full path answers.
+            }
+        }
         // archive#652: a cold read is a download in the history; a warm serve never starts the handle, so it leaves no row.
         val tx = history?.begin(TransferDirection.DOWNLOAD, path, bytesTotal = entry.remoteSize.takeIf { it > 0 })
         // The history handle of the download this read got its bytes from (another read's when it joined that one); null until
@@ -2485,7 +2510,23 @@ class HydrationImpl(
         if (!resolvesInsideCache(path)) return HydrateResult.Failed(HydrationError.InvalidPath)
         if (renames.blocks(path)) return HydrateResult.Failed(HydrationError.Generic(BUSY_TOKEN)) // archive#1040 M4, see openForReadAt
         touch(path)
-        val tx = history?.begin(TransferDirection.DOWNLOAD, path, bytesTotal = stateDb.getEntry(path)?.remoteSize?.takeIf { it > 0 })
+        val entry = stateDb.getEntry(path)
+        // A warm hydrate is answered here, the way openForReadAt answers a warm read: no download machinery, no history
+        // row; a name the platform cannot hold resolves nowhere, and the full path answers for it, as before.
+        if (entry != null && runCatching { mount.servesFromLocalCopy(entry) }.getOrDefault(false)) {
+            try {
+                val bytes = java.nio.file.Files.size(mount.resolveCachePath(path))
+                _events.emit(HydrationEvent.Hydrating(path))
+                accountCacheFile(path, bytes)
+                _events.emit(HydrationEvent.Hydrated(path, bytes, fetched = false))
+                // A pin brings bytes in without any handle to close, so the budget pass that a close triggers never came for it.
+                requestEviction()
+                return HydrateResult.Ok
+            } catch (_: java.io.IOException) {
+                // The copy vanished between the check and the serve: the full path answers.
+            }
+        }
+        val tx = history?.begin(TransferDirection.DOWNLOAD, path, bytesTotal = entry?.remoteSize?.takeIf { it > 0 })
         var served: TransferHandle? = null // as in openForReadAt
         return try {
             _events.emit(HydrationEvent.Hydrating(path))
