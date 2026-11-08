@@ -366,10 +366,16 @@ class HttpRetryBudget(
          *  - [java.net.SocketException] — covers "Connection reset",
          *    "Broken pipe", and the Windows TCP RST family
          *    (WSAECONNABORTED / WSAECONNRESET).
-         *  - Localised Windows messages: matches `aborted` / `reset` /
-         *    "Verbindung wurde" (German Windows TCP RST surface).
+         *  - Localised socket/SSL messages: [javax.net.ssl.SSLException] that
+         *    matches `aborted` / `reset` / "Verbindung wurde" (German Windows
+         *    TCP RST surface). Message text is matched only inside the socket
+         *    and SSL families — there the localised OS text is the failure
+         *    itself. On any other [IOException] the same words are often
+         *    server or OS text ("Session aborted", "Reset your password") and
+         *    must not drive a retry.
          *
          * Non-retriable:
+         *  - [HtmlInsteadOfContentException] — an HTML page in place of the file bytes.
          *  - [java.net.UnknownHostException] — typo / DNS down.
          *  - [javax.net.ssl.SSLPeerUnverifiedException] — cert mismatch.
          *  - [javax.net.ssl.SSLHandshakeException] — protocol / cert version mismatch.
@@ -386,7 +392,13 @@ class HttpRetryBudget(
             if (e is javax.net.ssl.SSLPeerUnverifiedException) return false
             if (e is javax.net.ssl.SSLHandshakeException) return false
             if (e is java.net.SocketException) return true
-            val msg = e.message ?: return false
+            if (e is javax.net.ssl.SSLException) return hasTransientSocketMessage(e.message)
+            return false
+        }
+
+        // The localised Windows TCP text the classifier matches on; see [isRetriableIoException].
+        private fun hasTransientSocketMessage(msg: String?): Boolean {
+            if (msg == null) return false
             return msg.contains("aborted", ignoreCase = true) ||
                 msg.contains("reset", ignoreCase = true) ||
                 msg.contains("broken pipe", ignoreCase = true) ||

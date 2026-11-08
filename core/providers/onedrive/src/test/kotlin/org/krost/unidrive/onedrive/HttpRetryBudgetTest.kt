@@ -298,18 +298,21 @@ class HttpRetryBudgetTest {
 
     @Test
     fun `UD-278 - isRetriableIoException - localised Windows TCP RST messages match`() {
-        // Plain English "aborted" — Windows WSAECONNABORTED surface.
-        assertTrue(HttpRetryBudget.isRetriableIoException(java.io.IOException("Connection aborted")))
+        // Plain English "aborted" — Windows WSAECONNABORTED surface; the message match lives in the
+        // socket and SSL families, where the localised OS text is the failure itself.
+        assertTrue(HttpRetryBudget.isRetriableIoException(javax.net.ssl.SSLException("Connection aborted")))
         // German Windows: "Eine bestehende Verbindung wurde softwaregesteuert..."
         assertTrue(
             HttpRetryBudget.isRetriableIoException(
-                java.io.IOException(
+                javax.net.ssl.SSLException(
                     "Eine bestehende Verbindung wurde softwaregesteuert durch den Hostcomputer abgebrochen",
                 ),
             ),
         )
         // Premature EOF mid-body.
-        assertTrue(HttpRetryBudget.isRetriableIoException(java.io.IOException("premature end of stream")))
+        assertTrue(HttpRetryBudget.isRetriableIoException(javax.net.ssl.SSLException("premature end of stream")))
+        // The same words on a generic IOException are server or OS text, not a TCP failure.
+        assertEquals(false, HttpRetryBudget.isRetriableIoException(java.io.IOException("Connection aborted")))
     }
 
     @Test

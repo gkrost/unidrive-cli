@@ -28,6 +28,7 @@ import org.krost.unidrive.http.UploadProgress
 import org.krost.unidrive.http.UploadTimeoutPolicy
 import org.krost.unidrive.http.UploadWatchdogException
 import org.krost.unidrive.http.UploadWatchdogLimits
+import org.krost.unidrive.http.HtmlInsteadOfContentException
 import org.krost.unidrive.http.assertNotHtml
 import org.krost.unidrive.http.writeStagedDownload
 import org.krost.unidrive.http.parseRetryAfterHeader
@@ -1680,14 +1681,14 @@ class GraphApiService(
             ?: response.headers["client-request-id"]
 
     /**
-     * Recognise the IOException that [assertNotHtml] raises when a CDN edge
+     * Recognise the exception [assertNotHtml] raises when a CDN edge
      * serves an HTML throttle/captive-portal page (HTTP 200, text/html) in
-     * place of the file bytes. Matched on the stable message substring so the
+     * place of the file bytes. Matched on the dedicated exception type so the
      * download path can re-resolve the download URL rather than re-GETting the
-     * same dead URL through the generic flake-retry.
+     * same dead URL through the generic flake-retry; the message is not parsed
+     * for the classification, since it can carry server HTML.
      */
-    private fun isHtmlBodyFailure(e: Throwable): Boolean =
-        e is java.io.IOException && e.message?.contains("HTML instead of file bytes") == true
+    private fun isHtmlBodyFailure(e: Throwable): Boolean = e is HtmlInsteadOfContentException
 
     private fun shouldBackoff(
         response: HttpResponse,

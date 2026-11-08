@@ -91,8 +91,8 @@ class HttpRetryBudgetMatrixTest {
             "SocketException 'Broken pipe' is transient — must retry",
         )
         assertTrue(
-            HttpRetryBudget.isRetriableIoException(java.io.IOException("premature end of stream")),
-            "premature EOF mid-body is transient — must retry",
+            HttpRetryBudget.isRetriableIoException(javax.net.ssl.SSLException("premature end of stream")),
+            "premature EOF mid-body in the SSL family is transient — must retry",
         )
         // Misconfig classes — explicit non-retriable.
         assertFalse(
@@ -106,6 +106,44 @@ class HttpRetryBudgetMatrixTest {
         assertFalse(
             HttpRetryBudget.isRetriableIoException(javax.net.ssl.SSLPeerUnverifiedException("hostname mismatch")),
                 "SSLPeerUnverifiedException is cert mismatch — must NOT retry",
+        )
+    }
+
+    // Captive-portal pages, expired-link login screens and local OS messages carry the same words as
+    // transient TCP failures ("Session aborted", "Reset your password"); message matching is reserved
+    // for the socket and SSL families, where the localised OS text is the failure itself.
+    @Test
+    fun `isRetriableIoException does not classify server or local text by message substring`() {
+        assertFalse(
+            HttpRetryBudget.isRetriableIoException(java.io.IOException("Reset your password")),
+            "server HTML text must not read as a transient TCP failure",
+        )
+        assertFalse(
+            HttpRetryBudget.isRetriableIoException(java.io.IOException("Session aborted")),
+            "server HTML text must not read as a transient TCP failure",
+        )
+        assertTrue(
+            HttpRetryBudget.isRetriableIoException(javax.net.ssl.SSLException("Connection aborted")),
+            "the SSL family keeps the localised-message match",
+        )
+    }
+
+    @Test
+    fun `the HTML-instead-of-content failure is terminal, not retriable`() {
+        // The snippet in the message can carry server HTML whose text matches the transient words.
+        assertFalse(
+            HttpRetryBudget.isRetriableIoException(
+                HtmlInsteadOfContentException(
+                    "Download returned HTML instead of file bytes (status=200, Content-Type=text/html): Reset your password",
+                ),
+            ),
+            "an HTML page in place of the file bytes is a permanent condition for this URL",
+        )
+        assertFalse(
+            HttpRetryBudget.isRetriableIoException(
+                HtmlInsteadOfContentException("Download returned HTML instead of file bytes (status=200, Content-Type=text/html)"),
+            ),
+            "an HTML page in place of the file bytes is a permanent condition for this URL",
         )
     }
 
