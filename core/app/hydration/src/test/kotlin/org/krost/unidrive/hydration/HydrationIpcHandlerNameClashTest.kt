@@ -163,5 +163,62 @@ class HydrationIpcHandlerNameClashTest {
         assertEquals("""{"ok":false,"error":"name_clash"}""", handler.handle("conn1", """{"verb":"hydration.create","path":"/$nfc"}""").trim())
     }
 
+    // #517 review: the rename's structured refusals are their own RenameResult variants, not Failed members —
+    // a rename that answers one of them is a failed verb, and the destination spelling it claimed must be
+    // rolled back, or the other spelling stays refused for nothing.
+    @Test
+    fun `a rename refused old_path_not_found leaves the destination spelling free`() = runTest {
+        val fake = ScriptedHydration()
+        fake.rename = RenameResult.OldPathNotFound
+        val handler = HydrationIpcHandler(fake)
+
+        assertEquals(
+            """{"ok":false,"error":"old_path_not_found"}""",
+            handler.handle("conn1", """{"verb":"hydration.rename","old_path":"/plain.txt","new_path":"/$nfc"}""").trim(),
+        )
+
+        fake.rename = RenameResult.Ok
+        assertTrue(
+            handler.handle("conn2", """{"verb":"hydration.rename","old_path":"/plain.txt","new_path":"/$nfd"}""").contains("\"ok\":true"),
+            "the rolled-back claim must not refuse the other spelling",
+        )
+    }
+
+    @Test
+    fun `a rename refused new_parent_not_found leaves the destination spelling free`() = runTest {
+        val fake = ScriptedHydration()
+        fake.rename = RenameResult.NewParentNotFound
+        val handler = HydrationIpcHandler(fake)
+
+        assertEquals(
+            """{"ok":false,"error":"new_parent_not_found"}""",
+            handler.handle("conn1", """{"verb":"hydration.rename","old_path":"/plain.txt","new_path":"/no-such-folder/$nfc"}""").trim(),
+        )
+
+        fake.rename = RenameResult.Ok
+        assertTrue(
+            handler.handle("conn2", """{"verb":"hydration.rename","old_path":"/plain.txt","new_path":"/$nfd"}""").contains("\"ok\":true"),
+            "the rolled-back claim must not refuse the other spelling",
+        )
+    }
+
+    @Test
+    fun `a rename refused new_path_exists leaves the destination spelling free`() = runTest {
+        val fake = ScriptedHydration()
+        fake.rename = RenameResult.NewPathExists
+        val handler = HydrationIpcHandler(fake)
+
+        assertEquals(
+            """{"ok":false,"error":"new_path_exists"}""",
+            handler.handle("conn1", """{"verb":"hydration.rename","old_path":"/plain.txt","new_path":"/$nfc"}""").trim(),
+        )
+
+        fake.rename = RenameResult.Ok
+        assertTrue(
+            handler.handle("conn2", """{"verb":"hydration.rename","old_path":"/plain.txt","new_path":"/$nfd"}""").contains("\"ok\":true"),
+            "the rolled-back claim must not refuse the other spelling",
+        )
+    }
+
     private fun kotlinx.coroutines.test.TestScope.advanceUntilIdleForUploads() = testScheduler.advanceUntilIdle()
 }

@@ -15,6 +15,7 @@ internal class ScriptedHydration : Hydration {
     var open: OpenResult = OpenResult.Ok(cache)
     var create: CreateResult = CreateResult.Ok(cache, "h-2")
     var mkdir: MkdirResult = MkdirResult.Ok
+    var rename: RenameResult = RenameResult.Ok
     var list: ListResult = ListResult.Ok(emptyList())
     var matches: MatchesLocalResult = MatchesLocalResult.Same("quickxor")
     var viewPage: ViewPageResult = ViewPageResult.UnknownView
@@ -111,7 +112,7 @@ internal class ScriptedHydration : Hydration {
 
     override suspend fun rename(oldPath: String, newPath: String, replace: Boolean): RenameResult {
         calls += HydrationCall("rename", listOf(oldPath, newPath, replace))
-        return RenameResult.Ok
+        return rename
     }
 
     override val events: Flow<HydrationEvent> = emptyFlow()

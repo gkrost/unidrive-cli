@@ -659,7 +659,10 @@ class HydrationIpcHandler(
                 // The old path's spelling is only checked: a rename records nothing for it. The new path's is claimed
                 // before the verb, like every verb that records a spelling.
                 nameClash(rawPath(request, "old_path"))?.let { return it }
-                val r = claimed(rawPath(request, "new_path"), { it is RenameResult.Failed }) {
+                // Every non-Ok answer is a failure for the claim's ownership: OldPathNotFound,
+                // NewParentNotFound and NewPathExists are their own variants, not RenameResult.Failed
+                // members, and a rename that refused them must not leave the destination spelling claimed.
+                val r = claimed(rawPath(request, "new_path"), { it !is RenameResult.Ok }) {
                     hydration.rename(oldPath, newPath, replace)
                 } ?: return reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN)
                 when (r) {
