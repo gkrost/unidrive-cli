@@ -1,6 +1,9 @@
 package org.krost.unidrive.dropbox
 
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.pluginOrNull
 import io.ktor.http.Url
+import kotlinx.coroutines.Job
 import kotlinx.serialization.json.jsonPrimitive
 import org.krost.unidrive.CompleteAuthResult
 import org.krost.unidrive.ConfigurationException
@@ -12,6 +15,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /** The sign-in request (PKCE, offline access, the loopback redirect) and what the factory asks of a profile. */
@@ -152,6 +156,56 @@ class DropboxAuthTest {
             val outcome = factory.completeInteractiveAuth(dir, begun.continuationHandle, "code", profile)
             assertIs<CompleteAuthResult.Failure>(outcome)
             assertEquals(CompleteAuthResult.Reason.EXPIRED, outcome.reason)
+        }
+
+    // The factory creates an HttpClient per sign-in process; it must carry the API client's timeouts and be
+    // closed once the flow (or the exchange) is done, so the daemon leaks no selector threads per sign-in.
+    @Test
+    fun `the client the factory hands an auth flow carries the api client's timeouts`() {
+        val client = DropboxProviderFactory().newHttpClientForBegin()
+        try {
+            assertNotNull(client.pluginOrNull(HttpTimeout), "the auth client carries the HttpTimeout plugin the API client builds in")
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `auth begin closes the client it creates`() =
+        kotlinx.coroutines.runBlocking<Unit> {
+            val client = io.ktor.client.HttpClient(FakeDropbox().engine)
+            val factory =
+                object : DropboxProviderFactory() {
+                    override fun newHttpClientForBegin() = client
+                }
+            val profileDir = Files.createTempDirectory("dropbox-auth-close-begin")
+
+            factory.beginInteractiveAuth(profileDir, profile)
+
+            assertTrue(client.coroutineContext[Job]!!.isCompleted, "the client is closed once the url is handed out")
+        }
+
+    @Test
+    fun `auth complete closes the client it creates, exchange refused or not`() =
+        kotlinx.coroutines.runBlocking<Unit> {
+            val fake = FakeDropbox()
+            fake.json("oauth2/token", """{"error_summary":"invalid_grant/"}""", status = 400)
+            // Begin and complete each create their own client, so both are recorded and both must be closed.
+            val clients = mutableListOf<io.ktor.client.HttpClient>()
+            val factory =
+                object : DropboxProviderFactory() {
+                    override fun newHttpClientForBegin(): io.ktor.client.HttpClient = io.ktor.client.HttpClient(fake.engine).also { clients += it }
+                }
+            val profileDir = Files.createTempDirectory("dropbox-auth-close-complete")
+            val begun = factory.beginInteractiveAuth(profileDir, profile)
+
+            val outcome = factory.completeInteractiveAuth(profileDir, begun.continuationHandle, "wrong", profile)
+
+            assertIs<CompleteAuthResult.Failure>(outcome)
+            assertTrue(
+                clients.all { it.coroutineContext[Job]!!.isCompleted },
+                "every client the flow created is closed, also when the exchange is refused",
+            )
         }
 
     /**
