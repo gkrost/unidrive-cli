@@ -3,6 +3,7 @@ package org.krost.unidrive.http
 import io.ktor.http.ContentType
 import io.ktor.http.content.OutgoingContent
 import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.cancel
 import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -323,39 +324,47 @@ public fun progressTrackingFileRangeBody(
         }
     }
 
-// The streamingFileBody loop (UD-342: 64 KiB chunks, backpressure through writeFully, the UD-287 close in finally), plus
-// a progress record per chunk the channel accepted. writeFully suspends while the transport's buffers are full, so a
-// chunk counts once it is in a bounded buffer on its way to the socket: the record stops moving when the network does.
-// It moves in steps of up to the channel's 1 MiB buffer (see UploadTimeoutPolicy.UPLOAD_IDLE_WINDOW_MS).
-private class ProgressTrackingContent(
+// The streamingFileBody loop (UD-342: 64 KiB chunks, backpressure through writeFully), plus a progress record per
+// chunk the channel accepted. writeFully suspends while the transport's buffers are full, so a chunk counts once it
+// is in a bounded buffer on its way to the socket: the record stops moving when the network does. It moves in steps
+// of up to the channel's 1 MiB buffer (see UploadTimeoutPolicy.UPLOAD_IDLE_WINDOW_MS).
+//
+// The body contract is [streamingFileBody]'s: exactly the declared contentLength bytes go out, and any failure
+// aborts the channel with that cause instead of ending the body as if it were complete.
+internal class ProgressTrackingContent(
     override val contentLength: Long,
     override val contentType: ContentType,
     private val progress: UploadProgress,
     private val open: () -> InputStream,
 ) : OutgoingContent.WriteChannelContent() {
+    @Suppress("TooGenericExceptionCaught") // whatever fails, the request is aborted with that cause and it is rethrown
     override suspend fun writeTo(channel: ByteWriteChannel) {
         progress.bodyStarted()
-        var complete = false
         try {
             withContext(Dispatchers.IO) {
                 open().use { input ->
                     val buf = ByteArray(CHUNK_BYTES)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        if (n == 0) continue
+                    var sent = 0L
+                    // Exactly the declared length: the file may be saved to while it uploads. A shorter file would leave
+                    // the server waiting for bytes, a longer one would put bytes past the Content-Length on the wire.
+                    while (sent < contentLength) {
+                        val n = input.read(buf, 0, minOf(buf.size.toLong(), contentLength - sent).toInt())
+                        if (n < 0) throw IOException("file changed during upload: read $sent of $contentLength bytes")
                         channel.writeFully(buf, 0, n)
                         progress.wrote(n)
+                        sent += n
                     }
+                    if (input.read() != -1) throw IOException("file changed during upload: more than the declared $contentLength bytes")
                 }
             }
             channel.flushAndClose()
-            complete = true
-        } finally {
-            // UD-287: a secondary close failure must not shadow the original cause.
-            if (!complete) runCatching { channel.flushAndClose() }
+            progress.bodyComplete()
+        } catch (e: Throwable) {
+            // An aborted body, not a normal end: a normal close would present a short body as a finished one
+            // (the cause reaches the caller as the request's failure). A close that fails must not shadow the cause.
+            runCatching { channel.cancel(e) }
+            throw e
         }
-        progress.bodyComplete()
     }
 
     private companion object {
