@@ -39,6 +39,19 @@ class AccountOwnerTest {
     }
 
     @Test
+    fun `a stored user that cannot be read is refused, not adopted`() {
+        // A directory stands in for a file a backup tool or an ACL denies reading: an id may be stored, nothing can be
+        // compared, so the sign-in is refused instead of adopting its user.
+        Files.createDirectories(dir.resolve(AccountOwner.FILE_NAME))
+
+        assertEquals(AccountOwner.Verdict.UNVERIFIED, AccountOwner.verdict(dir, "id-a"))
+        assertEquals(AccountOwner.Verdict.UNVERIFIED, AccountOwner.verdict(dir, null))
+        assertFailsWith<AccountUnverifiedException> { AccountOwner.requireSameUser(dir, "id-a") }
+        // read() keeps its own contract: null also when the file cannot be read (record and recordIfMissing rely on it).
+        assertNull(AccountOwner.read(dir))
+    }
+
+    @Test
     fun `record never replaces a stored user and ignores a blank one`() {
         AccountOwner.record(dir, " ")
         assertEquals(null, AccountOwner.read(dir))
