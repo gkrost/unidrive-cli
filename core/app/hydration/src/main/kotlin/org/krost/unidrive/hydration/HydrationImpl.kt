@@ -1708,7 +1708,11 @@ class HydrationImpl(
     // dropped — never a row with a real remote id ([StateDatabase.deleteLocalPendingRow] re-checks that). A path with an
     // upload under way is left to that upload. Once per start, at one line.
     private fun dropGonePendingRows() {
-        val gone = pendingUploadSplit().gone.filter { !uploadSlots.containsKey(it.path) }
+        // #452: a row a still-owed rename names is not judged gone — its copy may sit at the rename's other end because
+        // the settle could not move it yet, and dropping the row would strand the copy there.
+        val gone = pendingUploadSplit().gone.filter { row ->
+            !uploadSlots.containsKey(row.path) && renames.owedByOldPath.values.none { intent -> intent.names(row.path) }
+        }
         if (gone.isEmpty()) return
         val dropped = gone.filter { stateDb.deleteLocalPendingRow(it.path) }
         if (dropped.isEmpty()) return
@@ -3600,8 +3604,9 @@ class HydrationImpl(
     // The undo half of a settled replace: the source had not moved when the daemon stopped, so the parked file moves back to its
     // name. Returns whether the record can go; false keeps it for the next start.
     // - a never-uploaded source (no cloud id) may have moved its cache copy onto the destination's name before the stop, between
-    //   the cache move and the row's repath of its local rename — a step no rename record covers (the review of #313): those bytes
-    //   are the source's only copy, so the repath is finished and the replace stands, never undone over them;
+    //   the cache move and the row's repath of its local rename — a step rename records cover since #452, so this remains for a
+    //   state.db written before then (the review of #313): those bytes are the source's only copy, so the repath is finished and
+    //   the replace stands, never undone over them;
     // - a cache copy at the destination's name that nothing explains is not overwritten either: it stays until the next start
     //   (or a hand) resolves whose it is, and the parked file stays parked.
     private suspend fun undoReplace(
@@ -3609,7 +3614,7 @@ class HydrationImpl(
         atSource: org.krost.unidrive.sync.model.SyncEntry,
         parked: org.krost.unidrive.sync.model.SyncEntry,
     ): Boolean {
-        // The half of a local rename no record covers: the source's copy went, its row did not follow.
+        // The half of a local rename a pre-#452 state.db has no record of: the source's copy went, its row did not follow.
         val sourceCopyMovedOn = record.sourceRemoteId == null && atSource.remoteId == null &&
             !cacheCopyPresent(record.sourcePath) && cacheCopyPresent(record.destPath)
         if (sourceCopyMovedOn) {
@@ -3729,12 +3734,21 @@ class HydrationImpl(
                     RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
                 }
             }
+            // #452: the copy moves before the row does, so a failure or a stop in between left the file's only copy at the
+            // new name beside a row still at the old one — and the next start read the row as gone (its copy is not at its
+            // path) and dropped it, stranding the file for good. The rename is recorded before anything moves, and the
+            // record keeps the row's repath and the copy's move owed until both are done ([RenameRollForward]): the same
+            // roll-forward the cloud-backed renames run on.
+            val intent = renames.begin(oldNorm, newNorm, null, ghost = false)
             return runCatching {
                 moveCacheFile(oldNorm, newNorm)
                 rekeyUploadSlot(oldNorm, newNorm)
                 stateDb.renamePrefix(oldNorm, newNorm)
+                renames.finish(intent)
                 RenameResult.Ok
             }.getOrElse { e ->
+                // Whatever stopped it, the record stays: the next request or start finishes the rename.
+                renames.interrupted(intent)
                 RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
             }
         }
