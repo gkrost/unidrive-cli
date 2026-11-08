@@ -1,5 +1,6 @@
 package org.krost.unidrive.tracking
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.krost.unidrive.Capability
 import org.krost.unidrive.CloudProvider
@@ -298,6 +299,9 @@ class TrackingEngine(
                         is ReconcileAction.PropagateRemoteDelete -> applyPropagateRemoteDelete(action)
                         is ReconcileAction.ResolveKeepBoth -> applyKeepBoth(action)
                     }
+                } catch (e: CancellationException) {
+                    // A stop is not a failure of this action: no failure count, log line or failure-log entry.
+                    throw e
                 } catch (e: Exception) {
                     log.warn("Apply failed for ${action.path}: ${e.message}")
                     AppliedAction(action, ApplyOutcome.FAILED, e.message)
