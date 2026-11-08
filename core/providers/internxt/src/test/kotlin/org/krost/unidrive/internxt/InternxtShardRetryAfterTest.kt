@@ -68,21 +68,30 @@ class InternxtShardRetryAfterTest {
             assertTrue(bridge.resumeAfterEpochMs() - currentTime >= 3_000L, "the bridge circuit stays open for the host's wait")
         }
 
+    // The shard PUT the provider uses (the streaming one): the service itself does not retry it — the
+    // provider's shard-commit ladder does, on the hint this test pins — so a throttled PUT comes back as
+    // one attempt whose exception carries the Retry-After, and the bridge budget records the wait.
     @Test
-    fun `a throttled shard PUT carries the Retry-After and the retry waits for it`() =
+    fun `a throttled shard PUT carries the Retry-After and the bridge budget records it`() =
         runTest {
             val bridge = bridgeBudget()
             val puts = mutableListOf<Long>()
             val engine =
                 MockEngine {
                     puts += currentTime
-                    if (puts.size == 1) respond("", HttpStatusCode.ServiceUnavailable, throttled) else respond("", HttpStatusCode.OK)
+                    respond("", HttpStatusCode.ServiceUnavailable, throttled)
+                }
+            val shard = Files.createTempFile("ud-shard-retry", ".bin").also { Files.write(it, ByteArray(16)) }
+
+            val e =
+                assertFailsWith<InternxtApiException> {
+                    service(engine, bridge).putEncryptedShardFromFile("https://shard-host.invalid/put/shard-0", shard, 16L)
                 }
 
-            service(engine, bridge).putEncryptedShard("https://shard-host.invalid/put/shard-0", ByteArray(16))
-
-            assertEquals(2, puts.size)
-            assertTrue(puts[1] - puts[0] >= 3_000L, "the second PUT waited for the host's Retry-After: ${puts[1] - puts[0]} ms")
+            assertEquals(1, puts.size, "one attempt: the retry is the provider ladder's, not the service's")
+            assertEquals(503, e.statusCode)
+            assertEquals(3_000L, e.retryAfterMs)
+            assertTrue(bridge.resumeAfterEpochMs() - currentTime >= 3_000L, "the bridge circuit stays open for the host's wait")
         }
 
     // The provider's view: the shard-commit ladder of a download waits as long as the host asks, every attempt.
