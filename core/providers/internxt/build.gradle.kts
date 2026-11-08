@@ -27,6 +27,8 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
+    // The SPI's conformance contracts, run against this provider's own fake.
+    testImplementation(testFixtures(project(":app:core")))
     // InternxtSmokeLiveTest drives a real SyncEngine against the provider;
     // main sources depend only on :app:core (archive#560).
     testImplementation(project(":app:sync"))

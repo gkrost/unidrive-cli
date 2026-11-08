@@ -80,9 +80,10 @@ sealed class CapabilityResult<out T> {
 }
 
 /**
- * Thrown by adapter-internal helpers that prefer to fail fast on capability
- * misuse. Not thrown from the public [CloudProvider] surface — those methods
- * return [CapabilityResult.Unsupported] instead.
+ * Thrown by adapter-internal helpers that prefer to fail fast on capability misuse, and by the handful of public
+ * [CloudProvider] members whose refusal must be a typed error rather than a result value: the destructive operators
+ * ([CloudProvider.deletePermanently], [CloudProvider.listTrash], [CloudProvider.emptyTrash],
+ * [CloudProvider.purgeTrash]). Every other public member answers [CapabilityResult.Unsupported] instead.
  */
 class UnsupportedCapabilityException(
     val capability: Capability,

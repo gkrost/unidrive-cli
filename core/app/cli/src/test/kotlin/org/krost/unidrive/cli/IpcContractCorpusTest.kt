@@ -1708,6 +1708,9 @@ class IpcContractCorpusTest {
 
         override suspend fun authenticate() { /* no-op: already authenticated */ }
 
+        // The stub is always authenticated; the reload decision is that same no-op (the SPI default refuses).
+        override suspend fun reloadCredentials() { /* no-op: already authenticated */ }
+
         override suspend fun listChildren(path: String): List<CloudItem> = emptyList()
 
         override suspend fun getMetadata(path: String): CloudItem = error("not used")

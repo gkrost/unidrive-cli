@@ -71,13 +71,19 @@ interface CloudProvider {
     /**
      * Picks up credentials that were stored for this profile after this instance authenticated: a running daemon calls
      * it once a sign-in through it (`auth.login`, `auth.complete`) has written new credentials, so the same provider
-     * instance, and every transfer that goes through it from then on, uses them without a restart. The default runs
-     * [authenticate] again. A provider whose [authenticate] would fall back to an interactive sign-in when nothing is
-     * stored (a browser, a console prompt) overrides this to read the stored credentials only: a daemon has nobody to
-     * answer a prompt.
+     * instance, and every transfer that goes through it from then on, uses them without a restart.
+     *
+     * The default refuses: [authenticate] is allowed to fall back to an interactive sign-in when nothing is stored
+     * (a browser, a console prompt), and a daemon has nobody to answer a prompt. Every provider overrides this with
+     * its own explicit decision — reading the stored credentials in place, or [authenticate] again where that is
+     * provably non-interactive (S3: the keys are the credential; localfs: the root is). The provider conformance
+     * suite holds every adapter to it.
      */
     suspend fun reloadCredentials() {
-        authenticate()
+        throw UnsupportedOperationException(
+            "$id must override reloadCredentials: the default never runs authenticate() (it can prompt for a sign-in), " +
+                "it states its own reload decision instead",
+        )
     }
 
     /**
