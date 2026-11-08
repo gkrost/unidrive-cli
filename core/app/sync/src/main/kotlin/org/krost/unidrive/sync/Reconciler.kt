@@ -469,6 +469,7 @@ class Reconciler(
         detectRemoteRenames(actions, remoteChanges, entryByRemoteId, localChanges, alias)
         lastUnhydratedFolderDeletes = dropUnhydratedFolderDeletes(actions, entryByPath)
         keepFoldersHoldingChangedRemoteChildren(actions, entryByPath)
+        keepFoldersHoldingUntrackedRemoteContent(actions, remoteChangesLocal, entryByPath)
         dropScopedAncestorRemoteDeletes(actions, syncPaths)
         deferIncompleteRemoteCreates(actions, localChanges, enumerationComplete)
         keepFoldersHoldingUnsyncedLocalContent(actions, localChanges, allDbEntries, alias)
@@ -713,6 +714,7 @@ class Reconciler(
         detectRemoteRenames(actions, fullRemote, entryByRemoteId, fullLocal, alias)
         lastUnhydratedFolderDeletes = dropUnhydratedFolderDeletes(actions, entryByPath)
         keepFoldersHoldingChangedRemoteChildren(actions, entryByPath)
+        keepFoldersHoldingUntrackedRemoteContent(actions, fullRemoteLocal, entryByPath)
         dropScopedAncestorRemoteDeletes(actions, syncPaths)
         deferIncompleteRemoteCreates(actions, fullLocal, enumerationComplete)
         keepFoldersHoldingUnsyncedLocalContent(actions, fullLocal, allDbEntries, alias)
@@ -1372,6 +1374,30 @@ class Reconciler(
         actions.removeAll(held.toSet())
         log.warn(
             "Dropped {} DeleteRemote action(s) for folders the plan still fetches content under: {}",
+            held.size,
+            held.joinToString(",") { it.path },
+        )
+    }
+
+    // The second remote-side guard: a folder delete must not run when the listing this plan reconciled on shows
+    // live content below it that no action deletes — a path the scan skips (excluded or ignored), or one without
+    // an alive tracked row. Such paths never produce actions, so no filter above sees them (#451), and the
+    // provider's delete takes the folder's whole subtree with it. The tracked children keep their own file-level
+    // deletes; the engine's empty-directory reaper removes the folder on a later pass once its live listing shows
+    // nothing surviving below it.
+    private fun keepFoldersHoldingUntrackedRemoteContent(
+        actions: MutableList<SyncAction>,
+        remoteChangesLocal: Map<String, CloudItem>,
+        entryByPath: Map<String, SyncEntry>,
+    ) {
+        val held =
+            folderDeletesHoldingUnplannedRemoteItems(actions, remoteChangesLocal, entryByPath) { path, item ->
+                excludePatterns.any { matchesGlob(path, it) } || isIgnored(path, directoryFacet(path, item, entryByPath[path]))
+            }
+        if (held.isEmpty()) return
+        actions.removeAll(held.toSet())
+        log.warn(
+            "Dropped {} DeleteRemote action(s) for folders holding live content the plan does not delete: {}",
             held.size,
             held.joinToString(",") { it.path },
         )
@@ -2091,6 +2117,46 @@ internal fun foldersWithLiveRemoteItemsBelow(actions: List<SyncAction>): Set<Str
     return holders
 }
 
+// #451: the folder DeleteRemotes of [actions] whose live content below them the plan does not delete: a path
+// [skippedByScan] excludes or ignores, or one without an alive tracked row (an EXISTS row with a remote id). A
+// provider's folder delete takes its whole subtree with it, so such a folder must not go: the tracked children
+// keep their own file-level deletes and the engine's empty-directory reaper removes the folder once its live
+// listing shows nothing surviving below it.
+internal fun folderDeletesHoldingUnplannedRemoteItems(
+    actions: List<SyncAction>,
+    remoteChangesLocal: Map<String, CloudItem>,
+    entryByPath: Map<String, SyncEntry>,
+    skippedByScan: (path: String, item: CloudItem) -> Boolean,
+): List<SyncAction.DeleteRemote> =
+    actions.filterIsInstance<SyncAction.DeleteRemote>()
+        .filter { entryByPath[it.path]?.isFolder == true }
+        .filter { delete -> unplannedRemoteItemBelow(delete.path, remoteChangesLocal, entryByPath, skippedByScan) }
+
+// True when a live item under [folderPath] in [remoteChangesLocal] gets no delete of its own.
+private fun unplannedRemoteItemBelow(
+    folderPath: String,
+    remoteChangesLocal: Map<String, CloudItem>,
+    entryByPath: Map<String, SyncEntry>,
+    skippedByScan: (path: String, item: CloudItem) -> Boolean,
+): Boolean {
+    val prefix = folderPath + "/"
+    return remoteChangesLocal.any { (path, item) ->
+        !item.deleted && path.startsWith(prefix) && unplannedRemoteItem(path, item, entryByPath, skippedByScan)
+    }
+}
+
+// True when [path] (a live item under a folder the plan deletes remotely) gets no delete of its own: the scan
+// skips it ([skippedByScan]), or no alive row with a remote id tracks it.
+private fun unplannedRemoteItem(
+    path: String,
+    item: CloudItem,
+    entryByPath: Map<String, SyncEntry>,
+    skippedByScan: (path: String, item: CloudItem) -> Boolean,
+): Boolean {
+    val entry = entryByPath[path]
+    return skippedByScan(path, item) || entry == null || entry.remoteId == null || entry.status != EntryStatus.EXISTS
+}
+
 // #99: a scoped run never deletes in the cloud above its scope. A scope ancestor that is gone
 // locally — a profile narrowed after an unscoped sync leaves hydrated ancestor rows — is the
 // scope's bookkeeping, not a user delete: propagating it would delete the remote subtree the run
@@ -2197,7 +2263,10 @@ private fun foldersHoldingUnreportedLocalEntries(
 // and the scan never reports: an entry [skippedByScan] (excluded, ignored or blocked), or one without a tracked file
 // row (an alive row with a remote id). Null: everything below is tracked, the folder can go with its subtree. An
 // excluded directory ends the walk: the scan skips such a subtree whole, so nothing below it is reported either.
-private fun firstUnreportedLocalEntry(
+// A walk that cannot read its way through (#451: an unreadable subfolder, an entry gone mid-walk) refuses the
+// folder itself: what the walk cannot see may hold content the scan never reports, and null would read as
+// "everything tracked" and clear the folder for deletion.
+internal fun firstUnreportedLocalEntry(
     syncRoot: Path,
     folderPath: String,
     tracked: Set<String>,
@@ -2206,7 +2275,7 @@ private fun firstUnreportedLocalEntry(
     val folderLocal = safeResolveLocalOrNull(syncRoot, folderPath) ?: return null
     if (!Files.isDirectory(folderLocal)) return null
     var found: String? = null
-    runCatching {
+    try {
         Files.walkFileTree(
             folderLocal,
             object : java.nio.file.SimpleFileVisitor<Path>() {
@@ -2230,6 +2299,8 @@ private fun firstUnreportedLocalEntry(
                 ): java.nio.file.FileVisitResult = judge(file, isDir = false)
             },
         )
+    } catch (_: java.io.IOException) {
+        return folderPath
     }
     return found
 }

@@ -1661,8 +1661,7 @@ open class SyncEngine(
                             is SyncAction.DeleteLocal -> applyDeleteLocal(action)
                             is SyncAction.DeleteRemote ->
                                 if (!deleteBlockedByFailedMove(action, failedMoveSources)) {
-                                    applyDeleteRemote(action)
-                                    remoteDeletedPaths += action.path
+                                    if (applyDeleteRemote(action)) remoteDeletedPaths += action.path
                                 } else {
                                     applied = false
                                 }
@@ -3840,6 +3839,24 @@ open class SyncEngine(
                     baselineSize = observedSize,
                 )?.also { editsKeptAside.add(it) }
             }
+        if (keptLocalEdit == null && Files.isDirectory(localPath)) {
+            // The plan walked this folder at plan time; a file created since, or a subtree the walk could not
+            // read, is invisible to the DB-row re-check above (#451). Walk the folder again now: anything on
+            // disk the scan never reports (excluded, ignored, blocked, without a tracked row) holds the folder,
+            // the way an unreported member does at plan time, and the delete re-plans on the next pass against
+            // a fresh scan.
+            val unreported = firstUnreportedLocalEntry(syncRoot, action.path, trackedRowsUnder(action.path), ::skippedByScan)
+            if (unreported != null) {
+                if (unreported == action.path) {
+                    log.warn("Not deleting {}: the folder cannot be walked; the delete is retried on the next sync", action.path)
+                } else {
+                    log.warn("Not deleting {}: {} below it is not tracked; the delete is retried on the next sync", action.path, unreported)
+                }
+                reporter.onWarning("Skipped delete of ${action.path}: it holds content the plan does not track")
+                rememberUnappliedRemoteChange(action)
+                return
+            }
+        }
         if (keptLocalEdit == null) {
             withEchoSuppression(action.path) {
                 if (trashManager != null) {
@@ -3892,6 +3909,24 @@ open class SyncEngine(
         return false
     }
 
+    // The apply-time half of the plan's folder walk (applyDeleteLocal): the alive rows with a remote id below
+    // [folderPath]. Everything else the walk finds on disk holds the folder, the way an unreported member does at
+    // plan time.
+    private fun trackedRowsUnder(folderPath: String): Set<String> =
+        db.getEntriesByPrefix(folderPath.trimEnd('/') + "/")
+            .filter { it.remoteId != null && it.status == EntryStatus.EXISTS }
+            .mapTo(HashSet()) { it.path }
+
+    // The scan's own skip rule, asked by the apply-time folder walk (applyDeleteLocal): excluded, ignored or a
+    // blocked NFC twin — the same question keepFoldersHoldingUnsyncedLocalContent asks at plan time.
+    private fun skippedByScan(
+        path: String,
+        isDir: Boolean,
+    ): Boolean =
+        planExcludePatterns.any { Reconciler.matchesGlob(path, it) } ||
+            ignoredByRules(path, isDir) ||
+            scanner.isUnderNfcCollision(path)
+
     // True when this pass already moved a conflict copy into [folderPath] or below it.
     private fun keptEditUnder(folderPath: String): Boolean {
         val prefix = folderPath.trimEnd('/') + "/"
@@ -3940,7 +3975,8 @@ open class SyncEngine(
         return true
     }
 
-    private suspend fun applyDeleteRemote(action: SyncAction.DeleteRemote) {
+    // True when the delete ran; false when a guard held it back (the row stays, the next pass plans it again).
+    private suspend fun applyDeleteRemote(action: SyncAction.DeleteRemote): Boolean {
         // UD-113: capture pre-delete row for the audit entry.
         val priorEntry = db.getEntry(action.path)
         // archive#115: DeleteRemote.path is real-local (DB lookup above keys on it).
@@ -3952,6 +3988,7 @@ open class SyncEngine(
         // UD-753: per-operation log at the engine (was repeated across provider services).
         log.debug("Delete: {} (remote {})", action.path, remotePath)
         var auditResult = "success"
+        if (priorEntry?.isFolder == true && folderHoldsUnprovenRemoteContent(remotePath)) return false
         try {
             if (remoteId != null && !remoteId.startsWith("local:")) {
                 // archive#402: the row's real cloud uuid addresses the twin the engine
@@ -3959,7 +3996,7 @@ open class SyncEngine(
                 // same-named siblings and could trash the wrong one.
                 provider.deleteById(remoteId, remotePath)
             } else {
-                if (refuseCollidedPath(action)) return
+                if (refuseCollidedPath(action)) return false
                 provider.delete(remotePath)
             }
         } catch (e: ProviderException) {
@@ -4010,6 +4047,45 @@ open class SyncEngine(
             oldHash = priorEntry?.remoteHash,
             result = auditResult,
         )
+        return true
+    }
+
+    // #451: a folder DeleteRemote takes the folder's whole subtree with it, and the plan's view of what lies below
+    // is only this pass's delta, which omits every unchanged item. So the apply lists the folder live, all the way
+    // down, and lets the delete run only when every live item is proven tracked and unchanged: an alive row with
+    // that remote id, not skipped by the scan (excluded, ignored), same size and hash. Anything else — an excluded
+    // file, one another device added, one changed since — holds the folder; the tracked children keep their own
+    // file-level deletes and the empty-directory reaper removes the folder once its live listing is empty. A
+    // listing that fails holds the folder too (not-found excepted: nothing is left to lose).
+    private suspend fun folderHoldsUnprovenRemoteContent(remoteFolder: String): Boolean {
+        val unproven =
+            try {
+                firstUnprovenRemoteItem(remoteFolder)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (isRemoteNotFound(e)) return false
+                log.warn("Not deleting {}: its live content cannot be listed ({}); the delete is retried on the next sync", remoteFolder, e.message)
+                return true
+            } ?: return false
+        log.warn("Not deleting {}: {} below it is not tracked and unchanged; the folder is left to the empty-directory check", remoteFolder, unproven)
+        reporter.onWarning("Skipped delete of $remoteFolder: it holds content the sync does not track")
+        return true
+    }
+
+    private suspend fun firstUnprovenRemoteItem(folder: String): String? {
+        for (child in provider.listChildren(folder)) {
+            if (child.deleted) continue
+            val row = db.getEntryByRemoteId(child.id)
+            val proven =
+                row != null &&
+                    row.status == EntryStatus.EXISTS &&
+                    !skippedByScan(row.path, child.isFolder) &&
+                    (child.isFolder || (row.remoteSize == child.size && (row.remoteHash == null || child.hash == null || row.remoteHash == child.hash)))
+            if (!proven) return child.path
+            if (child.isFolder) firstUnprovenRemoteItem(child.path)?.let { return it }
+        }
+        return null
     }
 
     private fun applyRemoveEntry(action: SyncAction.RemoveEntry) {
