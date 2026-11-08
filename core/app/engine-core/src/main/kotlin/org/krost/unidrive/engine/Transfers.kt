@@ -1,5 +1,6 @@
 package org.krost.unidrive.engine
 
+import kotlinx.coroutines.CancellationException
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DownloadReceipt
@@ -70,6 +71,8 @@ object Transfers {
                 ms = (System.nanoTime() - started) / 1_000_000, retries = retryHistory?.attemptsFailed(eventPath), tally = tally)
             retryHistory?.noteSuccess(eventPath)
             return receipt
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             retryHistory?.noteFailure(eventPath)
             FileEvents.event(FileEvents.Phase.DOWNLOAD_FAILED, eventPath, ms = (System.nanoTime() - started) / 1_000_000,

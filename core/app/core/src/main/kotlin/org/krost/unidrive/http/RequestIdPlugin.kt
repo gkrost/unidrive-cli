@@ -441,7 +441,7 @@ internal class CountingByteReadChannel(
                 onProgress()
                 return staged.size >= atLeast
             }
-            delegate.awaitContent(atLeast)
+            delegate.awaitContent((atLeast - staged.size).toInt())
         }
     }
 

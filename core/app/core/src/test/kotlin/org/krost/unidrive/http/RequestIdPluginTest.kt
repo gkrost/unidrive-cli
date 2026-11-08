@@ -19,6 +19,7 @@ import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readAvailable
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
@@ -30,6 +31,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import kotlin.test.Test
@@ -569,6 +571,33 @@ class RequestIdPluginTest {
             assertEquals(3, counted.channel.readAvailable(ByteArray(3), 0, 3))
             counted.logUnknown()
             assertNull(ended.tryReceive().getOrNull(), "no second line for the same reply")
+            wire.cancel(null)
+        }
+
+    // The counting channel answers a wait for `atLeast` bytes with the bytes still missing, not with
+    // the whole count again: with bytes already staged and the wire pausing before the rest, waiting
+    // for the full count on the wire stalls even once enough of the remainder has arrived.
+    @Test
+    @OptIn(io.ktor.utils.io.InternalAPI::class)
+    fun `awaitContent is satisfied once the remainder of the asked bytes has arrived`() =
+        runTest {
+            val wire = ByteChannel(autoFlush = true)
+            wire.writeBuffer.write("abc".encodeToByteArray(), 0, 3)
+            wire.flush() // some bytes arrived, the body stays open — only two more ever come
+            val counted = CountingByteReadChannel(wire) { }
+
+            val satisfied = CompletableDeferred<Boolean>()
+            val waiter =
+                launch {
+                    satisfied.complete(counted.awaitContent(5))
+                }
+            runCurrent() // the waiter parks on the wire with the three staged bytes
+            wire.writeBuffer.write("de".encodeToByteArray(), 0, 2)
+            wire.flush()
+
+            val done = withTimeoutOrNull(1000L) { satisfied.await() }
+            assertTrue(done == true, "the wait ends once the remainder arrives on the wire")
+            waiter.cancel()
             wire.cancel(null)
         }
 
