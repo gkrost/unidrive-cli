@@ -11,6 +11,7 @@ import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.engine.CursorState
 import org.krost.unidrive.engine.CursorStateView
 import org.krost.unidrive.engine.DuplicateNames
+import org.krost.unidrive.engine.ScopeState
 import org.krost.unidrive.ProviderRegistry
 import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.sync.ExcludePatterns
@@ -1323,7 +1324,7 @@ internal fun persistedScope(configDir: Path): List<String> {
     val db = StateDatabase(stateDbPath, readOnly = true)
     return try {
         db.initialize()
-        db.getSyncState("effective_scope").orEmpty().split("\t").filter { it.isNotEmpty() }
+        ScopeState(db).effectiveScope.orEmpty().split("\t").filter { it.isNotEmpty() }
     } finally {
         db.close()
     }

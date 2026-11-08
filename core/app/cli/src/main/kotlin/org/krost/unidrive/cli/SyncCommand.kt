@@ -13,6 +13,7 @@ import org.krost.unidrive.io.Os
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.AccountOwner
 import org.krost.unidrive.authenticateAndLog
+import org.krost.unidrive.engine.ScopeState
 import org.krost.unidrive.onedrive.OneDriveProvider
 import org.krost.unidrive.sync.ConflictLog
 import org.krost.unidrive.sync.IpcAuth
@@ -394,10 +395,11 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         if (dryRun) {
             db = StateDatabase.snapshotOf(dbPath)
             if (reset) {
-                val realSyncRoot = db.getSyncState("sync_root")
+                val scope = ScopeState(db)
+                val realSyncRoot = scope.root
                 db.resetAll()
                 if (!realSyncRoot.isNullOrEmpty()) {
-                    db.setSyncState("sync_root", realSyncRoot)
+                    scope.setRoot(realSyncRoot)
                 }
                 println("Sync state virtually reset (dry-run; on-disk state.db untouched).")
             } else {
