@@ -114,6 +114,42 @@ class StateDatabaseTest {
     }
 
     @Test
+    fun `hasCloudChild sees a direct child that came from the cloud`() {
+        db.upsertEntry(entry("/f/a.txt"))
+        assertTrue(db.hasCloudChild("/f"))
+    }
+
+    @Test
+    fun `hasCloudChild at the root sees a root-level child`() {
+        db.upsertEntry(entry("/a.txt"))
+        assertTrue(db.hasCloudChild(""))
+    }
+
+    @Test
+    fun `hasCloudChild does not count a pending upload's synthetic id`() {
+        db.upsertEntry(entry("/f/a.txt").copy(remoteId = null))
+        assertFalse(db.hasCloudChild("/f"), "the synthetic id of a row that awaits its upload is not a remote item")
+    }
+
+    @Test
+    fun `hasCloudChild does not count a grandchild`() {
+        db.upsertEntry(entry("/f/sub/a.txt"))
+        assertFalse(db.hasCloudChild("/f"))
+    }
+
+    @Test
+    fun `hasCloudChild answers false for a folder without children`() {
+        db.upsertEntry(entry("/f/a.txt"))
+        assertFalse(db.hasCloudChild("/empty"))
+    }
+
+    @Test
+    fun `hasCloudChild resolves an NFD parent path`() {
+        db.upsertEntry(entry("/f\u00F6lder/a.txt"))
+        assertTrue(db.hasCloudChild("/fo\u0308lder"))
+    }
+
+    @Test
     fun `getEntriesByPrefix resolves an NFD prefix`() {
         db.upsertEntry(entry("/f\u00F6lder/a.txt"))
         assertTrue(db.getEntriesByPrefix("/fo\u0308lder").any { it.path == "/f\u00F6lder/a.txt" })

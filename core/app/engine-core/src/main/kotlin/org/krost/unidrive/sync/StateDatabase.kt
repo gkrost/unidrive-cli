@@ -1586,6 +1586,27 @@ class StateDatabase(
         }
 
     /**
+     * Whether any direct child of [parentPathRaw] from the alive view carries the id of a remote item, not the
+     * `local:` synthetic of a row that awaits its upload: the same question
+     * `listDirectChildren(parentPath).any { it.remoteId != null }` answers, without materialising the children.
+     * Stops at the first hit (`LIMIT 1`). Like [listDirectChildren], path-based, NFC-normalised, one seek of
+     * `idx_sync_entries_dir_alive`.
+     */
+    fun hasCloudChild(parentPathRaw: String): Boolean =
+        read("hasCloudChild") { c ->
+            val parentPath = PathNormalizer.nfc(parentPathRaw)
+            val base = if (parentPath.isEmpty()) "/" else "$parentPath/"
+            c
+                .prepareStatement(
+                    "SELECT 1 FROM alive_entries WHERE $PARENT_DIR_OF_PATH = ? " +
+                        "AND remote_id IS NOT NULL AND remote_id NOT GLOB 'local:*' LIMIT 1",
+                ).use { stmt ->
+                    stmt.setString(1, base)
+                    return stmt.executeQuery().next()
+                }
+        }
+
+    /**
      * gkrost/unidrive-cli#202: the folders that hold an alive file row with a remote id and no content id (`remote_content_id`
      * NULL: a row written before the column, or one whose item named no bytes), at most [limit] of them, in BINARY order,
      * each after [after]. A folder is given as `PARENT_DIR_OF_PATH` gives it, with its trailing '/' (the root: `/`); null
