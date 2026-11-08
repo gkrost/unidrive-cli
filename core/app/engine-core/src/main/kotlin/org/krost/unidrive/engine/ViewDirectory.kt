@@ -72,6 +72,9 @@ class ViewStatus(
     val asOfMs: Long?,
     val state: ViewState,
     val truncated: Boolean = false,
+    // The root's path before the engine moved it (`/Recents` before `/Recents (2)`), null while it never moved; kept for
+    // the daemon's lifetime, so a client that was away pairs the moved view with its old placeholder by identity.
+    val previousRootPath: String? = null,
 )
 
 /**
@@ -239,6 +242,7 @@ class ViewDirectory(
                 asOfMs = snapshot.asOfMs,
                 state = snapshot.state,
                 truncated = snapshot.truncated,
+                previousRootPath = namespaces.previousRootPath(kind),
             )
         }
 

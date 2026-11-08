@@ -312,6 +312,46 @@ class SharedViewDaemonTest {
         }
     }
 
+    @Test
+    fun `a view root that moved while the client was away is named by its previous path in daemon status`() {
+        val provider = SharedStub(listOf(ViewRef("11111111-report", false)))
+
+        runDaemonWith(config("shared_view = true\nshared_folder_name = \"Geteilt\"\nrecents_view = false\nfavorites_view = false\n"), provider) {
+            ask("""{"verb":"hydration.list","prefix":"/"}""")
+            val before = ask("""{"verb":"daemon.status"}""").getValue("views").jsonArray.single().jsonObject
+            assertEquals("/Geteilt", before.getValue("root_path").jsonPrimitive.content)
+            assertTrue("previous_root_path" !in before, "additive and optional: nothing to say before a move")
+
+            // A real top-level folder takes the view's name while the client is away (a pass wrote the row): the root moves aside.
+            val db = StateDatabase(tempDir.resolve("state.db"))
+            try {
+                db.initialize()
+                db.upsertEntry(
+                    SyncEntry(
+                        path = "/Geteilt",
+                        remoteId = "rid-geteilt",
+                        remoteHash = null,
+                        remoteSize = 0,
+                        remoteModified = Instant.ofEpochMilli(1_234_567_890_000L),
+                        localMtime = null,
+                        localSize = null,
+                        isFolder = true,
+                        isPinned = false,
+                        isHydrated = false,
+                        lastSynced = Instant.ofEpochMilli(1_234_567_890_123L),
+                    ),
+                )
+            } finally {
+                db.close()
+            }
+
+            ask("""{"verb":"hydration.list","prefix":"/"}""") // the listing works the roots out again
+            val view = ask("""{"verb":"daemon.status"}""").getValue("views").jsonArray.single().jsonObject
+            assertEquals("/Geteilt (2)", view.getValue("root_path").jsonPrimitive.content)
+            assertEquals("/Geteilt", view.getValue("previous_root_path").jsonPrimitive.content, "the client pairs the moved view by identity")
+        }
+    }
+
     // With shared_view unset, a provider that does not declare the Shared view shows no Shared root and no views capability.
     @Test
     fun `a daemon whose provider does not declare the Shared view shows no folder when the profile does not say`() {

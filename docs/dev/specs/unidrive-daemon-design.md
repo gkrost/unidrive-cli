@@ -386,6 +386,7 @@ before. One object per view, in the order `recents`, `favorites`, `shared`:
 | `as_of_ms` | when the list was fetched (epoch ms); `null` while it never was |
 | `state` | `ok`: the list is the provider's latest answer. `stale`: the last refresh failed, the list before it is served. `unavailable`: there is no list, because it was never fetched (also before anyone has listed the view: the engine asks only while somebody looks) or because the provider declares the view but answers that it has no such view (a server without the route); the folder is shown, empty |
 | `truncated` | additive. `true` while the list was cut: at the view's limit (the Shared view asks for 5,000) or at a cap of the provider, so the account has more such items than the folder shows. `false` otherwise, also before the first list. A client can say "showing the first N" instead of presenting the list as complete |
+| `previous_root_path` | additive. Present from the root's first move on and kept for the daemon's lifetime: the path the root had before its last move (`/Recents` before `/Recents (2)`), when a live top-level item took the name while the client was away. Absent while the root never moved. A client that was away pairs the moved view with its old placeholder by identity instead of by name |
 
 A view whose kind the provider does not declare (OneDrive, S3, localfs, ... for every kind today) is not shown at all, whatever
 the profile key says: no folder, no object here, and no `views` capability when it was the only one. The engine logs that once

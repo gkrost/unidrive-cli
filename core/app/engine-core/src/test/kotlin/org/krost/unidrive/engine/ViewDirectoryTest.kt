@@ -19,6 +19,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -254,6 +255,21 @@ class ViewDirectoryTest {
             assertEquals("/Recents (2)", s.directory.status().single().rootPath)
             assertEquals("Recents", s.directory.status().single().configuredName)
         }
+
+    @Test
+    fun `the status carries the root's previous path once the root moved and keeps it`() = runTest {
+        val s = setup()
+        assertEquals("/Recents", s.views.rootPath(recents), "a listing worked the roots out while the client was still up")
+        assertNull(s.directory.status().single().previousRootPath, "nothing has moved yet")
+
+        db.upsertEntry(row("/Recents", "id-real-folder", isFolder = true))
+        s.views.invalidate()
+        assertEquals("/Recents (2)", s.views.rootPath(recents))
+
+        assertEquals("/Recents (2)", s.directory.status().single().rootPath)
+        assertEquals("/Recents", s.directory.status().single().previousRootPath, "the client pairs the moved view by the old place")
+        assertEquals("/Recents", s.directory.status().single().previousRootPath, "kept for the daemon's lifetime, not only until the next question")
+    }
 
     @Test
     fun `a view whose provider has none lists empty and says unavailable`() =

@@ -44,7 +44,8 @@ data class ViewLocation(
  * it is empty. A live top-level item that already has the name keeps it: the root takes the first free `<name> (2)`,
  * `(3)`, ... (the rule of the trash, [RootNames]), and the engine says so once. Another view's root, taken in kind order,
  * counts as taken. The names of the live top-level items come from [topLevelNames] (state.db's), asked again after
- * [invalidate]; the roots are worked out on the first question and after each invalidation, never on a timer.
+ * [invalidate]; the roots are worked out on the first question and after each invalidation, never on a timer. The path
+ * a root had before a move stays as [previousRootPath] for the daemon's lifetime.
  *
  * **Read-only.** [locate] is the one question the guarantee rests on: a path is in a view when it is a root or lies
  * below one. [RemoteOperationGuard.isReadOnlyPath] asks it, the mount verbs refuse such a path with `read_only`, and
@@ -74,9 +75,12 @@ class ViewNamespaces(
     // The roots worked out from the top-level names: kind to "/<name>", with the generation of the names they were worked out
     // from. Rebuilt when the names may have changed. A reader that finds an older generation than [generation] waits for the
     // lock instead of using them, so no question is ever answered from the empty initial map or from names a pass has replaced.
+    // [previous] is the root each kind had before the move that produced [roots], for the kinds this resolution moved; a kind
+    // that moved earlier keeps its entry until its next move (the daemon's lifetime).
     private class Resolved(
         val generation: Long,
         val roots: Map<ViewKind, String>,
+        val previous: Map<ViewKind, String> = emptyMap(),
     )
 
     @Volatile
@@ -111,6 +115,15 @@ class ViewNamespaces(
         val view = byKind[kind] ?: return null
         return if (fresh) currentRoots()[kind] else resolved.roots[kind] ?: "/${view.configuredName}"
     }
+
+    /**
+     * The path of [kind]'s root before the move that put it where it is now, null while it never moved in this daemon's
+     * lifetime: what `daemon.status` reports per view (`previous_root_path`), so a client that was away pairs the view
+     * with its old placeholder by identity instead of by name. Read from the roots as last worked out — it waits for no
+     * lock and reads no state.db, like [rootPath] with fresh false — and kept until the daemon stops: only the next move
+     * replaces it, with the source of that move.
+     */
+    fun previousRootPath(kind: ViewKind): String? = resolved.previous[kind]
 
     /** The roots the profile shows, in kind order. */
     fun rootPaths(): List<Pair<ViewKind, String>> = currentRoots().entries.map { it.key to it.value }
@@ -154,7 +167,14 @@ class ViewNamespaces(
             val wanted = generation.get()
             val current = resolved
             if (current.generation == wanted) return current.roots
-            val worked = Resolved(wanted, resolveRoots())
+            val roots = resolveRoots()
+            // A root this resolution moved names the path it had (a live top-level item took its name): that is what a
+            // client that was away pairs the view by. A root that did not move keeps what an earlier move recorded.
+            val previous =
+                HashMap(current.previous).also { moved ->
+                    for ((kind, root) in roots) current.roots[kind]?.takeIf { it != root }?.let { moved[kind] = it }
+                }
+            val worked = Resolved(wanted, roots, previous)
             resolved = worked
             return worked.roots
         }

@@ -278,7 +278,10 @@ internal fun backupsStatusJson(
  * counted before the first listing. `as_of_ms` is when the list was fetched, null while it never was. `state` is `ok`, `stale`
  * (the last refresh failed, the list before it is served) or `unavailable` (no list: never fetched, or the provider has no such
  * view). `truncated` is true while the list was cut (at the view's limit or at a cap of the provider): there are more items
- * than the view shows. Nothing here asks the provider.
+ * than the view shows. `previous_root_path` is present from the root's first move on (a live top-level item took its name
+ * while the client was away) and names the path the root had before its last move; it is kept for the daemon's lifetime, so
+ * a client that was away pairs the moved view with its old placeholder by identity instead of by name. Nothing here asks the
+ * provider.
  */
 internal fun viewsStatusJson(views: List<ViewStatus>): JsonArray =
     buildJsonArray {
@@ -294,6 +297,7 @@ internal fun viewsStatusJson(views: List<ViewStatus>): JsonArray =
                     put("as_of_ms", v.asOfMs)
                     put("state", v.state.wire)
                     put("truncated", v.truncated)
+                    v.previousRootPath?.let { put("previous_root_path", it) }
                 },
             )
         }
