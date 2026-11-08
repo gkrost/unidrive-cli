@@ -152,23 +152,18 @@ while IFS= read -r flag; do
   [[ -n "$flag" ]] && STATIC_FLAGS+=("$flag")
 done < "$(dirname "${BASH_SOURCE[0]}")/../../dist/launcher/jvm-flags.txt"
 
-# jvm-flags.txt carries -XX:FlightRecorderOptions keys of its own (the JFR redact settings, issue
-# #522). A second -XX:FlightRecorderOptions replaces the first entirely (verified on the packaged
-# JDK 27 runtime image), so this script's keys merge with the flags-file keys into ONE option; a
-# plain extra flag here would silently drop the redaction from every recording this script makes.
+# JFR in-process redaction (JEP 536, gkrost/unidrive-cli#522): *vault* joins the default redact patterns so a
+# recording never carries UNIDRIVE_VAULT_PASS. Java 25/26 reject the option, so only a 27+ java gets it. It must be
+# part of THE -XX:FlightRecorderOptions below: a second such flag replaces the first entirely.
 FR_OPTIONS="stackdepth=256,memorysize=64m"
-REST_FLAGS=()
-for flag in "${STATIC_FLAGS[@]}"; do
-  if [[ "$flag" == -XX:FlightRecorderOptions=* ]]; then
-    FR_OPTIONS="${flag#-XX:FlightRecorderOptions=},${FR_OPTIONS}"
-  else
-    REST_FLAGS+=("$flag")
-  fi
-done
+JAVA_MAJOR="$(java -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+if [[ -n "$JAVA_MAJOR" && "$JAVA_MAJOR" -ge 27 ]]; then
+  FR_OPTIONS="redact-key=+*vault*,${FR_OPTIONS}"
+fi
 
 JVM_ARGS=(
   -Xmx6g
-  "${REST_FLAGS[@]}"
+  "${STATIC_FLAGS[@]}"
   "-XX:FlightRecorderOptions=$FR_OPTIONS"
   "-XX:StartFlightRecording=$JFR_PARAMS"
   -XX:+HeapDumpOnOutOfMemoryError

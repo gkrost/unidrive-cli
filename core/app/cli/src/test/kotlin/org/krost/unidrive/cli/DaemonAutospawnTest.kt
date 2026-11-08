@@ -127,6 +127,32 @@ class DaemonAutospawnTest {
         assertTrue(Files.isDirectory(diag), "the diagnostics dir exists before the child starts (the JVM skips dumps into missing dirs)")
     }
 
+    // gkrost/unidrive-cli#522: the spawned daemon gets the JFR vault redaction like the launcher's JVM, but
+    // only on Java 27+: Java 25 and 26 reject the redact-key option and the daemon would not start.
+    @Test
+    fun `the daemon child gets the JFR vault redact key only on Java 27 or newer`() {
+        val diag = Files.createTempDirectory("autospawn-jfr-diag")
+
+        fun command(javaFeature: Int): List<String> =
+            DaemonAutospawn.spawnCommand(
+                javaBin = Path.of("java"),
+                jar = Files.createTempDirectory("autospawn-jfr").resolve("unidrive.jar"),
+                configRoot = Files.createTempDirectory("autospawn-jfr-config"),
+                profileName = "p",
+                env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
+                props = { null },
+                windows = false,
+                javaFeature = javaFeature,
+            )
+        val flag = "-XX:FlightRecorderOptions=redact-key=+*vault*"
+        for (feature in listOf(25, 26)) assertTrue(flag !in command(feature), "Java $feature rejects the option")
+        for (feature in listOf(27, 28)) {
+            val args = command(feature)
+            assertTrue(flag in args, "Java $feature supports it")
+            assertTrue(args.indexOf(flag) < args.indexOf("-jar"), "a JVM option goes before -jar")
+        }
+    }
+
     // Two daemons (one per profile) on one machine must not share a GC log: the second JVM cannot
     // rotate a file the first one holds open ("Could not rename log file ... Permission denied").
     @Test

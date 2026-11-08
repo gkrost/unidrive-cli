@@ -149,11 +149,12 @@ class LauncherShTemplateTest {
     // gkrost/unidrive-cli#522: without the JFR redact key *vault*, a recording of a run whose vault
     // passphrase rode the environment as UNIDRIVE_VAULT_PASS carries the passphrase in cleartext — the
     // JEP 536 default patterns (*password*, *pwd*, *token*, ...) do not match plain PASS. If this flag
-    // is dropped, every shared recording leaks that passphrase again.
+    // is dropped, every shared recording leaks that passphrase again. Java 25 and 26 reject the option
+    // ("Unknown argument 'redact-key'") and do not start, so only a 27+ runtime may receive it.
     @Test
-    fun `the launcher passes the JFR vault redact key from jvm-flags txt before the jar`() {
-        val j25 = fakeJdk(dir.resolve("jvm"), "jdk-25", "25.0.4")
-        val r = run(j25, "status")
+    fun `the launcher passes the JFR vault redact key to a Java 27 runtime before the jar`() {
+        val j27 = fakeJdk(dir.resolve("jvm"), "jdk-27", "27.0.1")
+        val r = run(j27, "status")
         assertTrue("-XX:FlightRecorderOptions=redact-key=+*vault*" in r.args, r.args.toString())
         assertTrue(
             r.args.indexOf("-XX:FlightRecorderOptions=redact-key=+*vault*") < r.args.indexOf("-jar"),
@@ -161,6 +162,15 @@ class LauncherShTemplateTest {
         )
     }
 
+    @Test
+    fun `the launcher withholds the JFR redact key from Java 25 and 26 which reject it`() {
+        for ((name, version) in listOf("jdk-25" to "25.0.4", "jdk-26" to "26.0.2")) {
+            val jdk = fakeJdk(dir.resolve("jvm-$name"), name, version)
+            val r = run(jdk, "status")
+            assertEquals(0, r.exit, r.stderr)
+            assertTrue(r.args.none { it.startsWith("-XX:FlightRecorderOptions") }, "$name: ${r.args}")
+        }
+    }
     // One FIXED dump file per profile: HotSpot does not overwrite an existing dump, so an OOM restart loop
     // cannot stack a fresh ~2 GB hprof — which holds decrypted tokens — on every restart. The path has no
     // trailing separator, so the JVM treats it as a FILE name and dumps exactly there; the GC log's profile

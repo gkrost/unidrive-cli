@@ -8,6 +8,11 @@
 # -Djdk.net.unixdomain.tmpdir (the host's temp dir), -Duser.language/-Duser.country (--locale), and
 # the diagnostics paths (-XX:ErrorFile, -XX:HeapDumpPath, the daemon's -Xlog:gc*:file), which ride
 # the launcher templates and DaemonAutospawn under UNIDRIVE_DIAG_DIR.
+# Also runtime-gated, added by the launcher templates, DaemonAutospawn and scripts/dev/unidrive-jfr.sh only on
+# Java 27 or newer: -XX:FlightRecorderOptions=redact-key=+*vault* (JEP 536, gkrost/unidrive-cli#522). Java 25 and
+# 26 reject the redact-key option and refuse to start, while the launchers accept any Java >= 25, so it cannot
+# be a plain line here. It adds *vault* to the JFR default redaction patterns, which miss UNIDRIVE_VAULT_PASS.
+# A second -XX:FlightRecorderOptions replaces the first entirely: never add another one anywhere.
 # Also env-gated, added by the launcher templates and DaemonAutospawn (not a plain flag line): the
 # -javaagent of the probe jar deployed beside the fat jar, under UNIDRIVE_COROUTINE_DEBUG=1 (the
 # daemon's coroutine-dump facility, archive#613 — see CoroutineDebug).
@@ -35,15 +40,3 @@
 # dump file, so an OOM restart loop writes the first dump only, and it holds decrypted tokens; pruning
 # stays manual.
 -XX:+HeapDumpOnOutOfMemoryError
-# JFR in-process data redaction (JEP 536, Java 27 runtime): before startup data enters any flight
-# recording, values of environment variables and initial system properties whose NAME matches a
-# default pattern (*password*, *pwd*, *passphrase*, *token*, *auth*, *secret*, *api*key*, ...) are
-# replaced with [REDACTED] inside the JVM. The defaults miss plain *pass*: the vault passphrase rides
-# the environment as UNIDRIVE_VAULT_PASS (Main.loadVaultData), and its value landed in recordings in
-# cleartext (issue #522). The '+' keeps the defaults and adds *vault*; the line carries no space,
-# which every reader of this file requires. Two boundaries, verified on the packaged runtime image:
-#  - a second -XX:FlightRecorderOptions REPLACES this one entirely. scripts/dev/unidrive-jfr.sh
-#    passes its own keys (stackdepth, memorysize) and merges this line into one option; never add
-#    another -XX:FlightRecorderOptions anywhere.
-#  - custom event fields (StateDatabaseHold) are not redacted by design; never put secrets in them.
--XX:FlightRecorderOptions=redact-key=+*vault*

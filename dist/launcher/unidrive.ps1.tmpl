@@ -160,6 +160,10 @@ if ($javaBin) {
         [Console]::Error.WriteLine("unidrive: needs Java 25 or newer, found Java $major at $javaBin. Set UNIDRIVE_JAVA to a newer java.exe.")
         exit 1
     }
+    # JFR in-process redaction (JEP 536, gkrost/unidrive-cli#522): *vault* joins the default redact patterns so
+    # the vault passphrase never reaches a flight recording. Java 25 and 26 reject the option, so only a
+    # runtime known to be 27+ gets it.
+    if ($major -ge 27) { $javaArgs = @('-XX:FlightRecorderOptions=redact-key=+*vault*') + $javaArgs }
     $env:PATH = (Split-Path -Parent $javaBin) + ';' + $env:PATH
 }
 # Redirected standard input (profile set ignore_rules from a file, auth login --password-stdin) must reach the JVM:
