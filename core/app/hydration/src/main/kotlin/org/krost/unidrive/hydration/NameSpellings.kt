@@ -19,21 +19,99 @@ import java.util.concurrent.ConcurrentHashMap
  * test harness; the daemon always passes one).
  */
 internal class NameSpellings(private val store: NameSpellingStore? = null) {
-    // NFC path (a name and the folders above it, one entry each) -> the raw path as first named.
-    private val seen = ConcurrentHashMap<String, String>()
+    // NFC path (a name and the folders above it, one entry each) -> the spelling record: the raw path as first
+    // named, how many claims hold it right now, and whether a verb has already succeeded with it.
+    private val seen = ConcurrentHashMap<String, Spelling>()
+
+    private class Spelling(val raw: String) {
+        // The claims that hold this record: one per active claim of the same spelling. An increment/decrement
+        // pair per claim; a record with no claims and nothing committed is removed again.
+        val claims = java.util.concurrent.atomic.AtomicInteger(0)
+
+        // Set when a verb has succeeded with this spelling: the record is then owned by the success, not by
+        // the claim, and outlives every rollback until [forget] lifts it with the name.
+        @Volatile
+        var committed = false
+    }
 
     init {
-        store?.load()?.let { seen.putAll(it) }
+        // A record the store persisted was a past verb's success: it is owned by that success, not by any
+        // claim of this run, so a claim's rollback cannot lift it — only [forget] does, with the name.
+        store?.load()?.forEach { (nfc, raw) -> seen[nfc] = Spelling(raw).also { it.committed = true } }
     }
 
     /** True when [rawPath] names a name or a folder above it by another spelling than the one recorded for it. */
-    fun clashes(rawPath: String): Boolean = walk(rawPath) { nfc, raw -> seen[nfc]?.let { it != raw } == true }
+    fun clashes(rawPath: String): Boolean = walk(rawPath) { nfc, raw -> seen[nfc]?.let { it.raw != raw } == true }
 
-    /** Remembers the spelling [rawPath] uses for every name in it that could have a twin. */
-    fun record(rawPath: String) {
-        walk(rawPath) { nfc, raw ->
-            if (seen.putIfAbsent(nfc, raw) == null) store?.record(nfc, raw)
-            false
+    /**
+     * Atomically claims the spelling [rawPath] uses for every name in it that could have a twin, before the verb
+     * runs: the first claim inserts the record (the check and the reservation in one step), and a further claim
+     * of the SAME spelling takes a reference on the record that is already there — so two verbs naming one name
+     * by different spellings cannot both pass the guard however their calls interleave (gkrost/unidrive-cli#452).
+     * Answers null when a recorded spelling clashes, with nothing of this call left behind; otherwise the claimed
+     * (NFC prefix, raw prefix) pairs, for [commit] when the verb succeeds and [rollback] when it does not: a
+     * failed verb must not leave its spelling claimed, or the other spelling stays refused for nothing — but its
+     * rollback lifts a record only when it was its last reference and no success owns it (#517 review), so a
+     * shared or committed reservation survives it. The claim is the memory half only — the store is written on
+     * success, by [commit].
+     */
+    fun claim(rawPath: String): List<Pair<String, String>>? {
+        val claimed = ArrayList<Pair<String, String>>()
+        val clash = walk(rawPath) { nfc, raw ->
+            var raced = true
+            var isClash = false
+            while (raced) {
+                raced = false
+                when (val known = seen[nfc]) {
+                    null -> {
+                        val fresh = Spelling(raw)
+                        if (seen.putIfAbsent(nfc, fresh) != null) {
+                            raced = true // another thread claimed this name first: judge against its record
+                        } else {
+                            fresh.claims.incrementAndGet()
+                            claimed += nfc to raw
+                        }
+                    }
+                    else ->
+                        if (known.raw != raw) {
+                            isClash = true
+                        } else {
+                            known.claims.incrementAndGet()
+                            claimed += nfc to known.raw
+                        }
+                }
+            }
+            isClash
+        }
+        if (clash) {
+            rollback(claimed)
+            return null
+        }
+        return claimed
+    }
+
+    /** Persists a succeeded verb's claim: the record is marked owned by the success and the store is written. */
+    fun commit(claim: List<Pair<String, String>>) {
+        val persisted = store ?: return
+        for ((nfc, raw) in claim) {
+            val s = seen[nfc]
+            if (s != null && s.raw == raw) {
+                s.committed = true
+                persisted.record(nfc, raw)
+            }
+        }
+    }
+
+    /**
+     * Takes a failed verb's claim back: the record's reference count drops, and the record itself is removed
+     * only when this was its last reference and no verb has succeeded with it — another claimant's live claim,
+     * or a committed success, keeps the reservation that this rollback must not take away (#517 review).
+     */
+    fun rollback(claim: List<Pair<String, String>>) {
+        for ((nfc, raw) in claim) {
+            val s = seen[nfc] ?: continue
+            if (s.raw != raw) continue
+            if (s.claims.decrementAndGet() <= 0 && !s.committed) seen.remove(nfc, s)
         }
     }
 

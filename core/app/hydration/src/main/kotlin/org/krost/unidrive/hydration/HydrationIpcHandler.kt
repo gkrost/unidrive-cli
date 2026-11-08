@@ -1,5 +1,6 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -83,8 +84,12 @@ import java.util.concurrent.atomic.AtomicLong
  *
  *   mkdir       request:  {"verb":"hydration.mkdir","path":"/foo"[,"parents":true]}
  *               reply:    {"ok":true}
- *                         {"ok":true,"existed":true}                only with "parents":true: the folder was there already
- *                         {"ok":false,"error":"path_is_file"}       only with "parents":true: a file is at the path or above it
+ *                         {"ok":true,"existed":true}                the folder was there already; with "parents":true the
+ *                                                                   usual answer, and on any mkdir when the provider
+ *                                                                   refused the create with 409 and the folder the drive
+ *                                                                   has at the path was adopted into its row (gkrost/unidrive-cli#452)
+ *                         {"ok":false,"error":"path_is_file"}       a file is at the path or above it (with "parents":true,
+ *                                                                   or when the drive's 409 answers that a file holds the name)
  *               "parents":true (gkrost/unidrive-cli#445) is mkdir -p: the missing folders above the path are made, and the call is
  *               idempotent; concurrent calls for one path share one run. Without it nothing changes. An engine that does not know
  *               the field ignores it (a missing parent is then parent_not_found, and the reply has no "existed").
@@ -460,7 +465,6 @@ class HydrationIpcHandler(
                 // base_etag is OPTIONAL: absent (or a row with no recorded token) →
                 // unconditional upload, byte-identical to the pre-guard contract.
                 val baseEtag = request.string("base_etag")
-                nameClash(rawPath(request, "path"))?.let { return it }
                 val unansweredKey = "$connectionId\u0000$path"
                 if (clientHandleId == null) {
                     val pending = unansweredOpenWrite[unansweredKey]
@@ -473,11 +477,11 @@ class HydrationIpcHandler(
                 val handleId = clientHandleId ?: issueHandleId()
                 if (clientHandleId == null) unansweredOpenWrite[unansweredKey] = handleId
                 try {
-                    when (val r = hydration.openForWrite(connectionId, handleId, path, cachePath, baseEtag)) {
-                        is OpenResult.Ok -> {
-                            spellings.record(rawPath(request, "path"))
-                            openOkReply(r, issuedHandleId = handleId.takeIf { clientHandleId == null })
-                        }
+                    val r = claimed(rawPath(request, "path"), { it is OpenResult.Failed }) {
+                        hydration.openForWrite(connectionId, handleId, path, cachePath, baseEtag)
+                    } ?: return reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN)
+                    when (r) {
+                        is OpenResult.Ok -> openOkReply(r, issuedHandleId = handleId.takeIf { clientHandleId == null })
                         is OpenResult.Failed -> reply(ok = false, error = r.error.message)
                     }
                 } finally {
@@ -490,12 +494,11 @@ class HydrationIpcHandler(
                 // absent → one-shot setattr/bare-truncate (no registration).
                 val handleId = request.string("handle_id")
                 if (reservedHandleId(handleId)) return reply(ok = false, error = INVALID_HANDLE_ID)
-                nameClash(rawPath(request, "path"))?.let { return it }
-                when (val r = hydration.openWriteBegin(connectionId, path, handleId)) {
-                    is OpenResult.Ok -> {
-                        spellings.record(rawPath(request, "path"))
-                        openOkReply(r)
-                    }
+                val r = claimed(rawPath(request, "path"), { it is OpenResult.Failed }) {
+                    hydration.openWriteBegin(connectionId, path, handleId)
+                } ?: return reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN)
+                when (r) {
+                    is OpenResult.Ok -> openOkReply(r)
                     is OpenResult.Failed -> reply(ok = false, error = r.error.message)
                 }
             }
@@ -565,18 +568,14 @@ class HydrationIpcHandler(
             }
             "hydration.mkdir" -> {
                 val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
-                nameClash(rawPath(request, "path"))?.let { return it }
                 // gkrost/unidrive-cli#445: "parents":true makes the folders above and answers a folder that is there as existed.
                 val parents = request.bool("parents") == true
-                when (val r = if (parents) hydration.mkdirParents(path) else hydration.mkdir(path)) {
-                    is MkdirResult.Ok -> {
-                        spellings.record(rawPath(request, "path"))
-                        reply(ok = true)
-                    }
-                    MkdirResult.Existed -> {
-                        spellings.record(rawPath(request, "path"))
-                        """{"ok":true,"existed":true}"""
-                    }
+                val r = claimed(rawPath(request, "path"), { it is MkdirResult.ParentNotFound || it is MkdirResult.Failed }) {
+                    if (parents) hydration.mkdirParents(path) else hydration.mkdir(path)
+                } ?: return reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN)
+                when (r) {
+                    MkdirResult.Ok -> reply(ok = true)
+                    MkdirResult.Existed -> """{"ok":true,"existed":true}"""
                     MkdirResult.ParentNotFound -> reply(ok = false, error = "parent_not_found")
                     is MkdirResult.Failed -> reply(ok = false, error = r.error.message)
                 }
@@ -618,11 +617,15 @@ class HydrationIpcHandler(
                 val clientHandleId = request.string("handle_id")
                 if (reservedHandleId(clientHandleId)) return reply(ok = false, error = INVALID_HANDLE_ID)
                 val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
-                nameClash(rawPath(request, "path"))?.let { return it }
                 val handleId = clientHandleId ?: issueHandleId()
-                when (val r = hydration.create(connectionId, handleId, path)) {
+                val r = claimed(
+                    rawPath(request, "path"),
+                    { it is CreateResult.ParentNotFound || it is CreateResult.PathExists || it is CreateResult.Failed },
+                ) {
+                    hydration.create(connectionId, handleId, path)
+                } ?: return reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN)
+                when (r) {
                     is CreateResult.Ok -> {
-                        spellings.record(rawPath(request, "path"))
                         if (r.excluded) {
                             """{"ok":true,"cache_path":${jsonEsc(r.cachePath.toString())},"handle_id":${jsonEsc(r.handleId)},"excluded":true}"""
                         } else {
@@ -653,11 +656,18 @@ class HydrationIpcHandler(
                 val newPath = pluckPath(request, "new_path") ?: return reply(ok = false, error = "missing_new_path")
                 // replace is OPTIONAL (default false): POSIX overwrite-if-exists.
                 val replace = request.bool("replace") ?: false
-                nameClash(rawPath(request, "old_path"), rawPath(request, "new_path"))?.let { return it }
-                when (val r = hydration.rename(oldPath, newPath, replace)) {
+                // The old path's spelling is only checked: a rename records nothing for it. The new path's is claimed
+                // before the verb, like every verb that records a spelling.
+                nameClash(rawPath(request, "old_path"))?.let { return it }
+                // Every non-Ok answer is a failure for the claim's ownership: OldPathNotFound,
+                // NewParentNotFound and NewPathExists are their own variants, not RenameResult.Failed
+                // members, and a rename that refused them must not leave the destination spelling claimed.
+                val r = claimed(rawPath(request, "new_path"), { it !is RenameResult.Ok }) {
+                    hydration.rename(oldPath, newPath, replace)
+                } ?: return reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN)
+                when (r) {
                     is RenameResult.Ok -> {
                         spellings.forget(rawPath(request, "old_path"))
-                        spellings.record(rawPath(request, "new_path"))
                         reply(ok = true)
                     }
                     RenameResult.OldPathNotFound -> reply(ok = false, error = "old_path_not_found")
@@ -733,6 +743,28 @@ class HydrationIpcHandler(
     // The name_clash answer for a verb that names a name by another spelling than the one a client used for it first.
     private fun nameClash(vararg raws: String): String? =
         if (raws.any { spellings.clashes(it) }) reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN) else null
+
+    // gkrost/unidrive-cli#452: the name_clash guard around a verb that records a spelling. The claim — a putIfAbsent
+    // per name that could have a twin ([NameSpellings.claim]) — is the check and the reservation in one step, so a
+    // twin-spelled verb on another connection clashes instead of racing past a read-only check. The claim is
+    // persisted when the verb succeeded ([NameSpellings.commit]) and given back when it did not, or when the verb
+    // threw (a cancelled caller included), so a failed verb leaves no spelling behind. Null: the claim clashed, and
+    // the verb did not run.
+    private suspend fun <R> claimed(
+        rawPath: String,
+        failed: (R) -> Boolean,
+        verb: suspend () -> R,
+    ): R? {
+        val claim = spellings.claim(rawPath) ?: return null
+        try {
+            val r = verb()
+            if (failed(r)) spellings.rollback(claim) else spellings.commit(claim)
+            return r
+        } catch (e: CancellationException) {
+            spellings.rollback(claim)
+            throw e
+        }
+    }
 
     // The validation of a LOGICAL path at the IPC boundary, for every verb that takes one.
     // A path is a list of names separated by '/'; a `.` or `..` segment, a control

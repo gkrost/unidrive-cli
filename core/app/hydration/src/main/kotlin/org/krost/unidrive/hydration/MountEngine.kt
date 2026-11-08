@@ -2034,6 +2034,49 @@ class MountEngine private constructor(
         }
 
     /**
+     * gkrost/unidrive-cli#452: what the cloud holds at [path] after a folder create was refused with 409 (the name is
+     * taken). A folder is adopted into its row exactly as [createRemoteFolder] records a created one — the row a
+     * client answered existed needs to fill the folder — and returned; a file holding the name answers
+     * [ExistingFolder.HeldByFile]; a path the provider proves absent again (a stale conflict), a deleted item, or a
+     * probe that fails transiently (remoteItemOrNull propagates those, so they are folded here) answers
+     * [ExistingFolder.Unknown] and the caller's refusal stands.
+     */
+    suspend fun existingFolderAt(path: String): ExistingFolder {
+        val item =
+            try {
+                remoteItemOrNull(path)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.info("the item at {} could not be probed after the create was refused with 409: {}", path, e.message ?: e.javaClass.simpleName)
+                return ExistingFolder.Unknown
+            } ?: return ExistingFolder.Unknown
+        if (item.deleted) return ExistingFolder.Unknown
+        if (!item.isFolder) return ExistingFolder.HeldByFile
+        val existing = db.getEntry(path)
+        if (existing == null) {
+            val landed = if (item.nameOverridden) item.path else path
+            db.insertFolder(path = path, remoteId = item.id, mtime = item.modified ?: Instant.now(), remotePath = landed.takeIf { it != path })
+        } else if (existing.remoteId == null) {
+            // The row of a folder that lived only here (refused by name, or excluded) until the drive took the name:
+            // the upsert also clears its block.
+            val landed = if (item.nameOverridden) item.path else path
+            db.upsertEntry(
+                existing.copy(
+                    remotePath = landed.takeIf { it != path },
+                    remoteId = item.id,
+                    remoteModified = item.modified ?: Instant.now(),
+                    lastErrorAt = null,
+                    lastSynced = Instant.now(),
+                ),
+            )
+            if (landed != path) db.assignRemotePaths(path, landed)
+        }
+        log.info("the folder {} the create was refused for is already in the cloud; its row takes the item", path)
+        return ExistingFolder.Adopted(item)
+    }
+
+    /**
      * archive#1040 M7 (the owner's decision of 2026-10-28, compare first): the item [remoteItemOrNull] finds at the path of the
      * never-uploaded row [path], when it is that row's own upload (a "ghost": the upload landed, its answer was lost), else null.
      * An item at the path counts as the row's own only when it holds the bytes of the row's cache copy ([GhostMatch]: the size,
@@ -2169,3 +2212,15 @@ class BlockedByParentException(
 
 /** The reason of an entry that waits for a blocked folder above it; the reason of the folder itself is [NameRefusedException.SIMILAR_NAME]. */
 const val BLOCKED_BY_PARENT = "blocked_by_parent"
+
+/** gkrost/unidrive-cli#452: what [MountEngine.existingFolderAt] proved the cloud holds at a create refused with 409. */
+sealed interface ExistingFolder {
+    /** The folder is there, and its row now names it. */
+    data class Adopted(val item: CloudItem) : ExistingFolder
+
+    /** A file holds the name. */
+    data object HeldByFile : ExistingFolder
+
+    /** Nothing provable: the caller's refusal stands. */
+    data object Unknown : ExistingFolder
+}
