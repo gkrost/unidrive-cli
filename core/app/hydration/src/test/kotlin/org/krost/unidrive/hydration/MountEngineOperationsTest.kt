@@ -898,6 +898,9 @@ class MountEngineOperationsTest {
         override val reportsItemVersions = true
         val ifMatches = mutableListOf<String?>()
         var conflictOnNextUpload = false
+
+        /** gkrost/unidrive-cli#452: a write landing on the cache copy while the provider's upload runs. */
+        var writeDuringUpload = false
         var cloudVersion = "\"{A},2\""
 
         override suspend fun getMetadata(path: String): CloudItem =
@@ -922,9 +925,11 @@ class MountEngineOperationsTest {
             onProgress: ((Long, Long) -> Unit)?,
         ): CloudItem {
             ifMatches += ifMatchETag
-            val size = Files.size(localPath)
             if (conflictOnNextUpload) {
                 conflictOnNextUpload = false
+                // The provider reads the bytes as they were sent; a concurrent write lands after they left.
+                val size = Files.size(localPath)
+                if (writeDuringUpload) Files.writeString(localPath, "written while uploading")
                 val copy = remotePath.substringBeforeLast('.') + " 1." + remotePath.substringAfterLast('.')
                 return CloudItem(
                     id = "copy-id",
@@ -944,7 +949,7 @@ class MountEngineOperationsTest {
                 id = existingRemoteId ?: "new-id",
                 name = remotePath.substringAfterLast('/'),
                 path = remotePath,
-                size = size,
+                size = Files.size(localPath),
                 isFolder = false,
                 modified = Instant.now(),
                 created = null,
@@ -1028,5 +1033,53 @@ class MountEngineOperationsTest {
             assertTrue(copy.isHydrated, "the copy's bytes are the cache copy that was sent")
             assertEquals("edit", Files.readString(mount.resolveCachePath("/doc 1.txt")))
             assertFalse(mount.servesFromLocalCopy(original), "a read of the original does not serve the edit")
+        }
+
+    @Test
+    fun `#452 a kept-both copy that cannot be adopted still deletes the cache copy whose stats the upload saw`() =
+        runTest {
+            val (versioned, mount) = versionedMount()
+            db.upsertEntry(versionedRow("/doc.txt"))
+            db.markEdited("/doc.txt", "\"{A},1\"")
+            // A row already at the copy's name: the kept copy cannot be adopted there.
+            db.upsertEntry(trackedRow("/doc 1.txt", isFolder = false))
+            val cache = mount.resolveCachePath("/doc.txt").also { Files.createDirectories(it.parent) }
+            Files.writeString(cache, "edit")
+            versioned.conflictOnNextUpload = true
+
+            val outcome = mount.uploadMountWriteFromCache("/doc.txt", cache, baseToken = "\"{A},1\"")
+
+            assertEquals("/doc 1.txt", outcome.keptBothAs)
+            assertFalse(outcome.copyAdopted, "the taken name refused the adoption")
+            assertEquals("h", assertNotNull(db.getEntry("/doc 1.txt")).remoteHash, "the name's own row was not adopted over")
+            assertFalse(Files.exists(cache), "the cache copy held exactly the bytes that were sent: nothing of the row's is lost")
+            val original = assertNotNull(db.getEntry("/doc.txt"))
+            assertNull(original.editBase, "nothing was written during the upload: the row keeps no edit")
+            assertFalse(original.isHydrated)
+        }
+
+    @Test
+    fun `#452 a kept-both upload keeps a cache copy written during the upload and marks the row edited`() =
+        runTest {
+            val (versioned, mount) = versionedMount()
+            db.upsertEntry(versionedRow("/doc.txt"))
+            db.markEdited("/doc.txt", "\"{A},1\"")
+            db.upsertEntry(trackedRow("/doc 1.txt", isFolder = false))
+            val cache = mount.resolveCachePath("/doc.txt").also { Files.createDirectories(it.parent) }
+            Files.writeString(cache, "edit")
+            versioned.conflictOnNextUpload = true
+            versioned.writeDuringUpload = true
+
+            val outcome = mount.uploadMountWriteFromCache("/doc.txt", cache, baseToken = "\"{A},1\"")
+
+            assertEquals("/doc 1.txt", outcome.keptBothAs)
+            assertFalse(outcome.copyAdopted)
+            assertTrue(Files.exists(cache), "the bytes written during the upload are nowhere else: the copy stays")
+            assertEquals("written while uploading", Files.readString(cache))
+            assertEquals("h", assertNotNull(db.getEntry("/doc 1.txt")).remoteHash, "the name's own row was not adopted over")
+            val original = assertNotNull(db.getEntry("/doc.txt"))
+            assertEquals("\"{A},2\"", original.editBase, "the kept bytes are an edit based on the version the row now records")
+            assertFalse(original.isHydrated, "the row's cloud version still downloads beside the kept copy")
+            assertTrue(mount.servesFromLocalCopy(original), "a read of the original serves the kept bytes, not a download")
         }
 }
