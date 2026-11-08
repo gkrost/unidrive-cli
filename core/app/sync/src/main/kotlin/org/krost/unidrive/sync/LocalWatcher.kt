@@ -252,10 +252,12 @@ class LocalWatcher(
                         file: Path,
                         exc: IOException,
                     ): FileVisitResult {
-                        // One entry the walk cannot read (an ACL-denied folder, "System Volume Information"
-                        // at a drive root) must not kill the whole watch: the scanner tolerates the same
-                        // entry. Log and go on; what sits under it stays unwatched until a create in a
-                        // watched parent registers it.
+                        // The root itself stays a hard failure, like the register above: a vanished or typo'd
+                        // sync root must fail start() rather than watch nothing. One entry below it the walk
+                        // cannot read (an ACL-denied folder, "System Volume Information" at a drive root)
+                        // must not kill the whole watch: the scanner tolerates the same entry. Log and go on;
+                        // what sits under it stays unwatched until a create in a watched parent registers it.
+                        if (file == syncRoot) throw exc
                         log.warn("Cannot watch {}: {} ({})", file, exc.javaClass.simpleName, exc.message)
                         return FileVisitResult.CONTINUE
                     }
