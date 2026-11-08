@@ -2942,7 +2942,7 @@ open class SyncEngine(
                     // archive#115: the REMOTE source is item.path (canonical); the local
                     // destination is localPath (resolved from the real-local action.path).
                     // archive#491: in the provider's own spelling, which a name that is not NFC keeps at the provider.
-                    val receipt = downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli())
+                    val receipt = downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli()).first
                     downloadReceipt = receipt
                     downloadedHash = stagedLocalHash(localPath, receipt)
                     if (!receipt.mtimeAppliedBeforePlacement) placeholder.restoreMtime(action.path, item.modified)
@@ -2983,7 +2983,7 @@ open class SyncEngine(
                     // UD-225b: id-based dispatch (see applyCreatePlaceholder).
                     // archive#115: remote source = item.path (canonical); dest = real-local.
                     val localPath = placeholder.resolveLocal(action.path)
-                    val receipt = downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli())
+                    val receipt = downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli()).first
                     downloadReceipt = receipt
                     downloadedHash = stagedLocalHash(localPath, receipt)
                     if (!receipt.mtimeAppliedBeforePlacement) placeholder.restoreMtime(action.path, item.modified)
@@ -3011,10 +3011,18 @@ open class SyncEngine(
     // local mtime follows the remote's (what the download would have set), the row records the
     // delivered metadata, and no transfer runs. The pin, hydration and quarantine marks stay:
     // the touch learns nothing new about a quarantined identifier — its own delivery ends that.
-    private fun applyTouchMetadata(action: SyncAction.TouchMetadata) {
+    // Internal for the metadata-touch placement test (as applyDownload for the download-placement test).
+    internal fun applyTouchMetadata(action: SyncAction.TouchMetadata) {
         val item = action.remoteItem
-        placeholder.restoreMtime(action.path, item.modified)
         val row = db.getEntry(action.path) ?: return
+        val localPath = placeholder.resolveLocal(action.path)
+        // gkrost/unidrive-cli#451: an edit that landed between the scan and this touch must not be touched
+        // over — a same-size rewrite (a database, a vault file) would vanish: the mtime reset below plus the
+        // baseline this touch records would read as synced at the next scan, and a later cloud change would
+        // download over the edit. The touch is skipped whole: the row keeps its baseline, the next pass
+        // re-derives both the touch and the edit. A file that moved away has nothing to touch either.
+        if (!Files.isRegularFile(localPath) || editedSinceScan(localPath, row)) return
+        placeholder.restoreMtime(action.path, item.modified)
         db.upsertEntry(
             row.copy(
                 remoteId = item.id,
@@ -3038,12 +3046,25 @@ open class SyncEngine(
         destination: java.nio.file.Path,
     ): Long = Transfers.downloadByIdOrPath(provider, item, remotePath, destination)
 
+    // gkrost/unidrive-cli#451: what the file at a download's destination looked like when the transfer was
+    // cleared to start: its stats, or null stats when the path was empty (nothing there, or the pre-transfer
+    // check already moved an edit aside). The placement re-checks against this before it replaces the bytes.
+    // [absent] marks a PROVEN empty destination — distinct from an unreadable one, where null stats mean
+    // unknown: on a proven-empty destination a regular file that appears during the transfer is a new local
+    // edit with no row baseline to judge it against, and it is kept aside as such instead of being replaced.
+    private data class PreTransferGuard(
+        val path: String,
+        val stats: Pair<Long, Long>?,
+        val absent: Boolean = false,
+    )
+
     private suspend fun downloadByIdOrPathWithHash(
         item: CloudItem,
         remotePath: String,
         destination: Path,
         targetMtimeMillis: Long?,
-    ): DownloadReceipt {
+        guard: PreTransferGuard? = null,
+    ): Pair<DownloadReceipt, String?> {
         // Check the provider's result before it can replace the last good local copy. A broken provider may
         // return normally after writing short bytes; its own staging contract is not the mirror's safety net.
         Files.createDirectories(destination.parent)
@@ -3051,8 +3072,29 @@ open class SyncEngine(
         try {
             val receipt = Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staging, targetMtimeMillis, fileTally, downloadEventRetries)
             requireCompleteDownload(remotePath, item, receipt)
+            // gkrost/unidrive-cli#451: the transfer ran; the file may no longer be what the check cleared. A
+            // save that landed mid-transfer moves aside as a conflict-local copy before the replace, the way
+            // the pre-transfer check one scope earlier kept the edits that landed before it. Stats null (the
+            // path was empty when cleared) judges against the row instead.
+            val keptMidTransfer =
+                guard?.let { checked ->
+                    if (checked.absent) {
+                        // The path was PROVEN empty when cleared: a regular file that is here now appeared
+                        // during the transfer. It has no row baseline to judge it against (an unhydrated
+                        // row's own stats are null, which the edited-since check would read as unedited),
+                        // so it is kept aside unconditionally, before the replace can take its bytes.
+                        keepAppearedFileAside(checked.path, destination)
+                    } else {
+                        keepLocalEditAsideIfEditedSinceScan(
+                            checked.path,
+                            destination,
+                            baselineMtime = checked.stats?.first,
+                            baselineSize = checked.stats?.second,
+                        )
+                    }
+                }
             Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-            return receipt
+            return receipt to keptMidTransfer
         } finally {
             Files.deleteIfExists(staging)
         }
@@ -3081,6 +3123,19 @@ open class SyncEngine(
         // has another mtime or size, and the provider places the download over it with nothing logged. The edit
         // is moved aside as a conflict-local copy first, the way applyKeepBoth keeps a losing local edit.
         val keptLocalEdit = keepLocalEditAsideIfEditedSinceScan(action.path, localPath)
+        // gkrost/unidrive-cli#451: the check above covers scan→now; the transfer it clears can run minutes.
+        // Its stats travel with the download and are re-checked at the placement, so a save landing
+        // mid-transfer is kept as a conflict-local copy too, the way the tracking engine's download
+        // re-checks after its transfer. Null stats: the path was empty here (nothing, or the edit above
+        // already moved aside) and the placement judges off the row instead — unless the path is also
+        // PROVEN absent, in which case a file appearing mid-transfer is kept aside on its own (#513 review).
+        val preTransferStats = statBeforeUpload(localPath)
+        val preTransferGuard =
+            PreTransferGuard(
+                action.path,
+                preTransferStats,
+                absent = preTransferStats == null && !Files.exists(localPath, java.nio.file.LinkOption.NOFOLLOW_LINKS),
+            )
         if (versionManager != null && Files.isRegularFile(localPath) && Files.size(localPath) > 0) {
             versionManager.snapshot(action.path)
             versionManager.pruneByCount(action.path, maxVersions)
@@ -3090,18 +3145,21 @@ open class SyncEngine(
         try {
             var downloadReceipt: DownloadReceipt? = null
             var downloadedHash: String? = null
+            var keptMidTransfer: String? = null
             withEchoSuppression(action.path) {
                 // UD-225b: id-based dispatch — see applyCreatePlaceholder for rationale.
                 // archive#115: remote source = remoteItem.path (canonical); local
                 // destination = localPath (resolved from real-local action.path).
-                val receipt = downloadByIdOrPathWithHash(
+                val (receipt, midTransferEdit) = downloadByIdOrPathWithHash(
                     action.remoteItem,
                     remoteGather.cloudPathOf(action.remoteItem),
                     localPath,
                     action.remoteItem.modified?.toEpochMilli(),
+                    guard = preTransferGuard,
                 )
                 downloadReceipt = receipt
                 downloadedHash = stagedLocalHash(localPath, receipt)
+                keptMidTransfer = midTransferEdit
                 if (!receipt.mtimeAppliedBeforePlacement) placeholder.restoreMtime(action.path, action.remoteItem.modified)
             }
 
@@ -3125,8 +3183,11 @@ open class SyncEngine(
                 result = "success",
             )
             // The kept edit goes up in this pass, not on the next one (the plan was made before the copy existed).
-            if (keptLocalEdit != null && syncDirection != SyncDirection.DOWNLOAD) {
-                uploadKeptLocalEdit(keptLocalEdit, action.remoteItem.path.substringBeforeLast('/'))
+            // gkrost/unidrive-cli#451: the copy the placement kept aside mid-transfer goes up the same way.
+            if (syncDirection != SyncDirection.DOWNLOAD) {
+                listOfNotNull(keptLocalEdit, keptMidTransfer).forEach { kept ->
+                    uploadKeptLocalEdit(kept, action.remoteItem.path.substringBeforeLast('/'))
+                }
             }
         } catch (e: Exception) {
             auditLog?.emit(
@@ -3210,6 +3271,32 @@ open class SyncEngine(
             path = path,
             localState = ChangeState.MODIFIED.name,
             remoteState = remoteState.name,
+            policy = "KEEP_BOTH",
+            loserFile = null,
+        )
+        return conflictPath
+    }
+
+    // Moves a regular file that APPEARED at a destination the pre-transfer check proved empty aside as a
+    // conflict-local copy (#513 review): it has no row baseline to compare against, so it is kept whole
+    // before the download's placement replaces it. Returns the copy's path, or null when nothing appeared.
+    private suspend fun keepAppearedFileAside(
+        path: String,
+        localPath: Path,
+    ): String? {
+        if (!Files.isRegularFile(localPath)) return null
+        val conflictPath =
+            keepBothCopyPath(path, conflictStamp()) { candidate ->
+                Files.exists(placeholder.resolveLocal(candidate), java.nio.file.LinkOption.NOFOLLOW_LINKS) || db.getEntry(candidate) != null
+            }
+        withEchoSuppression(conflictPath) {
+            Files.move(localPath, placeholder.resolveLocal(conflictPath))
+        }
+        reporter.onWarning("Conflict: $path appeared during the download that was cleared for its empty destination; the file is kept as $conflictPath")
+        conflictLog?.record(
+            path = path,
+            localState = ChangeState.MODIFIED.name,
+            remoteState = ChangeState.MODIFIED.name,
             policy = "KEEP_BOTH",
             loserFile = null,
         )

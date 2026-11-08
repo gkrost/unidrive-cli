@@ -36,7 +36,7 @@ What differs between vendors is read off the endpoint's host (`S3Config.Vendor`)
 | Request | Used by | Notes |
 |---|---|---|
 | `GET ?list-type=2` (ListObjectsV2) | `delta`, `listChildren`, folder checks | `delta` lists the whole bucket (`deltaIsFullListing`), and the engine finds deletions by absence. A listing cut off half-way resumes with `start-after` the last key the scan context kept. `listChildren` uses the `/` delimiter. |
-| `HEAD` | `getMetadata`, the write guard, after every upload | |
+| `HEAD` | `getMetadata`, the write guard, after every upload, `move` checks every key it writes | A taken key is `RemoteConflictException`, never an overwrite; a key already holding the source's bytes (the ETag a copy leaves) is an interrupted attempt and the move may go over it again. The folder leg reads the destination with one ListObjectsV2 instead of a HEAD per key. |
 | `GET` | `download` | The bytes go to a staging sibling, moved over the target only when complete. A 404 is `PermanentDownloadFailureException`. |
 | `PUT` | `upload` up to 100 MiB, folder markers (`key/`) | `x-amz-meta-mtime` carries the file's mtime as rclone writes it (seconds since the epoch, with a fraction). |
 | `POST ?uploads`, `PUT ?partNumber`, `POST ?uploadId`, `DELETE ?uploadId`, `GET ?uploadId` | multipart above 100 MiB | Parts are at least 16 MiB, sized to the vendor's part limit, streamed from the file and checked with `Content-MD5`. The open upload is kept under `s3-uploads/` in the profile folder. A second attempt on the unchanged file reuses the parts S3 holds (ListParts, compared by MD5). `discardStagedUpload` aborts it. |

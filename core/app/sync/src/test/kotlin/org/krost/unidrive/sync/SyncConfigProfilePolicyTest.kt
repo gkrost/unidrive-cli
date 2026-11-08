@@ -55,7 +55,9 @@ class SyncConfigProfilePolicyTest {
         val plain = SyncConfig.parse(toml, "plain")
         assertEquals(SyncDirection.BIDIRECTIONAL, plain.syncDirection)
         assertFalse(plain.fileVersioning)
-        assertFalse(plain.trashEmulation)
+        // No key anywhere: the emulation defaults off, except on Windows, where the FreeDesktop
+        // fallback trash is never purged and copies cross-drive trees to the system drive first.
+        assertEquals(org.krost.unidrive.io.Os.isWindows(), plain.trashEmulation)
         assertEquals(7, plain.trashRetentionDays)
     }
 
