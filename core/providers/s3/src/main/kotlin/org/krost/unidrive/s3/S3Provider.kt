@@ -425,6 +425,20 @@ class S3Provider(
         return keys
     }
 
+    /** Every key under [prefix] with its ETag: what a move's destination already holds (#176). */
+    private suspend fun keysWithEtags(prefix: String): Map<String, String?> {
+        val keys = linkedMapOf<String, String?>()
+        val pages = PageTokenGuard("The S3 listing under '$prefix'")
+        var token: String? = null
+        do {
+            val page = api.list(prefix, token = token)
+            page.objects.forEach { keys[it.key] = it.etag }
+            pages.follow(page.nextToken)
+            token = page.nextToken
+        } while (token != null)
+        return keys
+    }
+
     override suspend fun createFolder(path: String): CloudItem {
         val key = keyOf(path)
         if (key.isEmpty()) return folderItem("/")
@@ -432,7 +446,12 @@ class S3Provider(
         return folderItem(pathOf(key))
     }
 
-    /** Copy, then delete the source: S3 has no rename. A folder moves key by key. */
+    /**
+     * Copy, then delete the source: S3 has no rename. A folder moves key by key. No key is copied over bytes it
+     * would replace (#176): [refuseTakenFileDestination] and [refuseTakenFolderDestination] run before the first
+     * copy and refuse a taken key with [RemoteConflictException], as every other provider refuses a taken
+     * destination.
+     */
     override suspend fun move(
         fromPath: String,
         toPath: String,
@@ -441,22 +460,67 @@ class S3Provider(
         val to = keyOf(toPath)
         val source = api.head(from)
         if (source != null) {
+            refuseTakenFileDestination(source, to)
             copyObject(source, to)
             api.delete(from)
             return fileItem(api.head(to) ?: throw ProviderException("S3 does not show '$to' right after the copy"))
         }
         val keys = allKeys("$from/")
         if (keys.isEmpty()) throw S3Exception("S3 has nothing at '$fromPath'", 404, "NoSuchKey")
-        for (key in keys) {
-            val target = "$to/" + key.removePrefix("$from/")
-            val obj = api.head(key) ?: continue
-            copyObject(obj, target)
+        val sources = keys.mapNotNull { key -> api.head(key)?.let { key to it } }
+        refuseTakenFolderDestination(sources, from, to)
+        for ((key, obj) in sources) {
+            copyObject(obj, "$to/" + key.removePrefix("$from/"))
         }
         // The source goes the way a folder delete goes: a key the store refuses to delete, or a vendor without
         // DeleteObjects, must not leave the source standing beside its copy under a success (archive#1063).
         deleteKeys(keys, "$from/")
         return folderItem(pathOf(to))
     }
+
+    // #176: a move refuses a key it would write when the key holds other bytes — Dropbox answers path/conflict,
+    // a Graph rename refuses nameAlreadyExists, and this one copied right over them. The check is per key the move
+    // writes, never over the keys it does not: a folder move beside foreign keys merges, as it always has, and a
+    // key holding exactly the source's bytes — the ETag a CopyObject leaves behind — is an interrupted attempt's
+    // leftover the copy may go over again. That leftover is what makes per-key the only safe scope: on the retry of
+    // a partly failed folder move the deleted source keys are gone, so a leftover there is indistinguishable from a
+    // foreign key, and refusing those would break the convergence archive#1063 pins. ETags that cannot be compared
+    // hold other bytes, the safe side.
+
+    private suspend fun refuseTakenFileDestination(
+        source: S3Object,
+        to: String,
+    ) {
+        val there = api.head(to)
+        if (there != null && !sameBytes(source.etag, there.etag)) {
+            throw RemoteConflictException("'$to' is on S3 already; the move would replace its bytes")
+        }
+    }
+
+    // One listing of the destination decides every target key in a single pass and carries the ETags the leftover
+    // comparison needs; one HEAD per key would be a call per source key for the same answer.
+    private suspend fun refuseTakenFolderDestination(
+        sources: List<Pair<String, S3Object>>,
+        from: String,
+        to: String,
+    ) {
+        val there = keysWithEtags("$to/")
+        for ((key, obj) in sources) {
+            val target = "$to/" + key.removePrefix("$from/")
+            // containsKey, not a null-safe get: an object without an ETag is present, and its bytes are
+            // unknown — the same side the file-move guard's sameBytes lands on, never a silent overwrite.
+            if (!there.containsKey(target)) continue
+            if (!sameBytes(obj.etag, there[target])) {
+                throw RemoteConflictException("'$target' is on S3 already; the move would replace its bytes")
+            }
+        }
+    }
+
+    // Equal only when both ETags are known: an unknown one cannot prove a leftover and holds other bytes, the safe side.
+    private fun sameBytes(
+        left: String?,
+        right: String?,
+    ): Boolean = left != null && right != null && left == right
 
     // One CopyObject up to 5 GiB; above, a multipart upload whose parts are copied server-side (every vendor, not only AWS).
     @Suppress("TooGenericExceptionCaught") // the half-made copy is aborted, then the failure is rethrown unchanged
