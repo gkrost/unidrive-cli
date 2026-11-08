@@ -75,7 +75,9 @@ class HttpRetryBudget(
 
     private val recentThrottles = ConcurrentLinkedDeque<Long>()
     private val lastRetryAfterInWindowMs = AtomicLong(0)
-    private val globalResumeAfter = AtomicLong(0)
+    // Sentinel [NOT_OPENED] (not 0) for "the circuit never opened": the monotonic clock may be negative
+    // (System.nanoTime fixes no origin), so 0 is a real deadline and positivity says nothing.
+    private val globalResumeAfter = AtomicLong(NOT_OPENED)
     private val concurrency = AtomicInteger(maxConcurrency)
 
     // UD-278: counters for net-retry observability. log-watch.sh counts
@@ -169,8 +171,9 @@ class HttpRetryBudget(
     }
 
     /** Timestamp in the budget's own clock domain (monotonic by default) until which all new request starts
-     *  should pause. Zero when the circuit is closed. Exposed for diagnostics / tests. */
-    fun resumeAfterEpochMs(): Long = globalResumeAfter.get()
+     *  should pause. Zero while the circuit has never opened (a real deadline may itself be 0 or negative in the
+     *  monotonic domain). Exposed for diagnostics / tests. */
+    fun resumeAfterEpochMs(): Long = globalResumeAfter.get().let { if (it == NOT_OPENED) 0L else it }
 
     /** Record a throttle response. [retryAfterMs] is the server-hinted wait (from
      *  Retry-After header or `retryAfterSeconds` JSON body). */
@@ -249,6 +252,7 @@ class HttpRetryBudget(
         // 1. Circuit breaker: if open, wait out the global pause.
         while (true) {
             val resumeAt = globalResumeAfter.get()
+            if (resumeAt == NOT_OPENED) break
             val now = clock()
             val circuitWait = resumeAt - now
             if (circuitWait <= 0) break
@@ -293,7 +297,7 @@ class HttpRetryBudget(
 
         // Storm band: circuit open right now, or we're inside postStormRecoveryMs after it
         // closed (whichever side of `resumeAt` `now` is on).
-        val circuitEverOpened = resumeAt > 0L
+        val circuitEverOpened = resumeAt != NOT_OPENED
         val timeSinceResume = now - resumeAt // negative while circuit is open
         if (circuitEverOpened && timeSinceResume < postStormRecoveryMs) {
             return stormSpacingMs
@@ -342,6 +346,9 @@ class HttpRetryBudget(
     companion object {
         /** How often a caller that waits for a [withPermit] permit looks again. */
         const val PERMIT_POLL_MS = 25L
+
+        // The value of the circuit deadline before the first storm; no clock reading is this low.
+        private const val NOT_OPENED = Long.MIN_VALUE
 
         /**
          * archive#1256 B: true when an HTTP [status] from a token endpoint says nothing about the credential: a request

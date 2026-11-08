@@ -166,4 +166,38 @@ class HttpRetryBudgetMatrixTest {
             "a wall-clock default would put the deadline near epoch time, far past the monotonic now",
         )
     }
+
+    // -- Row: Clock — System.nanoTime() may be negative (the JDK fixes no origin), so the budget must not read
+    // 0 or a positive value as "circuit opened". The clock here follows the test scheduler's virtual time from a
+    // negative origin, so a wait the budget should not take shows up as virtual time that passed. --
+
+    @Test
+    fun `with a negative clock the first awaitSlot does not wait`() =
+        runTest {
+            val origin = -10_000L
+            val budget = HttpRetryBudget(maxConcurrency = 4, clock = { origin + testScheduler.currentTime })
+            budget.awaitSlot()
+            assertEquals(0L, testScheduler.currentTime, "nothing throttled, so the first request start must not wait")
+            assertEquals(0L, budget.resumeAfterEpochMs(), "an unopened circuit still reports 0")
+            assertEquals(0L, budget.currentSpacingMs(), "no throttle yet: the fast path has no spacing")
+        }
+
+    @Test
+    fun `with a negative clock a storm opens the circuit until now plus the backoff`() =
+        runTest {
+            val origin = -10_000L
+            val budget =
+                HttpRetryBudget(
+                    maxConcurrency = 4,
+                    stormThreshold = 4,
+                    stormBackoffFactor = 1.2,
+                    stormSpacingMs = 500L,
+                    clock = { origin + testScheduler.currentTime },
+                )
+            repeat(4) { budget.recordThrottle(retryAfterMs = 5_000) }
+            assertEquals(origin + 6_000L, budget.resumeAfterEpochMs(), "the deadline is now + backoff, even below 0")
+            assertEquals(500L, budget.currentSpacingMs(), "an open circuit spaces starts at stormSpacingMs")
+            budget.awaitSlot()
+            assertEquals(6_000L, testScheduler.currentTime, "awaitSlot waits out the open circuit, no more")
+        }
 }
