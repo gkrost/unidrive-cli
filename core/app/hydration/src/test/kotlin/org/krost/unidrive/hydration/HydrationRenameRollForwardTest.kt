@@ -369,6 +369,46 @@ class HydrationRenameRollForwardTest {
         assertTrue(restarted.db.renameIntents().isEmpty(), "nothing is still owed")
     }
 
+    // The review of #452: a plain rename is allowed while its upload runs, and the upload worker is on another dispatcher.
+    // An upload can therefore give the old row its cloud id AFTER the local intent was recorded with no id: a stop after the
+    // cache move and before the row's repath left the row matched by nothing (the record's id is null, the row's is real), so
+    // the settle skipped the repath and forgot the record — the bytes at the new name had no row and the old row kept the old
+    // cloud path. The stop's aftermath is crafted here (the landed upload's row, the moved copy, the record), then the real
+    // restart/replay path runs.
+    @Test
+    fun `a local rename is recovered when an in-flight upload gave its old row an id before the stop`() = runTest {
+        val rig = Rig(this)
+        rig.seedLocal("/t.txt", "only copy")
+        rig.db.recordRenameIntent(RenameIntent("/t.txt", "/r.txt", null, false))
+        // The upload of /t.txt lands while the rename runs: the row takes the landed item's id and the cloud holds the bytes
+        // at the old path.
+        rig.drive.seed("/t.txt", id = "id-t", bytes = "only copy")
+        val row = rig.db.getEntry("/t.txt")!!
+        rig.db.upsertEntry(
+            row.copy(
+                remoteId = "id-t",
+                remoteHash = "v1",
+                remoteSize = "only copy".length.toLong(),
+                remoteModified = Instant.parse("2026-10-28T09:00:00Z"),
+                cacheBacked = true,
+                lastSynced = Instant.now(),
+            ),
+        )
+        // The cache copy moves before the daemon stops; the row's repath never runs.
+        Files.move(rig.cache("/t.txt"), rig.cache("/r.txt"))
+
+        val restarted = rig.restart()
+        restarted.impl.replayPendingUploads()
+        advanceUntilIdle()
+
+        assertEquals("id-t", restarted.db.getEntry("/r.txt")?.remoteId, "the row followed the copy and carries the landed id")
+        assertNull(restarted.db.getEntry("/t.txt"), "no row is left at the old name")
+        assertEquals(setOf("/r.txt"), rig.drive.items.keys, "the landed item moved to the new name by its id")
+        assertEquals("only copy", rig.drive.content["/r.txt"])
+        assertTrue(Files.notExists(restarted.cache("/t.txt")), "no copy is left behind at the old name")
+        assertTrue(restarted.db.renameIntents().isEmpty(), "nothing is still owed")
+    }
+
     // #452: the live local rename answers failed when its copy cannot follow, keeps row and bytes whole at the old name,
     // and the record it kept finishes the rename once the way is free.
     @Test
