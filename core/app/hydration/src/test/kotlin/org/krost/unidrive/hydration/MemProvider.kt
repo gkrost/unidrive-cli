@@ -27,6 +27,11 @@ internal class MemProvider : CloudProvider {
     // When set, delta() suspends here: a full scan that has not finished (the first scan of a big drive).
     @Volatile var deltaGate: CompletableDeferred<Unit>? = null
 
+    // When set, download() signals downloadReached and suspends on downloadRelease before writing: holds a
+    // hydration's download mid-transfer, with the path's hydration lock held.
+    @Volatile var downloadReached: CompletableDeferred<Unit>? = null
+    @Volatile var downloadRelease: CompletableDeferred<Unit>? = null
+
     // The folders listChildren was asked for, in order; and what it answers instead of the folder's children, or throws.
     val listCalls = java.util.concurrent.CopyOnWriteArrayList<String>()
     @Volatile var listFailure: Exception? = null
@@ -86,6 +91,8 @@ internal class MemProvider : CloudProvider {
 
     override suspend fun download(remotePath: String, destination: Path): Long {
         downloads += remotePath
+        downloadReached?.complete(Unit)
+        downloadRelease?.await()
         Files.createDirectories(destination.parent)
         Files.write(destination, remote.getValue(remotePath))
         return remote.getValue(remotePath).size.toLong()

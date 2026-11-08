@@ -2630,12 +2630,17 @@ class HydrationImpl(
             // not hydrated either way) from one the delete could not take (an error, or the copy changed under
             // the lock) — the old deleteIfExists answered Ok for the first and Failed for the second too.
             val freed = mount.forceEvictCacheCopy(path, observed = Transfers.statBeforeUpload(cachePath))
-            forgetCacheFile(path)
             if (freed == null && Files.exists(cachePath)) {
+                // #517 review: the locked delete was refused (the copy changed while the lock was waited for,
+                // or the delete errored) and the copy stays — it must stay ACCOUNTED for too. Forgetting it
+                // here underreported cacheHealth.bytes and could skip the budget trigger until the periodic
+                // full reconciliation put it back.
                 val err = HydrationError.Generic("dehydrate failed")
                 _events.emit(HydrationEvent.Failed(path, err))
                 DehydrateResult.Failed(err)
             } else {
+                // Success, or the copy was already gone: either way there is nothing left to account.
+                forgetCacheFile(path)
                 stateDb.markUnhydrated(path)
                 _events.emit(HydrationEvent.Dehydrated(path))
                 DehydrateResult.Ok
