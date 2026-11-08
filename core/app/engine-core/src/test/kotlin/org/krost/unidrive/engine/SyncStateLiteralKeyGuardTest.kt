@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
 class SyncStateLiteralKeyGuardTest {
     private val core = File("../..").canonicalFile
 
-    private val owners = setOf("CursorState.kt")
+    private val owners = setOf("CursorState.kt", "QuotaState.kt", "ScopeState.kt")
 
     private val call = Regex("""\b(?:get|set)SyncState\(\s*"([^"]*)"""")
 
@@ -104,26 +104,15 @@ class SyncStateLiteralKeyGuardTest {
         val SAFETY_CALLS_ALLOWED: Set<Pair<String, String>> = setOf("StateDatabase.kt" to "last_full_scan")
 
         /**
-         * TODO(gkrost/unidrive-cli#269): keys with no deletion safety that still use literal keys: the quota snapshot, the
-         * scan timings, the sync root and the effective scope. A typed holder for them is later work; until then the list
-         * may only shrink (the stale-entry test above).
+         * TODO(gkrost/unidrive-cli#269): keys with no deletion safety that still use literal keys: SyncEngine's only —
+         * the scan timings, the sync root and the effective scope. The typed holders exist (QuotaState, ScopeState);
+         * SyncEngine moves onto ScopeState in its own change, separate from any PR that edits SyncEngine.kt. Until
+         * then the list may only shrink (the stale-entry test above).
          */
         val ALLOWED: Set<Pair<String, String>> =
             setOf(
-                "DoctorCommand.kt" to "effective_scope",
-                "DoctorCommand.kt" to "quota_fetched_at",
                 // In a comment (check 8, state-vs-config drift), not a call.
                 "DoctorCommand.kt" to "sync_root",
-                "QuotaCommand.kt" to "quota_used",
-                "QuotaCommand.kt" to "quota_total",
-                "QuotaCommand.kt" to "quota_remaining",
-                "QuotaCommand.kt" to "quota_fetched_at",
-                "QuotaSnapshotMonitor.kt" to "quota_used",
-                "QuotaSnapshotMonitor.kt" to "quota_total",
-                "QuotaSnapshotMonitor.kt" to "quota_remaining",
-                "QuotaSnapshotMonitor.kt" to "quota_fetched_at",
-                "StatusCommand.kt" to "effective_scope",
-                "SyncCommand.kt" to "sync_root",
                 "SyncEngine.kt" to "sync_root",
                 "SyncEngine.kt" to "effective_scope",
                 "SyncEngine.kt" to "last_scan_secs_remote",

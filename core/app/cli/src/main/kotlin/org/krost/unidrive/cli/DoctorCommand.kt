@@ -11,6 +11,8 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import org.krost.unidrive.engine.CursorState
 import org.krost.unidrive.engine.CursorStateView
+import org.krost.unidrive.engine.QuotaState
+import org.krost.unidrive.engine.ScopeState
 import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.formatSizePrecise
 import org.krost.unidrive.sync.ProfileMode
@@ -422,7 +424,7 @@ class DoctorCommand : Runnable {
      */
     internal fun checkEffectiveScope(db: StateDatabase): CheckResult {
         val name = "effective-scope"
-        val scope = db.getSyncState("effective_scope")
+        val scope = ScopeState(db).effectiveScope
         return if (scope == null) {
             CheckResult(name, Severity.OK, "no narrowed scope (full-tree sync)", emptyList())
         } else {
@@ -445,7 +447,7 @@ class DoctorCommand : Runnable {
         now: Instant,
     ): CheckResult {
         val name = "quota-freshness"
-        val fetchedAt = db.getSyncState("quota_fetched_at")
+        val fetchedAt = QuotaState(db).fetchedAtText
         if (fetchedAt == null) {
             // archive#532: a fresh state has never cached a quota — expected, not a warning.
             // It used to be the single WARN that made `doctor` exit non-zero on a

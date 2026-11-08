@@ -2,9 +2,9 @@ package org.krost.unidrive.cli
 
 import kotlinx.coroutines.launch
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.engine.QuotaState
 import org.krost.unidrive.sync.StateDatabase
 import org.slf4j.LoggerFactory
-import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -51,11 +51,11 @@ internal class QuotaSnapshotMonitor(
 
     /** Seeds the snapshot from the cached quota tuple `quota` persists (same keys, one shared cache). */
     fun seedFromCache(db: StateDatabase) {
-        val used = db.getSyncState("quota_used")?.toLongOrNull() ?: return
-        val total = db.getSyncState("quota_total")?.toLongOrNull() ?: return
-        val remaining = db.getSyncState("quota_remaining")?.toLongOrNull()
-        val fetchedAt = db.getSyncState("quota_fetched_at")?.let { runCatching { Instant.parse(it) }.getOrNull() }
-            ?: return
+        val cached = QuotaState(db)
+        val used = cached.used ?: return
+        val total = cached.total ?: return
+        val remaining = cached.remaining
+        val fetchedAt = cached.fetchedAt ?: return
         val age = System.currentTimeMillis() - fetchedAt.toEpochMilli()
         quotaSnapshot = QuotaSnapshot(
             usedBytes = used,
@@ -148,12 +148,12 @@ internal class QuotaSnapshotMonitor(
     ) {
         db ?: return
         val values =
-            linkedMapOf(
-                "quota_used" to (snap.usedBytes?.toString() ?: return),
-                "quota_total" to (snap.totalBytes?.toString() ?: return),
-                "quota_fetched_at" to Instant.ofEpochMilli(snap.fetchedAtMs ?: return).toString(),
-            )
-        snap.remainingBytes?.let { values["quota_remaining"] = it.toString() }
+            QuotaState.cacheValues(
+                usedBytes = snap.usedBytes,
+                totalBytes = snap.totalBytes,
+                remainingBytes = snap.remainingBytes,
+                fetchedAtMs = snap.fetchedAtMs,
+            ) ?: return
         unpersistedQuota.set(values)
         retryQuotaPersist(db)
     }

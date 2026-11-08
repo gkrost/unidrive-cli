@@ -6,6 +6,7 @@ import kotlinx.serialization.json.jsonObject
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.authenticateAndLog
+import org.krost.unidrive.engine.QuotaState
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthException
 import org.krost.unidrive.sync.IpcEndpoint
@@ -93,10 +94,7 @@ class QuotaCommand : Runnable {
             val db = StateDatabase(stateDb)
             try {
                 db.initialize()
-                db.setSyncState("quota_used", quota.used.toString())
-                db.setSyncState("quota_total", quota.total.toString())
-                db.setSyncState("quota_remaining", quota.remaining.toString())
-                db.setSyncState("quota_fetched_at", Instant.now().toString())
+                QuotaState(db).cache(quota.used, quota.total, quota.remaining, Instant.now())
             } finally {
                 db.close()
             }
@@ -109,11 +107,11 @@ class QuotaCommand : Runnable {
             val db = StateDatabase(stateDb)
             try {
                 db.initialize()
-                val used = db.getSyncState("quota_used")?.toLongOrNull() ?: return@runCatching null
-                val total = db.getSyncState("quota_total")?.toLongOrNull() ?: return@runCatching null
-                val remaining = db.getSyncState("quota_remaining")?.toLongOrNull() ?: return@runCatching null
-                val fetchedAtStr = db.getSyncState("quota_fetched_at") ?: return@runCatching null
-                val fetchedAt = Instant.parse(fetchedAtStr)
+                val cached = QuotaState(db)
+                val used = cached.used ?: return@runCatching null
+                val total = cached.total ?: return@runCatching null
+                val remaining = cached.remaining ?: return@runCatching null
+                val fetchedAt = cached.fetchedAt ?: return@runCatching null
                 QuotaInfo(used = used, total = total, remaining = remaining) to fetchedAt
             } finally {
                 db.close()
