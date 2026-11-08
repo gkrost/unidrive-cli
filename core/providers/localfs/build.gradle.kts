@@ -14,6 +14,8 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
+    // The SPI's conformance contracts, run against this provider's own fake.
+    testImplementation(testFixtures(project(":app:core")))
 }
 
 tasks.test {

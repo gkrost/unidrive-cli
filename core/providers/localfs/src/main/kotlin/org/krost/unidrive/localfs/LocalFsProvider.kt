@@ -82,6 +82,12 @@ class LocalFsProvider(
         log.debug("localfs authenticated, root={}", rootNorm)
     }
 
+    // [authenticate] is a check of the root directory alone: there are no stored credentials to pick up and
+    // nothing interactive it could fall back to, so the reload decision is that same check.
+    override suspend fun reloadCredentials() {
+        authenticate()
+    }
+
     // A root below a mount point that is not mounted (an unplugged drive, a share not yet connected) is gone.
     // Re-created empty, it would read as a complete, empty drive and the next sync would delete every mirrored
     // file. Only a root this profile has never seen is created, and that goes for a write below it as well:

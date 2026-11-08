@@ -92,6 +92,12 @@ class S3Provider(
         return CredentialProof()
     }
 
+    // [authenticate] is one listing with the configured keys — there is no stored grant to pick up and nothing
+    // interactive it could fall back to, so the reload decision is that same proof.
+    override suspend fun reloadCredentials() {
+        authenticate()
+    }
+
     override fun close() = api.close()
 
     // ── reading ──

@@ -29,6 +29,10 @@ dependencies {
     testImplementation(libs.ktor.client.cio)
     testImplementation(libs.kotlinx.coroutines.test)
 
+    // The provider conformance suite: the contracts each provider module runs against its own fakes.
+    testFixturesImplementation(kotlin("test-junit"))
+    testFixturesImplementation(libs.kotlinx.coroutines.core)
+
     testImplementation(project(":providers:onedrive"))
 
     // archive#644: the plugin's log lines are asserted through a logback ListAppender.

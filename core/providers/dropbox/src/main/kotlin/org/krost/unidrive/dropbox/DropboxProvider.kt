@@ -147,6 +147,13 @@ class DropboxProvider(
         if (!auth.isAuthenticated) auth.signInWithBrowser()
     }
 
+    // The grant a sign-in through the daemon stored, read in place; never the browser sign-in of authenticate().
+    // A daemon reload has nobody to answer a sign-in: with nothing stored the instance stays unauthenticated and
+    // every later request fails as such.
+    override suspend fun reloadCredentials() {
+        auth.load()
+    }
+
     // archive#1052: auth/token/revoke disables the access token the call carries and the refresh token behind it. The
     // provider of a sign-out is built fresh, so the stored grant is read first; without one the call has no token.
     override suspend fun revokeToken(): TokenRevocation {
