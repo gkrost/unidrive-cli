@@ -146,7 +146,8 @@ internal class TelemetryStore private constructor(
                 ps.executeBatch()
             }
             c.commit()
-        } catch (e: SQLException) {
+        } catch (e: Throwable) {
+            // Throwable, like [inTransaction]: the finally below would otherwise commit the half-written batch.
             runCatching { c.rollback() }
             throw e
         } finally {
@@ -305,7 +306,9 @@ internal class TelemetryStore private constructor(
         try {
             block(c)
             c.commit()
-        } catch (e: SQLException) {
+        } catch (e: Throwable) {
+            // Throwable, not Exception: the finally below turns auto-commit back on, and JDBC commits the
+            // open transaction then, so a RuntimeException escaping here would commit what was written so far.
             runCatching { c.rollback() }
             throw e
         } finally {
