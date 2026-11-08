@@ -31,9 +31,11 @@ internal class TelemetryStore private constructor(
     private val connector: StateDatabaseConnector,
 ) {
     private var conn: Connection? = null
+    private var closed = false
 
     @Synchronized
     private fun connection(): Connection {
+        check(!closed) { "telemetry.db is closed" }
         conn?.let { if (!it.isClosed) return it }
         val opened = openConnection()
         conn = opened
@@ -146,7 +148,8 @@ internal class TelemetryStore private constructor(
                 ps.executeBatch()
             }
             c.commit()
-        } catch (e: SQLException) {
+        } catch (e: Throwable) {
+            // Throwable, like [inTransaction]: the finally below would otherwise commit the half-written batch.
             runCatching { c.rollback() }
             throw e
         } finally {
@@ -305,7 +308,9 @@ internal class TelemetryStore private constructor(
         try {
             block(c)
             c.commit()
-        } catch (e: SQLException) {
+        } catch (e: Throwable) {
+            // Throwable, not Exception: the finally below turns auto-commit back on, and JDBC commits the
+            // open transaction then, so a RuntimeException escaping here would commit what was written so far.
             runCatching { c.rollback() }
             throw e
         } finally {
@@ -335,6 +340,7 @@ internal class TelemetryStore private constructor(
 
     @Synchronized
     fun close() {
+        closed = true
         val c = conn ?: return
         conn = null
         try {

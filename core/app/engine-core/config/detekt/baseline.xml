@@ -18,6 +18,7 @@
     <ID>SwallowedException:CachePaths.kt$CachePaths$e: SecurityException</ID>
     <ID>SwallowedException:Transfers.kt$Transfers$e: java.io.IOException</ID>
     <ID>TooGenericExceptionCaught:RemoteEnumeration.kt$RemoteEnumeration$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:TelemetryStore.kt$TelemetryStore$e: Throwable</ID>
     <ID>TooGenericExceptionCaught:SqliteConnections.kt$SqliteConnections$e: Throwable</ID>
     <ID>TooGenericExceptionCaught:StateDatabase.kt$StateDatabase$e: Exception</ID>
     <ID>TooGenericExceptionCaught:StateDatabase.kt$StateDatabase$e: Throwable</ID>
