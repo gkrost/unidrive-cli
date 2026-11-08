@@ -62,6 +62,8 @@ sealed interface ViewResolution {
 }
 
 /** The state of one view for `daemon.status`: counts as of its last listing, the rest (whether the list was cut among it) as of now. */
+// The one wire object of a view's status; built with named arguments in the one place below.
+@Suppress("LongParameterList")
 class ViewStatus(
     val kind: ViewKind,
     val rootPath: String,

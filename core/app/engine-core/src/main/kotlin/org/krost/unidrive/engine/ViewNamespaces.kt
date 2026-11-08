@@ -52,6 +52,8 @@ data class ViewLocation(
  * [ReadOnlyTrashProvider] keeps it from the provider. Reading, hydrating and copying out stay allowed (they resolve to
  * the real item). With no view active every question answers no at once, without asking [topLevelNames].
  */
+// The views' one place, so every question about them is a method here (PlacedNamespace's rule, one namespace over).
+@Suppress("TooManyFunctions")
 class ViewNamespaces(
     specs: List<ViewSpec> = emptyList(),
     private val topLevelNames: () -> Collection<String> = { emptyList() },
