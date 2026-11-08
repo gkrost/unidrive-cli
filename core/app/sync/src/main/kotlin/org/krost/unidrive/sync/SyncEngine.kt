@@ -3049,9 +3049,13 @@ open class SyncEngine(
     // gkrost/unidrive-cli#451: what the file at a download's destination looked like when the transfer was
     // cleared to start: its stats, or null stats when the path was empty (nothing there, or the pre-transfer
     // check already moved an edit aside). The placement re-checks against this before it replaces the bytes.
+    // [absent] marks a PROVEN empty destination — distinct from an unreadable one, where null stats mean
+    // unknown: on a proven-empty destination a regular file that appears during the transfer is a new local
+    // edit with no row baseline to judge it against, and it is kept aside as such instead of being replaced.
     private data class PreTransferGuard(
         val path: String,
         val stats: Pair<Long, Long>?,
+        val absent: Boolean = false,
     )
 
     private suspend fun downloadByIdOrPathWithHash(
@@ -3074,12 +3078,20 @@ open class SyncEngine(
             // path was empty when cleared) judges against the row instead.
             val keptMidTransfer =
                 guard?.let { checked ->
-                    keepLocalEditAsideIfEditedSinceScan(
-                        checked.path,
-                        destination,
-                        baselineMtime = checked.stats?.first,
-                        baselineSize = checked.stats?.second,
-                    )
+                    if (checked.absent) {
+                        // The path was PROVEN empty when cleared: a regular file that is here now appeared
+                        // during the transfer. It has no row baseline to judge it against (an unhydrated
+                        // row's own stats are null, which the edited-since check would read as unedited),
+                        // so it is kept aside unconditionally, before the replace can take its bytes.
+                        keepAppearedFileAside(checked.path, destination)
+                    } else {
+                        keepLocalEditAsideIfEditedSinceScan(
+                            checked.path,
+                            destination,
+                            baselineMtime = checked.stats?.first,
+                            baselineSize = checked.stats?.second,
+                        )
+                    }
                 }
             Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             return receipt to keptMidTransfer
@@ -3115,8 +3127,15 @@ open class SyncEngine(
         // Its stats travel with the download and are re-checked at the placement, so a save landing
         // mid-transfer is kept as a conflict-local copy too, the way the tracking engine's download
         // re-checks after its transfer. Null stats: the path was empty here (nothing, or the edit above
-        // already moved aside) and the placement judges off the row instead.
-        val preTransferGuard = PreTransferGuard(action.path, statBeforeUpload(localPath))
+        // already moved aside) and the placement judges off the row instead — unless the path is also
+        // PROVEN absent, in which case a file appearing mid-transfer is kept aside on its own (#513 review).
+        val preTransferStats = statBeforeUpload(localPath)
+        val preTransferGuard =
+            PreTransferGuard(
+                action.path,
+                preTransferStats,
+                absent = preTransferStats == null && !Files.exists(localPath, java.nio.file.LinkOption.NOFOLLOW_LINKS),
+            )
         if (versionManager != null && Files.isRegularFile(localPath) && Files.size(localPath) > 0) {
             versionManager.snapshot(action.path)
             versionManager.pruneByCount(action.path, maxVersions)
@@ -3252,6 +3271,32 @@ open class SyncEngine(
             path = path,
             localState = ChangeState.MODIFIED.name,
             remoteState = remoteState.name,
+            policy = "KEEP_BOTH",
+            loserFile = null,
+        )
+        return conflictPath
+    }
+
+    // Moves a regular file that APPEARED at a destination the pre-transfer check proved empty aside as a
+    // conflict-local copy (#513 review): it has no row baseline to compare against, so it is kept whole
+    // before the download's placement replaces it. Returns the copy's path, or null when nothing appeared.
+    private suspend fun keepAppearedFileAside(
+        path: String,
+        localPath: Path,
+    ): String? {
+        if (!Files.isRegularFile(localPath)) return null
+        val conflictPath =
+            keepBothCopyPath(path, conflictStamp()) { candidate ->
+                Files.exists(placeholder.resolveLocal(candidate), java.nio.file.LinkOption.NOFOLLOW_LINKS) || db.getEntry(candidate) != null
+            }
+        withEchoSuppression(conflictPath) {
+            Files.move(localPath, placeholder.resolveLocal(conflictPath))
+        }
+        reporter.onWarning("Conflict: $path appeared during the download that was cleared for its empty destination; the file is kept as $conflictPath")
+        conflictLog?.record(
+            path = path,
+            localState = ChangeState.MODIFIED.name,
+            remoteState = ChangeState.MODIFIED.name,
             policy = "KEEP_BOTH",
             loserFile = null,
         )
