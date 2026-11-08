@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory
 import java.sql.SQLException
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -44,6 +45,11 @@ internal class HistoryWriter(
     }
 
     private val queue = ArrayBlockingQueue<Op>(config.queueCapacity)
+
+    // Terminal snapshots a full queue could not take: the writer drains this every turn. A row that
+    // lost its final snapshot stands `running` in the file for ever, and the retention skips running
+    // rows, so the loss would accumulate.
+    private val keptTerminals = ConcurrentHashMap<String, TransferRow>()
     private val written = AtomicLong()
     private val dropped = AtomicLong()
     private val droppedUnrecorded = AtomicBoolean()
@@ -67,13 +73,26 @@ internal class HistoryWriter(
 
     fun start() = thread.start()
 
-    /** Hot path: hands the snapshot to the queue; a full queue drops it and counts it. */
+    /** Hot path: hands the snapshot to the queue; a full queue drops a running one and keeps a terminal one aside. */
     fun offer(row: TransferRow) {
         if (!accepting.get()) return
-        if (!queue.offer(Op.Write(row))) {
-            dropped.incrementAndGet()
-            droppedUnrecorded.set(true)
+        if (queue.offer(Op.Write(row))) return
+        // A terminal snapshot a full queue dropped would leave its row running for ever: the retention
+        // never prunes a running row. It waits in a small map the writer drains every turn, and the
+        // running snapshot it supersedes leaves the queue (a transfer's last snapshot is its row).
+        if (row.result != TransferResult.RUNNING && keepTerminal(row)) {
+            queue.removeIf { it is Op.Write && it.row.operationId == row.operationId }
+            return
         }
+        dropped.incrementAndGet()
+        droppedUnrecorded.set(true)
+    }
+
+    /** True when [row] waits in [keptTerminals]: a full map drops a new operation, it never blocks. */
+    private fun keepTerminal(row: TransferRow): Boolean {
+        if (keptTerminals.size >= KEPT_TERMINALS && !keptTerminals.containsKey(row.operationId)) return false
+        keptTerminals[row.operationId] = row
+        return true
     }
 
     fun replace(row: TransferRow, previousId: String) {
@@ -139,12 +158,25 @@ internal class HistoryWriter(
                     batch.add(first)
                     queue.drainTo(batch, config.batchSize - 1)
                 }
+                takeKeptTerminals(batch)
                 running = process(batch)
                 batch.clear()
                 if (running) pruneIfDue()
             }
         } catch (e: InterruptedException) {
             log.debug("History writer for {} interrupted: {}", profile, e.message)
+        }
+    }
+
+    // Terminal snapshots kept aside when the queue was full: they go out with this turn, after the
+    // queue's older snapshots of their operations (the last snapshot of an operation is its row).
+    private fun takeKeptTerminals(batch: MutableList<Op>) {
+        if (keptTerminals.isEmpty()) return
+        val entries = keptTerminals.entries.iterator()
+        while (entries.hasNext()) {
+            val entry = entries.next()
+            batch.add(Op.Write(entry.value))
+            entries.remove()
         }
     }
 
@@ -267,6 +299,10 @@ internal class HistoryWriter(
         private val log = LoggerFactory.getLogger(HistoryWriter::class.java)
         const val DEFAULT_WAIT_MS = 10_000L
         private const val JOIN_TIMEOUT_MS = 10_000L
+
+        // How many terminal snapshots the overflow holds at most: the endings of the transfers that
+        // finish while the queue stays full (a burst's tail), not the burst itself.
+        private const val KEPT_TERMINALS = 256
         private val WARN_EVERY_NANOS = TimeUnit.MINUTES.toNanos(1)
     }
 }
