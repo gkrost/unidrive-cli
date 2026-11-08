@@ -356,6 +356,25 @@ class OneDriveProvider(
         )
     }
 
+    // The If-Match of a replace: the engine's plan-time eTag when supplied, else an at-upload-time
+    // fetch. A failed fetch must not strip the guard (#453): a 503 after the client's retries, an
+    // I/O error or a name-confused 404 would send the PUT as an unconditional replace — a lost
+    // update waiting to happen. Only a GONE item (404) falls through unguarded, because there is
+    // nothing left to guard; cancellation is never absorbed here.
+    private suspend fun fetchGuardETag(
+        ifMatchETag: String?,
+        sharedId: String?,
+        remotePath: String,
+    ): String? =
+        ifMatchETag
+            ?: try {
+                (if (sharedId != null) graphApi.getItemById(sharedId) else itemAt(remotePath)).eTag
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: GraphApiException) {
+                if (e.isItemGone()) null else throw e
+            }
+
     override suspend fun upload(
         localPath: Path,
         remotePath: String,
@@ -437,22 +456,10 @@ class OneDriveProvider(
             // MODIFIED file we own → replace-in-place, guarded by If-Match so a concurrent edit
             // surfaces as 412 instead of silently overwriting the other editor's change. archive#291
             // extends this guard to the ≤4 MiB simple-PUT path (previously only >4 MiB sessions
-            // carried it, archive#113). Prefer the engine's PLAN-TIME eTag when supplied; otherwise fall
-            // back to an at-upload-time fetch (closes the narrower fetch→PUT window, not the
+            // carried it, archive#113). Prefer the engine's PLAN-TIME eTag when supplied; otherwise
+            // fall back to an at-upload-time fetch (closes the narrower fetch→PUT window, not the
             // engine's stale-view window — see archive#291 for the plan-time-persistence limitation).
-            // A failed lookup must not strip the guard (#453): a 503 after the client's retries, an
-            // I/O error or a name-confused 404 would send the PUT as an unconditional replace — a
-            // lost update waiting to happen. Only a GONE item (404) falls through to an unguarded
-            // write, because there is nothing left to guard; cancellation is never absorbed here.
-            val guardETag =
-                ifMatchETag
-                    ?: try {
-                        (if (sharedId != null) graphApi.getItemById(sharedId) else itemAt(remotePath)).eTag
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: GraphApiException) {
-                        if (e.isItemGone()) null else throw e
-                    }
+            val guardETag = fetchGuardETag(ifMatchETag, sharedId, remotePath)
             return try {
                 if (sharedId != null) {
                     put("replace", guardETag, itemId = sharedId).toCloudItem().copy(id = sharedId, path = remotePath)
