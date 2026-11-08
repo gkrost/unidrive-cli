@@ -28,6 +28,42 @@ class RetryAfterTest {
         assertNull(parseRetryAfterHeader("Wed, 21 Oct 2026 07:28:00 GMT", now))
     }
 
+    // The response's own Date header is the baseline the server used when it set the Retry-After
+    // date, so a local clock minutes off does not turn the hint into null or a wrong wait.
+    @Test
+    fun `a date hint is measured from the response's Date header, not the local clock`() {
+        val dateHeader = "Wed, 21 Oct 2026 07:28:00 GMT"
+        val retryAfter = "Wed, 21 Oct 2026 07:29:00 GMT"
+        // The local clock here runs five minutes fast; pre-fix, target - nowMs was negative and the hint was lost.
+        assertEquals(60_000L, parseRetryAfterHeader(retryAfter, nowMs = now + 300_000, responseDateHeader = dateHeader))
+    }
+
+    @Test
+    fun `a date hint survives a local clock minutes fast, measured from the response Date`() {
+        assertEquals(5_000L, parseRetryAfterHeader(dateAhead5s, nowMs = now + 300_000, responseDateHeader = "Wed, 21 Oct 2026 07:28:00 GMT"))
+    }
+
+    @Test
+    fun `a date hint already past relative to the response Date gives null`() {
+        assertNull(
+            parseRetryAfterHeader("Wed, 21 Oct 2026 07:27:00 GMT", nowMs = now, responseDateHeader = "Wed, 21 Oct 2026 07:28:00 GMT"),
+        )
+    }
+
+    @Test
+    fun `an absent or unparseable Date header falls back to the local clock`() {
+        assertEquals(5_000L, parseRetryAfterHeader(dateAhead5s, nowMs = now, responseDateHeader = null))
+        assertEquals(5_000L, parseRetryAfterHeader(dateAhead5s, nowMs = now, responseDateHeader = "not a date"))
+    }
+
+    @Test
+    fun `the Date-relative wait is still clamped`() {
+        assertEquals(
+            MAX_RETRY_AFTER_MS,
+            parseRetryAfterHeader("Fri, 21 Oct 2101 07:28:00 GMT", nowMs = now, responseDateHeader = dateAhead5s),
+        )
+    }
+
     @Test
     fun `a wait far in the future is clamped`() {
         assertEquals(MAX_RETRY_AFTER_MS, parseRetryAfterHeader("Fri, 21 Oct 2101 07:28:00 GMT", now))

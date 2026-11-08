@@ -55,7 +55,9 @@ import java.util.concurrent.atomic.AtomicLong
  * Recovery: every [recoveryCleanIntervalMs] of no new throttle events, concurrency is
  * restored by +1 permit, up to [maxConcurrency].
  *
- * Clock is injectable so tests stay deterministic.
+ * The default clock is monotonic (`System.nanoTime()`): every deadline here is a duration from now, and a
+ * wall-clock step (sleep resume, time sync) must not stretch an open circuit or shrink one. The clock is
+ * injectable so tests stay deterministic.
  */
 class HttpRetryBudget(
     private val maxConcurrency: Int,
@@ -67,13 +69,15 @@ class HttpRetryBudget(
     private val noThrottleWindowMs: Long = 60_000L,
     private val postStormRecoveryMs: Long = 30_000L,
     private val recoveryCleanIntervalMs: Long = 5L * 60 * 1000,
-    private val clock: () -> Long = { System.currentTimeMillis() },
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val log = LoggerFactory.getLogger(HttpRetryBudget::class.java)
 
     private val recentThrottles = ConcurrentLinkedDeque<Long>()
     private val lastRetryAfterInWindowMs = AtomicLong(0)
-    private val globalResumeAfter = AtomicLong(0)
+    // Sentinel [NOT_OPENED] (not 0) for "the circuit never opened": the monotonic clock may be negative
+    // (System.nanoTime fixes no origin), so 0 is a real deadline and positivity says nothing.
+    private val globalResumeAfter = AtomicLong(NOT_OPENED)
     private val concurrency = AtomicInteger(maxConcurrency)
 
     // UD-278: counters for net-retry observability. log-watch.sh counts
@@ -166,9 +170,10 @@ class HttpRetryBudget(
         return held < concurrency.get() && permitsHeld.compareAndSet(held, held + 1)
     }
 
-    /** Timestamp (epoch ms) until which all new request starts should pause.
-     *  Zero when the circuit is closed. Exposed for diagnostics / tests. */
-    fun resumeAfterEpochMs(): Long = globalResumeAfter.get()
+    /** Timestamp in the budget's own clock domain (monotonic by default) until which all new request starts
+     *  should pause. Zero while the circuit has never opened (a real deadline may itself be 0 or negative in the
+     *  monotonic domain). Exposed for diagnostics / tests. */
+    fun resumeAfterEpochMs(): Long = globalResumeAfter.get().let { if (it == NOT_OPENED) 0L else it }
 
     /** Record a throttle response. [retryAfterMs] is the server-hinted wait (from
      *  Retry-After header or `retryAfterSeconds` JSON body). */
@@ -247,6 +252,7 @@ class HttpRetryBudget(
         // 1. Circuit breaker: if open, wait out the global pause.
         while (true) {
             val resumeAt = globalResumeAfter.get()
+            if (resumeAt == NOT_OPENED) break
             val now = clock()
             val circuitWait = resumeAt - now
             if (circuitWait <= 0) break
@@ -291,7 +297,7 @@ class HttpRetryBudget(
 
         // Storm band: circuit open right now, or we're inside postStormRecoveryMs after it
         // closed (whichever side of `resumeAt` `now` is on).
-        val circuitEverOpened = resumeAt > 0L
+        val circuitEverOpened = resumeAt != NOT_OPENED
         val timeSinceResume = now - resumeAt // negative while circuit is open
         if (circuitEverOpened && timeSinceResume < postStormRecoveryMs) {
             return stormSpacingMs
@@ -341,6 +347,9 @@ class HttpRetryBudget(
         /** How often a caller that waits for a [withPermit] permit looks again. */
         const val PERMIT_POLL_MS = 25L
 
+        // The value of the circuit deadline before the first storm; no clock reading is this low.
+        private const val NOT_OPENED = Long.MIN_VALUE
+
         /**
          * archive#1256 B: true when an HTTP [status] from a token endpoint says nothing about the credential: a request
          * timeout (408), a throttle (429) or any server error (5xx), such as a Cloudflare 502 in front of the endpoint. The
@@ -364,10 +373,16 @@ class HttpRetryBudget(
          *  - [java.net.SocketException] — covers "Connection reset",
          *    "Broken pipe", and the Windows TCP RST family
          *    (WSAECONNABORTED / WSAECONNRESET).
-         *  - Localised Windows messages: matches `aborted` / `reset` /
-         *    "Verbindung wurde" (German Windows TCP RST surface).
+         *  - Localised socket/SSL messages: [javax.net.ssl.SSLException] that
+         *    matches `aborted` / `reset` / "Verbindung wurde" (German Windows
+         *    TCP RST surface). Message text is matched only inside the socket
+         *    and SSL families — there the localised OS text is the failure
+         *    itself. On any other [IOException] the same words are often
+         *    server or OS text ("Session aborted", "Reset your password") and
+         *    must not drive a retry.
          *
          * Non-retriable:
+         *  - [HtmlInsteadOfContentException] — an HTML page in place of the file bytes.
          *  - [java.net.UnknownHostException] — typo / DNS down.
          *  - [javax.net.ssl.SSLPeerUnverifiedException] — cert mismatch.
          *  - [javax.net.ssl.SSLHandshakeException] — protocol / cert version mismatch.
@@ -384,7 +399,13 @@ class HttpRetryBudget(
             if (e is javax.net.ssl.SSLPeerUnverifiedException) return false
             if (e is javax.net.ssl.SSLHandshakeException) return false
             if (e is java.net.SocketException) return true
-            val msg = e.message ?: return false
+            if (e is javax.net.ssl.SSLException) return hasTransientSocketMessage(e.message)
+            return false
+        }
+
+        // The localised Windows TCP text the classifier matches on; see [isRetriableIoException].
+        private fun hasTransientSocketMessage(msg: String?): Boolean {
+            if (msg == null) return false
             return msg.contains("aborted", ignoreCase = true) ||
                 msg.contains("reset", ignoreCase = true) ||
                 msg.contains("broken pipe", ignoreCase = true) ||

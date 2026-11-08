@@ -37,7 +37,7 @@ import java.io.IOException
  * }
  * ```
  *
- * Throws [IOException] with a bounded snippet of the HTML body so the
+ * Throws [HtmlInsteadOfContentException] (an [IOException]) with a bounded snippet of the HTML body so the
  * operator can spot a captive portal vs throttle vs expired URL from
  * the log line. Bounded read (via [readBoundedErrorBody]) prevents the
  * UD-293 OOM where a CDN attached a multi-GB body to a fake
@@ -48,7 +48,7 @@ import java.io.IOException
  * @param contextMsg optional caller context — typically the remote
  *   path or operation name — included in the exception message for
  *   easier log correlation
- * @throws IOException when `response.contentType()` matches
+ * @throws HtmlInsteadOfContentException when `response.contentType()` matches
  *   `text/html`. The message contains the status code, the full
  *   content-type, the optional context, and a 200-char snippet of
  *   the HTML body.
@@ -61,9 +61,14 @@ public suspend fun assertNotHtml(
     if (ct != null && ct.match(ContentType.Text.Html)) {
         val snippet = readBoundedErrorBody(response, maxBytes = 4096).take(200)
         val ctxLabel = contextMsg?.let { " [$it]" }.orEmpty()
-        throw IOException(
+        throw HtmlInsteadOfContentException(
             "Download returned HTML instead of file bytes (status=${response.status.value}, " +
                 "Content-Type=$ct)$ctxLabel: $snippet",
         )
     }
 }
+
+/** The failure [assertNotHtml] raises when a response carries an HTML page in place of the file bytes. */
+public class HtmlInsteadOfContentException(
+    message: String,
+) : IOException(message)

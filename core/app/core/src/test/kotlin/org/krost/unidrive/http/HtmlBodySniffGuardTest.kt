@@ -109,6 +109,27 @@ class HtmlBodySniffGuardTest {
         }
 
     @Test
+    fun `assertNotHtml throws the dedicated exception type, not a plain IOException`() =
+        runTest {
+            val engine =
+                MockEngine {
+                    respond(
+                        content = "<html><body>Reset your password</body></html>",
+                        status = HttpStatusCode.OK,
+                        headers = headersOf("Content-Type", "text/html"),
+                    )
+                }
+            val response = HttpClient(engine).get("https://example.invalid/expired")
+            val e =
+                assertFailsWith<IOException> {
+                    assertNotHtml(response)
+                }
+            // The dedicated type lets callers classify the failure without matching the message,
+            // whose text can contain server HTML.
+            assertTrue(e is HtmlInsteadOfContentException, "expected HtmlInsteadOfContentException; got: ${e.javaClass.name}")
+        }
+
+    @Test
     fun `assertNotHtml caps body snippet at 200 chars`() =
         runTest {
             // The body snippet must be bounded — pre-UD-293 fix, a CDN

@@ -1476,7 +1476,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                         throw InternxtApiException(
                             "Download failed: ${response.status}",
                             response.status.value,
-                            retryAfterMs = parseRetryAfterHeader(response.headers[HttpHeaders.RetryAfter]),
+                            retryAfterMs = parseRetryAfterHeader(response.headers[HttpHeaders.RetryAfter], responseDateHeader = response.headers[HttpHeaders.Date]),
                             responseReceived = true,
                         )
                     }
@@ -1842,7 +1842,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                 throw InternxtApiException(
                     "Shard upload failed: ${response.status}",
                     response.status.value,
-                    retryAfterMs = parseRetryAfterHeader(response.headers[HttpHeaders.RetryAfter]),
+                    retryAfterMs = parseRetryAfterHeader(response.headers[HttpHeaders.RetryAfter], responseDateHeader = response.headers[HttpHeaders.Date]),
                     responseReceived = true,
                 )
             }
@@ -2146,7 +2146,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                 if (quoteBody) "API error: ${response.status} - ${ErrorBodyExcerpt.of(body)}" else "API error: ${response.status}",
                 statusCode = response.status.value,
                 requestId = extractRequestId(response),
-                retryAfterMs = parseRetryAfterHeader(response.headers["Retry-After"]) ?: parseRetryAfter(body),
+                retryAfterMs = parseRetryAfterHeader(response.headers["Retry-After"], responseDateHeader = response.headers["Date"]) ?: parseRetryAfter(body),
                 responseReceived = true,
             )
         }

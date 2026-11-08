@@ -91,8 +91,8 @@ class HttpRetryBudgetMatrixTest {
             "SocketException 'Broken pipe' is transient — must retry",
         )
         assertTrue(
-            HttpRetryBudget.isRetriableIoException(java.io.IOException("premature end of stream")),
-            "premature EOF mid-body is transient — must retry",
+            HttpRetryBudget.isRetriableIoException(javax.net.ssl.SSLException("premature end of stream")),
+            "premature EOF mid-body in the SSL family is transient — must retry",
         )
         // Misconfig classes — explicit non-retriable.
         assertFalse(
@@ -105,7 +105,99 @@ class HttpRetryBudgetMatrixTest {
         )
         assertFalse(
             HttpRetryBudget.isRetriableIoException(javax.net.ssl.SSLPeerUnverifiedException("hostname mismatch")),
-            "SSLPeerUnverifiedException is cert mismatch — must NOT retry",
+                "SSLPeerUnverifiedException is cert mismatch — must NOT retry",
         )
     }
+
+    // Captive-portal pages, expired-link login screens and local OS messages carry the same words as
+    // transient TCP failures ("Session aborted", "Reset your password"); message matching is reserved
+    // for the socket and SSL families, where the localised OS text is the failure itself.
+    @Test
+    fun `isRetriableIoException does not classify server or local text by message substring`() {
+        assertFalse(
+            HttpRetryBudget.isRetriableIoException(java.io.IOException("Reset your password")),
+            "server HTML text must not read as a transient TCP failure",
+        )
+        assertFalse(
+            HttpRetryBudget.isRetriableIoException(java.io.IOException("Session aborted")),
+            "server HTML text must not read as a transient TCP failure",
+        )
+        assertTrue(
+            HttpRetryBudget.isRetriableIoException(javax.net.ssl.SSLException("Connection aborted")),
+            "the SSL family keeps the localised-message match",
+        )
+    }
+
+    @Test
+    fun `the HTML-instead-of-content failure is terminal, not retriable`() {
+        // The snippet in the message can carry server HTML whose text matches the transient words.
+        assertFalse(
+            HttpRetryBudget.isRetriableIoException(
+                HtmlInsteadOfContentException(
+                    "Download returned HTML instead of file bytes (status=200, Content-Type=text/html): Reset your password",
+                ),
+            ),
+            "an HTML page in place of the file bytes is a permanent condition for this URL",
+        )
+        assertFalse(
+            HttpRetryBudget.isRetriableIoException(
+                HtmlInsteadOfContentException("Download returned HTML instead of file bytes (status=200, Content-Type=text/html)"),
+            ),
+            "an HTML page in place of the file bytes is a permanent condition for this URL",
+        )
+    }
+
+    // -- Row: Clock — the budget's default clock is monotonic, so a wall-clock step (sleep resume, time sync)
+    // cannot stretch or shrink the circuit and spacing waits. A wall-clock default puts every deadline near
+    // epoch time; a monotonic one keeps them in System.nanoTime's domain, which this test can tell apart. --
+    @Test
+    fun `the default clock is monotonic, not the wall clock`() {
+        val budget = HttpRetryBudget(maxConcurrency = 1, stormThreshold = 1, stormBackoffFactor = 1.0)
+        val before = System.nanoTime() / 1_000_000
+        budget.recordThrottle(retryAfterMs = 1_000)
+        val resumeAt = budget.resumeAfterEpochMs()
+        val after = System.nanoTime() / 1_000_000
+        assertTrue(
+            resumeAt >= before + 1_000,
+            "the circuit deadline must sit one Retry-After past the budget clock's own now",
+        )
+        assertTrue(
+            resumeAt <= after + 1_000,
+            "a wall-clock default would put the deadline near epoch time, far past the monotonic now",
+        )
+    }
+
+    // -- Row: Clock — System.nanoTime() may be negative (the JDK fixes no origin), so the budget must not read
+    // 0 or a positive value as "circuit opened". The clock here follows the test scheduler's virtual time from a
+    // negative origin, so a wait the budget should not take shows up as virtual time that passed. --
+
+    @Test
+    fun `with a negative clock the first awaitSlot does not wait`() =
+        runTest {
+            val origin = -10_000L
+            val budget = HttpRetryBudget(maxConcurrency = 4, clock = { origin + testScheduler.currentTime })
+            budget.awaitSlot()
+            assertEquals(0L, testScheduler.currentTime, "nothing throttled, so the first request start must not wait")
+            assertEquals(0L, budget.resumeAfterEpochMs(), "an unopened circuit still reports 0")
+            assertEquals(0L, budget.currentSpacingMs(), "no throttle yet: the fast path has no spacing")
+        }
+
+    @Test
+    fun `with a negative clock a storm opens the circuit until now plus the backoff`() =
+        runTest {
+            val origin = -10_000L
+            val budget =
+                HttpRetryBudget(
+                    maxConcurrency = 4,
+                    stormThreshold = 4,
+                    stormBackoffFactor = 1.2,
+                    stormSpacingMs = 500L,
+                    clock = { origin + testScheduler.currentTime },
+                )
+            repeat(4) { budget.recordThrottle(retryAfterMs = 5_000) }
+            assertEquals(origin + 6_000L, budget.resumeAfterEpochMs(), "the deadline is now + backoff, even below 0")
+            assertEquals(500L, budget.currentSpacingMs(), "an open circuit spaces starts at stormSpacingMs")
+            budget.awaitSlot()
+            assertEquals(6_000L, testScheduler.currentTime, "awaitSlot waits out the open circuit, no more")
+        }
 }
