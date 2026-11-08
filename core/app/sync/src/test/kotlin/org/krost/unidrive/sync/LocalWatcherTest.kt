@@ -142,4 +142,21 @@ class LocalWatcherTest {
             guarded.stop()
         }
     }
+
+    @Test
+    fun `a missing sync root fails the start instead of watching nothing`() {
+        // #515 review: the walk reports the missing root through visitFileFailed; swallowing it there let
+        // the watcher come up running with zero registrations and silently observe nothing. The root's own
+        // failure stays fatal (start's close-and-fail path), unlike an unreadable descendant. Cross-platform:
+        // a missing path fails the walk with NoSuchFileException, no ACL setup needed.
+        val missing = syncRoot.resolveSibling("unidrive-watch-missing-${System.nanoTime()}")
+        assertFalse(Files.exists(missing))
+        val missingWatcher = LocalWatcher(missing, debounceMs = 50L)
+        try {
+            assertFailsWith<java.io.IOException> { missingWatcher.start() }
+            assertFalse(Files.exists(missing), "the failed start must not create the root")
+        } finally {
+            missingWatcher.stop()
+        }
+    }
 }
