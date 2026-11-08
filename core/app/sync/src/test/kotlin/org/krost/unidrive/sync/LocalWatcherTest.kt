@@ -108,6 +108,16 @@ class LocalWatcherTest {
         }
 
     @Test
+    fun `an overflow signals a change so the engine rescans`() =
+        runBlocking {
+            // An overflow means the OS dropped events; the debounced emits never fire for
+            // what was lost, so the overflow handling itself must wake awaitChange the way
+            // an enqueue does.
+            watcher.onOverflow()
+            assertTrue(watcher.awaitChange(1.seconds), "the overflow must signal a change")
+        }
+
+    @Test
     fun `start survives an unreadable subfolder`() {
         // POSIX-only: a subdirectory with no permissions makes walkFileTree call visitFileFailed
         // while it descends; Windows ACL semantics make this hard to set up portably, so guard

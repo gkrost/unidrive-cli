@@ -63,7 +63,10 @@ class LocalWatcher(
 
                         for (event in key.pollEvents()) {
                             val kind = event.kind()
-                            if (kind == StandardWatchEventKinds.OVERFLOW) continue
+                            if (kind == StandardWatchEventKinds.OVERFLOW) {
+                                onOverflow()
+                                continue
+                            }
 
                             @Suppress("UNCHECKED_CAST")
                             val ev = event as WatchEvent<Path>
@@ -180,6 +183,16 @@ class LocalWatcher(
 
     /** The armed emits that have not fired or been replaced; for tests. */
     internal fun pendingEmitCount(): Int = pendingEmits.size
+
+    /**
+     * The watch queue overflowed and the OS dropped events. No debounced emit can fire for
+     * what was lost, so the overflow itself wakes [awaitChange] the way an enqueue does: the
+     * engine re-scans and sees whatever the burst left behind. (New directories created
+     * during the overflow were never registered; the re-scan covers them for that pass.)
+     */
+    internal fun onOverflow() {
+        changeSignal.trySend(Unit)
+    }
 
     private fun enqueue(relativePath: String) {
         // gkrost/unidrive-cli#394: the debounced path leaves the watcher for the next pass (one line per emit, not per OS event).
