@@ -1582,6 +1582,51 @@ class InternxtApiServiceTest {
         }
 
     @Test
+    fun `a tombstone with a short index is discarded and the upload cold-starts with a fresh one`() =
+        kotlinx.coroutines.test.runTest {
+            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-short-")
+            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+                java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
+            }
+            try {
+                val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
+                val pathHash = UploadTombstoneStore.pathHash(local.toAbsolutePath().toString())
+                val mtimeMillis = java.nio.file.Files.getLastModifiedTime(local).toMillis()
+                // Valid hex, but 8 bytes: the resume would throw an untyped IndexOutOfBoundsException
+                // on the iv on every attempt until the GC, so it must be discarded like a malformed one.
+                store.write(
+                    pathHash,
+                    UploadTombstone(
+                        localPath = local.toAbsolutePath().toString(),
+                        localMtimeMillis = mtimeMillis,
+                        localSize = 32L,
+                        bucket = tombstoneBucket,
+                        folderUuid = "root-folder-uuid",
+                        plainName = local.fileName.toString().substringBeforeLast('.'),
+                        ext = "bin",
+                        indexBytesHex = "11".repeat(8),
+                        contentFingerprintHex = UploadTombstoneStore.contentFingerprint(local),
+                        stage = UploadTombstone.Stage.ENCRYPTING,
+                        startedAtMillis = System.currentTimeMillis(),
+                        tombstoneWrittenAtMillis = System.currentTimeMillis(),
+                    ),
+                )
+
+                val counters = TombMockCounters()
+                val provider = newProviderRooted(tmp, tombMockEngine(counters))
+                provider.upload(local, "/${local.fileName}", existingRemoteId = null, onProgress = null)
+
+                assertEquals(1, counters.startCalls.get(), "cold start on a tombstone with a short index")
+                val finishIndex = counters.capturedFinishIndexHex.single()
+                assertEquals(64, finishIndex.length, "the finish carries a fresh 64-hex index, not the tombstone's short one")
+                assertTrue("11111111" !in finishIndex.take(16), "the fresh index does not extend the tombstone's short one")
+            } finally {
+                java.nio.file.Files.deleteIfExists(local)
+                tmp.toFile().deleteRecursively()
+            }
+        }
+
+    @Test
     fun `resume at PUT_PENDING with fresh URL re-PUTs cached ciphertext + indexBytes`() =
         kotlinx.coroutines.test.runTest {
             val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-put-")

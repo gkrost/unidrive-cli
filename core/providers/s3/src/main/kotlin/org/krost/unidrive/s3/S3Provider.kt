@@ -238,8 +238,10 @@ class S3Provider(
 
     /**
      * [write] as a create that a taken [key] refuses: with `If-None-Match: *` (AWS, MinIO, R2 answer 412, a conflict). A vendor
-     * that does not implement the header answers 501 or 400; then a HEAD checks that the key is free, the racy form a guarded
-     * modify without If-Match has too, the write goes without the header, and once that worked the header is not sent again.
+     * that does not implement the header answers 501, or a 400 whose code names the header; then a HEAD checks that the key is
+     * free, the racy form a guarded modify without If-Match has too, the write goes without the header, and once that worked
+     * the header is not sent again. Any other 400 (`RequestTimeout`, `IncompleteBody`, …) is a real failure, and a vendor that
+     * supports conditional writes never loses its guard to a refused create.
      */
     private suspend fun <T> createGuarded(
         key: String,
@@ -249,7 +251,7 @@ class S3Provider(
             try {
                 return write(true)
             } catch (e: S3Exception) {
-                if (e.status != 501 && e.status != 400) throw e
+                if (!createGuardRefusal(e)) throw e
                 log.info("S3 refused If-None-Match on '{}' ({} {}); checking that the key is free with a HEAD instead", key, e.status, e.code)
             }
             requireAbsent(key)
@@ -257,6 +259,16 @@ class S3Provider(
         }
         requireAbsent(key)
         return write(false)
+    }
+
+    // The refusal may retire the guard only when it names the header (or the missing feature) and the vendor does not
+    // declare conditional writes; anything else leaves the guard standing.
+    private fun createGuardRefusal(e: S3Exception): Boolean {
+        if (config.vendor.conditionalWrites) return false
+        if (e.status == 501) return true
+        if (e.status != 400) return false
+        val code = e.code.lowercase().replace("-", "").replace("_", "")
+        return "ifnonematch" in code || code == "notimplemented"
     }
 
     private suspend fun requireAbsent(key: String) {

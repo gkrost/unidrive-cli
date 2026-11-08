@@ -103,29 +103,23 @@ class InternxtShardPutWatchdogTest {
         )
     }
 
-    // Both public shard PUTs: the streaming one the provider uses, and the in-memory one.
-    private enum class Body { FILE, BYTES }
+    // The streaming shard PUT the provider uses. (The in-memory variant this suite also drove is gone:
+    // the service has one shard PUT path now.)
 
     // The payload is built BEFORE the upload (and before any timer starts): a 24 or 64 MiB fixture takes seconds to
     // build on a busy machine, and that time belongs to no step of the watchdog under test.
-    private fun uploadOf(
-        body: Body,
-        size: Int,
-    ): suspend (InternxtApiService) -> Unit {
-        val path = if (body == Body.FILE) file(size) else null
-        val data = if (body == Body.BYTES) bytes(size) else null
-        return { api ->
-            if (path != null) api.putEncryptedShardFromFile(url, path, size.toLong()) else api.putEncryptedShard(url, data!!)
-        }
+    private fun uploadOf(size: Int): suspend (InternxtApiService) -> Unit {
+        val path = file(size)
+        return { api -> api.putEncryptedShardFromFile(url, path, size.toLong()) }
     }
 
     // 40 MiB read at ~1.3 MB/s: the channel and the socket buffers take the first ten or so MiB at once, the rest
     // takes more than twice the (wide) idle window, so the upload outlives every limit the watchdog has — the shape of
     // the live case, where the body needed longer than the size-derived timeout.
-    private fun slowButSteady(body: Body) =
+    private fun slowButSteady() =
         runBlocking {
             val size = 40 * 1024 * 1024
-            val upload = uploadOf(body, size)
+            val upload = uploadOf(size)
             val received = AtomicLong(0)
             LoopbackServer(tls = true) { exchange ->
                 exchange.readRequestLine()
@@ -157,16 +151,13 @@ class InternxtShardPutWatchdogTest {
         }
 
     @Test
-    fun `a slow but steady upload that outlives every limit succeeds - file body`() = slowButSteady(Body.FILE)
-
-    @Test
-    fun `a slow but steady upload that outlives every limit succeeds - in-memory body`() = slowButSteady(Body.BYTES)
+    fun `a slow but steady upload that outlives every limit succeeds`() = slowButSteady()
 
     // The server reads the first 64 KiB and then nothing: the client's writes block once the buffers are full.
-    private fun stalled(body: Body) =
+    private fun stalled() =
         runBlocking {
             val size = 64 * 1024 * 1024
-            val upload = uploadOf(body, size)
+            val upload = uploadOf(size)
             LoopbackServer(tls = true) { exchange ->
                 exchange.readRequestLine()
                 exchange.readBody(64 * 1024)
@@ -199,16 +190,13 @@ class InternxtShardPutWatchdogTest {
         }
 
     @Test
-    fun `a body that stops moving is cut as stalled after the idle window - file body`() = stalled(Body.FILE)
-
-    @Test
-    fun `a body that stops moving is cut as stalled after the idle window - in-memory body`() = stalled(Body.BYTES)
+    fun `a body that stops moving is cut as stalled after the idle window`() = stalled()
 
     @Test
     fun `a server that never answers after the whole body is cut after the response wait`() =
         runBlocking {
             val size = 1024 * 1024
-            val upload = uploadOf(Body.FILE, size)
+            val upload = uploadOf(size)
             LoopbackServer(tls = true) { exchange ->
                 exchange.readRequestLine()
                 exchange.readBody(size.toLong())
@@ -243,7 +231,7 @@ class InternxtShardPutWatchdogTest {
     fun `a server that ends the connection mid-body is reported as the server's or the network's doing`() =
         runBlocking {
             val size = 64 * 1024 * 1024
-            val upload = uploadOf(Body.FILE, size)
+            val upload = uploadOf(size)
             LoopbackServer(tls = true) { exchange ->
                 exchange.readRequestLine()
                 exchange.readBody(1024 * 1024)
@@ -271,7 +259,7 @@ class InternxtShardPutWatchdogTest {
     fun `cancelling the caller cancels the upload and closes its connection`() =
         runBlocking {
             val size = 64 * 1024 * 1024
-            val upload = uploadOf(Body.FILE, size)
+            val upload = uploadOf(size)
             val connectionEnded = CountDownLatch(1)
             val cancelled = AtomicBoolean(false)
             val serverReceived = AtomicLong(0)

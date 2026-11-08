@@ -37,7 +37,6 @@ import org.krost.unidrive.http.UploadWatchdogLimits
 import org.krost.unidrive.http.assertNotHtml
 import org.krost.unidrive.http.currentPriority
 import org.krost.unidrive.http.parseRetryAfterHeader
-import org.krost.unidrive.http.progressTrackingBody
 import org.krost.unidrive.http.progressTrackingFileBody
 import org.krost.unidrive.http.progressTrackingFileRangeBody
 import org.krost.unidrive.http.throttleWaitMs
@@ -1694,23 +1693,8 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         return json.decodeFromString<BucketEntry>(body)
     }
 
-    suspend fun putEncryptedShard(
-        url: String,
-        data: ByteArray,
-    ) {
-        // OVH PUT to a presigned URL is idempotent at the S3 layer — same key,
-        // same body overwrites cleanly — so retryOnTransient retries the 5xx here
-        // (retryServerErrors), like every overwrite.
-        // The streaming variant (putEncryptedShardFromFile) takes its retry at
-        // the provider layer instead because that wrap also needs to keep
-        // indexBytes / iv / fileKey stable across attempts (see Design constraint
-        // in BACKLOG.md history).
-        retryOnTransient(retryServerErrors = true) {
-            bridgeBudget.awaitSlot()
-            watchedShardPut(url, data.size.toLong()) { progress -> progressTrackingBody(data, progress) }
-        }
-    }
-
+    // The shard PUT takes its retry at the provider layer: that wrap also needs to keep
+    // indexBytes / iv / fileKey stable across attempts (see Design constraint in BACKLOG.md history).
     suspend fun putEncryptedShardFromFile(
         url: String,
         file: java.nio.file.Path,

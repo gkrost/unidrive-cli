@@ -785,6 +785,15 @@ class InternxtProvider(
                                 cause = e,
                             )
                         }
+                    // The encryption derives from 32 bytes (16 of them the iv): an index of any other
+                    // length can never decrypt, so quarantine it like a malformed one instead of
+                    // throwing untyped from copyOfRange and being retried on every pass.
+                    if (indexBytes.size != 32) {
+                        throw UnsupportedRemoteObjectDownloadException(
+                            "Internxt bridge info for $remotePath carries a ${indexBytes.size}-byte encryption index, not 32 bytes",
+                            reason = "its encryption index is malformed",
+                        )
+                    }
                     val iv = indexBytes.copyOfRange(0, 16)
 
                     val creds = authService.getValidCredentials()
@@ -1425,11 +1434,12 @@ class InternxtProvider(
             }
         }
 
-        // archive#333 review: a tombstone whose index is not valid hex cannot be resumed (hexToBytes
-        // now throws). Treat it like the other unusable tombstones: discard and cold-restart
-        // with fresh indexBytes, instead of failing this upload on every retry.
-        if (tomb != null && runCatching { InternxtCrypto.hexToBytes(tomb.indexBytesHex) }.isFailure) {
-            log.warn("discarding upload tombstone for {} (malformed index bytes; rotating indexBytes)", localPath)
+        // A tombstone whose index is not valid hex — or not the 32 bytes the encryption derives from
+        // (copyOfRange of the iv would fail on every attempt until the GC) — cannot be resumed. Treat it
+        // like the other unusable tombstones: discard and cold-restart with fresh indexBytes, instead of
+        // failing this upload on every retry.
+        if (tomb != null && runCatching { InternxtCrypto.hexToBytes(tomb.indexBytesHex) }.getOrNull()?.size != 32) {
+            log.warn("discarding upload tombstone for {} (malformed or short index bytes; rotating indexBytes)", localPath)
             withContext(Dispatchers.IO) { tombstoneStore.discard(pathHashStr) }
             tomb = null
         }

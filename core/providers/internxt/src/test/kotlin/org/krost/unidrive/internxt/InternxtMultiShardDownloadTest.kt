@@ -144,6 +144,24 @@ class InternxtMultiShardDownloadTest {
         assertTrue(requestLog.none { it.contains("shard-host.invalid") }, "no download request may be made: $requestLog")
     }
 
+    // A short (under 32 bytes, valid hex) index escapes copyOfRange of the iv as an untyped
+    // IndexOutOfBoundsException and is retried on every pass: it must quarantine like a malformed one.
+    @Test
+    fun `a short bridge index fails permanently without downloading`() {
+        bridgeInfoJson = bridgeInfoJsonWith(listOf(shardUrl1)).replace(index64, "11".repeat(8))
+        val provider = newProvider()
+
+        val e =
+            assertFailsWith<UnsupportedRemoteObjectDownloadException> {
+                kotlinx.coroutines.test.runTest {
+                    provider.downloadById(fileUuid, "/shortindex.bin", destination)
+                }
+            }
+
+        assertEquals("its encryption index is malformed", e.reason)
+        assertTrue(requestLog.none { it.contains("shard-host.invalid") }, "no download request may be made: $requestLog")
+    }
+
     @Test
     fun `single-shard bridge info still downloads`() =
         kotlinx.coroutines.test.runTest {

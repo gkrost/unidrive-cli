@@ -63,8 +63,11 @@ open class DropboxProviderFactory(
     // verifier as a pending flow in the profile folder; `auth complete --code-stdin` exchanges the
     // code the user pasted. Dropbox has no device-code flow, so there is nothing to poll: one call.
 
-    // The app key comes from the profile's client_id first, then the environment: the lookup `create` uses.
-    internal open fun newHttpClientForBegin(): io.ktor.client.HttpClient = io.ktor.client.HttpClient()
+    // The app key comes from the profile's client_id first, then the environment: the lookup `create` uses. The
+    // sign-in client carries the API client's timeouts, and the caller runs it in a `use` block: one client per
+    // sign-in process, closed when it is done.
+    internal open fun newHttpClientForBegin(): io.ktor.client.HttpClient =
+        dropboxHttpClient(org.krost.unidrive.http.RequestMetricsTap(), DropboxConfig.DEFAULT_USER_AGENT)
 
     override fun supportsInteractiveAuth(): Boolean = true
 
@@ -74,11 +77,7 @@ open class DropboxProviderFactory(
         profileDir: Path,
         properties: Map<String, String?>,
     ): BeginAuthResult {
-        val auth =
-            DropboxAuth(
-                DropboxConfig(appKey = appKey(properties), tokenPath = profileDir, credentialProtector = credentialProtector),
-                newHttpClientForBegin(),
-            )
+        val appKey = appKey(properties)
         val verifier = org.krost.unidrive.auth.Pkce.generateVerifier()
         val state = java.util.UUID.randomUUID().toString()
         val handle = "dropbox-" + java.util.UUID.randomUUID()
@@ -87,13 +86,18 @@ open class DropboxProviderFactory(
         // The save must succeed: no pending flow means no later process can complete the sign-in,
         // so an IOException here stops the handle from being handed out (it propagates).
         pendingFlowStore(profileDir).save(flow)
+        val authorizeUrl =
+            newHttpClientForBegin().use { client ->
+                DropboxAuth(
+                    DropboxConfig(appKey = appKey, tokenPath = profileDir, credentialProtector = credentialProtector),
+                    client,
+                ).authorizationUrl(state, org.krost.unidrive.auth.Pkce.generateChallenge(verifier), redirect = false)
+            }
         return BeginAuthResult.of(
             continuationHandle = handle,
             fields =
                 linkedMapOf(
-                    "authorize_url" to kotlinx.serialization.json.JsonPrimitive(
-                        auth.authorizationUrl(state, org.krost.unidrive.auth.Pkce.generateChallenge(verifier), redirect = false),
-                    ),
+                    "authorize_url" to kotlinx.serialization.json.JsonPrimitive(authorizeUrl),
                     "expires_in" to kotlinx.serialization.json.JsonPrimitive(600),
                     "message" to kotlinx.serialization.json.JsonPrimitive(
                         "Open the url, allow the app, and paste the shown code with: auth complete --handle $handle --code-stdin",
@@ -135,29 +139,31 @@ open class DropboxProviderFactory(
             ?: return CompleteAuthResult.Failure(
                 "The code Dropbox showed is required: pipe it with --code-stdin.",
             )
-        val auth =
-            DropboxAuth(
-                DropboxConfig(appKey = appKey(properties), tokenPath = profileDir, credentialProtector = credentialProtector),
-                newHttpClientForBegin(),
-            )
-        return try {
-            val token = auth.exchangeCodeNoRedirect(code, flow.verifier)
-            auth.saveToken(token)
-            store.delete()
-            // Dropbox keeps no account name: one left by an earlier sign-in must not outlive this one.
-            org.krost.unidrive.AccountName.write(profileDir, null)
-            CompleteAuthResult.Success()
-        } catch (e: org.krost.unidrive.AccountChangedException) {
-            // Another account than the profile's: nothing was stored, and the spent code cannot be tried again.
-            store.delete()
-            CompleteAuthResult.Failure(e.message.orEmpty(), CompleteAuthResult.Reason.ACCOUNT_CHANGED)
-        } catch (e: org.krost.unidrive.AccountUnverifiedException) {
-            store.delete()
-            CompleteAuthResult.Failure(e.message.orEmpty(), CompleteAuthResult.Reason.ACCOUNT_UNVERIFIED)
-        } catch (e: org.krost.unidrive.AuthenticationException) {
-            // A wrong or spent code stores nothing; the pending flow stays until it expires so the
-            // same handle can try again with a freshly shown code.
-            CompleteAuthResult.Failure("Dropbox refused the code: ${e.message}")
+        return newHttpClientForBegin().use { client ->
+            val auth =
+                DropboxAuth(
+                    DropboxConfig(appKey = appKey(properties), tokenPath = profileDir, credentialProtector = credentialProtector),
+                    client,
+                )
+            try {
+                val token = auth.exchangeCodeNoRedirect(code, flow.verifier)
+                auth.saveToken(token)
+                store.delete()
+                // Dropbox keeps no account name: one left by an earlier sign-in must not outlive this one.
+                org.krost.unidrive.AccountName.write(profileDir, null)
+                CompleteAuthResult.Success()
+            } catch (e: org.krost.unidrive.AccountChangedException) {
+                // Another account than the profile's: nothing was stored, and the spent code cannot be tried again.
+                store.delete()
+                CompleteAuthResult.Failure(e.message.orEmpty(), CompleteAuthResult.Reason.ACCOUNT_CHANGED)
+            } catch (e: org.krost.unidrive.AccountUnverifiedException) {
+                store.delete()
+                CompleteAuthResult.Failure(e.message.orEmpty(), CompleteAuthResult.Reason.ACCOUNT_UNVERIFIED)
+            } catch (e: org.krost.unidrive.AuthenticationException) {
+                // A wrong or spent code stores nothing; the pending flow stays until it expires so the
+                // same handle can try again with a freshly shown code.
+                CompleteAuthResult.Failure("Dropbox refused the code: ${e.message}")
+            }
         }
     }
 
