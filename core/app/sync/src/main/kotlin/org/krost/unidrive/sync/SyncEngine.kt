@@ -30,6 +30,8 @@ import org.krost.unidrive.engine.NameKey
 import org.krost.unidrive.engine.RemoteEnumeration
 import org.krost.unidrive.engine.RemoteGather.RemoteMerge
 import org.krost.unidrive.engine.RemoteGather
+import org.krost.unidrive.engine.ScanTimings
+import org.krost.unidrive.engine.ScopeState
 import org.krost.unidrive.engine.localNameIssue
 import org.krost.unidrive.engine.Transfers
 import org.krost.unidrive.sync.model.*
@@ -467,6 +469,8 @@ open class SyncEngine(
 
     // The sync pass keeps its own cursor protocol; #265 is what merges it with RemoteGather's.
     private val cursorState = CursorState(db)
+    private val scopeState = ScopeState(db)
+    private val scanTimings = ScanTimings(db)
 
     // archive#560 U2b: the remote gather — delta paging, the scan staging and the cursor, the
     // archive#401 collision rule, the absence sweep, the tracked-scope transition and the
@@ -900,9 +904,9 @@ open class SyncEngine(
                 .toAbsolutePath()
                 .normalize()
                 .toString()
-        val storedRoot = db.getSyncState("sync_root")
+        val storedRoot = scopeState.root
         if (storedRoot.isNullOrEmpty()) {
-            db.setSyncState("sync_root", currentRoot)
+            scopeState.setRoot(currentRoot)
         } else if (!sameSyncRoot(storedRoot, currentRoot)) {
             throw IllegalStateException(
                 "sync_root changed from '$storedRoot' to '$currentRoot'. " +
@@ -973,7 +977,7 @@ open class SyncEngine(
                     "UD-256: --full-tree clears persisted effective_scope ({} entries)",
                     priorScope.size,
                 )
-                db.setSyncState("effective_scope", "")
+                scopeState.setEffectiveScope("")
             } else if (priorScope.isNotEmpty() && dryRun) {
                 log.info(
                     "UD-256: --full-tree --dry-run previewing whole-cloud reconciliation; persisted effective_scope ({} entries) left untouched",
@@ -988,7 +992,7 @@ open class SyncEngine(
                     syncPaths,
                     unioned.size,
                 )
-                db.setSyncState("effective_scope", unioned.joinToString("\t"))
+                scopeState.setEffectiveScope(unioned.joinToString("\t"))
             } else if (unioned.size != priorScope.size && dryRun) {
                 log.info(
                     "UD-256: --dry-run with new --sync-path {} — would extend effective_scope to {} entries (not persisted)",
@@ -1095,10 +1099,10 @@ open class SyncEngine(
         // UD-748: also pass the previous run's *final item count* for each
         // phase so the bucket helper can use progress-fraction extrapolation
         // when the current run is faster/slower than last time.
-        db.getSyncState("last_scan_secs_remote")?.toLongOrNull()?.let {
+        scanTimings.remoteSecs?.let {
             reporter.onScanHistoricalHint("remote", it)
         }
-        db.getSyncState("last_scan_count_remote")?.toIntOrNull()?.let {
+        scanTimings.remoteCount?.let {
             reporter.onScanCountHint("remote", it)
         }
         // Surface the cursor THIS scan will filter on, plus whether the prior
@@ -1144,10 +1148,10 @@ open class SyncEngine(
         // would cache "no rule file" for the whole pass. Hold the scan until the listing is published.
         val scanAfterListing = streamingViable && !dryRun && mirrorRules != null
         fun scanLocalNow(): Map<String, ChangeState> {
-            db.getSyncState("last_scan_secs_local")?.toLongOrNull()?.let {
+            scanTimings.localSecs?.let {
                 reporter.onScanHistoricalHint("local", it)
             }
-            db.getSyncState("last_scan_count_local")?.toIntOrNull()?.let {
+            scanTimings.localCount?.let {
                 reporter.onScanCountHint("local", it)
             }
             val localPhaseStart = System.currentTimeMillis()
@@ -1165,8 +1169,7 @@ open class SyncEngine(
                 }
             reporter.onScanProgress("local", scanned.size)
             val localScanSecs = (System.currentTimeMillis() - localPhaseStart) / 1000
-            db.setSyncState("last_scan_secs_local", localScanSecs.toString())
-            db.setSyncState("last_scan_count_local", scanned.size.toString())
+            scanTimings.recordLocal(localScanSecs, scanned.size)
             return scanned
         }
         if (streamingViable && !dryRun) {
@@ -1219,8 +1222,7 @@ open class SyncEngine(
         // UD-747 / UD-748: persist the wall-clock + final count for next
         // run's ETA computation.
         val remoteScanSecs = (System.currentTimeMillis() - remotePhaseStart) / 1000
-        db.setSyncState("last_scan_secs_remote", remoteScanSecs.toString())
-        db.setSyncState("last_scan_count_remote", remoteChanges.size.toString())
+        scanTimings.recordRemote(remoteScanSecs, remoteChanges.size)
 
         // Remote-shrink guard: abort a full, unscoped enumeration that observed far
         // fewer live remote items than the pre-gather baseline — a partial listing
@@ -4967,7 +4969,7 @@ open class SyncEngine(
     // control characters). Empty string / missing key both mean "no scope ever
     // persisted" → return empty list (no constraint).
     private fun loadEffectiveScope(): List<String> {
-        val raw = db.getSyncState("effective_scope") ?: return emptyList()
+        val raw = scopeState.effectiveScope ?: return emptyList()
         if (raw.isEmpty()) return emptyList()
         return raw.split("\t").filter { it.isNotEmpty() }
     }

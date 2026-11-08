@@ -7,8 +7,7 @@ import org.krost.unidrive.sync.StateDatabase
  * `effective_scope`. No deletion safety rides on them — they describe and narrow the sync, they do not guard a
  * cursor — but the key spelling lives here so `sync`, `doctor` and `status` name the same keys. A thin layer over
  * [StateDatabase.getSyncState]/[StateDatabase.setSyncState]: it goes through them (never raw SQL), and it stores
- * the same text as before, so an existing state.db reads the same. The sync engine still writes both keys with
- * literal keys, until it moves onto this holder in its own change.
+ * the same text as before, so an existing state.db reads the same.
  */
 class ScopeState(
     private val db: StateDatabase,
@@ -21,6 +20,9 @@ class ScopeState(
 
     /** Writes `sync_root`. */
     fun setRoot(root: String) = db.setSyncState(ROOT, root)
+
+    /** Writes `effective_scope`; an empty [scope] clears the persisted scope. */
+    fun setEffectiveScope(scope: String) = db.setSyncState(EFFECTIVE_SCOPE, scope)
 
     private companion object {
         const val ROOT = "sync_root"
