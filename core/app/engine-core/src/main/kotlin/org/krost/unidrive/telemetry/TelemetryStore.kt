@@ -31,9 +31,11 @@ internal class TelemetryStore private constructor(
     private val connector: StateDatabaseConnector,
 ) {
     private var conn: Connection? = null
+    private var closed = false
 
     @Synchronized
     private fun connection(): Connection {
+        check(!closed) { "telemetry.db is closed" }
         conn?.let { if (!it.isClosed) return it }
         val opened = openConnection()
         conn = opened
@@ -338,6 +340,7 @@ internal class TelemetryStore private constructor(
 
     @Synchronized
     fun close() {
+        closed = true
         val c = conn ?: return
         conn = null
         try {

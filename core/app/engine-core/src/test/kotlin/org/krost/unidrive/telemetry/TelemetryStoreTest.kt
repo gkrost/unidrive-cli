@@ -57,6 +57,13 @@ class TelemetryStoreTest {
         assertFailsWith<CommitFailure> { store.replace(row("op-1"), "op-0") }
         assertTrue(store.readAll().isEmpty(), "the failed transaction must not stay committed")
     }
+
+    @Test
+    fun `a method after close refuses instead of reopening the file`() {
+        val store = open()
+        store.close()
+        assertFailsWith<IllegalStateException> { store.readAll() }
+    }
 }
 
 /** The failure the sabotaged connector raises from commit: any RuntimeException behaves like this one. */
