@@ -7,10 +7,16 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
+import org.krost.unidrive.http.HttpRetryBudget
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -26,6 +32,14 @@ import kotlin.test.assertTrue
  *     NOT a silent overwrite and NOT an unhandled throw (the no-lost-update guarantee).
  *  3. a NEW upload (existingRemoteId == null) sends NO `If-Match` and still succeeds.
  *  4. a normal MODIFIED upload with no concurrent edit still succeeds.
+ *  5. a guard lookup failing with a retryable status (503, after the client's own retries)
+ *     propagates — the PUT never goes out unguarded (#453).
+ *  6. the name-confusion 404 of the guard lookup propagates too: the sibling it resolved to is
+ *     never blind-replaced (#453).
+ *  7. a genuine 404 — the item is gone — falls through to an unguarded replace, because there
+ *     is nothing left to guard (#453).
+ *  8. a cancellation of the guard lookup is rethrown, not absorbed into an unconditional
+ *     replace (#453).
  */
 class OneDriveIfMatchTest {
     private fun driveItemJson(
@@ -52,6 +66,22 @@ class OneDriveIfMatchTest {
 
         val provider = OneDriveProvider(graphApi = freshGraphApi)
         return provider
+    }
+
+    // The guard-lookup tests that ride the throttle loop (a 503 is retried internally) need its
+    // waits on the test's virtual clock: the budget's clock is [currentTime], and the loop's
+    // delays advance it with the rest.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun TestScope.providerWithVirtualBudget(engine: MockEngine): OneDriveProvider {
+        val freshGraphApi =
+            GraphApiService(
+                config = OneDriveConfig(),
+                throttleBudget = HttpRetryBudget(maxConcurrency = 8, clock = { currentTime }),
+                httpClient = HttpClient(engine),
+                tokenProvider = { _, _ -> "test-token" },
+            )
+
+        return OneDriveProvider(graphApi = freshGraphApi)
     }
 
     private fun jsonHeaders() = headersOf(HttpHeaders.ContentType, "application/json")
@@ -273,6 +303,156 @@ class OneDriveIfMatchTest {
                 "an engine-supplied plan-time eTag must be used verbatim, not overridden by an at-upload fetch",
             )
             assertTrue(!metadataFetched, "when the caller supplies a plan-time eTag the provider must skip the at-upload metadata GET")
+            provider.close()
+            Files.deleteIfExists(local)
+        }
+
+    @Test
+    fun `a guard lookup failing with a retryable status propagates and no unconditional put goes out`() =
+        runTest {
+            var gets = 0
+            var puts = 0
+            val engine =
+                MockEngine { request ->
+                    when {
+                        request.method == HttpMethod.Get && request.url.encodedPath.contains("/root:/") -> {
+                            gets++
+                            respond(
+                                """{"error":{"code":"serviceUnavailable","message":"try again later"}}""",
+                                HttpStatusCode.ServiceUnavailable,
+                                headersOf(HttpHeaders.RetryAfter, "0"),
+                            )
+                        }
+                        request.method == HttpMethod.Put && request.url.encodedPath.endsWith("/content") -> {
+                            puts++
+                            respond(driveItemJson("owned-id", "doc.txt"), HttpStatusCode.OK, jsonHeaders())
+                        }
+                        request.method.value == "PATCH" ->
+                            respond(driveItemJson("owned-id", "doc.txt"), HttpStatusCode.OK, jsonHeaders())
+                        else -> respond("{}", HttpStatusCode.OK, jsonHeaders())
+                    }
+                }
+            val provider = providerWithVirtualBudget(engine)
+            val local = Files.createTempFile("ud-guard-503", ".txt")
+            Files.write(local, "world".toByteArray())
+
+            val thrown =
+                assertFailsWith<GraphApiException> {
+                    provider.upload(local, "/doc.txt", existingRemoteId = "owned-id")
+                }
+
+            assertTrue(gets >= 2, "the lookup must have been retried internally first (503 after retries), got $gets GETs")
+            assertEquals(0, puts, "a failed guard lookup must not degrade into an unconditional replace PUT")
+            assertEquals(503, thrown.statusCode, "the 503 of the guard lookup must reach the caller, not strip the guard")
+            provider.close()
+            Files.deleteIfExists(local)
+        }
+
+    @Test
+    fun `the name confusion 404 of the guard lookup does not turn the replace unconditional`() =
+        runTest {
+            var puts = 0
+            val engine =
+                MockEngine { request ->
+                    when {
+                        // The lookup answers with a SIMILAR sibling: itemAt must refuse the resolution
+                        // ("resolved to a different name") instead of guarding the replace with it.
+                        request.method == HttpMethod.Get && request.url.encodedPath.contains("/root:/") ->
+                            respond(driveItemJson("sibling-id", "doc 1.txt", eTag = "sibling-etag"), HttpStatusCode.OK, jsonHeaders())
+                        request.method == HttpMethod.Put && request.url.encodedPath.endsWith("/content") -> {
+                            puts++
+                            respond(driveItemJson("sibling-id", "doc 1.txt"), HttpStatusCode.OK, jsonHeaders())
+                        }
+                        request.method.value == "PATCH" ->
+                            respond(driveItemJson("sibling-id", "doc 1.txt"), HttpStatusCode.OK, jsonHeaders())
+                        else -> respond("{}", HttpStatusCode.OK, jsonHeaders())
+                    }
+                }
+            val provider = providerWith(engine)
+            val local = Files.createTempFile("ud-guard-name404", ".txt")
+            Files.write(local, "world".toByteArray())
+
+            val thrown =
+                assertFailsWith<GraphApiException> {
+                    provider.upload(local, "/doc.txt", existingRemoteId = "owned-id")
+                }
+
+            assertEquals(404, thrown.statusCode)
+            assertTrue(
+                thrown.message.orEmpty().contains("resolved to a different name"),
+                "the refusal must be the name confusion of the lookup, got: ${thrown.message}",
+            )
+            assertEquals(0, puts, "a name-confused lookup must never degrade into an unconditional replace of the sibling")
+            provider.close()
+            Files.deleteIfExists(local)
+        }
+
+    @Test
+    fun `a gone item's 404 on the guard lookup falls through to an unguarded replace`() =
+        runTest {
+            val ifMatchHeaders = mutableListOf<String?>()
+            val conflictBehaviors = mutableListOf<String?>()
+            val engine =
+                MockEngine { request ->
+                    when {
+                        request.method == HttpMethod.Get && request.url.encodedPath.contains("/root:/") ->
+                            respond("""{"error":{"code":"itemNotFound","message":"The item does not exist"}}""", HttpStatusCode.NotFound, jsonHeaders())
+                        request.method == HttpMethod.Put && request.url.encodedPath.endsWith("/content") -> {
+                            ifMatchHeaders += request.headers[HttpHeaders.IfMatch]
+                            conflictBehaviors += request.url.parameters["@microsoft.graph.conflictBehavior"]
+                            respond(driveItemJson("recreated-id", "doc.txt"), HttpStatusCode.OK, jsonHeaders())
+                        }
+                        request.method.value == "PATCH" ->
+                            respond(driveItemJson("recreated-id", "doc.txt"), HttpStatusCode.OK, jsonHeaders())
+                        else -> respond("{}", HttpStatusCode.OK, jsonHeaders())
+                    }
+                }
+            val provider = providerWith(engine)
+            val local = Files.createTempFile("ud-guard-404", ".txt")
+            Files.write(local, "world".toByteArray())
+
+            val result = provider.upload(local, "/doc.txt", existingRemoteId = "owned-id")
+
+            assertEquals(
+                listOf<String?>(null),
+                ifMatchHeaders,
+                "a gone item leaves nothing to guard: the replace must go out unguarded instead of failing",
+            )
+            assertEquals(listOf<String?>("replace"), conflictBehaviors, "the fall-through must still be a replace at the same path")
+            assertEquals("doc.txt", result.name)
+            provider.close()
+            Files.deleteIfExists(local)
+        }
+
+    @Test
+    fun `a cancelled guard lookup is rethrown, not absorbed into an unconditional replace`() =
+        runTest {
+            var puts = 0
+            val engine =
+                MockEngine { request ->
+                    when {
+                        // The transport cancelled the lookup mid-flight (a request timeout surfaces
+                        // the same way): the cancellation must end the upload, not strip its guard.
+                        request.method == HttpMethod.Get && request.url.encodedPath.contains("/root:/") ->
+                            throw CancellationException("the lookup was cancelled mid-flight")
+                        request.method == HttpMethod.Put && request.url.encodedPath.endsWith("/content") -> {
+                            puts++
+                            respond(driveItemJson("owned-id", "doc.txt"), HttpStatusCode.OK, jsonHeaders())
+                        }
+                        request.method.value == "PATCH" ->
+                            respond(driveItemJson("owned-id", "doc.txt"), HttpStatusCode.OK, jsonHeaders())
+                        else -> respond("{}", HttpStatusCode.OK, jsonHeaders())
+                    }
+                }
+            val provider = providerWith(engine)
+            val local = Files.createTempFile("ud-guard-cancel", ".txt")
+            Files.write(local, "world".toByteArray())
+
+            assertFailsWith<CancellationException> {
+                provider.upload(local, "/doc.txt", existingRemoteId = "owned-id")
+            }
+
+            assertEquals(0, puts, "a cancelled lookup must stop the upload, not degrade it into an unconditional replace")
             provider.close()
             Files.deleteIfExists(local)
         }
