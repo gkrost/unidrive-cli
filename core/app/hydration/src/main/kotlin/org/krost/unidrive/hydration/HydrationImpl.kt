@@ -42,6 +42,7 @@ import org.krost.unidrive.engine.CachePaths
 import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.RemoteEnumeration
 import org.krost.unidrive.engine.RemoteErrors
+import org.krost.unidrive.engine.Transfers
 import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.moveFile
@@ -1708,7 +1709,11 @@ class HydrationImpl(
     // dropped — never a row with a real remote id ([StateDatabase.deleteLocalPendingRow] re-checks that). A path with an
     // upload under way is left to that upload. Once per start, at one line.
     private fun dropGonePendingRows() {
-        val gone = pendingUploadSplit().gone.filter { !uploadSlots.containsKey(it.path) }
+        // #452: a row a still-owed rename names is not judged gone — its copy may sit at the rename's other end because
+        // the settle could not move it yet, and dropping the row would strand the copy there.
+        val gone = pendingUploadSplit().gone.filter { row ->
+            !uploadSlots.containsKey(row.path) && renames.owedByOldPath.values.none { intent -> intent.names(row.path) }
+        }
         if (gone.isEmpty()) return
         val dropped = gone.filter { stateDb.deleteLocalPendingRow(it.path) }
         if (dropped.isEmpty()) return
@@ -2602,6 +2607,13 @@ class HydrationImpl(
         // event has arrived.
         if (uploadSlots.containsKey(path)) return DehydrateResult.Busy
 
+        // gkrost/unidrive-cli#452: refuse while a download of the path is in flight too. Its waiter holds no
+        // handle yet — openForRead registers one only after the download returns — so the open-set above does
+        // not see it, and a "free up space" in that window deleted the file the client was about to be handed.
+        // The delete itself then also sits under the path's hydration lock ([MountEngine.forceEvictCacheCopy]),
+        // so no hydration of the same path interleaves with it either.
+        if (downloads.waiterCount(path) > 0) return DehydrateResult.Busy
+
         // archive#301/#136: a pending upload (remoteId == null && isHydrated) has NO remote
         // copy at all — the cache is the only copy of the file. Dehydrate is
         // meaningless for it until the upload lands (which flips remoteId), so
@@ -2617,19 +2629,27 @@ class HydrationImpl(
 
         return try {
             val cachePath = mount.resolveCachePath(path)
-            val bytes = runCatching { Files.size(cachePath) }.getOrNull()
-            val started = System.nanoTime()
-            val deleted = java.nio.file.Files.deleteIfExists(cachePath)
-            if (deleted) {
-                val tally = FileEventTally()
-                FileEvents.event(FileEvents.Phase.CACHE_EVICT, path, bytes = bytes,
-                    ms = (System.nanoTime() - started) / 1_000_000, tally = tally, extra = listOf("reason" to "dehydrate"))
-                FileEvents.summary("mount-dehydrate", tally)
+            // gkrost/unidrive-cli#452: the delete goes through the engine's locked delete: no delete in the middle
+            // of a hydration of the same path, and nothing deleted that is not the copy vetted above. Null means
+            // nothing was deleted; the exists-check tells a copy that was already gone (fine: the row is marked
+            // not hydrated either way) from one the delete could not take (an error, or the copy changed under
+            // the lock) — the old deleteIfExists answered Ok for the first and Failed for the second too.
+            val freed = mount.forceEvictCacheCopy(path, observed = Transfers.statBeforeUpload(cachePath))
+            if (freed == null && Files.exists(cachePath)) {
+                // #517 review: the locked delete was refused (the copy changed while the lock was waited for,
+                // or the delete errored) and the copy stays — it must stay ACCOUNTED for too. Forgetting it
+                // here underreported cacheHealth.bytes and could skip the budget trigger until the periodic
+                // full reconciliation put it back.
+                val err = HydrationError.Generic("dehydrate failed")
+                _events.emit(HydrationEvent.Failed(path, err))
+                DehydrateResult.Failed(err)
+            } else {
+                // Success, or the copy was already gone: either way there is nothing left to account.
+                forgetCacheFile(path)
+                stateDb.markUnhydrated(path)
+                _events.emit(HydrationEvent.Dehydrated(path))
+                DehydrateResult.Ok
             }
-            forgetCacheFile(path)
-            stateDb.markUnhydrated(path)
-            _events.emit(HydrationEvent.Dehydrated(path))
-            DehydrateResult.Ok
         } catch (e: Exception) {
             val err = HydrationError.Generic(e.message ?: "dehydrate failed")
             _events.emit(HydrationEvent.Failed(path, err))
@@ -3608,8 +3628,9 @@ class HydrationImpl(
     // The undo half of a settled replace: the source had not moved when the daemon stopped, so the parked file moves back to its
     // name. Returns whether the record can go; false keeps it for the next start.
     // - a never-uploaded source (no cloud id) may have moved its cache copy onto the destination's name before the stop, between
-    //   the cache move and the row's repath of its local rename — a step no rename record covers (the review of #313): those bytes
-    //   are the source's only copy, so the repath is finished and the replace stands, never undone over them;
+    //   the cache move and the row's repath of its local rename — a step rename records cover since #452, so this remains for a
+    //   state.db written before then (the review of #313): those bytes are the source's only copy, so the repath is finished and
+    //   the replace stands, never undone over them;
     // - a cache copy at the destination's name that nothing explains is not overwritten either: it stays until the next start
     //   (or a hand) resolves whose it is, and the parked file stays parked.
     private suspend fun undoReplace(
@@ -3617,7 +3638,7 @@ class HydrationImpl(
         atSource: org.krost.unidrive.sync.model.SyncEntry,
         parked: org.krost.unidrive.sync.model.SyncEntry,
     ): Boolean {
-        // The half of a local rename no record covers: the source's copy went, its row did not follow.
+        // The half of a local rename a pre-#452 state.db has no record of: the source's copy went, its row did not follow.
         val sourceCopyMovedOn = record.sourceRemoteId == null && atSource.remoteId == null &&
             !cacheCopyPresent(record.sourcePath) && cacheCopyPresent(record.destPath)
         if (sourceCopyMovedOn) {
@@ -3737,12 +3758,21 @@ class HydrationImpl(
                     RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
                 }
             }
+            // #452: the copy moves before the row does, so a failure or a stop in between left the file's only copy at the
+            // new name beside a row still at the old one — and the next start read the row as gone (its copy is not at its
+            // path) and dropped it, stranding the file for good. The rename is recorded before anything moves, and the
+            // record keeps the row's repath and the copy's move owed until both are done ([RenameRollForward]): the same
+            // roll-forward the cloud-backed renames run on.
+            val intent = renames.begin(oldNorm, newNorm, null, ghost = false)
             return runCatching {
                 moveCacheFile(oldNorm, newNorm)
                 rekeyUploadSlot(oldNorm, newNorm)
                 stateDb.renamePrefix(oldNorm, newNorm)
+                renames.finish(intent)
                 RenameResult.Ok
             }.getOrElse { e ->
+                // Whatever stopped it, the record stays: the next request or start finishes the rename.
+                renames.interrupted(intent)
                 RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
             }
         }

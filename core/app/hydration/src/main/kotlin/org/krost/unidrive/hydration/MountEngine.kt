@@ -1155,15 +1155,44 @@ class MountEngine private constructor(
     suspend fun evictCacheCopy(
         path: String,
         onUnhydrated: (String) -> Unit = {},
+    ): Long? = deleteCacheCopyLocked(path, disposableOnly = true, reason = "budget", summary = "mount-evict", onUnhydrated = onUnhydrated)
+
+    /**
+     * gkrost/unidrive-cli#452: the delete of an explicit `dehydrate`, through the same per-path lock as
+     * [evictCacheCopy] but without its evictability gate: the hydration layer has already vetted the row
+     * (remote-backed, nothing unsynced), and "free up space" is not bound by the budget pass's rules. What
+     * it keeps from the locked delete is the staleness refusal: [observed] is what the caller saw of the
+     * copy when it vetted it (null = it saw no copy), and a copy that no longer matches — a write landing
+     * between the vetting and the lock — is left alone.
+     * Returns the freed bytes, or null when there was nothing to delete, the copy changed under the lock,
+     * or the delete failed.
+     */
+    suspend fun forceEvictCacheCopy(
+        path: String,
+        observed: Pair<Long, Long>?,
+    ): Long? = deleteCacheCopyLocked(path, disposableOnly = false, reason = "dehydrate", summary = "mount-dehydrate", observed = observed)
+
+    // The one cache-copy delete, under the path's hydration lock: the row re-read and the bytes re-checked
+    // before the delete, the CACHE_EVICT event, and the row's bookkeeping. The budget pass asks the full
+    // [cacheDisposition] first ([disposableOnly]); an explicit dehydrate only refuses a copy that is not the
+    // one its caller vetted ([observed]).
+    private suspend fun deleteCacheCopyLocked(
+        path: String,
+        disposableOnly: Boolean,
+        reason: String,
+        summary: String,
+        onUnhydrated: (String) -> Unit = {},
+        observed: Pair<Long, Long>? = null,
     ): Long? =
         hydrateMutexes.computeIfAbsent(path) { Mutex() }.withLock {
             // archive#728: one row read decides both the classification and the baseline question below: this
             // is the re-check that counts, so it must not ask the database twice per evicted file.
             val entry = db.getEntry(path) ?: return@withLock null
-            if (dispositionOf(path, entry) == CacheDisposition.PROTECTED) return@withLock null
+            if (disposableOnly && dispositionOf(path, entry) == CacheDisposition.PROTECTED) return@withLock null
             val cache = rowCachePath(path) ?: return@withLock null
             val size = runCatching { Files.size(cache) }.getOrNull() ?: return@withLock null
             val mtime = runCatching { Files.getLastModifiedTime(cache).toMillis() }.getOrNull() ?: return@withLock null
+            if (!disposableOnly && (mtime to size) != observed) return@withLock null
             // The same test cacheDisposition used: the cache copy is the row's local file.
             val cacheWasLocalFile =
                 entry.cacheBacked == true || (entry.cacheBacked == null && entry.localMtime == mtime && entry.localSize == size)
@@ -1176,8 +1205,8 @@ class MountEngine private constructor(
             }
             val tally = FileEventTally()
             FileEvents.event(FileEvents.Phase.CACHE_EVICT, path, bytes = size,
-                ms = (System.nanoTime() - evictionStarted) / 1_000_000, tally = tally, extra = listOf("reason" to "budget"))
-            FileEvents.summary("mount-evict", tally)
+                ms = (System.nanoTime() - evictionStarted) / 1_000_000, tally = tally, extra = listOf("reason" to reason))
+            FileEvents.summary(summary, tally)
             if (cacheWasLocalFile) {
                 db.markUnhydrated(path)
                 onUnhydrated(path)
@@ -1538,7 +1567,14 @@ class MountEngine private constructor(
         )
         val size = sent?.second ?: Files.size(cachePath)
         val adopted = copyPath != path && db.getEntry(copyPath) == null && adoptKeptBothCopy(copyPath, cachePath, copy, sent)
-        if (!adopted) Files.deleteIfExists(cachePath)
+        // gkrost/unidrive-cli#452: a write that landed on the cache copy while the upload ran is not in `copy`
+        // (the provider stored the bytes as they were sent) and is nowhere else — deleting the copy here
+        // destroyed their only record. The same comparison the normal path makes before it rebaselines
+        // (changedMidUpload): a copy whose stats moved past what was sent is kept, and the row keeps the
+        // bytes as an unsynced edit based on the version the row now records (the winner's), so the next
+        // upload of them bases on the cloud's current version instead of conflicting again.
+        val changedMidUpload = !adopted && sent != null && statBeforeUpload(cachePath)?.let { it != sent } == true
+        if (!adopted && !changedMidUpload) Files.deleteIfExists(cachePath)
         db.getEntry(path)?.let { row ->
             val current = currentCloudItemOrNull(remotePath)?.takeIf { !it.isFolder && it.id == row.remoteId }
             db.upsertEntry(
@@ -1557,9 +1593,15 @@ class MountEngine private constructor(
                     localSize = null,
                     localHash = null,
                     cacheBacked = null,
-                    editBase = null,
+                    editBase = if (changedMidUpload) (current?.version ?: row.remoteVersion).orEmpty() else null,
                 ),
                 keepMarks = true,
+            )
+        }
+        if (changedMidUpload) {
+            log.warn(
+                "uploadFromCache: {} was written while it was being uploaded; the bytes the kept copy does not hold stay in the cache as an unsynced edit",
+                path,
             )
         }
         auditLog?.emit(
