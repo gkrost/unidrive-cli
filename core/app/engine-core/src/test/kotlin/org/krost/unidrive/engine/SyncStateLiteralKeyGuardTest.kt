@@ -6,18 +6,19 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * gkrost/unidrive-cli#269: the cursor and recovery keys of `sync_state` are read and written through [CursorState]
- * only. A `getSyncState("…")`/`setSyncState("…")` call with a literal key anywhere in the main sources is how a typo
- * or a second, different default for an absent key slips in. This test walks every module's `src/main` and fails on
- * such a literal outside [CursorState], unless the (file, key) pair is on [ALLOWED] below. StateDatabase
- * keeps one checkpoint read of `last_full_scan`; any other safety key there fails.
+ * gkrost/unidrive-cli#269: every `sync_state` key is owned by a typed holder — [CursorState] for the cursor and
+ * recovery keys, [ScopeState], [QuotaState] and [ScanTimings] for the rest. A `getSyncState("…")`/`setSyncState("…")`
+ * call with a literal key anywhere in the main sources is how a typo or a second, different default for an absent
+ * key slips in. This test walks every module's `src/main` and fails on such a literal outside the owners, unless the
+ * (file, key) pair is on [ALLOWED] below. StateDatabase keeps one checkpoint read of `last_full_scan`; any other
+ * safety key there fails.
  *
  * The test task runs in the module directory (see SyncCommandNoHydrationWiringTest in :app:cli), so `../..` is `core`.
  */
 class SyncStateLiteralKeyGuardTest {
     private val core = File("../..").canonicalFile
 
-    private val owners = setOf("CursorState.kt", "QuotaState.kt", "ScopeState.kt")
+    private val owners = setOf("CursorState.kt", "QuotaState.kt", "ScopeState.kt", "ScanTimings.kt")
 
     private val call = Regex("""\b(?:get|set)SyncState\(\s*"([^"]*)"""")
 
@@ -104,21 +105,13 @@ class SyncStateLiteralKeyGuardTest {
         val SAFETY_CALLS_ALLOWED: Set<Pair<String, String>> = setOf("StateDatabase.kt" to "last_full_scan")
 
         /**
-         * TODO(gkrost/unidrive-cli#269): keys with no deletion safety that still use literal keys: SyncEngine's only —
-         * the scan timings, the sync root and the effective scope. The typed holders exist (QuotaState, ScopeState);
-         * SyncEngine moves onto ScopeState in its own change, separate from any PR that edits SyncEngine.kt. Until
-         * then the list may only shrink (the stale-entry test above).
+         * Literal-key calls that stay outside the owners: the only entry is a comment (check 8, state-vs-config
+         * drift) in DoctorCommand, not a call. Any new entry needs a typed owner of its own first.
          */
         val ALLOWED: Set<Pair<String, String>> =
             setOf(
                 // In a comment (check 8, state-vs-config drift), not a call.
                 "DoctorCommand.kt" to "sync_root",
-                "SyncEngine.kt" to "sync_root",
-                "SyncEngine.kt" to "effective_scope",
-                "SyncEngine.kt" to "last_scan_secs_remote",
-                "SyncEngine.kt" to "last_scan_count_remote",
-                "SyncEngine.kt" to "last_scan_secs_local",
-                "SyncEngine.kt" to "last_scan_count_local",
             )
     }
 }
