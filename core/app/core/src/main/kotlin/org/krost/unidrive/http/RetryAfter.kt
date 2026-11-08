@@ -14,23 +14,35 @@ private val DELTA_SECONDS = Regex("""\d+""")
  * header is absent, empty, negative or not understood. Both forms are read: delta-seconds, and an HTTP date
  * in the IMF-fixdate form (`Wed, 21 Oct 2026 07:28:00 GMT`). A date that has already passed gives null, and a
  * wait longer than [MAX_RETRY_AFTER_MS] is clamped to it.
+ *
+ * The date form is measured against [responseDateHeader], the response's own `Date` header, when one is
+ * present and parseable: that is the baseline the server used when it set the date, so a local clock minutes
+ * off does not turn the hint into null or a wrong wait. Only a response without a usable `Date` falls back
+ * to [nowMs].
  */
 fun parseRetryAfterHeader(
     header: String?,
     nowMs: Long = System.currentTimeMillis(),
+    responseDateHeader: String? = null,
 ): Long? {
     val raw = header?.trim()?.takeUnless { it.isEmpty() } ?: return null
     if (DELTA_SECONDS.matches(raw)) {
         val seconds = raw.toLongOrNull() ?: return MAX_RETRY_AFTER_MS
         return minOf(seconds, MAX_RETRY_AFTER_MS / 1000) * 1000
     }
-    return try {
-        val target = ZonedDateTime.parse(raw, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()
-        (target - nowMs).takeIf { it > 0L }?.coerceAtMost(MAX_RETRY_AFTER_MS)
-    } catch (_: DateTimeException) {
-        null
-    }
+    val target = parseHttpDateMs(raw) ?: return null
+    val baseMs = parseHttpDateMs(responseDateHeader) ?: nowMs
+    return (target - baseMs).takeIf { it > 0L }?.coerceAtMost(MAX_RETRY_AFTER_MS)
 }
+
+private fun parseHttpDateMs(raw: String?): Long? =
+    raw?.trim()?.takeUnless { it.isEmpty() }?.let {
+        try {
+            ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()
+        } catch (_: DateTimeException) {
+            null
+        }
+    }
 
 /**
  * The wait before a throttled call is sent again (#220): the server's [hintMs] (a `Retry-After` header or a hint in

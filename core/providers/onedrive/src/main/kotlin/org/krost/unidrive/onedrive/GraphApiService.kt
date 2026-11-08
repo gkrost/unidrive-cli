@@ -349,9 +349,16 @@ class GraphApiService(
         val header =
             (response["headers"] as? JsonObject)
                 ?.entries
-                ?.firstOrNull { it.key.equals("Retry-After", ignoreCase = true) }
-                ?.value?.jsonPrimitive?.contentOrNull
-                ?.let { parseRetryAfterHeader(it) }
+                ?.let { entries ->
+                    val date =
+                        entries
+                            .firstOrNull { it.key.equals("Date", ignoreCase = true) }
+                            ?.value?.jsonPrimitive?.contentOrNull
+                    entries
+                        .firstOrNull { it.key.equals("Retry-After", ignoreCase = true) }
+                        ?.value?.jsonPrimitive?.contentOrNull
+                        ?.let { parseRetryAfterHeader(it, responseDateHeader = date) }
+                }
         if (header != null) return header
         val body = response["body"] as? JsonObject ?: return null
         return body["retryAfterSeconds"]?.jsonPrimitive?.longOrNull
@@ -727,7 +734,7 @@ class GraphApiService(
         attempts: Int,
         totalWaitMs: Long,
     ): Long {
-        val retryAfterHeader = parseRetryAfterHeader(response.headers["Retry-After"])
+        val retryAfterHeader = parseRetryAfterHeader(response.headers["Retry-After"], responseDateHeader = response.headers["Date"])
         val retryAfterBody = parseRetryAfterFromJsonBody(body)?.let { it * 1000 }
         val backoffMs = boundedThrottleWaitMs(retryAfterHeader ?: retryAfterBody, DEFAULT_BACKOFF_START_MS * (1L shl attempts))
         val remainingBudget = MAX_TOTAL_THROTTLE_WAIT_MS - totalWaitMs
@@ -1257,7 +1264,7 @@ class GraphApiService(
             }
             status == 429 -> {
                 // #220: the probe waits the same bounded value it records, as the reads do.
-                val waitMs = boundedThrottleWaitMs(parseRetryAfterHeader(response.headers["Retry-After"]), delayMs)
+                val waitMs = boundedThrottleWaitMs(parseRetryAfterHeader(response.headers["Retry-After"], responseDateHeader = response.headers["Date"]), delayMs)
                 throttleBudget.recordThrottle(waitMs)
                 TransientProbe(GraphApiException("Upload session status probe was rate limited: ${response.status}", status), waitMs)
             }
@@ -1481,7 +1488,7 @@ class GraphApiService(
                 status == 429 -> {
                     // #220: the chunk waits the same bounded value it records, as the reads do (it used to wait the
                     // raw hint, up to an hour).
-                    val waitMs = boundedThrottleWaitMs(parseRetryAfterHeader(response.headers["Retry-After"]), delayMs)
+                    val waitMs = boundedThrottleWaitMs(parseRetryAfterHeader(response.headers["Retry-After"], responseDateHeader = response.headers["Date"]), delayMs)
                     throttleBudget.recordThrottle(waitMs)
                     if (!lastTry) return ChunkRetry(waitMs, probe = false)
                     GraphApiException("Rate limited (429) at offset $currentOffset after ${CHUNK_RETRY_DELAYS_MS.size} retries: ${response.status}", status)
@@ -1700,7 +1707,7 @@ class GraphApiService(
     ): Long {
         // Prefer the server's Retry-After if present (delta-seconds or an HTTP date), else 2s, 4s, 8s, 16s.
         val retryAfterMs =
-            boundedThrottleWaitMs(parseRetryAfterHeader(response.headers["Retry-After"]), DEFAULT_BACKOFF_START_MS * (1L shl attempts))
+            boundedThrottleWaitMs(parseRetryAfterHeader(response.headers["Retry-After"], responseDateHeader = response.headers["Date"]), DEFAULT_BACKOFF_START_MS * (1L shl attempts))
         // Never block a request longer than the remaining throttle budget of its sequence.
         val remainingBudget = MAX_TOTAL_THROTTLE_WAIT_MS - totalWaitMs
         return minOf(retryAfterMs, remainingBudget)

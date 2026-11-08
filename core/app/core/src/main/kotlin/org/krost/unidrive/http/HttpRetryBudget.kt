@@ -55,7 +55,9 @@ import java.util.concurrent.atomic.AtomicLong
  * Recovery: every [recoveryCleanIntervalMs] of no new throttle events, concurrency is
  * restored by +1 permit, up to [maxConcurrency].
  *
- * Clock is injectable so tests stay deterministic.
+ * The default clock is monotonic (`System.nanoTime()`): every deadline here is a duration from now, and a
+ * wall-clock step (sleep resume, time sync) must not stretch an open circuit or shrink one. The clock is
+ * injectable so tests stay deterministic.
  */
 class HttpRetryBudget(
     private val maxConcurrency: Int,
@@ -67,7 +69,7 @@ class HttpRetryBudget(
     private val noThrottleWindowMs: Long = 60_000L,
     private val postStormRecoveryMs: Long = 30_000L,
     private val recoveryCleanIntervalMs: Long = 5L * 60 * 1000,
-    private val clock: () -> Long = { System.currentTimeMillis() },
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val log = LoggerFactory.getLogger(HttpRetryBudget::class.java)
 
@@ -166,8 +168,8 @@ class HttpRetryBudget(
         return held < concurrency.get() && permitsHeld.compareAndSet(held, held + 1)
     }
 
-    /** Timestamp (epoch ms) until which all new request starts should pause.
-     *  Zero when the circuit is closed. Exposed for diagnostics / tests. */
+    /** Timestamp in the budget's own clock domain (monotonic by default) until which all new request starts
+     *  should pause. Zero when the circuit is closed. Exposed for diagnostics / tests. */
     fun resumeAfterEpochMs(): Long = globalResumeAfter.get()
 
     /** Record a throttle response. [retryAfterMs] is the server-hinted wait (from

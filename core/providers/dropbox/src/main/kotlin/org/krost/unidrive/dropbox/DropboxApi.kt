@@ -345,7 +345,7 @@ class DropboxApi(
         body: String,
         attempt: Int,
     ): Long {
-        val header = parseRetryAfterHeader(response.headers["Retry-After"])
+        val header = parseRetryAfterHeader(response.headers["Retry-After"], responseDateHeader = response.headers["Date"])
         val inBody =
             runCatching {
                 json.parseToJsonElement(body).jsonObject["error"]?.jsonObject?.get("retry_after")?.jsonPrimitive?.intOrNull?.toLong()

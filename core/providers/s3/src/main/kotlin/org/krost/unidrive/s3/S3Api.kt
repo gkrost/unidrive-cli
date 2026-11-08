@@ -520,7 +520,7 @@ class S3Api(
         response: HttpResponse,
         attempt: Int,
     ): Long {
-        val retryAfterMs = parseRetryAfterHeader(response.headers["Retry-After"])
+        val retryAfterMs = parseRetryAfterHeader(response.headers["Retry-After"], responseDateHeader = response.headers["Date"])
         return throttleWaitMs(retryAfterMs, (MIN_WAIT_MS shl attempt).coerceAtMost(MAX_WAIT_MS), MIN_WAIT_MS, MAX_WAIT_MS)
     }
 

@@ -105,7 +105,27 @@ class HttpRetryBudgetMatrixTest {
         )
         assertFalse(
             HttpRetryBudget.isRetriableIoException(javax.net.ssl.SSLPeerUnverifiedException("hostname mismatch")),
-            "SSLPeerUnverifiedException is cert mismatch — must NOT retry",
+                "SSLPeerUnverifiedException is cert mismatch — must NOT retry",
+        )
+    }
+
+    // -- Row: Clock — the budget's default clock is monotonic, so a wall-clock step (sleep resume, time sync)
+    // cannot stretch or shrink the circuit and spacing waits. A wall-clock default puts every deadline near
+    // epoch time; a monotonic one keeps them in System.nanoTime's domain, which this test can tell apart. --
+    @Test
+    fun `the default clock is monotonic, not the wall clock`() {
+        val budget = HttpRetryBudget(maxConcurrency = 1, stormThreshold = 1, stormBackoffFactor = 1.0)
+        val before = System.nanoTime() / 1_000_000
+        budget.recordThrottle(retryAfterMs = 1_000)
+        val resumeAt = budget.resumeAfterEpochMs()
+        val after = System.nanoTime() / 1_000_000
+        assertTrue(
+            resumeAt >= before + 1_000,
+            "the circuit deadline must sit one Retry-After past the budget clock's own now",
+        )
+        assertTrue(
+            resumeAt <= after + 1_000,
+            "a wall-clock default would put the deadline near epoch time, far past the monotonic now",
         )
     }
 }
