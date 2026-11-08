@@ -1661,8 +1661,7 @@ open class SyncEngine(
                             is SyncAction.DeleteLocal -> applyDeleteLocal(action)
                             is SyncAction.DeleteRemote ->
                                 if (!deleteBlockedByFailedMove(action, failedMoveSources)) {
-                                    applyDeleteRemote(action)
-                                    remoteDeletedPaths += action.path
+                                    if (applyDeleteRemote(action)) remoteDeletedPaths += action.path
                                 } else {
                                     applied = false
                                 }
@@ -3889,7 +3888,8 @@ open class SyncEngine(
         return true
     }
 
-    private suspend fun applyDeleteRemote(action: SyncAction.DeleteRemote) {
+    // True when the delete ran; false when a guard held it back (the row stays, the next pass plans it again).
+    private suspend fun applyDeleteRemote(action: SyncAction.DeleteRemote): Boolean {
         // UD-113: capture pre-delete row for the audit entry.
         val priorEntry = db.getEntry(action.path)
         // archive#115: DeleteRemote.path is real-local (DB lookup above keys on it).
@@ -3901,6 +3901,7 @@ open class SyncEngine(
         // UD-753: per-operation log at the engine (was repeated across provider services).
         log.debug("Delete: {} (remote {})", action.path, remotePath)
         var auditResult = "success"
+        if (priorEntry?.isFolder == true && folderHoldsUnprovenRemoteContent(remotePath)) return false
         try {
             if (remoteId != null && !remoteId.startsWith("local:")) {
                 // archive#402: the row's real cloud uuid addresses the twin the engine
@@ -3908,7 +3909,7 @@ open class SyncEngine(
                 // same-named siblings and could trash the wrong one.
                 provider.deleteById(remoteId, remotePath)
             } else {
-                if (refuseCollidedPath(action)) return
+                if (refuseCollidedPath(action)) return false
                 provider.delete(remotePath)
             }
         } catch (e: ProviderException) {
@@ -3959,6 +3960,45 @@ open class SyncEngine(
             oldHash = priorEntry?.remoteHash,
             result = auditResult,
         )
+        return true
+    }
+
+    // #451: a folder DeleteRemote takes the folder's whole subtree with it, and the plan's view of what lies below
+    // is only this pass's delta, which omits every unchanged item. So the apply lists the folder live, all the way
+    // down, and lets the delete run only when every live item is proven tracked and unchanged: an alive row with
+    // that remote id, not skipped by the scan (excluded, ignored), same size and hash. Anything else — an excluded
+    // file, one another device added, one changed since — holds the folder; the tracked children keep their own
+    // file-level deletes and the empty-directory reaper removes the folder once its live listing is empty. A
+    // listing that fails holds the folder too (not-found excepted: nothing is left to lose).
+    private suspend fun folderHoldsUnprovenRemoteContent(remoteFolder: String): Boolean {
+        val unproven =
+            try {
+                firstUnprovenRemoteItem(remoteFolder)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (isRemoteNotFound(e)) return false
+                log.warn("Not deleting {}: its live content cannot be listed ({}); the delete is retried on the next sync", remoteFolder, e.message)
+                return true
+            } ?: return false
+        log.warn("Not deleting {}: {} below it is not tracked and unchanged; the folder is left to the empty-directory check", remoteFolder, unproven)
+        reporter.onWarning("Skipped delete of $remoteFolder: it holds content the sync does not track")
+        return true
+    }
+
+    private suspend fun firstUnprovenRemoteItem(folder: String): String? {
+        for (child in provider.listChildren(folder)) {
+            if (child.deleted) continue
+            val row = db.getEntryByRemoteId(child.id)
+            val proven =
+                row != null &&
+                    row.status == EntryStatus.EXISTS &&
+                    !skippedByScan(row.path, child.isFolder) &&
+                    (child.isFolder || (row.remoteSize == child.size && (row.remoteHash == null || child.hash == null || row.remoteHash == child.hash)))
+            if (!proven) return child.path
+            if (child.isFolder) firstUnprovenRemoteItem(child.path)?.let { return it }
+        }
+        return null
     }
 
     private fun applyRemoveEntry(action: SyncAction.RemoveEntry) {

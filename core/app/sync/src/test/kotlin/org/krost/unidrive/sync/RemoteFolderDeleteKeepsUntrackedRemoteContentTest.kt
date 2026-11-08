@@ -97,7 +97,13 @@ class RemoteFolderDeleteKeepsUntrackedRemoteContentTest {
     }
 
     @Test
-    fun `a folder deleted locally keeps a cloud-only excluded file below it in both modes`() =
+    fun `a folder deleted locally keeps a cloud-only excluded file below it in both modes`() = excludedCloudOnlyFile(replayDelta = true)
+
+    // The normal incremental case: the unchanged excluded file is absent from the second pass's delta (#451 review).
+    @Test
+    fun `an empty incremental delta still keeps a cloud-only excluded file below a deleted folder`() = excludedCloudOnlyFile(replayDelta = false)
+
+    private fun excludedCloudOnlyFile(replayDelta: Boolean) =
         bothModes { eng ->
             val iso = "an image the profile excludes".toByteArray()
             provider.files["/dir/a.txt"] = ByteArray(3)
@@ -115,16 +121,26 @@ class RemoteFolderDeleteKeepsUntrackedRemoteContentTest {
 
             // The user deletes the local folder; the cloud-only excluded file exists nowhere else.
             provider.childrenByParent["/dir"] = listOf(item("/dir/a.iso", size = iso.size.toLong()))
+            if (!replayDelta) provider.deltaItems = emptyList()
             syncRoot.resolve("dir").toFile().deleteRecursively()
             eng.syncOnce()
 
             assertFalse("/dir" in provider.deletedPaths, "the folder delete must not run; got ${provider.deletedPaths}")
-            assertTrue("/dir/a.txt" in provider.deletedPaths, "the tracked child still loses its file-level delete; got ${provider.deletedPaths}")
+            // With an empty delta the streaming plan has nothing to reconcile the missing folder against, so only the
+            // full-listing mode is guaranteed to plan the tracked child's own delete.
+            if (replayDelta) {
+                assertTrue("/dir/a.txt" in provider.deletedPaths, "the tracked child still loses its file-level delete; got ${provider.deletedPaths}")
+            }
             assertTrue(provider.files["/dir/a.iso"]?.contentEquals(iso) == true, "the excluded file's bytes survive in the cloud")
         }
 
     @Test
-    fun `a folder deleted locally keeps an excluded file tracked from before the exclusion in both modes`() =
+    fun `a folder deleted locally keeps an excluded file tracked from before the exclusion in both modes`() = trackedThenExcluded(replayDelta = true)
+
+    @Test
+    fun `an empty incremental delta still keeps a file tracked before its exclusion below a deleted folder`() = trackedThenExcluded(replayDelta = false)
+
+    private fun trackedThenExcluded(replayDelta: Boolean) =
         bothEnginePairs { plain, excluding ->
             val iso = "synced before the exclusion existed".toByteArray()
             provider.files["/dir/a.txt"] = ByteArray(3)
@@ -142,12 +158,56 @@ class RemoteFolderDeleteKeepsUntrackedRemoteContentTest {
             // The profile now excludes *.iso; the row under the excluded path is never planned again. The user
             // deletes the local folder; the cloud copy is the only one left.
             provider.childrenByParent["/dir"] = listOf(item("/dir/a.iso", size = iso.size.toLong()))
+            if (!replayDelta) provider.deltaItems = emptyList()
             syncRoot.resolve("dir").toFile().deleteRecursively()
             excluding.syncOnce()
 
             assertFalse("/dir" in provider.deletedPaths, "the folder delete must not run; got ${provider.deletedPaths}")
-            assertTrue("/dir/a.txt" in provider.deletedPaths, "the tracked child still loses its file-level delete; got ${provider.deletedPaths}")
+            // With an empty delta the streaming plan has nothing to reconcile the missing folder against, so only the
+            // full-listing mode is guaranteed to plan the tracked child's own delete.
+            if (replayDelta) {
+                assertTrue("/dir/a.txt" in provider.deletedPaths, "the tracked child still loses its file-level delete; got ${provider.deletedPaths}")
+            }
             assertTrue(provider.files["/dir/a.iso"]?.contentEquals(iso) == true, "the excluded file's bytes survive in the cloud")
+        }
+
+    // A file another device added after this device's last delta is in no row and in no delta; it is not excluded.
+    @Test
+    fun `an empty incremental delta keeps an unseen cloud-only file below a deleted folder`() =
+        bothModes { eng ->
+            provider.files["/dir/a.txt"] = ByteArray(3)
+            provider.deltaItems = listOf(item("/dir", size = 0, isFolder = true), item("/dir/a.txt", size = 3))
+            provider.deltaCursor = "cursor-1"
+            eng.syncOnce()
+
+            val unseen = "added by another device".toByteArray()
+            provider.files["/dir/new.txt"] = unseen
+            provider.childrenByParent["/dir"] = listOf(item("/dir/a.txt", size = 3), item("/dir/new.txt", size = unseen.size.toLong()))
+            provider.deltaItems = emptyList()
+            syncRoot.resolve("dir").toFile().deleteRecursively()
+            eng.syncOnce()
+
+            assertFalse("/dir" in provider.deletedPaths, "the folder delete must not run; got ${provider.deletedPaths}")
+            assertTrue(provider.files["/dir/new.txt"]?.contentEquals(unseen) == true, "the unseen file survives in the cloud")
+        }
+
+    // The guard must not wedge a folder delete: when nothing live survives below the folder, it goes.
+    @Test
+    fun `an empty incremental delta still deletes a folder with nothing live below it`() =
+        runTest {
+            val eng = engine(streaming = false, excludePatterns = listOf("**/*.iso"))
+            provider.files["/dir/a.txt"] = ByteArray(3)
+            provider.deltaItems = listOf(item("/dir", size = 0, isFolder = true), item("/dir/a.txt", size = 3))
+            provider.deltaCursor = "cursor-1"
+            eng.syncOnce()
+
+            // The child's own delete runs first (deepest first), so the cloud's live listing is already empty.
+            provider.childrenByParent["/dir"] = emptyList()
+            provider.deltaItems = emptyList()
+            syncRoot.resolve("dir").toFile().deleteRecursively()
+            eng.syncOnce()
+
+            assertTrue("/dir" in provider.deletedPaths, "the all-tracked folder is deleted; got ${provider.deletedPaths}")
         }
 
     private fun item(

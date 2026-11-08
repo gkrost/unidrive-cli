@@ -2407,7 +2407,8 @@ class SyncEngineTest {
 
             assertEquals(1, provider.deletedPaths.count { it == "/dir" }, "folder deleted exactly once; deleted=${provider.deletedPaths}")
             assertTrue(provider.deletedPaths.contains("/dir/only.txt"), "the file must be deleted; deleted=${provider.deletedPaths}")
-            assertFalse("/dir" in provider.listChildrenCalls, "reaper must not probe a folder this run deleted; calls=${provider.listChildrenCalls}")
+            // The folder delete's own live check (#451) lists it once; the reaper must not probe it a second time.
+            assertEquals(1, provider.listChildrenCalls.count { it == "/dir" }, "reaper must not probe a folder this run deleted; calls=${provider.listChildrenCalls}")
             assertTrue(warns.none { it.contains("reap") }, "no reap WARN expected; got $warns")
         }
 
