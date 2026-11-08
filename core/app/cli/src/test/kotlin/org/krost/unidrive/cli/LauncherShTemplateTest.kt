@@ -146,6 +146,21 @@ class LauncherShTemplateTest {
         assertTrue(r.args.indexOf("-Djava.net.preferIPv6Addresses=system") < r.args.indexOf("-jar"), r.args.toString())
     }
 
+    // gkrost/unidrive-cli#522: without the JFR redact key *vault*, a recording of a run whose vault
+    // passphrase rode the environment as UNIDRIVE_VAULT_PASS carries the passphrase in cleartext — the
+    // JEP 536 default patterns (*password*, *pwd*, *token*, ...) do not match plain PASS. If this flag
+    // is dropped, every shared recording leaks that passphrase again.
+    @Test
+    fun `the launcher passes the JFR vault redact key from jvm-flags txt before the jar`() {
+        val j25 = fakeJdk(dir.resolve("jvm"), "jdk-25", "25.0.4")
+        val r = run(j25, "status")
+        assertTrue("-XX:FlightRecorderOptions=redact-key=+*vault*" in r.args, r.args.toString())
+        assertTrue(
+            r.args.indexOf("-XX:FlightRecorderOptions=redact-key=+*vault*") < r.args.indexOf("-jar"),
+            r.args.toString(),
+        )
+    }
+
     // One FIXED dump file per profile: HotSpot does not overwrite an existing dump, so an OOM restart loop
     // cannot stack a fresh ~2 GB hprof — which holds decrypted tokens — on every restart. The path has no
     // trailing separator, so the JVM treats it as a FILE name and dumps exactly there; the GC log's profile

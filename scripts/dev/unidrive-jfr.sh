@@ -152,10 +152,24 @@ while IFS= read -r flag; do
   [[ -n "$flag" ]] && STATIC_FLAGS+=("$flag")
 done < "$(dirname "${BASH_SOURCE[0]}")/../../dist/launcher/jvm-flags.txt"
 
+# jvm-flags.txt carries -XX:FlightRecorderOptions keys of its own (the JFR redact settings, issue
+# #522). A second -XX:FlightRecorderOptions replaces the first entirely (verified on the packaged
+# JDK 27 runtime image), so this script's keys merge with the flags-file keys into ONE option; a
+# plain extra flag here would silently drop the redaction from every recording this script makes.
+FR_OPTIONS="stackdepth=256,memorysize=64m"
+REST_FLAGS=()
+for flag in "${STATIC_FLAGS[@]}"; do
+  if [[ "$flag" == -XX:FlightRecorderOptions=* ]]; then
+    FR_OPTIONS="${flag#-XX:FlightRecorderOptions=},${FR_OPTIONS}"
+  else
+    REST_FLAGS+=("$flag")
+  fi
+done
+
 JVM_ARGS=(
   -Xmx6g
-  "${STATIC_FLAGS[@]}"
-  -XX:FlightRecorderOptions=stackdepth=256,memorysize=64m
+  "${REST_FLAGS[@]}"
+  "-XX:FlightRecorderOptions=$FR_OPTIONS"
   "-XX:StartFlightRecording=$JFR_PARAMS"
   -XX:+HeapDumpOnOutOfMemoryError
   "-XX:HeapDumpPath=$OUT_DIR"
