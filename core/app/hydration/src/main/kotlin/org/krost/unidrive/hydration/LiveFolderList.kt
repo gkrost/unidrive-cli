@@ -126,7 +126,7 @@ internal class LiveFolderList(
     }
 
     // Whether the folder has a row that came from the cloud (not the pending upload of a file nobody sent yet).
-    private fun knowsCloudRows(path: String): Boolean = db.listDirectChildren(path).any { it.remoteId != null }
+    private fun knowsCloudRows(path: String): Boolean = db.hasCloudChild(path)
 
     private fun recentlyEmpty(path: String): Boolean {
         val at = foundEmpty[path] ?: return false
