@@ -213,6 +213,10 @@ open class SyncEngine(
     // archive#738: the clock that stamps keep-both conflict copies. Tests pin it; production uses the system clock.
     // A property rather than a constructor parameter, so the constructor's signature stays as it is.
     internal var conflictClock: java.time.Clock = java.time.Clock.systemDefaultZone()
+
+    // gkrost/unidrive-cli#439: the monotonic millisecond clock the Pass 1 commit rule reads. Tests drive it
+    // without sleeping. A property for the same reason as [conflictClock].
+    internal var pass1CommitClock: () -> Long = { System.nanoTime() / 1_000_000 }
     // #218: the patterns the matcher can build, as every command that reads exclude_patterns takes them.
     private val effectiveExcludePatterns =
         ExcludePatterns.accepted(
@@ -1589,6 +1593,11 @@ open class SyncEngine(
             )
         db.beginBatch()
         var batchCommitted = false
+        // gkrost/unidrive-cli#439: the batch is committed between actions once PASS1_COMMIT_INTERVAL_MS have passed
+        // since the last commit, or PASS1_COMMIT_MAX_ACTIONS actions have gone into it. A pass that dies without
+        // unwinding (an Error, a killed process) then loses at most that much, not every row since beginBatch.
+        var lastCommitAt = pass1CommitClock()
+        var uncommittedActions = 0
         try {
             withContext(Priority.Foreground) {
                 // A copy kept aside on an earlier pass must not defer this pass's folder deletes.
@@ -1601,6 +1610,20 @@ open class SyncEngine(
                 // preserved by createFolderBatch's depth-barrier semantics.
                 var idx = 0
                 while (idx < sequentialActions.size) {
+                    // Only here, between actions: never inside a create-folder run, whose coroutines share the batch.
+                    if (uncommittedActions > 0) {
+                        val now = pass1CommitClock()
+                        if (uncommittedActions >= PASS1_COMMIT_MAX_ACTIONS || now - lastCommitAt >= PASS1_COMMIT_INTERVAL_MS) {
+                            // A failed commit leaves batchCommitted false, so the rollback below runs; once it went
+                            // through, a failure to reopen must not roll back an already closed transaction.
+                            db.commitBatch()
+                            batchCommitted = true
+                            db.beginBatch()
+                            batchCommitted = false
+                            lastCommitAt = now
+                            uncommittedActions = 0
+                        }
+                    }
                     val head = sequentialActions[idx]
                     if (head is SyncAction.CreateRemoteFolder) {
                         var end = idx
@@ -1642,6 +1665,7 @@ open class SyncEngine(
                             consecutiveFailures = 0
                         }
                         idx = end
+                        uncommittedActions += run.size
                         continue
                     }
                     val action = head
@@ -1761,6 +1785,7 @@ open class SyncEngine(
                     }
                     reporter.onActionProgress(completedActions.incrementAndGet(), actions.size, actionLabel(action), displayPath(action))
                     idx++
+                    uncommittedActions++
                 }
             }
             db.commitBatch()
@@ -5218,6 +5243,15 @@ open class SyncEngine(
         private const val FILE_EVENT_REMOTE_INSPECT_LIMIT = 20_000
 
         const val CONSECUTIVE_SYNC_FAILURE_HARD_CAP: Int = 20
+
+        /**
+         * gkrost/unidrive-cli#439: Pass 1 commits its batch when this many milliseconds have passed since the last commit.
+         * A commit is one WAL fsync: a network action (hundreds of ms) gets its own commit, local-only actions share one.
+         */
+        internal const val PASS1_COMMIT_INTERVAL_MS: Long = 300L
+
+        /** The most actions Pass 1 puts into one batch before it commits, however fast they run. */
+        internal const val PASS1_COMMIT_MAX_ACTIONS: Int = 1_000
 
         /** How many " (n)" names keepBothCopyPath tries before it refuses. */
         internal const val KEEP_BOTH_MAX_NAME_ATTEMPTS: Int = 1000

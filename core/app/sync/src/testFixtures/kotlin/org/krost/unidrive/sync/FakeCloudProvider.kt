@@ -464,6 +464,7 @@ class FakeCloudProvider : CloudProvider {
         toPath: String,
         carriedId: String?,
     ): CloudItem {
+        moveThrowByPath[fromPath]?.let { throw it }
         val content = files[fromPath]
         val subtree =
             if (content != null) {
@@ -526,6 +527,9 @@ class FakeCloudProvider : CloudProvider {
         fromPath: String,
         toPath: String,
     ): CloudItem = doMove(fromPath, toPath, carriedId = remoteId)
+
+    // gkrost/unidrive-cli#439: per-path throw for a move (by source path), e.g. an Error that stands in for a crash.
+    val moveThrowByPath = mutableMapOf<String, Throwable>()
 
     // UD-360: when set, delta() returns DeltaPage(complete=false) so that
     // tests can exercise the engine's partial-gather suppression path.
