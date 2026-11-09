@@ -547,6 +547,59 @@ class TransferHistoryTest {
         assertEquals(OwnerOnly.Outcome.Unchanged, OwnerOnly.restrictFile(db))
     }
 
+    // A snapshot the test offers by hand, with an operation id of its choosing: the overflow a full
+    // queue must survive is per operation, and the handles make their own ids.
+    private fun rowOf(
+        operationId: String,
+        path: String,
+        result: TransferResult,
+    ) = TransferRow(
+        operationId = operationId,
+        profile = "p1",
+        direction = TransferDirection.UPLOAD,
+        path = path,
+        queuedAt = wallMs.get(),
+        result = result,
+    )
+
+    @Test
+    fun `a full queue drops a running snapshot but keeps the terminal one of the same transfer`() {
+        val history =
+            open(HistoryConfig(queueCapacity = 4, batchSize = 4)) { conn ->
+                // The gate below parks the writer on a write lock it cannot take; the long busy timeout
+                // keeps it parked instead of failing the batch when the default one expires.
+                conn.createStatement().use { it.execute("PRAGMA busy_timeout = 60000") }
+            }
+        // The writer parks on its first write attempt while the gate holds the database's write lock:
+        // the queue fills and stays full, so the offers below meet the exact overflow they must survive.
+        DriverManager.getConnection("jdbc:sqlite:$db").use { gate ->
+            gate.createStatement().use { st ->
+                st.execute("PRAGMA busy_timeout = 60000")
+                st.execute("BEGIN EXCLUSIVE")
+            }
+            try {
+                history.enqueue(rowOf("op-kept", "/drop/kept.bin", TransferResult.RUNNING))
+                // More fillers than the queue holds: the writer drains nothing while parked, so the
+                // queue is full for certain and the surplus fillers are dropped.
+                repeat(8) { i -> history.enqueue(rowOf("filler-$i", "/drop/filler-$i.bin", TransferResult.RUNNING)) }
+                assertTrue(history.stats.dropped >= 4, "the queue is full: ${history.stats}")
+                history.enqueue(
+                    rowOf("op-kept", "/drop/kept.bin", TransferResult.FAILED).copy(
+                        finishedAt = wallMs.get(),
+                        errorClass = "IOException",
+                    ),
+                )
+            } finally {
+                // The write lock goes: the writer wakes and drains everything.
+                gate.createStatement().use { it.execute("ROLLBACK") }
+            }
+        }
+        assertTrue(history.flush(WRITER_BUDGET_MS))
+        val kept = history.rows().filter { it.operationId == "op-kept" }
+        assertEquals(1, kept.size)
+        assertEquals(TransferResult.FAILED, kept.single().result, "the terminal snapshot must survive a full queue")
+    }
+
     private companion object {
         /** The ceiling for the writer to answer a barrier; a healthy writer answers in well under a second. */
         const val WRITER_BUDGET_MS = 120_000L

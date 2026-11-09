@@ -941,7 +941,7 @@ class MountEngine private constructor(
     // gkrost/unidrive-cli#171: the name of the bytes a warm copy holds, from the row the serve was decided by: the download that filled
     // the copy recorded the name of what it read, and a later change of the name drops the copy (the enumeration's content rule) or
     // moves the bytes with it (a rename). None for a copy with an unsynced edit and for a row without a remote.
-    private fun SyncEntry.copyContentId(): String? = remoteContentId.takeIf { isHydrated && editBase == null && remoteId != null && !isFolder }
+    internal fun SyncEntry.copyContentId(): String? = remoteContentId.takeIf { isHydrated && editBase == null && remoteId != null && !isFolder }
 
     /**
      * archive#796: the row's download by its remote id, and when that fails as a gone item, once the file the
