@@ -18,6 +18,8 @@ import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
+import org.krost.unidrive.currentTransferMeter
+import org.krost.unidrive.TransferMeter
 import org.krost.unidrive.http.Priority
 import org.krost.unidrive.engine.AuditSink
 import org.krost.unidrive.engine.CursorState
@@ -205,10 +207,33 @@ open class SyncEngine(
     private val fileTally = FileEventTally()
     private val downloadEventRetries = FileEventTally()
 
-    // The shared line-time budget behind [maxBandwidthKbps]. One instance per
+    // The shared token bucket behind [maxBandwidthKbps]. One instance per
     // engine, so every transfer of every dispatch path draws from the same
     // budget whether it launches in Pass 2 or mid-scan on the streaming gather.
-    private val bandwidth: BandwidthPacer? = maxBandwidthKbps?.let { BandwidthPacer(it.toLong() * 1024) }
+    // A property so a test can drive it with its own clock.
+    internal var bandwidth: BandwidthPacer? = maxBandwidthKbps?.let { BandwidthPacer(it.toLong() * 1024) }
+
+    // Runs [block] holding a reservation on the bandwidth budget: the wait for the line runs while no permit is held, and the
+    // bytes the transfer reports through its TransferMeter are what the budget is charged (the rest of the forecast goes back
+    // when the block ends, however it ends). Without a cap this is just the permit.
+    private suspend fun <T> paced(
+        expectedBytes: Long,
+        permits: kotlinx.coroutines.sync.Semaphore,
+        block: suspend () -> T,
+    ): T = reservedBandwidth(expectedBytes) { permits.withPermit { block() } }
+
+    private suspend fun <T> reservedBandwidth(
+        expectedBytes: Long,
+        block: suspend () -> T,
+    ): T {
+        val pacer = bandwidth ?: return block()
+        val reservation = pacer.reserve(expectedBytes)
+        try {
+            return withContext(TransferMeter(reservation::moved)) { block() }
+        } finally {
+            reservation.close()
+        }
+    }
 
     // archive#738: the clock that stamps keep-both conflict copies. Tests pin it; production uses the system clock.
     // A property rather than a constructor parameter, so the constructor's signature stays as it is.
@@ -1824,10 +1849,9 @@ open class SyncEngine(
                         is SyncAction.DownloadContent -> {
                             launch {
                                 withContext(Priority.Foreground) {
-                                    // Pace the shared budget first: the wait for this transfer's line
+                                    // Reserve the shared budget first: the wait for this transfer's line
                                     // slot runs while no permit is held (see [BandwidthPacer]).
-                                    bandwidth?.pace(transferBytes(action))
-                                    transferSemaphore.withPermit {
+                                    paced(transferBytes(action), transferSemaphore) {
                                         try {
                                             applyDownload(action)
                                             downloaded.incrementAndGet()
@@ -1884,10 +1908,9 @@ open class SyncEngine(
                         is SyncAction.Upload -> {
                             launch {
                                 withContext(Priority.Foreground) {
-                                    // Pace the shared budget first: the wait for this transfer's line
+                                    // Reserve the shared budget first: the wait for this transfer's line
                                     // slot runs while no permit is held (see [BandwidthPacer]).
-                                    bandwidth?.pace(transferBytes(action))
-                                    transferSemaphore.withPermit {
+                                    paced(transferBytes(action), transferSemaphore) {
                                         try {
                                             applyUpload(action)
                                             uploaded.incrementAndGet()
@@ -2107,10 +2130,9 @@ open class SyncEngine(
         transferSemaphore: kotlinx.coroutines.sync.Semaphore,
     ) {
         withContext(Priority.Foreground) {
-            // Pace the shared budget first: the wait for this transfer's line
+            // Reserve the shared budget first: the wait for this transfer's line
             // slot runs while no permit is held (see [BandwidthPacer]).
-            bandwidth?.pace(transferBytes(action))
-            transferSemaphore.withPermit {
+            paced(transferBytes(action), transferSemaphore) {
                 try {
                     applyDownload(action)
                     downloaded.incrementAndGet()
@@ -2173,10 +2195,9 @@ open class SyncEngine(
         transferSemaphore: kotlinx.coroutines.sync.Semaphore,
     ) {
         withContext(Priority.Foreground) {
-            // Pace the shared budget first: the wait for this transfer's line
+            // Reserve the shared budget first: the wait for this transfer's line
             // slot runs while no permit is held (see [BandwidthPacer]).
-            bandwidth?.pace(transferBytes(action))
-            transferSemaphore.withPermit {
+            paced(transferBytes(action), transferSemaphore) {
                 try {
                     applyUpload(action)
                     uploaded.incrementAndGet()
@@ -2293,13 +2314,12 @@ open class SyncEngine(
         val previous = db.getEntry(path)
         try {
             local.parent?.let { Files.createDirectories(it) }
-            // Pace the shared budget before the runner runs: the rule file's permit
+            // Reserve the shared budget before the runner runs: the rule file's permit
             // is taken inside the runner, so the wait for its line slot holds no
             // permit (see [BandwidthPacer]). The size is capped by
             // maxRuleFileBytes (ruleFileToDownload refused larger ones).
-            bandwidth?.pace(item.size)
             val transfer = transfers.runner(path)
-            transfer { applyDownload(SyncAction.DownloadContent(path, item)) }
+            reservedBandwidth(item.size) { transfer { applyDownload(SyncAction.DownloadContent(path, item)) } }
         } catch (e: CancellationException) {
             throw e
         } catch (e: AuthenticationException) {
@@ -3162,6 +3182,8 @@ open class SyncEngine(
                     guard = preTransferGuard,
                 )
                 downloadReceipt = receipt
+                // A provider that reports no bytes while it downloads is charged once, for what it wrote.
+                currentTransferMeter()?.movedTotal(receipt.bytesWritten)
                 downloadedHash = stagedLocalHash(localPath, receipt)
                 keptMidTransfer = midTransferEdit
                 if (!receipt.mtimeAppliedBeforePlacement) placeholder.restoreMtime(action.path, action.remoteItem.modified)
@@ -3367,11 +3389,14 @@ open class SyncEngine(
             auditFailureEntry(e)
         }
         var traceStep = 0L
+        // The bandwidth cap is charged for the bytes the upload reports; null when the transfer is not paced.
+        val meter = currentTransferMeter()
         val result =
             try {
                 // UD-366: action.remoteId carries the existing remote UUID for MODIFIED uploads;
                 // null for NEW. Internxt routes through PUT /files/{uuid} when non-null.
                 provider.upload(localPath, remotePath, existingRemoteId = action.remoteId, ifMatchETag = ifMatch) { transferred, total ->
+                    meter?.movedTotal(transferred)
                     reporter.onTransferProgress(action.path, transferred, total)
                     // TRACE: one line per FILE_TRACE_STEP_BYTES of progress, and the last one, not one per chunk.
                     if (FileEvents.traceEnabled() && (transferred / FILE_TRACE_STEP_BYTES > traceStep || transferred >= total)) {
@@ -3388,6 +3413,8 @@ open class SyncEngine(
                 auditFailure(e)
                 throw e
             }
+        // A provider that reports no progress is charged once, for the file it has sent.
+        if (sizeForLog > 0) meter?.movedTotal(sizeForLog)
         FileEvents.event(
             FileEvents.Phase.UPLOAD_DONE,
             action.path,
