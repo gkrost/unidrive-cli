@@ -1,10 +1,13 @@
 package org.krost.unidrive.http
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.coroutineContext
 
 /**
  * UD-232: throttle coordinator for one provider HTTP client. Each client owns its own instance
@@ -104,11 +107,28 @@ class HttpRetryBudget(
     private val lastForegroundAdmissionMs = AtomicLong(Long.MIN_VALUE)
     private val yieldWindowMs: Long = minSpacingMs
 
-    // The permits [withPermit] has handed out and not yet taken back.
+    // The permits [withPermit] has handed out and not yet taken back. Mutated only under [permitLock]
+    // (admission, release, the cancelled-waiter give-back); [freeSlots] reads it lock-free.
     private val permitsHeld = AtomicInteger(0)
 
-    // The [Priority.Foreground] callers waiting in [withPermit]; while there is one, background callers take no permit.
-    private val foregroundPermitWaiters = AtomicInteger(0)
+    // gkrost/unidrive-cli#435: the FIFO of [withPermit] waiters, one queue per lane, guarded by
+    // [permitLock]. A release or a concurrency restore admits the head waiter directly — nobody
+    // polls, and no waiter of a lane can lose its round to a later arrival of the same lane.
+    private val permitLock = Any()
+    private val foregroundWaiters = ArrayDeque<PermitWaiter>()
+    private val backgroundWaiters = ArrayDeque<PermitWaiter>()
+
+    // A parked [withPermit] waiter. [isForeground] reads the lane LIVE (the Priority element was
+    // captured from the waiter's coroutine context) so a Promotable waiter that InFlightDedup
+    // promotes mid-wait joins the foreground queue at the next admission pass, without waking
+    // up to notice the flip.
+    private class PermitWaiter(val isForeground: () -> Boolean) {
+        val granted = CompletableDeferred<Unit>()
+
+        // Set under [permitLock] when admission took a permit for this waiter. Separates "still
+        // queued" from "granted but cancelled before the waiter ran its block" (the give-back case).
+        var admitted = false
+    }
 
     /** Current target concurrency: the number of permits [withPermit] hands out. */
     fun currentConcurrency(): Int = concurrency.get()
@@ -122,52 +142,77 @@ class HttpRetryBudget(
 
     /**
      * Runs [block] holding one of the [currentConcurrency] permits, and gives it back when [block] ends, however it ends.
-     * A caller that finds every permit taken waits (suspended, polling every [PERMIT_POLL_MS]) and holds nothing while
-     * it waits, so cancelling it releases nothing it does not own. The wait keeps the lanes of [awaitSlot]: while a
-     * [Priority.Foreground] caller waits for a permit, no [Priority.Background] caller takes one, so a user-driven call
-     * is not queued behind a scan's listings; the lane is read again on every poll, so a [Priority.Promotable] waiter
-     * moves up the moment it is promoted. As in [awaitSlot], background callers wait while foreground callers
-     * are counted as waiting. A throttle storm that halves the concurrency
-     * lowers the bound at once: permits already held run to completion and new callers wait until fewer than the new
-     * bound are held, so shrinking never deadlocks or starves anyone. Only callers that go through here are counted;
-     * [awaitSlot] alone (pacing and the circuit breaker) takes no permit, so cheap calls on the same budget stay
-     * unbounded. Take the permit first and then [awaitSlot], and never wait for a second permit of the same budget
-     * while holding one.
+     * A caller that finds every permit taken parks on a FIFO of waiters (one queue per lane) and is resumed by the next
+     * release or concurrency restore — no polling, and a waiter cannot lose its round to a later arrival of the same
+     * lane. It holds nothing while it waits, so cancelling it releases nothing it does not own; the one give-back is the
+     * granted-then-cancelled race, where the permit was counted but the block never ran. The wait keeps the lanes of
+     * [awaitSlot]: while a [Priority.Foreground] caller is parked, no [Priority.Background] caller is admitted, so a
+     * user-driven call is not queued behind a scan's listings; a parked waiter's lane is re-read at every admission
+     * pass, so a [Priority.Promotable] waiter moves up the moment it is promoted. A throttle storm that halves the
+     * concurrency lowers the bound at once: permits already held run to completion and parked callers wait until fewer
+     * than the new bound are held, so shrinking never deadlocks or starves anyone. Only callers that go through here
+     * are counted; [awaitSlot] alone (pacing and the circuit breaker) takes no permit, so cheap calls on the same
+     * budget stay unbounded. Take the permit first and then [awaitSlot], and never wait for a second permit of the
+     * same budget while holding one.
      */
     suspend fun <T> withPermit(block: suspend () -> T): T {
-        var countedAsForeground = false
+        val priority = coroutineContext[Priority] ?: Priority.Background
+        val waiter = PermitWaiter(isForeground = { priority.resolve() == Priority.Foreground })
+        synchronized(permitLock) {
+            if (waiter.isForeground()) foregroundWaiters.addLast(waiter) else backgroundWaiters.addLast(waiter)
+            admitLocked()
+        }
         try {
-            while (true) {
-                countedAsForeground = countPermitWaiter(countedAsForeground, currentPriority() == Priority.Foreground)
-                if (tryTakePermit(countedAsForeground)) break
-                delay(PERMIT_POLL_MS)
+            waiter.granted.await()
+        } catch (e: CancellationException) {
+            synchronized(permitLock) {
+                val stillQueued = foregroundWaiters.remove(waiter) || backgroundWaiters.remove(waiter)
+                if (!stillQueued && waiter.admitted) permitsHeld.decrementAndGet()
+                admitLocked()
             }
-        } finally {
-            if (countedAsForeground) foregroundPermitWaiters.decrementAndGet()
+            throw e
         }
         try {
             return block()
         } finally {
-            permitsHeld.decrementAndGet()
+            synchronized(permitLock) {
+                permitsHeld.decrementAndGet()
+                admitLocked()
+            }
         }
     }
 
-    // Moves a waiter of [withPermit] into the foreground count or out of it when its lane changed; returns its lane now.
-    private fun countPermitWaiter(
-        countedAsForeground: Boolean,
-        foreground: Boolean,
-    ): Boolean {
-        if (foreground != countedAsForeground) {
-            if (foreground) foregroundPermitWaiters.incrementAndGet() else foregroundPermitWaiters.decrementAndGet()
+    // Under [permitLock]: hands free permits to the head of the foreground queue first; the background
+    // lane is admitted only while no foreground waiter is parked. A granted waiter is resumed by
+    // completing its deferred — a plain resume, never inline on this thread.
+    private fun admitLocked() {
+        promoteLaneFlipsLocked()
+        while (permitsHeld.get() < concurrency.get()) {
+            val next = foregroundWaiters.removeFirstOrNull() ?: backgroundWaiters.removeFirstOrNull() ?: return
+            next.admitted = true
+            permitsHeld.incrementAndGet()
+            next.granted.complete(Unit)
         }
-        return foreground
     }
 
-    // Takes a permit if one is free and no foreground caller waits ahead of a background one.
-    private fun tryTakePermit(foreground: Boolean): Boolean {
-        if (!foreground && foregroundPermitWaiters.get() > 0) return false
-        val held = permitsHeld.get()
-        return held < concurrency.get() && permitsHeld.compareAndSet(held, held + 1)
+    // Under [permitLock]: moves background-parked waiters whose lane flipped to foreground (a Promotable
+    // reference promoted by InFlightDedup) to the tail of the foreground queue, keeping their order.
+    private fun promoteLaneFlipsLocked() {
+        if (backgroundWaiters.isEmpty()) return
+        var flipped = false
+        val stillBackground = ArrayDeque<PermitWaiter>()
+        for (waiter in backgroundWaiters) {
+            if (waiter.isForeground()) {
+                foregroundWaiters.addLast(waiter)
+                flipped = true
+            } else {
+                stillBackground.addLast(waiter)
+            }
+        }
+        if (flipped) {
+            backgroundWaiters.clear()
+            backgroundWaiters.addAll(stillBackground)
+        }
     }
 
     /** Timestamp in the budget's own clock domain (monotonic by default) until which all new request starts
@@ -218,6 +263,9 @@ class HttpRetryBudget(
         if (concurrency.compareAndSet(current, current + 1)) {
             lastRecoveryAtMs.set(now)
             log.info("UD-232 throttle recovery: concurrency {}→{}", current, current + 1)
+            // A restored permit may admit a parked [withPermit] waiter at once; a halving admits
+            // nobody (the bound only shrinks), so recordThrottle needs no pass.
+            synchronized(permitLock) { admitLocked() }
         }
     }
 
@@ -344,9 +392,6 @@ class HttpRetryBudget(
     }
 
     companion object {
-        /** How often a caller that waits for a [withPermit] permit looks again. */
-        const val PERMIT_POLL_MS = 25L
-
         // The value of the circuit deadline before the first storm; no clock reading is this low.
         private const val NOT_OPENED = Long.MIN_VALUE
 

@@ -125,7 +125,7 @@ internal object LatencySimulation {
             List(workers) {
                 scope.launch {
                     while (isActive && clock() < end) {
-                        while (controller != null && admitted >= controller.limit) delay(HttpRetryBudget.PERMIT_POLL_MS)
+                        while (controller != null && admitted >= controller.limit) delay(25L)
                         admitted++
                         val answer =
                             budget.withPermit {
