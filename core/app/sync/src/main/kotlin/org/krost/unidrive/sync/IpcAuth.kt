@@ -211,7 +211,7 @@ class IpcAuth(
         val VERB_CLASSES: Map<String, VerbClass> =
             buildMap {
                 listOf(
-                    "daemon.status", "hydration.list", "hydration.stat", "hydration.last_synced", "hydration.subscribe",
+                    "daemon.status", "hydration.list", "hydration.stat", "hydration.handle_status", "hydration.last_synced", "hydration.subscribe",
                     "sync.subscribe", "hydration.open_read", "history.list", "history.subscribe", "metrics.query", "ignore.explain", "view.page",
                 ).forEach { put(it, VerbClass.READ) }
                 listOf(

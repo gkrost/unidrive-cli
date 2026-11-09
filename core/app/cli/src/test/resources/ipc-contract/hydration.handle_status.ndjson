@@ -1,0 +1,4 @@
+{"verb":"hydration.handle_status","handle_id":"h-never-seen"}
+{"ok":true,"state":"unknown"}
+{"verb":"hydration.handle_status"}
+{"ok":false,"error":"missing_handle_id"}

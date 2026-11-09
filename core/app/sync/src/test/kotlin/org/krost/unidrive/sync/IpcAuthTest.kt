@@ -324,10 +324,31 @@ class IpcAuthTest {
     }
 
     @Test
+    fun `the vendorable class table of the spec lists exactly the verbs of VERB_CLASSES`() {
+        var dir: Path? = Path.of("").toAbsolutePath()
+        while (dir != null && !Files.exists(dir.resolve("docs/dev/specs/ipc-authentication.md"))) dir = dir.parent
+        assumeTrue("the spec is not reachable from the test's working directory", dir != null)
+        val rows =
+            Files.readAllLines(dir!!.resolve("docs/dev/specs/ipc-authentication.md"))
+                .mapNotNull { Regex("""^\| (read|write|admin) \| (.+) \|$""").matchEntire(it) }
+                .associate { m ->
+                    m.groupValues[1] to Regex("`([^`]+)`").findAll(m.groupValues[2]).map { it.groupValues[1] }.toSet()
+                }
+        assertEquals(setOf("read", "write", "admin"), rows.keys, "section 4 has one row per class")
+        for (cls in IpcAuth.VerbClass.entries) {
+            assertEquals(
+                IpcAuth.VERB_CLASSES.filterValues { it == cls }.keys,
+                rows.getValue(cls.name.lowercase()),
+                "docs/dev/specs/ipc-authentication.md section 4, class ${cls.name.lowercase()}, drifted from IpcAuth.VERB_CLASSES",
+            )
+        }
+    }
+
+    @Test
     fun `the verb classes are the exact wire strings`() {
         val read =
             setOf(
-                "daemon.status", "hydration.list", "hydration.stat", "hydration.last_synced", "hydration.subscribe", "sync.subscribe", "hydration.open_read",
+                "daemon.status", "hydration.list", "hydration.stat", "hydration.handle_status", "hydration.last_synced", "hydration.subscribe", "sync.subscribe", "hydration.open_read",
                 "history.list", "history.subscribe", "metrics.query", "ignore.explain", "view.page",
             )
         val write =
