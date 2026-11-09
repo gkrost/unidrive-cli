@@ -515,8 +515,21 @@ class DaemonRuntime(
                             subscribeEnumerates(server.authEnabled, server.scopeOf(connId))
                         ) {
                             server.scheduleAfterReply(connId) {
-                                runCatching { enumerateHandler.runGuarded(reset = false) }
-                                    .onFailure { log.warn("enumerate-on-subscribe failed", it) }
+                                // Detached, not awaited: the post-reply hook runs on the connection's
+                                // reader coroutine, and the enumeration a fresh mount triggers can run for
+                                // hours — awaiting it here would leave the socket unread for the whole
+                                // pass (EOF unseen, close listeners delayed, the connection still counted
+                                // against the client cap). The in-flight guard still serialises it with
+                                // the sync.enumerate verb and the poller.
+                                serveScope.launch {
+                                    try {
+                                        enumerateHandler.runGuarded(reset = false)
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        log.warn("enumerate-on-subscribe failed", e)
+                                    }
+                                }
                             }
                         }
                         reply

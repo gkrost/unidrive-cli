@@ -1114,6 +1114,47 @@ class DaemonRuntimeTest {
     }
 
     @Test
+    fun `the subscribe-triggered enumerate does not hold the subscriber connection's reader`() = runBlocking(Dispatchers.IO) {
+        // #436: the enumerate a full-scope hydration.subscribe triggers runs detached from the connection's
+        // reader. It used to be awaited inside the post-reply hook, which runs on the reader coroutine: for a
+        // first scan that runs long the socket went unread for the whole pass — a client that went away was
+        // noticed only when the scan ended (close listeners delayed, the connection still counted against the
+        // client cap) and no later request on the connection was answered. The provider's delta is gated
+        // below, so a reply on this same connection can only come from a reader that stayed free.
+        val gate = CompletableDeferred<Unit>()
+        val runtime = startDaemon(ScriptedDeltaProvider(gate = gate))
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath, daemonJob)
+        val channel = connect()
+        try {
+            channel.configureBlocking(false)
+            channel.write(ByteBuffer.wrap(("""{"verb":"hydration.subscribe"}""" + "\n").toByteArray()))
+            val reply = awaitIpcLine(channel, "hydration.subscribe reply") { !it.contains("\"event\"") }
+            assertTrue(reply.contains("\"ok\":true"), "subscribe must succeed; got: $reply")
+
+            // The triggered enumerate holds inside the provider's gate: running with the provider's own
+            // progress report (reported before the gate), so it is mid-pass and stays so until the finally.
+            awaitEnumeration { it.getValue("state").jsonPrimitive.content == "running" && it["items"]?.jsonPrimitive?.int == 1_234 }
+
+            // The discriminating step: a request on the SAME connection must be answered while the
+            // enumerate still holds. A reader parked in the post-reply await cannot answer it.
+            channel.write(ByteBuffer.wrap(("""{"verb":"daemon.status"}""" + "\n").toByteArray()))
+            val status =
+                awaitIpcLine(channel, "daemon.status while the triggered enumerate still holds", budgetMs = 20_000) {
+                    it.contains("\"uptime_ms\"")
+                }
+            val enumeration = Json.parseToJsonElement(status).jsonObject.getValue("enumeration").jsonObject
+            assertEquals("running", enumeration.getValue("state").jsonPrimitive.content, "the enumerate is still in flight; got: $status")
+        } finally {
+            gate.complete(Unit)
+            channel.close()
+        }
+
+        runtime.close()
+        daemonJob.join()
+    }
+
+    @Test
     fun `a read-scope subscribe is accepted and starts no enumerate`() = runBlocking {
         // An observer (a status UI) holds a READ token: it may subscribe to events, but a subscribe
         // must not start a scan of the remote on its behalf. Only a full-scope mount client's
