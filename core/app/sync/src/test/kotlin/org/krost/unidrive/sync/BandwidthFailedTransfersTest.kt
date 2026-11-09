@@ -108,4 +108,21 @@ class BandwidthFailedTransfersTest {
             assertTrue(tookMs >= 6000, "three slots of the four that moved bytes were waited out, took ${tookMs}ms")
             assertTrue(tookMs < 8000, "the four failed transfers gave their slots back, took ${tookMs}ms")
         }
+
+    @Test
+    fun `a download that stages its bytes and then fails keeps them charged`() =
+        runTest {
+            // #562 review: both downloads write their full 2 KiB to the staging file and then fail. Without the
+            // staged-size report the failed transfers refund their whole forecasts and the second one starts at
+            // once, so repeated partial failures bypass the cap; with it, only proven unused bytes go back.
+            for (i in 1..2) provider.deltaItems += cloudFile("/s$i.bin", 2048)
+            provider.afterDownloadWrite = { _ -> throw java.io.IOException("connection reset") }
+
+            engine().syncOnce()
+
+            assertEquals(2, provider.downloadByIdCalls.size, "both downloads reached the provider and staged their bytes")
+            val tookMs = testScheduler.currentTime
+            assertTrue(tookMs >= 2000, "the second transfer waited out the 2 KiB the first one moved, took ${tookMs}ms")
+            assertTrue(tookMs < 4000, "the wait was for the bytes that crossed, not the forecasts, took ${tookMs}ms")
+        }
 }

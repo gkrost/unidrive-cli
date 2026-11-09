@@ -3132,8 +3132,27 @@ open class SyncEngine(
             Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             return receipt to keptMidTransfer
         } finally {
+            // #562 review: a download that fails or is cancelled after bytes crossed the line has no receipt, and
+            // its reservation would refund the whole forecast — repeated partial failures could then bypass the cap.
+            // The staged file's size at cleanup is the engine's observation of what crossed; the success path never
+            // reports here (the staging is moved by then), so nothing is charged twice.
+            reportStagedBytesCrossed(staging)
             Files.deleteIfExists(staging)
         }
+    }
+
+    // #562 review: what a failed or cancelled download had already written to its staging file, told to the
+    // transfer's meter so the reservation keeps that much of its forecast. Outside a paced transfer there is no
+    // meter to tell; a provider that cleans up after itself leaves nothing observable, which refunds as before.
+    private suspend fun reportStagedBytesCrossed(staging: Path) {
+        val meter = currentTransferMeter() ?: return
+        val staged =
+            try {
+                Files.size(staging)
+            } catch (_: java.io.IOException) {
+                return
+            }
+        if (staged > 0) meter.movedTotal(staged)
     }
 
     // Internal for the download-placement test (as applyConflict for the refused-case-collision test).
