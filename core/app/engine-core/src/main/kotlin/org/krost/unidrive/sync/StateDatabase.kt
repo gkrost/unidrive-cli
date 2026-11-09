@@ -234,32 +234,44 @@ class StateDatabase(
     }
 
     fun initialize() {
-        locked("initialize") {
-            closeReaders()
-            statements.clear()
-            scanStaging.close()
-            _conn?.takeIf { !it.isClosed }?.close()
-            batchOwner = null
-            batchSuspended = false
-            forgetAliveCount()
-            if (readOnly) {
-                initializeReadOnly()
-                return
-            }
+        // The writable open pauses between its tries (up to 1.7 s, see [openWritable]); it runs before the monitor is
+        // taken, so a thread that calls into this database meanwhile waits for nothing but its own turn (#531).
+        var fresh: Connection? = null
+        if (!readOnly) {
             if (!inMemory) Files.createDirectories(dbPath.parent)
-            _conn = openWritable()
-            try {
-                bootstrapSchema()
-                if (!isDisposable) restrictSidecars()
-                // The one scan: from here on the writes keep the number (a read-only handle counts at its first ask).
-                recountAlive(dataVersion())
-                readers = readerPoolFor()
-            } catch (e: Throwable) {
-                // A refused open (archive#323) must not leak the connection it opened.
-                runCatching { _conn?.close() }
-                _conn = null
-                throw e
+            fresh = openWritable()
+        }
+        try {
+            locked("initialize") {
+                closeReaders()
+                statements.clear()
+                scanStaging.close()
+                _conn?.takeIf { !it.isClosed }?.close()
+                batchOwner = null
+                batchSuspended = false
+                forgetAliveCount()
+                if (readOnly) {
+                    initializeReadOnly()
+                    return
+                }
+                _conn = fresh
+                fresh = null // adopted: [_conn] closes it from here on
+                try {
+                    bootstrapSchema()
+                    if (!isDisposable) restrictSidecars()
+                    // The one scan: from here on the writes keep the number (a read-only handle counts at its first ask).
+                    recountAlive(dataVersion())
+                    readers = readerPoolFor()
+                } catch (e: Throwable) {
+                    // A refused open (archive#323) must not leak the connection it opened.
+                    runCatching { _conn?.close() }
+                    _conn = null
+                    throw e
+                }
             }
+        } finally {
+            // Opened but never adopted (a step before the adoption threw): do not leak it.
+            fresh?.let { runCatching { it.close() } }
         }
     }
 
@@ -470,6 +482,7 @@ class StateDatabase(
     private var snapshotShutdownHook: Thread? = null
 
     fun resetAll() {
+        scanStaging.warmUp() // outside the monitor: the first open of the staging file can pause (#531)
         locked("resetAll") {
             // sync_state also holds the schema stamp. Wiping it without restamping makes the
             // next open read this file as a pre-redesign database and drop sync_entries (archive#411),
@@ -503,8 +516,9 @@ class StateDatabase(
      *
      * Returns the number of rows kept.
      */
-    fun resetKeepingPending(alsoKeep: (SyncEntry) -> Boolean = { false }): Int =
-        locked("resetKeepingPending") {
+    fun resetKeepingPending(alsoKeep: (SyncEntry) -> Boolean = { false }): Int {
+        scanStaging.warmUp() // outside the monitor: the first open of the staging file can pause (#531)
+        return locked("resetKeepingPending") {
             scanStaging.clearAll()
             batch {
                 val keep = LinkedHashSet<String>()
@@ -552,6 +566,7 @@ class StateDatabase(
                 keep.size
             }
         }
+    }
 
     /**
      * Three bootstrap cases (acceptance criterion: upgrade path):
@@ -2982,6 +2997,7 @@ class StateDatabase(
      * row can never be read as a delete of a file the legacy state had not known about.
      */
     fun clearEnumerationBaseline() {
+        scanStaging.warmUp() // outside the monitor: the first open of the staging file can pause (#531)
         locked("clearEnumerationBaseline") {
             // The checkpoint and its rows first: a crash between the two files then leaves a stamp and no checkpoint
             // (the next gather lists fresh); the other order would leave a checkpoint the stamp no longer invalidates.
