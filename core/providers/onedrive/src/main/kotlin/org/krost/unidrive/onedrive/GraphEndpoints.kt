@@ -9,6 +9,7 @@ import org.krost.unidrive.HttpDefaults
 import org.krost.unidrive.http.EndpointClassifier
 import org.krost.unidrive.http.RequestId
 import org.krost.unidrive.http.RequestMetricsTap
+import org.krost.unidrive.http.unidriveHttpClient
 
 /**
  * The words of the Graph API this client calls; any other path segment is an identifier and becomes `{id}` in an endpoint
@@ -50,5 +51,5 @@ internal fun graphHttpClient(
             serverRequestIdHeaders = listOf("request-id", "client-request-id")
         }
     }
-    return if (engine != null) HttpClient(engine, configure) else HttpClient(configure)
+    return if (engine != null) HttpClient(engine, configure) else unidriveHttpClient(configure = configure)
 }

@@ -36,6 +36,12 @@ internal object LoopbackTls {
         SSLContext.getInstance("TLS").apply { init(keys.keyManagers, null, null) }.serverSocketFactory
     }
 
+    /** What a client needs to reach a [LoopbackServer] over TLS: a socket factory that trusts every certificate. */
+    val clientTls: org.krost.unidrive.http.ClientTls by lazy {
+        val socketFactory = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trustAll), null) }.socketFactory
+        org.krost.unidrive.http.ClientTls(socketFactory, trustAll)
+    }
+
     val trustAll: X509TrustManager =
         object : X509TrustManager {
             override fun checkClientTrusted(

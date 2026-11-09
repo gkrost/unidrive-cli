@@ -41,7 +41,7 @@ open class AuthService(
     // HttpClient (same seam as OneDrive's OAuthService). Production uses the
     // default.
     private val httpClient: HttpClient =
-        HttpClient {
+        org.krost.unidrive.http.unidriveHttpClient {
             expectSuccess = false
             install(HttpTimeout) {
                 connectTimeoutMillis = HttpDefaults.CONNECT_TIMEOUT_MS

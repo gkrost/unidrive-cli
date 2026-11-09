@@ -12,12 +12,14 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * archive#517 F1 / R11, pinned against the real client engine over TLS (the production shape): the socket timeout is a
- * read-idle timer, and a server that is silent while a request body flows never feeds it. With the engine's flat default
- * a flowing upload is cut at the limit, however steadily it moves, and the cut reads as "the server prematurely closed
- * the connection", the same text as a real close. A per-request socket timeout above the upload's duration lets the
- * same upload finish. (The shard PUT therefore carries its own outer limit and a progress watchdog; see
- * `InternxtShardPutWatchdogTest`.)
+ * archive#517 F1 / R11, pinned against the real client engine over TLS (the production shape). CIO's socket timeout was a
+ * read-idle timer only: a server that is silent while a request body flows never fed it, so a flowing upload was cut at
+ * the limit however steadily it moved, and the cut read as "the server prematurely closed the connection". OkHttp, the
+ * engine now (gkrost/unidrive-cli#566), applies the same value to reads and to writes, per operation: a body that keeps
+ * moving is never cut, a body whose peer stopped taking it is (a write that cannot proceed, or the wait for the answer after
+ * the last byte), and the cut is a SocketTimeoutException (see the note at the second test for what a stalled write over TLS does). The shard PUT still carries its own outer limit and a progress
+ * watchdog (see `InternxtShardPutWatchdogTest`); they stay the authority for "stuck", because the answer wait after a complete
+ * body is silent for the whole time the server stores it.
  *
  * The limits are scaled from 60 s to a second and a half, with a body that the server reads at a fixed pace.
  */
@@ -33,22 +35,43 @@ class InternxtSocketTimeoutLoopbackTest {
         }
 
     @Test
-    fun `with the flat default socket timeout a flowing upload is cut and reads as a closed connection`() =
+    fun `with the flat default socket timeout a flowing upload that outlives it is not cut`() =
         runBlocking {
             val received = AtomicLong(0)
             slowReadingServer(received).use { server ->
                 loopbackClient(server, socketTimeoutMs = 1_500).use { client ->
+                    val started = System.nanoTime()
+                    val answer = client.put("https://gateway.invalid/shard") { setBody(ByteArray(bodyBytes)) }
+
+                    assertEquals("{}", answer.bodyAsText())
+                    assertEquals(bodyBytes.toLong(), received.get())
+                    assertTrue((System.nanoTime() - started) / 1_000_000 > 1_500, "the upload outlived the socket timeout")
+                }
+            }
+        }
+
+    // A body that fits the socket buffers is written at once, and the wait for the answer is the read timer's: cut at the
+    // socket timeout. (A body larger than the buffers, to a peer that stops taking it, is NOT cut by the engine over TLS: on
+    // Windows with a 25 JVM a 3 MiB body to a peer that never read was cut only when the peer closed, 20 s later, instead of
+    // after the 1.5 s write timeout. The progress watchdog is what cuts that case: InternxtShardPutWatchdogTest.)
+    @Test
+    fun `with the flat default socket timeout a request whose peer never answers is cut as a SocketTimeoutException`() =
+        runBlocking {
+            LoopbackServer(tls = true) { exchange ->
+                exchange.readRequestLine()
+                Thread.sleep(20_000) // sends no answer
+            }.use { server ->
+                loopbackClient(server, socketTimeoutMs = 1_500).use { client ->
+                    val started = System.nanoTime()
                     val failure =
                         assertFailsWith<java.io.IOException> {
-                            client.put("https://gateway.invalid/shard") { setBody(ByteArray(bodyBytes)) }
+                            client.put("https://gateway.invalid/shard") { setBody(ByteArray(64 * 1024)) }
                         }
 
                     val chain = generateSequence<Throwable>(failure) { it.cause }.take(8).joinToString(" | ") { "${it.javaClass.simpleName}: ${it.message}" }
-                    assertTrue(
-                        "prematurely closed" in chain || generateSequence<Throwable>(failure) { it.cause }.take(8).any { it is java.net.SocketTimeoutException },
-                        "the engine's own timer shows as a closed connection over TLS: $chain",
-                    )
-                    assertTrue(received.get() < bodyBytes, "the upload was cut before the server had read it all: ${received.get()} of $bodyBytes")
+                    assertTrue(generateSequence<Throwable>(failure) { it.cause }.take(8).any { it is java.net.SocketTimeoutException }, chain)
+                    val elapsedMs = (System.nanoTime() - started) / 1_000_000
+                    assertTrue(elapsedMs < 10_000, "cut by the socket timeout, not by the 20 s of the server, after $elapsedMs ms: $chain")
                 }
             }
         }

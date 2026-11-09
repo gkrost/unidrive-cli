@@ -1,7 +1,6 @@
 package org.krost.unidrive.internxt
 
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpSend
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.plugin
@@ -11,6 +10,7 @@ import io.ktor.http.URLProtocol
 import kotlinx.coroutines.runBlocking
 import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.http.UploadWatchdogLimits
+import org.krost.unidrive.http.unidriveHttpClient
 import org.krost.unidrive.internxt.model.InternxtCredentials
 import java.io.BufferedInputStream
 import java.io.EOFException
@@ -195,7 +195,7 @@ internal class LoopbackServer(
 }
 
 /**
- * A real client on the engine production uses (CIO, with HttpTimeout), whose default socket timeout is [socketTimeoutMs]
+ * A real client on the engine production uses (OkHttp through unidriveHttpClient, with HttpTimeout), whose default socket timeout is [socketTimeoutMs]
  * and whose requests all go to [server], whatever host they were built on: the service under test builds its URLs on the
  * gateway's host, and this is how they reach a loopback server. [requestTimeoutMs] is the client-wide cap of a whole call
  * (production: 600 s).
@@ -205,8 +205,7 @@ internal fun loopbackClient(
     socketTimeoutMs: Long,
     requestTimeoutMs: Long = 600_000,
 ): HttpClient =
-    HttpClient(CIO) {
-        engine { https { trustManager = LoopbackTls.trustAll } }
+    unidriveHttpClient(LoopbackTls.clientTls) {
         install(HttpTimeout) {
             connectTimeoutMillis = 10_000
             socketTimeoutMillis = socketTimeoutMs
@@ -250,8 +249,7 @@ private val tlsWarmUp: Boolean by lazy {
         exchange.readRequestLine()
         exchange.respond(200, "OK", "{}")
     }.use { server ->
-        HttpClient(CIO) {
-            engine { https { trustManager = LoopbackTls.trustAll } }
+        unidriveHttpClient(LoopbackTls.clientTls) {
             install(HttpTimeout) {
                 connectTimeoutMillis = 30_000
                 socketTimeoutMillis = 30_000

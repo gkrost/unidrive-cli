@@ -32,6 +32,7 @@ import org.krost.unidrive.http.UploadTimeoutPolicy
 import org.krost.unidrive.http.UploadWatchdogException
 import org.krost.unidrive.http.UploadWatchdogLimits
 import org.krost.unidrive.http.parseRetryAfterHeader
+import org.krost.unidrive.http.unidriveHttpClient
 import org.krost.unidrive.http.readBoundedErrorBody
 import org.krost.unidrive.http.retrying
 import org.krost.unidrive.http.truncateErrorBody
@@ -614,5 +615,5 @@ internal fun s3HttpClient(
             serverRequestIdHeaders = listOf("x-amz-request-id")
         }
     }
-    return if (engine != null) HttpClient(engine, configure) else HttpClient(configure)
+    return if (engine != null) HttpClient(engine, configure) else unidriveHttpClient(configure = configure)
 }

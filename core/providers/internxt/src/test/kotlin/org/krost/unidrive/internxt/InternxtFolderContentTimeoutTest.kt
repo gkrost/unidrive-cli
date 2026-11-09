@@ -15,9 +15,10 @@ import kotlin.test.assertTrue
  * the folder, dropped its files and came back incomplete. The content call and the sync-listing pages run on the listing
  * timeouts.
  *
- * Real CIO engine against a loopback socket over TLS, the shape of production: there the engine's own timer reads as a
- * closed connection, the 503 the walk skips (over plain HTTP it is a SocketTimeoutException and would abort the walk).
- * A socket timeout of half a second and an answer that takes three times as long, instead of 60 s and 106 s.
+ * The real engine (OkHttp through unidriveHttpClient) against a loopback socket over TLS, the shape of production: the
+ * engine's own timer is a SocketTimeoutException, and a cut at the timer's limit is turned into the 503 the walk skips (CIO
+ * showed the same cut as a closed connection). A socket timeout of half a second and an answer that takes three times as
+ * long, instead of 60 s and 106 s.
  */
 class InternxtFolderContentTimeoutTest {
     private val log = LoggerFactory.getLogger(InternxtFolderContentTimeoutTest::class.java)

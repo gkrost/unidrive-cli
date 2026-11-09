@@ -1,7 +1,6 @@
 package org.krost.unidrive.http
 
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.request.get
@@ -92,7 +91,7 @@ class RequestMetricsPluginTest {
                 val collected = Collected()
                 val tap = RequestMetricsTap().also { it.sink = collected }
                 val client =
-                    HttpClient(CIO) {
+                    unidriveHttpClient {
                         install(RequestId) {
                             metrics = tap
                             provider = "test"
