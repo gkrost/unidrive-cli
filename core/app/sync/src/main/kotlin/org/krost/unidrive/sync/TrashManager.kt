@@ -3,9 +3,12 @@ package org.krost.unidrive.sync
 import org.krost.unidrive.io.LinkedEntries
 import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.engineRelative
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import kotlin.io.path.*
@@ -31,27 +34,65 @@ class TrashManager(
         val source = safeResolveLocal(syncRoot, relativePath)
         val timestamp = UtcSecondStamp.encode(now.truncatedTo(ChronoUnit.SECONDS))
         val dest = trashDir.resolve(timestamp).resolve(syncRoot.toAbsolutePath().normalize().relativize(source))
-        dest.parent.createDirectories()
+        ensurePlainFolders(dest.parent)
         if (source.exists()) {
             moveIntoSlot(source, dest)
         }
         return dest
     }
 
+    // Creates the folders from the sync root down to [folder] one by one and refuses any of them that is a link or a
+    // junction (or not a folder): a plain createDirectories walks through such an entry, and everything moved into the
+    // slot afterwards would land wherever the entry leads. The check runs on the entry itself, never on what it leads to.
+    private fun ensurePlainFolders(folder: Path) {
+        val root = syncRoot.toAbsolutePath().normalize()
+        var current = root
+        for (segment in root.relativize(folder.toAbsolutePath().normalize())) {
+            current = current.resolve(segment.toString())
+            if (!Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
+                try {
+                    Files.createDirectory(current)
+                } catch (_: FileAlreadyExistsException) {
+                    // created in between: the check below looks at what is there now
+                }
+            }
+            requirePlainFolder(current)
+        }
+        // Belt and braces: whatever the chain looks like, the slot's real location is inside the sync root.
+        if (!folder.toRealPath().startsWith(root.toRealPath())) {
+            throw SecurityException("Refusing trash slot: '$folder' is not inside the sync root")
+        }
+    }
+
+    private fun requirePlainFolder(
+        folder: Path,
+        attrs: BasicFileAttributes = Files.readAttributes(folder, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS),
+    ) {
+        if (LinkedEntries.leadsElsewhere(folder, attrs)) {
+            throw SecurityException("Refusing trash slot: '$folder' is a link or junction, not a folder of the trash")
+        }
+        if (!attrs.isDirectory) throw FileAlreadyExistsException(folder.toString(), null, "not a folder")
+    }
+
     // Deletes run deepest first, so a folder's child can land in this second's slot just before the
     // folder itself does: the slot entry is already there and a plain move would refuse. Fold what
     // the source still holds into that entry, so the trashed tree stays whole under its original
     // paths. A name present on both sides (recreated inside the same second) still refuses; the
-    // delete is retried in a later second, whose slot is fresh.
+    // delete is retried in a later second, whose slot is fresh. The entry is only entered when it is
+    // a plain folder: a link or junction in the slot is refused, never merged through.
     private fun moveIntoSlot(
         source: Path,
         dest: Path,
     ) {
-        if (!dest.exists()) {
-            Files.move(source, dest)
-            return
-        }
+        val destAttrs =
+            try {
+                Files.readAttributes(dest, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+            } catch (_: NoSuchFileException) {
+                Files.move(source, dest)
+                return
+            }
         if (Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS) && !LinkedEntries.leadsElsewhere(source)) {
+            requirePlainFolder(dest, destAttrs)
             for (child in source.listDirectoryEntries()) {
                 moveIntoSlot(child, dest.resolve(child.fileName.toString()))
             }
