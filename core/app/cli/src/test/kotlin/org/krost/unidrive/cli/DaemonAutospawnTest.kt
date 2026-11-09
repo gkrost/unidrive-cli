@@ -140,9 +140,8 @@ class DaemonAutospawnTest {
                 configRoot = Files.createTempDirectory("autospawn-jfr-config"),
                 profileName = "p",
                 env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
-                props = { null },
+                props = { name -> if (name == "java.specification.version") javaFeature.toString() else null },
                 windows = false,
-                javaFeature = javaFeature,
             )
         val flag = "-XX:FlightRecorderOptions=redact-key=+*vault*"
         for (feature in listOf(25, 26)) assertTrue(flag !in command(feature), "Java $feature rejects the option")

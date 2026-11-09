@@ -145,8 +145,8 @@ object DaemonAutospawn {
      * diagnostics flags into the diagnostics dir — always daemon work here, so the bounded GC log
      * (the profile's own `gc-<profile>.log`) rides unconditioned.
      *
-     * [env], [props], [windows] and [javaFeature] are the tests' seams for the process environment, the system
-     * properties, the OS family and the Java feature version the child runs on.
+     * [env], [props] and [windows] are the tests' seams for the process environment, the system
+     * properties (java.specification.version is the Java feature version the child runs on) and the OS family.
      */
     internal fun spawnCommand(
         javaBin: Path,
@@ -156,7 +156,6 @@ object DaemonAutospawn {
         env: (String) -> String? = System::getenv,
         props: (String) -> String? = { System.getProperty(it) },
         windows: Boolean = isWindows,
-        javaFeature: Int = Runtime.version().feature(),
     ): List<String> =
         buildList {
             add(javaBin.toString())
@@ -165,7 +164,7 @@ object DaemonAutospawn {
             addAll(TrustStorePolicy.flags(windows, env))
             // JFR redaction of the vault passphrase (gkrost/unidrive-cli#522); the child runs on the parent's java,
             // and Java 25/26 reject the option, so only 27+ gets it.
-            if (javaFeature >= JFR_REDACT_MIN_JAVA) add(JFR_REDACT_FLAG)
+            if ((props("java.specification.version")?.toIntOrNull() ?: 0) >= JFR_REDACT_MIN_JAVA) add(JFR_REDACT_FLAG)
             addAll(localeArgs(env, props))
             props("java.io.tmpdir")?.takeIf { it.isNotBlank() }?.let { add("-Djdk.net.unixdomain.tmpdir=$it") }
             if (CoroutineDebug.enabled(env)) {
