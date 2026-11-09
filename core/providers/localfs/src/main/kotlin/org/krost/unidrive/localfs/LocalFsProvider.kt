@@ -7,6 +7,7 @@ import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CaseSensitivity
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.ContentProof
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
@@ -30,6 +31,9 @@ import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.moveFile
 import org.krost.unidrive.io.stagingSiblingName
 import org.krost.unidrive.io.withLocalIoRetry
+
+/** The [ContentProof.method] of a localfs answer: both files were read and compared byte for byte. */
+internal const val METHOD_BYTE_COMPARE = "byte_compare"
 
 /**
  * A no-auth, local-filesystem [CloudProvider]. Treats one local directory
@@ -202,6 +206,24 @@ class LocalFsProvider(
             destination.parent?.let { Files.createDirectories(it) }
             withLocalIoRetry { copyDurably(src, destination) }
             Files.size(destination)
+        }
+
+    /**
+     * gkrost/unidrive-cli#580: a localfs item has no content hash ([CloudItem.hash] is null), but its bytes are one read away, so the
+     * proof is the comparison itself: the sizes, then the bytes. It lets the engine tell the file a killed upload had already put
+     * at the target (the same bytes: settled as done) from somebody else's file of the same name (other bytes: a conflict).
+     * Null when there is nothing to compare: the item is gone, or not a regular file.
+     */
+    override suspend fun contentMatchesLocal(
+        remoteId: String,
+        remotePath: String,
+        local: Path,
+    ): ContentProof? =
+        withContext(Dispatchers.IO) {
+            val target = toLocal(remotePath)
+            if (!Files.isRegularFile(target)) return@withContext null
+            val same = Files.size(target) == Files.size(local) && Files.mismatch(target, local) == -1L
+            ContentProof(same, METHOD_BYTE_COMPARE)
         }
 
     // ── writes ─────────────────────────────────────────────────────────────
