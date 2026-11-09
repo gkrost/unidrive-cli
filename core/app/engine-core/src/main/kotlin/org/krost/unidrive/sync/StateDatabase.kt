@@ -1452,6 +1452,31 @@ class StateDatabase(
         }
     }
 
+    /**
+     * gkrost/unidrive-cli#455: the four numbers `status` shows, from one aggregate query instead of every row as an object (the 700 GiB
+     * Internxt drive has millions): the files not hydrated ([StatusAggregates.sparseFiles]), the sum of the files' remote sizes, and the
+     * local bytes of hydrated files split into pending upload (a row with the synthetic `local:` id) and in sync. Same rules as
+     * counting over [getAllEntries]: folders count in none of them, a missing local size counts 0.
+     */
+    fun statusAggregates(): StatusAggregates =
+        read("statusAggregates") { c ->
+            c.createStatement().use { stmt ->
+                stmt.executeQuery(
+                    """
+                    SELECT
+                      COALESCE(SUM(CASE WHEN is_folder=0 AND is_hydrated=0 THEN 1 END), 0),
+                      COALESCE(SUM(CASE WHEN is_folder=0 THEN remote_size END), 0),
+                      COALESCE(SUM(CASE WHEN is_folder=0 AND is_hydrated=1 AND remote_id GLOB 'local:*' THEN COALESCE(local_size, 0) END), 0),
+                      COALESCE(SUM(CASE WHEN is_folder=0 AND is_hydrated=1 AND NOT (remote_id GLOB 'local:*') THEN COALESCE(local_size, 0) END), 0)
+                    FROM alive_entries
+                    """.trimIndent(),
+                ).use { rs ->
+                    rs.next()
+                    StatusAggregates(rs.getInt(1), rs.getLong(2), rs.getLong(3), rs.getLong(4))
+                }
+            }
+        }
+
     fun getAllEntries(): List<SyncEntry> =
         read("getAllEntries") { c ->
             c.createStatement().use { stmt ->
@@ -3739,6 +3764,14 @@ class StateDatabase(
  * and start-from-scratch on the next sync pass. [marker] is opaque to the
  * engine — the provider parsed it into its native pagination cursor.
  */
+/** The numbers of [StateDatabase.statusAggregates]. */
+data class StatusAggregates(
+    val sparseFiles: Int,
+    val remoteBytes: Long,
+    val pendingBytes: Long,
+    val hydratedBytes: Long,
+)
+
 data class ActiveScan(
     val scanId: String,
     val marker: String?,

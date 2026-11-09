@@ -467,12 +467,27 @@ open class Main : Runnable {
     fun handleAuthError(
         e: AuthenticationException,
         provider: CloudProvider,
+    ) = handleAuthError(e, provider.id, provider.displayName)
+
+    /**
+     * The same message for a provider that could not be built (gkrost/unidrive-cli#455): [providerId] is the profile's type,
+     * and its display name comes from the registry, so no second attempt to build the failing provider is needed.
+     */
+    fun handleAuthErrorForProfile(e: AuthenticationException) {
+        val id = runCatching { resolveCurrentProfile().type }.getOrDefault("")
+        handleAuthError(e, id, ProviderRegistry.get(id)?.metadata?.displayName ?: id)
+    }
+
+    private fun handleAuthError(
+        e: AuthenticationException,
+        providerId: String,
+        displayName: String,
     ) {
         // The hint must name what `-p` accepts: the profile. It is always resolvable
         // here (the provider was built from it); fall back to the provider id rather
         // than fail an error path.
         val profileName = runCatching { resolveCurrentProfile().name }.getOrNull()
-        System.err.print(renderAuthError(e, provider.id, provider.displayName, verbose, profileName))
+        System.err.print(renderAuthError(e, providerId, displayName, verbose, profileName))
         System.exit(1)
     }
 

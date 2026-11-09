@@ -655,11 +655,17 @@ class StatusCommand : Runnable {
         }
 
         try {
+            // gkrost/unidrive-cli#455: one aggregate query, not every row as an object; the database is closed whatever happens.
             val db = StateDatabase(stateDbPath, readOnly = true)
-            db.initialize()
-            val entries = db.getAllEntries()
-            val sparseCount = entries.count { !it.isHydrated && !it.isFolder }
-            val totalRemoteSize = entries.filter { !it.isFolder }.sumOf { it.remoteSize }
+            val (aggregates, lastSyncRaw) =
+                try {
+                    db.initialize()
+                    db.statusAggregates() to CursorState(db).lastFullScan
+                } finally {
+                    db.close()
+                }
+            val sparseCount = aggregates.sparseFiles
+            val totalRemoteSize = aggregates.remoteBytes
             // UD-261: prefer the authoritative quota.used over the enumerated
             // sum for QuotaExact providers. quotaUsed is null when the provider
             // doesn't support quota or the auth/network call failed.
@@ -668,11 +674,8 @@ class StatusCommand : Runnable {
             // present locally that also exist remotely) and PENDING (bytes
             // present locally but not yet uploaded — UD-901 places these rows
             // with remoteId=null + isHydrated=true).
-            val buckets = computeLocalSizeBuckets(entries)
-            val hydratedBytes = buckets.hydratedBytes
-            val pendingBytes = buckets.pendingBytes
-            val lastSyncRaw = CursorState(db).lastFullScan
-            db.close()
+            val hydratedBytes = aggregates.hydratedBytes
+            val pendingBytes = aggregates.pendingBytes
             val lastSyncFormatted = formatLastSync(lastSyncRaw)
 
             if (!effectiveCanAuth) {
@@ -746,14 +749,18 @@ class StatusCommand : Runnable {
             )
         }
         return try {
+            // gkrost/unidrive-cli#455: one aggregate query, not every row as an object; the database is closed whatever happens.
             val db = StateDatabase(stateDbPath, readOnly = true)
-            db.initialize()
-            val entries = db.getAllEntries()
-            val sparseCount = entries.count { !it.isHydrated && !it.isFolder }
-            val totalRemoteSize = entries.filter { !it.isFolder }.sumOf { it.remoteSize }
-            val buckets = computeLocalSizeBuckets(entries)
-            val lastSyncRaw = CursorState(db).lastFullScan
-            db.close()
+            val (aggregates, lastSyncRaw) =
+                try {
+                    db.initialize()
+                    db.statusAggregates() to CursorState(db).lastFullScan
+                } finally {
+                    db.close()
+                }
+            val sparseCount = aggregates.sparseFiles
+            val totalRemoteSize = aggregates.remoteBytes
+            val buckets = LocalSizeBuckets(aggregates.hydratedBytes, aggregates.pendingBytes)
             AccountRow(
                 profileName = label,
                 status = "orphan",

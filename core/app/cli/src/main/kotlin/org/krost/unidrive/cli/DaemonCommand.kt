@@ -527,8 +527,13 @@ internal sealed class LockPidReadResult {
  * health check), extract this further.
  */
 internal fun readLockPid(pidFile: java.nio.file.Path): LockPidReadResult {
-    if (!java.nio.file.Files.exists(pidFile)) return LockPidReadResult.Absent
-    val raw = java.nio.file.Files.readString(pidFile).trim()
+    // No exists() pre-check: the daemon can remove the file between the check and the read (gkrost/unidrive-cli#455).
+    val raw =
+        try {
+            java.nio.file.Files.readString(pidFile).trim()
+        } catch (_: java.nio.file.NoSuchFileException) {
+            return LockPidReadResult.Absent
+        }
     val parts = raw.split(Regex("\\s+"), limit = 2)
     val pid = parts.getOrNull(0)?.toLongOrNull() ?: return LockPidReadResult.Malformed(raw)
     val modeToken = parts.getOrNull(1)
