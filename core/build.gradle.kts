@@ -28,6 +28,18 @@ configure<JacocoPluginExtension> {
 val flakyCategory = "org.krost.unidrive.testing.FlakyTests"
 val flakyTestTask = "flakyTest"
 
+// The groups the third-party Central mirrors may serve (see the long comment in settings.gradle.kts).
+val mirrorGroups =
+    file("gradle/mirror-groups.txt")
+        .readLines()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("#") }
+val restrictedToMirroredGroups: MavenArtifactRepository.() -> Unit = {
+    content {
+        mirrorGroups.forEach { includeGroup(it) }
+    }
+}
+
 allprojects {
     group = "org.krost.unidrive"
     // Released: 0.0.1 (greenfield restart baseline), 0.0.2. The tag v<version> on the commit that carries this line makes the release (release.yml).
@@ -39,9 +51,11 @@ allprojects {
         // a 404, so Central must be reachable only via mirror misses to keep the
         // shared-CI-runner 429s out of the resolution path.
         maven("https://maven-central.storage-download.googleapis.com/maven2/")
-        maven("https://maven.aliyun.com/repository/public")
-        maven("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/")
-        maven("https://repo.huaweicloud.com/repository/maven/")
+        // The three third-party mirrors serve only the groups of gradle/mirror-groups.txt (same file and same
+        // rules as in settings.gradle.kts); Google's mirror and mavenCentral() stay unrestricted.
+        maven("https://maven.aliyun.com/repository/public", restrictedToMirroredGroups)
+        maven("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/", restrictedToMirroredGroups)
+        maven("https://repo.huaweicloud.com/repository/maven/", restrictedToMirroredGroups)
         mavenCentral()
     }
 
