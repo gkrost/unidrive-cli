@@ -2516,6 +2516,9 @@ open class SyncEngine(
                     .listChildren("/")
                     .filter { it.isFolder && !it.deleted }
                     .mapTo(mutableSetOf()) { it.name }
+            } catch (e: CancellationException) {
+                // A stop is not a failed listing: the pass ends here, it does not go on without the set (#439).
+                throw e
             } catch (e: Exception) {
                 // Non-fatal: if the preliminary listing fails (e.g. network glitch,
                 // provider doesn't support it), fall back to an empty set so

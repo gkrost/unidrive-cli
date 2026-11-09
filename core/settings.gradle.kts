@@ -12,20 +12,44 @@ rootProject.name = "unidrive"
 // locked artifact is interchangeable with Central.
 //
 // Google's storage mirror is an official, continuously-synced full copy of
-// Central; Aliyun/Tencent/Huawei are further full mirrors kept as additional
-// fallbacks. The same list lives in allprojects.repositories in the root
-// build script — keep the two in sync.
+// Central and stays unrestricted, like mavenCentral(). Aliyun/Tencent/Huawei are
+// third-party copies kept as additional fallbacks, so they are restricted with a
+// content filter: they may serve only the groups listed in gradle/mirror-groups.txt
+// (everything the build resolves), never a plugin marker, and never the
+// implementation jar of a build plugin (those come from the Portal or Central).
+// A group outside the list skips the three mirrors and resolves from mavenCentral().
+// The checksum metadata (gradle/verification-metadata.xml) still applies on top.
+// The same list lives in allprojects.repositories in the root build script — keep
+// the two in sync.
 //
 // Plugin markers exist only on the Portal and the Portal itself is not the
 // rate-limit source, so it stays first; the mirrors catch what the Portal
 // redirects to Central (e.g. kotlin-gradle-plugins-bom).
 pluginManagement {
+    val mirrorGroups =
+        settings.settingsDir
+            .resolve("gradle/mirror-groups.txt")
+            .readLines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+
+    fun RepositoryHandler.restrictedMirror(url: String) =
+        maven(url) {
+            content {
+                mirrorGroups.forEach { includeGroup(it) }
+                excludeModuleByRegex(".*", ".*\\.gradle\\.plugin")
+                excludeModule("com.gradleup.shadow", "shadow-gradle-plugin")
+                excludeModule("org.cyclonedx", "cyclonedx-gradle-plugin")
+                excludeModule("org.jetbrains.kotlin", "kotlin-gradle-plugin")
+            }
+        }
+
     repositories {
         gradlePluginPortal()
         maven("https://maven-central.storage-download.googleapis.com/maven2/")
-        maven("https://maven.aliyun.com/repository/public")
-        maven("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/")
-        maven("https://repo.huaweicloud.com/repository/maven/")
+        restrictedMirror("https://maven.aliyun.com/repository/public")
+        restrictedMirror("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/")
+        restrictedMirror("https://repo.huaweicloud.com/repository/maven/")
         mavenCentral()
     }
 }

@@ -3477,6 +3477,29 @@ class SyncEngineTest {
         }
 
     @Test
+    fun `a cancel during the streaming gather's root listing stops the pass instead of falling back to an empty set`() =
+        runTest {
+            provider.files["/a.txt"] = ByteArray(10)
+            provider.deltaItems = listOf(cloudItem("/a.txt", size = 10))
+            provider.deltaCursor = "after-streaming"
+            provider.listChildrenThrow["/"] = kotlinx.coroutines.CancellationException("stopped")
+            val streamingEngine =
+                SyncEngine(
+                    provider = provider,
+                    db = db,
+                    syncRoot = syncRoot,
+                    conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                    reporter = ProgressReporter.Silent,
+                    streamingReconciliation = true,
+                )
+
+            assertFailsWith<kotlinx.coroutines.CancellationException> { streamingEngine.syncOnce() }
+
+            assertEquals(0, provider.downloadByIdCalls.size + provider.downloadByPathCalls.size, "the stopped pass must not go on to download")
+            assertEquals(null, db.getSyncState("delta_cursor"), "the stopped pass must not promote the cursor")
+        }
+
+    @Test
     fun `streaming gather dispatches downloads inside the gather scope without double-dispatching in Pass 2`() =
         runTest {
             // Phase 3 (Internxt boosters plan): the streaming-gather executor
