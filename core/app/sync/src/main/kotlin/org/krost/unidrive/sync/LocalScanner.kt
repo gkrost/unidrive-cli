@@ -62,6 +62,23 @@ class LocalScanner(
 
     private fun underBlockedKey(path: String): Boolean = blockedKeys.any { path == it || path.startsWith("$it/") }
 
+    // gkrost/unidrive-cli#582/#583: local entries the walk met and refused, so that they are "not seen" without being
+    // "gone": a name the file system cannot carry (a lone UTF-16 surrogate has no UTF-8 form, a trailing dot on Windows)
+    // and a symbolic link to a folder. Owner decision: skipped with one warning, never uploaded or mirrored, left as
+    // they are, and nothing is planned for them in either direction, a delete least of all. Rebuilt by every scan().
+    private val skippedKeys = mutableSetOf<String>()
+
+    private fun underSkippedKey(path: String): Boolean = skippedKeys.any { path == it || path.startsWith("$it/") }
+
+    /** True when [path] is, or lies below, a local entry the last [scan] met and refused (a bad name, a linked folder). */
+    fun isUnderSkippedEntry(path: String): Boolean = underSkippedKey(path)
+
+    /** The paths the last [scan] met and refused for their name or for being a link to a folder. */
+    val skippedEntryKeys: Set<String> get() = skippedKeys.toSet()
+
+    /** True when nothing may be planned for [path]: an NFC clash member (archive#503) or a skipped entry (#582, #583). */
+    fun isUnderRefusedLocalEntry(path: String): Boolean = underBlockedKey(path) || underSkippedKey(path)
+
     /** archive#503: whether [path] (an NFC path) is, or lies below, a name the last [scan] refused as an NFC clash. */
     fun isUnderNfcCollision(path: String): Boolean = underBlockedKey(path)
 
@@ -161,6 +178,7 @@ class LocalScanner(
         val changes = mutableMapOf<String, ChangeState>()
         blockedPaths.clear()
         blockedKeys.clear()
+        skippedKeys.clear()
         val seenPaths = mutableSetOf<String>()
         var skipped = 0
         // What the walk could not read, and so did not see; the root itself is "".
@@ -211,7 +229,18 @@ class LocalScanner(
                     // persist a pending upload Windows cannot resolve later (archive#526).
                     localNameIssue(relativePath)?.let { reason ->
                         skipped++
+                        skippedKeys.add(relativePath)
                         log.warn("Skipping local file {}: {}", relativePath, reason)
+                        return FileVisitResult.CONTINUE
+                    }
+                    // gkrost/unidrive-cli#583: the walk does not follow links, so a symbolic link to a folder reaches
+                    // visitFile as a "file". It is no file: uploaded as one it fails on every sync, mirrored as a folder
+                    // it would be followed. Skipped like a junction. (A link to a file is still uploaded as a file.)
+                    if (attrs.isSymbolicLink && Files.isDirectory(file)) {
+                        skipped++
+                        skippedKeys.add(relativePath)
+                        unreadable.add(relativePath)
+                        log.warn("Skipping linked folder {}: it is a symbolic link to a folder", relativePath)
                         return FileVisitResult.CONTINUE
                     }
                     seenPaths.add(relativePath)
@@ -342,6 +371,7 @@ class LocalScanner(
                     // uploaded. Like an unreadable folder, nothing at or under it counts as deleted.
                     if (LinkedEntries.leadsElsewhere(dir, attrs)) {
                         skipped++
+                        skippedKeys.add(relativePath.removeSuffix("/"))
                         unreadable.add(relativePath.removeSuffix("/"))
                         log.warn("Skipping linked folder {}: it leads outside the sync root", relativePath)
                         return FileVisitResult.SKIP_SUBTREE

@@ -35,6 +35,7 @@ import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.engine.ScanTimings
 import org.krost.unidrive.engine.ScopeState
 import org.krost.unidrive.engine.localNameIssue
+import org.krost.unidrive.engine.loneSurrogatePathIssue
 import org.krost.unidrive.engine.Transfers
 import org.krost.unidrive.sync.model.*
 import org.slf4j.LoggerFactory
@@ -428,6 +429,9 @@ open class SyncEngine(
 
     private fun isTracked(remotePath: String): Boolean = guard.isTracked(remotePath)
 
+    // #582: the cloud names already warned about in this engine's life (the warning is once per name, not per sync).
+    private val loneSurrogateWarned = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+
     private val perProviderConcurrency: Int get() = guard.maxConcurrentTransfers
     private val transferBudget: kotlinx.coroutines.sync.Semaphore get() = guard.transferBudget
 
@@ -462,7 +466,7 @@ open class SyncEngine(
         // archive#503: the local names the last scan refused as an NFC clash, asked by the reconciler's folder walk
         // (a remote folder delete must not take a blocked member with it). Read at call time: the scanner rebuilds
         // its clash set on every scan.
-        r.isBlocked = { scanner.isUnderNfcCollision(it) }
+        r.isBlocked = { scanner.isUnderRefusedLocalEntry(it) }
     }
 
     // Debounce state for remote-change wake hints (Internxt notifications WS).
@@ -1338,18 +1342,29 @@ open class SyncEngine(
                     downloadOnly = syncDirection == SyncDirection.DOWNLOAD,
                     enumerationComplete = enumerationComplete)
             }
+        // gkrost/unidrive-cli#582: a cloud item whose name holds a lone UTF-16 surrogate cannot be a local name, and no store
+        // keeps it as it is. It is skipped with one warning, the way the scan skips such a name locally: nothing is
+        // downloaded or created for it and no failed action is counted. The cloud copy is left alone.
+        val reconciledActionsNamed =
+            reconciledActionsAll.filterNot { a ->
+                val issue = loneSurrogatePathIssue(a.path) ?: return@filterNot false
+                if (loneSurrogateWarned.add(a.path)) log.warn("Skipping cloud item {}: {}", a.path, issue)
+                true
+            }
         // archive#503 review: a name the local scan refused as an NFC clash (archive#491) is out of sync in BOTH directions. The scan
         // reports no change for it, so without this a remote edit of the cloud copy would be planned as a download that
         // overwrites the local member with that name (and a local edit of it would be lost). Nothing is planned for it.
         val reconciledActions =
-            if (scanner.nfcCollisionKeys.isEmpty()) {
-                reconciledActionsAll
+            if (scanner.nfcCollisionKeys.isEmpty() && scanner.skippedEntryKeys.isEmpty()) {
+                reconciledActionsNamed
             } else {
-                reconciledActionsAll.filterNot { a ->
-                    scanner.isUnderNfcCollision(a.path) ||
-                        (a is SyncAction.MoveRemote && scanner.isUnderNfcCollision(a.fromPath)) ||
-                        (a is SyncAction.MoveLocal && scanner.isUnderNfcCollision(a.fromPath))
-                }.also { kept -> if (kept.size < reconciledActionsAll.size) log.warn("#503: {} planned action(s) under NFC-clashing local names skipped", reconciledActionsAll.size - kept.size) }
+                // gkrost/unidrive-cli#582/#583: the same for a local entry the scan refused for its name or as a link to a
+                // folder: not seen is not gone, so no del-local and no adopt is planned for it either.
+                reconciledActionsNamed.filterNot { a ->
+                    scanner.isUnderRefusedLocalEntry(a.path) ||
+                        (a is SyncAction.MoveRemote && scanner.isUnderRefusedLocalEntry(a.fromPath)) ||
+                        (a is SyncAction.MoveLocal && scanner.isUnderRefusedLocalEntry(a.fromPath))
+                }.also { kept -> if (kept.size < reconciledActionsNamed.size) log.warn("#503/#582/#583: {} planned action(s) under refused local entries skipped", reconciledActionsNamed.size - kept.size) }
             }
         logUnhydratedFolderSkips(dryRun)
         val reconciledActionsWritable = dropWritesToTrash(reconciledActions)
@@ -1362,7 +1377,8 @@ open class SyncEngine(
         // the row hydrated again.
         val awaitingContent = rowsAwaitingContent(reconciledActionsWritable)
         db.batch {
-            updateRemoteEntries(allRemoteChanges.filterKeys { isTracked(it) })
+            // #582: a lone-surrogate name would be stored as another name ('?'), so no row is kept for it.
+            updateRemoteEntries(allRemoteChanges.filterKeys { isTracked(it) && loneSurrogatePathIssue(it) == null })
             markAwaitingContent(awaitingContent)
         }
 
@@ -4013,7 +4029,7 @@ open class SyncEngine(
     ): Boolean =
         planExcludePatterns.any { Reconciler.matchesGlob(path, it) } ||
             ignoredByRules(path, isDir) ||
-            scanner.isUnderNfcCollision(path)
+            scanner.isUnderRefusedLocalEntry(path)
 
     // True when this pass already moved a conflict copy into [folderPath] or below it.
     private fun keptEditUnder(folderPath: String): Boolean {

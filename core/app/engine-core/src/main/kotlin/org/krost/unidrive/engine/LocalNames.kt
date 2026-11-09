@@ -32,6 +32,9 @@ fun localNameIssue(
     for (component in remotePath.split('/')) {
         if (component.isEmpty()) continue
         if (component.any { it.code == 0 }) return "name contains a NUL character"
+        // gkrost/unidrive-cli#582: a lone surrogate has no UTF-8 form, so the name cannot be stored in state.db or
+        // sent to a cloud as it is: it comes back as '?', another name, on every host. It is refused whole.
+        loneSurrogateIssue(component)?.let { return it }
         // Filesystems commonly cap a single name at 255 units: UTF-16 code
         // units on Windows and UTF-8 bytes on POSIX.
         if (windows) {
@@ -69,4 +72,36 @@ fun aliasingSegmentIssue(path: String): String? {
         if (segment.isEmpty() && i != 0 && i != segments.lastIndex) return "path contains an empty segment"
     }
     return null
+}
+
+/**
+ * gkrost/unidrive-cli#582: the reason when a component of [path] holds a UTF-16 surrogate that is not half of a valid
+ * pair, else null. Such a name has no UTF-8 form: state.db, a cloud's wire format and a POSIX name all turn it into a
+ * '?' (another name), so it is neither mirrored nor tracked, from either side. The reason shows the code unit.
+ */
+fun loneSurrogatePathIssue(path: String): String? {
+    for (component in path.split('/')) loneSurrogateIssue(component)?.let { return it }
+    return null
+}
+
+private fun loneSurrogateIssue(component: String): String? {
+    val shown = StringBuilder()
+    var lone = false
+    var i = 0
+    while (i < component.length) {
+        val c = component[i]
+        if (c.isHighSurrogate() && i + 1 < component.length && component[i + 1].isLowSurrogate()) {
+            shown.append(c).append(component[i + 1])
+            i += 2
+            continue
+        }
+        if (c.isSurrogate()) {
+            lone = true
+            shown.append("\\u%04X".format(c.code))
+        } else {
+            shown.append(c)
+        }
+        i++
+    }
+    return if (lone) "name contains a lone UTF-16 surrogate (no UTF-8 form): '${shown.take(80)}'" else null
 }
