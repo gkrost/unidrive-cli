@@ -579,10 +579,15 @@ class TransferHistoryTest {
             }
             try {
                 history.enqueue(rowOf("op-kept", "/drop/kept.bin", TransferResult.RUNNING))
-                // More fillers than the queue holds: the writer drains nothing while parked, so the
-                // queue is full for certain and the surplus fillers are dropped.
-                repeat(8) { i -> history.enqueue(rowOf("filler-$i", "/drop/filler-$i.bin", TransferResult.RUNNING)) }
-                assertTrue(history.stats.dropped >= 4, "the queue is full: ${history.stats}")
+                // The writer takes op-kept and whatever is queued at that moment (up to one batch), then parks
+                // on the write lock. Fillers go in until one is dropped: a drop means the queue is full, and the
+                // parked writer takes nothing more, so the terminal snapshot below meets a full queue for certain.
+                var fillers = 0
+                while (history.stats.dropped == 0L && fillers < MAX_FILLERS) {
+                    history.enqueue(rowOf("filler-$fillers", "/drop/filler-$fillers.bin", TransferResult.RUNNING))
+                    fillers++
+                }
+                assertTrue(history.stats.dropped > 0, "the queue never filled after $fillers fillers: ${history.stats}")
                 history.enqueue(
                     rowOf("op-kept", "/drop/kept.bin", TransferResult.FAILED).copy(
                         finishedAt = wallMs.get(),
@@ -603,6 +608,9 @@ class TransferHistoryTest {
     private companion object {
         /** The ceiling for the writer to answer a barrier; a healthy writer answers in well under a second. */
         const val WRITER_BUDGET_MS = 120_000L
+
+        /** More fillers than a parked writer's batch plus the queue can ever hold (4 + 4). */
+        const val MAX_FILLERS = 64
 
         /** A poll of the 20 ms loop that comes later than this was not run: the process was paused. */
         const val POLL_PAUSE_MS = 1_000L
