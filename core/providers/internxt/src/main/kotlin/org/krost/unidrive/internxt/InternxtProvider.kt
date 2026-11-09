@@ -1023,7 +1023,15 @@ class InternxtProvider(
                 attempt++
                 val transient = e.statusCode in setOf(429, 500, 502, 503, 504)
                 if (!transient || attempt >= maxAttempts) throw e
-                val backoffMs = e.retryAfterMs ?: (1_000L shl (attempt - 1))
+                // The host's Retry-After, else exponential, within the one-second floor and one-minute cap the API
+                // service's ladders apply (#220): a Retry-After of zero waits a second, not half of one.
+                val backoffMs =
+                    org.krost.unidrive.http.throttleWaitMs(
+                        e.retryAfterMs,
+                        1_000L shl (attempt - 1),
+                        InternxtApiService.MIN_THROTTLE_WAIT_MS,
+                        InternxtApiService.MAX_THROTTLE_WAIT_MS,
+                    )
                 log.warn(
                     "shard-commit attempt {}/{} hit status {}, sleeping {}ms before retry",
                     attempt,
@@ -1031,7 +1039,7 @@ class InternxtProvider(
                     e.statusCode,
                     backoffMs,
                 )
-                kotlinx.coroutines.delay(backoffMs.coerceIn(500L, 60_000L))
+                kotlinx.coroutines.delay(backoffMs)
             } catch (e: InternxtDownloadBudgetExhaustedException) {
                 // archive#1065: a download that used up its whole time budget would use it up again from byte 0.
                 log.warn("shard-commit attempt {}/{} not repeated: {}", attempt + 1, maxAttempts, e.message)
