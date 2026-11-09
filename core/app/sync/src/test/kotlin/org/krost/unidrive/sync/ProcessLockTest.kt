@@ -6,6 +6,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -351,6 +352,39 @@ class ProcessLockTest {
         } finally {
             writer.unlock()
             hold.close()
+        }
+    }
+
+    // -- #531: only contention is retried; any other failure of the lock call is the caller's ---------------------
+
+    @Test
+    fun `a lock call that fails for another reason than contention throws that cause at once`() {
+        val lock = ProcessLock(lockFile) { throw java.io.IOException("No space left on device") }
+
+        val started = System.nanoTime()
+        val failure = assertFailsWith<java.io.IOException> { lock.tryLock(ProcessLock.Mode.SYNC, 5_000.milliseconds) }
+        val tookMs = (System.nanoTime() - started) / 1_000_000L
+
+        assertEquals("No space left on device", failure.message)
+        assertTrue(tookMs < 2_000, "the failure was retried for ${tookMs} ms as if another process held the lock")
+        // The channel the failed attempt opened is gone: a later lock on the same file works.
+        val later = ProcessLock(lockFile)
+        try {
+            assertTrue(later.tryLock(ProcessLock.Mode.SYNC))
+        } finally {
+            later.unlock()
+        }
+    }
+
+    @Test
+    fun `a lock held by another lock of this JVM is contention that is retried until the timeout`() {
+        val holder = ProcessLock(lockFile)
+        val contender = ProcessLock(lockFile)
+        try {
+            assertTrue(holder.tryLock(ProcessLock.Mode.DAEMON))
+            assertEquals(false, contender.tryLock(ProcessLock.Mode.SYNC, 250.milliseconds))
+        } finally {
+            holder.unlock()
         }
     }
 }

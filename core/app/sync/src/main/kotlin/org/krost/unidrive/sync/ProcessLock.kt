@@ -2,6 +2,7 @@ package org.krost.unidrive.sync
 
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -17,6 +18,8 @@ import kotlin.time.toDuration
  */
 class ProcessLock(
     @PublishedApi internal val lockFile: Path,
+    // The lock attempt on an open channel; a test replaces it to make the lock call fail (#531).
+    private val attempt: (FileChannel) -> FileLock? = { it.tryLock() },
 ) {
     private var channel: FileChannel? = null
     private var lock: FileLock? = null
@@ -92,7 +95,7 @@ class ProcessLock(
                     StandardOpenOption.WRITE,
                 )
             try {
-                val candidate = channel!!.tryLock()
+                val candidate = attempt(channel!!)
                 if (candidate != null) {
                     lock = candidate
                     acquired = true
@@ -104,8 +107,14 @@ class ProcessLock(
                     }
                     break
                 }
-            } catch (_: Exception) {
-                // tryLock failed (e.g. OverlappingFileLockException)
+            } catch (_: OverlappingFileLockException) {
+                // Another ProcessLock in this JVM holds the file: contention like another process's, so wait and retry.
+            } catch (e: java.io.IOException) {
+                // A lock call that fails for another reason (a closed channel, an I/O error on the file) is not
+                // contention; reporting it as "another process holds the lock" sent users hunting a phantom daemon (#531).
+                runCatching { channel?.close() }
+                channel = null
+                throw e
             }
             channel!!.close()
             channel = null
@@ -213,8 +222,12 @@ class ProcessLock(
         val shared =
             try {
                 ch.tryLock(0L, Long.MAX_VALUE, true)
-            } catch (_: Exception) {
-                null // OverlappingFileLockException: held by this JVM
+            } catch (_: OverlappingFileLockException) {
+                null // held by this JVM
+            } catch (e: java.io.IOException) {
+                // Not contention (#531): the caller learns the real cause, and the channel does not leak.
+                runCatching { ch.close() }
+                throw e
             }
         if (shared == null) {
             ch.close()

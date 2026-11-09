@@ -234,32 +234,44 @@ class StateDatabase(
     }
 
     fun initialize() {
-        locked("initialize") {
-            closeReaders()
-            statements.clear()
-            scanStaging.close()
-            _conn?.takeIf { !it.isClosed }?.close()
-            batchOwner = null
-            batchSuspended = false
-            forgetAliveCount()
-            if (readOnly) {
-                initializeReadOnly()
-                return
-            }
+        // The writable open pauses between its tries (up to 1.7 s, see [openWritable]); it runs before the monitor is
+        // taken, so a thread that calls into this database meanwhile waits for nothing but its own turn (#531).
+        var fresh: Connection? = null
+        if (!readOnly) {
             if (!inMemory) Files.createDirectories(dbPath.parent)
-            _conn = openWritable()
-            try {
-                bootstrapSchema()
-                if (!isDisposable) restrictSidecars()
-                // The one scan: from here on the writes keep the number (a read-only handle counts at its first ask).
-                recountAlive(dataVersion())
-                readers = readerPoolFor()
-            } catch (e: Throwable) {
-                // A refused open (archive#323) must not leak the connection it opened.
-                runCatching { _conn?.close() }
-                _conn = null
-                throw e
+            fresh = openWritable()
+        }
+        try {
+            locked("initialize") {
+                closeReaders()
+                statements.clear()
+                scanStaging.close()
+                _conn?.takeIf { !it.isClosed }?.close()
+                batchOwner = null
+                batchSuspended = false
+                forgetAliveCount()
+                if (readOnly) {
+                    initializeReadOnly()
+                    return
+                }
+                _conn = fresh
+                fresh = null // adopted: [_conn] closes it from here on
+                try {
+                    bootstrapSchema()
+                    if (!isDisposable) restrictSidecars()
+                    // The one scan: from here on the writes keep the number (a read-only handle counts at its first ask).
+                    recountAlive(dataVersion())
+                    readers = readerPoolFor()
+                } catch (e: Throwable) {
+                    // A refused open (archive#323) must not leak the connection it opened.
+                    runCatching { _conn?.close() }
+                    _conn = null
+                    throw e
+                }
             }
+        } finally {
+            // Opened but never adopted (a step before the adoption threw): do not leak it.
+            fresh?.let { runCatching { it.close() } }
         }
     }
 

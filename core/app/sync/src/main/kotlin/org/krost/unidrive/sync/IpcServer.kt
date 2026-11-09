@@ -44,6 +44,9 @@ class IpcServer(
     // runner cannot make the peer's request arrive after the server stopped waiting for it.
     private val refusalLingerMs: Long = REFUSAL_LINGER_MS,
 ) {
+    // How long close() waits for the server's own transport threads to finish before it interrupts them (#531).
+    internal var transportShutdownWaitMs: Long = TRANSPORT_SHUTDOWN_WAIT_MS
+
     // Captured at construction so a later companion-object change can't accidentally
     // re-read the env var mid-flight. Multiply once into nanos so writeNonBlocking
     // does no per-call arithmetic.
@@ -478,8 +481,17 @@ class IpcServer(
         }
         ownedTransport?.let { es ->
             es.shutdown()
-            runCatching {
-                es.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)
+            val finished =
+                try {
+                    es.awaitTermination(transportShutdownWaitMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    false
+                }
+            if (!finished) {
+                // A wedged task (a refusal drain, a blocked write) would keep the pool's threads past the daemon's stop.
+                log.warn("IPC: transport tasks still running {} ms after close; interrupting them", transportShutdownWaitMs)
+                es.shutdownNow()
             }
             ownedTransport = null
         }
@@ -927,6 +939,7 @@ class IpcServer(
         private const val MAX_SOCKET_PATH_LENGTH = 90
         private const val MAX_REQUEST_BYTES = 64 * 1024
         private const val TRANSPORT_POOL_SIZE = 4
+        internal const val TRANSPORT_SHUTDOWN_WAIT_MS = 5_000L
 
         // gkrost/unidrive-cli#23: a request that runs this long has its connection watched for the client going away.
         private const val PEER_WATCH_AFTER_MS = 100L
