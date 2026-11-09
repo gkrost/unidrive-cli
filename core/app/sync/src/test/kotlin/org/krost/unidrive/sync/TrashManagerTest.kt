@@ -9,9 +9,14 @@ import java.time.temporal.ChronoUnit
 import kotlin.io.path.*
 import kotlin.test.*
 import org.junit.Assume.assumeTrue
+import org.krost.unidrive.io.LinkedEntries
+import java.io.IOException
+import java.nio.file.FileAlreadyExistsException
+import java.nio.file.LinkOption
 
 class TrashManagerTest {
     private lateinit var syncRoot: Path
+    private lateinit var outside: Path
 
     @BeforeTest
     fun setUp() {
@@ -20,9 +25,59 @@ class TrashManagerTest {
 
     @AfterTest
     fun tearDown() {
-        if (::syncRoot.isInitialized && syncRoot.exists()) {
-            syncRoot.toFile().deleteRecursively()
+        // Links first and never followed: a test that planted a junction must not clean up what it leads to.
+        if (::syncRoot.isInitialized) runCatching { LinkedEntries.deleteTree(syncRoot) }
+        if (::outside.isInitialized) runCatching { LinkedEntries.deleteTree(outside) }
+    }
+
+    // A folder beside the sync root that must stay untouched; the link tests point their links at it.
+    private fun outsideFolder(): Path {
+        outside = Files.createTempDirectory("trash-manager-outside")
+        Files.writeString(outside.resolve("keep.txt"), "keep")
+        return outside
+    }
+
+    private fun windows() = System.getProperty("os.name", "").lowercase().contains("win")
+
+    private fun junction(
+        link: Path,
+        target: Path,
+    ): Path {
+        link.parent.createDirectories()
+        val made = ProcessBuilder("cmd", "/c", "mklink", "/J", link.toString(), target.toString()).redirectErrorStream(true).start()
+        val output = made.inputStream.readBytes().toString(Charsets.UTF_8)
+        assumeTrue("mklink /J is not available here: $output", made.waitFor() == 0 && Files.exists(link, LinkOption.NOFOLLOW_LINKS))
+        return link
+    }
+
+    private fun symlink(
+        link: Path,
+        target: Path,
+    ): Path {
+        link.parent.createDirectories()
+        try {
+            Files.createSymbolicLink(link, target)
+        } catch (e: IOException) {
+            assumeTrue("symbolic links cannot be created here: ${e.message}", false)
+        } catch (e: UnsupportedOperationException) {
+            assumeTrue("symbolic links cannot be created here: ${e.message}", false)
         }
+        return link
+    }
+
+    // The ordinary link of the platform: a junction on Windows (needs no privilege), a symbolic link elsewhere.
+    private fun link(
+        link: Path,
+        target: Path,
+    ): Path = if (windows()) junction(link, target) else symlink(link, target)
+
+    private fun assertOutsideUntouched() {
+        assertEquals(
+            setOf("keep.txt"),
+            outside.listDirectoryEntries().map { it.name }.toSet(),
+            "nothing may be written into the folder the link leads to",
+        )
+        assertEquals("keep", outside.resolve("keep.txt").readText())
     }
 
     @Test
@@ -317,5 +372,99 @@ class TrashManagerTest {
             setOf("p.txt", "q.txt"),
             manager.list().map { it.originalPath }.toSet(),
         )
+    }
+
+    @Test
+    fun `a slot entry that is a link is refused and the source is not merged through it`() {
+        val now = Instant.parse("2030-01-01T00:00:00Z")
+        val manager = TrashManager(syncRoot)
+        val slotEntry = manager.trash("dir", now) // the source is absent: this only yields the slot path
+        link(slotEntry, outsideFolder())
+        syncRoot.resolve("dir").createDirectories()
+        Files.writeString(syncRoot.resolve("dir/file.txt"), "payload")
+
+        assertFailsWith<SecurityException> { manager.trash("dir", now) }
+
+        assertOutsideUntouched()
+        assertEquals("payload", syncRoot.resolve("dir/file.txt").readText(), "a refused delete leaves the source where it was")
+    }
+
+    @Test
+    fun `a link inside a slot entry that is merged into is refused`() {
+        val now = Instant.parse("2030-01-01T00:00:00Z")
+        syncRoot.resolve("a/sub").createDirectories()
+        Files.writeString(syncRoot.resolve("a/sub/x.txt"), "x")
+        val manager = TrashManager(syncRoot)
+        val slotEntry = manager.trash("a", now) // moved whole: the slot holds a/sub/x.txt
+        // the same names again inside the same second, with the slot's `sub` replaced by a link
+        LinkedEntries.deleteTree(slotEntry.resolve("sub"))
+        link(slotEntry.resolve("sub"), outsideFolder())
+        syncRoot.resolve("a/sub").createDirectories()
+        Files.writeString(syncRoot.resolve("a/sub/y.txt"), "y")
+
+        assertFailsWith<SecurityException> { manager.trash("a", now) }
+
+        assertOutsideUntouched()
+        assertEquals("y", syncRoot.resolve("a/sub/y.txt").readText())
+    }
+
+    @Test
+    fun `a time slot that is a link is refused`() {
+        val now = Instant.parse("2030-01-01T00:00:00Z")
+        val manager = TrashManager(syncRoot)
+        val slot = manager.trash("dir", now).parent // trash/<second>
+        slot.deleteIfExists()
+        link(slot, outsideFolder())
+        syncRoot.resolve("dir").createDirectories()
+        Files.writeString(syncRoot.resolve("dir/file.txt"), "payload")
+
+        assertFailsWith<SecurityException> { manager.trash("dir", now) }
+
+        assertOutsideUntouched()
+        assertEquals("payload", syncRoot.resolve("dir/file.txt").readText())
+    }
+
+    @Test
+    fun `a trash folder that is a link is refused`() {
+        link(syncRoot.resolve(".unidrive-trash"), outsideFolder())
+        syncRoot.resolve("file.txt").writeText("payload")
+
+        assertFailsWith<SecurityException> { TrashManager(syncRoot).trash("file.txt") }
+
+        assertOutsideUntouched()
+        assertEquals("payload", syncRoot.resolve("file.txt").readText())
+    }
+
+    @Test
+    fun `a name present on both sides of a merge still refuses and keeps both`() {
+        val now = Instant.parse("2030-01-01T00:00:00Z")
+        syncRoot.resolve("d").createDirectories()
+        Files.writeString(syncRoot.resolve("d/same.txt"), "first")
+        val manager = TrashManager(syncRoot)
+        manager.trash("d", now)
+        syncRoot.resolve("d").createDirectories()
+        Files.writeString(syncRoot.resolve("d/same.txt"), "second")
+
+        assertFailsWith<FileAlreadyExistsException> { manager.trash("d", now) }
+
+        assertEquals("second", syncRoot.resolve("d/same.txt").readText())
+        assertEquals("first", manager.list().single().trashPath.readText())
+    }
+
+    @Test
+    fun `a link in the source moves into the slot as an entry and its target is left alone`() {
+        val now = Instant.parse("2030-01-01T00:00:00Z")
+        syncRoot.resolve("d").createDirectories()
+        Files.writeString(syncRoot.resolve("d/first.txt"), "first")
+        val manager = TrashManager(syncRoot)
+        val slotEntry = manager.trash("d", now)
+        syncRoot.resolve("d").createDirectories()
+        link(syncRoot.resolve("d/deps"), outsideFolder())
+
+        manager.trash("d", now) // merges into the slot's d; the link moves as one entry
+
+        assertFalse(syncRoot.resolve("d").exists())
+        assertTrue(LinkedEntries.leadsElsewhere(slotEntry.resolve("deps")), "the link itself sits in the slot")
+        assertOutsideUntouched()
     }
 }
