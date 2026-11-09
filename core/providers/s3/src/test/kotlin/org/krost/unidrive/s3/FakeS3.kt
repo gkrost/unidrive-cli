@@ -44,7 +44,7 @@ class FakeS3(
         val encodedPath: String,
     )
 
-    val objects = sortedMapOf<String, Obj>()
+    val objects = java.util.concurrent.ConcurrentSkipListMap<String, Obj>()
     val requests = mutableListOf<Request>()
     private val uploads = mutableMapOf<String, Pair<String, MutableMap<Int, Obj>>>()
     private val uploadMeta = mutableMapOf<String, Map<String, String>>()
