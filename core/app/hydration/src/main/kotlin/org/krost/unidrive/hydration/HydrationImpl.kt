@@ -389,6 +389,10 @@ class HydrationImpl(
     }
     private val uploadSlots = ConcurrentHashMap<String, UploadSlot>()
 
+    // gkrost/unidrive-cli#584: the old spelling of each never-uploaded file the user renamed by its case only (keyed by the new
+    // spelling, NFC): what a stale cloud item of that file is looked for under once its upload ends ([settleStaleSpelling]).
+    private val caseRenamedFrom = ConcurrentHashMap<String, String>()
+
     // gkrost/unidrive-cli#23: the running downloads of open_read and hydrate, one per path, each stopped when the last caller
     // waiting for it is cancelled. [SharedRead.tx] is the history handle of the caller that started it.
     private data class SharedRead(
@@ -500,6 +504,7 @@ class HydrationImpl(
         private const val PATH_IS_FILE_TOKEN = "path_is_file"
         private const val HTTP_CONFLICT = 409
         private const val PROVIDER_CAUSE_DEPTH = 5
+        private const val CASE_RENAME_MEMORY = 1024
 
         /** Default bound on uploads waiting to run (see [uploadQueueDepth]). */
         const val DEFAULT_UPLOAD_QUEUE_DEPTH = 256
@@ -1183,6 +1188,7 @@ class HydrationImpl(
                     newHash = outcome.newHash,
                 )
                 _events.emit(HydrationEvent.Hydrated(path, bytes, fetched = true))
+                settleStaleSpelling(path)
                 return HydrationEvent.Completed(
                     path = path,
                     handleId = handleId,
@@ -3818,10 +3824,15 @@ class HydrationImpl(
             // record keeps the row's repath and the copy's move owed until both are done ([RenameRollForward]): the same
             // roll-forward the cloud-backed renames run on.
             val intent = renames.begin(oldNorm, newNorm, null, ghost = false)
+            if (!sourceEntry.isFolder && oldNorm.equals(newNorm, ignoreCase = true)) rememberCaseRename(oldNorm, newNorm)
             return runCatching {
                 moveCacheFile(oldNorm, newNorm)
                 rekeyUploadSlot(oldNorm, newNorm)
                 stateDb.renamePrefix(oldNorm, newNorm)
+                // gkrost/unidrive-cli#584: the row was read as never uploaded, and the upload that was running may have landed its
+                // item and written its row between that read and the repath above. The row then carries the item's id at the new
+                // name while the item still sits at the old one: it follows the rename in the cloud, as a settled file's does.
+                if (!sourceEntry.isFolder) mount.moveItemOfRepathedRow(oldNorm, newNorm)
                 renames.finish(intent)
                 RenameResult.Ok
             }.getOrElse { e ->
@@ -3948,6 +3959,34 @@ class HydrationImpl(
                 slotRekeyWindow()
                 removeDyingSlotAt(newKey, slot)
             }
+        }
+    }
+
+    // gkrost/unidrive-cli#584: bounded, as the renames of a long run are; a file whose upload never ends keeps its entry until then.
+    private fun rememberCaseRename(oldPath: String, newPath: String) {
+        if (caseRenamedFrom.size >= CASE_RENAME_MEMORY) caseRenamedFrom.clear()
+        caseRenamedFrom[PathNormalizer.nfc(newPath)] = oldPath
+    }
+
+    /**
+     * gkrost/unidrive-cli#584 (the owner's decision of 2026-11-09: the user's latest spelling wins): the upload of [path] ended
+     * and the file had been renamed by its case only while it was never uploaded. When the cloud holds an item under the old
+     * spelling that is another item with the file's bytes, the file reached the cloud under both spellings (the upload that
+     * ran under the old one was not followed): the stale one goes to the cloud's trash, by the delete path `unlink` takes, and
+     * the spelling the user chose stays. An item that does not hold the file's bytes is another file's, and stays. Best effort:
+     * a failed probe or delete is logged and leaves both, as before.
+     */
+    @Suppress("TooGenericExceptionCaught") // whatever the probe or the delete meets, the upload that ended stays ended
+    private suspend fun settleStaleSpelling(path: String) {
+        val stale = caseRenamedFrom.remove(PathNormalizer.nfc(path)) ?: return
+        try {
+            if (mount.trashStaleSpelling(stale, path)) {
+                log.warn("{} reached the cloud under its old spelling {} as well; the old one went to the trash", CachePaths.forLog(path), CachePaths.forLog(stale))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("the cloud was not cleared of the old spelling {} of {}: {}", CachePaths.forLog(stale), CachePaths.forLog(path), e.message)
         }
     }
 
