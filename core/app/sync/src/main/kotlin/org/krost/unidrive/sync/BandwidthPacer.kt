@@ -16,7 +16,10 @@ import kotlinx.coroutines.withTimeoutOrNull
  * over the line (more than the forecast is charged at once), and [Reservation.close] gives back the part of the
  * forecast that was never used, so a transfer that fails fast, is skipped or is cancelled does not keep its slot and
  * does not leave the line idle for its share. Idle time earns no credit: the bucket never holds more than zero, so a
- * quiet minute does not buy a burst afterwards.
+ * quiet minute does not buy a burst afterwards. Nor can a late failure pay another transfer's debt: elapsed time
+ * repays the oldest outstanding forecast first, and each reservation remembers how much of its forecast that
+ * repayment has already covered — close() returns only the part that neither moved nor was repaid, so a reservation
+ * that outlives its forecast gives back nothing.
  *
  * The engine reserves BEFORE taking a permit of the transfer budget (`RemoteOperationGuard.transferBudget`): waiting
  * for the line idles no concurrency slot, and a transfer that is only waiting never blocks one that is ready to send.
@@ -41,12 +44,17 @@ class BandwidthPacer(
         require(maxBytesPerSecond > 0) { "maxBytesPerSecond must be positive" }
     }
 
-    // Guards [tokens] and [lastNanos], and the counters of every [Reservation]. Held for a few arithmetic steps only.
+    // Guards [tokens] and [lastNanos], the [pending] queue and the counters of every [Reservation]. Held for a few arithmetic steps only.
     private val state = Any()
 
     // Bytes of credit; never above zero, below zero while reservations are being repaid.
     private var tokens = 0.0
     private var lastNanos = nanoTime()
+
+    // The live reservations in the order they were admitted. Elapsed time repays the front of this queue first, and
+    // each reservation's [BandwidthPacer.Reservation.timeRepaid] grows by what was attributed to it, so a close()
+    // refund cannot exceed the forecast that time has not already returned. Caller holds [state].
+    private val pending = ArrayDeque<Reservation>()
 
     // The waiters queue here; the one holding the mutex is the head and watches the bucket.
     private val queue = Mutex()
@@ -59,7 +67,15 @@ class BandwidthPacer(
         val now = nanoTime()
         val elapsed = now - lastNanos
         lastNanos = now
-        if (elapsed > 0) tokens = minOf(0.0, tokens + elapsed * maxBytesPerSecond / NANOS_PER_SECOND)
+        if (elapsed <= 0) return
+        val elapsedBytes = elapsed * maxBytesPerSecond / NANOS_PER_SECOND
+        val debtBefore = maxOf(0.0, -tokens)
+        tokens = minOf(0.0, tokens + elapsedBytes)
+        // Only the repayment that actually reduced debt belongs to the reservations; the part past zero is idle
+        // time and earns nobody a credit.
+        var left = minOf(elapsedBytes, debtBefore)
+        val repaid = pending.iterator()
+        while (left > 0.0 && repaid.hasNext()) left = repaid.next().repay(left)
     }
 
     /**
@@ -89,7 +105,25 @@ class BandwidthPacer(
         private var reserved: Long,
     ) {
         private var movedBytes = 0L
+
+        // How much of this reservation's forecast elapsed time has already repaid ([refill] attributes the
+        // repayment oldest-first). Guarded by [state].
+        private var timeRepaid = 0L
         private var closed = false
+
+        init {
+            synchronized(state) { pending.addLast(this) }
+        }
+
+        // Caller holds [state]. Attributes up to [amount] bytes of elapsed time's repayment to this reservation's
+        // still-outstanding forecast and returns what is left for the next one in the queue.
+        internal fun repay(amount: Double): Double {
+            val outstanding = (reserved - timeRepaid).toDouble()
+            if (outstanding <= 0.0) return amount
+            val take = minOf(outstanding, amount)
+            timeRepaid += take.toLong()
+            return amount - take
+        }
 
         /** [bytes] more went over the line: charged now when they exceed what was reserved. */
         fun moved(bytes: Long) {
@@ -104,13 +138,18 @@ class BandwidthPacer(
             }
         }
 
-        /** The transfer is over, however it ended: the part of the forecast it did not move goes back to the line. */
+        /**
+         * The transfer is over, however it ended: the part of the forecast that neither moved nor was already
+         * repaid by elapsed time goes back to the line. A reservation that outlived its forecast refunds nothing,
+         * so its late failure cannot pay the debt of transfers that were admitted after it.
+         */
         fun close() {
             val unused =
                 synchronized(state) {
                     if (closed) return
                     closed = true
-                    reserved - movedBytes
+                    pending.remove(this)
+                    reserved - movedBytes - timeRepaid
                 }
             if (unused <= 0) return
             synchronized(state) {

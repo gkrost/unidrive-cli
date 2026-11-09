@@ -42,6 +42,23 @@ class BandwidthPacerTest {
         }
 
     @Test
+    fun `a forecast that time already repaid does not refund a later transfer's debt`() =
+        runTest {
+            // A books 10 KiB at t=0 and goes quiet; by t=10 s elapsed time has repaid its whole forecast. B then
+            // books 2 KiB and moves them; A finally fails having moved nothing. A's refund must not pay B's
+            // charge: C waits out B's 2 s instead of being admitted at once (#562 review).
+            val pacer = pacer(1024)
+            val a = pacer.reserve(10 * 1024)
+            testScheduler.advanceTimeBy(10_000)
+            val b = pacer.reserve(2 * 1024)
+            b.moved(2 * 1024)
+            b.close()
+            a.close()
+            pacer.reserve(2 * 1024)
+            assertEquals(12_000, now(), "A's expired forecast does not pay B's 2 KiB charge")
+        }
+
+    @Test
     fun `a transfer that moved part of its forecast is charged for the part`() =
         runTest {
             val pacer = pacer(1024)
