@@ -482,6 +482,7 @@ class StateDatabase(
     private var snapshotShutdownHook: Thread? = null
 
     fun resetAll() {
+        scanStaging.warmUp() // outside the monitor: the first open of the staging file can pause (#531)
         locked("resetAll") {
             // sync_state also holds the schema stamp. Wiping it without restamping makes the
             // next open read this file as a pre-redesign database and drop sync_entries (archive#411),
@@ -515,8 +516,9 @@ class StateDatabase(
      *
      * Returns the number of rows kept.
      */
-    fun resetKeepingPending(alsoKeep: (SyncEntry) -> Boolean = { false }): Int =
-        locked("resetKeepingPending") {
+    fun resetKeepingPending(alsoKeep: (SyncEntry) -> Boolean = { false }): Int {
+        scanStaging.warmUp() // outside the monitor: the first open of the staging file can pause (#531)
+        return locked("resetKeepingPending") {
             scanStaging.clearAll()
             batch {
                 val keep = LinkedHashSet<String>()
@@ -564,6 +566,7 @@ class StateDatabase(
                 keep.size
             }
         }
+    }
 
     /**
      * Three bootstrap cases (acceptance criterion: upgrade path):
@@ -2994,6 +2997,7 @@ class StateDatabase(
      * row can never be read as a delete of a file the legacy state had not known about.
      */
     fun clearEnumerationBaseline() {
+        scanStaging.warmUp() // outside the monitor: the first open of the staging file can pause (#531)
         locked("clearEnumerationBaseline") {
             // The checkpoint and its rows first: a crash between the two files then leaves a stamp and no checkpoint
             // (the next gather lists fresh); the other order would leave a checkpoint the stamp no longer invalidates.

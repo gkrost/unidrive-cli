@@ -98,4 +98,33 @@ class StateDatabaseOpenRetryTest {
         assertTrue(failure is SQLException, "expected the last SQLException, got $failure")
         assertEquals(4, connector.attempts.get())
     }
+
+    // The first open of the staging file is a retrying one as well; the three resets used to make it under the monitor.
+    private class StagingOpenWatcher(
+        val heldAtStagingOpen: MutableList<Boolean>,
+        val holder: () -> Any,
+    ) : StateDatabaseConnector {
+        override fun open(path: Path?): Connection {
+            if (path?.fileName?.toString() == StateDatabase.SCAN_STAGING_FILE_NAME) heldAtStagingOpen += Thread.holdsLock(holder())
+            return JdbcStateDatabaseConnector.open(path)
+        }
+
+        override fun openReadOnly(path: Path): Connection = JdbcStateDatabaseConnector.openReadOnly(path)
+    }
+
+    @Test
+    fun `the three resets open the scan staging file before they take the monitor`() {
+        for (reset in listOf<(StateDatabase) -> Unit>({ it.resetAll() }, { it.resetKeepingPending() }, { it.clearEnumerationBaseline() })) {
+            val held = mutableListOf<Boolean>()
+            lateinit var db: StateDatabase
+            db = StateDatabase(Files.createTempDirectory(dir, "reset").resolve("state.db"), connector = StagingOpenWatcher(held) { db })
+            db.initialize()
+            try {
+                reset(db)
+            } finally {
+                db.close()
+            }
+            assertEquals(listOf(false), held, "the staging file is opened once, and not under the monitor")
+        }
+    }
 }

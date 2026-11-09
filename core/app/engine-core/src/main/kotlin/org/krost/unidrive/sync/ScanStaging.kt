@@ -38,6 +38,15 @@ internal class ScanStaging(
     // Test seam: fired after each commit of this file.
     internal var commitHook: (() -> Unit)? = null
 
+    /**
+     * Opens the file now, when it is not open. The open can pause between its tries (see [openWritableRetrying]); a
+     * caller that is about to hold the database's monitor for a [clearAll] calls this first, so that the pauses run
+     * without it.
+     */
+    fun warmUp() {
+        connection()
+    }
+
     // Null when there is nothing to read: a read-only handle and no file.
     @Synchronized
     private fun connection(): Connection? {
