@@ -1839,6 +1839,10 @@ open class SyncEngine(
         // them before this point, so the move is behaviour-preserving.
         try {
             coroutineScope {
+                // A pool of perProviderConcurrency workers takes the transfers in plan order, instead of one coroutine
+                // per planned transfer parked on the transfer budget: a first sync of 200 000 files holds that many
+                // coroutines, not 200 000. The loop waits for a free worker before it hands over the next one.
+                val workers = BoundedLauncher(this, perProviderConcurrency)
                 for (action in transferActions) {
                     // Streaming-gather executor may have already dispatched
                     // this transfer mid-scan; skip the second dispatch so we
@@ -1847,7 +1851,7 @@ open class SyncEngine(
                     if (action.path in executedPaths) continue
                     when (action) {
                         is SyncAction.DownloadContent -> {
-                            launch {
+                            workers.launch {
                                 withContext(Priority.Foreground) {
                                     // Reserve the shared budget first: the wait for this transfer's line
                                     // slot runs while no permit is held (see [BandwidthPacer]).
@@ -1906,7 +1910,7 @@ open class SyncEngine(
                             }
                         }
                         is SyncAction.Upload -> {
-                            launch {
+                            workers.launch {
                                 withContext(Priority.Foreground) {
                                     // Reserve the shared budget first: the wait for this transfer's line
                                     // slot runs while no permit is held (see [BandwidthPacer]).
@@ -1964,6 +1968,7 @@ open class SyncEngine(
                         else -> {}
                     }
                 }
+                workers.close()
             }
         } catch (e: CancellationException) {
             // Scope cancelled by an AuthenticationException in a child job — the rethrow happens
@@ -2682,6 +2687,11 @@ open class SyncEngine(
             // dispatch in terms of side effects. Launches into `gatherScope`
             // (not into a child scope) so an auth failure cancels consumer
             // + producer too, matching Pass 2's behaviour.
+            // perProviderConcurrency workers take the queued transfers, instead of a coroutine per transfer
+            // parked on the transfer budget. The queue is unbounded on purpose: a full queue would hold back
+            // executorChannel and with it the enumeration, which a slow transfer must not stall. It holds
+            // the small items, not coroutines.
+            val workers = BoundedLauncher(gatherScope, perProviderConcurrency, kotlinx.coroutines.channels.Channel.UNLIMITED)
             val executorJob =
                 launch {
                     // Serialize transfers that target the SAME path, in channel (page)
@@ -2700,7 +2710,7 @@ open class SyncEngine(
                         when (action) {
                             is SyncAction.DownloadContent ->
                                 lastJobPerPath[action.path] =
-                                    gatherScope.launch {
+                                    workers.launch {
                                         prior?.join()
                                         dispatchStreamingDownload(
                                             action = action,
@@ -2714,7 +2724,7 @@ open class SyncEngine(
                                     }
                             is SyncAction.Upload ->
                                 lastJobPerPath[action.path] =
-                                    gatherScope.launch {
+                                    workers.launch {
                                         prior?.join()
                                         dispatchStreamingUpload(
                                             action = action,
@@ -2734,6 +2744,8 @@ open class SyncEngine(
                         }
                     }
                 }
+            // However the executor ends, no more items come: the workers finish what is queued and end.
+            executorJob.invokeOnCompletion { workers.close() }
 
             // Producer: page-fetch loop with 1-page rename-coalescing lookahead.
             launch {
