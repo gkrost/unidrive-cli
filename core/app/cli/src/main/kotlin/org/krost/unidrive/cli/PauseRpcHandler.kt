@@ -5,8 +5,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.krost.unidrive.hydration.HydrationEvent
@@ -44,7 +42,7 @@ class PauseRpcHandler(
     private var timer: Job? = null
 
     fun pause(jsonRequest: String): String {
-        val body = runCatching { Json.parseToJsonElement(jsonRequest) as? JsonObject }.getOrNull()
+        val body = jsonRequest.asJsonObjectOrNull()
         val reasonElement = body?.get("reason") ?: return MISSING_REASON
         val reason = (reasonElement as? JsonPrimitive)?.takeIf { it.isString }?.content
         if (reason == null || !REASON.matches(reason)) return INVALID_REASON

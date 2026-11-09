@@ -5,7 +5,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -187,7 +186,7 @@ internal class AuthCheckRpcHandler(
 
     @Suppress("TooGenericExceptionCaught")
     suspend fun check(jsonRequest: String): String {
-        val body = runCatching { Json.parseToJsonElement(jsonRequest) as? JsonObject }.getOrNull() ?: return INVALID_REQUEST
+        val body = jsonRequest.asJsonObjectOrNull() ?: return INVALID_REQUEST
         val seconds = (body["timeout_seconds"] as? JsonPrimitive)?.content?.toLongOrNull() ?: AUTH_CHECK_DEFAULT_TIMEOUT_SECONDS
         return oneAtATime.withLock {
             try {

@@ -3,8 +3,6 @@ package org.krost.unidrive.cli
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.krost.unidrive.engine.RemoteEnumeration
 import org.krost.unidrive.http.UrlRedaction
@@ -202,8 +200,7 @@ class RefreshRpcHandler(
     internal data class Flags(val reset: Boolean, val forceDelete: Boolean) {
         companion object {
             fun of(jsonRequest: String): Flags {
-                val body = runCatching { Json.parseToJsonElement(jsonRequest) as? JsonObject }.getOrNull()
-                    ?: return Flags(reset = false, forceDelete = false)
+                val body = jsonRequest.asJsonObjectOrNull() ?: return Flags(reset = false, forceDelete = false)
                 return Flags(reset = body.isTrue("reset"), forceDelete = body.isTrue("force_delete"))
             }
         }

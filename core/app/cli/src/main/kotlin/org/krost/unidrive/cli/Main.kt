@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import kotlin.system.exitProcess
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.CredentialHealth
@@ -100,7 +101,11 @@ open class Main : Runnable {
     private val baseConfigDir: Path
         get() = SyncConfig.defaultConfigDir(explicitOverride = configDir?.let { Paths.get(it) })
 
+    // @Volatile: the daemon reuses this instance across threads, so a cached value must publish safely.
+    @Volatile
     private var _profile: ProfileInfo? = null
+
+    @Volatile
     private var _vaultData: Map<String, Map<String, String>>? = null
 
     /**
@@ -117,7 +122,8 @@ open class Main : Runnable {
     }
 
     fun resolveCurrentProfile(): ProfileInfo {
-        if (_profile != null) return _profile!!
+        val cached = _profile
+        if (cached != null) return cached
         val configFile = baseConfigDir.resolve("config.toml")
         val configText = if (Files.exists(configFile)) Files.readString(configFile) else "[general]\n"
         val raw = SyncConfig.parseRaw(configText, configFile.toString())
@@ -145,7 +151,7 @@ open class Main : Runnable {
                     System.exit(1)
                     throw e
                 }
-        _profile =
+        val resolved =
             try {
                 SyncConfig.resolveProfile(profileName, raw)
             } catch (e: IllegalArgumentException) {
@@ -169,12 +175,13 @@ open class Main : Runnable {
                     throw e
                 }
             }
+        _profile = resolved
         // UD-212: stamp the SLF4J MDC so every log line in this process carries the active
         // profile. `logback.xml` pulls this via `%X{profile:-*}`. For coroutines spawned under
         // runBlocking, the SyncCommand runBlocking wraps itself in MDCContext() to propagate
         // the MDC across dispatcher workers.
-        MDC.put("profile", _profile!!.name)
-        return _profile!!
+        MDC.put("profile", resolved.name)
+        return resolved
     }
 
     /**
@@ -193,11 +200,7 @@ open class Main : Runnable {
     ): ProfileMode {
         val mode =
             profile.mode
-                ?: run {
-                    System.err.println("Error: ${ProfileMode.modelessMessage(profile.name, command)}")
-                    System.exit(MODE_REFUSAL_EXIT)
-                    @Suppress("UNREACHABLE_CODE") throw IllegalStateException("unreachable")
-                }
+                ?: fatal("Error: ${ProfileMode.modelessMessage(profile.name, command)}", MODE_REFUSAL_EXIT)
         if (mode != needed) {
             System.err.println(
                 "Error: profile '${profile.name}' is a ${mode.wireName} profile; '$command' needs a ${needed.wireName} profile. " +
@@ -218,11 +221,7 @@ open class Main : Runnable {
         command: String,
     ): ProfileMode =
         profile.mode
-            ?: run {
-                System.err.println("Error: ${ProfileMode.modelessMessage(profile.name, command)}")
-                System.exit(MODE_REFUSAL_EXIT)
-                @Suppress("UNREACHABLE_CODE") throw IllegalStateException("unreachable")
-            }
+            ?: fatal("Error: ${ProfileMode.modelessMessage(profile.name, command)}", MODE_REFUSAL_EXIT)
 
     /** Exit code of a hosting-contract refusal (archive#603): config-shaped, like [MountCommand.EX_CONFIG]. */
     val MODE_REFUSAL_EXIT: Int = 78
@@ -255,11 +254,11 @@ open class Main : Runnable {
     }
 
     private fun loadVaultData(): Map<String, Map<String, String>> {
-        if (_vaultData != null) return _vaultData!!
+        val cached = _vaultData
+        if (cached != null) return cached
         val vault = Vault(baseConfigDir.resolve("vault.enc"))
         if (!vault.exists()) {
-            _vaultData = emptyMap()
-            return _vaultData!!
+            return emptyMap<String, Map<String, String>>().also { _vaultData = it }
         }
         val envPass = System.getenv("UNIDRIVE_VAULT_PASS")
         val systemdCredentialPath =
@@ -286,7 +285,7 @@ open class Main : Runnable {
                     throw IllegalStateException("unreachable")
                 }
             }
-        _vaultData =
+        val data =
             try {
                 vault.read(passphrase)
             } catch (e: javax.crypto.AEADBadTagException) {
@@ -298,7 +297,8 @@ open class Main : Runnable {
                 System.exit(1)
                 throw IllegalStateException("unreachable")
             }
-        return _vaultData!!
+        _vaultData = data
+        return data
     }
 
     private fun mergeVaultCreds(profile: ProfileInfo): RawProvider? {
@@ -868,3 +868,12 @@ internal fun configurationErrorLine(
     type: String,
     message: String,
 ): String = "Configuration error: profile '$profileName' ($type): $message"
+
+/** One refusal line on stderr, then exit — the [Nothing] return lets a guard's exit path type-check without `!!` or a dead throw. */
+internal fun fatal(
+    message: String,
+    exitCode: Int = 1,
+): Nothing {
+    System.err.println(message)
+    exitProcess(exitCode)
+}

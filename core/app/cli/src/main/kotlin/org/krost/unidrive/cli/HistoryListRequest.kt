@@ -1,6 +1,5 @@
 package org.krost.unidrive.cli
 
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -31,7 +30,7 @@ internal sealed interface HistoryListRequest {
 
         @Suppress("CyclomaticComplexMethod", "ReturnCount") // one early refusal per member of the request
         fun parse(jsonRequest: String): HistoryListRequest {
-            val body = runCatching { Json.parseToJsonElement(jsonRequest) as? JsonObject }.getOrNull() ?: return Refused("invalid_request")
+            val body = jsonRequest.asJsonObjectOrNull() ?: return Refused("invalid_request")
 
             val limit =
                 when (val element = body["limit"]) {
