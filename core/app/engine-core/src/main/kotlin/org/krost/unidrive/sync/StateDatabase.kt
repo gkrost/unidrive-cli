@@ -112,6 +112,12 @@ class StateDatabase(
     // drive SyncEngine in :app:sync. Production code never sets it.
     var batchCommitHook: (() -> Unit)? = null
 
+    // Test seam (gkrost/unidrive-cli#439): how many times [commitBatch] has ended a transaction with a real commit,
+    // so a test can count the commits of a pass that commits by time. Public for the same reason as [batchCommitHook].
+    @Volatile
+    var manualBatchCommits: Long = 0
+        private set
+
     // Runs between the chunks of a staged-row delete (see [ScanStaging.clear]), outside its transaction and its lock.
     // The pause lets a reader that queued on the lock during the chunk take it before the next chunk starts (a monitor
     // is not fair: its last owner would otherwise walk in again). A test replaces it.
@@ -1034,7 +1040,10 @@ class StateDatabase(
     /** Commit a manual transaction started by [beginBatch] (from whichever thread ends it). */
     fun commitBatch() {
         locked("commitBatch") {
-            if (!batchSuspended) conn.commit()
+            if (!batchSuspended) {
+                conn.commit()
+                manualBatchCommits++
+            }
             conn.autoCommit = true
             endBatch()
         }
