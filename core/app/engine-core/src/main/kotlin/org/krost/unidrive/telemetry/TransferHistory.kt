@@ -303,6 +303,9 @@ class TransferHistory private constructor(
 
     internal fun rows(): List<TransferRow> = store.readAll()
 
+    /** Where the writer thread stands, or why it ended (see [HistoryStats.writerFailure]); for a test that waits on it. */
+    internal fun writerStatus(): String = writer.writerStatus()
+
     internal fun fileBytes(): Long = store.fileBytes()
 
     internal fun attemptCount(): Int = store.attemptCount()

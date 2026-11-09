@@ -397,12 +397,13 @@ class TransferHistoryTest {
     // gkrost/unidrive-cli#390: the burst stalled twice on Windows CI (issue #390's first record, then PR #423's
     // run of 2026-11-06) without a related change either time — the writer froze at ~43k/46k of 50k written for
     // 60 s, and even with the process-pause crediting above the run cannot tell a dead writer thread from a
-    // starved one. Quarantined until the issue says why the writer stops and holds a fix.
+    // starved one. Quarantined until the issue says why the writer stops and holds a fix. The stall message now says
+    // whether the writer died (its Error) or is alive, with its thread state and top frames, so the next failure decides.
     @Category(FlakyTests::class)
     @Flaky(
         issue = 390,
         reason = "the 50000-row burst stalls on Windows CI without a related change: the writer stops consuming " +
-            "the queue for 60s and the run cannot tell a dead writer thread from a starved one",
+            "the queue for 60s; the cause (a writer that died, or one starved or blocked) is still open",
         firstFailure = "https://github.com/gkrost/unidrive-cli/actions/runs/41848318771/job/126637645236",
     )
     @Test
@@ -443,6 +444,8 @@ class TransferHistoryTest {
         var lastProgress = System.nanoTime()
         var lastPoll = lastProgress
         while (history.stats.queued > 0) {
+            // #390: a writer that died on an Error is not a slow one; say so (the cause is in the stats and the log).
+            history.stats.writerFailure?.let { fail("the writer died: $it (${history.stats})") }
             val written = history.stats.written
             val now = System.nanoTime()
             val gap = now - lastPoll
@@ -452,7 +455,7 @@ class TransferHistoryTest {
                 lastWritten = written
                 lastProgress = now
             } else if (now - lastProgress > TimeUnit.MILLISECONDS.toNanos(stallMs)) {
-                fail("the writer made no progress for ${stallMs}ms: ${history.stats}")
+                fail("the writer made no progress for ${stallMs}ms: ${history.stats}; ${history.writerStatus()}")
             }
             Thread.sleep(20)
         }

@@ -16,12 +16,29 @@ import java.util.concurrent.atomic.AtomicLong
  * [TelemetryStore] behind. The producer side ([offer]) never blocks and never throws; everything that
  * touches the disk happens on the writer thread.
  */
+private const val STATUS_FRAMES = 8
+
+/** Why [thread] ended ([failure]), or its state and top frames: what a test that waits on a telemetry writer reports (#390). */
+internal fun writerThreadStatus(
+    thread: Thread,
+    failure: String?,
+): String {
+    failure?.let { return "the writer died: $it" }
+    val frames =
+        thread.stackTrace.take(STATUS_FRAMES).joinToString(" <- ") {
+            "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}"
+        }
+    return "the writer thread is ${thread.state}${if (frames.isEmpty()) "" else " at $frames"}"
+}
+
 @Suppress("TooManyFunctions") // the queue's producer calls and the writer thread's steps, one each
 internal class HistoryWriter(
     private val profile: String,
     private val config: HistoryConfig,
     private val clock: () -> Long,
     private val store: TelemetryStore,
+    // How long close() waits for the queue to take Stop, and then for the thread to end.
+    private val closeWaitMs: Long = JOIN_TIMEOUT_MS,
 ) {
     private sealed interface Op {
         class Write(
@@ -55,6 +72,10 @@ internal class HistoryWriter(
     private val droppedUnrecorded = AtomicBoolean()
     private val accepting = AtomicBoolean(true)
 
+    // Set by the writer thread when it ends on a Throwable the loop does not handle (#390); see [writerLoop].
+    @Volatile
+    private var writerFailure: String? = null
+
     // gkrost/unidrive-cli#225: the writer's lines (and the tail listeners it calls) carry the MDC (profile, build) of the daemon
     // that opened the history.
     private val logContext = MdcSnapshot.capture()
@@ -66,7 +87,12 @@ internal class HistoryWriter(
     private var lastWarnNanos = 0L
 
     val stats: HistoryStats
-        get() = HistoryStats(written.get(), dropped.get(), dropped.get() > 0, queue.size)
+        get() = HistoryStats(written.get(), dropped.get(), dropped.get() > 0, queue.size, writerFailure)
+
+    internal val writerAlive: Boolean get() = thread.isAlive
+
+    /** For a test that waits on the writer: the thread's state and where it stands, or why it ended. */
+    internal fun writerStatus(): String = writerThreadStatus(thread, writerFailure)
 
     /** The live tail: what the writer committed, numbered, for the listeners. */
     val tail = HistoryTail(profile)
@@ -76,6 +102,11 @@ internal class HistoryWriter(
     /** Hot path: hands the snapshot to the queue; a full queue drops a running one and keeps a terminal one aside. */
     fun offer(row: TransferRow) {
         if (!accepting.get()) return
+        if (writerFailure != null) {
+            // Nobody drains the queue any more: the row is lost, and says so in the counters.
+            dropped.incrementAndGet()
+            return
+        }
         if (queue.offer(Op.Write(row))) return
         // A terminal snapshot a full queue dropped would leave its row running for ever: the retention
         // never prunes a running row. It waits in a small map the writer drains every turn, and the
@@ -97,6 +128,10 @@ internal class HistoryWriter(
 
     fun replace(row: TransferRow, previousId: String) {
         if (!accepting.get()) return
+        if (writerFailure != null) {
+            dropped.incrementAndGet()
+            return
+        }
         if (!queue.offer(Op.Replace(row, previousId))) {
             dropped.incrementAndGet()
             droppedUnrecorded.set(true)
@@ -139,9 +174,13 @@ internal class HistoryWriter(
     fun close(): Boolean {
         if (!accepting.getAndSet(false)) return false
         if (thread.isAlive) {
-            // A bounded wait: closing is not the hot path, and Stop must not be dropped.
-            queue.offer(Op.Stop, JOIN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            thread.join(JOIN_TIMEOUT_MS)
+            // A bounded wait: closing is not the hot path. A Stop the full queue did not take in time would leave the
+            // writer polling for ever (#530); the interrupt ends its loop, so the writer does not outlive the close.
+            if (!queue.offer(Op.Stop, closeWaitMs, TimeUnit.MILLISECONDS)) {
+                log.warn("History for {}: the queue did not take the stop within {} ms; interrupting the writer", profile, closeWaitMs)
+                thread.interrupt()
+            }
+            thread.join(closeWaitMs)
         }
         return true
     }
@@ -165,6 +204,14 @@ internal class HistoryWriter(
             }
         } catch (e: InterruptedException) {
             log.debug("History writer for {} interrupted: {}", profile, e.message)
+        } catch (@Suppress("TooGenericExceptionCaught") e: Throwable) {
+            // An Error (or anything the steps above let through) used to end the thread unseen: the queue then filled, every
+            // row dropped, and the stats showed nothing but a queue that never emptied (#390). Say so where the stats and
+            // the log carry it; nothing is retried, the thread is gone.
+            val what = "${e.javaClass.name}: ${HistorySanitizer.message(e.message)}"
+            writerFailure = what
+            log.error("History writer for {} died, no more rows are written: {}", profile, what)
+            log.debug("History writer for {} died", profile, e)
         }
     }
 
