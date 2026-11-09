@@ -2,7 +2,6 @@ package org.krost.unidrive.cli
 
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.krost.unidrive.io.string
 import org.slf4j.LoggerFactory
@@ -87,7 +86,7 @@ internal class AuthLoginRpcHandler(
         block: suspend (ProfileTarget, JsonObject) -> JsonObject,
     ): String {
         val profile = target ?: return SIGN_IN_UNAVAILABLE
-        val body = runCatching { Json.parseToJsonElement(jsonRequest) as? JsonObject }.getOrNull() ?: return INVALID_REQUEST
+        val body = jsonRequest.asJsonObjectOrNull() ?: return INVALID_REQUEST
         return oneAtATime.withLock {
             try {
                 block(profile, body).toString()

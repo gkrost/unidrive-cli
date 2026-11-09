@@ -2,9 +2,7 @@ package org.krost.unidrive.cli
 
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -59,7 +57,7 @@ internal class AuthLogoutRpcHandler(
         }
 
     private suspend fun handleLocked(jsonRequest: String): String {
-        val body = runCatching { Json.parseToJsonElement(jsonRequest) as? JsonObject }.getOrNull()
+        val body = jsonRequest.asJsonObjectOrNull()
         val force =
             when (val element = body?.get("force")) {
                 null -> false

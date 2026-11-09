@@ -1,8 +1,6 @@
 package org.krost.unidrive.cli
 
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -33,7 +31,7 @@ class IgnoreRpcHandler(
     private val excludePattern: (path: String) -> String?,
 ) {
     fun explain(jsonRequest: String): String {
-        val body = runCatching { Json.parseToJsonElement(jsonRequest) as? JsonObject }.getOrNull()
+        val body = jsonRequest.asJsonObjectOrNull()
         val raw = (body?.get("path") as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return MISSING_PATH
         val isDir =
             when (val element = body["is_dir"]) {

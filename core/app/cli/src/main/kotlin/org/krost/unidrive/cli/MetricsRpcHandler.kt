@@ -1,6 +1,5 @@
 package org.krost.unidrive.cli
 
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -38,7 +37,7 @@ class MetricsRpcHandler(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     fun query(jsonRequest: String): String {
-        val body = runCatching { Json.parseToJsonElement(jsonRequest) as? JsonObject }.getOrNull() ?: JsonObject(emptyMap())
+        val body = jsonRequest.asJsonObjectOrNull() ?: JsonObject(emptyMap())
         val now = clock()
         val defaultTo = (Math.floorDiv(now, MINUTE_MS) + 1) * MINUTE_MS
         val from = body.nonNegativeLong("from_ms")
