@@ -152,10 +152,19 @@ while IFS= read -r flag; do
   [[ -n "$flag" ]] && STATIC_FLAGS+=("$flag")
 done < "$(dirname "${BASH_SOURCE[0]}")/../../dist/launcher/jvm-flags.txt"
 
+# JFR in-process redaction (JEP 536, gkrost/unidrive-cli#522): *vault* joins the default redact patterns so a
+# recording never carries UNIDRIVE_VAULT_PASS. Java 25/26 reject the option, so only a 27+ java gets it. It must be
+# part of THE -XX:FlightRecorderOptions below: a second such flag replaces the first entirely.
+FR_OPTIONS="stackdepth=256,memorysize=64m"
+JAVA_MAJOR="$(java -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+if [[ -n "$JAVA_MAJOR" && "$JAVA_MAJOR" -ge 27 ]]; then
+  FR_OPTIONS="redact-key=+*vault*,${FR_OPTIONS}"
+fi
+
 JVM_ARGS=(
   -Xmx6g
   "${STATIC_FLAGS[@]}"
-  -XX:FlightRecorderOptions=stackdepth=256,memorysize=64m
+  "-XX:FlightRecorderOptions=$FR_OPTIONS"
   "-XX:StartFlightRecording=$JFR_PARAMS"
   -XX:+HeapDumpOnOutOfMemoryError
   "-XX:HeapDumpPath=$OUT_DIR"

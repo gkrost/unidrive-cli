@@ -33,6 +33,11 @@ object DaemonAutospawn {
 
     const val DEFAULT_WAIT_TIMEOUT_MS: Long = 60_000
 
+    /** JEP 536 JFR redaction: adds `*vault*` to the default patterns so UNIDRIVE_VAULT_PASS stays out of recordings.
+     *  Java 25 and 26 reject the `redact-key` option and fail to start, hence the version gate. */
+    internal const val JFR_REDACT_FLAG = "-XX:FlightRecorderOptions=redact-key=+*vault*"
+    internal const val JFR_REDACT_MIN_JAVA = 27
+
     /** Who holds the profile lock; the tests' seam for the sidecar and the process table. */
     @Volatile internal var lockCheck: (String, Path) -> DaemonLockCheck = { name, dir -> checkDaemonLock(name, dir.resolve(".lock.pid")) }
 
@@ -141,7 +146,7 @@ object DaemonAutospawn {
      * (the profile's own `gc-<profile>.log`) rides unconditioned.
      *
      * [env], [props] and [windows] are the tests' seams for the process environment, the system
-     * properties and the OS family.
+     * properties (java.specification.version is the Java feature version the child runs on) and the OS family.
      */
     internal fun spawnCommand(
         javaBin: Path,
@@ -157,6 +162,9 @@ object DaemonAutospawn {
             add("-Xmx" + (env("UNIDRIVE_XMX")?.takeIf { it.isNotBlank() } ?: "2g"))
             addAll(staticJvmFlags(jar.resolveSibling("jvm-flags.txt")))
             addAll(TrustStorePolicy.flags(windows, env))
+            // JFR redaction of the vault passphrase (gkrost/unidrive-cli#522); the child runs on the parent's java,
+            // and Java 25/26 reject the option, so only 27+ gets it.
+            if ((props("java.specification.version")?.toIntOrNull() ?: 0) >= JFR_REDACT_MIN_JAVA) add(JFR_REDACT_FLAG)
             addAll(localeArgs(env, props))
             props("java.io.tmpdir")?.takeIf { it.isNotBlank() }?.let { add("-Djdk.net.unixdomain.tmpdir=$it") }
             if (CoroutineDebug.enabled(env)) {
