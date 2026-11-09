@@ -104,20 +104,28 @@ class LauncherTemplateTest {
 
     /**
      * A fake JDK `<root>/<name>` whose `release` says [version] (no `release` file when null, like a PATH shim);
-     * returns its bin/java.cmd, which prints which JDK it is, or [versionBanner] on stderr when given (the
-     * `java -version` first line of a shim that has no `release` file).
+     * returns its bin/java.cmd, which prints which JDK it is (followed by the arguments it got when [echoArgs]),
+     * or [versionBanner] on stderr when given (the `java -version` first line of a shim that has no `release` file).
      */
     private fun fakeJdk(
         root: Path,
         name: String,
         version: String?,
         versionBanner: String? = null,
+        echoArgs: Boolean = false,
     ): Path {
         val home = root.resolve(name)
         Files.createDirectories(home.resolve("bin"))
         if (version != null) Files.writeString(home.resolve("release"), "IMPLEMENTOR=\"fake\"\nJAVA_VERSION=\"$version\"\n")
         val java = home.resolve("bin/java.cmd")
-        Files.writeString(java, if (versionBanner != null) "@echo $versionBanner 1>&2" else "@echo JAVA:$name")
+        Files.writeString(
+            java,
+            when {
+                versionBanner != null -> "@echo $versionBanner 1>&2"
+                echoArgs -> "@echo JAVA:$name %*"
+                else -> "@echo JAVA:$name"
+            },
+        )
         return java
     }
 
@@ -317,6 +325,33 @@ class LauncherTemplateTest {
             assertEquals(1, exit, output)
             assertTrue("JAVA:jdk17" !in output, "the stale java must not be started: $output")
             assertTrue(output.contains("needs Java 25 or newer, found Java 17"), output)
+        } finally {
+            jdks.toFile().deleteRecursively()
+        }
+    }
+
+    // gkrost/unidrive-cli#522, the Windows twin of LauncherShTemplateTest's cases: the JFR redact key *vault* keeps
+    // the vault passphrase out of flight recordings, but Java 25 and 26 reject the option ("Unknown argument
+    // 'redact-key'") and do not start. So only a runtime whose version reads as 27+ may receive it, before the jar.
+    @Test
+    fun `the powershell launcher passes the JFR vault redact key to Java 27 only, before the jar`() {
+        assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
+        val flag = "-XX:FlightRecorderOptions=redact-key=+*vault*"
+        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        try {
+            for ((name, version) in listOf("jdk25" to "25.0.4", "jdk26" to "26.0.2", "jdk27" to "27.0.1")) {
+                val java = fakeJdk(jdks, name, version, echoArgs = true)
+                val (exit, output) = runResolution(mapOf("UNIDRIVE_JAVA" to java.toString()), "status")
+                assertEquals(0, exit, output)
+                val line = output.lines().single { it.startsWith("JAVA:$name ") }
+                val args = line.split(' ')
+                if (name == "jdk27") {
+                    assertTrue(flag in args, "$name: $line")
+                    assertTrue(args.indexOf(flag) < args.indexOf("-jar"), "a JVM option goes before -jar: $line")
+                } else {
+                    assertTrue(args.none { it.startsWith("-XX:FlightRecorderOptions") }, "$name: $line")
+                }
+            }
         } finally {
             jdks.toFile().deleteRecursively()
         }
