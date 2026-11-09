@@ -56,7 +56,6 @@ class HttpRetryBudgetPermitTest {
             assertEquals(2, inside.get(), "two callers hold the two permits, the third waits")
 
             gates[0].complete(Unit)
-            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 2)
             runCurrent()
             assertEquals(2, inside.get(), "the released permit let the third caller in")
 
@@ -64,6 +63,63 @@ class HttpRetryBudgetPermitTest {
             gates[2].complete(Unit)
             callers.forEach { it.await() }
             assertEquals(2, peak.get(), "never more than two inside at once")
+        }
+
+    @Test
+    fun `a released permit admits the next waiter without waiting out a timer`() =
+        runTest {
+            // #435: withPermit admits waiters through a FIFO resumed by the release itself, not by a
+            // poll interval. A timer-based waiter would stay parked until the virtual clock moved;
+            // no advanceTimeBy call follows the release, so only a direct resume can pass this.
+            val budget = budget(maxConcurrency = 1)
+            val holderGate = CompletableDeferred<Unit>()
+            val holder = async { budget.withPermit { holderGate.await() } }
+            runCurrent()
+            val waiterRan = AtomicInteger(0)
+            val waiter = launch { budget.withPermit { waiterRan.incrementAndGet() } }
+            runCurrent()
+            assertEquals(0, waiterRan.get(), "the single permit is held; the waiter parks")
+
+            holderGate.complete(Unit)
+            holder.await()
+            runCurrent()
+            assertEquals(1, waiterRan.get(), "the release itself resumed the head waiter")
+            waiter.join()
+        }
+
+    @Test
+    fun `waiters of one lane are admitted in arrival order`() =
+        runTest {
+            // #435: the poller raced a CAS every 25 ms, so a waiter could lose every round to callers
+            // that arrived later. The FIFO queue pins the arrival order within a lane.
+            val budget = budget(maxConcurrency = 1)
+            val holderGate = CompletableDeferred<Unit>()
+            val holder = async { budget.withPermit { holderGate.await() } }
+            runCurrent()
+            val order = Collections.synchronizedList(mutableListOf<Int>())
+            val gates = List(4) { CompletableDeferred<Unit>() }
+            val waiters =
+                gates.mapIndexed { i, gate ->
+                    launch { budget.withPermit { order.add(i); gate.await() } }
+                }
+            runCurrent()
+
+            holderGate.complete(Unit)
+            holder.await()
+            runCurrent()
+            assertEquals(listOf(0), order.toList(), "the first arrival takes the released permit")
+
+            gates[0].complete(Unit)
+            waiters[0].join()
+            runCurrent()
+            assertEquals(listOf(0, 1), order.toList(), "each release admits the waiter that arrived next")
+            gates[1].complete(Unit)
+            waiters[1].join()
+            runCurrent()
+            assertEquals(listOf(0, 1, 2), order.toList())
+            gates.forEach { it.complete(Unit) }
+            waiters.forEach { it.join() }
+            assertEquals(listOf(0, 1, 2, 3), order.toList())
         }
 
     @Test
@@ -133,23 +189,20 @@ class HttpRetryBudgetPermitTest {
                         }
                     }
                 }
-            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
+            advanceTimeBy(1)
             runCurrent()
             assertEquals(0, newInside.get(), "four are still inside, two are allowed: newcomers wait")
 
             gates[0].complete(Unit)
             gates[1].complete(Unit)
-            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
             runCurrent()
             assertEquals(0, newInside.get(), "two released, two still inside, the new limit is two: still no room")
 
             gates[2].complete(Unit)
-            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
             runCurrent()
             assertEquals(1, newInside.get(), "exactly the new limit is let through: one old holder plus one newcomer")
 
             gates[3].complete(Unit)
-            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
             runCurrent()
             assertEquals(2, newInside.get(), "both newcomers are in once the old holders are gone")
 
@@ -190,13 +243,11 @@ class HttpRetryBudgetPermitTest {
 
             holderGate.complete(Unit)
             holder.await()
-            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
             runCurrent()
             assertEquals(listOf("foreground"), order.toList(), "the user-driven call is not queued behind the scan")
 
             gates[2].complete(Unit)
             foreground.join()
-            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
             runCurrent()
             assertEquals(2, order.size, "with no foreground waiter left the background lane gets the permit back")
             gates.forEach { it.complete(Unit) }
@@ -219,11 +270,8 @@ class HttpRetryBudgetPermitTest {
             runCurrent()
 
             lane.set(Priority.Foreground)
-            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 2)
-            runCurrent()
             holderGate.complete(Unit)
             holder.await()
-            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
             runCurrent()
             plain.join()
             promoted.join()
@@ -247,7 +295,6 @@ class HttpRetryBudgetPermitTest {
             foreground.cancelAndJoin()
             holderGate.complete(Unit)
             holder.await()
-            advanceTimeBy(HttpRetryBudget.PERMIT_POLL_MS * 4)
             runCurrent()
             background.join()
 
