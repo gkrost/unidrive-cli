@@ -21,10 +21,10 @@ buildscript {
             activateDependencyLocking()
             force("org.apache.logging.log4j:log4j-core:2.26.1")
             force("org.codehaus.plexus:plexus-utils:4.1.0")
-            force("com.fasterxml.jackson.core:jackson-core:2.21.7")
-            force("com.fasterxml.jackson.core:jackson-databind:2.21.7")
-            force("com.fasterxml.jackson.core:jackson-annotations:2.21")   // the annotations line has no 2.21.x patches
-            force("com.google.guava:guava:33.7.2-jre")
+            force("com.fasterxml.jackson.core:jackson-core:2.22.4")
+            force("com.fasterxml.jackson.core:jackson-databind:2.22.4")
+            force("com.fasterxml.jackson.core:jackson-annotations:2.22")   // the annotations line has no 2.22.x patches
+            force("com.google.guava:guava:33.8.0-jre")
         }
     }
 }
