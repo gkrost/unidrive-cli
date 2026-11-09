@@ -23,7 +23,7 @@ buildscript {
             force("org.codehaus.plexus:plexus-utils:4.1.0")
             force("com.fasterxml.jackson.core:jackson-core:2.21.7")
             force("com.fasterxml.jackson.core:jackson-databind:2.21.7")
-            force("com.fasterxml.jackson.core:jackson-annotations:2.21")   // the annotations line has no 2.21.x patches
+            force("com.fasterxml.jackson.core:jackson-annotations:2.22")   // the annotations line has no 2.22.x patches
             force("com.google.guava:guava:33.7.2-jre")
         }
     }
