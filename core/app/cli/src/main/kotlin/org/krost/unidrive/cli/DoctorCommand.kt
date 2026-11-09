@@ -17,6 +17,7 @@ import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.formatSizePrecise
 import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.StateDbCorruptException
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
 import picocli.CommandLine.Command
@@ -187,11 +188,17 @@ class DoctorCommand : Runnable {
                     // additive column passes initialize() and the first read throws. Report it as a
                     // state-db error instead of aborting doctor with a stack trace.
                     results.subList(marker, results.size).clear()
+                    val failure = outcome.exceptionOrNull()
+                    // A damaged file is not an older schema (gkrost/unidrive-cli#581): "run sync once to upgrade it" is
+                    // wrong advice for it, and a mount-mode profile never runs sync.
                     results += CheckResult(
                         "state-db",
                         Severity.ERR,
-                        "state.db could not be read read-only (an older schema or a corrupt file): " +
-                            "${outcome.exceptionOrNull()?.message}",
+                        if (failure != null && StateDbCorruptException.isCorruption(failure)) {
+                            (failure as? StateDbCorruptException ?: StateDbCorruptException(stateDb, failure)).message.orEmpty()
+                        } else {
+                            "state.db could not be read read-only (an older schema or an incomplete one): ${failure?.message}"
+                        },
                         emptyList(),
                     )
                 }

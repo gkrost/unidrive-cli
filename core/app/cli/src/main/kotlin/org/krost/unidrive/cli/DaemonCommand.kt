@@ -11,6 +11,7 @@ import org.krost.unidrive.sync.IpcLineClient
 import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessFacts
+import org.krost.unidrive.sync.StateDbCorruptException
 import org.krost.unidrive.sync.backups
 import org.krost.unidrive.sync.isLockHolder
 import org.krost.unidrive.sync.lookupProcess
@@ -184,6 +185,12 @@ class DaemonRunCommand : Runnable {
             // The IPC token files could not be written or verified: the daemon never runs without its
             // IPC. The reason is already on stderr and in the log, as one line.
             kotlin.system.exitProcess(IpcAuth.STARTUP_REFUSED_EXIT_CODE)
+        } catch (e: StateDbCorruptException) {
+            // state.db is damaged: one line (what, which file, the recovery), no stack trace. Restarting cannot fix
+            // it, so a code of its own rather than 1, which Restart=on-failure would retry at a fixed interval
+            // (gkrost/unidrive-cli#581). The file is not touched: moving it aside is the operator's call.
+            System.err.println("Error: unidrive daemon: ${e.message}")
+            kotlin.system.exitProcess(StateDbCorruptException.EXIT_CODE)
         } catch (_: AuthenticationException) {
             // The provider refused the credentials — at start (the one-line stderr report beside
             // authenticateAndLog) or surfaced by the serve loop (the lifecycle-error log line).
