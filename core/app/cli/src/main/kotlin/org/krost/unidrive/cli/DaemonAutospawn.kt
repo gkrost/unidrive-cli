@@ -9,6 +9,7 @@ import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.slf4j.LoggerFactory
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -286,14 +287,32 @@ object DaemonAutospawn {
 /** A started daemon process: answers its exit code once it has ended, null while it runs (gkrost/unidrive-cli#455). */
 internal typealias SpawnedChild = () -> Int?
 
-/** The last [lines] lines of [logFile] for an error message, each indented; empty when the file cannot be read. */
+/** How far back from the end of the spawn log [logTail] looks. The log is appended to by every spawn and never
+ *  rotated, so reading it whole would make the error path cost as much as the log has grown. */
+private const val LOG_TAIL_WINDOW_BYTES = 64 * 1024
+
+/** The longest line [logTail] shows; a longer one (a minified stack, a binary dump) keeps its end. */
+private const val LOG_TAIL_LINE_MAX_CHARS = 500
+
+/** The last [lines] lines of [logFile] for an error message, each indented; empty when the file cannot be read.
+ *  Reads at most [LOG_TAIL_WINDOW_BYTES] from the end of the file, so the work and memory do not grow with the log. */
 internal fun logTail(
     logFile: Path,
     lines: Int = 5,
 ): String =
-    runCatching { Files.readAllLines(logFile).takeLast(lines) }
-        .getOrDefault(emptyList())
-        .joinToString("") { "\n    $it" }
+    runCatching {
+        RandomAccessFile(logFile.toFile(), "r").use { file ->
+            val start = maxOf(0L, file.length() - LOG_TAIL_WINDOW_BYTES)
+            val bytes = ByteArray((file.length() - start).toInt())
+            file.seek(start)
+            file.readFully(bytes)
+            val text = String(bytes, Charsets.UTF_8)
+            // A window that starts mid-file begins inside a line: drop that fragment.
+            val whole = if (start > 0) text.substringAfter('\n', "") else text
+            whole.lines().dropLastWhile { it.isEmpty() }.takeLast(lines)
+        }
+    }.getOrDefault(emptyList())
+        .joinToString("") { "\n    ${it.takeLast(LOG_TAIL_LINE_MAX_CHARS)}" }
 
 /** The profile-name rule of the diagnostics file names: letters, digits, `-` and `_`, which is file-safe. */
 private val FILE_SAFE_PROFILE = Regex("[A-Za-z0-9_-]+")

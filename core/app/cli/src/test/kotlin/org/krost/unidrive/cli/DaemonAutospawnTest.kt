@@ -363,6 +363,37 @@ class DaemonAutospawnTest {
     }
 
     @Test
+    fun `logTail of a large log returns the last lines from a bounded read`() {
+        val log = Files.createTempDirectory("autospawn-tail").resolve("daemon-spawn.log")
+        // 48 MB of history before the lines that matter (the review's reproduction: it exhausted a 64 MB heap).
+        Files.newOutputStream(log).use { out ->
+            val filler = ("x".repeat(99) + "\n").toByteArray()
+            repeat(500_000) { out.write(filler) }
+            out.write("one\ntwo\nthree\nfour\nfive\nsix\nseven\n".toByteArray())
+        }
+        assertEquals("\n    three\n    four\n    five\n    six\n    seven", logTail(log))
+    }
+
+    @Test
+    fun `logTail handles CRLF and a single line longer than the window`() {
+        val dir = Files.createTempDirectory("autospawn-tail-short")
+        val short = dir.resolve("short.log")
+        Files.writeString(short, "a\r\nb\r\n")
+        assertEquals("\n    a\n    b", logTail(short))
+        val longLine = dir.resolve("long.log")
+        // A single huge line: the window starts inside it, so there is no whole line to show.
+        Files.writeString(longLine, "y".repeat(200_000))
+        assertEquals("", logTail(longLine))
+    }
+
+    @Test
+    fun `logTail caps a very long line to its end`() {
+        val log = Files.createTempDirectory("autospawn-tail-cap").resolve("daemon-spawn.log")
+        Files.writeString(log, "z".repeat(5_000) + "END\n")
+        assertEquals("\n    " + "z".repeat(497) + "END", logTail(log))
+    }
+
+    @Test
     fun `thisJar names a jar or nothing`() {
         // In the test suite the classes are loose, so both outcomes are legal; the pinned contract is
         // that a non-null answer is always a .jar (the spawner's -jar argument needs exactly that).
