@@ -47,7 +47,10 @@ class DaemonAutospawnTest {
                 configDir = Files.createTempDirectory("autospawn-alive"),
                 probe = { _, _ -> true },
                 locateJar = { error("a live daemon must not need the jar") },
-                spawn = { command, _ -> spawnedCommands.add(command) },
+                spawn = { command, _ ->
+                    spawnedCommands.add(command)
+                    null
+                },
             )
         assertTrue(ok)
         assertTrue(spawnedCommands.isEmpty(), "nothing is spawned over a live daemon")
@@ -71,6 +74,7 @@ class DaemonAutospawnTest {
                     spawnCalls++
                     seenCommand = command
                     assertEquals(tempDir.resolve("daemon-spawn.log"), logFile, "the child's output goes under the profile's config folder")
+                    null
                 },
             )
         assertTrue(ok, "the spawner reports a serving daemon once the probe turns true")
@@ -287,7 +291,7 @@ class DaemonAutospawnTest {
                 waitTimeoutMs = 400,
                 probe = { _, _ -> false },
                 locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
-                spawn = { _, _ -> /* a daemon that starts but never binds */ },
+                spawn = { _, _ -> null /* a daemon that starts but never binds */ },
             )
         assertFalse(ok, "the timeout is reported as false, to the caller's own error path")
     }
@@ -316,6 +320,46 @@ class DaemonAutospawnTest {
                 spawn = { _, _ -> error("nothing can be spawned without a jar") },
             )
         assertFalse(ok)
+    }
+
+    // gkrost/unidrive-cli#455: a daemon that exits at once is reported with its exit code and the log's tail, not after the full wait.
+    @Test
+    fun `a daemon that exits at once is reported at once with its exit code and the log tail`() {
+        val dir = Files.createTempDirectory("autospawn-exits")
+        Files.writeString(dir.resolve("daemon-spawn.log"), "line one\nrefused: no credentials\n")
+        val started = System.currentTimeMillis()
+        val ok =
+            DaemonAutospawn.ensureDaemonRunning(
+                profileName = "p",
+                configDir = dir,
+                waitTimeoutMs = 30_000,
+                probe = { _, _ -> false },
+                locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
+                spawn = { _, _ -> { 78 } },
+            )
+        assertFalse(ok)
+        assertTrue(System.currentTimeMillis() - started < 10_000, "the wait does not run to its deadline")
+        assertEquals("\n    line one\n    refused: no credentials", logTail(dir.resolve("daemon-spawn.log")))
+    }
+
+    @Test
+    fun `a child that is still running does not end the wait early`() {
+        var polls = 0
+        val ok =
+            DaemonAutospawn.ensureDaemonRunning(
+                profileName = "p",
+                configDir = Files.createTempDirectory("autospawn-slow"),
+                waitTimeoutMs = 5_000,
+                probe = { _, _ -> ++polls > 3 },
+                locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
+                spawn = { _, _ -> { null } },
+            )
+        assertTrue(ok)
+    }
+
+    @Test
+    fun `logTail of a missing file is empty`() {
+        assertEquals("", logTail(Path.of("no-such-dir", "no.log")))
     }
 
     @Test
@@ -401,7 +445,10 @@ class DaemonAutospawnTest {
                 configDir = Files.createTempDirectory("autospawn-busy"),
                 probe = { _, _ -> ++probes > 3 },
                 locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
-                spawn = { _, _ -> spawned = true },
+                spawn = { _, _ ->
+                    spawned = true
+                    null
+                },
             )
             }
         assertTrue(ok, "it answered once it was not busy")
@@ -418,7 +465,10 @@ class DaemonAutospawnTest {
                     configDir = Files.createTempDirectory("autospawn-sync-holder"),
                     probe = { _, _ -> false },
                     locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
-                    spawn = { _, _ -> spawned = true },
+                    spawn = { _, _ ->
+                    spawned = true
+                    null
+                },
                 )
             }
         assertFalse(ok)

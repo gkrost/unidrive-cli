@@ -57,7 +57,7 @@ object DaemonAutospawn {
         waitTimeoutMs: Long = DEFAULT_WAIT_TIMEOUT_MS,
         probe: (String, Path) -> Boolean = { name, socket -> daemonAnswers(name, socket, configDir) },
         locateJar: () -> Path? = ::thisJar,
-        spawn: (List<String>, Path) -> Unit = ::defaultSpawn,
+        spawn: (List<String>, Path) -> SpawnedChild? = ::defaultSpawn,
     ): Boolean {
         if (probe(profileName, socketPath)) return true
         // Nothing valid answered. A live holder of the profile lock is not "no daemon": a second JVM would only lose the
@@ -91,20 +91,21 @@ object DaemonAutospawn {
         System.err.println(
             "unidrive: the daemon for profile '$profileName' is not running; starting it (output: $logFile) and waiting for it ...",
         )
-        try {
-            spawn(
-                spawnCommand(javaBin, jar, configDir.toAbsolutePath().parent, profileName),
-                logFile,
-            )
-        } catch (e: Exception) {
-            log.warn("auto-spawn of the daemon failed", e)
-            System.err.println(
-                "unidrive: the daemon could not be started (${e.javaClass.simpleName}). " +
-                    "Start it manually: `unidrive -p $profileName daemon run`.",
-            )
-            return false
-        }
-        return waitForDaemon(profileName, socketPath, waitTimeoutMs, probe, logFile)
+        val child: SpawnedChild? =
+            try {
+                spawn(
+                    spawnCommand(javaBin, jar, configDir.toAbsolutePath().parent, profileName),
+                    logFile,
+                )
+            } catch (e: Exception) {
+                log.warn("auto-spawn of the daemon failed", e)
+                System.err.println(
+                    "unidrive: the daemon could not be started (${e.javaClass.simpleName}). " +
+                        "Start it manually: `unidrive -p $profileName daemon run`.",
+                )
+                return false
+            }
+        return waitForDaemon(profileName, socketPath, waitTimeoutMs, probe, logFile, child)
     }
 
     /**
@@ -272,14 +273,27 @@ object DaemonAutospawn {
     private fun defaultSpawn(
         command: List<String>,
         logFile: Path,
-    ) {
+    ): SpawnedChild {
         Files.createDirectories(logFile.parent)
         val pb = ProcessBuilder(command)
         pb.redirectErrorStream(true)
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile.toFile()))
-        pb.start() // deliberately not waited for: the daemon outlives the client that started it
+        val process = pb.start() // deliberately not waited for: the daemon outlives the client that started it
+        return { if (process.isAlive) null else process.exitValue() }
     }
 }
+
+/** A started daemon process: answers its exit code once it has ended, null while it runs (gkrost/unidrive-cli#455). */
+internal typealias SpawnedChild = () -> Int?
+
+/** The last [lines] lines of [logFile] for an error message, each indented; empty when the file cannot be read. */
+internal fun logTail(
+    logFile: Path,
+    lines: Int = 5,
+): String =
+    runCatching { Files.readAllLines(logFile).takeLast(lines) }
+        .getOrDefault(emptyList())
+        .joinToString("") { "\n    $it" }
 
 /** The profile-name rule of the diagnostics file names: letters, digits, `-` and `_`, which is file-safe. */
 private val FILE_SAFE_PROFILE = Regex("[A-Za-z0-9_-]+")
@@ -300,10 +314,23 @@ private fun waitForDaemon(
     waitTimeoutMs: Long,
     probe: (String, Path) -> Boolean,
     logFile: Path,
+    child: SpawnedChild? = null,
 ): Boolean {
     val deadline = System.currentTimeMillis() + waitTimeoutMs
     while (System.currentTimeMillis() < deadline) {
         if (probe(profileName, socketPath)) return true
+        // gkrost/unidrive-cli#455: a daemon that exits at once (credentials refused, profile lock held, IPC token files not writable)
+        // will never bind: say so now, with its exit code and the log's tail, instead of waiting out the deadline.
+        val exitCode = child?.invoke()
+        if (exitCode != null) {
+            // The daemon may have bound in its last moments before it ended: one more look settles that.
+            if (probe(profileName, socketPath)) return true
+            System.err.println(
+                "unidrive: the daemon for profile '$profileName' exited at once (exit code $exitCode). Its output: $logFile" +
+                    logTail(logFile) + "\nStart it in a terminal to see the error: `unidrive -p $profileName daemon run`.",
+            )
+            return false
+        }
         Thread.sleep(200)
     }
     System.err.println(
