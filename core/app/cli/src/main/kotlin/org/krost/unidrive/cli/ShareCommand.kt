@@ -63,7 +63,7 @@ class ShareCommand : Runnable {
                 try {
                     parent.createProvider()
                 } catch (e: AuthenticationException) {
-                    parent.handleAuthError(e, parent.createProvider())
+                    parent.handleAuthErrorForProfile(e)
                     return@runBlocking
                 } catch (e: Exception) {
                     System.err.println("Error: ${e.message}")
@@ -130,6 +130,9 @@ class ShareCommand : Runnable {
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}")
                 System.exit(1)
+            } finally {
+                // gkrost/unidrive-cli#455: the provider's HTTP client and sockets close with the command, not with the halt watchdog.
+                runCatching { provider.close() }
             }
         }
     }
