@@ -1369,29 +1369,13 @@ class MountEngine private constructor(
                         onProgress?.invoke(transferred, total)
                         traceProgress?.invoke(transferred)
                     }
-                } catch (e: Exception) {
+                } catch (e: RemoteConflictException) {
                     // gkrost/unidrive-cli#580: a create the provider refused because the name is taken, by an item that holds these
                     // very bytes, is the row's own earlier upload (the daemon died after the write, before the row): settled as done.
-                    val landedBefore = if (e is RemoteConflictException && existingRemoteId == null && ifMatchETag == null) identicalItemAtOrNull(path, cachePath) else null
-                    if (landedBefore != null) {
-                        log.info("uploadFromCache: {} was refused as taken, by an item that holds these bytes ({} bytes); adopted, nothing sent", path, sizeForLog)
-                        wasSent = false
-                        FileEvents.event(FileEvents.Phase.UPLOAD_SKIPPED, path, bytes = sizeForLog, tally = tally)
-                        landedBefore
-                    } else {
-                        uploadEventRetries.noteFailure(path)
-                        FileEvents.event(FileEvents.Phase.UPLOAD_FAILED, path, ms = (System.nanoTime() - uploadStarted) / 1_000_000,
-                            retries = uploadEventRetries.attemptsFailed(path), tally = tally, extra = listOf("error" to e.javaClass.simpleName))
-                        noteAuthRejection(e)
-                        auditLog?.emit(
-                            action = "Upload",
-                            path = path,
-                            size = sizeForLog,
-                            oldHash = prevHash,
-                            result = "failed:${e.javaClass.simpleName}: ${e.message}",
-                        )
-                        throw e
-                    }
+                    wasSent = false
+                    adoptedOrFailed(e, create = existingRemoteId == null && ifMatchETag == null, path, cachePath, sizeForLog, uploadStarted, prevHash, tally)
+                } catch (e: Exception) {
+                    failUpload(e, path, sizeForLog, uploadStarted, prevHash, tally)
                 }
         if (wasSent) {
             FileEvents.event(FileEvents.Phase.UPLOAD_DONE, path, bytes = sizeForLog, ms = (System.nanoTime() - uploadStarted) / 1_000_000,
@@ -1405,7 +1389,7 @@ class MountEngine private constructor(
         // Where the item is now: a provider that had to place it under another name says so (nameOverridden), and
         // the row remembers that name from here on. Any other answer leaves the place it was asked for.
         val landedRemote = if (result.nameOverridden) result.path else remotePath
-        val auditResult = if (wasSent) "success" else if (unchanged != null) "skipped:unchanged" else "skipped:identical-at-target"
+        val auditResult = uploadAuditResult(sent = wasSent, unchanged = unchanged != null)
         // archive#658: only a real transfer is a provider round trip; the skipped-unchanged path made no upload.
         if (wasSent) recordProviderContact()
         // Defer the absence sweep's deletion verdict while the delta feed catches up
@@ -1494,6 +1478,58 @@ class MountEngine private constructor(
             result = auditResult,
         )
         return UploadOutcome(sent = wasSent, size = size, oldHash = prevHash, newHash = result.hash)
+    }
+
+    // The audit line of an upload that finished: a transfer, or a skipped one (the row's own version, or an item at the name that held the bytes).
+    private fun uploadAuditResult(
+        sent: Boolean,
+        unchanged: Boolean,
+    ): String = if (sent) "success" else if (unchanged) "skipped:unchanged" else "skipped:identical-at-target"
+
+    /** The failed upload on record (events, retry tally, audit), then [e] again. */
+    @Suppress("LongParameterList") // the facts uploadFromCache already holds; a record for them would only move the list
+    private fun failUpload(
+        e: Exception,
+        path: String,
+        size: Long,
+        startedNanos: Long,
+        prevHash: String?,
+        tally: FileEventTally,
+    ): Nothing {
+        uploadEventRetries.noteFailure(path)
+        FileEvents.event(FileEvents.Phase.UPLOAD_FAILED, path, ms = (System.nanoTime() - startedNanos) / 1_000_000,
+            retries = uploadEventRetries.attemptsFailed(path), tally = tally, extra = listOf("error" to e.javaClass.simpleName))
+        noteAuthRejection(e)
+        auditLog?.emit(
+            action = "Upload",
+            path = path,
+            size = size,
+            oldHash = prevHash,
+            result = "failed:${e.javaClass.simpleName}: ${e.message}",
+        )
+        throw e
+    }
+
+    /**
+     * gkrost/unidrive-cli#580: the item a refused create ran into, when it holds the cache copy's bytes ([identicalItemAtOrNull]), with
+     * the skipped transfer on record; else the refusal [e] stands as a failed upload ([failUpload]). A replace is never settled here.
+     */
+    @Suppress("LongParameterList") // the facts uploadFromCache already holds; a record for them would only move the list
+    private suspend fun adoptedOrFailed(
+        e: RemoteConflictException,
+        create: Boolean,
+        path: String,
+        cachePath: Path,
+        size: Long,
+        startedNanos: Long,
+        prevHash: String?,
+        tally: FileEventTally,
+    ): CloudItem {
+        val landed = if (create) identicalItemAtOrNull(path, cachePath) else null
+        if (landed == null) failUpload(e, path, size, startedNanos, prevHash, tally)
+        log.info("uploadFromCache: {} was refused as taken, by an item that holds these bytes ({} bytes); adopted, nothing sent", path, size)
+        FileEvents.event(FileEvents.Phase.UPLOAD_SKIPPED, path, bytes = size, tally = tally)
+        return landed
     }
 
     /**

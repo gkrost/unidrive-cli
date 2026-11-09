@@ -379,7 +379,8 @@ internal class MinimalFakeProvider(
         uploadConflictRemaining.getAndUpdate { p -> if (p > 0) p - 1 else p }.let { before ->
             if (before > 0) throw org.krost.unidrive.RemoteConflictException("injected remote conflict: $remotePath")
         }
-        if (createRefusesTakenName && existingRemoteId == null && ifMatchETag == null && remoteFiles.containsKey(remotePath)) {
+        val isCreate = existingRemoteId == null && ifMatchETag == null
+        if (createRefusesTakenName && isCreate && remoteFiles.containsKey(remotePath)) {
             throw org.krost.unidrive.RemoteConflictException("fake: '$remotePath' appeared at the target since the upload was planned")
         }
         uploadRefusedRemaining.getAndUpdate { p -> if (p > 0) p - 1 else p }.let { before ->
