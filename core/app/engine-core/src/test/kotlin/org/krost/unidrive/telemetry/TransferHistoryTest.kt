@@ -8,6 +8,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.path.deleteIfExists
@@ -564,40 +565,39 @@ class TransferHistoryTest {
 
     @Test
     fun `a full queue drops a running snapshot but keeps the terminal one of the same transfer`() {
-        val history =
-            open(HistoryConfig(queueCapacity = 4, batchSize = 4)) { conn ->
-                // The gate below parks the writer on a write lock it cannot take; the long busy timeout
-                // keeps it parked instead of failing the batch when the default one expires.
-                conn.createStatement().use { it.execute("PRAGMA busy_timeout = 60000") }
+        val history = open(HistoryConfig(queueCapacity = 4, batchSize = 4))
+        // The writer parks inside its tail listener on the first committed row. Only a parked writer is
+        // certain to take nothing from the queue, so the fillers below fill it and the terminal offer meets
+        // a full queue for certain. The first drop alone would not prove that: the writer could still poll
+        // up to a batch between the drop and the terminal offer.
+        val parked = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        history.addTailListener { _, row ->
+            if (row.operationId == "op-warm") {
+                parked.countDown()
+                release.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS)
             }
-        // The writer parks on its first write attempt while the gate holds the database's write lock:
-        // the queue fills and stays full, so the offers below meet the exact overflow they must survive.
-        DriverManager.getConnection("jdbc:sqlite:$db").use { gate ->
-            gate.createStatement().use { st ->
-                st.execute("PRAGMA busy_timeout = 60000")
-                st.execute("BEGIN EXCLUSIVE")
+        }
+        try {
+            history.enqueue(rowOf("op-warm", "/drop/warm.bin", TransferResult.RUNNING))
+            assertTrue(parked.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS), "the writer never committed the first row")
+            // The running snapshot of the transfer waits in the queue: the terminal offer must take its place.
+            history.enqueue(rowOf("op-kept", "/drop/kept.bin", TransferResult.RUNNING))
+            var fillers = 0
+            while (history.stats.dropped == 0L && fillers < MAX_FILLERS) {
+                history.enqueue(rowOf("filler-$fillers", "/drop/filler-$fillers.bin", TransferResult.RUNNING))
+                fillers++
             }
-            try {
-                history.enqueue(rowOf("op-kept", "/drop/kept.bin", TransferResult.RUNNING))
-                // The writer takes op-kept and whatever is queued at that moment (up to one batch), then parks
-                // on the write lock. Fillers go in until one is dropped: a drop means the queue is full, and the
-                // parked writer takes nothing more, so the terminal snapshot below meets a full queue for certain.
-                var fillers = 0
-                while (history.stats.dropped == 0L && fillers < MAX_FILLERS) {
-                    history.enqueue(rowOf("filler-$fillers", "/drop/filler-$fillers.bin", TransferResult.RUNNING))
-                    fillers++
-                }
-                assertTrue(history.stats.dropped > 0, "the queue never filled after $fillers fillers: ${history.stats}")
-                history.enqueue(
-                    rowOf("op-kept", "/drop/kept.bin", TransferResult.FAILED).copy(
-                        finishedAt = wallMs.get(),
-                        errorClass = "IOException",
-                    ),
-                )
-            } finally {
-                // The write lock goes: the writer wakes and drains everything.
-                gate.createStatement().use { it.execute("ROLLBACK") }
-            }
+            assertTrue(history.stats.dropped > 0, "the queue never filled after $fillers fillers: ${history.stats}")
+            history.enqueue(
+                rowOf("op-kept", "/drop/kept.bin", TransferResult.FAILED).copy(
+                    finishedAt = wallMs.get(),
+                    errorClass = "IOException",
+                ),
+            )
+        } finally {
+            // The listener returns: the writer takes the queue and the kept terminal snapshot.
+            release.countDown()
         }
         assertTrue(history.flush(WRITER_BUDGET_MS))
         val kept = history.rows().filter { it.operationId == "op-kept" }
