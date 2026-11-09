@@ -24,7 +24,7 @@ buildscript {
             force("com.fasterxml.jackson.core:jackson-core:2.22.4")
             force("com.fasterxml.jackson.core:jackson-databind:2.22.4")
             force("com.fasterxml.jackson.core:jackson-annotations:2.22")   // the annotations line has no 2.22.x patches
-            force("com.google.guava:guava:33.7.2-jre")
+            force("com.google.guava:guava:33.8.0-jre")
         }
     }
 }
