@@ -209,12 +209,17 @@ class FakeCloudProvider : CloudProvider {
     val maxConcurrentDownloadsByPath = java.util.concurrent.ConcurrentHashMap<String, Int>()
     private val activeDownloadsByPath = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
+    // Runs inside every id-addressed download, in the transfer's own coroutine, so a test can look at the coroutine
+    // tree the engine runs its transfers in (how many coroutines are alive while it transfers).
+    var duringDownload: (suspend () -> Unit)? = null
+
     private suspend fun trackDownloadConcurrency(remotePath: String) {
         val active = (activeDownloadsByPath[remotePath] ?: 0) + 1
         activeDownloadsByPath[remotePath] = active
         maxConcurrentDownloadsByPath[remotePath] =
             maxOf(maxConcurrentDownloadsByPath[remotePath] ?: 0, active)
         if (downloadDelayMs > 0) kotlinx.coroutines.delay(downloadDelayMs)
+        duringDownload?.invoke()
     }
 
     override suspend fun downloadById(
