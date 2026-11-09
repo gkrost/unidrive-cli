@@ -168,9 +168,12 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         private const val OUTAGE_FIRST_DELAY_MS: Long = 2_000L
         private const val OUTAGE_MAX_DELAY_MS: Long = 30_000L
 
-        /** The bounds the throttle ladders apply to a server's Retry-After hint: at least one second, at most a minute. */
-        private const val MIN_THROTTLE_WAIT_MS: Long = 1_000L
-        private const val MAX_THROTTLE_WAIT_MS: Long = 60_000L
+        /**
+         * The bounds the throttle ladders apply to a server's Retry-After hint: at least one second, at most a minute. The
+         * provider's shard-commit ladder uses the same bounds.
+         */
+        internal const val MIN_THROTTLE_WAIT_MS: Long = 1_000L
+        internal const val MAX_THROTTLE_WAIT_MS: Long = 60_000L
 
         /** How many shard pointers one [getBridgeMirrors] query asks for; an object with more shards cannot be judged from it. */
         internal const val BRIDGE_MIRROR_LIMIT: Int = 3

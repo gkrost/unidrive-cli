@@ -98,49 +98,70 @@ class InternxtShardRetryAfterTest {
     @Test
     fun `the shard-commit retry of a download waits for the host's Retry-After`() =
         runTest {
-            val fileUuid = "file-uuid-1"
-            val fileId = "bridge-file-id-1"
-            val bucket = "6928426c1a2316b856c9ab81"
-            val shardGets = mutableListOf<Long>()
-            val payloadB64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
-            val engine =
-                MockEngine { request: HttpRequestData ->
-                    val json = headersOf(HttpHeaders.ContentType, "application/json")
-                    when {
-                        request.url.encodedPath == "/drive/files/$fileUuid/meta" ->
-                            respond("""{"uuid":"$fileUuid","bucket":"$bucket","fileId":"$fileId","size":"16","status":"EXISTS"}""", HttpStatusCode.OK, json)
-                        request.url.encodedPath == "/buckets/$bucket/files/$fileId/info" ->
-                            respond(
-                                """{"bucket":"$bucket","id":"$fileId","index":"${"11".repeat(32)}","shards":[{"index":0,"hash":"${"ab".repeat(32)}","url":"https://shard-host.invalid/get/shard-0"}]}""",
-                                HttpStatusCode.OK,
-                                json,
-                            )
-                        request.url.host == "shard-host.invalid" && request.method == HttpMethod.Get -> {
-                            shardGets += currentTime
-                            respond("", HttpStatusCode.TooManyRequests, throttled)
-                        }
-                        else -> respond("{}", HttpStatusCode.NotFound, json)
-                    }
-                }
-            val provider =
-                InternxtProvider(
-                    InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-shard-retry-token", ".tmp")),
-                    httpClient = HttpClient(engine),
-                    credentials =
-                        credentials.copy(
-                            jwt = "header.$payloadB64.signature",
-                            mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-                            bucket = bucket,
-                        ),
-                )
-
-            assertFailsWith<Exception> {
-                provider.downloadById(fileUuid, "/big.bin", Files.createTempDirectory("ud-shard-retry").resolve("out.bin"))
-            }
+            val shardGets = throttledShardDownloadAttempts(retryAfter = "3")
 
             assertEquals(3, shardGets.size, "three attempts: $shardGets")
             for (i in 1 until shardGets.size) {
                 assertTrue(shardGets[i] - shardGets[i - 1] >= 3_000L, "attempt ${i + 1} waited ${shardGets[i] - shardGets[i - 1]} ms, not the 3 s asked for")
             }
         }
+
+    // The shared one-second floor (#220) holds on the shard-commit ladder too: a host that answers `Retry-After: 0`
+    // is not asked again after half a second.
+    @Test
+    fun `the shard-commit retry waits the one-second floor when the host's Retry-After is zero`() =
+        runTest {
+            val shardGets = throttledShardDownloadAttempts(retryAfter = "0")
+
+            assertEquals(3, shardGets.size, "three attempts: $shardGets")
+            for (i in 1 until shardGets.size) {
+                assertTrue(shardGets[i] - shardGets[i - 1] >= 1_000L, "attempt ${i + 1} waited ${shardGets[i] - shardGets[i - 1]} ms, below the 1 s floor")
+            }
+        }
+
+    // Downloads a one-shard file whose every shard GET is a 429 with the given Retry-After, and returns the
+    // virtual time of each shard GET.
+    private suspend fun TestScope.throttledShardDownloadAttempts(retryAfter: String): List<Long> {
+        val throttledReply = headersOf(HttpHeaders.RetryAfter, retryAfter)
+        val fileUuid = "file-uuid-1"
+        val fileId = "bridge-file-id-1"
+        val bucket = "6928426c1a2316b856c9ab81"
+        val shardGets = mutableListOf<Long>()
+        val payloadB64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
+        val engine =
+            MockEngine { request: HttpRequestData ->
+                val json = headersOf(HttpHeaders.ContentType, "application/json")
+                when {
+                    request.url.encodedPath == "/drive/files/$fileUuid/meta" ->
+                        respond("""{"uuid":"$fileUuid","bucket":"$bucket","fileId":"$fileId","size":"16","status":"EXISTS"}""", HttpStatusCode.OK, json)
+                    request.url.encodedPath == "/buckets/$bucket/files/$fileId/info" ->
+                        respond(
+                            """{"bucket":"$bucket","id":"$fileId","index":"${"11".repeat(32)}","shards":[{"index":0,"hash":"${"ab".repeat(32)}","url":"https://shard-host.invalid/get/shard-0"}]}""",
+                            HttpStatusCode.OK,
+                            json,
+                        )
+                    request.url.host == "shard-host.invalid" && request.method == HttpMethod.Get -> {
+                        shardGets += currentTime
+                        respond("", HttpStatusCode.TooManyRequests, throttledReply)
+                    }
+                    else -> respond("{}", HttpStatusCode.NotFound, json)
+                }
+            }
+        val provider =
+            InternxtProvider(
+                InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-shard-retry-token", ".tmp")),
+                httpClient = HttpClient(engine),
+                credentials =
+                    credentials.copy(
+                        jwt = "header.$payloadB64.signature",
+                        mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                        bucket = bucket,
+                    ),
+            )
+
+        assertFailsWith<Exception> {
+            provider.downloadById(fileUuid, "/big.bin", Files.createTempDirectory("ud-shard-retry").resolve("out.bin"))
+        }
+        return shardGets
+    }
 }
