@@ -1,0 +1,84 @@
+# The Maven groups the third-party Central mirrors (Aliyun, Tencent, Huawei) may serve, one per line.
+# Read by settings.gradle.kts (pluginManagement.repositories) and build.gradle.kts (allprojects.repositories);
+# see the comment in settings.gradle.kts for why the mirrors exist and what the filter guarantees.
+#
+# The list is every group that appears in gradle/verification-metadata.xml or in a dependency lockfile,
+# minus the Gradle plugin marker groups (org.jetbrains.kotlin.jvm, org.jetbrains.kotlin.plugin.serialization,
+# org.cyclonedx.bom): markers come from the Plugin Portal and are never mirrored.
+#
+# A group that is missing here is not a build error. The mirrors are skipped for it and the artifact comes from
+# mavenCentral(), the unrestricted last fallback (only without the mirrors' protection against Central's 429s).
+# When a new dependency brings a new group, add it here in the same change as its lockfile and verification metadata.
+aopalliance
+ch.qos.logback
+com.akuleshov7
+com.charleskorn.kaml
+com.ethlo.time
+com.fasterxml
+com.fasterxml.jackson
+com.fasterxml.jackson.core
+com.fasterxml.jackson.dataformat
+com.fasterxml.woodstox
+com.github.docker-java
+com.github.package-url
+com.google
+com.google.code.gson
+com.google.errorprone
+com.google.guava
+com.google.inject
+com.gradleup.shadow
+com.networknt
+com.squareup.okhttp3
+com.squareup.okio
+commons-codec
+commons-io
+dev.drewhamilton.poko
+info.picocli
+io.github.davidburstrom.contester
+io.github.detekt.sarif4k
+io.github.java-diff-utils
+io.gitlab.arturbosch.detekt
+io.ktor
+io.socket
+it.krzeminski
+jakarta.platform
+javax.inject
+junit
+net.java.dev.jna
+net.thauvin.erik.urlencoder
+org.apache
+org.apache.ant
+org.apache.commons
+org.apache.groovy
+org.apache.logging.log4j
+org.apache.maven
+org.apache.maven.resolver
+org.apache.maven.shared
+org.codehaus.plexus
+org.codehaus.woodstox
+org.cyclonedx
+org.eclipse.ee4j
+org.eclipse.sisu
+org.hamcrest
+org.jacoco
+org.jcommander
+org.jdom
+org.jetbrains
+org.jetbrains.intellij.deps
+org.jetbrains.kotlin
+org.jetbrains.kotlinx
+org.json
+org.jspecify
+org.junit
+org.mockito
+org.ow2
+org.ow2.asm
+org.rnorth.duct-tape
+org.slf4j
+org.snakeyaml
+org.sonatype.oss
+org.springframework
+org.testcontainers
+org.vafer
+org.xerial
+org.yaml
