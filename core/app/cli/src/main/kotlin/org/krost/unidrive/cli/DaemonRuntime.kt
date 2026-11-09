@@ -983,16 +983,17 @@ class DaemonRuntime(
                     closeTransferHistory(transferHistory)
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: StateDbCorruptException) {
+            // The command prints the one line (stderr is also where WARN and up are logged, so no WARN here); the
+            // trace stays in the log at debug (gkrost/unidrive-cli#581).
+            log.info("daemon: state.db at {} is corrupt; stopping", e.dbPath)
+            log.debug("daemon: state.db corrupt", e)
+            throw e
+        } catch (e: IpcAuth.StartupRefused) {
             // An IPC startup refusal is already reported as its one line.
-            if (e is StateDbCorruptException) {
-                // The command prints the one line (stderr is also where WARN and up are logged, so no WARN here); the
-                // trace stays in the log at debug (gkrost/unidrive-cli#581).
-                log.info("daemon: state.db at {} is corrupt; stopping", e.dbPath)
-                log.debug("daemon: state.db corrupt", e)
-            } else if (e !is IpcAuth.StartupRefused) {
-                log.error("daemon: lifecycle error", e)
-            }
+            throw e
+        } catch (e: Exception) {
+            log.error("daemon: lifecycle error", e)
             throw e
         } finally {
             cleanup()
