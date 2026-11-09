@@ -91,6 +91,14 @@ class DaemonRuntimeTest {
     private fun rawConnect(): SocketChannel = SocketChannel.open(UnixDomainSocketAddress.of(socketPath))
 
     @Test
+    fun `the start line names the transfer budget, the upload queue depth and the cache grace`() {
+        assertEquals(
+            "hydration limits: 4 concurrent transfers, upload queue depth 256, cache access grace 60 s",
+            DaemonRuntime.hydrationLimitsLine(4, 256, 60_000),
+        )
+    }
+
+    @Test
     fun `autospawn recognizes a daemon whose tokens are separate from its socket`() =
         runBlocking(kotlinx.coroutines.Dispatchers.IO) {
             socketPath = Files.createDirectory(tempDir.resolve("ipc")).resolve("daemon.sock")

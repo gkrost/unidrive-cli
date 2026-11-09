@@ -403,6 +403,9 @@ class DaemonRuntime(
                     } else {
                         null
                     }
+                if (hydration != null) {
+                    log.info(hydrationLimitsLine(mount.transferBudgetSize, HydrationImpl.DEFAULT_UPLOAD_QUEUE_DEPTH, HydrationImpl.CACHE_ACCESS_GRACE_MS))
+                }
                 val hydrationIpc: HydrationIpcHandler? =
                     // gkrost/unidrive-cli#24: the name_clash guard's first spellings persist in state.db, so a restart keeps them.
                     hydration?.let { h ->
@@ -1106,6 +1109,13 @@ class DaemonRuntime(
          * cannot be told apart (gkrost/unidrive-cli#225). A child coroutine inherits it; a thread the daemon's code starts
          * itself carries it with [org.krost.unidrive.MdcSnapshot].
          */
+        /** The constants that bound a mount daemon's transfers, for one INFO line at start (gkrost/unidrive-cli#72). Numbers only. */
+        internal fun hydrationLimitsLine(
+            transfers: Int,
+            uploadQueueDepth: Int,
+            cacheAccessGraceMs: Long,
+        ): String = "hydration limits: $transfers concurrent transfers, upload queue depth $uploadQueueDepth, cache access grace ${cacheAccessGraceMs / 1000} s"
+
         internal fun logContext(profileName: String): MDCContext = MDCContext(mapOf("build" to BuildInfo.COMMIT, "profile" to profileName))
 
         /**
