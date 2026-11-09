@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import kotlin.system.exitProcess
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.CredentialHealth
@@ -199,11 +200,7 @@ open class Main : Runnable {
     ): ProfileMode {
         val mode =
             profile.mode
-                ?: run {
-                    System.err.println("Error: ${ProfileMode.modelessMessage(profile.name, command)}")
-                    System.exit(MODE_REFUSAL_EXIT)
-                    @Suppress("UNREACHABLE_CODE") throw IllegalStateException("unreachable")
-                }
+                ?: fatal("Error: ${ProfileMode.modelessMessage(profile.name, command)}", MODE_REFUSAL_EXIT)
         if (mode != needed) {
             System.err.println(
                 "Error: profile '${profile.name}' is a ${mode.wireName} profile; '$command' needs a ${needed.wireName} profile. " +
@@ -224,11 +221,7 @@ open class Main : Runnable {
         command: String,
     ): ProfileMode =
         profile.mode
-            ?: run {
-                System.err.println("Error: ${ProfileMode.modelessMessage(profile.name, command)}")
-                System.exit(MODE_REFUSAL_EXIT)
-                @Suppress("UNREACHABLE_CODE") throw IllegalStateException("unreachable")
-            }
+            ?: fatal("Error: ${ProfileMode.modelessMessage(profile.name, command)}", MODE_REFUSAL_EXIT)
 
     /** Exit code of a hosting-contract refusal (archive#603): config-shaped, like [MountCommand.EX_CONFIG]. */
     val MODE_REFUSAL_EXIT: Int = 78
@@ -875,3 +868,12 @@ internal fun configurationErrorLine(
     type: String,
     message: String,
 ): String = "Configuration error: profile '$profileName' ($type): $message"
+
+/** One refusal line on stderr, then exit — the [Nothing] return lets a guard's exit path type-check without `!!` or a dead throw. */
+internal fun fatal(
+    message: String,
+    exitCode: Int = 1,
+): Nothing {
+    System.err.println(message)
+    exitProcess(exitCode)
+}

@@ -137,11 +137,8 @@ class ProfileAddCommand : Callable<Int> {
         types.forEachIndexed { i, t -> println("  ${i + 1}) $t") }
         print("Choice [1-${types.size}]: ")
         val choice = console.readLine()?.trim()?.toIntOrNull()
-        if (choice == null || choice !in 1..types.size) {
-            System.err.println("Invalid choice.")
-            System.exit(1)
-        }
-        val type = types[choice!! - 1]
+        if (choice == null || choice !in 1..types.size) fatal("Invalid choice.")
+        val type = types[choice - 1]
         val accountHint = newAccountHint(org.krost.unidrive.ProviderRegistry.getMetadata(type))
         if (accountHint.isNotEmpty()) {
             println()
@@ -337,11 +334,8 @@ class ProfileAddCommand : Callable<Int> {
     ): String {
         print("$label: ")
         val value = console.readLine()?.trim()
-        if (value.isNullOrBlank()) {
-            System.err.println("Error: $label is required.")
-            System.exit(1)
-        }
-        return value!!
+        if (value.isNullOrBlank()) fatal("Error: $label is required.")
+        return value
     }
 
     /**
