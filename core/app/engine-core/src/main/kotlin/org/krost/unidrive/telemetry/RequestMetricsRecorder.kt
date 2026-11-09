@@ -36,6 +36,8 @@ class RequestMetricsRecorder internal constructor(
     private val maxBytes: Long,
     private val clock: () -> Long,
     private val store: TelemetryStore,
+    // How long close() waits for the queue to take Stop, and then for the thread to end.
+    private val closeWaitMs: Long = JOIN_TIMEOUT_MS,
 ) : RequestMetricsSink,
     AutoCloseable {
     private sealed interface Op {
@@ -60,6 +62,10 @@ class RequestMetricsRecorder internal constructor(
     private val droppedUnrecorded = AtomicBoolean()
     private val accepting = AtomicBoolean(true)
 
+    // Set by the writer thread when it ends on a Throwable the loop does not handle (#390); see [writerLoop].
+    @Volatile
+    private var writerFailure: String? = null
+
     // gkrost/unidrive-cli#225: the writer's lines carry the MDC (profile, build) of the daemon that opened the metrics.
     private val logContext = MdcSnapshot.capture()
     private val thread = Thread(::writerLoop, "request-metrics-$profile").apply { isDaemon = true }
@@ -71,13 +77,22 @@ class RequestMetricsRecorder internal constructor(
     private var lastWarnNanos = 0L
 
     val stats: RequestMetricsStats
-        get() = RequestMetricsStats(written.get(), dropped.get(), dropped.get() > 0, queue.size)
+        get() = RequestMetricsStats(written.get(), dropped.get(), dropped.get() > 0, queue.size, writerFailure)
 
     internal fun start() = thread.start()
+
+    internal val writerAlive: Boolean get() = thread.isAlive
+
+    internal fun writerStatus(): String = writerThreadStatus(thread, writerFailure)
 
     /** Hot path: hands the attempt to the queue; a full queue drops it and counts it. Never blocks, never throws. */
     override fun record(attempt: RequestAttempt) {
         if (!accepting.get()) return
+        if (writerFailure != null) {
+            // Nobody drains the queue any more: the attempt is lost, and says so in the counters.
+            dropped.incrementAndGet()
+            return
+        }
         if (!queue.offer(Op.Write(attempt))) {
             dropped.incrementAndGet()
             droppedUnrecorded.set(true)
@@ -136,8 +151,13 @@ class RequestMetricsRecorder internal constructor(
     override fun close() {
         if (!accepting.getAndSet(false)) return
         if (thread.isAlive) {
-            queue.offer(Op.Stop, JOIN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            thread.join(JOIN_TIMEOUT_MS)
+            // A Stop the full queue did not take in time would leave the writer polling for ever (#530); the interrupt
+            // ends its loop, so the writer does not outlive the close.
+            if (!queue.offer(Op.Stop, closeWaitMs, TimeUnit.MILLISECONDS)) {
+                log.warn("Request metrics for {}: the queue did not take the stop within {} ms; interrupting the writer", profile, closeWaitMs)
+                thread.interrupt()
+            }
+            thread.join(closeWaitMs)
         }
     }
 
@@ -164,6 +184,12 @@ class RequestMetricsRecorder internal constructor(
             rollUp()
         } catch (e: InterruptedException) {
             log.debug("Request metrics writer for {} interrupted: {}", profile, e.message)
+        } catch (@Suppress("TooGenericExceptionCaught") e: Throwable) {
+            // As in HistoryWriter (#390): an Error ended the thread unseen. Say so where the stats and the log carry it.
+            val what = "${e.javaClass.name}: ${HistorySanitizer.message(e.message)}"
+            writerFailure = what
+            log.error("Request metrics writer for {} died, no more attempts are written: {}", profile, what)
+            log.debug("Request metrics writer for {} died", profile, e)
         }
     }
 

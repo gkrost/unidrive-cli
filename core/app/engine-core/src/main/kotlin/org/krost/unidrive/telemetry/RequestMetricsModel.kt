@@ -45,6 +45,8 @@ data class RequestMetricsStats(
     val dropped: Long,
     val incomplete: Boolean,
     val queued: Int,
+    /** Why the writer thread ended on its own (an Error it did not expect), or null while it runs or was closed. */
+    val writerFailure: String? = null,
 )
 
 /**
