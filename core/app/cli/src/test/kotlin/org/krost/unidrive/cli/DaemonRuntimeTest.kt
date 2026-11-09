@@ -376,6 +376,7 @@ class DaemonRuntimeTest {
                     """{"verb":"hydration.open_write","handle_id":"h2","path":"/startup/write.txt","cache_path":${kotlinx.serialization.json.JsonPrimitive(tempDir.resolve("write-cache.bin").toString())}}""",
                     """{"verb":"hydration.open_write_begin","path":"/startup/truncate.txt"}""",
                     """{"verb":"hydration.close_handle","handle_id":"h3"}""",
+                    """{"verb":"hydration.handle_status","handle_id":"h5"}""", // gkrost/unidrive-cli#437: an unknown handle is an answer ("unknown"), not silence
                     """{"verb":"hydration.hydrate","path":"/startup/hydrate.txt"}""",
                     """{"verb":"hydration.dehydrate","path":"/startup/dehydrate.txt"}""",
                     """{"verb":"hydration.subscribe"}""",
