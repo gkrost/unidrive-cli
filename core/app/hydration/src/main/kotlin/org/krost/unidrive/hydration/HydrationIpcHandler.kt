@@ -174,6 +174,12 @@ import java.util.concurrent.atomic.AtomicLong
  *                         daemon.status lists "hydration.cancel_read" in capabilities on an engine that does this, so a client
  *                         tells "handle_id on cancel is understood" from an engine that reads the path alone.
  *
+ *   handle_status request: {"verb":"hydration.handle_status","handle_id":"h1"}
+ *               reply:    {"ok":true,"state":"done","completed":{<the completed event line as the subscribe stream sent it>}}
+ *                         {"ok":true,"state":"unknown"}   no outcome recorded: the transfer may still run, the daemon restarted,
+ *                                                         or the outcome is older than ten minutes (gkrost/unidrive-cli#437)
+ *                         errs: missing_handle_id
+ *
  *   Upload progress: while a client-written file uploads, the stream carries
  *   {"event":"uploading","path":"...","handle_id":"...","bytes_done":N,"bytes_total":M}
  *   coalesced to a few per second per file, correlated by the open_write
@@ -206,7 +212,42 @@ class HydrationIpcHandler(
     handleIdRun: String = randomHandleIdRun(),
     // gkrost/unidrive-cli#24: where the first spellings persist across a daemon restart; null = in memory only (tests).
     spellingsStore: NameSpellingStore? = null,
+    // gkrost/unidrive-cli#437: the clock of the outcome table; a seam for tests.
+    private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
+    /**
+     * gkrost/unidrive-cli#437: the last outcome of every handle, kept [OUTCOME_TTL_MS] (at most [OUTCOME_CAP]) in memory. It is fed at the
+     * single fan-out site, so it does not depend on a subscriber being connected: a client that reconnects asks
+     * `hydration.handle_status` instead of listing rows to guess whether its transfer ended. It does not survive a daemon restart.
+     */
+    private class OutcomeTable(private val nowMs: () -> Long) {
+        private class Outcome(val atMs: Long, val line: String)
+
+        private val byHandle = LinkedHashMap<String, Outcome>()
+
+        @Synchronized
+        fun record(handleId: String, line: String) {
+            byHandle.remove(handleId) // re-insert at the end: the map stays in age order
+            byHandle[handleId] = Outcome(nowMs(), line)
+            expire()
+            while (byHandle.size > OUTCOME_CAP) byHandle.remove(byHandle.keys.first())
+        }
+
+        @Synchronized
+        fun lookup(handleId: String): String? {
+            expire()
+            return byHandle[handleId]?.line
+        }
+
+        private fun expire() {
+            val cutoff = nowMs() - OUTCOME_TTL_MS
+            val it = byHandle.values.iterator()
+            while (it.hasNext() && it.next().atMs < cutoff) it.remove()
+        }
+    }
+
+    private val outcomes = OutcomeTable(nowMs)
+
     // Write-handle ids the daemon issues (open_write or create without handle_id): this run's prefix and a counter.
     // No client can name one (see reservedHandleId), so a close from one client never releases another's handle.
     private val issuedHandlePrefix = "$ISSUED_HANDLE_PREFIX$handleIdRun-"
@@ -305,6 +346,9 @@ class HydrationIpcHandler(
      * The single collector at the caller site drains hydration.events into here.
      */
     fun dispatchEvent(event: HydrationEvent) {
+        if (event is HydrationEvent.Completed && event.handleId.isNotEmpty()) {
+            outcomes.record(event.handleId, serialiseHydrationEvent(event))
+        }
         for (sub in subscribers.values) {
             sub.queue.offer(event)
         }
@@ -368,6 +412,10 @@ class HydrationIpcHandler(
         // source and the queue is the per-subscriber smoothing layer.
         const val SUBSCRIBER_QUEUE_CAPACITY = 64
 
+        // gkrost/unidrive-cli#437: how long and how many `completed` outcomes `hydration.handle_status` can answer.
+        const val OUTCOME_TTL_MS = 10 * 60_000L
+        const val OUTCOME_CAP = 4096
+
         // The most outcomes (completed, failed for good) one subscriber's queue keeps when nothing else is left to drop.
         const val SUBSCRIBER_TERMINAL_HARD_CAP = 4096
 
@@ -404,9 +452,13 @@ class HydrationIpcHandler(
             "hydration.create",
             "hydration.rename",
             "hydration.cancel",
+            HANDLE_STATUS,
             REFUSE_NAME,
             VIEW_PAGE,
         )
+
+        /** The outcome of a handle's transfer, from a short-lived table that survives a reconnect (gkrost/unidrive-cli#437); also the daemon.status capability. */
+        const val HANDLE_STATUS = "hydration.handle_status"
 
         /** A file the client does not upload for its twin, recorded and cleared (gkrost/unidrive-cli#24); also the daemon.status capability. */
         const val REFUSE_NAME = "hydration.refuse_name"
@@ -691,6 +743,17 @@ class HydrationIpcHandler(
                         hydration.cancelDownload(path) || upload
                     }
                 """{"ok":true,"cancelled":$cancelled}"""
+            }
+            HANDLE_STATUS -> {
+                val handleId = request.string("handle_id")
+                if (handleId.isNullOrEmpty()) return reply(ok = false, error = "missing_handle_id")
+                val line = outcomes.lookup(handleId)
+                if (line == null) {
+                    // Nothing recorded: still running, never seen by this daemon run, or aged out. The client keeps its own backstop.
+                    """{"ok":true,"state":"unknown"}"""
+                } else {
+                    """{"ok":true,"state":"done","completed":$line}"""
+                }
             }
             "hydration.subscribe" -> {
                 registerSubscriber(connectionId)

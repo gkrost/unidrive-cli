@@ -398,6 +398,19 @@ is listed.
 | `view.invalidated` | `{"event":"view.invalidated","paths":[…][,"moved":[{"from":…,"to":…}]]}` or `{"event":"view.invalidated","full":true}` | `full:true` stands alone, without `paths` (more than 256 changed paths, or the tracked scope was reshaped: drop every cache); otherwise `paths` is present. Enumeration changed the view, or `hydration.unlink` / `hydration.rmdir` removed `paths` (a delete through the daemon, e.g. `unidrive rm`, archive#1199); drop readdir/getattr caches |
 | `lost` | `{"event":"lost","since_last":N}` | your queue overflowed; resync from `hydration.list` |
 
+`hydration.handle_status {"handle_id":"h1"}` answers how a handle's transfer ended, for a client whose subscribe connection
+dropped (a daemon restart, a reset socket) and that missed the `completed`. The daemon keeps the last `completed` of every
+handle for ten minutes (at most 4096) in memory, whether or not a subscriber was connected:
+
+- `{"ok":true,"state":"done","completed":{<the completed event exactly as the stream carries it>}}`
+- `{"ok":true,"state":"unknown"}`: no outcome is recorded. The transfer may still run, the daemon may have restarted (the table
+  is not persisted, and a crash-recovery replay reports under its own `recovery-` handle ids), or the outcome is older than ten
+  minutes. A client keeps its own backstop for this answer.
+- `{"ok":false,"error":"missing_handle_id"}`
+
+The verb is read class (the stream's events are read scope too). An engine that answers it lists `hydration.handle_status` in the
+`daemon.status` `capabilities`. Pinned by `hydration.handle_status.ndjson` and the capability list of `daemon.status.ndjson`.
+
 Blocked names: a drive that refuses an entry by its name (OneDrive's uniqueness check ignores some characters, so a
 sibling that differs from an existing one only in such characters is refused) first gets the entry under a stable
 server name, invisible to the client: the local name stays and `hydration.list` shows it as an ordinary synced entry. If that
