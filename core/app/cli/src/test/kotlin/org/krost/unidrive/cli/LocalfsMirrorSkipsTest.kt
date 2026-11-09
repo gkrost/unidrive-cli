@@ -79,8 +79,7 @@ class LocalfsMirrorSkipsTest {
     @Test
     fun `a local name with a lone surrogate is skipped with one warning, never uploaded, and the second sync is clean`() {
         val name = "lone-\uD800-surrogate.txt"
-        val file = local.resolve(name)
-        assumeTrue("this host cannot create a name with a lone surrogate", runCatching { Files.writeString(file, "mine") }.isSuccess)
+        val file = seedLoneSurrogate(local, name, "mine")
         Files.writeString(local.resolve("ordinary.txt"), "an ordinary sibling")
 
         val first = sync()
@@ -105,7 +104,7 @@ class LocalfsMirrorSkipsTest {
     @Test
     fun `a cloud name with a lone surrogate is skipped the same way and its cloud copy is left alone`() {
         val name = "cloud-\uDC00-lone.txt"
-        assumeTrue("this host cannot create a name with a lone surrogate", runCatching { Files.writeString(remote.resolve(name), "theirs") }.isSuccess)
+        seedLoneSurrogate(remote, name, "theirs")
         Files.writeString(remote.resolve("ordinary.txt"), "an ordinary sibling")
 
         val first = sync()
@@ -184,6 +183,17 @@ class LocalfsMirrorSkipsTest {
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    // Linux refuses the name already in Path.resolve (it has no UTF-8 form); NTFS takes it. Skips the test where it is refused.
+    private fun seedLoneSurrogate(
+        root: Path,
+        name: String,
+        content: String,
+    ): Path {
+        val file = runCatching { root.resolve(name).also { Files.writeString(it, content) } }.getOrNull()
+        assumeTrue("this host cannot create a name with a lone surrogate", file != null)
+        return file!!
+    }
 
     private fun junction(
         link: Path,
