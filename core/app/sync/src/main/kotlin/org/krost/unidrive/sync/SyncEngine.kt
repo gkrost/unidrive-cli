@@ -2800,6 +2800,15 @@ open class SyncEngine(
                     val ids = mutableListOf<String>()
                     for ((_, item) in held) {
                         ids.add(item.originalId)
+                        // gkrost/unidrive-cli#582: a cloud name with a lone surrogate is refused here, at the page's
+                        // admission, before the slice reconciles and dispatches: no action is planned for it, no row
+                        // is written, and the warning is the once-per-name one the final filter shares. The id stays
+                        // in the page's ids above (seen accounting), and the cloud copy is left alone.
+                        val surrogateIssue = loneSurrogatePathIssue(item.resolved.path)
+                        if (surrogateIssue != null) {
+                            if (loneSurrogateWarned.add(item.resolved.path)) log.warn("Skipping cloud item {}: {}", item.resolved.path, surrogateIssue)
+                            continue
+                        }
                         // archive#401: single admit into the gather map. The page slice carries
                         // the key's winner only when THIS page's item is it — a twin that
                         // lost to an earlier page's winner was already reconciled on that
