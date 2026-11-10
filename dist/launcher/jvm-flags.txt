@@ -16,6 +16,12 @@
 # Also env-gated, added by the launcher templates and DaemonAutospawn (not a plain flag line): the
 # -javaagent of the probe jar deployed beside the fat jar, under UNIDRIVE_COROUTINE_DEBUG=1 (the
 # daemon's coroutine-dump facility, archive#613 — see CoroutineDebug).
+# Also machine-gated, added by the launcher templates and DaemonAutospawn (gkrost/unidrive-cli#572): the
+# per-install startup cache beside the jar — -XX:AOTCache=<jar dir>/unidrive.aot -Xlog:aot=off when that
+# file exists (and no -javaagent is armed), else -XX:+AutoCreateSharedArchive
+# -XX:SharedArchiveFile=<jar dir>/unidrive.jsa -Xlog:cds=off when the jar's folder is writable. JDK 27
+# refuses the two caches in one JVM, so exactly one applies; the conditions are in DaemonAutospawn and
+# the launcher templates, never as plain lines here.
 # Start with a small heap. Without it JDK <= 25 commit 1/64 of RAM up front (about 500 MB on a 32 GB
 # machine), touch 80-140 MB of it during start and give it back only at a later GC: a one-shot sync then
 # peaks at ~385 MB RSS instead of ~200 MB, and a daemon can sit at ~470 MB until that GC. Measured on

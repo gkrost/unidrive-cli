@@ -143,7 +143,8 @@ object DaemonAutospawn {
      * passes: the heap cap (UNIDRIVE_XMX, default 2g), the static flags from `jvm-flags.txt` beside
      * the jar (the launchers' single source; a missing file degrades to no static flags, never to a
      * failed spawn), the locale (UNIDRIVE_LOCALE, else the parent's own user.language/user.country),
-     * the Windows trust store pair on Windows ([TrustStorePolicy]), the pinned unix-domain temp dir, the coroutine-debug agent when armed, and the post-mortem
+     * the Windows trust store pair on Windows ([TrustStorePolicy]), the pinned unix-domain temp dir, the coroutine-debug agent when armed, the per-install
+     * startup cache beside the jar ([startupCacheFlags]), and the post-mortem
      * diagnostics flags into the diagnostics dir — always daemon work here, so the bounded GC log
      * (the profile's own `gc-<profile>.log`) rides unconditioned.
      *
@@ -169,9 +170,9 @@ object DaemonAutospawn {
             if ((props("java.specification.version")?.toIntOrNull() ?: 0) >= JFR_REDACT_MIN_JAVA) add(JFR_REDACT_FLAG)
             addAll(localeArgs(env, props))
             props("java.io.tmpdir")?.takeIf { it.isNotBlank() }?.let { add("-Djdk.net.unixdomain.tmpdir=$it") }
-            if (CoroutineDebug.enabled(env)) {
-                CoroutineDebug.agentJarBeside(jar)?.let { add("-javaagent:$it") }
-            }
+            val agent = if (CoroutineDebug.enabled(env)) CoroutineDebug.agentJarBeside(jar) else null
+            agent?.let { add("-javaagent:$it") }
+            addAll(startupCacheFlags(jar, agentArmed = agent != null))
             addAll(diagArgs(diagDir(env, props, windows), profileName))
             add("-jar")
             add(jar.toString())
@@ -326,6 +327,35 @@ private val FILE_SAFE_PROFILE = Regex("[A-Za-z0-9_-]+")
  *  for objects (11). */
 internal fun heapDumpFileName(profileName: String): String =
     if (FILE_SAFE_PROFILE.matches(profileName)) "heap-$profileName.hprof" else "heap-default.hprof"
+
+/** The startup-cache flags for a JVM launched from [jar], the same choice the launcher templates make
+ *  (dist/launcher/unidrive.ps1.tmpl, unidrive.sh.tmpl): the AOT cache of a bundled image wins when one
+ *  lies beside the jar — and no coroutine-debug agent is armed, because the agent disables the cache and
+ *  errors; else the dynamic CDS archive, and only when the jar's folder is writable, because an
+ *  unwritable archive path makes the JVM exit 127 after an otherwise successful run (verified on JDK
+ *  27). The -Xlog switches keep the first run's and a jar change's cache messages off stdout, which the
+ *  client parses; a failed dump or map degrades to a run without a cache, never to a failed command.
+ *  JDK 27 refuses the two caches in one JVM ("Option AOTCache cannot be used at the same time with ...
+ *  SharedArchiveFile"), so exactly one of the two applies. Beside [DaemonAutospawn] for the same reason
+ *  as [heapDumpFileName]: one function more in the object trips detekt's TooManyFunctions limit. */
+internal fun startupCacheFlags(
+    jar: Path,
+    agentArmed: Boolean,
+): List<String> {
+    val aot = jar.resolveSibling("unidrive.aot")
+    if (!agentArmed && Files.isRegularFile(aot)) {
+        return listOf("-XX:AOTCache=$aot", "-Xlog:aot=off")
+    }
+    val dir = jar.parent
+    if (dir != null && Files.isDirectory(dir) && Files.isWritable(dir)) {
+        return listOf(
+            "-XX:+AutoCreateSharedArchive",
+            "-XX:SharedArchiveFile=${dir.resolve("unidrive.jsa")}",
+            "-Xlog:cds=off",
+        )
+    }
+    return emptyList()
+}
 
 private fun waitForDaemon(
     profileName: String,

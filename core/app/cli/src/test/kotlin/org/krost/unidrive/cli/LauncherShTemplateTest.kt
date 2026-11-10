@@ -52,7 +52,12 @@ class LauncherShTemplateTest {
     private data class Run(val exit: Int, val java: String?, val args: List<String>, val stderr: String)
 
     /** Renders the template the way build.gradle.kts / install.sh do and runs it with `java` on PATH -> [pathJava]. */
-    private fun run(pathJava: Path?, vararg passArgs: String, env: Map<String, String> = emptyMap()): Run {
+    private fun run(
+        pathJava: Path?,
+        vararg passArgs: String,
+        env: Map<String, String> = emptyMap(),
+        jar: String = "/opt/unidrive.jar",
+    ): Run {
         val flags = launcherDir().resolve("jvm-flags.txt").toFile().readLines()
             .map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
         val script = dir.resolve("unidrive")
@@ -60,7 +65,7 @@ class LauncherShTemplateTest {
             script,
             launcherDir().resolve("unidrive.sh.tmpl").toFile().readText()
                 .replace("@STATIC_FLAGS_SH@", flags.joinToString(" ") { "\"$it\"" })
-                .replace("@JAR@", "/opt/unidrive.jar")
+                .replace("@JAR@", jar)
                 .replace("@COROUTINES_DEBUG_AGENT@", ""),
         )
         val pathBin = Files.createDirectories(dir.resolve("pathbin"))
@@ -205,5 +210,26 @@ class LauncherShTemplateTest {
         val line = launcherDir().resolve("unidrive.sh.tmpl").toFile().readLines().single { it.trimStart().startsWith("daemon_run_valued=(") }
         val named = Regex("(--[a-z-]+)").findAll(line).map { it.groupValues[1] }.toSet()
         assertEquals(DaemonRunValuedOptions.fromCommand(), named, "valued options of daemon run vs the template: $line")
+    }
+
+    // gkrost/unidrive-cli#572: the dynamic CDS archive beside the jar is dumped when a run exits and mapped
+    // from the next run on. Its path is per-install stable, and the flags ride only when the jar's folder is
+    // writable: an unwritable archive path makes the JVM exit 127 after an otherwise successful run.
+    @Test
+    fun `the launcher arms the dynamic CDS archive beside a writable jar folder`() {
+        val j25 = fakeJdk(dir.resolve("jvm"), "jdk-25", "25.0.4")
+        val jarDir = Files.createDirectory(dir.resolve("deploy"))
+        val r = run(j25, "status", jar = jarDir.resolve("unidrive.jar").toString())
+        assertTrue("-XX:+AutoCreateSharedArchive" in r.args, r.args.toString())
+        assertTrue("-XX:SharedArchiveFile=$jarDir/unidrive.jsa" in r.args, r.args.toString())
+        assertTrue("-Xlog:cds=off" in r.args, "the first run's CDS messages stay off stdout: ${r.args}")
+        assertTrue(r.args.indexOf("-XX:+AutoCreateSharedArchive") < r.args.indexOf("-jar"), r.args.toString())
+    }
+
+    @Test
+    fun `the launcher arms no CDS archive when the jar's folder is missing`() {
+        val j25 = fakeJdk(dir.resolve("jvm"), "jdk-25", "25.0.4")
+        val r = run(j25, "status", jar = dir.resolve("nowhere").resolve("unidrive.jar").toString())
+        assertTrue(r.args.none { it.startsWith("-XX:+AutoCreateSharedArchive") || it.startsWith("-XX:SharedArchiveFile=") }, r.args.toString())
     }
 }

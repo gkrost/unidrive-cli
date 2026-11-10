@@ -260,6 +260,97 @@ class DaemonAutospawnTest {
         assertTrue(command.any { it.startsWith("-Xlog:gc*:file=") })
     }
 
+    // gkrost/unidrive-cli#572: the spawned daemon carries the startup cache like the launcher's JVM does.
+    // The AOT cache of a bundled image wins when one lies beside the jar; JDK 27 refuses the AOT cache and
+    // the dynamic CDS archive in one JVM, so exactly one of the two may be on the command line.
+    @Test
+    fun `the spawned daemon gets the AOT cache when one lies beside the jar`() {
+        val jarDir = Files.createTempDirectory("autospawn-aot")
+        Files.createFile(jarDir.resolve("unidrive.aot"))
+        val diag = Files.createTempDirectory("autospawn-aot-diag")
+        val command =
+            DaemonAutospawn.spawnCommand(
+                javaBin = Path.of("java"),
+                jar = jarDir.resolve("unidrive.jar"),
+                configRoot = Files.createTempDirectory("autospawn-aot-config"),
+                profileName = "p",
+                env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
+                props = { null },
+            )
+        assertTrue(command.contains("-XX:AOTCache=${jarDir.resolve("unidrive.aot")}"), "the cache beside the jar: $command")
+        assertTrue(command.contains("-Xlog:aot=off"), "a stale cache prints to stdout, which the client parses: $command")
+        assertTrue(
+            command.none { it.startsWith("-XX:+AutoCreateSharedArchive") || it.startsWith("-XX:SharedArchiveFile=") },
+            "no CDS archive beside the AOT cache: $command",
+        )
+        assertTrue(command.indexOf("-XX:AOTCache=${jarDir.resolve("unidrive.aot")}") < command.indexOf("-jar"), "a JVM option goes before -jar: $command")
+    }
+
+    @Test
+    fun `the spawned daemon falls back to the dynamic CDS archive when the jar's folder is writable`() {
+        val jarDir = Files.createTempDirectory("autospawn-cds")
+        val diag = Files.createTempDirectory("autospawn-cds-diag")
+        val command =
+            DaemonAutospawn.spawnCommand(
+                javaBin = Path.of("java"),
+                jar = jarDir.resolve("unidrive.jar"),
+                configRoot = Files.createTempDirectory("autospawn-cds-config"),
+                profileName = "p",
+                env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
+                props = { null },
+            )
+        assertTrue(command.contains("-XX:+AutoCreateSharedArchive"), "the dump-and-map archive: $command")
+        assertTrue(command.contains("-XX:SharedArchiveFile=${jarDir.resolve("unidrive.jsa")}"), "a per-install stable path: $command")
+        assertTrue(command.contains("-Xlog:cds=off"), "the first run's CDS messages stay off stdout: $command")
+    }
+
+    @Test
+    fun `the armed coroutine agent keeps the daemon off the AOT cache but not off the CDS archive`() {
+        val jarDir = Files.createTempDirectory("autospawn-agent-aot")
+        Files.createFile(jarDir.resolve("unidrive.aot"))
+        Files.createFile(jarDir.resolve("${CoroutineDebug.AGENT_JAR_PREFIX}test.jar"))
+        val diag = Files.createTempDirectory("autospawn-agent-aot-diag")
+        val command =
+            DaemonAutospawn.spawnCommand(
+                javaBin = Path.of("java"),
+                jar = jarDir.resolve("unidrive.jar"),
+                configRoot = Files.createTempDirectory("autospawn-agent-aot-config"),
+                profileName = "p",
+                env = { name ->
+                    when (name) {
+                        CoroutineDebug.ENV_FLAG -> "1"
+                        "UNIDRIVE_DIAG_DIR" -> diag.toString()
+                        else -> null
+                    }
+                },
+                props = { null },
+            )
+        assertTrue(command.any { it.startsWith("-javaagent:") }, "the agent is armed: $command")
+        assertTrue(command.none { it.startsWith("-XX:AOTCache=") }, "the agent disables the cache and errors: $command")
+        assertTrue(command.contains("-XX:+AutoCreateSharedArchive"), "the CDS archive still applies: $command")
+    }
+
+    @Test
+    fun `a jar whose folder does not exist gets no startup cache flags`() {
+        val diag = Files.createTempDirectory("autospawn-nodir-diag")
+        val command =
+            DaemonAutospawn.spawnCommand(
+                javaBin = Path.of("java"),
+                jar = Files.createTempDirectory("autospawn-nodir").resolve("gone").resolve("unidrive.jar"),
+                configRoot = Files.createTempDirectory("autospawn-nodir-config"),
+                profileName = "p",
+                env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
+                props = { null },
+            )
+        assertTrue(
+            command.none {
+                it.startsWith("-XX:AOTCache=") || it.startsWith("-XX:+AutoCreateSharedArchive") ||
+                    it.startsWith("-XX:SharedArchiveFile=")
+            },
+            "an unwritable archive path makes the JVM exit 127 after a successful run: $command",
+        )
+    }
+
     @Test
     fun `the default diagnostics dir sits under the OS data root`() {
         val home = Files.createTempDirectory("autospawn-diaghome")

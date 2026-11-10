@@ -53,8 +53,10 @@ if ($tmp) { $javaArgs += ('-Djdk.net.unixdomain.tmpdir=' + $tmp) }
 # daemon then dumps its coroutines on a coroutine-dump.trigger file in the profile folder
 # (see CoroutineDebug).
 $debugAgent = '@COROUTINES_DEBUG_AGENT@'
+$agentArmed = $false
 if ($env:UNIDRIVE_COROUTINE_DEBUG -and $env:UNIDRIVE_COROUTINE_DEBUG -ne '0' -and $debugAgent -and (Test-Path $debugAgent)) {
     $javaArgs += ('-javaagent:' + $debugAgent)
+    $agentArmed = $true
 }
 # Post-mortem diagnostics in one directory (UNIDRIVE_DIAG_DIR overrides): fatal-crash hs_err logs, the OOM
 # heap dump (the companion -XX:+HeapDumpOnOutOfMemoryError rides jvm-flags.txt) and the daemon's bounded
@@ -110,6 +112,33 @@ if ($gcAt -ge 0) {
 # dumps exactly there. One-shots share heap-default.hprof.
 $dumpProfile = if ($gcProfile) { $gcProfile } else { 'default' }
 $javaArgs += ('-XX:HeapDumpPath=' + $diag + 'heap-' + $dumpProfile + '.hprof')
+# A per-install startup cache beside the jar (gkrost/unidrive-cli#572), picked the way DaemonAutospawn
+# picks it: the AOT cache of the bundled runtime image wins when one lies beside the jar - and no
+# coroutine-debug agent is armed, because the agent disables the cache and errors; else the dynamic CDS
+# archive, and only when the jar's folder is writable, because an unwritable archive path makes the JVM
+# exit 127 after an otherwise successful run (verified on JDK 27). The -Xlog switches keep the first
+# run's and a jar change's cache messages off stdout, which the client parses; a failed dump or map
+# degrades to a run without a cache, never to a failed command. JDK 27 refuses the two caches in one
+# JVM, so exactly one of the two applies. An empty jar dir (a relative @JAR@) gets neither.
+$jarDir = Split-Path -Parent '@JAR@'
+if ($jarDir) {
+    $aotCache = Join-Path $jarDir 'unidrive.aot'
+    $cdsProbe = Join-Path $jarDir '.unidrive-cds-probe'
+    if (-not $agentArmed -and (Test-Path -LiteralPath $aotCache)) {
+        # Parenthesise each element: `,` binds tighter than `+` (see the diag flags above).
+        $javaArgs += @(('-XX:AOTCache=' + $aotCache), '-Xlog:aot=off')
+    } else {
+        $writable = $false
+        try {
+            [System.IO.File]::WriteAllText($cdsProbe, '')
+            Remove-Item -LiteralPath $cdsProbe -Force -ErrorAction SilentlyContinue
+            $writable = $true
+        } catch { }
+        if ($writable) {
+            $javaArgs += @('-XX:+AutoCreateSharedArchive', ('-XX:SharedArchiveFile=' + (Join-Path $jarDir 'unidrive.jsa')), '-Xlog:cds=off')
+        }
+    }
+}
 $javaArgs += @('-jar', '@JAR@')
 # Java runtime, resolved the way unidrive.sh.tmpl resolves it on Linux: UNIDRIVE_JAVA wins (and must exist: a
 # typo is an error, not a silent fall-through to another java); else the bundled runtime image a platform
@@ -143,7 +172,6 @@ if ($env:UNIDRIVE_JAVA) {
     $javaBin = $env:UNIDRIVE_JAVA
 }
 if (-not $javaBin) {
-    $jarDir = Split-Path -Parent '@JAR@'
     foreach ($base in @($PSScriptRoot, $jarDir)) {
         if (-not $base) { continue }
         $bundled = Join-Path $base 'runtime-image\bin\java.exe'
