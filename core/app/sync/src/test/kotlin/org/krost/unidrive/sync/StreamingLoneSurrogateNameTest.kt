@@ -129,6 +129,29 @@ class StreamingLoneSurrogateNameTest {
         assertTrue(provider.deletedPaths.isEmpty(), "and it is not deleted either")
     }
 
+    // A tracked file the cloud renames to a refused name is still listed, under the same id: the full-listing absence sweep
+    // must see it, or it plans a remote deletion of the old path and takes the local copy (the streaming gather only).
+    @Test
+    fun `a tracked file the cloud renamed to a lone-surrogate name is not deleted locally by the full listing`() = bothModes { eng, reporter ->
+        provider.files["/original.txt"] = ByteArray(3)
+        provider.deltaItems = listOf(item("/original.txt", size = 3))
+        provider.deltaCursor = "cursor-1"
+        eng.syncOnce()
+        assertTrue(Files.exists(syncRoot.resolve("original.txt")), "the first pass downloads it")
+
+        // The next full listing names the same item (same id) by a name that cannot be local.
+        db.setSyncState("delta_cursor", "")
+        provider.deltaItems = listOf(item("/bad-\uD800.txt", size = 3).copy(id = "id-/original.txt"))
+        provider.deltaComplete = true
+        provider.deltaCursor = "cursor-2"
+        eng.syncOnce()
+
+        assertTrue(Files.exists(syncRoot.resolve("original.txt")), "the listed item is not a remote deletion: ${reporter.warnings}")
+        assertEquals("id-/original.txt", db.getEntry("/original.txt")?.remoteId, "its row is kept")
+        assertEquals(0, reporter.failed)
+        assertTrue(provider.deletedPaths.isEmpty(), "and nothing is deleted in the cloud")
+    }
+
     private fun item(
         path: String,
         size: Long = 100,

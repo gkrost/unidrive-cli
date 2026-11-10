@@ -2803,9 +2803,13 @@ open class SyncEngine(
                         // gkrost/unidrive-cli#582: a cloud name with a lone surrogate is refused here, at the page's
                         // admission, before the slice reconciles and dispatches: no action is planned for it, no row
                         // is written, and the warning is the once-per-name one the final filter shares. The id stays
-                        // in the page's ids above (seen accounting), and the cloud copy is left alone.
+                        // in the page's ids above (checkpoint accounting) and in the absence sweep's unreachable set, as an
+                        // item the provider listed but this pass does not take: a row tracked under the same id (the cloud
+                        // renamed it to this name) is not a remote deletion, and the folders above it stay (as for any
+                        // unreachable item). The cloud copy is left alone.
                         val surrogateIssue = loneSurrogatePathIssue(item.resolved.path)
                         if (surrogateIssue != null) {
+                            unreachable.add(item.originalId)
                             if (loneSurrogateWarned.add(item.resolved.path)) log.warn("Skipping cloud item {}: {}", item.resolved.path, surrogateIssue)
                             continue
                         }
