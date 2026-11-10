@@ -604,8 +604,11 @@ class TransferHistoryTest {
         }
         assertTrue(history.flush(WRITER_BUDGET_MS))
         val kept = history.rows().filter { it.operationId == "op-kept" }
-        assertEquals(1, kept.size)
-        assertEquals(TransferResult.FAILED, kept.single().result, "the terminal snapshot must survive a full queue")
+        // The stats name the branch of a rare CI-only failure (#611): dropped == 1 is the one filler (the policy path ran);
+        // dropped >= 5 with written == 1 is the writer's own catch having dropped the batch (store.upsert failed); writerFailure
+        // names a dead writer. Without them the assertion cannot say which of the three it was.
+        assertEquals(1, kept.size, "the terminal snapshot must survive a full queue: ${history.stats}")
+        assertEquals(TransferResult.FAILED, kept.single().result, "the terminal snapshot must survive a full queue: ${history.stats}")
     }
 
     private companion object {
