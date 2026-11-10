@@ -2152,16 +2152,11 @@ class InternxtProvider(
                     // bucketEntry.id is never null, so an equal fileId is a present one.
                     if (remoteFile != null && remoteFile.fileId == bucketEntry.id && remoteSize == fileSize) {
                         log.info(
-                            "UD-366: remote {} has identical content (fileId={}, size={}) — adopting via replaceFile",
+                            "remote {} already has the uploaded content (fileId={}, size={}); adopting its file row",
                             remotePath, bucketEntry.id, fileSize,
                         )
-                        api
-                            .replaceFile(
-                                uuid = remoteFile.uuid,
-                                size = fileSize,
-                                fileId = bucketEntry.id,
-                                modificationTime = localMtime,
-                            ).afterReplace(localMtime)
+                        // The row already points at this bucket entry. Replacing it with the same fileId is refused by the API.
+                        remoteFile
                     } else if (
                         remoteFile != null &&
                             remoteSize == fileSize &&
