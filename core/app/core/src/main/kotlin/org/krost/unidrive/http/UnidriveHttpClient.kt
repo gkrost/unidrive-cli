@@ -9,18 +9,6 @@ import okhttp3.Protocol
 import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLSocketFactory
-import javax.net.ssl.X509TrustManager
-
-/**
- * A trust override for a client that talks to a test server with a certificate of its own. Production code never passes one:
- * the clients then use the JVM's default trust (the `javax.net.ssl.trustStore*` properties, `Windows-ROOT` on the Windows
- * launchers).
- */
-public class ClientTls(
-    public val socketFactory: SSLSocketFactory,
-    public val trustManager: X509TrustManager,
-)
 
 /**
  * The one place that names the HTTP engine of the data plane (gkrost/unidrive-cli#566). Every Ktor client of the app (the S3,
