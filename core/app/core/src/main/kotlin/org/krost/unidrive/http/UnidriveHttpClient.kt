@@ -108,7 +108,7 @@ public fun unidriveHttpClient(
                     val connection = chain.connection()
                     if (connection != null) {
                         val last = lastUse[connection]
-                        if (last != null && System.nanoTime() - last >= PROBE_AFTER_IDLE_NANOS && connection.socket().isClosedByPeer()) {
+                        if (connection.probeFindsItClosed(last)) {
                             pool.evictAll()
                             runCatching { connection.socket().close() }
                             throw StaleConnectionException()
@@ -169,6 +169,17 @@ private fun Socket.isClosedByPeer(): Boolean {
     } finally {
         runCatching { soTimeout = before }
     }
+}
+
+/**
+ * Whether the probe finds this idle connection closed by the server. Only an HTTP/1.1 connection is probed: it has no reader while it is
+ * idle. An HTTP/2 connection has a reader thread of its own, blocked in the very read the probe would make, so the probe hangs on it
+ * (reproduced against a real HTTP/2 endpoint with the protocol list flipped, gkrost/unidrive-cli#577). The pin to HTTP/1.1 below keeps
+ * that unreachable today; this keeps the probe correct on the day the pin is lifted.
+ */
+internal fun Connection.probeFindsItClosed(lastUseNanos: Long?): Boolean {
+    if (protocol() != Protocol.HTTP_1_1 || lastUseNanos == null) return false
+    return System.nanoTime() - lastUseNanos >= PROBE_AFTER_IDLE_NANOS && socket().isClosedByPeer()
 }
 
 private const val PROBE_AFTER_IDLE_NANOS = 50_000_000L
