@@ -1188,7 +1188,7 @@ class HydrationImpl(
                     newHash = outcome.newHash,
                 )
                 _events.emit(HydrationEvent.Hydrated(path, bytes, fetched = true))
-                settleStaleSpelling(path)
+                settleStaleSpelling(path, outcome.landedWithoutRow?.item?.id)
                 return HydrationEvent.Completed(
                     path = path,
                     handleId = handleId,
@@ -3970,17 +3970,19 @@ class HydrationImpl(
 
     /**
      * gkrost/unidrive-cli#584 (the owner's decision of 2026-11-09: the user's latest spelling wins): the upload of [path] ended
-     * and the file had been renamed by its case only while it was never uploaded. When the cloud holds an item under the old
-     * spelling that is another item with the file's bytes, the file reached the cloud under both spellings (the upload that
-     * ran under the old one was not followed): the stale one goes to the cloud's trash, by the delete path `unlink` takes, and
-     * the spelling the user chose stays. An item that does not hold the file's bytes is another file's, and stays. Best effort:
-     * a failed probe or delete is logged and leaves both, as before.
+     * and the file had been renamed by its case only while it was never uploaded. Only an item the upload itself landed under
+     * the old spelling ([landedId], the id its landing answered) is the file's own, and goes to the cloud's trash, by the delete
+     * path `unlink` takes; the spelling the user chose stays. An item of unknown origin is another file's, and stays — even
+     * when its bytes match the file's. Best effort: a failed probe or delete is logged and leaves both, as before.
      */
     @Suppress("TooGenericExceptionCaught") // whatever the probe or the delete meets, the upload that ended stays ended
-    private suspend fun settleStaleSpelling(path: String) {
+    private suspend fun settleStaleSpelling(
+        path: String,
+        landedId: String?,
+    ) {
         val stale = caseRenamedFrom.remove(PathNormalizer.nfc(path)) ?: return
         try {
-            if (mount.trashStaleSpelling(stale, path)) {
+            if (mount.trashStaleSpelling(stale, path, landedId)) {
                 log.warn("{} reached the cloud under its old spelling {} as well; the old one went to the trash", CachePaths.forLog(path), CachePaths.forLog(stale))
             }
         } catch (e: CancellationException) {

@@ -22,6 +22,7 @@ import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -550,18 +551,19 @@ class HydrationRenameOvertakesUploadRetryTest {
         assertEquals("id-landed", rig.db.getEntry("/move/CASE.txt")?.remoteId, "the row at the new spelling is the item")
     }
 
-    // If the file still reached the cloud under both spellings (an item the rename's probe could not see, then the upload
-    // of the new name), the stale one is trashed and the user's spelling stays: never a purge, and never the user's file.
+    // An item under the old spelling whose landing this engine never observed is unproven, whatever bytes it holds:
+    // equal size and hash prove equal content, not that it is this file's own upload — it can be another device's
+    // file. It stays, beside the file under the spelling the user chose.
     @Test
-    fun `the old spelling of a file renamed by case only is trashed when the cloud holds the file under both`() = runTest {
+    fun `an unproven item under the old spelling stays even when its content matches the file`() = runTest {
         val rig = Rig(this)
         rig.seedFolder("/move")
         rig.seedWritten("/move/case.txt", "data")
-        val stale = CloudItem(
-            id = "id-stale", name = "case.txt", path = "/move/case.txt", size = 4, isFolder = false,
+        val stranger = CloudItem(
+            id = "id-stranger", name = "case.txt", path = "/move/case.txt", size = 4, isFolder = false,
             modified = Instant.parse("2026-10-07T07:33:00Z"), created = null, hash = "h-data", mimeType = null,
         )
-        rig.drive.items["/move/case.txt"] = stale
+        rig.drive.items["/move/case.txt"] = stranger
         rig.drive.blind += "/move/case.txt"
 
         assertEquals(RenameResult.Ok, rig.impl.rename("/move/case.txt", "/move/CASE.txt"))
@@ -569,11 +571,41 @@ class HydrationRenameOvertakesUploadRetryTest {
         assertTrue(rig.impl.openForWrite("c", "h1", "/move/CASE.txt", renamedCache, null) is OpenResult.Ok)
         advanceUntilIdle()
 
-        assertEquals(listOf("/move/CASE.txt"), rig.drive.items.keys.toList(), "the stale spelling is gone: ${rig.drive.log}")
-        assertTrue(rig.drive.log.contains("delete:/move/case.txt"), "it went through the delete path (the trash): ${rig.drive.log}")
+        assertEquals(setOf("/move/case.txt", "/move/CASE.txt"), rig.drive.items.keys, "both spellings stay: ${rig.drive.log}")
+        assertEquals("id-stranger", rig.drive.items["/move/case.txt"]?.id, "the unproven item is untouched")
+        assertTrue(rig.drive.log.none { it.startsWith("delete:") }, "nothing is deleted: ${rig.drive.log}")
         assertNotNull(rig.db.getEntry("/move/CASE.txt")?.remoteId)
-        assertNull(rig.db.getEntry("/move/case.txt"))
         assertTrue(Files.exists(renamedCache), "the user's bytes are still there")
+    }
+
+    // The trash gate itself: an item under the old spelling is trashed only when it is the id the settling upload's own
+    // landing carried; a stranger's item (equal bytes or not), a call without provenance, and the row's own item stay.
+    @Test
+    fun `the stale-spelling trash takes only the landed id at the old spelling`() = runTest {
+        val rig = Rig(this)
+        rig.seedFolder("/move")
+        rig.seedWritten("/move/CASE.txt", "data")
+        val row = rig.db.getEntry("/move/CASE.txt")!!
+        rig.db.upsertEntry(row.copy(remoteId = "id-keep", remoteHash = "h-data", remoteSize = 4))
+        val stranger = CloudItem(
+            id = "id-stale", name = "case.txt", path = "/move/case.txt", size = 4, isFolder = false,
+            modified = Instant.parse("2026-10-07T07:33:00Z"), created = null, hash = "h-data", mimeType = null,
+        )
+        val mount = MountEngine.over(rig.engine)
+
+        rig.drive.items["/move/case.txt"] = stranger
+        assertTrue(mount.trashStaleSpelling("/move/case.txt", "/move/CASE.txt", "id-stale"), "the landed id is trashed")
+        assertNull(rig.drive.items["/move/case.txt"])
+        assertTrue(rig.drive.log.contains("delete:/move/case.txt"), "it went through the delete path (the trash): ${rig.drive.log}")
+
+        rig.drive.items["/move/case.txt"] = stranger.copy(id = "id-stranger")
+        assertFalse(mount.trashStaleSpelling("/move/case.txt", "/move/CASE.txt", "id-stale"), "another item's id is not the landed one")
+        assertFalse(mount.trashStaleSpelling("/move/case.txt", "/move/CASE.txt", null), "nothing is trashed without provenance")
+        assertEquals("id-stranger", rig.drive.items["/move/case.txt"]?.id, "the stranger stays")
+
+        rig.drive.items["/move/case.txt"] = stranger.copy(id = "id-keep")
+        assertFalse(mount.trashStaleSpelling("/move/case.txt", "/move/CASE.txt", "id-keep"), "the row's own item is never trashed")
+        assertEquals("id-keep", rig.drive.items["/move/case.txt"]?.id)
     }
 
     // A real collision is two files: a rename by case of a new file next to another device's file of the other spelling keeps both.

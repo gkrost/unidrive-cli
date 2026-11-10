@@ -2142,25 +2142,23 @@ class MountEngine private constructor(
 
     /**
      * gkrost/unidrive-cli#584: the cloud holds an item at the old spelling [stalePath] of the file now at [keepPath] (renamed by its
-     * case only, then uploaded): when that item is another one than the file's own and holds its bytes (same size, and the same
-     * content hash or content id where both name one), it is the file's earlier upload and goes to the cloud's trash, by its id
-     * (never a purge). A different file under the old spelling, a folder, or an item without a proof of equal bytes stays.
-     * Returns whether an item was trashed. Throws when the probe or the delete fails.
+     * case only, then uploaded). Only the item the settling upload itself landed there is the file's earlier upload: [landedId] is
+     * the id its landing answered, and only that item goes to the cloud's trash, by its id (never a purge). An item of unknown
+     * origin stays even when its bytes match the file's — equal bytes prove equal content, not that it is this upload's own — and
+     * the row's own item stays too, wherever the move machinery leaves it. Returns whether an item was trashed. Throws when the
+     * probe or the delete fails.
      */
     suspend fun trashStaleSpelling(
         stalePath: String,
         keepPath: String,
+        landedId: String?,
     ): Boolean {
+        if (landedId == null) return false
         val keep = db.getEntry(keepPath) ?: return false
         val keepId = keep.remoteId?.takeUnless { it.startsWith("local:") } ?: return false
         if (keep.isFolder) return false
         val stale = remoteItemOrNull(stalePath) ?: return false
-        if (stale.isFolder || stale.id == keepId) return false
-        if (stale.size != keep.remoteSize) return false
-        val sameBytes =
-            (stale.contentId != null && stale.contentId == keep.remoteContentId) ||
-                (stale.hash != null && stale.hash == keep.remoteHash)
-        if (!sameBytes) return false
+        if (stale.isFolder || stale.id != landedId || stale.id == keepId) return false
         val staleRow = db.getEntry(stalePath)
         if (staleRow != null && staleRow.remoteId == stale.id) {
             deleteRemote(stalePath)
