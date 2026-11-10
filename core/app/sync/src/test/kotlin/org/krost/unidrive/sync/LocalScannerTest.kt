@@ -51,6 +51,69 @@ class LocalScannerTest {
         lastSynced = Instant.now(),
     )
 
+    private fun fileLink(link: Path, target: Path) {
+        try {
+            Files.createSymbolicLink(link, target)
+        } catch (e: UnsupportedOperationException) {
+            org.junit.Assume.assumeTrue("symbolic links unavailable: ${e.message}", false)
+        } catch (e: IOException) {
+            org.junit.Assume.assumeTrue("symbolic links unavailable: ${e.message}", false)
+        } catch (e: SecurityException) {
+            org.junit.Assume.assumeTrue("symbolic links unavailable: ${e.message}", false)
+        }
+    }
+
+    @Test
+    fun `a file link records target stats and an unchanged next scan plans nothing`() {
+        val target = syncRoot.resolve("target.txt")
+        Files.writeString(target, "target bytes")
+        val link = syncRoot.resolve("link.txt")
+        fileLink(link, target.fileName)
+
+        assertEquals(ChangeState.NEW, scanner.scan()["/link.txt"])
+        val pending = assertNotNull(db.getEntry("/link.txt"))
+        assertEquals(Files.size(target), pending.localSize)
+        assertEquals(Files.getLastModifiedTime(target).toMillis(), pending.localMtime)
+        db.upsertEntry(pending.copy(remoteId = "uploaded", remoteSize = Files.size(target)))
+
+        assertNull(scanner.scan()["/link.txt"])
+        assertNull(scanner.scan()["/link.txt"])
+        Files.writeString(target, "changed target bytes")
+        assertEquals(ChangeState.MODIFIED, scanner.scan()["/link.txt"])
+    }
+
+    @Test
+    fun `a dangling file link leaves its synced row alone`() {
+        val target = syncRoot.resolve("target.txt")
+        Files.writeString(target, "target bytes")
+        val link = syncRoot.resolve("link.txt")
+        fileLink(link, target.fileName)
+        scanner.scan()
+        val pending = assertNotNull(db.getEntry("/link.txt"))
+        db.upsertEntry(pending.copy(remoteId = "uploaded"))
+        Files.delete(target)
+
+        assertNull(scanner.scan()["/link.txt"])
+        assertNotNull(db.getEntry("/link.txt"))
+    }
+
+    @Test
+    fun `a file link retargeted to another file is compared with the new target`() {
+        val first = syncRoot.resolve("first.txt")
+        val second = syncRoot.resolve("second.txt")
+        Files.writeString(first, "first")
+        Files.writeString(second, "longer second")
+        val link = syncRoot.resolve("link.txt")
+        fileLink(link, first.fileName)
+        scanner.scan()
+        val pending = assertNotNull(db.getEntry("/link.txt"))
+        db.upsertEntry(pending.copy(remoteId = "uploaded"))
+
+        Files.delete(link)
+        fileLink(link, second.fileName)
+        assertEquals(ChangeState.MODIFIED, scanner.scan()["/link.txt"])
+    }
+
     @Test
     fun `detects new local file`() {
         Files.writeString(syncRoot.resolve("new.txt"), "hello")
