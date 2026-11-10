@@ -45,8 +45,8 @@ class OneDrivePendingFlowTest {
         protector: CredentialProtector? = null,
     ) =
         object : OneDriveProviderFactory(protector) {
-            override fun newOAuthServiceForBegin(profileDir: Path): OAuthService =
-                OAuthService(OneDriveConfig(tokenPath = profileDir), HttpClient(engine))
+            override fun newOAuthServiceForBegin(profileDir: Path, config: OneDriveConfig): OAuthService =
+                OAuthService(config, HttpClient(engine))
 
             // No sign-in test reaches the real Graph: /me answers 404, so no account name is kept.
             override fun newGraphApiForIdentity(

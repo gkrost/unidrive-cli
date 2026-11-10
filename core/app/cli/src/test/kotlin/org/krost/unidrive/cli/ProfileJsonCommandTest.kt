@@ -933,6 +933,66 @@ class ProfileJsonCommandTest {
         assertEquals(twoProfiles, config())
     }
 
+    // -- profile set / list: the Microsoft authority the profile signs in at ----------------------------------------
+
+    @Test
+    fun `a profile without an authority lists null, never a made-up default`() {
+        writeConfig(twoProfiles)
+
+        assertEquals(JsonNull, listed("work").getValue("authority_url"))
+    }
+
+    @Test
+    fun `set authority_url persists the organizations authority, lists it and leaves the rest byte for byte`() {
+        writeConfig(twoProfiles)
+        val organizations = "https://login.microsoftonline.com/organizations/oauth2/v2.0"
+
+        assertEquals(0, run("profile", "set", "work", "authority_url", organizations, "--json"), stderr())
+        val r = json()
+        assertTrue(r.getValue("ok").jsonPrimitive.boolean)
+        assertEquals(organizations, r.getValue("value").jsonPrimitive.content)
+        assertEquals(JsonNull, r.getValue("previous"))
+        assertTrue(r.getValue("restart_required").jsonPrimitive.boolean, "the daemon reads it at start")
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "authority_url = \"$organizations\"\n"), config())
+        assertEquals(organizations, listed("work").getValue("authority_url").jsonPrimitive.content)
+
+        // One tenant instead of the generic organizations: the segment stands where it does, the rest of the address is the same.
+        assertEquals(0, run("profile", "set", "work", "authority_url", "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/oauth2/v2.0", "--json"), stderr())
+        assertEquals(organizations, json().getValue("previous").jsonPrimitive.content)
+        assertEquals("https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/oauth2/v2.0", json().getValue("value").jsonPrimitive.content)
+
+        // The trailing slash is not stored: the sign-in and the token calls append their own one after the address.
+        assertEquals(0, run("profile", "set", "work", "authority_url", "https://login.microsoftonline.com/organizations/oauth2/v2.0/", "--json"), stderr())
+        assertEquals(organizations, json().getValue("value").jsonPrimitive.content)
+
+        assertEquals(0, run("profile", "set", "work", "authority_url", "--unset", "--json"), stderr())
+        assertEquals(twoProfiles, config())
+    }
+
+    @Test
+    fun `set authority_url refuses anything that is not a Microsoft authority address, and changes nothing`() {
+        writeConfig(twoProfiles)
+        for (bad in listOf(
+            "",
+            "  ",
+            "login.microsoftonline.com/organizations/oauth2/v2.0",
+            "http://login.microsoftonline.com/organizations/oauth2/v2.0",
+            "https://evil.example.com/organizations/oauth2/v2.0",
+            "https://login.microsoftonline.com/organizations",
+            "https://login.microsoftonline.com/organizations/oauth2",
+            "https://login.microsoftonline.com/organizations/v2.0/v2.0",
+            "https://login.microsoftonline.com//oauth2/v2.0",
+            "https://login.microsoftonline.com/organizations/oauth2/v2.0/extra",
+            "https://login.microsoftonline.com/organizations/oauth2/v2.0?x=1",
+            "https://user@login.microsoftonline.com/organizations/oauth2/v2.0",
+            "https://login.microsoftonline.com:8443/organizations/oauth2/v2.0",
+        )) {
+            assertEquals(1, run("profile", "set", "work", "authority_url", bad, "--json"), "value '$bad'")
+            assertEquals("invalid_value", json().getValue("error").jsonPrimitive.content, "value '$bad'")
+        }
+        assertEquals(twoProfiles, config())
+    }
+
     @Test
     fun `set ignore_rules reads the lines from stdin, changes them, and clears them on empty input`() {
         writeConfig(twoProfiles)

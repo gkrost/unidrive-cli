@@ -2,6 +2,14 @@
 
 Talks to Microsoft Graph v1.0 (`https://graph.microsoft.com/v1.0`) through `GraphApiService`, which centralises bearer-token auth, 401-on-expiry refresh, and the 429/503 throttle budget.
 
+## Personal, work and school accounts
+
+The profile's `authority_url` decides which Microsoft authority the device-code sign-in and the token calls use. The default is the personal authority, `https://login.microsoftonline.com/consumers/oauth2/v2.0`, which accepts personal accounts only. `profile set <profile> authority_url https://login.microsoftonline.com/organizations/oauth2/v2.0` moves the profile to work or school accounts; the segment may also be one tenant (a tenant id or verified domain) so the sign-in asks that tenant alone. The value is validated as exactly an `https://login.microsoftonline.com/{segment}/oauth2/v2.0` address, and a running daemon is restarted for it to count. The Graph host stays `graph.microsoft.com` in every case; national clouds (Germany, China, US government) answer on other Graph hosts and stay unsupported (#42).
+
+A work or school tenant can leave user consent off, and then a sign-in is refused until the tenant admin granted consent for the app once, tenant-wide. When the profile's authority is an organization's, `auth begin` answers with `admin_consent_url` beside the device code: the admin-consent URL Microsoft documents (`https://login.microsoftonline.com/{tenant}/v2.0/adminconsent` with `client_id`, `scope` and `redirect_uri`, read 2026-11-10) built from the app registration's id, the Graph scope the provider asks for and the registered localhost redirect. The admin opens it once and approves; the browser then lands on the localhost redirect, which answers nothing — the consent is already granted, and the user's sign-in goes through from then on. For the personal authority, and for `common`, no URL is derived (`common` is not to be used for admin consent).
+
+The app registration itself must allow organizational accounts ("Accounts in any organizational directory and personal Microsoft accounts" in the Azure portal) before any tenant can use it, and `http://localhost:8080/callback` (or the port `UNIDRIVE_ONEDRIVE_OAUTH_PORT` moves it to) must be a registered redirect URI for the admin-consent reply to have somewhere to land.
+
 ## API surface used
 
 | Endpoint | Method in `GraphApiService` | Notes |

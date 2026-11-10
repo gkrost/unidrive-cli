@@ -27,6 +27,12 @@ data class OneDriveConfig(
         const val DEFAULT_REDIRECT_URI = "http://localhost:$DEFAULT_OAUTH_CALLBACK_PORT/callback"
         const val DEFAULT_AUTH_ENDPOINT = "https://login.microsoftonline.com/consumers/oauth2/v2.0"
 
+        /** The one Graph scope the provider asks for; [OAuthService.SCOPES] adds the OIDC ones, the admin-consent URL asks for it alone. */
+        const val GRAPH_FILES_SCOPE = "https://graph.microsoft.com/Files.ReadWrite.All"
+
+        /** Tenant segments of an authority that have no tenant admin to ask: personal accounts, and the one Microsoft says not to use for admin consent. */
+        private val TENANTS_WITHOUT_ADMIN = setOf("consumers", "common")
+
         /** Environment variable that moves the browser sign-in callback off the default port. */
         const val OAUTH_PORT_ENV = "UNIDRIVE_ONEDRIVE_OAUTH_PORT"
 
@@ -48,5 +54,46 @@ data class OneDriveConfig(
             }
             return port
         }
+    }
+
+    /**
+     * The tenant-wide admin-consent URL of this [authEndpoint]'s tenant, or null when there is no tenant admin to ask. A
+     * work or school tenant that leaves user consent off refuses the sign-in until its admin granted consent for the app
+     * once; Microsoft documents the URL as `https://login.microsoftonline.com/{tenant}/v2.0/adminconsent` with required
+     * client_id, scope and redirect_uri, and names `organizations` as the tenant to use (never `common`). The redirect is
+     * the registered localhost callback: after the approval the browser lands there and answers nothing — the consent is
+     * already granted. Null also for anything that is not a `https://login.microsoftonline.com/{tenant}/oauth2/v2.0`
+     * authority (the shape `profile set authority_url` keeps, a hand-edited config may not), so a URL is never derived
+     * from an endpoint this engine does not talk to.
+     */
+    fun adminConsentUrl(): String? {
+        val tenant = consentTenant() ?: return null
+        return io.ktor.http.URLBuilder(
+            protocol = io.ktor.http.URLProtocol.HTTPS,
+            host = "login.microsoftonline.com",
+            pathSegments = listOf(tenant, "v2.0", "adminconsent"),
+        ).apply {
+            parameters.append("client_id", applicationId)
+            parameters.append("scope", GRAPH_FILES_SCOPE)
+            parameters.append("redirect_uri", redirectUri)
+        }.buildString()
+    }
+
+    /** The tenant segment of [authEndpoint] when a tenant admin can be asked there: the authority shape the engine talks to, not one without a tenant admin. */
+    private fun consentTenant(): String? {
+        val uri =
+            try {
+                java.net.URI(authEndpoint)
+            } catch (_: Exception) {
+                return null
+            }
+        if (uri.scheme?.lowercase() != "https") return null
+        if (uri.host?.lowercase() != "login.microsoftonline.com") return null
+        if (uri.port != -1 && uri.port != 443) return null
+        if (uri.userInfo != null || uri.rawQuery != null || uri.fragment != null) return null
+        val segments = uri.rawPath?.trimEnd('/')?.split('/')?.filter(String::isNotEmpty) ?: return null
+        if (segments.size != 3 || segments[1] != "oauth2" || segments[2] != "v2.0") return null
+        if (segments[0].lowercase() in TENANTS_WITHOUT_ADMIN) return null
+        return segments[0]
     }
 }

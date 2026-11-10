@@ -75,7 +75,7 @@ class OneDriveFactoryProtectionTest {
         runTest {
             val factory = OneDriveProviderFactory(protector)
 
-            factory.newOAuthServiceForBegin(dir).use { it.saveToken(token()) }
+            factory.newOAuthServiceForBegin(dir, OneDriveConfig(tokenPath = dir, credentialProtector = protector)).use { it.saveToken(token()) }
 
             assertEquals(FakeProtector.REFERENCE, Files.readString(tokenFile))
             assertFalse("refresh-token-secret" in Files.readString(tokenFile))
@@ -85,7 +85,7 @@ class OneDriveFactoryProtectionTest {
     fun `status reads a protected token through the protector`() =
         runTest {
             val factory = OneDriveProviderFactory(protector)
-            factory.newOAuthServiceForBegin(dir).use { it.saveToken(token()) }
+            factory.newOAuthServiceForBegin(dir, OneDriveConfig(tokenPath = dir, credentialProtector = protector)).use { it.saveToken(token()) }
 
             assertEquals(CredentialHealth.Ok, factory.checkCredentialHealth(emptyMap(), dir))
             assertTrue("token expires" in factory.describeConnection(emptyMap(), dir), factory.describeConnection(emptyMap(), dir))
@@ -94,7 +94,7 @@ class OneDriveFactoryProtectionTest {
     @Test
     fun `a plaintext token from before is still read, and protected by the first load`() =
         runTest {
-            OneDriveProviderFactory(null).newOAuthServiceForBegin(dir).use { it.saveToken(token()) }
+            OneDriveProviderFactory(null).newOAuthServiceForBegin(dir, OneDriveConfig(tokenPath = dir)).use { it.saveToken(token()) }
             assertTrue("refresh-token-secret" in Files.readString(tokenFile))
             val factory = OneDriveProviderFactory(protector)
 
@@ -108,7 +108,7 @@ class OneDriveFactoryProtectionTest {
         runTest {
             val factory = OneDriveProviderFactory(null)
 
-            factory.newOAuthServiceForBegin(dir).use { it.saveToken(token()) }
+            factory.newOAuthServiceForBegin(dir, OneDriveConfig(tokenPath = dir)).use { it.saveToken(token()) }
 
             assertTrue("refresh-token-secret" in Files.readString(tokenFile))
             assertIs<CredentialHealth.Ok>(factory.checkCredentialHealth(emptyMap(), dir))
