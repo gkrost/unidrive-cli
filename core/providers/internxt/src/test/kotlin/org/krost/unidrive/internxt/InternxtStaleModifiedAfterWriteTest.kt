@@ -334,11 +334,14 @@ class InternxtStaleModifiedAfterWriteTest {
 
     // The 409 -> "identical content, adopt via replaceFile" branch of a create is a second
     // PUT /files/{uuid} call site and must carry the same fresh timestamp.
+    //
+    // Superseded: an adopted collision no longer replaces the row (the API refuses a replace with the
+    // fileId the row already has), so there is no write whose post-update time could be returned. The
+    // adopted row is returned as listed, and no PUT or metadata read is made for it.
     @Test
-    fun `create collision adopted via replaceFile also returns the post-update modified time`() =
+    fun `create collision adopted as the live row returns its listed modified time without a write`() =
         runTest {
             withTempFile("notes.txt", 64) { tmp, local ->
-                val clock = ServerClock(staleReads = 1)
                 val engine =
                     MockEngine { request ->
                         val url = request.url.toString()
@@ -350,12 +353,6 @@ class InternxtStaleModifiedAfterWriteTest {
                                 path == "/drive/folders/content/root-folder-uuid" ->
                                     // Same fileId + size as what we just uploaded -> provably identical -> adopt.
                                     json("""{"children":[],"files":[${fileJson("existing-uuid", "notes", 64, pre, fileId = bridgeFileId)}]}""")
-                                path == "/drive/files/existing-uuid" && request.method == HttpMethod.Put -> {
-                                    clock.wrote()
-                                    json(fileJson("existing-uuid", "notes", 64, pre, fileId = bridgeFileId))
-                                }
-                                path == "/drive/files/existing-uuid/meta" && request.method == HttpMethod.Get ->
-                                    json(fileJson("existing-uuid", "notes", 64, clock.modified(pre, post), fileId = bridgeFileId))
                                 else -> error("unexpected URL in adopt test: $url (${request.method})")
                             }
                     }
@@ -364,8 +361,7 @@ class InternxtStaleModifiedAfterWriteTest {
                     val result = provider.upload(local, "/notes.txt", existingRemoteId = null, onProgress = null)
 
                     assertEquals("existing-uuid", result.id)
-                    assertEquals(Instant.parse(post), result.modified)
-                    assertEquals(2, clock.reads.get(), "one lagging read, then the new value")
+                    assertEquals(Instant.parse(pre), result.modified)
                 } finally {
                     provider.close()
                 }
