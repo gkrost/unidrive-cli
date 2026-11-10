@@ -1,5 +1,6 @@
 package org.krost.unidrive.http
 
+import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
@@ -649,4 +650,90 @@ class RequestIdPluginTest {
         assertEquals(" up=? dn=7", formatCountedSizeSegment(null, 7L))
         assertEquals(" up=0 dn=35", formatCountedSizeSegment(0L, 35L))
     }
+
+    // The review of #571: the → line keeps its shape at DEBUG (the id 8 hex characters, the query
+    // redacted) while the id no longer comes from a per-request UUID.
+    @Test
+    fun `the request line keeps its shape and the id stays 8 hexadecimal characters`() =
+        runTest {
+            val seen = mutableListOf<String>()
+            val engine =
+                MockEngine { request ->
+                    seen += request.headers["X-Unidrive-Request-Id"].orEmpty()
+                    respond("ok", HttpStatusCode.OK, headers = headersOf("Content-Type", "text/plain"))
+                }
+            val client = HttpClient(engine) { install(RequestId) }
+            val lines =
+                capturedLines {
+                    repeat(3) { client.get("https://example.invalid/a?token=SECRET") }
+                }
+            client.close()
+            val opens = lines.filter { it.startsWith("→") }
+            assertEquals(3, opens.size, "one → line per request: $lines")
+            for (line in opens) {
+                assertTrue(
+                    Regex("""^→ req=[0-9a-f]{8} GET https://example\.invalid/a\?<redacted>$""").matches(line),
+                    "the open line's shape: $line",
+                )
+            }
+            assertEquals(seen.size, seen.toSet().size, "every request its own id")
+        }
+
+    // The review of #571: the counter ids stay unique well past the lengths the old UUID draw covered.
+    @Test
+    fun `ten thousand sequential requests keep distinct ids in the header format`() =
+        runTest {
+            val seen = mutableListOf<String>()
+            val engine =
+                MockEngine { request ->
+                    seen += request.headers["X-Unidrive-Request-Id"].orEmpty()
+                    respond("ok", HttpStatusCode.OK, headers = headersOf("Content-Type", "text/plain"))
+                }
+            val client = HttpClient(engine) { install(RequestId) }
+            repeat(10_000) { client.get("https://example.invalid/a") }
+            client.close()
+            assertEquals(10_000, seen.size)
+            assertTrue(seen.all { Regex("[0-9a-f]{8}").matches(it) }, "8 hex characters each")
+            assertEquals(seen.size, seen.toSet().size, "no id repeats")
+        }
+
+    // The review of #571: the →/← DEBUG lines are not built when DEBUG is off, the header stays, and a
+    // 4xx reply still logs its WARN line.
+    @Test
+    fun `with DEBUG off no request or reply line is logged, the header stays, and a 4xx still warns`() =
+        runTest {
+            val logger = LoggerFactory.getLogger("org.krost.unidrive.http.RequestId") as Logger
+            val previous = logger.level
+            logger.level = Level.INFO
+            try {
+                val seen = mutableListOf<String>()
+                val engine =
+                    MockEngine { request ->
+                        seen += request.headers["X-Unidrive-Request-Id"].orEmpty()
+                        if (request.url.encodedPath == "/bad") {
+                            respond("no", HttpStatusCode.BadRequest, headers = headersOf("Content-Type", "text/plain"))
+                        } else {
+                            respond("ok", HttpStatusCode.OK, headers = headersOf("Content-Type", "text/plain"))
+                        }
+                    }
+                val client = HttpClient(engine) { install(RequestId) }
+                val lines =
+                    capturedLines {
+                        client.get("https://example.invalid/a")
+                        client.get("https://example.invalid/bad")
+                    }
+                client.close()
+                assertEquals(2, seen.size, "the header is sent for every request: $seen")
+                assertTrue(seen.all { it.isNotBlank() }, "and it carries an id: $seen")
+                assertEquals(
+                    1,
+                    lines.count { it.startsWith("←") },
+                    "the 400's WARN line is the only reply line: $lines",
+                )
+                assertTrue(lines.none { it.startsWith("→") }, "no request line at INFO: $lines")
+                assertTrue(lines.last { it.startsWith("←") }.contains(" 400 "), "the warn names the status: $lines")
+            } finally {
+                logger.level = previous
+            }
+        }
 }
