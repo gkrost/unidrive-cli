@@ -130,6 +130,12 @@ class MountEngine private constructor(
     private val log: Logger = wiring.log
 
     /**
+     * Test seam (gkrost/unidrive-cli#584): runs in [uploadFromCache] after the row it rebaselines was read and before it is
+     * written, so that a test can land a rename in that gap deterministically. Production runs nothing.
+     */
+    internal var rowWriteWindow: () -> Unit = {}
+
+    /**
      * archive#658: epoch ms of the last provider round trip this engine actually made — a completed download
      * or upload, never a warm-cache serve or a local-only write. `daemon.status` reports it as
      * `provider_health.last_contact_ms`, so an outage keeps the last real contact.
@@ -1421,21 +1427,7 @@ class MountEngine private constructor(
                 "uploadFromCache: row for {} vanished mid-upload; remote copy is current, skipping row write",
                 path,
             )
-            auditLog?.emit(
-                action = "Upload",
-                path = path,
-                size = size,
-                oldHash = prevHash,
-                newHash = result.hash,
-                result = auditResult,
-            )
-            return UploadOutcome(
-                sent = wasSent,
-                size = size,
-                oldHash = prevHash,
-                newHash = result.hash,
-                landedWithoutRow = LandedWithoutRow(result, landedRemote, sent),
-            )
+            return landedWithoutRow(path, size, prevHash, result, auditResult, wasSent, LandedWithoutRow(result, landedRemote, sent))
         }
         // archive#319: `existing` is non-null here (the vanished-row case returns above),
         // so the upload rebaselines the row that owns the bytes instead of
@@ -1467,7 +1459,12 @@ class MountEngine private constructor(
         // The row just adopted the cache copy's stats, and these are exactly the bytes the
         // write-back sent: hash the cache copy (guarded against a writer landing mid-hash)
         // so the touch shield covers mount-edited files too.
-        db.upsertEntry(withSentHash(uploaded, cachePath, sent, result.sentSha256, tally))
+        val rebaselined = withSentHash(uploaded, cachePath, sent, result.sentSha256, tally)
+        rowWriteWindow()
+        if (!writeIfRowStays(path, existing, rebaselined)) {
+            log.warn("uploadFromCache: row for {} moved while the upload was ending; the item landed at {} and is not written back", path, landedRemote)
+            return landedWithoutRow(path, size, prevHash, result, auditResult, wasSent, LandedWithoutRow(result, landedRemote, sent))
+        }
         FileEvents.event(FileEvents.Phase.UPLOAD_CONFIRMED, path, bytes = size, tally = tally, extra = listOf("sent" to wasSent))
         auditLog?.emit(
             action = "Upload",
@@ -1555,6 +1552,39 @@ class MountEngine private constructor(
             log.debug("uploadFromCache: the item at {} could not be compared after the create was refused: {}", path, e.javaClass.simpleName)
             null
         }
+
+    /**
+     * gkrost/unidrive-cli#584: the row was read before the transfer and is written after it, with the hash of the sent bytes in
+     * between, and a file's rename can land in that gap (the upload of a file renamed by its case only ends just as the rename
+     * arrives). The write is decided under the database's monitor, the one a rename's repath holds: a row that moved away (or
+     * was replaced by another) is not written back to its old path, where it would stand beside the pending row the rename
+     * left, and that row would upload the file a second time under the new name. False: nothing was written; the caller
+     * reports the item as landed without a row, so that the caller whose rename it was moves it ([adoptLandedAfterRename]).
+     */
+    private fun writeIfRowStays(
+        path: String,
+        read: SyncEntry,
+        row: SyncEntry,
+    ): Boolean =
+        db.batch {
+            val now = db.getEntry(path)
+            (now != null && now.remoteId == read.remoteId).also { if (it) db.upsertEntry(row) }
+        }
+
+    // The end of an upload whose item landed but whose row is not the row it was for (archive#1217, gkrost/unidrive-cli#584).
+    @Suppress("LongParameterList") // the facts uploadFromCache already holds; a record for them would only move the list
+    private fun landedWithoutRow(
+        path: String,
+        size: Long,
+        prevHash: String?,
+        result: CloudItem,
+        auditResult: String,
+        sent: Boolean,
+        landed: LandedWithoutRow,
+    ): UploadOutcome {
+        auditLog?.emit(action = "Upload", path = path, size = size, oldHash = prevHash, newHash = result.hash, result = auditResult)
+        return UploadOutcome(sent = sent, size = size, oldHash = prevHash, newHash = result.hash, landedWithoutRow = landed)
+    }
 
     /**
      * archive#583: the cloud item the cache copy is already identical to, or null when the copy has to be uploaded.
@@ -2081,6 +2111,61 @@ class MountEngine private constructor(
         )
         db.upsertEntry(withSentHash(adopted, cachePath, landed.sent))
         log.info("upload of {} landed at {} while a rename moved it; moved the item to {} by its id", newPath, landed.remotePath, newRemote)
+        return true
+    }
+
+    /**
+     * gkrost/unidrive-cli#584: the local rename of a never-uploaded file ([HydrationImpl.rename]) repathed a row from [oldPath] to
+     * [newPath] that an upload had meanwhile made the row of its item: the upload landed the item at the old name and wrote the
+     * row, after the rename read the row as pending and before it repathed it. The item is moved to the new name by its id and
+     * the row takes the move's answer, so that the cloud holds the file once, under the name the user chose. Returns whether an
+     * item was moved: false when the row at [newPath] is still pending (the rename was local, as it was read) or the item is not
+     * where the old name says (a server name: left to the next enumeration). Throws when the move fails.
+     */
+    suspend fun moveItemOfRepathedRow(
+        oldPath: String,
+        newPath: String,
+    ): Boolean {
+        val row = db.getEntry(newPath) ?: return false
+        val id = row.remoteId?.takeUnless { it.startsWith("local:") } ?: return false
+        if (row.isFolder || row.remotePath != null) return false
+        val oldRemote = remotePathOf(oldPath, entry = null)
+        val newRemote = remotePathOf(newPath, entry = null)
+        if (oldRemote == newRemote) return false
+        val moved = provider.moveById(id, oldRemote, newRemote)
+        recordProviderContact()
+        markRecentlyUploaded(newRemote)
+        MoveRecord.follow(db, row, newPath, moved, heldBefore = null)
+        log.info("rename of {} to {} met the upload that landed it; moved the item to {} by its id", oldPath, newPath, newRemote)
+        return true
+    }
+
+    /**
+     * gkrost/unidrive-cli#584: the cloud holds an item at the old spelling [stalePath] of the file now at [keepPath] (renamed by its
+     * case only, then uploaded). Only the item the settling upload itself landed there is the file's earlier upload: [landedId] is
+     * the id its landing answered, and only that item goes to the cloud's trash, by its id (never a purge). An item of unknown
+     * origin stays even when its bytes match the file's — equal bytes prove equal content, not that it is this upload's own — and
+     * the row's own item stays too, wherever the move machinery leaves it. Returns whether an item was trashed. Throws when the
+     * probe or the delete fails.
+     */
+    suspend fun trashStaleSpelling(
+        stalePath: String,
+        keepPath: String,
+        landedId: String?,
+    ): Boolean {
+        if (landedId == null) return false
+        val keep = db.getEntry(keepPath) ?: return false
+        val keepId = keep.remoteId?.takeUnless { it.startsWith("local:") } ?: return false
+        if (keep.isFolder) return false
+        val stale = remoteItemOrNull(stalePath) ?: return false
+        if (stale.isFolder || stale.id != landedId || stale.id == keepId) return false
+        val staleRow = db.getEntry(stalePath)
+        if (staleRow != null && staleRow.remoteId == stale.id) {
+            deleteRemote(stalePath)
+        } else {
+            provider.deleteById(stale.id, remotePathOf(stalePath, entry = null))
+            recordProviderContact()
+        }
         return true
     }
 

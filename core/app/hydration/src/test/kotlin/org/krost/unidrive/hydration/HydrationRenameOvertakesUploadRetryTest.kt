@@ -2,6 +2,7 @@ package org.krost.unidrive.hydration
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -21,6 +22,7 @@ import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -72,7 +74,19 @@ class HydrationRenameOvertakesUploadRetryTest {
         override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
         override suspend fun authenticate() {}
         override suspend fun listChildren(path: String): List<CloudItem> = emptyList()
-        override suspend fun getMetadata(path: String): CloudItem = items[path] ?: throw ProviderException("Item not found: $path")
+        // gkrost/unidrive-cli#584: [blind]: paths whose first lookup finds nothing although an item is there (a probe that ran
+        // before the item was visible); [onProbe]: runs once during the first lookup of any path, after its answer was taken.
+        val blind = mutableSetOf<String>()
+        var onProbe: (() -> Unit)? = null
+
+        override suspend fun getMetadata(path: String): CloudItem {
+            val found = if (blind.remove(path)) null else items[path]
+            onProbe?.let { hook ->
+                onProbe = null
+                hook()
+            }
+            return found ?: throw ProviderException("Item not found: $path")
+        }
         override suspend fun download(remotePath: String, destination: Path): Long = 0L
         override suspend fun downloadById(remoteId: String, remotePath: String, destination: Path): Long = 0L
 
@@ -477,6 +491,172 @@ class HydrationRenameOvertakesUploadRetryTest {
         val done = completed.single { it.handleId == "h0" }
         assertTrue(done.ok, "the renamed file's upload completes: $completed")
         assertEquals("/move/sub/f1.txt", done.path, "the completion names the new path: $completed")
+    }
+
+    // gkrost/unidrive-cli#584: the upload of a file ends just as the file is renamed by its case only, in the gap between the
+    // moment the upload reads the row it rebaselines and the moment it writes it back. The write must not put the row back
+    // under the old spelling beside the pending row the rename left: that row uploaded the file a second time, and the cloud
+    // ended with both spellings.
+    @Test
+    fun `a file renamed by case only as its upload ends is one cloud item under the new spelling`() = runTest {
+        val rig = Rig(this)
+        rig.seedFolder("/move")
+        val cache = rig.seedWritten("/move/case.txt", "data")
+        val mount = MountEngine.over(rig.engine)
+        var renamed: RenameResult? = null
+        mount.rowWriteWindow = {
+            mount.rowWriteWindow = {}
+            renamed = runBlocking { rig.impl.rename("/move/case.txt", "/move/CASE.txt") }
+            // The client reports the file written under its new name, as it does after a rename.
+            val renamedCache = rig.engine.resolveCachePath("/move/CASE.txt")
+            runBlocking { rig.impl.openForWrite("c", "h2", "/move/CASE.txt", renamedCache, null) }
+        }
+        val completed = mutableListOf<HydrationEvent.Completed>()
+        val collector = launch { rig.impl.events.collect { if (it is HydrationEvent.Completed) completed += it } }
+        runCurrent()
+        launch { assertTrue(rig.impl.openForWrite("c", "h1", "/move/case.txt", cache, null) is OpenResult.Ok) }
+        advanceUntilIdle()
+        collector.cancel()
+
+        assertEquals(RenameResult.Ok, renamed, "the rename landed in the window")
+        assertEquals(listOf("/move/CASE.txt"), rig.drive.items.keys.toList(), "one cloud item, under the spelling the user chose: ${rig.drive.log}")
+        assertTrue(rig.drive.log.none { it.startsWith("conflict-copy:") }, rig.drive.log.toString())
+        val rows = rig.db.getAllEntries().filter { it.path.startsWith("/move/") && it.path.endsWith("ase.txt", ignoreCase = true) }
+        assertEquals(listOf("/move/CASE.txt"), rows.map { it.path }, "one row, at the new spelling: $rows")
+        assertEquals(rig.drive.items["/move/CASE.txt"]?.id, rows.single().remoteId, "the row is the cloud item there: ${rig.drive.log}")
+        assertTrue(completed.all { it.ok }, "every upload completes: $completed")
+    }
+
+    // The other order of the same window: the rename read the row as never uploaded, its probe found nothing, and the upload
+    // landed its item and wrote its row before the rename repathed the row. The item then still sits at the old spelling.
+    @Test
+    fun `a file whose upload landed while its case-only rename ran is moved to the new spelling in the cloud`() = runTest {
+        val rig = Rig(this)
+        rig.seedFolder("/move")
+        rig.seedWritten("/move/case.txt", "data")
+        rig.drive.onProbe = {
+            val landed = CloudItem(
+                id = "id-landed", name = "case.txt", path = "/move/case.txt", size = 4, isFolder = false,
+                modified = Instant.parse("2026-10-07T07:33:00Z"), created = null, hash = "h-data", mimeType = null,
+            )
+            rig.drive.items["/move/case.txt"] = landed
+            val pending = rig.db.getEntry("/move/case.txt")!!
+            rig.db.upsertEntry(pending.copy(remoteId = "id-landed", remoteHash = "h-data", remoteSize = 4, remoteModified = landed.modified))
+        }
+
+        assertEquals(RenameResult.Ok, rig.impl.rename("/move/case.txt", "/move/CASE.txt"))
+
+        assertEquals(listOf("/move/CASE.txt"), rig.drive.items.keys.toList(), "the item follows the rename: ${rig.drive.log}")
+        assertNull(rig.db.getEntry("/move/case.txt"), "no row stays under the old spelling")
+        assertEquals("id-landed", rig.db.getEntry("/move/CASE.txt")?.remoteId, "the row at the new spelling is the item")
+    }
+
+    // An item under the old spelling whose landing this engine never observed is unproven, whatever bytes it holds:
+    // equal size and hash prove equal content, not that it is this file's own upload — it can be another device's
+    // file. It stays, beside the file under the spelling the user chose.
+    @Test
+    fun `an unproven item under the old spelling stays even when its content matches the file`() = runTest {
+        val rig = Rig(this)
+        rig.seedFolder("/move")
+        rig.seedWritten("/move/case.txt", "data")
+        val stranger = CloudItem(
+            id = "id-stranger", name = "case.txt", path = "/move/case.txt", size = 4, isFolder = false,
+            modified = Instant.parse("2026-10-07T07:33:00Z"), created = null, hash = "h-data", mimeType = null,
+        )
+        rig.drive.items["/move/case.txt"] = stranger
+        rig.drive.blind += "/move/case.txt"
+
+        assertEquals(RenameResult.Ok, rig.impl.rename("/move/case.txt", "/move/CASE.txt"))
+        val renamedCache = rig.engine.resolveCachePath("/move/CASE.txt")
+        assertTrue(rig.impl.openForWrite("c", "h1", "/move/CASE.txt", renamedCache, null) is OpenResult.Ok)
+        advanceUntilIdle()
+
+        assertEquals(setOf("/move/case.txt", "/move/CASE.txt"), rig.drive.items.keys, "both spellings stay: ${rig.drive.log}")
+        assertEquals("id-stranger", rig.drive.items["/move/case.txt"]?.id, "the unproven item is untouched")
+        assertTrue(rig.drive.log.none { it.startsWith("delete:") }, "nothing is deleted: ${rig.drive.log}")
+        assertNotNull(rig.db.getEntry("/move/CASE.txt")?.remoteId)
+        assertTrue(Files.exists(renamedCache), "the user's bytes are still there")
+    }
+
+    // The trash gate itself: an item under the old spelling is trashed only when it is the id the settling upload's own
+    // landing carried; a stranger's item (equal bytes or not), a call without provenance, and the row's own item stay.
+    @Test
+    fun `the stale-spelling trash takes only the landed id at the old spelling`() = runTest {
+        val rig = Rig(this)
+        rig.seedFolder("/move")
+        rig.seedWritten("/move/CASE.txt", "data")
+        val row = rig.db.getEntry("/move/CASE.txt")!!
+        rig.db.upsertEntry(row.copy(remoteId = "id-keep", remoteHash = "h-data", remoteSize = 4))
+        val stranger = CloudItem(
+            id = "id-stale", name = "case.txt", path = "/move/case.txt", size = 4, isFolder = false,
+            modified = Instant.parse("2026-10-07T07:33:00Z"), created = null, hash = "h-data", mimeType = null,
+        )
+        val mount = MountEngine.over(rig.engine)
+
+        rig.drive.items["/move/case.txt"] = stranger
+        assertTrue(mount.trashStaleSpelling("/move/case.txt", "/move/CASE.txt", "id-stale"), "the landed id is trashed")
+        assertNull(rig.drive.items["/move/case.txt"])
+        assertTrue(rig.drive.log.contains("delete:/move/case.txt"), "it went through the delete path (the trash): ${rig.drive.log}")
+
+        rig.drive.items["/move/case.txt"] = stranger.copy(id = "id-stranger")
+        assertFalse(mount.trashStaleSpelling("/move/case.txt", "/move/CASE.txt", "id-stale"), "another item's id is not the landed one")
+        assertFalse(mount.trashStaleSpelling("/move/case.txt", "/move/CASE.txt", null), "nothing is trashed without provenance")
+        assertEquals("id-stranger", rig.drive.items["/move/case.txt"]?.id, "the stranger stays")
+
+        rig.drive.items["/move/case.txt"] = stranger.copy(id = "id-keep")
+        assertFalse(mount.trashStaleSpelling("/move/case.txt", "/move/CASE.txt", "id-keep"), "the row's own item is never trashed")
+        assertEquals("id-keep", rig.drive.items["/move/case.txt"]?.id)
+    }
+
+    // A real collision is two files: a rename by case of a new file next to another device's file of the other spelling keeps both.
+    @Test
+    fun `another file under the old spelling is not touched by a case-only rename and its upload`() = runTest {
+        val rig = Rig(this)
+        rig.seedFolder("/move")
+        rig.seedWritten("/move/doc.txt", "mine")
+        val other = CloudItem(
+            id = "id-other", name = "doc.txt", path = "/move/doc.txt", size = 9, isFolder = false,
+            modified = Instant.parse("2026-10-07T07:33:00Z"), created = null, hash = "h-other-bytes", mimeType = null,
+        )
+        rig.drive.items["/move/doc.txt"] = other
+        rig.drive.blind += "/move/doc.txt"
+
+        assertEquals(RenameResult.Ok, rig.impl.rename("/move/doc.txt", "/move/DOC.txt"))
+        val renamedCache = rig.engine.resolveCachePath("/move/DOC.txt")
+        assertTrue(rig.impl.openForWrite("c", "h1", "/move/DOC.txt", renamedCache, null) is OpenResult.Ok)
+        advanceUntilIdle()
+
+        assertEquals(setOf("/move/doc.txt", "/move/DOC.txt"), rig.drive.items.keys, "both files stay: ${rig.drive.log}")
+        assertEquals("id-other", rig.drive.items["/move/doc.txt"]?.id, "the other file is untouched")
+        assertTrue(rig.drive.log.none { it.startsWith("delete:") }, "nothing is deleted: ${rig.drive.log}")
+    }
+
+    // The control: a settled file's case-only rename is a move in the cloud, and ends as one item.
+    @Test
+    fun `a settled file renamed by case only is moved in the cloud and stays one item`() = runTest {
+        val rig = Rig(this)
+        rig.seedFolder("/move")
+        rig.seedWritten("/move/s.txt", "data")
+        val cache = rig.engine.resolveCachePath("/move/s.txt")
+        assertTrue(rig.impl.openForWrite("c", "h1", "/move/s.txt", cache, null) is OpenResult.Ok)
+        advanceUntilIdle()
+        assertEquals(RenameResult.Ok, rig.impl.rename("/move/s.txt", "/move/S.txt"))
+        advanceUntilIdle()
+
+        assertEquals(listOf("/move/S.txt"), rig.drive.items.keys.toList(), rig.drive.log.toString())
+        assertNull(rig.db.getEntry("/move/s.txt"))
+        assertEquals(rig.drive.items["/move/S.txt"]?.id, rig.db.getEntry("/move/S.txt")?.remoteId)
+    }
+
+    @Test
+    fun `a file renamed by case only while its upload attempt runs ends as one cloud item at the new spelling`() = runTest {
+        val rig = Rig(this)
+        val renames = listOf("/move/case.txt" to "/move/CASE.txt")
+
+        val completed = renameWhileAttemptsRun(rig, renames)
+
+        assertOneItemPerRenameAtItsNewPath(rig, renames)
+        assertTrue(completed.single { it.handleId == "h0" }.ok, "the renamed file's upload completes: $completed")
     }
 
     @Test
