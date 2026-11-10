@@ -4,6 +4,10 @@ import io.ktor.client.plugins.timeout
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.content.OutgoingContent
+import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.writeByteArray
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
@@ -41,7 +45,25 @@ class InternxtSocketTimeoutLoopbackTest {
             slowReadingServer(received).use { server ->
                 loopbackClient(server, socketTimeoutMs = 1_500).use { client ->
                     val started = System.nanoTime()
-                    val answer = client.put("https://gateway.invalid/shard") { setBody(ByteArray(bodyBytes)) }
+                    // The body itself flows, at the pace the server reads (64 KiB per 50 ms): the writes keep the
+                    // write timer fed and the answer follows the last write at once. An unpaced body fits the
+                    // loopback buffers of Linux whole — there the write ends long before the server has read, and
+                    // the cut lands in the answer wait, which is the second test's case, not this one's.
+                    val pacedBody =
+                        object : OutgoingContent.WriteChannelContent() {
+                            override val contentLength: Long = bodyBytes.toLong()
+
+                            override suspend fun writeTo(sink: ByteWriteChannel) {
+                                val chunk = ByteArray(64 * 1024)
+                                var left = bodyBytes.toLong()
+                                while (left > 0) {
+                                    sink.writeByteArray(chunk)
+                                    left -= chunk.size
+                                    delay(50)
+                                }
+                            }
+                        }
+                    val answer = client.put("https://gateway.invalid/shard") { setBody(pacedBody) }
 
                     assertEquals("{}", answer.bodyAsText())
                     assertEquals(bodyBytes.toLong(), received.get())

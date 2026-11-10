@@ -61,6 +61,23 @@ public fun unidriveHttpClient(
         configure()
         engine {
             config {
+                // No transport-level retries: OkHttp's default silently re-sends a request whose committed write
+                // lost the answer to a closed keep-alive connection, which can duplicate a create or turn a
+                // successful conditional write into a conflict. The providers' retry ladders and the reconciliation
+                // own every retry; a lost answer surfaces to them as the failure it was.
+                retryOnConnectionFailure(false)
+                // The object's stored bytes, always: OkHttp's `Accept-Encoding: gzip` default would transparently
+                // decode an answer whose content was stored encoded, so a staged download would write plaintext
+                // for object bytes and lose the length check with it. A client that wants an encoding itself still
+                // names it, and its choice stands.
+                addInterceptor { chain ->
+                    val request = chain.request()
+                    if (request.header("Accept-Encoding") == null) {
+                        chain.proceed(request.newBuilder().header("Accept-Encoding", "identity").build())
+                    } else {
+                        chain.proceed(request)
+                    }
+                }
                 protocols(listOf(Protocol.HTTP_1_1))
                 connectionPool(pool)
                 dispatcher(dispatcher)

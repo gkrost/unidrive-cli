@@ -15,6 +15,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.net.ConnectException
@@ -378,6 +379,68 @@ class UnidriveHttpClientTest {
                 val threads = Thread.getAllStackTraces().keys.filter { it.name.startsWith("unidrive-http") || it.name.startsWith("OkHttp") }
                 assertTrue(threads.isNotEmpty(), "no engine thread seen")
                 assertTrue(threads.all { it.isDaemon }, "non-daemon: ${threads.filter { !it.isDaemon }.map { it.name }}")
+            }
+        }
+    }
+
+    @Test
+    fun `a POST whose committed write lost the answer is not re-sent by the engine`() {
+        val commits = AtomicInteger()
+        RawServer { s, idx ->
+            if (idx == 0) {
+                // The keep-alive connection is warmed with one answered request, as the pool holds it.
+                readRequest(s)
+                ok(s, "warm".toByteArray())
+            }
+            // The reuse: a POST the server takes in fully — the bytes are committed — and then the connection
+            // dies with no answer. A retry would commit the body a second time here.
+            readRequest(s, discardBody = false) ?: return@RawServer
+            commits.incrementAndGet()
+            s.close()
+        }.use { server ->
+            client(socketMs = 30_000).use { c ->
+                runBlocking {
+                    c.get("http://127.0.0.1:${server.port}/warm")
+                    val failure = runCatching { c.put("http://127.0.0.1:${server.port}/commit") { setBody(ByteArray(1000)) } }.exceptionOrNull()
+                    assertTrue(failure is IOException, "the lost answer surfaces as the failure it was: $failure")
+                }
+            }
+            assertEquals(1, commits.get(), "the body was sent once, never silently re-sent")
+        }
+    }
+
+    @Test
+    fun `object bytes the cloud stored encoded arrive as stored, not transparently decoded`() {
+        val askedEncoding = Collections.synchronizedList(mutableListOf<String>())
+        val plain = "encoded-object".toByteArray()
+        val encoded = ByteArrayOutputStream().let { out ->
+            java.util.zip.GZIPOutputStream(out).use { it.write(plain) }
+            out.toByteArray()
+        }
+        RawServer { s, _ ->
+            val req = readRequest(s, discardBody = false) ?: return@RawServer
+            askedEncoding += req.firstOrNull { it.startsWith("accept-encoding:", ignoreCase = true) }?.substringAfter(':')?.trim() ?: "<none>"
+            // An object that was stored with an encoding of its own: the answer carries the stored bytes.
+            s.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: ${encoded.size}\r\n\r\n".toByteArray() + encoded)
+            s.getOutputStream().flush()
+        }.use { server ->
+            client().use { c ->
+                val received =
+                    runBlocking {
+                        c.prepareGet("http://127.0.0.1:${server.port}/obj").execute { r ->
+                            val ch = r.bodyAsChannel()
+                            val out = ByteArrayOutputStream()
+                            val buf = ByteArray(8192)
+                            while (true) {
+                                val n = ch.readAvailable(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                            }
+                            out.toByteArray()
+                        }
+                    }
+                assertTrue(askedEncoding.all { it == "identity" }, "the client asks for identity by default: $askedEncoding")
+                assertTrue(encoded.contentEquals(received), "the ${encoded.size} stored bytes arrive as they are stored, not the ${received.size} decoded ones")
             }
         }
     }
