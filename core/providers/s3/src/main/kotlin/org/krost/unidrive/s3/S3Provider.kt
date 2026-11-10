@@ -165,9 +165,8 @@ class S3Provider(
         val actual = sha256Of(local)
         if (localStats(local) != localBefore) return null
         val after = api.head(key) ?: return null
-        if (after.etag != etag || after.lastModified != before.lastModified ||
-            after.size != before.size || after.proofSha256 != expected
-        ) return null
+        if (after.etag != etag || after.lastModified != before.lastModified) return null
+        if (after.size != before.size || after.proofSha256 != expected) return null
         return ContentProof(actual.equals(expected, ignoreCase = true), SHA256_PROOF)
     }
 
@@ -234,7 +233,7 @@ class S3Provider(
         if (size <= config.multipartThreshold) {
             if (create) createGuarded(key) { api.put(key, localPath, meta, ifNoneMatch = it) } else api.put(key, localPath, meta, ifMatch)
         } else {
-            uploadInParts(localPath, key, size, mtime.toEpochMilli(), digest, meta, onProgress) { uploadId, parts ->
+            uploadInParts(localPath, key, size, mtime.toEpochMilli(), meta, onProgress) { uploadId, parts ->
                 if (create) {
                     createGuarded(key) { api.completeMultipart(key, uploadId, parts, ifNoneMatch = it) }
                 } else {
@@ -326,13 +325,12 @@ class S3Provider(
         key: String,
         size: Long,
         mtimeMillis: Long,
-        proofSha256: String,
         meta: Map<String, String>,
         onProgress: ((Long, Long) -> Unit)?,
         complete: suspend (uploadId: String, parts: List<Pair<Int, String>>) -> Unit,
     ) {
         val partSize = partSizeFor(size)
-        val (uploadId, held) = openUpload(localPath, key, size, mtimeMillis, partSize, proofSha256, meta)
+        val (uploadId, held) = openUpload(localPath, key, size, mtimeMillis, partSize, meta)
         val parts = mutableListOf<Pair<Int, String>>()
         var offset = 0L
         var number = 1
@@ -358,9 +356,9 @@ class S3Provider(
         size: Long,
         mtimeMillis: Long,
         partSize: Long,
-        proofSha256: String,
         meta: Map<String, String>,
     ): Pair<String, Map<Int, S3Part>> {
+        val proofSha256 = meta.getValue("unidrive-sha256-v1")
         val pending = uploads.find(key)
         if (pending != null) {
             val same = pending.localPath == localPath.toString() && pending.size == size && pending.mtimeMillis == mtimeMillis &&
