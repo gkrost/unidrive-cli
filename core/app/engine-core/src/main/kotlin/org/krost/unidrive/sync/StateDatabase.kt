@@ -1047,6 +1047,12 @@ class StateDatabase(
         }
     }
 
+    /**
+     * True when the calling thread owns the open manual batch ([beginBatch]): a write it makes joins that transaction,
+     * costs no commit of its own, and must stay on this thread to keep doing so (see [StateGroupCommit]).
+     */
+    fun ownsOpenBatch(): Boolean = batchOwner === Thread.currentThread()
+
     /** Commit a manual transaction started by [beginBatch] (from whichever thread ends it). */
     fun commitBatch() {
         locked("commitBatch") {
