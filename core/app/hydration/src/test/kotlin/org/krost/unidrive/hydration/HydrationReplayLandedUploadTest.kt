@@ -14,6 +14,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.HashAlgorithm
 
 /**
  * gkrost/unidrive-cli#580: the daemon dies after the provider stored an upload and before the row learned it. The replay of the
@@ -57,6 +58,39 @@ class HydrationReplayLandedUploadTest {
         assertNotNull(env.stateDb.remoteIdOf(path), "the row takes the cloud item")
         assertEquals(10L, env.stateDb.remoteSizeOf(path))
         assertNull(env.stateDb.lastErrorAt(path), "the error of the earlier replay is cleared")
+    }
+
+    @Test
+    fun `a hashless cloud item uses its provider proof and settles the replay`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this)
+        env.rowOfLandedUpload("0123456789")
+        env.providerForTest.hashAlgorithmValue = HashAlgorithm.Md5Hex
+
+        val completed = replay(env, "0123456789")
+
+        assertTrue(completed.ok)
+        assertNotNull(env.stateDb.remoteIdOf(path))
+        assertNull(env.stateDb.lastErrorAt(path))
+        assertEquals(1, env.syncEngine.uploadAttempts())
+        assertEquals(1, env.providerForTest.proofAsks.size)
+    }
+
+    @Test
+    fun `a cloud revision changed during proof cannot settle the replay`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this)
+        env.rowOfLandedUpload("0123456789")
+        env.providerForTest.hashAlgorithmValue = HashAlgorithm.Md5Hex
+        env.providerForTest.metadataVersion = "before"
+        env.providerForTest.contentProof = { _, _ ->
+            env.providerForTest.metadataVersion = "after"
+            org.krost.unidrive.ContentProof(true, "test_proof")
+        }
+
+        val completed = replay(env, "0123456789")
+
+        assertFalse(completed.ok)
+        assertEquals(HydrationError.Conflict, completed.error)
+        assertNull(env.stateDb.remoteIdOf(path))
     }
 
     @Test

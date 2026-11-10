@@ -39,9 +39,11 @@ internal object GhostMatch {
         if (size == null) return true
         val algorithm = provider.hashAlgorithm()
         if (algorithm != null) {
-            val hash = item.hash?.takeIf { it.isNotEmpty() } ?: return !strict
-            return RowHashProof.prove(cache, hash, algorithm)?.same
-                ?: if (strict) HashVerifier.compare(cache, hash, algorithm) == true else HashVerifier.verify(cache, hash, algorithm)
+            val hash = item.hash?.takeIf { it.isNotEmpty() }
+            if (hash != null) {
+                return RowHashProof.prove(cache, hash, algorithm)?.same
+                    ?: if (strict) HashVerifier.compare(cache, hash, algorithm) == true else HashVerifier.verify(cache, hash, algorithm)
+            }
         }
         val proof =
             try {
@@ -53,6 +55,17 @@ internal object GhostMatch {
                 log.debug("the stored object at {} could not be compared with its cache copy: {}", remotePath, e.javaClass.simpleName)
                 null
             }
+        if (proof?.same == true && item.version != null) {
+            // A provider may prove a later object than the one the refusal found. Do not adopt across that change.
+            val now = try {
+                provider.getMetadata(remotePath)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                return false
+            }
+            if (now.id != item.id || now.version != item.version || now.size != item.size) return false
+        }
         return proof?.same ?: !strict
     }
 }

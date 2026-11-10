@@ -7,7 +7,7 @@ import java.util.Properties
 /**
  * The multipart uploads this profile has started and not finished, one small file each under [dir], so an upload cut
  * off half-way resumes with the parts S3 already holds. An entry is only reused for the same local file, unchanged
- * (size and mtime), split the same way (part size).
+ * (size, mtime and plaintext digest), split the same way (part size).
  */
 internal class MultipartStore(
     private val dir: Path,
@@ -19,6 +19,7 @@ internal class MultipartStore(
         val size: Long,
         val mtimeMillis: Long,
         val partSize: Long,
+        val proofSha256: String? = null,
     )
 
     @Synchronized
@@ -41,6 +42,7 @@ internal class MultipartStore(
                 setProperty("size", pending.size.toString())
                 setProperty("mtimeMillis", pending.mtimeMillis.toString())
                 setProperty("partSize", pending.partSize.toString())
+                pending.proofSha256?.let { setProperty("proofSha256", it) }
             }
         val target = fileOf(pending.key)
         val tmp = target.resolveSibling(target.fileName.toString() + ".tmp")
@@ -63,6 +65,7 @@ internal class MultipartStore(
                 size = props.getProperty("size").toLong(),
                 mtimeMillis = props.getProperty("mtimeMillis").toLong(),
                 partSize = props.getProperty("partSize").toLong(),
+                proofSha256 = props.getProperty("proofSha256"),
             )
         }.getOrNull()
 

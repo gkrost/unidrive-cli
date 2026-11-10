@@ -61,6 +61,7 @@ internal class MinimalFakeProvider(
     // archive#1219: the content hash the provider's rows carry (OneDrive: quickXor; null = none, as Internxt) and the stored-object
     // proof it offers; [proofAsks] records which remote ids the engine asked it about.
     @Volatile var hashAlgorithmValue: org.krost.unidrive.HashAlgorithm? = null
+    @Volatile var metadataVersion: String? = null
     @Volatile var contentProof: ((remoteId: String, local: Path) -> org.krost.unidrive.ContentProof?)? = null
     val proofAsks = java.util.concurrent.CopyOnWriteArrayList<String>()
 
@@ -260,6 +261,7 @@ internal class MinimalFakeProvider(
             created = Instant.parse("2026-03-28T12:00:00Z"),
             hash = null,
             mimeType = null,
+            version = metadataVersion,
         )
     }
 
