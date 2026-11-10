@@ -181,6 +181,35 @@ class StateGroupCommitTest {
         }
 
     @Test
+    fun `an Error during the row-by-row retry fails the row and the rows behind it, none is answered as written`() =
+        runBlocking {
+            val stall = Stall()
+            val hook = stall.hook(db)
+            val oomCalls = AtomicInteger()
+            // "/oom" throws an Exception in the group's transaction (so the group is retried row by row) and an Error in the retry.
+            val group =
+                StateGroupCommit(db) { entry, keepMarks ->
+                    if (entry.path == "/oom") {
+                        if (oomCalls.incrementAndGet() == 1) error("poisoned row") else throw OutOfMemoryError("test")
+                    }
+                    hook(entry, keepMarks)
+                }
+            val first = async(Dispatchers.Default) { group.upsertEntry(row("/first")) }
+            assertTrue(stall.entered.await(20, TimeUnit.SECONDS))
+            val good = async(Dispatchers.Default) { group.upsertEntry(row("/good")) }
+            val oom = async(Dispatchers.Default) { runCatching { group.upsertEntry(row("/oom")) } }
+            val tail = async(Dispatchers.Default) { runCatching { group.upsertEntry(row("/tail")) } }
+            awaitTrue("three rows queued") { group.queued == 3 }
+            stall.release.countDown()
+            withTimeout(20_000) { listOf(first, good).awaitAll() }
+            val oomOutcome = withTimeout(20_000) { oom.await() }
+            val tailOutcome = withTimeout(20_000) { tail.await() }
+            assertTrue(oomOutcome.exceptionOrNull() is OutOfMemoryError, "the row that hit the Error sees it: $oomOutcome")
+            assertTrue(tailOutcome.exceptionOrNull() is OutOfMemoryError, "the row behind it was never written and must not return normally: $tailOutcome")
+            assertEquals(setOf("/first", "/good"), committedPaths(), "the rows before the Error are in, the failed ones are not")
+        }
+
+    @Test
     fun `a call that is cancelled before its commit started still gets its row committed`() =
         runBlocking {
             // A dispatcher that holds the commit back, so the cancellation lands while the call waits to be dispatched. The

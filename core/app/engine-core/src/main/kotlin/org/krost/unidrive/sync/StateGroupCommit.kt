@@ -121,18 +121,28 @@ class StateGroupCommit(
             onGroupCommitted?.invoke(group.size, Thread.currentThread())
         } catch (e: Exception) {
             // The transaction was rolled back as a whole. Row by row, so that one bad row fails only its own caller.
-            for (p in group) {
-                try {
-                    write(p.entry, p.keepMarks)
-                    commitCount.incrementAndGet()
-                    rowCount.incrementAndGet()
-                } catch (rowFailure: Exception) {
-                    p.failure = rowFailure
-                }
-            }
+            writeRowByRow(group)
         } catch (e: Throwable) {
             for (p in group) p.failure = e
             throw e
+        }
+    }
+
+    @Suppress("TooGenericExceptionCaught") // a row that fails must fail its own caller, whatever it throws
+    private fun writeRowByRow(group: List<Pending>) {
+        for ((i, p) in group.withIndex()) {
+            try {
+                write(p.entry, p.keepMarks)
+                commitCount.incrementAndGet()
+                rowCount.incrementAndGet()
+            } catch (rowFailure: Exception) {
+                p.failure = rowFailure
+            } catch (fatal: Throwable) {
+                // An Error (an OOM is the realistic one) is not one bad row: the rows behind it were not written and nobody retries
+                // them, so they fail with it instead of being answered as done. The drain answers the group; its callers throw this.
+                for (rest in group.subList(i, group.size)) rest.failure = fatal
+                break
+            }
         }
     }
 
