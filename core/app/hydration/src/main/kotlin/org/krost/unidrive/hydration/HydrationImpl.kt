@@ -2873,6 +2873,16 @@ class HydrationImpl(
     ): Long {
         val recorded = (if (e.isHydrated) (e.localSize ?: e.remoteSize) else e.remoteSize).coerceAtLeast(0L)
         if (!pendingUpload || e.isFolder) return recorded
+        // gkrost/unidrive-cli#585: the stat resolves through the cache-containment walk (real-path
+        // probes per call), which a folder of never-uploaded rows pays per row on every list.
+        // The recorded size is the cache copy's own: the write verbs stamp it as the copy is
+        // closed (the keep-local branch at close, the upload's settlement). Only a row whose
+        // size is not on record yet (archive#524: a 0 on the wire reads as data loss and
+        // invites a delete), or whose bytes may still be moving under an open handle or a
+        // queued upload, is stated; the rest answer from the row.
+        if (recorded > 0L && !uploadSlots.containsKey(e.path) && openSets.values.none { it.containsValue(e.path) }) {
+            return recorded
+        }
         return runCatching {
             Files.size(mount.resolveCachePath(e.path)).coerceAtLeast(0L)
         }.getOrDefault(recorded)
@@ -3047,15 +3057,32 @@ class HydrationImpl(
             // that holds this row's bytes, delete it cloud-side, else hard-delete
             // the genuinely-local row (archive#1040 M7: an item of other size or
             // content is another device's file and stays).
-            val ghost = try {
-                mount.ghostItemOrNull(normalised)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // Transient remote-probe failure: fail the unlink rather than
-                // hard-delete the row and orphan a ghost's cloud copy.
-                return UnlinkResult.Failed(HydrationError.Generic(e.message ?: "remote probe failed"))
-            }
+            //
+            // gkrost/unidrive-cli#585: the probe is a provider round trip on every unlink of a
+            // never-uploaded row, and the row itself proves when none is owed. The durable
+            // keep-local rules exclude the path — no upload of it is ever submitted (the write
+            // verbs take the keep-local branch, the start-up replay skips it, the engine's
+            // planner refuses it) — and no attempt of it ever failed (every failed attempt
+            // stamps last_error_at), so no cloud write of this row's bytes can have landed:
+            // the local-only cleanup below is the whole unlink. Any other row keeps the
+            // probe: an includable path may carry an upload that committed cloud-side
+            // before its row was written (a lost response, a crash between commit and
+            // record), and a recorded failure may have landed after its answer was lost.
+            val probeOwed = !mount.isExcludedPath(normalised) || entry.lastErrorAt != null
+            val ghost =
+                if (!probeOwed) {
+                    null
+                } else {
+                    try {
+                        mount.ghostItemOrNull(normalised)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Transient remote-probe failure: fail the unlink rather than
+                        // hard-delete the row and orphan a ghost's cloud copy.
+                        return UnlinkResult.Failed(HydrationError.Generic(e.message ?: "remote probe failed"))
+                    }
+                }
             if (ghost != null && !ghost.isFolder) {
                 return runCatching {
                     mount.deleteRemote(normalised, permanent)
