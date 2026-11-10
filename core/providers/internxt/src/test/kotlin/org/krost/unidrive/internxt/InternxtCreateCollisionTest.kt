@@ -35,7 +35,7 @@ import kotlin.test.assertTrue
  *     — content not identical: replaceFile is not called; local lands as a
  *     conflict copy.
  *  2. [create_collision_with_identical_remote_adopts_no_conflict_copy]
-     *     — identical bucket-entry + size → adopt the live row; no conflict
+ *     — identical bucket-entry + size → adopt the live row; no conflict
  *     createFile.
  *  3. [create_collision_on_folder_path_still_throws]
  *     — existing item is a folder → original exception re-thrown unchanged.
