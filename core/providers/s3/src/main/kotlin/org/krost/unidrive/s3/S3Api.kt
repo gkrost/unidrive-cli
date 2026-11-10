@@ -215,7 +215,8 @@ class S3Api(
                         budget.recordSuccess()
                         val declared = response.contentLength()
                         val limitMs = downloadBodyTimeoutMs(declared)
-                        // On the IO dispatcher so the timer runs on the clock, whatever dispatcher the caller is on.
+                        // Not redundant with the IO switch inside writeStagedDownload: withTimeoutOrNull takes its timer from the dispatcher it is
+                        // entered on. Under runTest that is virtual time, the cap fires at once while the real body is still arriving. On IO it is the wall clock.
                         val written =
                             withContext(Dispatchers.IO) {
                                 withTimeoutOrNull(limitMs) { writeStagedDownload(response.bodyAsChannel(), destination, declared, "S3 download of '$key'") }
