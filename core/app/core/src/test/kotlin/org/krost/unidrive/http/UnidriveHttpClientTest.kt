@@ -8,6 +8,7 @@ import io.ktor.client.request.prepareGet
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsChannel
+import io.ktor.client.statement.bodyAsText
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -406,6 +407,66 @@ class UnidriveHttpClientTest {
                 }
             }
             assertEquals(1, commits.get(), "the body was sent once, never silently re-sent")
+        }
+    }
+
+    // A server that serves one request per connection and then closes it, without a `Connection: close`: the pooled connection
+    // is dead when the next request meets it (gkrost/unidrive-cli#566, a real bucket: "unexpected end of stream", EOFException
+    // "newline not found: limit=0", on a download).
+    private fun closesAfterOneAnswer(requests: MutableList<String>) =
+        RawServer { s, _ ->
+            val req = readRequest(s) ?: return@RawServer
+            requests += req.first().substringBefore(' ')
+            ok(s, "answer".toByteArray())
+            s.close()
+        }
+
+    @Test
+    fun `a GET on a keep-alive connection the server closed meanwhile succeeds on a fresh one`() {
+        val requests = Collections.synchronizedList(mutableListOf<String>())
+        closesAfterOneAnswer(requests).use { server ->
+            client().use { c ->
+                runBlocking {
+                    assertEquals("answer", c.get("http://127.0.0.1:${server.port}/one").bodyAsText())
+                    Thread.sleep(300) // the server's FIN is in by now; the pool still holds the connection
+                    assertEquals("answer", c.get("http://127.0.0.1:${server.port}/two").bodyAsText())
+                }
+            }
+            assertEquals(listOf("GET", "GET"), requests.toList())
+            assertEquals(2, server.accepted.get(), "the second request needed a fresh connection")
+        }
+    }
+
+    @Test
+    fun `a PUT with a body on a keep-alive connection the server closed meanwhile is sent once, on a fresh one`() {
+        val requests = Collections.synchronizedList(mutableListOf<String>())
+        closesAfterOneAnswer(requests).use { server ->
+            client().use { c ->
+                runBlocking {
+                    c.get("http://127.0.0.1:${server.port}/warm")
+                    Thread.sleep(300)
+                    val answer = c.put("http://127.0.0.1:${server.port}/obj") { setBody(ByteArray(200_000)) }
+                    assertEquals(200, answer.status.value)
+                }
+            }
+            assertEquals(listOf("GET", "PUT"), requests.toList(), "the body was committed once")
+            assertEquals(2, server.accepted.get())
+        }
+    }
+
+    @Test
+    fun `a GET nobody answers is retried once on a fresh connection and then fails`() {
+        val seen = AtomicInteger()
+        RawServer { s, _ ->
+            readRequest(s) ?: return@RawServer
+            seen.incrementAndGet()
+            s.close()
+        }.use { server ->
+            client().use { c ->
+                val failure = runBlocking { runCatching { c.get("http://127.0.0.1:${server.port}/never") }.exceptionOrNull() }
+                assertTrue(failure is IOException, "the failure surfaces: $failure")
+            }
+            assertEquals(2, seen.get(), "one retry, not a loop")
         }
     }
 
