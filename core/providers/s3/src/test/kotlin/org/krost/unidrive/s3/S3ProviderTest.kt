@@ -8,6 +8,7 @@ import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CaseSensitivity
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.ConfigurationException
+import org.krost.unidrive.ContentProof
 import org.krost.unidrive.HttpDefaults
 import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.ProviderException
@@ -154,6 +155,79 @@ class S3ProviderTest {
             assertTrue(Files.list(dir.resolve("s3-uploads")).use { it.count() } == 0L)
         }
 
+    @Test
+    fun `a hashless multipart object proves the uploaded bytes from its metadata`() = runTest {
+        val fake = FakeS3()
+        val bytes = ByteArray((2.5 * mib).toInt()) { (it % 253).toByte() }
+        val source = local("proof.bin", bytes)
+        val provider = provider(fake, threshold = mib, minPart = mib)
+        provider.upload(source, "/proof.bin")
+        val stored = fake.objects.getValue("proof.bin")
+        assertNotNull(stored.meta["unidrive-sha256-v1"])
+        fake.objects["proof.bin"] = FakeS3.Obj(stored.bytes, stored.size, "multipart-3", stored.meta, stored.lastModified, sse = "aws:kms")
+
+        assertEquals(ContentProof(true, "s3_sha256_metadata"), provider.contentMatchesLocal("proof.bin", "/proof.bin", source))
+        val other = local("other.bin", bytes.copyOf().also { it[1234] = (it[1234] + 1).toByte() })
+        assertEquals(ContentProof(false, "s3_sha256_metadata"), provider.contentMatchesLocal("proof.bin", "/proof.bin", other))
+        assertEquals(ContentProof(false, "s3_sha256_metadata"), provider.contentMatchesLocal("proof.bin", "/proof.bin", local("short.bin", byteArrayOf(1))))
+    }
+
+    @Test
+    fun `absent or malformed proof metadata cannot adopt an old object`() = runTest {
+        val fake = FakeS3()
+        fake.put("old.bin", "same bytes")
+        val source = local("old.bin", "same bytes".toByteArray())
+        val provider = provider(fake)
+        assertNull(provider.contentMatchesLocal("old.bin", "/old.bin", source))
+        val old = fake.objects.getValue("old.bin")
+        fake.objects["old.bin"] = FakeS3.Obj(old.bytes, old.size, "multipart-2", mapOf("unidrive-sha256-v1" to "not-a-digest"), old.lastModified)
+        assertNull(provider.contentMatchesLocal("old.bin", "/old.bin", source))
+    }
+
+    @Test
+    fun `a changed remote revision makes the metadata proof unknown`() = runTest {
+        val fake = FakeS3()
+        val source = local("revision.bin", "same bytes".toByteArray())
+        val provider = provider(fake)
+        provider.upload(source, "/revision.bin")
+        var heads = 0
+        fake.onHead = { key, _ ->
+            if (++heads == 2) {
+                val old = fake.objects.getValue(key)
+                fake.objects[key] = FakeS3.Obj(old.bytes, old.size, "new-revision", old.meta, old.lastModified)
+            }
+        }
+
+        assertNull(provider.contentMatchesLocal("revision.bin", "/revision.bin", source))
+    }
+
+    @Test
+    fun `a source changed during upload is not reported as a completed stable revision`() = runTest {
+        val fake = FakeS3()
+        val source = local("changing.bin", ByteArray((2.5 * mib).toInt()) { 1 })
+        val provider = provider(fake, threshold = mib, minPart = mib)
+        var changed = false
+
+        assertFailsWith<ProviderException> {
+            provider.upload(source, "/changing.bin", onProgress = { _, _ ->
+                if (!changed) {
+                    changed = true
+                    Files.write(source, ByteArray((2.5 * mib).toInt()) { 2 })
+                }
+            })
+        }
+        assertTrue(changed)
+    }
+
+    @Test
+    fun `an unrelated bad request remains an upload failure`() = runTest {
+        val fake = FakeS3()
+        fake.failures += Triple({ r: FakeS3.Request -> r.method == HttpMethod.Put && r.key == "bad.bin" }, 400, "RequestTimeout")
+
+        assertFailsWith<S3Exception> { provider(fake).upload(local("bad.bin", byteArrayOf(1)), "/bad.bin") }
+        assertNull(fake.objects["bad.bin"])
+    }
+
     // archive#1062: the key of a path loses its leading and trailing '/', never white space inside the name.
     @Test
     fun `a name with a trailing space is its own key, listed, downloaded and deleted as such`() =
@@ -218,6 +292,26 @@ class S3ProviderTest {
             assertEquals(listOf("1", "2", "3", "3"), fake.requests.filter { it.query.containsKey("partNumber") }.map { it.query["partNumber"] })
             assertTrue(fake.objects.getValue("big.bin").bytes!!.contentEquals(bytes))
         }
+
+    @Test
+    fun `a multipart upload with changed bytes cannot resume under its old proof`() = runTest {
+        val fake = FakeS3()
+        val original = ByteArray((2.5 * mib).toInt()) { 1 }
+        val file = local("revised.bin", original)
+        val mtime = Files.getLastModifiedTime(file)
+        val provider = provider(fake, threshold = mib, minPart = mib)
+        fake.failures += Triple({ r: FakeS3.Request -> r.query["partNumber"] == "2" }, 400, "RequestTimeout")
+        assertFailsWith<S3Exception> { provider.upload(file, "/revised.bin") }
+
+        val revised = ByteArray(original.size) { 2 }
+        Files.write(file, revised)
+        Files.setLastModifiedTime(file, mtime)
+        provider.upload(file, "/revised.bin")
+
+        assertEquals(2, fake.count { it.query.containsKey("uploads") }, "the old metadata belongs to other bytes")
+        assertTrue(fake.objects.getValue("revised.bin").bytes!!.contentEquals(revised))
+        assertEquals(ContentProof(true, "s3_sha256_metadata"), provider.contentMatchesLocal("revised.bin", "/revised.bin", file))
+    }
 
     @Test
     fun `deleting a file that was never uploaded aborts the upload it left open`() =

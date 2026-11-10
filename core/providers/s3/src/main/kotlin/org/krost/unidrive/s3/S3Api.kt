@@ -74,6 +74,7 @@ data class S3Object(
     // SSE-C, either of which replaces the ETag-is-the-MD5 rule. A listing cannot establish the encryption kind.
     val sseKmsOrCustomer: Boolean = false,
     val encryptionKnown: Boolean = false,
+    val proofSha256: String? = null,
 )
 
 data class S3ListPage(
@@ -172,6 +173,7 @@ class S3Api(
                 response.headers["x-amz-server-side-encryption"]?.startsWith("aws:kms") == true ||
                 response.headers["x-amz-server-side-encryption-customer-algorithm"] != null,
             encryptionKnown = true,
+            proofSha256 = response.headers["x-amz-meta-unidrive-sha256-v1"],
         )
     }
 

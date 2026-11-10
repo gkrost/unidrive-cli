@@ -46,6 +46,8 @@ class FakeS3(
 
     val objects = java.util.concurrent.ConcurrentSkipListMap<String, Obj>()
     val requests = mutableListOf<Request>()
+    var onHead: ((key: String, count: Int) -> Unit)? = null
+    private var headCount = 0
     private val uploads = mutableMapOf<String, Pair<String, MutableMap<Int, Obj>>>()
     private val uploadMeta = mutableMapOf<String, Map<String, String>>()
     private var tick = Instant.parse("2026-01-01T00:00:00Z")
@@ -144,6 +146,7 @@ class FakeS3(
                 respond("", HttpStatusCode.OK, headersOf("ETag", "\"${objects.getValue(r.key).etag}\""))
             }
             r.method == HttpMethod.Head -> {
+                onHead?.invoke(r.key!!, ++headCount)
                 val obj = objects[r.key] ?: return respond("", HttpStatusCode.NotFound)
                 val headers =
                     listOfNotNull(

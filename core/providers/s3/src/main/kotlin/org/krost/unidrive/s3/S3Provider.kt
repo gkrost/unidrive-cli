@@ -9,6 +9,7 @@ import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CaseSensitivity
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.ContentProof
 import org.krost.unidrive.CredentialProof
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.HashAlgorithm
@@ -151,6 +152,25 @@ class S3Provider(
         return CapabilityResult.Success(exists)
     }
 
+    // A multipart or encrypted object's ETag cannot prove plaintext bytes. A digest written with the upload can,
+    // provided the object is still the same revision after reading the local file. Older objects remain unknown.
+    override suspend fun contentMatchesLocal(remoteId: String, remotePath: String, local: Path): ContentProof? {
+        val key = keyOf(remotePath)
+        if (key.isEmpty() || remoteId != key) return null
+        val before = api.head(key) ?: return null
+        val expected = before.proofSha256?.takeIf { it.matches(SHA256_HEX) } ?: return null
+        val etag = before.etag ?: return null
+        val localBefore = localStats(local) ?: return null
+        if (localBefore.second != before.size) return ContentProof(false, SHA256_PROOF)
+        val actual = sha256Of(local)
+        if (localStats(local) != localBefore) return null
+        val after = api.head(key) ?: return null
+        if (after.etag != etag || after.lastModified != before.lastModified ||
+            after.size != before.size || after.proofSha256 != expected
+        ) return null
+        return ContentProof(actual.equals(expected, ignoreCase = true), SHA256_PROOF)
+    }
+
     /**
      * The whole bucket, folders included (from markers and from the keys below them). With a scan context each page is
      * persisted with its last key as the marker, and a resumed listing starts after it, from the items staged before.
@@ -203,7 +223,10 @@ class S3Provider(
         if (key.isEmpty()) throw ProviderException("Refusing to upload to the bucket root")
         val size = Files.size(localPath)
         val mtime = Files.getLastModifiedTime(localPath).toInstant()
-        val meta = mapOf("mtime" to S3Api.epochText(mtime))
+        val sourceStats = mtime.toEpochMilli() to size
+        val digest = sha256Of(localPath)
+        if (localStats(localPath) != sourceStats) throw ProviderException("'$remotePath' changed while its upload proof was prepared")
+        val meta = mapOf("mtime" to S3Api.epochText(mtime), "unidrive-sha256-v1" to digest)
         if (ifMatchETag != null && !config.vendor.conditionalWrites) requireUnchanged(key, ifMatchETag)
         val ifMatch = ifMatchETag?.takeIf { config.vendor.conditionalWrites }
         // gkrost/unidrive-cli#57: a create (nothing to replace, no token) must not replace an object that appeared after the plan.
@@ -211,7 +234,7 @@ class S3Provider(
         if (size <= config.multipartThreshold) {
             if (create) createGuarded(key) { api.put(key, localPath, meta, ifNoneMatch = it) } else api.put(key, localPath, meta, ifMatch)
         } else {
-            uploadInParts(localPath, key, size, mtime.toEpochMilli(), meta, onProgress) { uploadId, parts ->
+            uploadInParts(localPath, key, size, mtime.toEpochMilli(), digest, meta, onProgress) { uploadId, parts ->
                 if (create) {
                     createGuarded(key) { api.completeMultipart(key, uploadId, parts, ifNoneMatch = it) }
                 } else {
@@ -219,8 +242,31 @@ class S3Provider(
                 }
             }
         }
+        if (localStats(localPath) != sourceStats || sha256Of(localPath) != digest) {
+            throw ProviderException("'$remotePath' changed while it was uploaded")
+        }
         onProgress?.invoke(size, size)
         return fileItem(api.head(key) ?: throw ProviderException("S3 does not show '$key' right after its upload"))
+    }
+
+    private fun localStats(file: Path): Pair<Long, Long>? =
+        try {
+            Files.getLastModifiedTime(file).toMillis() to Files.size(file)
+        } catch (_: java.io.IOException) {
+            null
+        }
+
+    private suspend fun sha256Of(file: Path): String = withContext(Dispatchers.IO) {
+        val digest = MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(file).use { input ->
+            val bytes = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(bytes)
+                if (count < 0) break
+                digest.update(bytes, 0, count)
+            }
+        }
+        HexFormat.of().formatHex(digest.digest())
     }
 
     // The racy form of a conditional write, for vendors without If-Match: the object must still carry the ETag the engine saw.
@@ -280,12 +326,13 @@ class S3Provider(
         key: String,
         size: Long,
         mtimeMillis: Long,
+        proofSha256: String,
         meta: Map<String, String>,
         onProgress: ((Long, Long) -> Unit)?,
         complete: suspend (uploadId: String, parts: List<Pair<Int, String>>) -> Unit,
     ) {
         val partSize = partSizeFor(size)
-        val (uploadId, held) = openUpload(localPath, key, size, mtimeMillis, partSize, meta)
+        val (uploadId, held) = openUpload(localPath, key, size, mtimeMillis, partSize, proofSha256, meta)
         val parts = mutableListOf<Pair<Int, String>>()
         var offset = 0L
         var number = 1
@@ -311,11 +358,13 @@ class S3Provider(
         size: Long,
         mtimeMillis: Long,
         partSize: Long,
+        proofSha256: String,
         meta: Map<String, String>,
     ): Pair<String, Map<Int, S3Part>> {
         val pending = uploads.find(key)
         if (pending != null) {
-            val same = pending.localPath == localPath.toString() && pending.size == size && pending.mtimeMillis == mtimeMillis && pending.partSize == partSize
+            val same = pending.localPath == localPath.toString() && pending.size == size && pending.mtimeMillis == mtimeMillis &&
+                pending.partSize == partSize && pending.proofSha256 == proofSha256
             val held = if (same) api.listParts(key, pending.uploadId) else null
             if (held != null) {
                 log.info("Resuming the multipart upload of '{}' with {} part(s) already on S3", key, held.size)
@@ -325,7 +374,7 @@ class S3Provider(
             uploads.remove(key)
         }
         val uploadId = api.createMultipart(key, meta)
-        uploads.save(MultipartStore.Pending(key, uploadId, localPath.toString(), size, mtimeMillis, partSize))
+        uploads.save(MultipartStore.Pending(key, uploadId, localPath.toString(), size, mtimeMillis, partSize, proofSha256))
         return uploadId to emptyMap()
     }
 
@@ -643,6 +692,8 @@ class S3Provider(
         private const val MAX_PRESIGN_SECONDS = 7L * 24 * 3600
         private const val COPY_PART_SIZE = 512L * 1024 * 1024
         private val MD5_ETAG = Regex("[0-9a-fA-F]{32}")
+        private val SHA256_HEX = Regex("[0-9a-fA-F]{64}")
+        private const val SHA256_PROOF = "s3_sha256_metadata"
 
         // Exactly one leading slash comes off: an object whose key starts with one (another tool's `/a.txt`, listed
         // at `//a.txt`) must be addressed at that same key, not at the object without it (#82 E). Trailing slashes
