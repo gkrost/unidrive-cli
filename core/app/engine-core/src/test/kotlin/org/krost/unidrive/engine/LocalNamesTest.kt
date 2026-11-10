@@ -3,6 +3,7 @@ package org.krost.unidrive.engine
 import kotlin.test.Test
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * The OS file-name rules both front-ends refuse a name with (archive#230, archive#526). Moved here from
@@ -92,6 +93,21 @@ class LocalNamesTest {
         val eAcute128 = "é".repeat(128)
         assertNull(localNameIssue("/d/$eAcute128", windows = true), "128 units are fine on Windows")
         assertNotNull(localNameIssue("/d/$eAcute128", windows = false), "256 UTF-8 bytes are over the POSIX limit")
+    }
+
+    // gkrost/unidrive-cli#582: a lone surrogate has no UTF-8 form, on any host; a valid pair (an emoji) is an ordinary name.
+    @Test
+    fun `localNameIssue refuses a lone surrogate on every host and takes a valid pair`() {
+        for (windows in listOf(true, false)) {
+            assertNotNull(localNameIssue("/d/lone-\uD800-high.txt", windows = windows), "lone high, windows=$windows")
+            assertNotNull(localNameIssue("/d/lone-\uDC00-low.txt", windows = windows), "lone low, windows=$windows")
+            assertNotNull(localNameIssue("/d/swapped-\uDC00\uD800.txt", windows = windows), "a pair the wrong way round")
+            assertNotNull(localNameIssue("/d/ends-\uD83D", windows = windows), "a high surrogate at the end")
+            assertNotNull(localNameIssue("/ok/folder-\uD800/inside.txt", windows = windows), "in a folder name")
+            assertNull(localNameIssue("/d/cat-🐱.txt", windows = windows), "a valid pair, windows=$windows")
+        }
+        val reason = localNameIssue("/d/lone-\uD800-high.txt", windows = false)
+        assertTrue(reason!!.contains("\\uD800"), "the reason names the code unit: $reason")
     }
 
     @Test
