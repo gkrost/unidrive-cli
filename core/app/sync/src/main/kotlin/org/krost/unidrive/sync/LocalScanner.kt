@@ -243,6 +243,27 @@ class LocalScanner(
                         log.warn("Skipping linked folder {}: it is a symbolic link to a folder", relativePath)
                         return FileVisitResult.CONTINUE
                     }
+                    // The walk supplies the link's own attributes, while upload opens its target. Compare and record
+                    // the same file revision upload sees; a broken or retargeted link must not become a deletion.
+                    val fileAttrs =
+                        if (attrs.isSymbolicLink) {
+                            try {
+                                Files.readAttributes(file, BasicFileAttributes::class.java)
+                            } catch (e: IOException) {
+                                skipped++
+                                unreadable.add(relativePath)
+                                log.warn("Skipping unreadable file link {} ({}: {})", relativePath, e.javaClass.simpleName, e.message)
+                                return FileVisitResult.CONTINUE
+                            }
+                        } else {
+                            attrs
+                        }
+                    if (attrs.isSymbolicLink && !fileAttrs.isRegularFile) {
+                        skipped++
+                        unreadable.add(relativePath)
+                        log.warn("Skipping file link {}: its target is not a regular file", relativePath)
+                        return FileVisitResult.CONTINUE
+                    }
                     seenPaths.add(relativePath)
                     visited++
 
@@ -271,8 +292,8 @@ class LocalScanner(
                                 remoteHash = null,
                                 remoteSize = 0,
                                 remoteModified = null,
-                                localMtime = attrs.lastModifiedTime().toMillis(),
-                                localSize = attrs.size(),
+                                localMtime = fileAttrs.lastModifiedTime().toMillis(),
+                                localSize = fileAttrs.size(),
                                 isFolder = false,
                                 isPinned = false,
                                 isHydrated = true,
@@ -280,8 +301,8 @@ class LocalScanner(
                             ),
                         )
                     } else if (entry.isHydrated) {
-                        val currentMtime = attrs.lastModifiedTime().toMillis()
-                        val currentSize = attrs.size()
+                        val currentMtime = fileAttrs.lastModifiedTime().toMillis()
+                        val currentSize = fileAttrs.size()
                         if (currentMtime != entry.localMtime || currentSize != entry.localSize) {
                             // archive#112: mtime changed but size is the same — potential touch-only.
                             // Hash-compare to avoid a needless re-upload when content is identical.
@@ -344,7 +365,7 @@ class LocalScanner(
                         }
                     } else if (entry.remoteId != null &&
                         !entry.isFolder &&
-                        holdsUserBytes(file, attrs, entry)
+                        holdsUserBytes(file, fileAttrs, entry)
                     ) {
                         // Not hydrated, yet the file holds real bytes: the user saved into the
                         // placeholder stub. Report the edit so the recovery download cannot replace

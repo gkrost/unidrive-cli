@@ -104,6 +104,35 @@ class SyncEngineTest {
         }
 
     @Test
+    fun `a file link uploads its target once and uploads again when the target changes`() =
+        runTest {
+            val target = syncRoot.resolve("target.txt")
+            Files.writeString(target, "target bytes")
+            try {
+                Files.createSymbolicLink(syncRoot.resolve("link.txt"), target.fileName)
+            } catch (e: java.io.IOException) {
+                org.junit.Assume.assumeTrue("symbolic links unavailable: ${e.message}", false)
+            } catch (e: UnsupportedOperationException) {
+                org.junit.Assume.assumeTrue("symbolic links unavailable: ${e.message}", false)
+            } catch (e: SecurityException) {
+                org.junit.Assume.assumeTrue("symbolic links unavailable: ${e.message}", false)
+            }
+            provider.deltaItems = emptyList()
+            engine.syncOnce()
+            val row = assertNotNull(db.getEntry("/link.txt"))
+            assertEquals(1, provider.uploadedPaths.count { it == "/link.txt" })
+            provider.deltaItems = listOf(cloudItem("/link.txt", size = row.remoteSize).copy(id = row.remoteId!!, hash = row.remoteHash, modified = row.remoteModified))
+
+            engine.syncOnce()
+            engine.syncOnce()
+            assertEquals(1, provider.uploadedPaths.count { it == "/link.txt" })
+
+            Files.writeString(target, "changed target bytes")
+            engine.syncOnce()
+            assertEquals(2, provider.uploadedPaths.count { it == "/link.txt" })
+        }
+
+    @Test
     fun `permanent upload refusal is skipped until local content changes`() =
         runTest {
             provider.deltaItems = emptyList()
