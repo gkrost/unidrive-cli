@@ -12,8 +12,9 @@ import kotlin.test.assertNull
 /**
  * gkrost/unidrive-cli#57: a create must not replace an object that appeared after the plan. The PUT (or the multipart complete)
  * carries `If-None-Match: *`, and a taken key is a conflict. A vendor that does not implement the header answers 501, or a 400
- * whose code names the header: the provider then checks with a HEAD first and stops sending it. Any other 400 is a real
- * failure, and a vendor that supports conditional writes never loses its guard to one.
+ * whose code names the header: the header is then not sent again and the listing that made the engine plan the create backs the
+ * write (#573's relaxation). Any other 400 is a real failure, and a vendor that supports conditional writes never loses its
+ * guard to one.
  */
 class S3CreateGuardTest {
     private val dir = Files.createTempDirectory("s3-create-guard")
@@ -77,7 +78,7 @@ class S3CreateGuardTest {
         }
 
     @Test
-    fun `a vendor that answers 501 to the header gets a HEAD check instead, and the header is not sent again`() =
+    fun `a vendor that answers 501 to the header loses it, and a create is then backed by the listing alone`() =
         runTest {
             val fake = FakeS3()
             fake.failures += Triple({ r: FakeS3.Request -> r.headers.containsKey("if-none-match") }, 501, "NotImplemented")
@@ -86,10 +87,12 @@ class S3CreateGuardTest {
             s3.upload(local("a.txt", "mine".toByteArray()), "/a.txt")
             assertEquals("mine", fake.text("a.txt"))
 
-            fake.put("a.txt", "theirs")
-            assertFailsWith<RemoteConflictException> { s3.upload(local("a.txt", "mine again".toByteArray()), "/a.txt") }
-            assertEquals("theirs", fake.text("a.txt"))
-            assertEquals(listOf("*", null), puts(fake).map { it.headers["if-none-match"] }, "one refused attempt with it, one without")
+            // gkrost/unidrive-cli#573: an object that appeared after the plan's listing is replaced, not refused — the race
+            // a HEAD before the PUT would only narrow, never close.
+            s3.upload(local("a.txt", "mine again".toByteArray()), "/a.txt")
+            assertEquals("mine again", fake.text("a.txt"))
+            assertEquals(listOf("*", null, null), puts(fake).map { it.headers["if-none-match"] }, "one refused attempt with it, none after")
+            assertEquals(2, fake.requests.count { it.method == HttpMethod.Head && it.key == "a.txt" }, "only the post-upload HEAD, no guard HEAD")
         }
 
     @Test
@@ -102,9 +105,9 @@ class S3CreateGuardTest {
             s3.upload(local("a.txt", "mine".toByteArray()), "/a.txt")
             assertEquals("mine", fake.text("a.txt"))
 
-            fake.put("a.txt", "theirs")
-            assertFailsWith<RemoteConflictException> { s3.upload(local("a.txt", "mine again".toByteArray()), "/a.txt") }
-            assertEquals(listOf("*", null), puts(fake).map { it.headers["if-none-match"] }, "one refused attempt with it, one without")
+            s3.upload(local("a.txt", "mine again".toByteArray()), "/a.txt")
+            assertEquals("mine again", fake.text("a.txt"), "the listing backs the create, the taken key is replaced")
+            assertEquals(listOf("*", null, null), puts(fake).map { it.headers["if-none-match"] }, "one refused attempt with it, none after")
         }
 
     @Test

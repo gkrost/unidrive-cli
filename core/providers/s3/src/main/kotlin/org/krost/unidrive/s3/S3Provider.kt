@@ -39,7 +39,7 @@ import java.util.HexFormat
  * - **Conditional writes:** the engine's write token is the ETag it saw. Where the vendor honours `If-Match`
  *   (AWS), the write carries it and a 412 is a conflict. Elsewhere a HEAD compares first, which leaves a short race.
  *   A create carries `If-None-Match: *`, so a key taken since the plan is a conflict too; a vendor that refuses the
- *   header (501, 400) gets the HEAD check instead.
+ *   header (501, 400) is written to on the strength of the listing that made the engine plan a create (#573).
  * - **Copies** (moves) above 5 GiB go through UploadPartCopy on every vendor.
  */
 class S3Provider(
@@ -227,7 +227,8 @@ class S3Provider(
         val meta = mapOf("mtime" to S3Api.epochText(mtime), "unidrive-sha256-v1" to digest)
         if (ifMatchETag != null && !config.vendor.conditionalWrites) requireUnchanged(key, ifMatchETag)
         val ifMatch = ifMatchETag?.takeIf { config.vendor.conditionalWrites }
-        // gkrost/unidrive-cli#57: a create (nothing to replace, no token) must not replace an object that appeared after the plan.
+        // gkrost/unidrive-cli#57: a create (nothing to replace, no token) must not replace an object that appeared after
+        // the plan — where the vendor takes `If-None-Match` it cannot (412); a vendor that refuses it is #573's relaxation.
         val create = existingRemoteId == null && ifMatchETag == null
         if (size <= config.multipartThreshold) {
             if (create) createGuarded(key) { api.put(key, localPath, meta, ifNoneMatch = it) } else api.put(key, localPath, meta, ifMatch)
@@ -281,16 +282,17 @@ class S3Provider(
         if (current?.etag != etag) throw RemoteConflictException("'$key' changed on S3 since it was last synced")
     }
 
-    // gkrost/unidrive-cli#57: set once the vendor refused `If-None-Match` and the HEAD check took its place.
+    // gkrost/unidrive-cli#57: set once the vendor refused `If-None-Match` and the listing took the guard's place.
     @Volatile
     private var createGuardRefused = false
 
     /**
      * [write] as a create that a taken [key] refuses: with `If-None-Match: *` (AWS, MinIO, R2 answer 412, a conflict). A vendor
-     * that does not implement the header answers 501, or a 400 whose code names the header; then a HEAD checks that the key is
-     * free, the racy form a guarded modify without If-Match has too, the write goes without the header, and once that worked
-     * the header is not sent again. Any other 400 (`RequestTimeout`, `IncompleteBody`, …) is a real failure, and a vendor that
-     * supports conditional writes never loses its guard to a refused create.
+     * that does not implement the header answers 501, or a 400 whose code names the header; from then on the header is not sent
+     * and the listing that made the engine plan a create is what backs the write — the #573 relaxation of gkrost/unidrive-cli#57:
+     * a create may replace an object that appeared on S3 after that listing. A HEAD before every PUT would narrow that race, never
+     * close it (the key can appear between the two requests), and it costs one request per object. Any other 400 (`RequestTimeout`,
+     * `IncompleteBody`, …) is a real failure, and a vendor that supports conditional writes never loses its guard to a refused create.
      */
     private suspend fun <T> createGuarded(
         key: String,
@@ -301,12 +303,10 @@ class S3Provider(
                 return write(true)
             } catch (e: S3Exception) {
                 if (!createGuardRefusal(e)) throw e
-                log.info("S3 refused If-None-Match on '{}' ({} {}); checking that the key is free with a HEAD instead", key, e.status, e.code)
+                log.info("S3 refused If-None-Match on '{}' ({} {}); a create is backed by the sync's listing from now on", key, e.status, e.code)
+                createGuardRefused = true
             }
-            requireAbsent(key)
-            return write(false).also { createGuardRefused = true }
         }
-        requireAbsent(key)
         return write(false)
     }
 
@@ -318,10 +318,6 @@ class S3Provider(
         if (e.status != 400) return false
         val code = e.code.lowercase().replace("-", "").replace("_", "")
         return "ifnonematch" in code || code == "notimplemented"
-    }
-
-    private suspend fun requireAbsent(key: String) {
-        if (api.head(key) != null) throw RemoteConflictException("'$key' is on S3 already")
     }
 
     private suspend fun uploadInParts(
