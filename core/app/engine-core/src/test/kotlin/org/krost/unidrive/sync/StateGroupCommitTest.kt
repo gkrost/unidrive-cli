@@ -99,7 +99,7 @@ class StateGroupCommitTest {
             fail: String? = null,
         ): (SyncEntry, Boolean) -> Unit =
             { entry, keepMarks ->
-                if (entry.path == fail) throw IllegalStateException("poisoned row")
+                if (entry.path == fail) error("poisoned row")
                 db.upsertEntry(entry, keepMarks)
                 if (entry.path == "/first" && firsts.incrementAndGet() == 1) {
                     entered.countDown()
