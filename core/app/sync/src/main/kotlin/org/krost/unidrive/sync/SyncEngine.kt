@@ -208,6 +208,10 @@ open class SyncEngine(
     private val fileTally = FileEventTally()
     private val downloadEventRetries = FileEventTally()
 
+    // gkrost/unidrive-cli#567: the rows of finished transfers are committed off this engine's event loop, a group of
+    // concurrent transfers to one commit (see [StateGroupCommit]). Internal for the off-the-loop tests.
+    internal val transferRows = StateGroupCommit(db)
+
     // The shared token bucket behind [maxBandwidthKbps]. One instance per
     // engine, so every transfer of every dispatch path draws from the same
     // budget whether it launches in Pass 2 or mid-scan on the streaming gather.
@@ -3275,14 +3279,18 @@ open class SyncEngine(
             }
 
             if (verifyIntegrity) {
-                val verified = HashVerifier.verify(localPath, action.remoteItem.hash, algorithm = provider.hashAlgorithm())
+                // #567: a read of the whole file, so off the event loop (the other transfers run on it).
+                val verified =
+                    offLoop { HashVerifier.verify(localPath, action.remoteItem.hash, algorithm = provider.hashAlgorithm()) }
                 if (!verified) {
                     reporter.onWarning("Integrity check failed: ${action.path}")
                 }
             }
 
             val entry = entryFromCloudItem(action.remoteItem, action.path, isHydrated = true)
-            db.upsertEntry(withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash))
+            // #567: the row is committed off the event loop, with the commits of the transfers beside it; this call
+            // returns only once it is durable, as the plain upsert did.
+            transferRows.upsertEntry(withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash))
             // The bytes of a renamed item are at the row's path: the failed local move this mark remembers is made up.
             if (db.pendingLocalMarkAt(action.path)?.let { PendingLocal.moveFrom(it) } != null) db.clearPendingLocal(action.path)
             auditLog?.emit(
@@ -3529,7 +3537,9 @@ open class SyncEngine(
         }
         val mtime = sent?.first ?: afterUpload?.first ?: Files.getLastModifiedTime(localPath).toMillis()
         val size = sent?.second ?: afterUpload?.second ?: Files.size(localPath)
-        db.upsertEntry(
+        // #567: the hash of the sent bytes (hashless providers) is a read of the file, and the row a durable commit: neither
+        // on the event loop. The call returns once the row is committed, as the plain upsert did.
+        transferRows.upsertEntry(
             SyncEntry(
                 path = action.path,
                 // archive#115: persist the canonical remote path so the next sync's
@@ -4733,12 +4743,19 @@ open class SyncEngine(
     // The hash is kept only if the file still has the mtime and size the row records, so a
     // write that lands while we are hashing cannot turn the new bytes into the tracked
     // baseline. Any read failure just leaves the hash null (today's mtime+size behaviour).
-    private fun withLocalHash(entry: SyncEntry): SyncEntry {
+    private suspend fun withLocalHash(entry: SyncEntry): SyncEntry {
         if ((provider.hashAlgorithm() != null && !entry.remoteHash.isNullOrEmpty()) || entry.isFolder) return entry
         val mtime = entry.localMtime ?: return entry
         val size = entry.localSize ?: return entry
-        return withLocalHash(entry, placeholder.resolveLocal(entry.path), mtime, size)
+        return offLoop { withLocalHash(entry, placeholder.resolveLocal(entry.path), mtime, size) }
     }
+
+    // gkrost/unidrive-cli#567: a read of a whole file (the SHA-256 of a download, of a sent file, the integrity check) runs
+    // on an IO thread, not on the engine's event loop, which also runs the other transfers and their HTTP pipeline. It is
+    // not cancellable once started: the bytes are placed or sent, and the row that follows must still be written, as it
+    // was when the read was a plain call. The caller resumes on its own dispatcher (the loop), so a manual batch it owns
+    // stays on its thread.
+    private suspend fun <T> offLoop(block: () -> T): T = withContext(NonCancellable + Dispatchers.IO) { block() }
 
     // A provider that hashes its plaintext while writing can return the staged file's stats. Check
     // the installed destination against those stats before restoring the remote mtime; an edit
@@ -4757,7 +4774,7 @@ open class SyncEngine(
         }
     }
 
-    private fun withDownloadedHash(
+    private suspend fun withDownloadedHash(
         entry: SyncEntry,
         receipt: DownloadReceipt,
         streamedHash: String?,
@@ -4791,11 +4808,25 @@ open class SyncEngine(
     private fun statBeforeUpload(local: Path): Pair<Long, Long>? = Transfers.statBeforeUpload(local)
 
     // See [Transfers.withSentHash] (archive#337/#148: hash only the bytes that were sent).
-    private fun withSentHash(
+    private suspend fun withSentHash(
         entry: SyncEntry,
         local: Path,
         sent: Pair<Long, Long>?,
         sentSha256: String? = null,
+    ): SyncEntry {
+        // Nothing to read when there are no stats to guard with, the provider hashed the bytes it sent, or the row carries the
+        // provider's own hash: that is no file read, so no hop either.
+        val readsFile =
+            sent != null && sentSha256 == null && !entry.isFolder &&
+                (provider.hashAlgorithm() == null || entry.remoteHash.isNullOrEmpty())
+        return if (readsFile) offLoop { hashSent(entry, local, sent, sentSha256) } else hashSent(entry, local, sent, sentSha256)
+    }
+
+    private fun hashSent(
+        entry: SyncEntry,
+        local: Path,
+        sent: Pair<Long, Long>?,
+        sentSha256: String?,
     ): SyncEntry =
         Transfers.withSentHash(entry, local, sent, provider.hashAlgorithm(), log, sentSha256) { fromProvider, ms ->
             FileEvents.event(

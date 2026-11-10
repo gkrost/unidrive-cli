@@ -228,6 +228,11 @@ class FakeCloudProvider : CloudProvider {
         destination: Path,
     ): Long = downloadByIdWithHash(remoteId, remotePath, destination).bytesWritten
 
+    // gkrost/unidrive-cli#567: false = a provider that does not hash while it writes (S3): the receipt carries no SHA-256, so
+    // the engine reads the placed file itself when the row needs a local hash. The default keeps the receipt a streaming
+    // provider (Internxt) gives.
+    var reportDownloadSha256: Boolean = true
+
     override suspend fun downloadByIdWithHash(
         remoteId: String,
         remotePath: String,
@@ -254,8 +259,11 @@ class FakeCloudProvider : CloudProvider {
         targetMtimeMillis?.let { Files.setLastModifiedTime(destination, java.nio.file.attribute.FileTime.fromMillis(it)) }
         val receipt = DownloadReceipt(
             bytesWritten = content.size.toLong(),
-            plaintextSha256 = java.security.MessageDigest.getInstance("SHA-256").digest(content)
-                .joinToString("") { "%02x".format(it) },
+            plaintextSha256 = if (reportDownloadSha256) {
+                java.security.MessageDigest.getInstance("SHA-256").digest(content).joinToString("") { "%02x".format(it) }
+            } else {
+                null
+            },
             stagedSize = Files.size(destination),
             stagedMtimeMillis = Files.getLastModifiedTime(destination).toMillis(),
             mtimeAppliedBeforePlacement = targetMtimeMillis != null,
