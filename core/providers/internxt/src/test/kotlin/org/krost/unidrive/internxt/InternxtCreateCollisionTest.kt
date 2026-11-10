@@ -35,7 +35,7 @@ import kotlin.test.assertTrue
  *     — content not identical: replaceFile is not called; local lands as a
  *     conflict copy.
  *  2. [create_collision_with_identical_remote_adopts_no_conflict_copy]
- *     — identical bucket-entry + size → adopt (replaceFile); no conflict
+ *     — identical bucket-entry + size → adopt the live row; no conflict
  *     createFile.
  *  3. [create_collision_on_folder_path_still_throws]
  *     — existing item is a folder → original exception re-thrown unchanged.
@@ -273,11 +273,8 @@ class InternxtCreateCollisionTest {
     /**
      * Invariant guarded: when the remote file is provably byte-identical to
      * the local upload (same bucket-entry fileId AND same size), the adopt
-     * path (replaceFile) is used and NO conflict copy is created.
-     *
-     * This is safe because equal fileId + size ⇒ the same encrypted blob is
-     * already registered on the remote — replaceFile is a no-op-equivalent
-     * re-link, not a destructive overwrite.
+     * path returns that row unchanged and NO conflict copy is created.
+     * Replacing a row with its current fileId is refused by the API.
      */
     @Test
     fun `create_collision_with_identical_remote_adopts_no_conflict_copy`() =
@@ -359,13 +356,14 @@ class InternxtCreateCollisionTest {
 
                 val provider = newProviderRooted(tmp, engine)
                 try {
-                    provider.upload(local, "/notes.txt", existingRemoteId = null, onProgress = null)
+                    val adopted = provider.upload(local, "/notes.txt", existingRemoteId = null, onProgress = null)
 
                     assertEquals(
-                        1,
+                        0,
                         replaceFileCalls.get(),
-                        "identical content → adopt via replaceFile exactly once",
+                        "identical content must not replace a file with its own fileId",
                     )
+                    assertEquals("existing-file-uuid", adopted.id)
                     assertEquals(
                         1,
                         createFileCalls.get(),
