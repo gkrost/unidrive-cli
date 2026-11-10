@@ -18,6 +18,8 @@ dependencies {
     // ktor-client-core brings slf4j-api transitively for the plugin's DEBUG
     // logging.
     implementation(libs.ktor.client.core)
+    // The one HTTP engine of the app, named only in UnidriveHttpClient.kt (gkrost/unidrive-cli#566).
+    implementation(libs.ktor.client.okhttp)
 
     // UD-343: shared `UnidriveJson` singleton lives here too so every
     // provider's wire-format parser can stop building its own Json {}
@@ -26,7 +28,6 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(libs.ktor.client.mock)
-    testImplementation(libs.ktor.client.cio)
     testImplementation(libs.kotlinx.coroutines.test)
 
     // The provider conformance suite: the contracts each provider module runs against its own fakes.

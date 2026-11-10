@@ -21,8 +21,9 @@ import kotlin.test.assertTrue
  * the way the CLI does (no engine passed), so a change of the client engine (gkrost/unidrive-cli#566) is in the picture.
  * The request counts per object are in [S3RequestPatternTest].
  *
- * The test without an `@Ignore` keeps the path alive and prints the numbers. The tests with one state a target: whoever
- * lands the issue they name removes the `@Ignore` (the bound [CONNECTION_SLACK] is theirs to tune).
+ * The first test keeps the path alive and prints the numbers. The connection tests bound the distinct connections by the
+ * transfers plus [CONNECTION_SLACK]; the test with an `@Ignore` states a target for the issue it names, whoever lands that
+ * issue removes the `@Ignore`.
  */
 class S3ConnectionPatternTest {
     @get:Rule
@@ -74,7 +75,6 @@ class S3ConnectionPatternTest {
         assertEquals(tree.files.size, LoggingS3Server.perKey(uploads).size, "every object was uploaded")
     }
 
-    @Ignore("enable with #566")
     @Test
     fun `an upload uses about as many connections as it has transfers`() {
         val mark = server.mark()
@@ -83,7 +83,6 @@ class S3ConnectionPatternTest {
         assertConnectionsBounded("upload", server.requestsSince(mark))
     }
 
-    @Ignore("enable with #566")
     @Test
     fun `a download uses about as many connections as it has transfers`() {
         tree.files.forEach { (path, bytes) -> server.seed(tree.key(path), bytes) }
@@ -93,7 +92,8 @@ class S3ConnectionPatternTest {
         assertConnectionsBounded("download", server.requestsSince(mark))
     }
 
-    // Today every request is its own connection (gkrost/unidrive-cli#563: 651 requests on 651 connections), ended by the client.
+    // CIO made every request its own connection (gkrost/unidrive-cli#563: 651 requests on 651 connections), ended by the client;
+    // the pooling engine (gkrost/unidrive-cli#566) holds about as many as there are transfers.
     private fun assertConnectionsBounded(
         phase: String,
         requests: List<LoggingS3Server.Request>,

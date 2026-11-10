@@ -1,7 +1,6 @@
 package org.krost.unidrive.onedrive
 
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
 import kotlinx.coroutines.test.runTest
 import java.io.ByteArrayOutputStream
@@ -87,7 +86,7 @@ class OneDriveSlowUploadTimeoutTest {
         GraphApiService(
             config = OneDriveConfig(tokenPath = tokenDir),
             httpClient =
-                HttpClient(CIO) {
+                org.krost.unidrive.http.unidriveHttpClient {
                     install(HttpTimeout) {
                         connectTimeoutMillis = 2_000
                         socketTimeoutMillis = 100

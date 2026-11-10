@@ -30,7 +30,7 @@ class OAuthService(
     // pass a Ktor MockEngine-backed HttpClient (via OneDriveProviderFactory's
     // newOAuthServiceForBegin hook). Production code uses the default.
     private val httpClient: HttpClient =
-        HttpClient {
+        org.krost.unidrive.http.unidriveHttpClient {
             install(HttpTimeout) {
                 connectTimeoutMillis = HttpDefaults.CONNECT_TIMEOUT_MS
                 socketTimeoutMillis = HttpDefaults.SOCKET_TIMEOUT_MS

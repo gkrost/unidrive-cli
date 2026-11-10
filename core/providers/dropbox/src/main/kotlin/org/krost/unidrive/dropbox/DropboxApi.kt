@@ -46,6 +46,7 @@ import org.krost.unidrive.http.UploadWatchdogException
 import org.krost.unidrive.http.UploadWatchdogLimits
 import org.krost.unidrive.http.readBoundedErrorBody
 import org.krost.unidrive.http.retrying
+import org.krost.unidrive.http.unidriveHttpClient
 import org.krost.unidrive.http.truncateErrorBody
 import org.krost.unidrive.http.throttleWaitMs
 import org.krost.unidrive.http.withUploadWatchdog
@@ -435,5 +436,5 @@ internal fun dropboxHttpClient(
             this.profile = profile
         }
     }
-    return if (engine != null) HttpClient(engine, configure) else HttpClient(configure)
+    return if (engine != null) HttpClient(engine, configure) else unidriveHttpClient(configure = configure)
 }

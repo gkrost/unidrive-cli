@@ -220,7 +220,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                     serverRequestIdHeaders = listOf("x-request-id")
                 }
             }
-            return if (engine != null) HttpClient(engine, configure) else HttpClient(configure)
+            return if (engine != null) HttpClient(engine, configure) else org.krost.unidrive.http.unidriveHttpClient(configure = configure)
         }
 
         // archive#1065: the request timeout of one shard GET. Ktor counts it up to the end of the `execute` block, so the client's
@@ -713,7 +713,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                 driveBudget.recordSuccess()
                 response.bodyAsText()
             } catch (e: java.io.IOException) {
-                val closed = e.closedBeforeResponse()
+                val closed = e.cutBeforeResponse()
                 throw InternxtApiException(
                     if (closed) "Server closed connection for GET $url" else "Connection error for GET $url",
                     if (closed) 503 else 0,
@@ -2053,7 +2053,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                 // (status 0), and neither the retry nor the /files -> folder walk fallback (500/503 only) ran.
                 val elapsedMs = (System.nanoTime() - attemptStartNanos) / 1_000_000
                 if (attemptStartNanos != 0L &&
-                    e.closedBeforeResponse() &&
+                    e.cutBeforeResponse() &&
                     UploadTimeoutPolicy.isSocketWatchdogCut(elapsedMs, socketTimeoutMs)
                 ) {
                     // archive#517 R3/F1: a cut whose elapsed matches the request's own read-idle watchdog is not a
@@ -2070,7 +2070,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                 }
                 driveBudget.recordIoRetry()
                 lastException =
-                    if (e.closedBeforeResponse()) {
+                    if (e.cutBeforeResponse()) {
                         InternxtApiException("Server closed connection for GET $url: ${e.message}", 503, cause = e)
                     } else {
                         InternxtApiException("Connection error for GET $url: ${e.message}", 0, cause = e)
@@ -2113,6 +2113,15 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
 
     // The server closed the connection before it answered: the EOFException, or what Ktor wraps around it.
     private fun Throwable.closedBeforeResponse(): Boolean = generateSequence(this) { it.cause }.take(8).any { it is java.io.EOFException }
+
+    // The engine's own read-idle timer fired. OkHttp (the engine, see unidriveHttpClient) reports it as a SocketTimeoutException;
+    // CIO showed the same cut as a closed connection (see [closedBeforeResponse]). Where the cut comes at the timer's limit
+    // the cause is ours, whichever way the engine words it.
+    private fun Throwable.readIdleTimeout(): Boolean = generateSequence(this) { it.cause }.take(8).any { it is java.net.SocketTimeoutException }
+
+    // No answer came, whichever way the engine words it: a closed connection or the read-idle timer. The status 503 of both is
+    // the one the retry ladder and the walk fallback act on; a connect failure stays status 0 (an outage).
+    private fun Throwable.cutBeforeResponse(): Boolean = closedBeforeResponse() || readIdleTimeout()
 
     private fun HttpRequestBuilder.applyAuth(creds: InternxtCredentials) {
         bearerAuth(creds.jwt)
