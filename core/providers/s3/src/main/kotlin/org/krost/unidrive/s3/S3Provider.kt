@@ -2,6 +2,7 @@ package org.krost.unidrive.s3
 
 import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.Capability
@@ -260,6 +261,8 @@ class S3Provider(
         Files.newInputStream(file).use { input ->
             val bytes = ByteArray(64 * 1024)
             while (true) {
+                // A cancelled upload must not keep hashing a multi-gigabyte file to the end (this pass runs twice per upload).
+                ensureActive()
                 val count = input.read(bytes)
                 if (count < 0) break
                 digest.update(bytes, 0, count)
