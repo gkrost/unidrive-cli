@@ -142,6 +142,10 @@ internal class MinimalFakeProvider(
     // provider's "remote changed under the edit" refusal).
     val uploadConflictRemaining = AtomicInteger(0)
 
+    // gkrost/unidrive-cli#580: a create (no id, no token) over a name the cloud holds is refused as a conflict, as localfs, S3 and Dropbox
+    // refuse it, and the bytes at the name stay as they are.
+    @Volatile var createRefusesTakenName = false
+
     // archive#493: like [uploadFailuresRemaining] but the failure is a PermanentUploadFailureException (the provider refused
     // the request itself).
     val uploadRefusedRemaining = AtomicInteger(0)
@@ -374,6 +378,10 @@ internal class MinimalFakeProvider(
         uploadFailureRemaining.getAndUpdate { p -> if (p > 0) p - 1 else p }.let { before -> if (before > 0) throw uploadFailure }
         uploadConflictRemaining.getAndUpdate { p -> if (p > 0) p - 1 else p }.let { before ->
             if (before > 0) throw org.krost.unidrive.RemoteConflictException("injected remote conflict: $remotePath")
+        }
+        val isCreate = existingRemoteId == null && ifMatchETag == null
+        if (createRefusesTakenName && isCreate && remoteFiles.containsKey(remotePath)) {
+            throw org.krost.unidrive.RemoteConflictException("fake: '$remotePath' appeared at the target since the upload was planned")
         }
         uploadRefusedRemaining.getAndUpdate { p -> if (p > 0) p - 1 else p }.let { before ->
             if (before > 0) throw org.krost.unidrive.PermanentUploadFailureException("injected refusal: $remotePath")
@@ -990,6 +998,20 @@ internal class HydrationTestEnv(
         /** Injects [count] RemoteConflictException refusals from upload() before the next success. */
         fun conflictUploads(count: Int) {
             fakeProvider.uploadConflictRemaining.set(count)
+        }
+
+        /**
+         * gkrost/unidrive-cli#580: the cloud holds [content] at [path] already (a killed daemon's upload had landed before its row
+         * learned it), reports [content]'s size, proves its bytes against a local file by comparing them (what localfs does), and
+         * refuses a create over the name.
+         */
+        fun landedBeforeTheRow(path: String, content: String) {
+            fakeProvider.seedContent(path, content)
+            fakeProvider.metadataSizes[path] = content.toByteArray().size.toLong()
+            fakeProvider.contentProof = { _, local ->
+                org.krost.unidrive.ContentProof(Files.readAllBytes(local).contentEquals(content.toByteArray()), "test_byte_compare")
+            }
+            fakeProvider.createRefusesTakenName = true
         }
 
         /** archive#493: injects [count] PermanentUploadFailureException refusals from upload() before the next success. */

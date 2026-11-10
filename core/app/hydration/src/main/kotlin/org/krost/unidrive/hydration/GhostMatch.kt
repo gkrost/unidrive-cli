@@ -18,6 +18,10 @@ import java.nio.file.Path
  * the item's hash ([RowHashProof], else [HashVerifier.verify], which skips a value that is not a content hash), or, for a provider
  * without a hash of its own, its proof from the stored object ([CloudProvider.contentMatchesLocal]). A hash or proof that cannot
  * be compared decides nothing; one that differs decides. A row created and never written has no cache copy: its upload was empty.
+ *
+ * gkrost/unidrive-cli#580: an upload whose create the provider refused (the name is taken) settles as done only on a proof, so it asks
+ * with `strict`: a hash or proof that cannot be compared, or an item with no hash, is then "not the same". The ghost callers (rename,
+ * unlink) keep the lenient answer, where a wrong "same" costs a cloud-side delete of a same-sized file only after the size matched.
  */
 internal object GhostMatch {
     @Suppress("TooGenericExceptionCaught") // whatever the provider's proof throws, it proved nothing: the size decides
@@ -27,6 +31,7 @@ internal object GhostMatch {
         cache: Path,
         remotePath: String,
         log: Logger,
+        strict: Boolean = false,
     ): Boolean {
         // Read in line, as the rename and the unlink move and delete their cache copies.
         val size = if (Files.isRegularFile(cache)) Files.size(cache) else null
@@ -34,8 +39,9 @@ internal object GhostMatch {
         if (size == null) return true
         val algorithm = provider.hashAlgorithm()
         if (algorithm != null) {
-            val hash = item.hash?.takeIf { it.isNotEmpty() } ?: return true
-            return RowHashProof.prove(cache, hash, algorithm)?.same ?: HashVerifier.verify(cache, hash, algorithm)
+            val hash = item.hash?.takeIf { it.isNotEmpty() } ?: return !strict
+            return RowHashProof.prove(cache, hash, algorithm)?.same
+                ?: if (strict) HashVerifier.compare(cache, hash, algorithm) == true else HashVerifier.verify(cache, hash, algorithm)
         }
         val proof =
             try {
@@ -47,6 +53,6 @@ internal object GhostMatch {
                 log.debug("the stored object at {} could not be compared with its cache copy: {}", remotePath, e.javaClass.simpleName)
                 null
             }
-        return proof?.same ?: true
+        return proof?.same ?: !strict
     }
 }
