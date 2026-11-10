@@ -240,6 +240,16 @@ class StateDatabase(
     }
 
     fun initialize() {
+        try {
+            openAndBootstrap()
+        } catch (e: SQLException) {
+            // A damaged file is its own failure (#581): neither an older schema nor a locked file.
+            if (!inMemory && StateDbCorruptException.isCorruption(e)) throw StateDbCorruptException(dbPath, e)
+            throw e
+        }
+    }
+
+    private fun openAndBootstrap() {
         // The writable open pauses between its tries (up to 1.7 s, see [openWritable]); it runs before the monitor is
         // taken, so a thread that calls into this database meanwhile waits for nothing but its own turn (#531).
         var fresh: Connection? = null
@@ -3721,7 +3731,9 @@ class StateDatabase(
                     st.setString(1, SCHEMA_VERSION_KEY)
                     st.executeQuery().use { rs -> if (rs.next()) rs.getString(1).toIntOrNull() else null }
                 }
-            } catch (_: java.sql.SQLException) {
+            } catch (e: java.sql.SQLException) {
+                // A damaged file is not "no schema version" (#581): that would read as an older unidrive.
+                if (StateDbCorruptException.isCorruption(e)) throw e
                 null // no sync_state table yet: an empty or brand-new file
             }
 

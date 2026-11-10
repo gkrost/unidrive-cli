@@ -125,6 +125,44 @@ class DoctorCommandTest {
         assertTrue(before.contentEquals(Files.readAllBytes(dbPath)), "a read-only run must not rewrite the file")
     }
 
+    @Test
+    fun `doctor_says_a_truncated_state_db_is_corrupt_and_names_the_recovery_not_the_upgrade`() {
+        seedDb { db -> for (i in 0 until 300) db.setSyncState("key-$i", "v".repeat(200)) }
+        Files.deleteIfExists(profileDir.resolve("state.db-wal"))
+        Files.deleteIfExists(profileDir.resolve("state.db-shm"))
+        Files.write(dbPath, Files.readAllBytes(dbPath).copyOf(5000))
+        assertCorruptReported()
+    }
+
+    @Test
+    fun `doctor_says_a_garbage_state_db_is_corrupt_and_names_the_recovery_not_the_upgrade`() {
+        Files.write(dbPath, ByteArray(8192) { (it * 31 + 7).toByte() })
+        assertCorruptReported()
+    }
+
+    private fun assertCorruptReported() {
+        val before = Files.readAllBytes(dbPath)
+        val check = result(runDoctor(), "state-db")
+        assertEquals(DoctorCommand.Severity.ERR, check.severity)
+        val msg = check.summary
+        assertTrue("corrupt" in msg, msg)
+        assertTrue("move" in msg && "aside" in msg && "cloud" in msg, "names the recovery: $msg")
+        assertTrue("lost" in msg, "says what the recovery costs: $msg")
+        assertFalse("unidrive sync" in msg || "older unidrive" in msg, "not the upgrade advice: $msg")
+        assertTrue(before.contentEquals(Files.readAllBytes(dbPath)), "doctor must not write to state.db")
+    }
+
+    @Test
+    fun `doctor_still_advises_the_upgrade_for_a_state_db_without_a_schema_version`() {
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$dbPath").use {
+            it.createStatement().use { st -> st.execute("CREATE TABLE sync_state(key TEXT PRIMARY KEY, value TEXT)") }
+        }
+        val check = result(runDoctor(), "state-db")
+        assertEquals(DoctorCommand.Severity.ERR, check.severity)
+        assertTrue("older unidrive" in check.summary && "unidrive sync" in check.summary, check.summary)
+        assertFalse("corrupt" in check.summary, check.summary)
+    }
+
     // ── Clean profile → exit 0 ────────────────────────────────────────────
 
     @Test

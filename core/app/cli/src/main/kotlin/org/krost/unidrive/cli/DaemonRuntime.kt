@@ -37,6 +37,8 @@ import org.krost.unidrive.sync.ProcessLock
 import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.PendingUploads
 import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.StateDbCorruptException
+import org.krost.unidrive.sync.StateDbRecovery
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.telemetry.TransferHistory
 import org.krost.unidrive.sync.ignore.IgnoreSettings
@@ -173,6 +175,36 @@ class DaemonRuntime(
     private var lock: ProcessLock? = null
     private var db: StateDatabase? = null
 
+    /** gkrost/unidrive-cli#581: set when a mount-mode start found state.db corrupt and moved it aside; reported by daemon.status. */
+    @Volatile private var stateRecovery: StateDbRecovery? = null
+
+    /**
+     * Opens state.db. A corrupt file (gkrost/unidrive-cli#581) ends the start with [StateDbCorruptException] — except in
+     * mount mode, where the owner decided the daemon recovers by itself: the damaged file is kept as
+     * `state.db.corrupt-<time>`, a fresh one is opened, the engine rebuilds from the cloud listing, and the status says
+     * so (including that local changes recorded only in the state are lost). Other modes only report.
+     */
+    private fun openStateDatabase(): StateDatabase {
+        try {
+            return StateDatabase(dbPath).also { it.initialize() }
+        } catch (e: StateDbCorruptException) {
+            if (profileMode != ProfileMode.MOUNT) throw e
+            val recovery =
+                try {
+                    StateDbRecovery.moveAside(dbPath)
+                } catch (moveFailure: java.io.IOException) {
+                    // Cannot recover: report the corruption as a non-mount mode does, with the reason it could not be moved.
+                    e.addSuppressed(moveFailure)
+                    log.info("daemon: could not move the corrupt state.db at {} aside: {}", dbPath, moveFailure.message)
+                    throw e
+                }
+            log.warn("daemon: {}", recovery.message)
+            System.err.println("WARNING: unidrive daemon: ${recovery.message}")
+            stateRecovery = recovery
+            return StateDatabase(dbPath).also { it.initialize() }
+        }
+    }
+
     // archive#655: the daemon's quota snapshot for daemon.status (`quota`). It reads the cache and persists
     // through this runtime's database — the one the lifecycle opens and cleanup closes — and shares the
     // provider factory.
@@ -227,7 +259,7 @@ class DaemonRuntime(
                 staleMounts.forEach { System.err.println("  fusermount3 -u $it") }
             }
 
-            db = StateDatabase(dbPath).also { it.initialize() }
+            db = openStateDatabase()
             // Before anything is served: the one rewrite of a fragmented file holds it alone (seconds on a large drive).
             runCatching { db!!.compactOnce() }.onFailure { log.warn("compacting state.db at start failed", it) }
 
@@ -793,6 +825,8 @@ class DaemonRuntime(
                         ",\"provider_health\":$providerHealth" +
                         requestsJson +
                         ",\"credential_health\":$credentialHealthJson" +
+                        // state_recovery (gkrost/unidrive-cli#581): present only when this start found state.db corrupt and moved it aside.
+                        (stateRecovery?.let { ",\"state_recovery\":${stateRecoveryJson(it)}" } ?: "") +
                         ",\"auth\":$authJson" +
                         // notifications (archive#111): the provider's remote-change push channel; `unsupported` where it has none.
                         ",\"notifications\":${notificationsStatusJson(provider.remoteChangeChannelStatus())}" +
@@ -949,9 +983,17 @@ class DaemonRuntime(
                     closeTransferHistory(transferHistory)
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: StateDbCorruptException) {
+            // The command prints the one line (stderr is also where WARN and up are logged, so no WARN here); the
+            // trace stays in the log at debug (gkrost/unidrive-cli#581).
+            log.info("daemon: state.db at {} is corrupt; stopping", e.dbPath)
+            log.debug("daemon: state.db corrupt", e)
+            throw e
+        } catch (e: IpcAuth.StartupRefused) {
             // An IPC startup refusal is already reported as its one line.
-            if (e !is IpcAuth.StartupRefused) log.error("daemon: lifecycle error", e)
+            throw e
+        } catch (e: Exception) {
+            log.error("daemon: lifecycle error", e)
             throw e
         } finally {
             cleanup()
@@ -1164,3 +1206,7 @@ class DaemonRuntime(
         ): Boolean = !authEnabled || scope == IpcAuth.Scope.FULL.wire
     }
 }
+
+/** The `state_recovery` object of `daemon.status` (gkrost/unidrive-cli#581): additive, present only after a corrupt state.db was moved aside. */
+internal fun stateRecoveryJson(r: StateDbRecovery): String =
+    """{"reason":"corrupt","moved_to":${ndjsonString(r.movedTo.toString())},"at_ms":${r.atMs},"local_changes_lost":true,"message":${ndjsonString(r.message)}}"""

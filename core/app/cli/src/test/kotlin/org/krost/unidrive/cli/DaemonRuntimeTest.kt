@@ -266,6 +266,91 @@ class DaemonRuntimeTest {
         }
 
     @Test
+    fun `a corrupt state_db stops a mirror daemon with the typed error and leaves the file, no socket and no lock`() = runBlocking {
+        // gkrost/unidrive-cli#581: outside mount mode the daemon only reports; the command turns this into one stderr
+        // line and exit 65.
+        val garbage = ByteArray(8192) { (it * 31 + 7).toByte() }
+        Files.write(dbPath, garbage)
+        val runtime =
+            DaemonRuntime(
+                profileMode = ProfileMode.MIRROR,
+                profileName = "test_profile",
+                lockFile = lockFile,
+                dbPath = dbPath,
+                syncRoot = tempDir,
+                socketPath = socketPath,
+                providerFactory = { StubProvider() },
+            )
+        val ex = runCatching { runtime.start() }.exceptionOrNull()
+
+        assertTrue(ex is org.krost.unidrive.sync.StateDbCorruptException, "got $ex")
+        assertEquals(dbPath, ex.dbPath)
+        assertEquals(65, org.krost.unidrive.sync.StateDbCorruptException.EXIT_CODE)
+        assertTrue(garbage.contentEquals(Files.readAllBytes(dbPath)), "a non-mount daemon must not move or rewrite a corrupt state.db")
+        assertFalse(Files.exists(socketPath), "the socket is never bound")
+        assertFalse(Files.exists(lockFile.resolveSibling("${lockFile.fileName}.pid")), "the lock is released")
+    }
+
+    @Test
+    fun `a corrupt state_db in mount mode is moved aside, the daemon starts and its status says so`() = runBlocking {
+        // Owner decision on gkrost/unidrive-cli#581.
+        val garbage = ByteArray(8192) { (it * 31 + 7).toByte() }
+        Files.write(dbPath, garbage)
+        val runtime =
+            DaemonRuntime(
+                profileMode = ProfileMode.MOUNT,
+                profileName = "test_profile",
+                lockFile = lockFile,
+                dbPath = dbPath,
+                syncRoot = tempDir,
+                socketPath = socketPath,
+                providerFactory = { StubProvider() },
+            )
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath)
+        try {
+            val reply = sendOneRequest("""{"verb":"daemon.status"}""")
+            val recovery = kotlinx.serialization.json.Json.parseToJsonElement(reply)
+                .let { it as kotlinx.serialization.json.JsonObject }["state_recovery"]
+                .let { it as kotlinx.serialization.json.JsonObject }
+            fun field(k: String) = (recovery[k] as kotlinx.serialization.json.JsonPrimitive).content
+            assertEquals("corrupt", field("reason"))
+            assertEquals("true", field("local_changes_lost"))
+            assertTrue("lost" in field("message") && "rebuilt from the cloud" in field("message"), field("message"))
+            val kept = java.nio.file.Path.of(field("moved_to"))
+            assertTrue(kept.fileName.toString().startsWith("state.db.corrupt-"), "kept as state.db.corrupt-<time>: $kept")
+            assertTrue(garbage.contentEquals(Files.readAllBytes(kept)), "the corrupt copy is kept byte for byte")
+            assertTrue(Files.size(dbPath) > 8192 || !garbage.contentEquals(Files.readAllBytes(dbPath)), "a fresh state.db was created")
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    @Test
+    fun `a healthy state_db in mount mode leaves status without a state_recovery`() = runBlocking {
+        val runtime =
+            DaemonRuntime(
+                profileMode = ProfileMode.MOUNT,
+                profileName = "test_profile",
+                lockFile = lockFile,
+                dbPath = dbPath,
+                syncRoot = tempDir,
+                socketPath = socketPath,
+                providerFactory = { StubProvider() },
+            )
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath)
+        try {
+            val reply = sendOneRequest("""{"verb":"daemon.status"}""")
+            assertFalse("state_recovery" in reply, reply)
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    @Test
     fun daemon_fail_fast_on_auth_failure_does_not_bind_socket() = runBlocking {
         // Spec T4: provider.authenticate() throws → daemon refuses to bind
         // the socket, releases the lock, exits non-zero.
