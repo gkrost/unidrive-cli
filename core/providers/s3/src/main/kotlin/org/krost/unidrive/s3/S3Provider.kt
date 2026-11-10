@@ -18,7 +18,6 @@ import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.ScanProgress
-import org.krost.unidrive.http.UploadTimeoutPolicy
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -130,11 +129,10 @@ class S3Provider(
         destination: Path,
     ): Long {
         val key = keyOf(remotePath)
-        // The declared size sizes the request timeout (the flat 10 minute cap cut every download that needs longer);
-        // the HEAD also answers "gone" before the GET is spent on it.
-        val head = api.head(key) ?: throw PermanentDownloadFailureException("S3 has no object at '$remotePath' any more")
+        // One GET, no HEAD before it (#569). What the HEAD supplied now comes from the GET itself: the declared size from its
+        // Content-Length (it sizes the body timeout and is what the byte count is checked against) and "gone" from its 404.
         return try {
-            api.get(key, destination, timeoutMs = UploadTimeoutPolicy.computeRequestTimeoutMs(head.size))
+            api.get(key, destination)
         } catch (e: S3Exception) {
             if (e.status == 404) throw PermanentDownloadFailureException("S3 has no object at '$remotePath' any more", e, e.requestId)
             throw e
@@ -220,6 +218,9 @@ class S3Provider(
             }
         }
         onProgress?.invoke(size, size)
+        // The HEAD stays (#574): the engine records this item's `modified` and compares it with the listing's LastModified in whole
+        // seconds (#82 D), and no PUT or CompleteMultipartUpload answer carries that time (the `Date` header is the answer's time,
+        // not the object's); the HEAD also tells the encryption kind that decides whether the ETag is an MD5 (`fileItem`).
         return fileItem(api.head(key) ?: throw ProviderException("S3 does not show '$key' right after its upload"))
     }
 

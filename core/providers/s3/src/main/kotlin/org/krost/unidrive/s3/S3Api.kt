@@ -3,7 +3,9 @@ package org.krost.unidrive.s3
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.HttpClientEngine
+import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.HttpTimeoutConfig
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.header
 import io.ktor.client.request.prepareRequest
@@ -17,6 +19,9 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.content.OutgoingContent
 import io.ktor.http.contentLength
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.HttpDefaults
 import org.krost.unidrive.ProviderException
@@ -100,11 +105,15 @@ class S3Api(
     clock: () -> Instant = Instant::now,
     private val budget: HttpRetryBudget = HttpRetryBudget(maxConcurrency = MAX_CONCURRENCY),
     private val uploadWatchdog: UploadWatchdogLimits = UploadWatchdogLimits.DEFAULT,
+    // How long the body of a GET may take once its headers are in, from the Content-Length they declare. A test passes a short one.
+    private val downloadBodyTimeoutMs: (declaredBytes: Long?) -> Long = ::defaultDownloadBodyTimeoutMs,
+    // The read-idle limit of every call: the only watchdog of a GET while its headers are awaited. A test passes a short one.
+    socketTimeoutMs: Long = HttpDefaults.SOCKET_TIMEOUT_MS,
 ) : AutoCloseable {
     private val log = org.slf4j.LoggerFactory.getLogger(S3Api::class.java)
     private val signer = SigV4Signer(config.accessKey, config.secretKey, config.region, clock)
     private val metrics = RequestMetricsTap()
-    private val httpClient: HttpClient = s3HttpClient(metrics, config, engine)
+    private val httpClient: HttpClient = s3HttpClient(metrics, config, engine, socketTimeoutMs)
     private val base = config.endpoint.trimEnd('/')
 
     fun attachRequestMetrics(sink: RequestMetricsSink?) {
@@ -177,22 +186,25 @@ class S3Api(
 
     // ── content ──
 
-    /** Downloads [key] to [destination] through a staging sibling moved over it only when complete. */
+    /**
+     * Downloads [key] to [destination] through a staging sibling moved over it only when complete: one GET, nothing before it.
+     *
+     * Ktor counts a request timeout up to the end of the `execute` block, and a size-based cap cannot be set before the
+     * size is known, so the call itself is unbounded and the cap is applied to the body once the headers are in, sized from
+     * the GET's own `Content-Length` (what a HEAD first used to supply). Until the headers arrive the connect and the
+     * read-idle socket timeout are the watchdog; during the body the read-idle timeout still is the stall detector and the
+     * size-based cap only ends a transfer that is steady but too slow for the floor throughput. A missing `Content-Length`
+     * gets the flat floor. The same header is what [writeStagedDownload] checks the byte count against.
+     */
     suspend fun get(
         key: String,
         destination: Path,
-        timeoutMs: Long? = null,
     ): Long =
         budget.retrying { _, retries ->
             val statement =
                 httpClient.prepareRequest {
                     signed(HttpMethod.Get, key, emptyList(), emptyMap(), SigV4Signer.EMPTY_SHA256)
-                    // Ktor counts the request timeout up to the end of the `execute` block, so the client's flat 10 minute
-                    // cap cut every download that needs longer, steady transfer or not. The socket timeout stays at its
-                    // default: during a download the read-idle timer is the stall detector.
-                    if (timeoutMs != null) {
-                        timeout { requestTimeoutMillis = timeoutMs }
-                    }
+                    timeout { requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS }
                 }
             statement.execute { response ->
                 when {
@@ -201,7 +213,14 @@ class S3Api(
                     !response.status.isSuccess() -> throw failure(response, readBoundedErrorBody(response), "GET")
                     else -> {
                         budget.recordSuccess()
-                        RetryOutcome.Done(writeStagedDownload(response.bodyAsChannel(), destination, response.contentLength(), "S3 download of '$key'"))
+                        val declared = response.contentLength()
+                        val limitMs = downloadBodyTimeoutMs(declared)
+                        // On the IO dispatcher so the timer runs on the clock, whatever dispatcher the caller is on.
+                        val written =
+                            withContext(Dispatchers.IO) {
+                                withTimeoutOrNull(limitMs) { writeStagedDownload(response.bodyAsChannel(), destination, declared, "S3 download of '$key'") }
+                            } ?: throw HttpRequestTimeoutException(response.call.request.url.toString(), limitMs)
+                        RetryOutcome.Done(written)
                     }
                 }
             }
@@ -594,15 +613,19 @@ class S3Api(
     }
 }
 
+/** The longest a GET body of [declaredBytes] may take: the flat floor, or the time at the floor throughput when that is longer. */
+internal fun defaultDownloadBodyTimeoutMs(declaredBytes: Long?): Long = UploadTimeoutPolicy.computeRequestTimeoutMs(declaredBytes ?: 0L)
+
 internal fun s3HttpClient(
     tap: RequestMetricsTap,
     config: S3Config,
     engine: HttpClientEngine?,
+    socketTimeoutMs: Long = HttpDefaults.SOCKET_TIMEOUT_MS,
 ): HttpClient {
     val configure: HttpClientConfig<*>.() -> Unit = {
         install(HttpTimeout) {
             connectTimeoutMillis = HttpDefaults.CONNECT_TIMEOUT_MS
-            socketTimeoutMillis = HttpDefaults.SOCKET_TIMEOUT_MS
+            socketTimeoutMillis = socketTimeoutMs
             requestTimeoutMillis = HttpDefaults.REQUEST_TIMEOUT_MS
         }
         // Every path segment is a bucket or a key, so every one becomes {id}: nothing identifying reaches the metrics.

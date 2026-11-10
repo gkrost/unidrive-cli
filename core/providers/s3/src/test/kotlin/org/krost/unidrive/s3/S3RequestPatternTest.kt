@@ -5,6 +5,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Rule
 import org.junit.rules.TemporaryFolder
+import org.krost.unidrive.PermanentDownloadFailureException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -14,6 +15,7 @@ import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -24,6 +26,7 @@ import kotlin.test.assertTrue
  *
  * Tests without an `@Ignore` pin what holds today. Tests with one state the target of an open issue and name it: whoever
  * fixes the issue removes the `@Ignore` and, where an active test above it pins the old number, deletes or flips that test.
+ * A download is one GET per object since gkrost/unidrive-cli#569; an upload still ends in a HEAD (#574, see the test below).
  * Every failure message carries the observed counts and the request sequence of the objects that broke the bound.
  */
 class S3RequestPatternTest {
@@ -111,7 +114,7 @@ class S3RequestPatternTest {
         assertEquals(tree.files.keys.map(::key).toSet(), perKey.keys, "every object was uploaded; $report")
         val tooMany = perKey.filterValues { it.size > 2 }.keys
         assertTrue(tooMany.isEmpty(), "upload: ${tooMany.size} of ${perKey.size} objects took more than 2 requests; ${report(requests, tooMany)}")
-        // The post-upload HEAD stays until gkrost/unidrive-cli#574.
+        // The post-upload HEAD stays until gkrost/unidrive-cli#574: it is the only source of the LastModified the engine records (see S3Provider.upload).
         assertEquals(2 * tree.files.size, requests.size, "upload: 2 requests per object (PUT, HEAD); $report")
         assertTrue(perKey.values.all { it == listOf("PUT", "HEAD") }, "upload: each object is PUT then HEAD; $report")
         assertTrue(requests.filter { it.method == HttpMethod.Put }.all { it.headers["if-none-match"] == "*" }, "upload: each create asks for a free key; $report")
@@ -170,36 +173,49 @@ class S3RequestPatternTest {
     // ── download ──
 
     @Test
-    fun `a download is a HEAD and a GET per object today`() {
-        seedAll()
-        downloadAll()
-        val requests = snapshot()
-
-        // Today: the HEAD learns the size that sizes the request timeout, and finds a vanished object, then the GET.
-        // gkrost/unidrive-cli#569 drops the HEAD: whoever lands it deletes this test and enables the one below.
-        val report = report(requests)
-        println("download ${tree.files.size} objects: $report")
-        val perKey = perKey(requests)
-        assertEquals(tree.files.keys.map(::key).toSet(), perKey.keys, "every object was downloaded; $report")
-        val others = perKey.filterValues { it != listOf("HEAD", "GET") }.keys
-        assertTrue(others.isEmpty(), "download: ${others.size} of ${perKey.size} objects were not exactly HEAD then GET; ${report(requests, others)}")
-        assertEquals(2 * tree.files.size, requests.size, "download: 2 requests per object; $report")
-    }
-
-    @Ignore("enable with #569")
-    @Test
     fun `a download is a single GET per object`() {
         seedAll()
         downloadAll()
         val requests = snapshot()
 
         val report = report(requests)
+        println("download ${tree.files.size} objects: $report")
         val perKey = perKey(requests)
         assertEquals(tree.files.keys.map(::key).toSet(), perKey.keys, "every object was downloaded; $report")
         val tooMany = perKey.filterValues { it != listOf("GET") }.keys
         assertTrue(tooMany.isEmpty(), "download: ${tooMany.size} of ${perKey.size} objects were not a single GET; ${report(requests, tooMany)}")
         assertEquals(tree.files.size, requests.count { it.method == HttpMethod.Get }, "download: one GET per object; $report")
         assertEquals(0, requests.count { it.method == HttpMethod.Head }, "download: no HEAD; $report")
+    }
+
+    @Test
+    fun `an object that is gone is one GET and the same permanent failure`() {
+        seedAll()
+        val gone = tree.files.keys.first()
+        fake.objects.remove(key(gone))
+        val failure = assertFailsWith<PermanentDownloadFailureException> { runBlocking { s3.download(gone, tmp.newFolder("gone").toPath().resolve("x.bin")) } }
+        val requests = snapshot()
+
+        assertEquals("S3 has no object at '$gone' any more", failure.message)
+        assertEquals(listOf("GET"), requests.map(::label), "gone: the 404 of the GET is the answer, no HEAD first; ${report(requests)}")
+    }
+
+    @Test
+    fun `an object replaced after it was listed is downloaded as it is now, by its own Content-Length`() {
+        seedAll()
+        val path = tree.files.keys.first()
+        val replaced = ByteArray(tree.files.getValue(path).size + 777) { (it % 251).toByte() }
+        fake.objects[key(path)] = FakeS3.Obj(replaced, replaced.size.toLong(), S3Api.md5Hex(replaced), emptyMap(), Instant.parse("2026-02-02T00:00:00Z"))
+        val destination = tmp.newFolder("replaced").toPath().resolve("x.bin")
+
+        // No version guard exists on the read path today (the HEAD before the GET never made one: the GET carries no If-Match and the
+        // provider is not handed the ETag the engine listed), so the bytes are the new ones and the count is the new object's.
+        val written = runBlocking { s3.download(path, destination) }
+        val requests = snapshot()
+
+        assertEquals(replaced.size.toLong(), written)
+        assertContentEquals(replaced, Files.readAllBytes(destination))
+        assertEquals(listOf("GET"), requests.map(::label), "replaced: one GET; ${report(requests)}")
     }
 
     // ── integrity ──
