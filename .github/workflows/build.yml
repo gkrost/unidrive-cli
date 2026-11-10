@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A manual run builds in full, the legs a pull request skips included (see the `changes` job).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,8 +20,13 @@ concurrency:
 # internal properties in ErrorHandlingModuleComponentRepository (9.8.1); GRADLE_OPTS carries them into the build JVM,
 # the single-use one of --no-daemon included. Developer machines keep Gradle's defaults. Which repositories and mirrors
 # serve the build is #183, and is not changed here.
+#
+# gkrost/unidrive-cli#596: the local build cache is on in CI (org.gradle.caching). setup-gradle saves ~/.gradle/caches,
+# build-cache-1 included, from jobs on main and restores it read-only on pull requests, so a pull request compiles only
+# the modules it changes and the ones that depend on them. Test tasks are never cached (core/build.gradle.kts): every
+# job still runs its whole test set. Developer machines keep the cache off unless they turn it on themselves.
 env:
-  GRADLE_OPTS: -Dorg.gradle.internal.repository.max.tentatives=5 -Dorg.gradle.internal.repository.initial.backoff=5000
+  GRADLE_OPTS: -Dorg.gradle.internal.repository.max.tentatives=5 -Dorg.gradle.internal.repository.initial.backoff=5000 -Dorg.gradle.caching=true
 
 # Every Ubuntu job pins ubuntu-24.04: the ubuntu-latest label began migrating to
 # Ubuntu 26 on 2026-10-19, and an uncontrolled image flip is exactly what this
@@ -81,6 +88,14 @@ jobs:
   # A docs file that a test reads is code (archive#1075): a PR that edits only it must run that test, or main goes red after
   # the merge. `docs_read_by_tests` below names them (today SyncConfigScopeTest reads docs/config-schema/config.schema.json;
   # the whole folder is listed); a test that starts reading another file under docs/ adds its path there.
+  #
+  # `full` decides the two second runs of the whole suite, check-windows and check-runtime-jdk (gkrost/unidrive-cli#596).
+  # In 74 runs neither caught anything `check` missed except one flaky test, and together they were 42 % of the runner
+  # time, with check-windows alone setting an 18-minute wall clock on every pull request. They run on every push to main
+  # and on a manual run (`gh workflow run build.yml --ref <branch>`), and on a pull request only when it changes the build
+  # itself (a build script, a lockfile, core/gradle/ — dependency bumps included — the wrapper, or this workflow) or carries
+  # the `ci:full` label. A label is read from the event, so it takes effect with the next push to the branch; `labeled` is
+  # not a trigger on purpose: a label added mid-run would cancel the running gate through the concurrency group.
   changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -88,20 +103,22 @@ jobs:
       pull-requests: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      full: ${{ steps.filter.outputs.full }}
     steps:
       - id: filter
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           PR: ${{ github.event.pull_request.number }}
+          FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
         run: |
-          # Anything that is not Markdown or under docs/ is code, and so is a docs file a test reads. Pushes (main) always
-          # build; if the file list cannot be read, build rather than skip.
-          if [ "$EVENT" != pull_request ]; then echo code=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          # Anything that is not Markdown or under docs/ is code, and so is a docs file a test reads. Pushes (main) and
+          # manual runs always build, in full; if the file list cannot be read, build in full rather than skip.
+          if [ "$EVENT" != pull_request ]; then printf 'code=true\nfull=true\n' >> "$GITHUB_OUTPUT"; exit 0; fi
           # A rename lists only the new name in `filename`; `previous_filename` is the old one, so moving code under docs/
           # (or to a .md name) still shows the code path.
           if ! files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq ".[] | .filename, (.previous_filename // empty)"); then
-            echo code=true >> "$GITHUB_OUTPUT"; exit 0
+            printf 'code=true\nfull=true\n' >> "$GITHUB_OUTPUT"; exit 0
           fi
           docs_read_by_tests='^docs/config-schema/'
           if [ -z "$files" ] || printf '%s\n' "$files" | grep -qvE '(^docs/|\.md$)' || printf '%s\n' "$files" | grep -qE "$docs_read_by_tests"; then
@@ -109,6 +126,17 @@ jobs:
           else
             echo code=false >> "$GITHUB_OUTPUT"
             echo "Docs-only change: Gradle jobs skipped."
+          fi
+          build_files='(^|/)[^/]*\.gradle\.kts$|^core/gradle\.properties$|^core/[^/]*\.lockfile$|^core/gradle/|^core/gradlew|^\.github/workflows/build\.yml$'
+          if [ "$FULL_LABEL" = true ]; then
+            echo full=true >> "$GITHUB_OUTPUT"
+            echo "Label ci:full: check-windows and check-runtime-jdk run."
+          elif printf '%s\n' "$files" | grep -qE "$build_files"; then
+            echo full=true >> "$GITHUB_OUTPUT"
+            echo "The build changes: check-windows and check-runtime-jdk run."
+          else
+            echo full=false >> "$GITHUB_OUTPUT"
+            echo "check-windows and check-runtime-jdk skipped (main runs them; label ci:full or a manual run brings them to a PR)."
           fi
 
   check:
@@ -199,10 +227,11 @@ jobs:
   # switches only the test JVMs; bytecode stays at the toolchain level), so
   # a runtime regression surfaces here and not in a packaged build. Gradle
   # itself runs on the runtime JDK; the compile toolchain resolves from the
-  # runner's pre-installed JDK.
+  # runner's pre-installed JDK. On a pull request only when `changes` says
+  # `full` (a build change or the ci:full label); main and manual runs always.
   check-runtime-jdk:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -387,9 +416,11 @@ jobs:
             --tests 'org.krost.unidrive.internxt.WindowsDpapiCredentialProtectorTest' \
             --tests 'org.krost.unidrive.internxt.InternxtUploadWritebackTest'
 
+  # The full suite on Windows, advisory. On a pull request only when `changes` says `full` (a build change or the
+  # ci:full label); main and manual runs always. windows-security above stays on every pull request.
   check-windows:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: windows-2025
     timeout-minutes: 45
     continue-on-error: true

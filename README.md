@@ -49,7 +49,9 @@ cd core && ./gradlew :app:cli:shadowJar :app:cli:runtimeImage
 The image's JDK module set is pinned — a new dependency that changes it fails
 `check` (see `RuntimeModulesTest`, which compares the set with what `jdeps` reports),
 and CI runs the whole gate a second time with the tests executing on the runtime
-JDK's release (the `check-runtime-jdk` job, a full Zulu JDK on Linux). The
+JDK's release (the `check-runtime-jdk` job, a full Zulu JDK on Linux; on every push
+to `main`, and on a pull request that changes the build or carries the `ci:full`
+label). The
 `runtime-image` CI job builds the image on Linux and Windows and boots the
 packaged launcher once against it. Launchers honour
 `UNIDRIVE_XMX` (bare size, e.g. `512m`, `2g`; default `2g`) and pin
