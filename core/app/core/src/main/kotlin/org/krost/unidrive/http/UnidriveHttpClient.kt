@@ -87,10 +87,7 @@ public fun unidriveHttpClient(
                     try {
                         chain.proceed(request)
                     } catch (e: IOException) {
-                        val retry =
-                            !chain.call().isCanceled() &&
-                                (e is StaleConnectionException || (request.method in READ_METHODS && e.looksLikeDeadConnection()))
-                        if (!retry) throw e
+                        if (!e.canBeSentAgain(request.method, chain.call().isCanceled())) throw e
                         pool.evictAll()
                         chain.proceed(request)
                     }
@@ -135,6 +132,15 @@ public fun unidriveHttpClient(
 private class StaleConnectionException : IOException("the server had closed the pooled connection before the request was sent")
 
 private val READ_METHODS = setOf("GET", "HEAD")
+
+/**
+ * Whether a request that failed with this may go out once more: not a cancelled call; a request nothing of which was written
+ * ([StaleConnectionException]) of any method; a read that failed before its answer on a connection-level error.
+ */
+private fun IOException.canBeSentAgain(
+    method: String,
+    cancelled: Boolean,
+): Boolean = !cancelled && (this is StaleConnectionException || (method in READ_METHODS && looksLikeDeadConnection()))
 
 /** An EOF or a reset: how a connection the server closed shows. Not a timeout, not a refused or unreachable connect. */
 private fun IOException.looksLikeDeadConnection(): Boolean =
