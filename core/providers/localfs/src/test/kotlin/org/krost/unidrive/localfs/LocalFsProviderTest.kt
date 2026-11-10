@@ -3,6 +3,7 @@ package org.krost.unidrive.localfs
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CaseSensitivity
+import org.krost.unidrive.ContentProof
 import org.krost.unidrive.ProviderException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -11,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class LocalFsProviderTest {
@@ -491,5 +493,48 @@ class LocalFsProviderTest {
             assertEquals("in", Files.readString(root.resolve("moved/in.txt")))
             assertFalse(Files.exists(root.resolve("a.txt")))
             assertFalse(Files.exists(root.resolve("dir")))
+        }
+
+    // gkrost/unidrive-cli#580: the daemon is killed after the upload wrote its target and before the row learned it. The replay
+    // creates the same name again, is refused (the file is somebody's data until proven otherwise), and asks whether the target
+    // holds the bytes it is uploading.
+    @Test
+    fun the_replay_of_a_killed_upload_finds_its_own_bytes_at_the_target_and_other_bytes_stay_other() =
+        runTest {
+            val root = newRoot()
+            val p = LocalFsProvider(root)
+            p.authenticate()
+            val src = Files.createTempFile("src", ".bin")
+            Files.write(src, ByteArray(300_000) { (it % 251).toByte() })
+
+            p.upload(src, "/st2/s017.bin") // the write that landed; the process dies here, before the row is written
+
+            assertFailsWith<org.krost.unidrive.RemoteConflictException> { p.upload(src, "/st2/s017.bin") }
+            val sameBytes = p.contentMatchesLocal("/st2/s017.bin", "/st2/s017.bin", src)
+            assertEquals(ContentProof(true, METHOD_BYTE_COMPARE), sameBytes)
+
+            // The same size with one byte changed in the middle is another file.
+            val other = Files.createTempFile("other", ".bin")
+            Files.write(other, Files.readAllBytes(src).also { it[150_000] = (it[150_000] + 1).toByte() })
+            assertEquals(ContentProof(false, METHOD_BYTE_COMPARE), p.contentMatchesLocal("/st2/s017.bin", "/st2/s017.bin", other))
+
+            // Another size, and a name nobody holds.
+            val shorter = Files.createTempFile("shorter", ".bin")
+            Files.write(shorter, Files.readAllBytes(src).copyOf(299_999))
+            assertEquals(ContentProof(false, METHOD_BYTE_COMPARE), p.contentMatchesLocal("/st2/s017.bin", "/st2/s017.bin", shorter))
+            assertNull(p.contentMatchesLocal("/st2/none.bin", "/st2/none.bin", src))
+            assertNull(p.contentMatchesLocal("/st2", "/st2", src), "a folder holds no bytes to compare")
+
+            assertTrue(Files.readAllBytes(root.resolve("st2/s017.bin")).contentEquals(Files.readAllBytes(src)), "the target was never rewritten")
+        }
+
+    @Test
+    fun a_proof_for_a_path_outside_the_root_is_refused() =
+        runTest {
+            val p = LocalFsProvider(newRoot())
+            p.authenticate()
+            val src = Files.createTempFile("src", ".bin")
+
+            assertFailsWith<IllegalArgumentException> { p.contentMatchesLocal("x", "/../escape.bin", src) }
         }
 }
