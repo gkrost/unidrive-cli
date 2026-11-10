@@ -299,6 +299,11 @@ subprojects {
         environment("HOME", testHome)
         systemProperty("user.home", testHome)
         systemProperty("unidrive.test.home", testHome)
+        // CI turns the build cache on (build.yml, #596) so a module nobody touched is not compiled again. Test results
+        // are never taken from it: tests read inputs Gradle does not track (SyncConfigScopeTest reads
+        // docs/config-schema/, others the CI and UNIDRIVE_* environment, the ignore oracle its pinned git), and a cached
+        // pass would hide a failure. A module's tests may opt in once their inputs are declared.
+        outputs.doNotCacheIf("test results are not cached: tests read inputs Gradle does not track (#596)") { true }
     }
 }
 

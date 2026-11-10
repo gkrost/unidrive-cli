@@ -20,8 +20,13 @@ concurrency:
 # internal properties in ErrorHandlingModuleComponentRepository (9.8.1); GRADLE_OPTS carries them into the build JVM,
 # the single-use one of --no-daemon included. Developer machines keep Gradle's defaults. Which repositories and mirrors
 # serve the build is #183, and is not changed here.
+#
+# gkrost/unidrive-cli#596: the local build cache is on in CI (org.gradle.caching). setup-gradle saves ~/.gradle/caches,
+# build-cache-1 included, from jobs on main and restores it read-only on pull requests, so a pull request compiles only
+# the modules it changes and the ones that depend on them. Test tasks are never cached (core/build.gradle.kts): every
+# job still runs its whole test set. Developer machines keep the cache off unless they turn it on themselves.
 env:
-  GRADLE_OPTS: -Dorg.gradle.internal.repository.max.tentatives=5 -Dorg.gradle.internal.repository.initial.backoff=5000
+  GRADLE_OPTS: -Dorg.gradle.internal.repository.max.tentatives=5 -Dorg.gradle.internal.repository.initial.backoff=5000 -Dorg.gradle.caching=true
 
 # Every Ubuntu job pins ubuntu-24.04: the ubuntu-latest label began migrating to
 # Ubuntu 26 on 2026-10-19, and an uncontrolled image flip is exactly what this
