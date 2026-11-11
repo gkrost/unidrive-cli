@@ -156,21 +156,86 @@ class CloudRelocator(
         return oversized
     }
 
+    /** How a source file relates to the file already at its target path (gkrost/unidrive-cli#62). */
+    internal enum class Equivalence(
+        /** True when the target file may be taken for the source file, so the transfer is skipped. */
+        val isSkip: Boolean,
+    ) {
+        /** Both sides report a hash and the hashes agree: proven the same content. */
+        HASH(true),
+
+        /** No comparable hash exists and the sizes agree: assumed the same, not proven. */
+        SIZE_ONLY(true),
+
+        /**
+         * Both providers report a hash of the same algorithm, the sizes agree and the hashes differ: two different files
+         * under one name. Neither may be taken for the other, and nothing may overwrite or delete either.
+         */
+        CONFLICT(false),
+
+        /** The sizes differ (and no hash proves otherwise): the target is stale or partial and is transferred again. */
+        DIFFERENT(false),
+    }
+
     /**
-     * Equivalence check between a source file and a candidate target file.
-     * Hash match wins when both sides report a hash (OneDrive ↔ OneDrive,
-     * Dropbox ↔ Dropbox). Falls back to size equality when either side has
-     * no hash (Synology WebDAV has no ETag; cross-provider hashes rarely
-     * agree on algorithm). Size-only has a small false-positive risk — two
-     * differently-named files of identical byte length — but for relocate's
-     * idempotent-resume use case it's the right trade-off.
+     * Compares a source file with the candidate target file at its path.
+     *
+     * Two hashes are comparable when both exist and the providers do not report different algorithms (a provider that
+     * reports none is taken to carry the same format as the other side, as equal strings are then the only evidence).
+     * Comparable hashes decide: equal is [Equivalence.HASH]; unequal is a [Equivalence.CONFLICT] when the sizes agree
+     * and both providers named the same algorithm, so the mismatch is certain. Only when no hash is comparable does
+     * size alone decide ([Equivalence.SIZE_ONLY]): Synology WebDAV has no ETag, and cross-provider hashes rarely share
+     * an algorithm. A size-only match is a weaker claim and the caller must say so.
      */
+    internal fun compare(
+        src: CloudItem,
+        dst: CloudItem,
+    ): Equivalence {
+        val srcAlgorithm = source.hashAlgorithm()
+        val dstAlgorithm = target.hashAlgorithm()
+        val algorithmsDiffer = srcAlgorithm != null && dstAlgorithm != null && srcAlgorithm != dstAlgorithm
+        val sameKnownAlgorithm = srcAlgorithm != null && srcAlgorithm == dstAlgorithm
+        if (src.hash != null && dst.hash != null && !algorithmsDiffer) {
+            if (src.hash == dst.hash) return Equivalence.HASH
+            if (sameKnownAlgorithm && src.size == dst.size) return Equivalence.CONFLICT
+        }
+        return if (src.size == dst.size) Equivalence.SIZE_ONLY else Equivalence.DIFFERENT
+    }
+
+    /** True when the target file may be taken for the source file: proven by hash or, failing a hash, by size. */
     internal fun isEquivalent(
         src: CloudItem,
         dst: CloudItem,
-    ): Boolean {
-        if (src.hash != null && dst.hash != null && src.hash == dst.hash) return true
-        return src.size == dst.size
+    ): Boolean = compare(src, dst).isSkip
+
+    private fun conflictMessage(
+        newTarget: String,
+        src: CloudItem,
+        dst: CloudItem,
+    ): String {
+        log.warn(
+            "Conflict at {}: source and target hold different content (hash {} vs {}, size {}); " +
+                "nothing was transferred and neither copy was changed",
+            newTarget,
+            src.hash,
+            dst.hash,
+            src.size,
+        )
+        return "Conflict at $newTarget: the target already holds a different file of the same size " +
+            "(hash ${src.hash} on the source, ${dst.hash} on the target); " +
+            "nothing was transferred and neither copy was changed"
+    }
+
+    private fun logSizeOnlySkip(
+        newTarget: String,
+        src: CloudItem,
+    ) {
+        log.warn(
+            "Skipping {}: matched by size only ({} bytes), no comparable hash to prove the content is equal; " +
+                "its source copy will not be deleted by --delete-source",
+            newTarget,
+            src.size,
+        )
     }
 
     fun migrate(
@@ -288,20 +353,30 @@ class CloudRelocator(
                         walk(newSource, newTarget)
                     } else {
                         val existing = existingByName[itemName]
+                        val equivalence = if (existing != null && !existing.isFolder) compare(item, existing) else null
                         if (existing != null) {
                             log.debug(
-                                "skip-check {}: isFolder={} equivalent={}",
+                                "skip-check {}: isFolder={} equivalence={}",
                                 itemName,
                                 existing.isFolder,
-                                isEquivalent(item, existing),
+                                equivalence,
                             )
                         }
-                        if (existing != null && !existing.isFolder && isEquivalent(item, existing)) {
+                        if (existing != null && equivalence == Equivalence.CONFLICT) {
+                            // gkrost/unidrive-cli#62: two different files under one name. Neither transferred over the
+                            // target nor recorded in the manifest (so the source delete refuses); reported as an error.
+                            errorCount.incrementAndGet()
+                            val message = conflictMessage(newTarget, item, existing)
+                            emitMutex.withLock { send(MigrateEvent.Error(message)) }
+                            continue
+                        }
+                        if (existing != null && equivalence?.isSkip == true) {
+                            if (equivalence == Equivalence.SIZE_ONLY) logSizeOnlySkip(newTarget, item)
                             manifest?.recordSkippedEquivalent(
                                 item.path,
                                 item.id,
                                 newTarget,
-                                hashEquivalent = item.hash != null && existing.hash != null && item.hash == existing.hash,
+                                hashEquivalent = equivalence == Equivalence.HASH,
                             )
                             skippedFiles.incrementAndGet()
                             skippedSize.addAndGet(item.size)

@@ -431,8 +431,8 @@ class RelocateCommand : Runnable {
                 !entry.hashEquivalent
             ) {
                 problems.add(
-                    "${entry.sourcePath} was skipped on equal size alone, with no hash to prove it " +
-                        "(gkrost/unidrive-cli#62 tracks the hash comparison that would)",
+                    "${entry.sourcePath} was skipped on equal size alone, with no comparable hash to prove it " +
+                        "(gkrost/unidrive-cli#62: a size-only match is never proof enough to delete the source)",
                 )
             }
         }
