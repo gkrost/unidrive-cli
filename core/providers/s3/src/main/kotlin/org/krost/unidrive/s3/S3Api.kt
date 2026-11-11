@@ -239,9 +239,14 @@ class S3Api(
         meta: Map<String, String> = emptyMap(),
         ifMatch: String? = null,
         ifNoneMatch: Boolean = false,
+        contentMd5: ByteArray? = null,
     ): String? {
         val size = file?.let { Files.size(it) } ?: 0L
-        val headers = meta.mapKeys { "x-amz-meta-${it.key}" } + conditionHeaders(ifMatch, ifNoneMatch)
+        // [contentMd5] is the MD5 of the bytes of [file] as they were read before this call: S3 answers 400 BadDigest, and stores
+        // nothing, when what it received is not those bytes (the file changed since, or the body was damaged on the way).
+        val headers =
+            meta.mapKeys { "x-amz-meta-${it.key}" } + conditionHeaders(ifMatch, ifNoneMatch) +
+                listOfNotNull(contentMd5?.let { "Content-MD5" to Base64.getEncoder().encodeToString(it) })
         val response =
             if (file != null) {
                 send(HttpMethod.Put, key, emptyList(), headers, SigV4Signer.UNSIGNED_PAYLOAD, watched = WatchedBody(size) { progressTrackingFileBody(file, size, it) })
@@ -521,7 +526,7 @@ class S3Api(
     ): Exception {
         val root = runCatching { xml(body) }.getOrNull()
         val code = root?.text("Code") ?: response.status.value.toString()
-        val message = "S3 $what failed (${response.status.value} $code): ${truncateErrorBody(root?.text("Message") ?: body)}"
+        val message = "S3 $what failed (${response.status.value} $code): ${truncateErrorBody(root?.text("Message") ?: body)}" + digestHint(code)
         val requestId = response.headers["x-amz-request-id"]
         return when {
             // Only the credentials are an authentication failure. A 403 for one object (a policy deny, an object lock,
@@ -533,6 +538,15 @@ class S3Api(
             else -> S3Exception(message, response.status.value, code, requestId)
         }
     }
+
+    // A Content-MD5 the body does not match (#570) is not a credential or a policy problem and a later attempt can succeed, so the
+    // message says what it is. It is an ordinary failure of the transfer, never a permanent one: the engine sends the file again.
+    private fun digestHint(code: String): String =
+        when (code) {
+            "BadDigest" -> " [the bytes S3 received are not the bytes whose MD5 was sent: the file changed on disk after it was read, or the body was damaged in transit; nothing was stored]"
+            "InvalidDigest" -> " [the Content-MD5 header this client sent is not a valid MD5]"
+            else -> ""
+        }
 
     private fun isRetryable(status: Int): Boolean = status == 500 || status == 503 || status == 429
 

@@ -224,15 +224,22 @@ class S3Provider(
         val size = Files.size(localPath)
         val mtime = Files.getLastModifiedTime(localPath).toInstant()
         val sourceStats = mtime.toEpochMilli() to size
-        val digest = sha256Of(localPath)
+        val singlePart = size <= config.multipartThreshold
+        // One read of the file gives the SHA-256 proof and, for a single-part PUT, the MD5 that goes in Content-MD5 (#570): the
+        // proof pass was there already, so the header costs the MD5 arithmetic and no further read.
+        val (digest, contentMd5) = digestsOf(localPath, md5 = singlePart)
         if (localStats(localPath) != sourceStats) throw ProviderException("'$remotePath' changed while its upload proof was prepared")
         val meta = mapOf("mtime" to S3Api.epochText(mtime), "unidrive-sha256-v1" to digest)
         if (ifMatchETag != null && !config.vendor.conditionalWrites) requireUnchanged(key, ifMatchETag)
         val ifMatch = ifMatchETag?.takeIf { config.vendor.conditionalWrites }
         // gkrost/unidrive-cli#57: a create (nothing to replace, no token) must not replace an object that appeared after the plan.
         val create = existingRemoteId == null && ifMatchETag == null
-        if (size <= config.multipartThreshold) {
-            if (create) createGuarded(key) { api.put(key, localPath, meta, ifNoneMatch = it) } else api.put(key, localPath, meta, ifMatch)
+        if (singlePart) {
+            if (create) {
+                createGuarded(key) { api.put(key, localPath, meta, ifNoneMatch = it, contentMd5 = contentMd5) }
+            } else {
+                api.put(key, localPath, meta, ifMatch, contentMd5 = contentMd5)
+            }
         } else {
             uploadInParts(localPath, key, size, mtime.toEpochMilli(), meta, onProgress) { uploadId, parts ->
                 if (create) {
@@ -259,20 +266,29 @@ class S3Provider(
             null
         }
 
-    private suspend fun sha256Of(file: Path): String = withContext(Dispatchers.IO) {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(file).use { input ->
-            val bytes = ByteArray(64 * 1024)
-            while (true) {
-                // A cancelled upload must not keep hashing a multi-gigabyte file to the end (this pass runs twice per upload).
-                ensureActive()
-                val count = input.read(bytes)
-                if (count < 0) break
-                digest.update(bytes, 0, count)
+    private suspend fun sha256Of(file: Path): String = digestsOf(file, md5 = false).first
+
+    /** The SHA-256 of [file] as hex and, when [md5] is set, its MD5, both from one read. */
+    private suspend fun digestsOf(
+        file: Path,
+        md5: Boolean,
+    ): Pair<String, ByteArray?> =
+        withContext(Dispatchers.IO) {
+            val sha = MessageDigest.getInstance("SHA-256")
+            val md = if (md5) MessageDigest.getInstance("MD5") else null
+            Files.newInputStream(file).use { input ->
+                val bytes = ByteArray(64 * 1024)
+                while (true) {
+                    // A cancelled upload must not keep hashing a multi-gigabyte file to the end (this pass runs twice per upload).
+                    ensureActive()
+                    val count = input.read(bytes)
+                    if (count < 0) break
+                    sha.update(bytes, 0, count)
+                    md?.update(bytes, 0, count)
+                }
             }
+            HexFormat.of().formatHex(sha.digest()) to md?.digest()
         }
-        HexFormat.of().formatHex(digest.digest())
-    }
 
     // The racy form of a conditional write, for vendors without If-Match: the object must still carry the ETag the engine saw.
     private suspend fun requireUnchanged(
