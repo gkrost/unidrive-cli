@@ -647,6 +647,116 @@ class CloudRelocatorTest {
             assertEquals(2, manifest.folders.size)
         }
 
+    // -- gkrost/unidrive-cli#62: a hash mismatch is not an equivalence ----------------------------
+
+    @Test
+    fun `isEquivalent is false when both providers report the same algorithm and the hashes differ`() {
+        source.fakeHashAlgorithm = HashAlgorithm.Sha256Hex
+        target.fakeHashAlgorithm = HashAlgorithm.Sha256Hex
+        val relocator = CloudRelocator(source, target)
+
+        assertFalse(relocator.isEquivalent(cloudItem("/a.txt", size = 10, hash = "A"), cloudItem("/a.txt", size = 10, hash = "B")))
+        assertEquals(
+            CloudRelocator.Equivalence.CONFLICT,
+            relocator.compare(cloudItem("/a.txt", size = 10, hash = "A"), cloudItem("/a.txt", size = 10, hash = "B")),
+        )
+    }
+
+    @Test
+    fun `isEquivalent is true for equal hashes and for equal sizes when no hash is comparable`() {
+        source.fakeHashAlgorithm = HashAlgorithm.Sha256Hex
+        target.fakeHashAlgorithm = HashAlgorithm.Sha256Hex
+        val relocator = CloudRelocator(source, target)
+
+        assertEquals(
+            CloudRelocator.Equivalence.HASH,
+            relocator.compare(cloudItem("/a.txt", size = 10, hash = "A"), cloudItem("/a.txt", size = 99, hash = "A")),
+        )
+        // One side reports no hash: size decides, and it is the weaker claim.
+        assertEquals(
+            CloudRelocator.Equivalence.SIZE_ONLY,
+            relocator.compare(cloudItem("/a.txt", size = 10, hash = "A"), cloudItem("/a.txt", size = 10, hash = null)),
+        )
+        assertEquals(
+            CloudRelocator.Equivalence.DIFFERENT,
+            relocator.compare(cloudItem("/a.txt", size = 10, hash = "A"), cloudItem("/a.txt", size = 11, hash = null)),
+        )
+    }
+
+    @Test
+    fun `different algorithms or none make unequal hashes incomparable, so size decides`() {
+        val a = cloudItem("/a.txt", size = 10, hash = "A")
+        val b = cloudItem("/a.txt", size = 10, hash = "B")
+
+        source.fakeHashAlgorithm = HashAlgorithm.Sha256Hex
+        target.fakeHashAlgorithm = HashAlgorithm.QuickXor
+        assertEquals(CloudRelocator.Equivalence.SIZE_ONLY, CloudRelocator(source, target).compare(a, b))
+
+        source.fakeHashAlgorithm = null
+        target.fakeHashAlgorithm = null
+        assertEquals(CloudRelocator.Equivalence.SIZE_ONLY, CloudRelocator(source, target).compare(a, b))
+    }
+
+    @Test
+    fun `a different size with differing hashes stays a plain transfer, as before`() {
+        source.fakeHashAlgorithm = HashAlgorithm.Sha256Hex
+        target.fakeHashAlgorithm = HashAlgorithm.Sha256Hex
+        assertEquals(
+            CloudRelocator.Equivalence.DIFFERENT,
+            CloudRelocator(source, target).compare(
+                cloudItem("/a.txt", size = 10, hash = "A"),
+                cloudItem("/a.txt", size = 5, hash = "B"),
+            ),
+        )
+    }
+
+    @Test
+    fun `migrate reports a hash conflict, keeps the target and records nothing for the source to be deleted by`() =
+        runTest {
+            source.fakeHashAlgorithm = HashAlgorithm.Sha256Hex
+            target.fakeHashAlgorithm = HashAlgorithm.Sha256Hex
+            source.children["/"] = listOf(cloudItem("/a.txt", size = 100, hash = "source-bytes"))
+            source.fileContents["/a.txt"] = ByteArray(100)
+            target.children["/"] = listOf(cloudItem("/a.txt", size = 100, hash = "other-bytes"))
+
+            val manifest = MigrationManifest()
+            val events = CloudRelocator(source, target).migrate("/", "/", manifest = manifest).toList()
+
+            assertTrue("/a.txt" !in target.uploadedPaths, "the conflicting target must not be overwritten")
+            val errors = events.filterIsInstance<MigrateEvent.Error>()
+            assertEquals(1, errors.size, "the conflict is reported once")
+            assertTrue("Conflict" in errors.single().message && "/a.txt" in errors.single().message, errors.single().message)
+            val completed = events.filterIsInstance<MigrateEvent.Completed>().single()
+            assertEquals(1, completed.errorCount)
+            assertEquals(0, completed.skippedFiles, "a conflict is not a skip")
+            assertEquals(0, completed.doneFiles)
+            assertNull(manifest.entries["/a.txt"], "no manifest entry: the source copy is never in the set a delete pass may delete")
+        }
+
+    @Test
+    fun `a size-only skip is logged as such and stays unproven in the manifest`() =
+        runTest {
+            source.children["/"] = listOf(cloudItem("/a.txt", size = 100, hash = null))
+            source.fileContents["/a.txt"] = ByteArray(100)
+            target.children["/"] = listOf(cloudItem("/a.txt", size = 100, hash = null))
+
+            val logger = LoggerFactory.getLogger(CloudRelocator::class.java) as Logger
+            val appender = ListAppender<ILoggingEvent>().apply { start() }
+            logger.addAppender(appender)
+            val manifest = MigrationManifest()
+            try {
+                CloudRelocator(source, target).migrate("/", "/", manifest = manifest).toList()
+            } finally {
+                logger.detachAppender(appender)
+            }
+
+            assertTrue(
+                appender.list.any { it.level == Level.WARN && "size only" in it.formattedMessage },
+                "a size-only skip says so; got ${appender.list.map { it.formattedMessage }}",
+            )
+            assertFalse(manifest.entries.getValue("/a.txt").hashEquivalent)
+        }
+
     // -- UD-269: stale tempdir GC ---------------------------------------------
 
     @Test
@@ -945,6 +1055,12 @@ class CloudRelocatorTest {
         override suspend fun logout() {}
 
         override fun maxFileSizeBytes(): Long? = fakeMaxFileSizeBytes
+
+        // gkrost/unidrive-cli#62: the algorithm this provider reports for its items' hashes. Null (the default) is a
+        // provider that names none, as the real ones without a verifiable hash do.
+        var fakeHashAlgorithm: HashAlgorithm? = null
+
+        override fun hashAlgorithm(): HashAlgorithm? = fakeHashAlgorithm
 
         override suspend fun listChildren(path: String): List<CloudItem> {
             listChildrenCount++
