@@ -27,6 +27,9 @@ class ShareRpcHandler(
     private val provider: CloudProvider,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
+    // The share call is the provider's own code: whatever it throws is provider_error with the redacted message, so the
+    // daemon keeps serving (cancellation is rethrown first).
+    @Suppress("TooGenericExceptionCaught")
     suspend fun handle(jsonRequest: String): String {
         val body = jsonRequest.asJsonObjectOrNull()
         val path =
@@ -48,6 +51,6 @@ class ShareRpcHandler(
     }
 
     private companion object {
-        val MISSING_PATH = """{"ok":false,"error":"missing_path"}"""
+        const val MISSING_PATH = """{"ok":false,"error":"missing_path"}"""
     }
 }
