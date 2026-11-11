@@ -39,7 +39,9 @@ import java.util.HexFormat
  * - **Conditional writes:** the engine's write token is the ETag it saw. Where the vendor honours `If-Match`
  *   (AWS), the write carries it and a 412 is a conflict. Elsewhere a HEAD compares first, which leaves a short race.
  *   A create carries `If-None-Match: *`, so a key taken since the plan is a conflict too; a vendor that refuses the
- *   header (501, 400) gets the HEAD check instead.
+ *   header (501, 400) gets a HEAD that checks the key is free; with the profile key `s3_create_from_listing = true` that HEAD
+ *   is left out and the listing that made the engine plan a create is trusted instead (#573: one request fewer per object, a
+ *   longer window for another writer's object to be replaced; off by default).
  * - **Copies** (moves) above 5 GiB go through UploadPartCopy on every vendor.
  */
 class S3Provider(
@@ -281,16 +283,24 @@ class S3Provider(
         if (current?.etag != etag) throw RemoteConflictException("'$key' changed on S3 since it was last synced")
     }
 
-    // gkrost/unidrive-cli#57: set once the vendor refused `If-None-Match` and the HEAD check took its place.
+    // gkrost/unidrive-cli#57: set once the vendor refused `If-None-Match` and a HEAD (or, opted in, the listing) took its place.
     @Volatile
     private var createGuardRefused = false
 
     /**
      * [write] as a create that a taken [key] refuses: with `If-None-Match: *` (AWS, MinIO, R2 answer 412, a conflict). A vendor
-     * that does not implement the header answers 501, or a 400 whose code names the header; then a HEAD checks that the key is
-     * free, the racy form a guarded modify without If-Match has too, the write goes without the header, and once that worked
-     * the header is not sent again. Any other 400 (`RequestTimeout`, `IncompleteBody`, …) is a real failure, and a vendor that
-     * supports conditional writes never loses its guard to a refused create.
+     * that does not implement the header answers 501, or a 400 whose code names the header; then the key must be free by a HEAD
+     * ([requireAbsent]), the write goes without the header, and once that worked the header is not sent again. The HEAD is the
+     * racy form a guarded modify without If-Match has too: it narrows the window in which another writer's object is replaced to
+     * the time between that HEAD and the PUT, and it costs one request per object.
+     *
+     * That HEAD is the default, and it is what keeps a create from replacing an object that is already there, whoever calls: the
+     * provider's upload receives no proof that the key was absent in a listing (the sync's plan knows, a mount's direct upload
+     * does not). Profile key `s3_create_from_listing = true` ([S3Config.createFromListing], gkrost/unidrive-cli#573) drops the
+     * HEAD for a vendor that refused the header: the listing that made the caller plan a create is then trusted, so a create may
+     * replace an object that appeared on S3 after that listing, or one that was there all along when the caller had no listing.
+     * A vendor that honours the header keeps its atomic guard either way. Any other 400 (`RequestTimeout`, `IncompleteBody`, …)
+     * is a real failure, and a vendor that supports conditional writes never loses its guard to a refused create.
      */
     private suspend fun <T> createGuarded(
         key: String,
@@ -301,12 +311,18 @@ class S3Provider(
                 return write(true)
             } catch (e: S3Exception) {
                 if (!createGuardRefusal(e)) throw e
-                log.info("S3 refused If-None-Match on '{}' ({} {}); checking that the key is free with a HEAD instead", key, e.status, e.code)
+                log.info(
+                    "S3 refused If-None-Match on '{}' ({} {}); {}",
+                    key,
+                    e.status,
+                    e.code,
+                    if (config.createFromListing) "a create is backed by the sync's listing from now on (s3_create_from_listing)" else "checking that the key is free with a HEAD instead",
+                )
             }
-            requireAbsent(key)
+            if (!config.createFromListing) requireAbsent(key)
             return write(false).also { createGuardRefused = true }
         }
-        requireAbsent(key)
+        if (!config.createFromListing) requireAbsent(key)
         return write(false)
     }
 

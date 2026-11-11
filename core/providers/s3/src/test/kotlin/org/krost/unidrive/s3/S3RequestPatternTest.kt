@@ -34,7 +34,10 @@ class S3RequestPatternTest {
     val tmp = TemporaryFolder()
 
     private val fake = FakeS3()
-    private val s3 by lazy { S3Provider(S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", tmp.newFolder("profile").toPath()), fake.engine) }
+    private var createFromListing = false
+    private val s3 by lazy {
+        S3Provider(S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", tmp.newFolder("profile").toPath(), createFromListing = createFromListing), fake.engine)
+    }
     private val tree = S3TransferTree()
 
     @After
@@ -143,6 +146,29 @@ class S3RequestPatternTest {
         assertTrue(tooMany.isEmpty(), "refusing vendor: ${tooMany.size} later objects took more than 3 requests (HEAD, PUT, HEAD); ${report(requests, tooMany)}")
         assertTrue(requests.size <= 3 * tree.files.size + 1, "refusing vendor: more than 3 requests per object plus the one refused PUT; $report")
         assertEquals(1, requests.count { it.method == HttpMethod.Put && it.headers.containsKey("if-none-match") }, "refusing vendor: the header is sent once, then dropped; $report")
+    }
+
+    @Test
+    fun `with s3_create_from_listing an upload to a vendor that refuses If-None-Match is two requests per object after the first`() {
+        createFromListing = true
+        val local = writeLocal()
+        fake.failures += Triple({ r: FakeS3.Request -> r.headers.containsKey("if-none-match") }, 501, "NotImplemented")
+        val probe = tree.files.keys.first()
+        // The refusal is learned once per provider, on the first object's refused PUT: the first goes alone so the bound below is tight.
+        uploadAll(local, listOf(probe))
+        uploadAll(local, tree.files.keys - probe)
+        val requests = snapshot()
+
+        assertStored()
+        val report = report(requests)
+        println("upload ${tree.files.size} objects to a vendor without If-None-Match, listing-backed (#573): $report")
+        val perKey = perKey(requests)
+        assertEquals(tree.files.keys.map(::key).toSet(), perKey.keys, "every object was uploaded; $report")
+        // The first object costs three: PUT (501), PUT, HEAD; every later one two: the listing-backed PUT, HEAD.
+        assertEquals(listOf("PUT", "PUT", "HEAD"), perKey.getValue(key(probe)), "listing-backed: the first object; ${report(requests, listOf(key(probe)))}")
+        val tooMany = perKey.filterKeys { it != key(probe) }.filterValues { it != listOf("PUT", "HEAD") }.keys
+        assertTrue(tooMany.isEmpty(), "listing-backed: ${tooMany.size} later objects were not PUT then HEAD; ${report(requests, tooMany)}")
+        assertEquals(2 * tree.files.size + 1, requests.size, "listing-backed: 2 requests per object plus the one refused PUT; $report")
     }
 
     @Test
