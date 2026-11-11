@@ -2,18 +2,23 @@ package org.krost.unidrive.sync
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.krost.unidrive.sync.model.SyncEntry
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.DriverManager
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.CoroutineContext
 import kotlin.test.AfterTest
@@ -196,8 +201,11 @@ class StateGroupCommitTest {
                 }
             val first = async(Dispatchers.Default) { group.upsertEntry(row("/first")) }
             assertTrue(stall.entered.await(20, TimeUnit.SECONDS))
+            // Queued one after the other: the order of the rows in the group decides which rows are before the Error.
             val good = async(Dispatchers.Default) { group.upsertEntry(row("/good")) }
+            awaitTrue("the first row queued") { group.queued == 1 }
             val oom = async(Dispatchers.Default) { runCatching { group.upsertEntry(row("/oom")) } }
+            awaitTrue("the second row queued") { group.queued == 2 }
             val tail = async(Dispatchers.Default) { runCatching { group.upsertEntry(row("/tail")) } }
             awaitTrue("three rows queued") { group.queued == 3 }
             stall.release.countDown()
@@ -207,6 +215,88 @@ class StateGroupCommitTest {
             assertTrue(oomOutcome.exceptionOrNull() is OutOfMemoryError, "the row that hit the Error sees it: $oomOutcome")
             assertTrue(tailOutcome.exceptionOrNull() is OutOfMemoryError, "the row behind it was never written and must not return normally: $tailOutcome")
             assertEquals(setOf("/first", "/good"), committedPaths(), "the rows before the Error are in, the failed ones are not")
+        }
+
+    @Test
+    fun `callers that wait for a commit do not hold the threads of the dispatcher`() =
+        runBlocking {
+            // Two threads, one of them inside the stalled commit. Seven callers wait for it. If every waiter kept a thread (the
+            // old loop of drain / yield did), the second thread is theirs, the pool is full, and the probe below never runs.
+            Executors.newFixedThreadPool(2).asCoroutineDispatcher().use { small ->
+                val stall = Stall()
+                val group = StateGroupCommit(db, dispatcher = small, write = stall.hook(db))
+                val first = async(Dispatchers.Default) { group.upsertEntry(row("/first")) }
+                assertTrue(stall.entered.await(20, TimeUnit.SECONDS))
+                val others = (1..6).map { i -> async(Dispatchers.Default) { group.upsertEntry(row("/o$i")) } }
+                awaitTrue("six rows queued behind the stalled commit") { group.queued == 6 }
+                val probe = async(Dispatchers.Default) { withContext(small) { "ran" } }
+                val ran = withTimeoutOrNull(5_000) { probe.await() }
+                stall.release.countDown()
+                assertEquals("ran", ran, "a task of the same dispatcher must run while six callers wait for a commit")
+                withTimeout(20_000) { (others + first).awaitAll() }
+                assertEquals(7, committedPaths().size)
+            }
+        }
+
+    @Test
+    fun `many concurrent callers on a small dispatcher all return after their commit`() =
+        runBlocking {
+            Executors.newFixedThreadPool(2).asCoroutineDispatcher().use { small ->
+                val group = StateGroupCommit(db, dispatcher = small)
+                val calls = (1..400).map { i -> async(Dispatchers.Default) { group.upsertEntry(row("/m$i")).also { check("/m$i" in committedPaths()) } } }
+                withTimeout(60_000) { calls.awaitAll() }
+                assertEquals(400L, group.rows)
+                assertEquals(400, committedPaths().size)
+                assertTrue(group.commits <= 400, "never more commits than rows")
+            }
+        }
+
+    @Test
+    fun `a closed database fails every caller and none of them hangs`() =
+        runBlocking {
+            val group = StateGroupCommit(db)
+            db.close()
+            val outcomes = (1..8).map { i -> async(Dispatchers.Default) { runCatching { group.upsertEntry(row("/c$i")) } } }
+            val results = withTimeout(20_000) { outcomes.awaitAll() }
+            assertTrue(results.all { it.isFailure }, "no row is answered as written on a closed database: $results")
+            assertEquals(0L, group.rows)
+        }
+
+    @Test
+    fun `an Error out of a group its caller did not belong to fails that caller, drops its row and leaves the writer usable`() =
+        runBlocking {
+            // "/p" queues first but its call is dispatched late (the gate); "/l" queues second and is dispatched at once, so its caller
+            // drains the group of one that holds "/p" (maxGroup 1), and "/p" throws an Error there.
+            val firstDispatch = AtomicBoolean(true)
+            val gate = CountDownLatch(1)
+            val gated =
+                object : CoroutineDispatcher() {
+                    override fun dispatch(
+                        context: CoroutineContext,
+                        block: Runnable,
+                    ) = if (firstDispatch.compareAndSet(true, false)) {
+                        Dispatchers.IO.dispatch(context, Runnable {
+                            gate.await(20, TimeUnit.SECONDS)
+                            block.run()
+                        })
+                    } else {
+                        Dispatchers.IO.dispatch(context, block)
+                    }
+                }
+            val group =
+                StateGroupCommit(db, dispatcher = gated, maxGroup = 1) { entry, keepMarks ->
+                    if (entry.path == "/p") throw OutOfMemoryError("test") else db.upsertEntry(entry, keepMarks)
+                }
+            val p = async(Dispatchers.Default) { runCatching { group.upsertEntry(row("/p")) } }
+            awaitTrue("the row of /p queued") { group.queued == 1 }
+            val l = async(Dispatchers.Default) { runCatching { group.upsertEntry(row("/l")) } }
+            val lOutcome = withTimeout(20_000) { l.await() }
+            assertTrue(lOutcome.exceptionOrNull() is OutOfMemoryError, "the caller that drained the failing group sees its Error: $lOutcome")
+            gate.countDown()
+            val pOutcome = withTimeout(20_000) { p.await() }
+            assertTrue(pOutcome.exceptionOrNull() is OutOfMemoryError, "the row that hit the Error fails with it: $pOutcome")
+            withTimeout(20_000) { group.upsertEntry(row("/after")) }
+            assertEquals(setOf("/after"), committedPaths(), "a call that failed did not leave its row behind to be committed by a later one")
         }
 
     @Test
