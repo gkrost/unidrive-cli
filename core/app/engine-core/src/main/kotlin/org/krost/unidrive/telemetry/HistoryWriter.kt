@@ -197,7 +197,6 @@ internal class HistoryWriter(
                     batch.add(first)
                     queue.drainTo(batch, config.batchSize - 1)
                 }
-                takeKeptTerminals(batch)
                 running = process(batch)
                 batch.clear()
                 if (running) pruneIfDue()
@@ -215,14 +214,22 @@ internal class HistoryWriter(
         }
     }
 
-    // Terminal snapshots kept aside when the queue was full: they go out with this turn, after the
-    // queue's older snapshots of their operations (the last snapshot of an operation is its row).
-    private fun takeKeptTerminals(batch: MutableList<Op>) {
+    // Terminal snapshots kept aside when the queue was full: they join the rows of this turn, after the queue's older
+    // snapshots of their operations (the last snapshot of an operation is its row), and they are taken where the turn
+    // answers for them: at a control op (a flush or a prune answers for every snapshot offered before it was queued, a
+    // set-aside terminal among them) and at the end of the turn. They used to be appended to the batch behind its ops, so
+    // a barrier drained in the same turn answered before they were written (gkrost/unidrive-cli#597: the flush returned
+    // with the row of a failed transfer still missing).
+    private fun takeKeptTerminals(
+        pending: MutableMap<String, TransferRow>,
+        absorbed: MutableSet<String>,
+    ) {
         if (keptTerminals.isEmpty()) return
         val entries = keptTerminals.entries.iterator()
         while (entries.hasNext()) {
             val entry = entries.next()
-            batch.add(Op.Write(entry.value))
+            pending[entry.key] = entry.value
+            absorbed.add(entry.key)
             entries.remove()
         }
     }
@@ -230,19 +237,23 @@ internal class HistoryWriter(
     /** Writes the batch's rows (the last snapshot of an operation wins) and runs the control ops in order. Returns false after Stop. */
     private fun process(batch: List<Op>): Boolean {
         val pending = LinkedHashMap<String, TransferRow>()
+        // A kept terminal may be taken at a barrier before an older write in this same batch.
+        val absorbed = mutableSetOf<String>()
         var keepRunning = true
         for (op in batch) {
             when (op) {
-                is Op.Write -> pending[op.row.operationId] = op.row
+                is Op.Write -> if (op.row.operationId !in absorbed) pending[op.row.operationId] = op.row
                 is Op.Replace -> {
                     writePending(pending)
                     replaceRow(op.row, op.previousId)
                 }
                 is Op.Barrier -> {
+                    takeKeptTerminals(pending, absorbed)
                     writePending(pending)
                     op.done.complete(Unit)
                 }
                 is Op.Prune -> {
+                    takeKeptTerminals(pending, absorbed)
                     writePending(pending)
                     prune()
                     op.done.complete(Unit)
@@ -250,6 +261,7 @@ internal class HistoryWriter(
                 Op.Stop -> keepRunning = false
             }
         }
+        takeKeptTerminals(pending, absorbed)
         writePending(pending)
         return keepRunning
     }

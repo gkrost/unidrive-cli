@@ -604,12 +604,153 @@ class TransferHistoryTest {
         }
         assertTrue(history.flush(WRITER_BUDGET_MS))
         val kept = history.rows().filter { it.operationId == "op-kept" }
-        // The stats name the branch of a rare CI-only failure (#611): dropped == 1 is the one filler (the policy path ran);
-        // dropped >= 5 with written == 1 is the writer's own catch having dropped the batch (store.upsert failed); writerFailure
-        // names a dead writer. Without them the assertion cannot say which of the three it was.
+        // The stats name the branch of a failure (#611): dropped == 1 is the one filler (the policy path ran); dropped >= 5 with
+        // written == 1 is the writer's own catch having dropped the batch (store.upsert failed); writerFailure names a dead
+        // writer. The CI failures were the first: the flush was answered before the writer wrote the kept terminal (#597, see the
+        // test below).
         assertEquals(1, kept.size, "the terminal snapshot must survive a full queue: ${history.stats}")
         assertEquals(TransferResult.FAILED, kept.single().result, "the terminal snapshot must survive a full queue: ${history.stats}")
     }
+
+    // gkrost/unidrive-cli#597, #611: the cause of the CI-only failure of the test above. The writer used to drain the terminal
+    // snapshots a full queue had set aside into the END of the batch it had just taken, behind the batch's ops; a flush barrier
+    // drained in the same batch was answered before that write, so the caller read the file without the terminal row (the CI
+    // stats: written=4, the warm row and the three fillers; dropped=1, the filler that did not fit; queued=0; no writer failure).
+    // The test above only lost when the reader beat the writer's last single-row upsert, which a busy runner makes likely: 17 %
+    // of 400 runs under 24 busy threads, none in a quiet one. This test removes the race: it holds the store's monitor from the
+    // moment the barrier's own rows are written, so that a write the flush has not covered cannot happen before the read.
+    @Test
+    fun `a flush answers only after a terminal snapshot a full queue set aside is written`() {
+        val store = TelemetryStore.open(db)
+        val writer = HistoryWriter("p1", HistoryConfig(queueCapacity = 4, batchSize = 4), { wallMs.get() }, store)
+        val parked = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val grab = CountDownLatch(1)
+        val held = CountDownLatch(1)
+        val letGo = CountDownLatch(1)
+        val fillersSeen = java.util.concurrent.atomic.AtomicInteger()
+        // Takes the store's monitor on behalf of the test while the writer is inside its tail listener, so that every
+        // store call the writer makes from then on waits until the test lets go. The listener returns only once it holds.
+        val holder =
+            Thread {
+                grab.await()
+                synchronized(store) {
+                    held.countDown()
+                    letGo.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS)
+                }
+            }.apply { isDaemon = true }
+        writer.tail.add { _, row ->
+            if (row.operationId == "op-warm") {
+                parked.countDown()
+                release.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS)
+            }
+            // The third filler is the last row of the batch the barrier ends: whatever the writer stores after it, it stores
+            // behind the held monitor.
+            if (row.operationId.startsWith("filler-") && fillersSeen.incrementAndGet() == 3) {
+                grab.countDown()
+                held.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS)
+            }
+        }
+        holder.start()
+        writer.start()
+        val flushed = java.util.concurrent.CompletableFuture<Boolean>()
+        try {
+            writer.offer(rowOf("op-warm", "/drop/warm.bin", TransferResult.RUNNING))
+            assertTrue(parked.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS), "the writer never committed the first row")
+            writer.offer(rowOf("op-kept", "/drop/kept.bin", TransferResult.RUNNING))
+            val fillers = offerFillersUntilFirstDrop(writer)
+            assertEquals(3, fillers - 1, "the queue held the running snapshot and three fillers: ${writer.stats}")
+            writer.offer(
+                rowOf("op-kept", "/drop/kept.bin", TransferResult.FAILED).copy(finishedAt = wallMs.get(), errorClass = "IOException"),
+            )
+            // The barrier goes into the queue behind the three fillers (the terminal offer freed the running snapshot's place),
+            // while the writer is still parked: the next batch the writer takes holds the fillers AND the barrier.
+            Thread { flushed.complete(writer.flush(WRITER_BUDGET_MS)) }.apply { isDaemon = true }.start()
+            val queuedBy = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(WRITER_BUDGET_MS)
+            while (writer.stats.queued < 4 && System.nanoTime() < queuedBy) Thread.sleep(1)
+            assertEquals(4, writer.stats.queued, "the barrier waits behind the three fillers: ${writer.stats}")
+            release.countDown()
+
+            assertTrue(flushed.get(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS), "the writer answered the barrier")
+            assertEquals("failed", resultOnDisk("op-kept"), "the flush answered before the terminal snapshot it covers was written: ${writer.stats}")
+        } finally {
+            release.countDown()
+            grab.countDown()
+            letGo.countDown()
+            writer.close()
+            store.close()
+        }
+    }
+
+    @Test
+    fun `a kept terminal stays newer than a running snapshot after multiple barriers`() {
+        val store = TelemetryStore.open(db)
+        val writer = HistoryWriter("p1", HistoryConfig(queueCapacity = 4, batchSize = 4), { wallMs.get() }, store)
+        val warm = CountDownLatch(1)
+        val releaseWarm = CountDownLatch(1)
+        val marker = CountDownLatch(1)
+        val releaseMarker = CountDownLatch(1)
+        writer.tail.add { _, row ->
+            if (row.operationId == "warm") {
+                warm.countDown()
+                releaseWarm.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS)
+            }
+            if (row.operationId == "marker") {
+                marker.countDown()
+                releaseMarker.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS)
+            }
+        }
+        writer.start()
+        try {
+            writer.offer(rowOf("warm", "/warm", TransferResult.RUNNING))
+            assertTrue(warm.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS))
+            writer.offer(rowOf("marker", "/marker", TransferResult.RUNNING))
+            val barriers = (2..3).map { expected ->
+                java.util.concurrent.CompletableFuture<Boolean>().also { result ->
+                    Thread { result.complete(writer.flush(WRITER_BUDGET_MS)) }.apply { isDaemon = true }.start()
+                    val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(WRITER_BUDGET_MS)
+                    while (writer.stats.queued < expected && System.nanoTime() < deadline) Thread.sleep(1)
+                    assertEquals(expected, writer.stats.queued)
+                }
+            }
+            writer.offer(rowOf("target", "/target", TransferResult.RUNNING))
+            releaseWarm.countDown()
+            assertTrue(marker.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS))
+            repeat(4) { writer.offer(rowOf("fill-$it", "/fill-$it", TransferResult.RUNNING)) }
+            writer.offer(rowOf("target", "/target", TransferResult.FAILED).copy(finishedAt = wallMs.get()))
+            releaseMarker.countDown()
+            barriers.forEach { assertTrue(it.get(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS)) }
+            assertTrue(writer.flush(WRITER_BUDGET_MS))
+            assertEquals("failed", resultOnDisk("target"))
+        } finally {
+            releaseWarm.countDown()
+            releaseMarker.countDown()
+            writer.close()
+            store.close()
+        }
+    }
+
+    // Offers running snapshots until the queue drops one; how many were offered, the dropped one included.
+    private fun offerFillersUntilFirstDrop(writer: HistoryWriter): Int {
+        var fillers = 0
+        while (writer.stats.dropped == 0L && fillers < MAX_FILLERS) {
+            writer.offer(rowOf("filler-$fillers", "/drop/filler-$fillers.bin", TransferResult.RUNNING))
+            fillers++
+        }
+        return fillers
+    }
+
+    // The result column of a row as the file has it, read through a connection of its own: the writer's may be held.
+    private fun resultOnDisk(operationId: String): String? = DriverManager.getConnection("jdbc:sqlite:$db").use { storedResult(it, operationId) }
+
+    private fun storedResult(
+        c: Connection,
+        operationId: String,
+    ): String? =
+        c.prepareStatement("SELECT result FROM transfers WHERE operation_id = ?").use { ps ->
+            ps.setString(1, operationId)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
 
     private companion object {
         /** The ceiling for the writer to answer a barrier; a healthy writer answers in well under a second. */
