@@ -236,7 +236,8 @@ class RecentsPagingDaemonTest {
             assertEquals("invalid_limit", ask("""{"verb":"view.page","kind":"recents","limit":0}""").getValue("error").jsonPrimitive.content)
             assertEquals("invalid_offset", ask("""{"verb":"view.page","kind":"recents","offset":-5}""").getValue("error").jsonPrimitive.content)
             assertEquals("unknown_view", ask("""{"verb":"view.page","kind":"shared"}""").getValue("error").jsonPrimitive.content)
-            assertEquals(emptyList(), provider.sizes.toList(), "none of these asked the provider")
+            // gkrost/unidrive-cli#631: the start fill asked the folder's list once (size 50); the refused verbs added nothing.
+            assertEquals(listOf(50), provider.sizes.toList(), "none of these asked the provider")
 
             assertEquals(50, paths(ask("""{"verb":"view.page","kind":"recents"}""")).size)
         }

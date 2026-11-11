@@ -384,9 +384,10 @@ class DaemonRuntime(
                 // fallback (RefreshRpcHandler, U4). See MountEngine for who owns what.
                 val mount = MountEngine.over(engine)
                 // The references of the views, refreshed on the serve scope; a change goes to the subscribers as a
-                // view.invalidated for the view's root.
-                if (!viewNamespaces.isEmpty()) {
-                    mount.attachViews(
+                // view.invalidated for the view's root. Held so the poller can keep them fresh (afterTick below) and the
+                // start fill below can fetch them once without a caller (gkrost/unidrive-cli#631).
+                val viewCache: ViewCache? =
+                    if (!viewNamespaces.isEmpty()) {
                         ViewCache(
                             scope = serveScope,
                             fetch = provider::listView,
@@ -398,9 +399,10 @@ class DaemonRuntime(
                                     hydrationLink.dispatchEvent(HydrationEvent.ViewInvalidated(paths = listOf(root)))
                                 }
                             },
-                        ),
-                    )
-                }
+                        ).also { mount.attachViews(it) }
+                    } else {
+                        null
+                    }
                 // archive#778: the pause (daemon.pause / daemon.resume); the uploads and downloads of the mount consult it
                 // through the front-end, the enumeration and the refresh through the handlers below.
                 val pause = mount.pause
@@ -489,6 +491,11 @@ class DaemonRuntime(
                                 db!!.getSyncState(SyncEngine.ENUMERATE_FAILURE_STREAK_KEY)?.toIntOrNull() ?: 0,
                             isBusy = { refreshHandler.isInFlight() },
                             awaitResumed = { pause.awaitResumed() },
+                            afterTick = {
+                                // gkrost/unidrive-cli#631: a list younger than its TTL is answered as it is, one past it is
+                                // refreshed behind the answer — a view stays fresh even where nothing ever lists it.
+                                viewCache?.let { cc -> for (kind in viewNamespaces.kinds()) cc.get(kind) }
+                            },
                         )
                     } else {
                         null
@@ -670,6 +677,18 @@ class DaemonRuntime(
                 // cycle at full cadence. Mount-only (archive#603): a mirror profile's discovery is `sync`'s
                 // reconcile, not the mount-view poll (the poller is constructed above, null on a mirror).
                 poller?.start()
+                // gkrost/unidrive-cli#631: a view's list is fetched only when a caller asks (the cache runs nothing on a
+                // timer), and a mount that serves its directories from the filesystem never asks — the view stayed empty
+                // for ever. The first fill runs here, once, without waiting for anyone, through the directory so the join
+                // and the counts a status reports come with it; the poller's afterTick keeps the lists fresh from then on.
+                // list() answers a failed fill at once and the next tick retries, so a provider that is slow to
+                // authenticate costs nothing here but a logged warning.
+                val viewDirectory = mount.views
+                if (viewDirectory != null) {
+                    serveScope.launch {
+                        for (kind in viewNamespaces.kinds()) viewDirectory.list(kind)
+                    }
+                }
                 // archive#111: a provider with a push channel (Internxt's notifications, Dropbox's longpoll) wakes the poll when
                 // something changed in the cloud. Mount-only and only while the poll is on; a mirror daemon registers nothing.
                 if (poller != null && pollIntervalMs > 0) wakePollerOnRemoteChangeHint(provider, poller)

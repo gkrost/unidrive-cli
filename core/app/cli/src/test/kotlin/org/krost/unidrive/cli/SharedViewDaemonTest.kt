@@ -288,13 +288,16 @@ class SharedViewDaemonTest {
         val provider = SharedStub(listOf(ViewRef("11111111-report", false), ViewRef("99999999-gone", false)))
 
         runDaemonWith(config("shared_view = true\nshared_folder_name = \"Geteilt\"\n"), provider) {
+            // gkrost/unidrive-cli#631: the daemon fills the view once at start, so the provider has been asked already;
+            // what the listing must not do is ask again.
+            val askedAtStart = provider.viewRequests.get()
             val top = ask("""{"verb":"hydration.list","prefix":"/"}""")
             assertEquals(listOf("/Work", "/Geteilt"), paths(top))
             val root = top.getValue("entries").jsonArray.map { it.jsonObject }.single { it.getValue("path").jsonPrimitive.content == "/Geteilt" }
             assertEquals("shared", root.getValue("view").jsonPrimitive.content)
             assertEquals("unidrive:view:shared", root.getValue("remote_id").jsonPrimitive.content)
             assertTrue(root.getValue("read_only").jsonPrimitive.content.toBoolean())
-            assertEquals(0, provider.viewRequests.get(), "listing the top level asks the provider for nothing")
+            assertEquals(askedAtStart, provider.viewRequests.get(), "listing the top level asks the provider for nothing")
 
             val listed = ask("""{"verb":"hydration.list","prefix":"/Geteilt"}""")
             assertEquals(listOf("/Geteilt/report.pdf"), paths(listed), "the file that has a row; the reference without one is skipped")
@@ -375,6 +378,23 @@ class SharedViewDaemonTest {
             assertEquals(listOf("/Work", "/Shared"), paths(ask("""{"verb":"hydration.list","prefix":"/"}""")))
             assertEquals(listOf("/Shared/report.pdf"), paths(ask("""{"verb":"hydration.list","prefix":"/Shared"}""")))
             assertTrue(ask("""{"verb":"daemon.status"}""").getValue("capabilities").jsonArray.any { it.jsonPrimitive.content == "views" })
+        }
+    }
+
+    // gkrost/unidrive-cli#631: the cache runs nothing on a timer, so a mount whose directory listings never reach the
+    // engine never triggered a first fill and the view stayed empty for ever. The daemon fills every configured view
+    // once at start, without waiting for a caller.
+    @Test
+    fun `the daemon fills a configured view at start without a client asking`() {
+        val provider = SharedStub(listOf(ViewRef("11111111-report", false)))
+
+        runDaemonWith(config("shared_view = true\nshared_folder_name = \"Geteilt\"\n"), provider) {
+            val deadline = System.currentTimeMillis() + 10_000
+            while (provider.viewRequests.get() == 0 && System.currentTimeMillis() < deadline) Thread.sleep(50)
+            assertTrue(provider.viewRequests.get() >= 1, "the start fill asked the provider")
+            val view = ask("""{"verb":"daemon.status"}""").getValue("views").jsonArray.single().jsonObject
+            assertEquals("ok", view.getValue("state").jsonPrimitive.content, "the list the fill brought is served")
+            assertEquals(1, view.getValue("entries").jsonPrimitive.content.toInt())
         }
     }
 }

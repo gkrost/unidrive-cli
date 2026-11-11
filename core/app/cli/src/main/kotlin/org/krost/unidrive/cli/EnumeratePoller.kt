@@ -40,6 +40,10 @@ import kotlin.random.Random
  * - A provider's remote-change hint ([wake], archive#111) ends a plain sleep early: the enumerate runs after a 2 s quiet
  *   window instead of up to one interval later. The poll itself stays (the push channels are best effort).
  *
+ * - After a pass that succeeded ([afterTick]) the caller's hook runs: the views ride the poll's cadence (a list younger
+ *   than its TTL is answered as it is, one past it is refreshed behind the answer), so a view fills even where nothing
+ *   ever lists it (gkrost/unidrive-cli#631).
+ *
  * Cancelled cleanly when the serve scope is cancelled at shutdown.
  */
 // Every tuning knob and test seam is its own parameter: the virtual-time tests set them one by one.
@@ -76,6 +80,9 @@ class EnumeratePoller(
     private val awaitResumed: suspend () -> Unit = {},
     // archive#111: the quiet window after a remote-change hint ([wake]); the mirror's SyncEngine.registerRemoteWakeListener uses 2 s too.
     private val hintQuietMs: Long = DEFAULT_HINT_QUIET_MS,
+    // gkrost/unidrive-cli#631: runs after a pass that succeeded, before the next sleep. A throw from the hook ends the
+    // loop like a tick error (the catch below backs off), so the hook keeps its own failures to itself.
+    private val afterTick: suspend () -> Unit = {},
 ) {
     private val log = LoggerFactory.getLogger(EnumeratePoller::class.java)
 
@@ -143,6 +150,8 @@ class EnumeratePoller(
                     // The hints that came before this run are covered by it; the ones during it give one run after it.
                     hints.tryReceive()
                     val result = runOnce(hinted)
+                    // gkrost/unidrive-cli#631: the views ride the successful pass (kept fresh on the poll's cadence).
+                    if (result?.ok == true) afterTick()
                     // The profile was busy (a manual enumerate, a refresh): the hint is not lost, the run is tried again.
                     if (hinted && result == null) hints.trySend(Unit)
                     afterFailure = result != null && !result.ok

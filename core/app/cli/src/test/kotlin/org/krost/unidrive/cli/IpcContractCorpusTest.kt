@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -505,7 +506,15 @@ class IpcContractCorpusTest {
         val tempDir = Files.createTempDirectory("ipc-contract-view-event")
         val socketPath = tempDir.resolve("daemon.sock")
         val file = CloudItem("22222222-todo", "todo.txt", "/todo.txt", 5, false, null, null, null, null)
-        val provider = StubProvider(listing = listOf(file), viewRefs = mapOf(ViewKind.RECENTS to listOf(ViewRef("22222222-todo", false))))
+        // gkrost/unidrive-cli#631: the daemon fills the view once at start, so the list lands without the client's
+        // listing. The gate holds the fill's fetch until the subscriber is connected, and the push stays deterministic.
+        val startFillGate = CompletableDeferred<Unit>()
+        val provider =
+            StubProvider(
+                listing = listOf(file),
+                viewRefs = mapOf(ViewKind.RECENTS to listOf(ViewRef("22222222-todo", false))),
+                listViewGate = startFillGate,
+            )
         val runtime = DaemonRuntime(
             profileMode = ProfileMode.MOUNT,
             profileName = "contract_profile",
@@ -529,6 +538,7 @@ class IpcContractCorpusTest {
                 client.configureBlocking(false)
                 subscriber.write(ByteBuffer.wrap(("""{"verb":"hydration.subscribe"}""" + newline).toByteArray()))
                 readFirstLine(subscriber, timeoutMs = 5_000)
+                startFillGate.complete(Unit)
                 client.write(ByteBuffer.wrap(("""{"verb":"hydration.list","prefix":"/Recents"}""" + newline).toByteArray()))
                 readFirstLine(client, timeoutMs = 5_000)
 
@@ -1735,6 +1745,9 @@ class IpcContractCorpusTest {
         private val backups: Boolean = false,
         // What `share` answers (Capability.Share) for every path; null is a provider without the capability.
         private val shareLink: String? = null,
+        // gkrost/unidrive-cli#631: held open while a test connects its subscriber, so the start fill's list lands after
+        // the subscription exists and the push is deterministic.
+        private val listViewGate: CompletableDeferred<Unit>? = null,
     ) : CloudProvider {
         override val id: String = "stub"
         override val displayName: String = "Stub"
@@ -1757,6 +1770,7 @@ class IpcContractCorpusTest {
 
         // A list longer than the limit is cut, and the answer says so, as a provider does.
         override suspend fun listView(kind: ViewKind, limit: Int): CapabilityResult<List<ViewRef>> {
+            listViewGate?.await()
             viewFailure?.let { throw it }
             return viewRefs[kind]?.let { CapabilityResult.Success(ViewList(it.take(limit), truncated = it.size > limit)) }
                 ?: CapabilityResult.Unsupported(Capability.View(kind), "the stub has no $kind view")

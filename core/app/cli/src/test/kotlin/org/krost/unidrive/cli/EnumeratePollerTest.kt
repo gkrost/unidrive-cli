@@ -738,6 +738,43 @@ class EnumeratePollerTest {
         assertEquals("5m", run.pollInterval)
     }
 
+    // gkrost/unidrive-cli#631: the views ride the poll — the hook runs after a pass that succeeded and after none that
+    // failed or was skipped, so a provider in trouble is not asked twice per tick for lists it cannot answer.
+    @Test
+    fun `the tick hook runs after a successful pass and after no failed or skipped one`() = pollTest { scope ->
+        val engine = RecordingEngine(enumerateResult = EnumerateResult(ok = false, error = "provider boom"))
+        val handler = EnumerateRpcHandler(engine, scope, emit = {})
+        val ticks = java.util.concurrent.atomic.AtomicInteger(0)
+        val refreshRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+        val poller =
+            EnumeratePoller(
+                handler = handler,
+                intervalMs = intervalMs,
+                scope = scope,
+                jitter = { it },
+                isBusy = { refreshRunning.get() },
+                backoffMultiplier = 1,
+                afterTick = { ticks.incrementAndGet() },
+            )
+        poller.start()
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(1, engine.enumerateCount.get())
+        assertEquals(0, ticks.get(), "a failed pass runs no hook")
+
+        engine.enumerateResult = EnumerateResult(ok = true)
+        advanceTimeBy(stepOneInterval())
+        runCurrent()
+        assertEquals(2, engine.enumerateCount.get())
+        assertEquals(1, ticks.get(), "the successful pass runs the hook once")
+
+        refreshRunning.set(true)
+        advanceTimeBy(stepOneInterval())
+        runCurrent()
+        assertEquals(2, engine.enumerateCount.get(), "a skipped tick (a refresh held the profile)")
+        assertEquals(1, ticks.get(), "a skipped tick runs no hook either")
+    }
+
     @Test
     fun `parseIntervalMs accepts bare seconds suffixed units and zero`() {
         assertEquals(0L, EnumeratePoller.parseIntervalMs("0"))
