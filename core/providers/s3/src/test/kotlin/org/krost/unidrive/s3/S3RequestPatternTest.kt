@@ -220,9 +220,8 @@ class S3RequestPatternTest {
 
     // ── integrity ──
 
-    // The MD5 of a file is not at hand at the PUT (the engine hashes with SHA-256 after the upload), so #570 costs a read of
-    // the file or a change in what the engine hands down; this test only states the wire format it must end in.
-    @Ignore("enable with #570")
+    // gkrost/unidrive-cli#570: the MD5 comes from the one read of the file that also makes the SHA-256 proof; the header is checked
+    // here against the bytes the fake actually received, not against a recomputation of the file.
     @Test
     fun `a single-part PUT carries the Content-MD5 of its body`() {
         val local = writeLocal()
