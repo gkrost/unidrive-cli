@@ -74,6 +74,15 @@ fun HttpRequestBuilder.requestId(): String? = attributes.getOrNull(RequestIdKey)
  * With no sink on the tap, nothing is recorded; the attempt is still classified, for the abandonment WARN and the
  * in-flight registry, which do not depend on the tap.
  */
+/**
+ * The process-wide sequence every request id is drawn from, initialized with randomness once at
+ * class-load: every client of this process shares it, so a client recreated mid-run cannot restart
+ * onto ids another client already used, and the random start makes two processes writing one shared
+ * log almost surely never overlap. One AtomicLong increment per request — no randomness on the
+ * request path. The counter masks to 32 bits, so the wrap needs 4.3G requests in one process.
+ */
+private val requestIdSequence = AtomicLong(UUID.randomUUID().mostSignificantBits and 0xFFFFFFFFL)
+
 @Suppress("TooGenericExceptionCaught") // the failure is classified, recorded and rethrown unchanged
 @OptIn(io.ktor.utils.io.InternalAPI::class) // the counted reply replaces the response body (see CountedReply)
 val RequestId =
@@ -178,27 +187,34 @@ val RequestId =
         }
 
         onRequest { request, _ ->
-            val id = UUID.randomUUID().toString().take(8)
+            val id = "%08x".format(requestIdSequence.getAndIncrement() and 0xFFFFFFFFL)
             request.attributes.put(CreatedNanosKey, System.nanoTime())
             request.attributes.put(RequestIdKey, id)
             request.headers.append("X-Unidrive-Request-Id", id)
-            log.debug(
-                "→ req={} {} {}",
-                id,
-                request.method.value,
-                redact(request.url.buildString()),
-            )
+            // The URL string and its redaction run only when the line is actually logged.
+            if (log.isDebugEnabled) {
+                log.debug(
+                    "→ req={} {} {}",
+                    id,
+                    request.method.value,
+                    redact(request.url.buildString()),
+                )
+            }
         }
 
         onResponse { response ->
             val request = response.call.request
             val id = request.attributes.getOrNull(RequestIdKey)
+            val status = response.status.value
+            val warn = status >= HttpStatusCode.BadRequest.value
+            // The segments of the close line are built only when the line is logged; a DEBUG reply of a
+            // client whose DEBUG is off costs nothing here. The WARN branch stays unconditional.
+            if (!warn && !log.isDebugEnabled) return@onResponse
             val queuedMs = request.attributes.getOrNull(QueuedMsKey) ?: 0L
             // The total now runs from the request's creation, so the local wait it includes is told apart
             // as `queued=<ms>` (gkrost/unidrive-cli#416) and the engine's own time is what remains.
             val elapsed =
                 response.responseTime.timestamp - response.requestTime.timestamp + queuedMs
-            val status = response.status.value
             // archive#644: the profile travels in the message itself, independent of the thread's MDC (hydration
             // downloads and other worker threads have none), so a shared log splits per account. The server's
             // own request id (first present header of [RequestIdConfig.serverRequestIdHeaders]) rides along
@@ -218,8 +234,7 @@ val RequestId =
             val profileSegment = profile?.let { " [$it]" } ?: ""
             val serverId = serverRequestIdHeaders.firstNotNullOfOrNull { response.headers[it] }
             val srvSegment = serverId?.let { " srv=$it" } ?: ""
-            val level = if (status >= HttpStatusCode.BadRequest.value) "WARN" else "DEBUG"
-            if (level == "WARN") {
+            if (warn) {
                 log.warn(
                     "← req={}{}{} {} {} ({}ms) queued={}ms{}",
                     id ?: "--------",
@@ -254,39 +269,44 @@ val RequestId =
             val request = response.call.request
             val status = response.status.value
             val warn = status >= HttpStatusCode.BadRequest.value
+            val debug = log.isDebugEnabled
             val queuedMs = request.attributes.getOrNull(QueuedMsKey) ?: 0L
             val elapsedMs = response.responseTime.timestamp - response.requestTime.timestamp
             val upBytes = request.content.contentLength
-            val profileSegment = profile?.let { " [$it]" } ?: ""
-            val serverId = serverRequestIdHeaders.firstNotNullOfOrNull { response.headers[it] }
-            val srvSegment = serverId?.let { " srv=$it" } ?: ""
             val id = request.attributes.getOrNull(RequestIdKey) ?: "--------"
             val counted =
                 CountedReply(response.rawContent) { dn ->
-                    val sizeSegment = formatCountedSizeSegment(upBytes, dn)
-                    if (warn) {
-                        log.warn(
-                            "← req={}{}{} {} {} ({}ms) queued={}ms{}",
-                            id,
-                            profileSegment,
-                            srvSegment,
-                            status,
-                            response.status.description,
-                            elapsedMs + queuedMs,
-                            queuedMs,
-                            sizeSegment,
-                        )
-                    } else {
-                        log.debug(
-                            "← req={}{}{} {} ({}ms) queued={}ms{}",
-                            id,
-                            profileSegment,
-                            srvSegment,
-                            status,
-                            elapsedMs + queuedMs,
-                            queuedMs,
-                            sizeSegment,
-                        )
+                    // The wrapper itself stays for the metrics; only the line's segments are built and
+                    // logged when the level wants them.
+                    if (warn || debug) {
+                        val sizeSegment = formatCountedSizeSegment(upBytes, dn)
+                        val profileSegment = profile?.let { " [$it]" } ?: ""
+                        val serverId = serverRequestIdHeaders.firstNotNullOfOrNull { response.headers[it] }
+                        val srvSegment = serverId?.let { " srv=$it" } ?: ""
+                        if (warn) {
+                            log.warn(
+                                "← req={}{}{} {} {} ({}ms) queued={}ms{}",
+                                id,
+                                profileSegment,
+                                srvSegment,
+                                status,
+                                response.status.description,
+                                elapsedMs + queuedMs,
+                                queuedMs,
+                                sizeSegment,
+                            )
+                        } else {
+                            log.debug(
+                                "← req={}{}{} {} ({}ms) queued={}ms{}",
+                                id,
+                                profileSegment,
+                                srvSegment,
+                                status,
+                                elapsedMs + queuedMs,
+                                queuedMs,
+                                sizeSegment,
+                            )
+                        }
                     }
                 }
             request.attributes.put(CountedKey, counted)
