@@ -503,6 +503,8 @@ class DaemonRuntimeTest {
                     """{"verb":"auth.login","email":"user@example.test","password":"x"}""",
                     // archive#1240: the stub provider has no credential check, so this answers unsupported (still a reply).
                     """{"verb":"auth.check"}""",
+                    // share.create is answered (ok or a typed error), never unknown_verb: the stub provider cannot share, so it answers unsupported.
+                    """{"verb":"share.create","path":"/startup/share.txt"}""",
                     """{"verb":"daemon.shutdown"}""",
                 )
                 // The IPC verb classes (IpcAuth) name exactly these verbs: each reaches a handler below,

@@ -1,0 +1,6 @@
+{"verb":"share.create"}
+{"ok":false,"error":"missing_path"}
+{"verb":"share.create","path":42}
+{"ok":false,"error":"missing_path"}
+{"verb":"share.create","path":"/notes/a.txt"}
+{"ok":false,"error":"unsupported","message":"Provider does not support generating share links"}

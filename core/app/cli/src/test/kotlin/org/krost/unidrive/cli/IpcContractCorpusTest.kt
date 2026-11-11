@@ -96,7 +96,7 @@ class IpcContractCorpusTest {
     private val daemonVerbs =
         listOf(
             "daemon.status", "daemon.pause", "daemon.resume", "metrics.query", "sync.subscribe", "refresh.run", "sync.enumerate",
-            "history.list", "history.subscribe", "ignore.explain",
+            "history.list", "history.subscribe", "ignore.explain", "share.create",
             // auth.logout deletes the corpus daemon's (absent) credential files and is idempotent; it must
             // run before daemon.shutdown, which stops the daemon the other verbs are replayed against.
             "auth.logout",
@@ -435,9 +435,55 @@ class IpcContractCorpusTest {
     }
 
     /**
+     * `sessions/share.ndjson`: the `share.create` verb (§4.13) on a live mount daemon whose provider declares
+     * `Capability.Share`: `daemon.status` lists the `share.create` capability, then the verb answers the link for the
+     * path asked. The refusal shapes (a share-less provider) are `share.create.ndjson`, replayed against the default
+     * stub in `daemon_verb_replies_match_corpus_over_live_socket`.
+     */
+    @Test
+    fun share_session_matches_corpus_over_live_socket() = runBlocking {
+        val pairs = loadSession("share")
+        val tempDir = Files.createTempDirectory("ipc-contract-share")
+        val socketPath = tempDir.resolve("daemon.sock")
+        val runtime = DaemonRuntime(
+            profileMode = ProfileMode.MOUNT,
+            profileName = "contract_profile",
+            lockFile = tempDir.resolve(".lock"),
+            dbPath = tempDir.resolve("state.db"),
+            syncRoot = tempDir,
+            socketPath = socketPath,
+            providerFactory = { StubProvider(shareLink = "https://example.test/s/stub-share") },
+            providerHasQuota = false,
+        )
+        val daemonJob = launch { runtime.start() }
+        try {
+            awaitDaemonSocket(socketPath)
+            val endpoint = IpcEndpoint(socketPath, tempDir, "contract_profile")
+            val channel = IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL)
+            try {
+                channel.configureBlocking(false)
+                for ((request, expectedReply) in pairs) {
+                    channel.write(ByteBuffer.wrap((request + "\n").toByteArray()))
+                    assertJsonMatches(
+                        expected = Json.parseToJsonElement(expectedReply),
+                        actual = Json.parseToJsonElement(readFirstLine(channel, timeoutMs = 5_000)),
+                        at = "share session: reply to $request",
+                    )
+                }
+            } finally {
+                channel.close()
+            }
+        } finally {
+            runtime.close()
+            daemonJob.join()
+            runCatching { tempDir.toFile().deleteRecursively() }
+        }
+    }
+
+    /**
      * `sessions/views-recents.ndjson`: the Recents view on a live mount daemon. state.db holds six rows (three folders, three
      * files, two of them called todo.txt) and the provider lists four references to them (one without a row). The transcript
-     * is the top level with the view's root, the view's entries (the namesakes told apart, the reference without a row
+     * is the top level with the view's root, the view's entries (the namesake told apart, the reference without a row
      * skipped), `daemon.status` with its `views` object and the `views` capability, reads through an entry (the cache file is
      * the real item's), and every verb that would write answering `read_only`; the real item is listed where it was afterwards.
      * The root's own mtime is the daemon's start, so the transcript's stands in for it. No client subscribes here: a
@@ -1687,6 +1733,8 @@ class IpcContractCorpusTest {
         private val declared: Set<ViewKind> = viewRefs.keys,
         // Whether it declares the backups (Capability.Backups): the listing's backup items are then its own.
         private val backups: Boolean = false,
+        // What `share` answers (Capability.Share) for every path; null is a provider without the capability.
+        private val shareLink: String? = null,
     ) : CloudProvider {
         override val id: String = "stub"
         override val displayName: String = "Stub"
@@ -1697,7 +1745,15 @@ class IpcContractCorpusTest {
         var viewFailure: Exception? = null
 
         override fun capabilities(): Set<Capability> =
-            declared.map { Capability.View(it) }.toSet() + if (backups) setOf(Capability.Backups) else emptySet()
+            declared.map { Capability.View(it) }.toSet() +
+                (if (backups) setOf(Capability.Backups) else emptySet()) +
+                (if (shareLink != null) setOf(Capability.Share) else emptySet())
+
+        override suspend fun share(
+            path: String,
+            expiryHours: Int,
+            password: String?,
+        ): CapabilityResult<String> = shareLink?.let { CapabilityResult.Success(it) } ?: super.share(path, expiryHours, password)
 
         // A list longer than the limit is cut, and the answer says so, as a provider does.
         override suspend fun listView(kind: ViewKind, limit: Int): CapabilityResult<List<ViewRef>> {
