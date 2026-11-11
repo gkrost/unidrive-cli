@@ -98,6 +98,23 @@ pwsh scripts/golden/unicode-tree/verify.ps1 -Root <mirror>\golden-unicode-downlo
     -Manifest scripts/golden/unicode-tree/download-manifest.tsv
 ```
 
+### Linux: `golden.py` (no PowerShell)
+
+`golden.py` (Python 3.9+, standard library only) is the Linux twin of the PowerShell scripts: `generate`, `verify`, `compare`
+(= compare-expected), `daemon-view` (IPC socket `$XDG_RUNTIME_DIR/unidrive-<profile>.sock`, read token of the profile's config folder),
+`remote-live` (no ASCII-only limit on Linux), `selftest` (verify and compare halves) and `run`. It prints the same finding lines and
+exits with the same codes, so the files under `expected/` work with both. Not ported: the download-direction suite and `probes/`.
+
+```bash
+python3 scripts/golden/unicode-tree/golden.py selftest
+python3 scripts/golden/unicode-tree/golden.py run --localfs                      # isolated localfs profile, own daemon and FUSE mount
+python3 scripts/golden/unicode-tree/golden.py run --profile <p> --mount ~/Drive --prefix _INBOX/golden-run --remote-live   # a live profile
+python3 scripts/golden/unicode-tree/golden.py verify <dir> --strict-mtime --max-lines 100000
+```
+
+`run` refuses to overwrite an existing target folder, so a live run needs a fresh `--prefix`. A name the mount refuses
+(`File exists`, the NFC/NFD twins) is reported and the copy goes on.
+
 ## Use
 
 The quick way, no cloud account needed (stop any other unidrive mount first; about 5 minutes):
