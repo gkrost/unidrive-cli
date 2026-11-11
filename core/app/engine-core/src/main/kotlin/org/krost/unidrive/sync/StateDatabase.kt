@@ -690,6 +690,7 @@ class StateDatabase(
                     mount_deleted_at     TEXT,
                     remote_content_id    TEXT,
                     pending_local        TEXT,
+                    never_submitted      INTEGER,
                     hint_file_id         TEXT,
                     hint_bucket          TEXT,
                     hint_encrypt_version TEXT,
@@ -873,6 +874,13 @@ class StateDatabase(
             // listing of its folder (gkrost/unidrive-cli#202, foldersWithoutContentIds); remote_hash decides alone meanwhile.
             if (!columnExists("sync_entries", "remote_content_id")) {
                 stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN remote_content_id TEXT")
+            }
+            // gkrost/unidrive-cli#585: durable proof that no upload of this never-uploaded row was ever submitted (see
+            // [markNeverSubmitted]). Same additive pattern, no schema_version bump, and no backfill: NULL = unknown, which is
+            // every older row, every row an upsert wrote and every row an older build's upsert reset. Unknown is the safe
+            // reading (the cloud is asked), so a reset costs a round trip and nothing else.
+            if (!columnExists("sync_entries", "never_submitted")) {
+                stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN never_submitted INTEGER")
             }
             // A remote delete, rename, or new folder the delta will not deliver again, still not applied locally.
             // NULL = nothing pending. Same additive pattern, no schema_version bump: every older row reads as nothing pending.
@@ -2445,6 +2453,56 @@ class StateDatabase(
                 }
         }
     }
+
+    /**
+     * gkrost/unidrive-cli#585: records that no upload of the never-uploaded file row at [pathRaw] has been submitted and
+     * none was ever possible while its path was kept local, so no cloud write of its bytes can have landed. The caller
+     * records it only where it knows that first-hand: the row was made while its path was excluded (create), or already
+     * carried the record and is only restamped (the keep-local branch). The record is a fact about the row's history and
+     * is read by [neverSubmitted]; a row whose history is unknown carries none and is probed when it goes.
+     *
+     * Any upsert of the row clears it (the row is then written by a path that does not vouch for the history), and
+     * [clearNeverSubmitted] ends it explicitly: every writer of the row's bytes to the cloud calls that BEFORE the first
+     * provider call, so that a crash after the cloud took the bytes and before the row learned of it leaves a row that
+     * is probed, never one that vouches for a history that has ended. Only a pending file row takes it; true when it was set.
+     */
+    fun markNeverSubmitted(pathRaw: String): Boolean =
+        locked("markNeverSubmitted") {
+            beginWrite()
+            val path = PathNormalizer.nfc(pathRaw)
+            conn
+                .prepareStatement(
+                    "UPDATE sync_entries SET never_submitted=1 " +
+                        "WHERE path=? AND status='EXISTS' AND is_folder=0 AND remote_id GLOB 'local:*'",
+                ).use { stmt ->
+                    stmt.setString(1, path)
+                    stmt.executeUpdate() == 1
+                }
+        }
+
+    /** gkrost/unidrive-cli#585: ends the record of [markNeverSubmitted], before a first byte of the row is sent to the cloud. True when one was there. */
+    fun clearNeverSubmitted(pathRaw: String): Boolean =
+        locked("clearNeverSubmitted") {
+            beginWrite()
+            val path = PathNormalizer.nfc(pathRaw)
+            conn
+                .prepareStatement("UPDATE sync_entries SET never_submitted=NULL WHERE path=? AND status='EXISTS' AND never_submitted IS NOT NULL")
+                .use { stmt ->
+                    stmt.setString(1, path)
+                    stmt.executeUpdate() > 0
+                }
+        }
+
+    /** gkrost/unidrive-cli#585: whether the alive row at [pathRaw] carries the record of [markNeverSubmitted]. */
+    fun neverSubmitted(pathRaw: String): Boolean =
+        read("neverSubmitted") { c ->
+            val path = PathNormalizer.nfc(pathRaw)
+            c.prepareStatement("SELECT never_submitted FROM sync_entries WHERE path=? AND status='EXISTS'").use { stmt ->
+                stmt.setString(1, path)
+                val rs = stmt.executeQuery()
+                return rs.next() && rs.getInt(1) == 1
+            }
+        }
 
     /** archive#493: the refusal recorded by [markUploadRefused] for this alive row, or null. */
     fun uploadRefusal(pathRaw: String): String? =
