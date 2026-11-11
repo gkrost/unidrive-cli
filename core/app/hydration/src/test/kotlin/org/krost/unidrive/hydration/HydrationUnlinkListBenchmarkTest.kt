@@ -35,6 +35,7 @@ class HydrationUnlinkListBenchmarkTest {
     private val rowsBig = 4300
     private val rowsMid = 2500
     private val rowsSmall = 500
+    private val rowsRtt = 200
 
     private val provider = BenchProvider()
     private val base: Path = Files.createTempDirectory("ud-585-bench")
@@ -171,6 +172,39 @@ class HydrationUnlinkListBenchmarkTest {
         }
         provider.latencyMs = 0
         report("unlink_whole_500_probe_rtt_200ms", withRtt)
+
+        // The rows this change is about, at the same latency: an excluded row that records no upload was ever submitted
+        // owes no probe; the same row without the record (older build, other path of creation) keeps it.
+        provider.latencyMs = latency
+        for (recorded in listOf(true, false)) {
+            val ns = mutableListOf<Long>()
+            val before = provider.metadataCalls.get()
+            for (i in 0 until rowsRtt) {
+                val path = "$folder/~\$x${if (recorded) "r" else "u"}$i.tmp"
+                db.upsertEntry(
+                    SyncEntry(
+                        path = path,
+                        remoteId = null,
+                        remoteHash = null,
+                        remoteSize = 0L,
+                        remoteModified = null,
+                        localMtime = Instant.now().toEpochMilli(),
+                        localSize = 1L,
+                        isFolder = false,
+                        isPinned = false,
+                        isHydrated = true,
+                        lastSynced = Instant.now(),
+                    ),
+                )
+                if (recorded) db.markNeverSubmitted(path)
+                val t0 = System.nanoTime()
+                assertIs<UnlinkResult.Ok>(hydration.unlink(path, false))
+                ns += System.nanoTime() - t0
+            }
+            report("unlink_whole_${rowsRtt}_excluded_${if (recorded) "recorded_never_submitted" else "no_record"}_rtt_200ms", ns)
+            assertEquals(if (recorded) 0 else rowsRtt, provider.metadataCalls.get() - before, "provider probes (recorded=$recorded)")
+        }
+        provider.latencyMs = 0
         small.third.close()
     }
 
