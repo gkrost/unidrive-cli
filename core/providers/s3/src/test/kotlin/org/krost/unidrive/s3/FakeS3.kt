@@ -44,28 +44,40 @@ class FakeS3(
         val encodedPath: String,
     )
 
+    // The engine runs its handler on several threads at once (S3RequestPatternTest drives four transfers, FakeS3ConcurrencyTest
+    // many more), so every piece of state below is safe for that: concurrent collections, atomics, or one lock where a check and
+    // its write belong together. A plain list or counter here once lost requests and answered one scripted failure many times.
     val objects = java.util.concurrent.ConcurrentSkipListMap<String, Obj>()
-    val requests = mutableListOf<Request>()
-    var onHead: ((key: String, count: Int) -> Unit)? = null
-    private var headCount = 0
-    private val uploads = mutableMapOf<String, Pair<String, MutableMap<Int, Obj>>>()
-    private val uploadMeta = mutableMapOf<String, Map<String, String>>()
-    private var tick = Instant.parse("2026-01-01T00:00:00Z")
-    private var uploadCounter = 0
 
-    /** Answers the next request [matching] with [status] and an S3 error [code] instead of serving it. */
-    val failures = mutableListOf<Triple<(Request) -> Boolean, Int, String>>()
+    /** Every request, in arrival order. Safe to read while requests are still being recorded. */
+    val requests = java.util.concurrent.CopyOnWriteArrayList<Request>()
+
+    @Volatile
+    var onHead: ((key: String, count: Int) -> Unit)? = null
+    private val headCount = java.util.concurrent.atomic.AtomicInteger()
+    private val uploads = java.util.concurrent.ConcurrentHashMap<String, Pair<String, MutableMap<Int, Obj>>>()
+    private val uploadMeta = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
+    private val tick = java.util.concurrent.atomic.AtomicReference(Instant.parse("2026-01-01T00:00:00Z"))
+    private val uploadCounter = java.util.concurrent.atomic.AtomicInteger()
+
+    /** Held while a conditional write checks the key and stores, so two creates with `If-None-Match: *` cannot both win. */
+    private val writeLock = Any()
+
+    /** Answers the next request [matching] with [status] and an S3 error [code] instead of serving it, once. */
+    val failures = java.util.concurrent.CopyOnWriteArrayList<Triple<(Request) -> Boolean, Int, String>>()
 
     /** Keys DeleteObjects reports as refused (an `Error` entry in its answer) and leaves in place. */
-    val undeletable = mutableSetOf<String>()
+    val undeletable: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /** The `Retry-After` value every scripted failure carries, when set. */
+    @Volatile
     var failureRetryAfter: String? = null
 
     /**
      * The next N list answers claim `IsTruncated` and repeat the continuation token they were asked with (or `tok`),
      * like a server or proxy that loops its pages (#82 F). After them the listing ends normally.
      */
+    @Volatile
     var repeatTokenResponses: Int = 0
 
     fun put(
@@ -96,7 +108,7 @@ class FakeS3(
 
     fun text(key: String): String? = objects[key]?.bytes?.toString(Charsets.UTF_8)
 
-    fun count(predicate: (Request) -> Boolean): Int = synchronized(requests) { requests.count(predicate) }
+    fun count(predicate: (Request) -> Boolean): Int = requests.count(predicate)
 
     val engine =
         MockEngine { request ->
@@ -114,12 +126,10 @@ class FakeS3(
                     request.body.toByteArray(),
                     request.url.encodedPath,
                 )
-            synchronized(requests) { requests += r }
-            val failure = failures.firstOrNull { it.first(r) }
-            if (failure != null) {
-                failures.remove(failure)
-                return@MockEngine error(failure.second, failure.third)
-            }
+            requests += r
+            // Finding the scripted failure and taking it out of the list is one step: it answers one request, however many are in flight.
+            val failure = synchronized(failures) { failures.firstOrNull { it.first(r) }?.also { failures.remove(it) } }
+            if (failure != null) return@MockEngine error(failure.second, failure.third)
             serve(request, r)
         }
 
@@ -137,16 +147,9 @@ class FakeS3(
                 objects[r.key!!] = Obj(source.bytes, source.size, source.etag, source.meta, nextTime())
                 xml("<CopyObjectResult><ETag>\"${source.etag}\"</ETag></CopyObjectResult>")
             }
-            r.method == HttpMethod.Put -> {
-                val current = objects[r.key!!]
-                val ifMatch = r.headers["if-match"]?.trim('"')
-                if (ifMatch != null && current?.etag != ifMatch) return error(if (current == null) 404 else 412, "PreconditionFailed")
-                if (r.headers["if-none-match"] == "*" && current != null) return error(412, "PreconditionFailed")
-                objects[r.key] = Obj(r.body, r.body.size.toLong(), md5Hex(r.body), meta(r), nextTime())
-                respond("", HttpStatusCode.OK, headersOf("ETag", "\"${objects.getValue(r.key).etag}\""))
-            }
+            r.method == HttpMethod.Put -> put(r)
             r.method == HttpMethod.Head -> {
-                onHead?.invoke(r.key!!, ++headCount)
+                onHead?.invoke(r.key!!, headCount.incrementAndGet())
                 val obj = objects[r.key] ?: return respond("", HttpStatusCode.NotFound)
                 val headers =
                     listOfNotNull(
@@ -172,12 +175,28 @@ class FakeS3(
         }
     }
 
+    private fun MockRequestHandleScope.put(r: Request): HttpResponseData {
+        val stored = Obj(r.body, r.body.size.toLong(), md5Hex(r.body), meta(r), nextTime())
+        val ifMatch = r.headers["if-match"]?.trim('"')
+        val refused =
+            synchronized(writeLock) {
+                val current = objects[r.key!!]
+                when {
+                    ifMatch != null && current?.etag != ifMatch -> if (current == null) 404 else 412
+                    r.headers["if-none-match"] == "*" && current != null -> 412
+                    else -> null.also { objects[r.key] = stored }
+                }
+            }
+        if (refused != null) return error(refused, "PreconditionFailed")
+        return respond("", HttpStatusCode.OK, headersOf("ETag", "\"${stored.etag}\""))
+    }
+
     private fun MockRequestHandleScope.multipart(r: Request): HttpResponseData {
         val q = r.query
         return when {
             r.method == HttpMethod.Post && "uploads" in q -> {
-                val id = "up${++uploadCounter}"
-                uploads[id] = r.key!! to mutableMapOf()
+                val id = "up${uploadCounter.incrementAndGet()}"
+                uploads[id] = r.key!! to java.util.concurrent.ConcurrentSkipListMap<Int, Obj>()
                 uploadMeta[id] = meta(r)
                 xml("<InitiateMultipartUploadResult><UploadId>$id</UploadId></InitiateMultipartUploadResult>")
             }
@@ -209,7 +228,11 @@ class FakeS3(
             }
         }
         val page = entries.take(max)
-        val truncated = entries.size > max || repeatTokenResponses > 0
+        val repeating =
+            synchronized(this) {
+                (repeatTokenResponses > 0).also { if (it) repeatTokenResponses-- }
+            }
+        val truncated = entries.size > max || repeating
         // Like S3: with encoding-type=url the Key and Prefix elements are URL-encoded (spaces as '+') and the answer says so;
         // without it they are raw, which XML 1.0 cannot carry for a control character.
         val urlEncoded = q["encoding-type"] == "url"
@@ -220,8 +243,7 @@ class FakeS3(
                 if (urlEncoded) append("<EncodingType>url</EncodingType>")
                 if (truncated) {
                     val token =
-                        if (repeatTokenResponses > 0) {
-                            repeatTokenResponses--
+                        if (repeating) {
                             q["continuation-token"] ?: "tok"
                         } else {
                             page.last().first
@@ -249,12 +271,12 @@ class FakeS3(
         val copySource = r.headers["x-amz-copy-source"]
         if (copySource != null) {
             val range = r.headers.getValue("x-amz-copy-source-range").removePrefix("bytes=").split("-").map { it.toLong() }
-            parts[number] = Obj(null, range[1] - range[0] + 1, "copy$number", emptyMap(), tick)
+            parts[number] = Obj(null, range[1] - range[0] + 1, "copy$number", emptyMap(), tick.get())
             return xml("<CopyPartResult><ETag>\"copy$number\"</ETag></CopyPartResult>")
         }
         val md5 = java.util.Base64.getEncoder().encodeToString(MessageDigest.getInstance("MD5").digest(r.body))
         if (r.headers["content-md5"] != md5) return error(400, "BadDigest")
-        parts[number] = Obj(r.body, r.body.size.toLong(), md5Hex(r.body), emptyMap(), tick)
+        parts[number] = Obj(r.body, r.body.size.toLong(), md5Hex(r.body), emptyMap(), tick.get())
         return respond("", HttpStatusCode.OK, headersOf("ETag", "\"${md5Hex(r.body)}\""))
     }
 
@@ -271,13 +293,22 @@ class FakeS3(
         val id = r.query.getValue("uploadId")
         val (key, parts) = uploads[id] ?: return error(404, "NoSuchUpload")
         val ifMatch = r.headers["if-match"]?.trim('"')
-        if (ifMatch != null && objects[key]?.etag != ifMatch) return error(412, "PreconditionFailed")
-        if (r.headers["if-none-match"] == "*" && objects[key] != null) return error(412, "PreconditionFailed")
         val numbers = Regex("<PartNumber>(\\d+)</PartNumber>").findAll(r.body.toString(Charsets.UTF_8)).map { it.groupValues[1].toInt() }.toList()
-        check(numbers == numbers.sorted() && numbers.toSet() == parts.keys) { "complete lists $numbers, held ${parts.keys}" }
-        val bytes = if (parts.values.all { it.bytes != null }) numbers.map { parts.getValue(it).bytes!! }.reduce { a, b -> a + b } else null
-        val size = numbers.sumOf { parts.getValue(it).size }
-        objects[key] = Obj(bytes, size, "multi-${numbers.size}", uploadMeta[id] ?: emptyMap(), nextTime())
+        val refused =
+            synchronized(writeLock) {
+                when {
+                    ifMatch != null && objects[key]?.etag != ifMatch -> true
+                    r.headers["if-none-match"] == "*" && objects[key] != null -> true
+                    else -> {
+                        check(numbers == numbers.sorted() && numbers.toSet() == parts.keys) { "complete lists $numbers, held ${parts.keys}" }
+                        val bytes = if (parts.values.all { it.bytes != null }) numbers.map { parts.getValue(it).bytes!! }.reduce { a, b -> a + b } else null
+                        val size = numbers.sumOf { parts.getValue(it).size }
+                        objects[key] = Obj(bytes, size, "multi-${numbers.size}", uploadMeta[id] ?: emptyMap(), nextTime())
+                        false
+                    }
+                }
+            }
+        if (refused) return error(412, "PreconditionFailed")
         uploads.remove(id)
         return xml("<CompleteMultipartUploadResult><ETag>\"multi-${numbers.size}\"</ETag></CompleteMultipartUploadResult>")
     }
@@ -296,7 +327,7 @@ class FakeS3(
     private fun meta(r: Request): Map<String, String> =
         r.headers.filterKeys { it.startsWith("x-amz-meta-") }.mapKeys { it.key.removePrefix("x-amz-meta-") }
 
-    private fun nextTime(): Instant = tick.also { tick = tick.plusSeconds(1) }
+    private fun nextTime(): Instant = tick.getAndUpdate { it.plusSeconds(1) }
 
     private fun MockRequestHandleScope.xml(body: String) = respond(body, HttpStatusCode.OK, headersOf("Content-Type", "application/xml"))
 

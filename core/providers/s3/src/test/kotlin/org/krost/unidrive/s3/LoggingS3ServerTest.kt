@@ -5,6 +5,10 @@ import java.io.InputStream
 import java.net.Socket
 import java.security.MessageDigest
 import java.util.Base64
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -59,7 +63,8 @@ class LoggingS3ServerTest {
         }
     }
 
-    private fun client(): Socket = Socket("127.0.0.1", server.endpoint.substringAfterLast(':').toInt())
+    // A read that finds no answer fails after READ_TIMEOUT_MS; without it a server that never answers would hang the build.
+    private fun client(): Socket = Socket("127.0.0.1", server.endpoint.substringAfterLast(':').toInt()).also { it.soTimeout = READ_TIMEOUT_MS }
 
     private fun untilClosed(connection: LoggingS3Server.Connection): LoggingS3Server.Closer? {
         val deadline = System.nanoTime() + 5_000_000_000L
@@ -131,5 +136,78 @@ class LoggingS3ServerTest {
         client().use { it.call("PUT", "/b/k", emptyMap(), byteArrayOf(0, 1, 2)) }
 
         assertContentEquals(byteArrayOf(1, 1, 2), server.bytesOf("k"))
+    }
+
+    @Test
+    fun `a mark taken while a request is still being read leaves out the requests that arrived before it`() {
+        client().use { slow ->
+            // The head of a PUT whose body is still to come: the server has counted the request but not answered it, so it is not logged.
+            val head = "PUT /b/slow HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\n"
+            slow.getOutputStream().write(head.toByteArray(Charsets.ISO_8859_1))
+            slow.getOutputStream().flush()
+            val deadline = System.nanoTime() + 5_000_000_000L
+            while (server.connections().singleOrNull()?.requestCount?.get() != 1 && System.nanoTime() < deadline) Thread.sleep(5)
+            assertEquals(1, server.connections().singleOrNull()?.requestCount?.get(), "the server has read the head of the slow request")
+            client().use { assertEquals(404, it.call("GET", "/b/missing").status) }
+
+            val mark = server.mark()
+            slow.getOutputStream().write("hello".toByteArray())
+            slow.getOutputStream().flush()
+            assertEquals(200, readStatus(slow))
+            assertEquals(2, server.requests().size, "both requests are logged by now")
+            assertEquals(emptyList(), server.requestsSince(mark).map { it.key }, "both arrived before the mark")
+
+            client().use { assertEquals(404, it.call("GET", "/b/after").status) }
+            assertEquals(listOf("after"), server.requestsSince(mark).map { it.key })
+        }
+    }
+
+    @Test
+    fun `of many concurrent creates with If-None-Match star exactly one wins`() {
+        val body = ByteArray(4 shl 20) { it.toByte() } // its MD5 is computed between looking at the key and storing
+        val statuses = ConcurrentLinkedQueue<Int>()
+        val ready = CountDownLatch(CREATORS)
+        val go = CountDownLatch(1)
+        val workers =
+            (1..CREATORS).map {
+                thread {
+                    client().use { socket ->
+                        ready.countDown()
+                        go.await()
+                        statuses += socket.call("PUT", "/b/taken", mapOf("If-None-Match" to "*"), body).status
+                    }
+                }
+            }
+        assertTrue(ready.await(10, TimeUnit.SECONDS), "the clients connected")
+        go.countDown()
+        workers.forEach { it.join(30_000) }
+
+        assertEquals(CREATORS, statuses.size, "every create was answered")
+        assertEquals(1, statuses.count { it == 200 }, "statuses: ${statuses.groupingBy { it }.eachCount()}")
+        assertContentEquals(body, server.bytesOf("taken"))
+    }
+
+    @Test
+    fun `close ends the threads of the server and its connections`() {
+        val sockets = (1..3).map { client().also { socket -> socket.call("GET", "/b/missing") } }
+
+        server.close()
+
+        assertTrue(server.stopped, "close() returned while the server still had threads running")
+        sockets.forEach { assertEquals(-1, runCatching { it.getInputStream().read() }.getOrDefault(-1), "the server closed this connection") }
+        sockets.forEach { it.close() }
+    }
+
+    private fun readStatus(socket: Socket): Int {
+        val input = socket.getInputStream()
+        val status = readLine(input).split(' ')[1].toInt()
+        val headers = generateSequence { readLine(input).takeIf { it.isNotEmpty() } }.associate { it.substringBefore(':').lowercase() to it.substringAfter(':').trim() }
+        input.readNBytes(headers["content-length"]?.toInt() ?: 0)
+        return status
+    }
+
+    private companion object {
+        const val READ_TIMEOUT_MS = 15_000
+        const val CREATORS = 8
     }
 }

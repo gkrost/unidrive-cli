@@ -11,6 +11,9 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -34,11 +37,15 @@ class S3RequestPatternTest {
     val tmp = TemporaryFolder()
 
     private val fake = FakeS3()
-    private val s3 by lazy { S3Provider(S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", tmp.newFolder("profile").toPath()), fake.engine) }
+    private val provider = lazy { S3Provider(S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", tmp.newFolder("profile").toPath()), fake.engine) }
+    private val s3 by provider
     private val tree = S3TransferTree()
 
+    // No provider is built here only to be closed by a test that never used one.
     @After
-    fun stop() = s3.close()
+    fun stop() {
+        if (provider.isInitialized()) s3.close()
+    }
 
     private fun key(path: String) = tree.key(path)
 
@@ -96,6 +103,25 @@ class S3RequestPatternTest {
     }
 
     private fun assertStored() = tree.files.forEach { (path, bytes) -> assertContentEquals(bytes, fake.objects[key(path)]?.bytes, "the fake holds the bytes of $path") }
+
+    // ── the premise ──
+
+    @Test
+    fun `the transfers really overlap, so the counts below are taken with several in flight`() {
+        val local = writeLocal()
+        // Each of the first two HEADs waits for the other. If the provider ever ran the transfers one after the other, no second
+        // HEAD would come while the first waits, and the wait would run out.
+        val together = CountDownLatch(2)
+        val overlapped = AtomicBoolean(true)
+        fake.onHead = { _, _ ->
+            together.countDown()
+            if (!together.await(OVERLAP_WAIT_S, TimeUnit.SECONDS)) overlapped.set(false)
+        }
+
+        uploadAll(local)
+
+        assertTrue(overlapped.get(), "no two uploads were ever in flight together: the tests here would not exercise concurrent access")
+    }
 
     // ── upload ──
 
@@ -158,7 +184,11 @@ class S3RequestPatternTest {
         assertEquals(tree.folders.size, requests.size, "folders: ${tree.folders.size} folders, one request each; $report")
     }
 
-    @Ignore("enable with #575")
+    // Open and undesigned (gkrost/unidrive-cli#575): the provider cannot know that a child follows, so the issue's options are an
+    // engine that skips createFolder for such a folder, or a marker written only for a folder left empty at the end of the pass.
+    // This test calls createFolder itself and then uploads, so under either option it still sees the marker: whoever lands one
+    // rewrites it for that design (the engine option makes it an engine-level test).
+    @Ignore("#575 is open and has no design yet; rewrite this for the design that lands (the provider alone cannot satisfy it)")
     @Test
     fun `a folder that gets a child in the same pass gets no marker`() {
         val local = writeLocal()
@@ -239,5 +269,6 @@ class S3RequestPatternTest {
 
     private companion object {
         const val SHOWN = 4
+        const val OVERLAP_WAIT_S = 10L
     }
 }
