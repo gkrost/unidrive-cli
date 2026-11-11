@@ -119,7 +119,7 @@ class StateGroupCommit(
             rowCount.addAndGet(group.size.toLong())
             if (group.size > largest) largest = group.size
             onGroupCommitted?.invoke(group.size, Thread.currentThread())
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             // The transaction was rolled back as a whole. Row by row, so that one bad row fails only its own caller.
             writeRowByRow(group)
         } catch (e: Throwable) {

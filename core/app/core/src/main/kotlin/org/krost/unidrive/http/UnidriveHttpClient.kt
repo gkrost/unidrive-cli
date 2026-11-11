@@ -49,7 +49,7 @@ import java.util.concurrent.TimeUnit
  * fresh socket per request) never showed. OkHttp's own recovery, `retryOnConnectionFailure`, cannot stay on: it also re-sends a
  * body whose write was committed and whose answer was lost (see below). What the factory does instead retries only where the
  * request provably or harmlessly did not take effect:
- * - Before a request goes out on a connection that has been idle for [PROBE_AFTER_IDLE_NANOS] or more, a network interceptor
+ * - Before a request goes out on an HTTP/1.1 connection that has been idle for [PROBE_AFTER_IDLE_NANOS] or more, a network interceptor
  *   probes it (a 1 ms read, the check OkHttp itself makes). A connection found closed is dropped, together with every other idle
  *   one (the server closes them together), and the request is sent again on a fresh connection: nothing of it was written, so
  *   this is safe for every method, a PUT with a body included.
@@ -108,7 +108,7 @@ public fun unidriveHttpClient(
                     val connection = chain.connection()
                     if (connection != null) {
                         val last = lastUse[connection]
-                        if (last != null && System.nanoTime() - last >= PROBE_AFTER_IDLE_NANOS && connection.socket().isClosedByPeer()) {
+                        if (connection.probeFindsItClosed(last)) {
                             pool.evictAll()
                             runCatching { connection.socket().close() }
                             throw StaleConnectionException()
@@ -171,7 +171,23 @@ private fun Socket.isClosedByPeer(): Boolean {
     }
 }
 
-private const val PROBE_AFTER_IDLE_NANOS = 50_000_000L
+/**
+ * Whether the probe finds this idle connection closed by the server, at [nowNanos] (the tests pass a fixed time). Only an HTTP/1.1
+ * connection is probed: it has no reader while it is idle. An HTTP/2 connection has a reader thread of its own, blocked in the very read
+ * the probe would make, so the probe hangs on it (reproduced against a real HTTP/2 endpoint with the protocol list flipped,
+ * gkrost/unidrive-cli#577). It needs no probe either: its reader sees the server's close or GOAWAY, and OkHttp's pool stops handing the
+ * connection out (`Http2Connection.isHealthy`). The pin to HTTP/1.1 in [unidriveHttpClient] keeps HTTP/2 unreachable today; this keeps
+ * the probe correct on the day the pin is lifted.
+ */
+internal fun Connection.probeFindsItClosed(
+    lastUseNanos: Long?,
+    nowNanos: Long = System.nanoTime(),
+): Boolean {
+    if (protocol() != Protocol.HTTP_1_1 || lastUseNanos == null) return false
+    return nowNanos - lastUseNanos >= PROBE_AFTER_IDLE_NANOS && socket().isClosedByPeer()
+}
+
+internal const val PROBE_AFTER_IDLE_NANOS = 50_000_000L
 private const val MAX_IDLE_CONNECTIONS = 16
 private const val IDLE_CONNECTION_SECONDS = 15L
 private const val MAX_CALLS = 64

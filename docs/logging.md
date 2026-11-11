@@ -7,6 +7,14 @@ rolled at 10 MB per file, five files, 50 MB in all (`core/app/cli/src/main/resou
 that an exception quotes does not reach the file. Every line carries `[build] [profile] [scan]`; a grep of `scan=<id>` or
 `[<id>]` gives the slice of one sync pass.
 
+## Wall clocks
+
+The log's timestamps are local: logback renders the file pattern's `%d` (`yyyy-MM-dd HH:mm:ss.SSS`) in the JVM's default
+timezone — the pattern names no UTC — and nothing pins `user.timezone`. A reader that turns a line's stamp into an
+instant must parse it as local time, with the date's own daylight-saving offset, never as UTC. This is a contract: a
+change to UTC is a change for every reader that measures a window against these stamps (a busy-period check, for
+example), and belongs in a change of its own that says so here.
+
 ## Per-file events
 
 One shared helper, `org.krost.unidrive.engine.FileEvents` (`core/app/core`), writes the events of a file's way through
