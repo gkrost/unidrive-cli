@@ -197,4 +197,16 @@ class StagedDownloadTest {
             val original = generateSequence<Throwable>(e) { it.cause }.first { it.suppressed.isNotEmpty() }
             assertEquals(1, original.suppressed.size, "the failed cleanup is attached, not thrown instead")
         }
+
+    @Test
+    fun `an Error while the data is written leaves the old file and no staging file`() =
+        runTest {
+            Files.writeString(destination, "old")
+            val steps = StagedDownloadSteps(force = { throw OutOfMemoryError("test") }, windows = false)
+
+            assertFailsWith<OutOfMemoryError> { writeStagedDownload(payload(), destination, 4L, "test download", steps) }
+
+            assertEquals("old", Files.readString(destination))
+            assertEquals(listOf("f.bin"), folder(), "an Error is not a reason to leave the partial staging file behind")
+        }
 }
