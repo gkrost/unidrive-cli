@@ -132,9 +132,13 @@ class FakeS3ConcurrencyTest {
                 }
             }
 
-        concurrently(8 * 200) { call(HttpMethod.Get, "k") }
-        running.set(false)
-        reader.join(TIMEOUT_MS)
+        try {
+            concurrently(8 * 200) { call(HttpMethod.Get, "k") }
+        } finally {
+            running.set(false)
+            reader.join(TIMEOUT_MS)
+            assertTrue(!reader.isAlive, "the log reader stopped")
+        }
 
         assertEquals(null, failure.get(), "a reader of the log hit a write")
         assertEquals(8 * 200, fake.count { it.method == HttpMethod.Get })

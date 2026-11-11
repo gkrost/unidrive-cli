@@ -178,9 +178,13 @@ class LoggingS3ServerTest {
                     }
                 }
             }
-        assertTrue(ready.await(10, TimeUnit.SECONDS), "the clients connected")
-        go.countDown()
-        workers.forEach { it.join(30_000) }
+        try {
+            assertTrue(ready.await(10, TimeUnit.SECONDS), "the clients connected")
+        } finally {
+            go.countDown()
+            workers.forEach { it.join(30_000) }
+            assertTrue(workers.none { it.isAlive }, "the clients stopped")
+        }
 
         assertEquals(CREATORS, statuses.size, "every create was answered")
         assertEquals(1, statuses.count { it == 200 }, "statuses: ${statuses.groupingBy { it }.eachCount()}")
