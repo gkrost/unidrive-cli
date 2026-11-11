@@ -441,6 +441,18 @@ interface CloudProvider {
      */
     suspend fun folderStateById(remoteId: String): FolderState = FolderState.UNKNOWN
 
+    /**
+     * gkrost/unidrive-cli#632: what the provider says about the item [remoteId] (a file OR a folder) right now, asked
+     * for by its id: [ItemRemoteState.Live] when the provider serves it in its live namespace (an item another client
+     * moved still answers, under its new parent), [ItemRemoteState.Trashed] when it sits in the provider's trash,
+     * [ItemRemoteState.NotFound] when the provider answered and has no such item (deleted for good), and
+     * [ItemRemoteState.Unknown] when the provider cannot tell (no lookup by id — the default). The state decides; the
+     * caller takes any path it shows from its own rows, which can lag a move done by another client. A call that failed
+     * (unreachable, a 5xx, a timeout) throws: it proves nothing, and the caller changes nothing on it — same contract
+     * as [folderStateById].
+     */
+    suspend fun itemStateById(remoteId: String): ItemRemoteState = ItemRemoteState.Unknown
+
     /** Generate a shareable link for a file/folder. */
     suspend fun share(
         path: String,
@@ -616,4 +628,22 @@ enum class FolderState {
 
     /** The provider cannot tell (the default for a provider without a lookup by id). */
     UNKNOWN,
+}
+
+/**
+ * What [CloudProvider.itemStateById] found for an item asked for by its id (gkrost/unidrive-cli#632). A folder flag
+ * of null means the provider's meta did not say (the caller falls back to its own rows).
+ */
+sealed interface ItemRemoteState {
+    /** The provider serves the item in its live namespace; a move by another client keeps it here, under its new parent. */
+    data class Live(val isFolder: Boolean?) : ItemRemoteState
+
+    /** The item sits in the provider's trash. */
+    data class Trashed(val isFolder: Boolean?) : ItemRemoteState
+
+    /** The provider answered and has no live or trashed item with this id (deleted for good). */
+    data object NotFound : ItemRemoteState
+
+    /** The provider cannot tell (the default for a provider without a lookup by id). */
+    data object Unknown : ItemRemoteState
 }

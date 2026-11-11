@@ -14,6 +14,7 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.QuotaInfo
+import org.krost.unidrive.ItemRemoteState
 import org.krost.unidrive.ViewKind
 import org.krost.unidrive.ViewRef
 import org.krost.unidrive.engine.ViewCache
@@ -57,6 +58,17 @@ internal class MinimalFakeProvider(
     @Volatile var keepBothNextUpload = false
     override val displayName = "Fake (hydration test)"
     override var isAuthenticated = true
+
+    // gkrost/unidrive-cli#632: the by-id answers the locate verb reads; empty = the provider cannot tell by id.
+    @Volatile var itemStatesById: Map<String, ItemRemoteState> = emptyMap()
+
+    // When set, itemStateById throws it instead of answering.
+    @Volatile var itemStateFailure: Exception? = null
+
+    override suspend fun itemStateById(remoteId: String): ItemRemoteState {
+        itemStateFailure?.let { throw it }
+        return itemStatesById[remoteId] ?: ItemRemoteState.Unknown
+    }
 
     // archive#1219: the content hash the provider's rows carry (OneDrive: quickXor; null = none, as Internxt) and the stored-object
     // proof it offers; [proofAsks] records which remote ids the engine asked it about.

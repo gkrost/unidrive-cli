@@ -15,6 +15,7 @@ import org.krost.unidrive.ContentProof
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.FolderState
 import org.krost.unidrive.FolderNotEmptyException
+import org.krost.unidrive.ItemRemoteState
 import org.krost.unidrive.NameRefusedException
 import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.PermanentUploadFailureException
@@ -2290,6 +2291,9 @@ class MountEngine private constructor(
 
     // The provider's own name rules (CloudProvider.newNameIssue); the hydration layer refuses a new name with them too.
     internal fun providerNameIssue(path: String): String? = provider.newNameIssue(path)
+
+    // The provider's by-id answer about an item (CloudProvider.itemStateById); the locate verb rides on it (gkrost/unidrive-cli#632).
+    internal suspend fun itemStateById(remoteId: String): ItemRemoteState = provider.itemStateById(remoteId)
 
     /** The rows the provider's strict-name mode currently blocks ([CloudProvider.existingNameIssue] marks them): the writes the provider refused and the cloud items the gather quarantined, one count for `daemon.status`. */
     fun strictNameBlockedCount(): Int = db.countNameBlocked(org.krost.unidrive.NameRefusedException.NAME_INCOMPATIBLE)

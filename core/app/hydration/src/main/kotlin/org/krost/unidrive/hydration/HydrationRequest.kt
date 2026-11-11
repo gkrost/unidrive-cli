@@ -2,6 +2,7 @@ package org.krost.unidrive.hydration
 
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -18,6 +19,15 @@ import kotlinx.serialization.json.JsonPrimitive
 internal class HydrationRequest private constructor(private val members: JsonObject) {
     /** A top-level string member's decoded text; null for a missing member or any other JSON type (null included). */
     fun string(key: String): String? = (members[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+    /**
+     * A top-level array-of-strings member's decoded texts; null for a missing member, any other JSON type, or an array
+     * holding anything but strings (a client that sends `[]` or a list of ids reads as an empty list).
+     */
+    fun strings(key: String): List<String>? =
+        (members[key] as? JsonArray)
+            ?.takeIf { array -> array.all { it is JsonPrimitive && it.isString } }
+            ?.map { (it as JsonPrimitive).content }
 
     /**
      * An OPTIONAL flag. The bare JSON literals `true` / `false` (what System.Text.Json and serde_json emit) and, defensively,

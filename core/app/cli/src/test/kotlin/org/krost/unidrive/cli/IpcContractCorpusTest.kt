@@ -31,6 +31,9 @@ import org.krost.unidrive.hydration.HydrationEvent
 import org.krost.unidrive.hydration.HydrationImpl
 import org.krost.unidrive.hydration.HydrationIpcHandler
 import org.krost.unidrive.hydration.LastSyncedResult
+import org.krost.unidrive.hydration.LocateResult
+import org.krost.unidrive.hydration.Located
+import org.krost.unidrive.hydration.LocatedItem
 import org.krost.unidrive.hydration.ListResult
 import org.krost.unidrive.hydration.RefuseNameResult
 import org.krost.unidrive.hydration.MatchesLocalResult
@@ -1648,6 +1651,20 @@ class IpcContractCorpusTest {
                 ?.let { StatResult.Ok(it) }
                 ?: StatResult.Unknown(HydrationError.UNKNOWN_PATH_TOKEN)
         }
+
+        // gkrost/unidrive-cli#632: one of each answer, in the shapes the corpus pins.
+        override suspend fun locate(remoteIds: List<String>): LocateResult =
+            LocateResult.Ok(
+                remoteIds.map { id ->
+                    when (id) {
+                        "rid-trashed" -> Located(id, LocatedItem.Trashed(null))
+                        "rid-gone" -> Located(id, LocatedItem.Unknown)
+                        "rid-folder" -> Located(id, LocatedItem.Listed("/docs", true))
+                        "rid-norow" -> Located(id, LocatedItem.Listed(null, null))
+                        else -> Located(id, LocatedItem.Listed("/docs/report.txt", false))
+                    }
+                },
+            )
 
         override suspend fun mkdir(path: String): MkdirResult =
             when {

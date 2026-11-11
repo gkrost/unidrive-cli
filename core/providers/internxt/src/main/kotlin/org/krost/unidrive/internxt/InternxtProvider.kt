@@ -2514,6 +2514,34 @@ class InternxtProvider(
         return state
     }
 
+    /**
+     * gkrost/unidrive-cli#632: the item [remoteId] (file first, then folder, like [metadataById]) as its meta answers.
+     * The file and folder rows carry the same words: status `DELETED` or the `deleted` flag is gone for good, status
+     * `TRASHED` or the `removed` flag is the trash, everything else is live. Any other failure propagates: it proves
+     * nothing. A folder found gone also leaves the folder-uuid cache, like [folderStateById].
+     */
+    override suspend fun itemStateById(remoteId: String): ItemRemoteState {
+        val fileState =
+            try {
+                val file = api.getFileMeta(remoteId)
+                when {
+                    file.status == "DELETED" || file.deleted -> ItemRemoteState.NotFound
+                    file.status == "TRASHED" || file.removed -> ItemRemoteState.Trashed(false)
+                    else -> ItemRemoteState.Live(false)
+                }
+            } catch (e: InternxtApiException) {
+                if (e.statusCode != 404) throw e
+                null
+            }
+        if (fileState != null) return fileState
+        return when (folderStateById(remoteId)) {
+            FolderState.LIVE -> ItemRemoteState.Live(true)
+            FolderState.TRASHED -> ItemRemoteState.Trashed(true)
+            FolderState.NOT_FOUND -> ItemRemoteState.NotFound
+            FolderState.UNKNOWN -> ItemRemoteState.Unknown
+        }
+    }
+
     // True when [folderUuid] is the top of a tree of its own or lies below one (see [outsideDriveFolders]): climbed through
     // the folders' meta up to the drive root, each folder asked for once per process. A folder that is gone, or a chain
     // that comes back to itself, proves nothing and is not remembered. A chain that ends at a backup device, or at a

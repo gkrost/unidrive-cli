@@ -818,7 +818,7 @@ class DaemonRuntime(
                     // `hydration.cancel_read` (gkrost/unidrive-cli#23): hydration.cancel with a handle_id ends that open_read, and a download nobody waits for stops.
                     val capabilitiesJson = (
                         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-                            (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY)) +
+                            (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY)) +
                             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
                             (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList())
                     ).joinToString(",", "[", "]") { ndjsonString(it) }
