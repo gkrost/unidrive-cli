@@ -545,6 +545,11 @@ data class RawProvider(
     // write is refused before any request (`name_incompatible: <rule>`). Default off. Threaded into
     // InternxtConfig.strictNames by InternxtProviderFactory.
     val internxt_strict_names: Boolean? = null,
+    // S3: for a vendor that refuses `If-None-Match` (so every create is guarded by a HEAD before the PUT), leave that HEAD out and
+    // trust the sync's own listing that the key was free (gkrost/unidrive-cli#573). One request fewer per object; another writer's
+    // object that appeared after the listing, or a key a direct upload never listed, can be replaced. Default off. Threaded into
+    // S3Config.createFromListing by S3ProviderFactory.
+    val s3_create_from_listing: Boolean? = null,
     // The sync policy of this profile alone: each key overrides the same-named [general] key for this profile
     // (`unidrive backup add` writes them). Absent = the [general] value, then the default.
     val sync_direction: String? = null,

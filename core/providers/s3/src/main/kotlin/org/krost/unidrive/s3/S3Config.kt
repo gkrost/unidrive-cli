@@ -20,13 +20,22 @@ data class S3Config(
     val multipartThreshold: Long = MULTIPART_THRESHOLD,
     val minPartSize: Long = MIN_PART_SIZE,
     val vendor: Vendor = Vendor.of(endpoint),
+    /**
+     * Profile key `s3_create_from_listing`, default off (gkrost/unidrive-cli#573). Only a vendor that refuses `If-None-Match`
+     * is affected: by default each of its creates is guarded by a HEAD (the key must be free) before the PUT. With this on, that
+     * HEAD is not sent and the sync's own listing is what says the key was free, which widens the window in which an object
+     * written by someone else after that listing is replaced from "the HEAD just before the PUT" to "the listing at plan time".
+     * A caller that has no listing (a mount's direct upload) is trusted all the same, so turn it on only where nothing else
+     * writes to the bucket.
+     */
+    val createFromListing: Boolean = false,
 ) {
     val host: String get() = URI(endpoint).let { if (it.port == -1) it.host else "${it.host}:${it.port}" }
 
     override fun toString(): String =
         "S3Config(bucket=$bucket, region=$region, endpoint=$endpoint, accessKey=${maskSecret(accessKey)}, " +
             "secretKey=${maskSecret(secretKey)}, tokenPath=$tokenPath, multipartThreshold=$multipartThreshold, " +
-            "minPartSize=$minPartSize, vendor=$vendor)"
+            "minPartSize=$minPartSize, vendor=$vendor, createFromListing=$createFromListing)"
 
     /** What sets one S3 implementation apart from another for this provider. */
     data class Vendor(

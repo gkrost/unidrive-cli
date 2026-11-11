@@ -115,3 +115,10 @@ sync_root = "~/Internxt"
 # as CON.txt, more than 255 characters or 255 UTF-8 bytes). Such a write is refused before anything reaches the cloud,
 # with the reason name_incompatible. For accounts that also run the official apps. Default false.
 # internxt_strict_names = false
+
+# S3 only, for a vendor that refuses the If-None-Match header on a create (Scaleway and most other non-AWS endpoints answer
+# 501 or 400): by default every create then costs a HEAD that checks the key is free, so an object another device put there
+# is never replaced. s3_create_from_listing = true leaves that HEAD out and trusts the sync's own listing: one request fewer
+# per object, but an object written to the bucket by someone else after the listing (or a key a direct upload never listed)
+# can be replaced. Turn it on only where nothing else writes to the bucket. Default false.
+# s3_create_from_listing = false

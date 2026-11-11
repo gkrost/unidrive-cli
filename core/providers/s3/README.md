@@ -15,6 +15,7 @@ region = "fr-par"                       # default us-east-1
 endpoint = "https://s3.fr-par.scw.cloud" # default: AWS in that region
 access_key_id = "..."
 secret_access_key = "..."
+# s3_create_from_listing = false         # see "Creates on a vendor without If-None-Match" below
 ```
 
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `S3_BUCKET` fill the same keys from the environment.
@@ -30,6 +31,12 @@ What differs between vendors is read off the endpoint's host (`S3Config.Vendor`)
 | `*.amazonaws.com` | 10,000 | `If-Match` on PUT and CompleteMultipartUpload: a 412 is a conflict |
 | `*.scw.cloud` | 1,000 (Scaleway's documented limit) | a HEAD comparison first |
 | any other | 10,000 | a HEAD comparison first |
+
+### Creates on a vendor without `If-None-Match`
+
+A create (a new key, nothing to replace) carries `If-None-Match: *`, so a key that is taken by now answers 412 and is a conflict. Where the vendor refuses the header (a 501, or a 400 that names it), the provider checks that the key is free with a HEAD before the write and stops sending the header for the rest of the process. That is the default, and it holds for every caller, including a mount's direct upload, which has no listing behind it. The HEAD narrows the window in which another writer's object can be replaced; it does not close it.
+
+`s3_create_from_listing = true` (default `false`, gkrost/unidrive-cli#573) leaves that HEAD out for such a vendor and trusts the sync's own listing that the key was free. That is one request fewer per object (PUT, HEAD instead of HEAD, PUT, HEAD). The trade-off is a wider window: an object that someone else put there after the sync's listing is replaced, and so is one a direct upload never looked up. Turn it on only for a bucket nothing else writes to. A vendor that honours `If-None-Match` keeps its atomic guard whichever way the key is set.
 
 ## API surface used
 
