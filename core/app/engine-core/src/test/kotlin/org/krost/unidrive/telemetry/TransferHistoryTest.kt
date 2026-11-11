@@ -682,6 +682,54 @@ class TransferHistoryTest {
         }
     }
 
+    @Test
+    fun `a kept terminal stays newer than a running snapshot after multiple barriers`() {
+        val store = TelemetryStore.open(db)
+        val writer = HistoryWriter("p1", HistoryConfig(queueCapacity = 4, batchSize = 4), { wallMs.get() }, store)
+        val warm = CountDownLatch(1)
+        val releaseWarm = CountDownLatch(1)
+        val marker = CountDownLatch(1)
+        val releaseMarker = CountDownLatch(1)
+        writer.tail.add { _, row ->
+            if (row.operationId == "warm") {
+                warm.countDown()
+                releaseWarm.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS)
+            }
+            if (row.operationId == "marker") {
+                marker.countDown()
+                releaseMarker.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS)
+            }
+        }
+        writer.start()
+        try {
+            writer.offer(rowOf("warm", "/warm", TransferResult.RUNNING))
+            assertTrue(warm.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS))
+            writer.offer(rowOf("marker", "/marker", TransferResult.RUNNING))
+            val barriers = (2..3).map { expected ->
+                java.util.concurrent.CompletableFuture<Boolean>().also { result ->
+                    Thread { result.complete(writer.flush(WRITER_BUDGET_MS)) }.apply { isDaemon = true }.start()
+                    val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(WRITER_BUDGET_MS)
+                    while (writer.stats.queued < expected && System.nanoTime() < deadline) Thread.sleep(1)
+                    assertEquals(expected, writer.stats.queued)
+                }
+            }
+            writer.offer(rowOf("target", "/target", TransferResult.RUNNING))
+            releaseWarm.countDown()
+            assertTrue(marker.await(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS))
+            repeat(4) { writer.offer(rowOf("fill-$it", "/fill-$it", TransferResult.RUNNING)) }
+            writer.offer(rowOf("target", "/target", TransferResult.FAILED).copy(finishedAt = wallMs.get()))
+            releaseMarker.countDown()
+            barriers.forEach { assertTrue(it.get(WRITER_BUDGET_MS, TimeUnit.MILLISECONDS)) }
+            assertTrue(writer.flush(WRITER_BUDGET_MS))
+            assertEquals("failed", resultOnDisk("target"))
+        } finally {
+            releaseWarm.countDown()
+            releaseMarker.countDown()
+            writer.close()
+            store.close()
+        }
+    }
+
     // Offers running snapshots until the queue drops one; how many were offered, the dropped one included.
     private fun offerFillersUntilFirstDrop(writer: HistoryWriter): Int {
         var fillers = 0
