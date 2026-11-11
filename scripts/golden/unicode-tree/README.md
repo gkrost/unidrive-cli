@@ -20,6 +20,7 @@ the same tree has to come out, and every difference is a finding.
 | `run-localfs.ps1` | **the whole hermetic run in one command**: builds an isolated localfs profile (own config, provider directory, engine mirror, mount root), starts a daemon and a mount, copies the tree into the mount, waits until the uploads settle, verifies the provider directory, the mirror, the mount, the daemon's view and a fresh mount root (round trip, with hashes), sorts every result with `compare-expected.ps1` and prints one summary. Uses the installed builds or private ones (`-EngineJar`, `-ClientDir`); installs nothing; refuses to run next to another mount. Exit 1 = unexpected findings, 2 = the upload queue got stuck |
 | `download.json` | the pin of the **download-direction** suite: names created on the cloud side that Windows cannot create through the normal API (trailing dot or space, reserved device names, a case-only twin pair). Kept out of the upload tree above on purpose |
 | `seed-download.ps1` | seeds `download.json` on the provider side of a hermetic localfs profile (the `\\?\` prefix makes the impossible names legal to the raw call) and writes `download-manifest.tsv` (+ its SHA-256) for `verify.ps1 -Manifest`. A name the volume refuses (a folding volume keeps only the first of the twin pair) is reported and noted in the manifest header |
+| `golden.py` | the Linux twin of the scripts above in one file (Python 3.9+, no PowerShell): `generate`, `verify`, `compare`, `daemon-view`, `remote-live`, `selftest`, `run`; see "Linux: `golden.py`" below |
 | `RUN-2026-10-03.md` | the first run through the whole chain: setup, procedure, interventions, results, findings (interim until it says otherwise) |
 
 PowerShell 7 (`pwsh`) is needed. The scripts are ASCII only.
@@ -97,6 +98,30 @@ pwsh scripts/golden/unicode-tree/verify.ps1 -Root <provider directory>\golden-un
 pwsh scripts/golden/unicode-tree/verify.ps1 -Root <mirror>\golden-unicode-download-v1 `
     -Manifest scripts/golden/unicode-tree/download-manifest.tsv
 ```
+
+### Linux: `golden.py` (no PowerShell)
+
+`golden.py` (Python 3.9+, standard library only) is the Linux twin of the PowerShell scripts: `generate`, `verify`, `compare`
+(= compare-expected), `daemon-view` (IPC socket `$XDG_RUNTIME_DIR/unidrive-<profile>.sock`, read token of the profile's config folder),
+`remote-live` (no ASCII-only limit on Linux), `selftest` (verify and compare halves) and `run`. It prints the same finding lines and
+exits with the same codes, so the files under `expected/` work with both. Not ported: the download-direction suite and `probes/`.
+
+```bash
+python3 scripts/golden/unicode-tree/golden.py selftest
+python3 scripts/golden/unicode-tree/golden.py run --localfs                      # isolated localfs profile, own daemon and FUSE mount
+python3 scripts/golden/unicode-tree/golden.py run --profile <p> --mount ~/Drive --prefix _INBOX/golden-run --remote-live   # a live profile
+python3 scripts/golden/unicode-tree/golden.py verify <dir> --strict-mtime --max-lines 100000
+```
+
+`run` refuses to overwrite an existing target folder, so a live run needs a fresh `--prefix`. A name the mount refuses
+(`File exists`, the NFC/NFD twins) is reported and the copy goes on.
+
+The committed `expected/` files are for `golden-unicode-v1`; the layout is `golden-unicode-v2`, so a run against it has no matching
+file until one is committed. Without `--expected`, `run` prints the findings but does not classify them.
+
+Cleaning up a live run: a recursive delete through the mount (`rm -rf`) is slow on Internxt (about 1.3 entries/s) and can end with
+`Directory not empty` on folders that no longer hold anything (gkrost/unidrive-cli#634, #635). Remove the run's folder with
+`unidrive rm -r -y <path inside the drive>` instead: one call, 1.6 s for a 28-entry tree.
 
 ## Use
 

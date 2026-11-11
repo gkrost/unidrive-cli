@@ -105,7 +105,7 @@ foreach ($e in $sortedExpected) {
     $isDir = $actual[$found]
     if (($x.Kind -eq 'D') -ne $isDir) { Add-Finding KIND "$(To-Ascii $e): expected $($x.Kind), found $(if ($isDir) { 'directory' } else { 'file' })"; continue }
     if ($x.Kind -eq 'D') { if ($clean) { $counts.OK++ }; continue }
-    $full = [IO.Path]::Combine($Root, $found.Replace('/', '\'))
+    $full = [IO.Path]::Combine($Root, $found.Replace('/', [string][IO.Path]::DirectorySeparatorChar))
     $fi = [IO.FileInfo]::new($full)
     if ([string]$fi.Length -ne $x.Size) { Add-Finding SIZE "$(To-Ascii $e): expected $($x.Size), found $($fi.Length)"; continue }
     if (-not $SizeOnly) {
