@@ -93,6 +93,18 @@ fi
 dump_profile="default"
 [[ -n "${gc_profile:-}" ]] && dump_profile="$gc_profile"
 diag_args+=("-XX:HeapDumpPath=$diag_dir/heap-$dump_profile.hprof")
+# A per-install startup cache beside the jar (gkrost/unidrive-cli#572): the dynamic CDS archive is
+# written when this JVM exits and mapped from the next run on; its path never changes between runs.
+# Only when the jar's folder is writable: an unwritable archive path makes the JVM exit 127 after an
+# otherwise successful run (verified on JDK 27), and the first run and a jar change print CDS
+# messages to stdout, which the client parses - -Xlog:cds=off keeps them off. A failed dump or map
+# degrades to a run without sharing, never to a failed command. (The bundled Windows image instead
+# gets the AOT cache, which JDK 27 refuses to combine with this archive in one JVM; DaemonAutospawn
+# and unidrive.ps1.tmpl pick the AOT cache when a unidrive.aot lies beside the jar.)
+cache_args=()
+if [[ -w "$(dirname "@JAR@")" ]]; then
+    cache_args+=("-XX:+AutoCreateSharedArchive" "-XX:SharedArchiveFile=$(dirname "@JAR@")/unidrive.jsa" "-Xlog:cds=off")
+fi
 # Java runtime: Linux runs unidrive on the system's JDK, not a bundled one. Java 25 is the floor (the jar is
 # compiled for it; an older java would die with a bare class-file-version error). Order:
 # UNIDRIVE_JAVA; else `java` on PATH when it is 25+; else the newest 25+ JDK under UNIDRIVE_JVM_DIR
@@ -148,4 +160,4 @@ done
 if [[ -n "$major" && "$major" -ge 27 ]]; then
     diag_args+=("-XX:FlightRecorderOptions=redact-key=+*vault*")
 fi
-exec "$java_bin" "-Xmx${UNIDRIVE_XMX:-2g}" @STATIC_FLAGS_SH@ "${agent_args[@]}" "${locale_args[@]}" "-Djdk.net.unixdomain.tmpdir=${TMPDIR:-/tmp}" "${diag_args[@]}" -jar "@JAR@" "${pass[@]}"
+exec "$java_bin" "-Xmx${UNIDRIVE_XMX:-2g}" @STATIC_FLAGS_SH@ "${agent_args[@]}" "${locale_args[@]}" "-Djdk.net.unixdomain.tmpdir=${TMPDIR:-/tmp}" "${diag_args[@]}" "${cache_args[@]}" -jar "@JAR@" "${pass[@]}"
