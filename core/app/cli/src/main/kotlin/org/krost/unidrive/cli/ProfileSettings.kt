@@ -46,6 +46,7 @@ internal class ProfileCommandError(
  * credential, which never travels through an argument list. The registry is the single list; a
  * key that is not here is refused by name.
  */
+@Suppress("TooManyFunctions") // one validator per documented key: the count is the registry's, not complexity
 internal object ProfileSettings {
     const val LABEL = "label"
     const val SYNC_PATH = "sync_path"
@@ -63,6 +64,7 @@ internal object ProfileSettings {
     const val RECENTS_LIMIT = "recents_limit"
     const val FAVORITES_FOLDER_NAME = "favorites_folder_name"
     const val FAVORITES_VIEW = "favorites_view"
+    const val AUTHORITY_URL = "authority_url"
 
     /** Upper bound of the `ignore_rules` input, in characters; far above any real rule list. */
     const val IGNORE_RULES_MAX_CHARS = 64 * 1024
@@ -217,6 +219,13 @@ internal object ProfileSettings {
                 toToml = { _, raw -> booleanToml(FAVORITES_VIEW, raw) },
                 read = { rp -> JsonPrimitive(rp.favorites_view ?: SyncConfig.DEFAULT_FAVORITES_VIEW) },
             ),
+            Spec(
+                key = AUTHORITY_URL,
+                description = "the Microsoft authority a OneDrive profile signs in at: an https://login.microsoftonline.com/{segment}/oauth2/v2.0 address; unset is the personal default, organizations signs in with a work or school account",
+                needsDaemonRestart = true,
+                toToml = { _, raw -> authorityUrlToml(AUTHORITY_URL, raw) },
+                read = { rp -> rp.authority_url?.let(::JsonPrimitive) ?: JsonNull },
+            ),
         )
 
     private val byKey = SPECS.associateBy { it.key }
@@ -316,6 +325,46 @@ internal object ProfileSettings {
         }
 
     /**
+     * The Microsoft authority a OneDrive profile signs in at: exactly `https://login.microsoftonline.com/{segment}/oauth2/v2.0`,
+     * with one tenant segment (organizations, a tenant id or domain) and nothing else — no query, fragment, user info or port,
+     * and no trailing slash, which would double the one the token calls append. The device-code sign-in, the token endpoint and
+     * the admin-consent URL all derive from it, so anything else here would break the sign-in far from the typo.
+     */
+    private fun authorityUrlToml(
+        key: String,
+        raw: String,
+    ): String {
+        val value = raw.trim().trimEnd('/')
+        val uri =
+            try {
+                java.net.URI(value)
+            } catch (_: Exception) {
+                null
+            }
+        val segments = uri?.rawPath?.trimEnd('/')?.split('/')?.filter(String::isNotEmpty).orEmpty()
+        val ok =
+            uri != null &&
+                uri.scheme?.lowercase() == "https" &&
+                uri.host?.lowercase() == "login.microsoftonline.com" &&
+                uri.port == -1 &&
+                uri.userInfo == null &&
+                uri.rawQuery == null &&
+                uri.fragment == null &&
+                segments.size == 3 &&
+                segments[1] == "oauth2" &&
+                segments[2] == "v2.0" &&
+                segments[0].isNotEmpty()
+        if (!ok) {
+            throw ProfileCommandError(
+                "invalid_value",
+                "$key must be an https://login.microsoftonline.com/{segment}/oauth2/v2.0 address " +
+                    "(organizations signs in with a work or school account), got '$raw'",
+            )
+        }
+        return "\"${escapeTomlValue(value)}\""
+    }
+
+    /**
      * The rules in [text], one per line (CRLF or LF); blank lines carry no rule and are dropped. Patterns are kept as
      * typed, since git's syntax has no invalid pattern; only control characters and an oversized input are refused.
      */
@@ -388,7 +437,7 @@ internal fun writeConfigAtomically(
     name = "set",
     description = [
         "Change one documented key of a profile in config.toml (label, sync_path, hydration_cache_max_bytes, " +
-            "daemon_poll_seconds, honor_gitignore, ignore_rules, trash_folder_name, backups_folder_name, show_backups, shared_folder_name, shared_view, recents_folder_name, recents_view, recents_limit, favorites_folder_name, favorites_view). " +
+            "daemon_poll_seconds, honor_gitignore, ignore_rules, trash_folder_name, backups_folder_name, show_backups, shared_folder_name, shared_view, recents_folder_name, recents_view, recents_limit, favorites_folder_name, favorites_view, authority_url). " +
             "ignore_rules takes its rules from standard input, " +
             "one per line (an empty input clears them), not from an argument. Credentials and fixed keys (type, mode, sync_root) are refused. " +
             "A running daemon does not reload the config: restart it.",

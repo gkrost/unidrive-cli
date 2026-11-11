@@ -67,8 +67,8 @@ class OneDriveAccountNameTest {
 
     private fun factory(me: (() -> io.ktor.client.engine.mock.MockRequestHandleScope.() -> io.ktor.client.request.HttpResponseData)? = null) =
         object : OneDriveProviderFactory() {
-            override fun newOAuthServiceForBegin(profileDir: Path): OAuthService =
-                OAuthService(OneDriveConfig(tokenPath = profileDir), HttpClient(authEngine))
+            override fun newOAuthServiceForBegin(profileDir: Path, config: OneDriveConfig): OAuthService =
+                OAuthService(config, HttpClient(authEngine))
 
             override fun newGraphApiForIdentity(
                 profileDir: Path,

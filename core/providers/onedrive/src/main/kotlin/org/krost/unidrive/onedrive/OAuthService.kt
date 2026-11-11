@@ -46,7 +46,7 @@ class OAuthService(
             listOf(
                 "openid",
                 "offline_access",
-                "https://graph.microsoft.com/Files.ReadWrite.All",
+                OneDriveConfig.GRAPH_FILES_SCOPE,
             ).joinToString(" ")
 
         private const val TOKEN_FILE = "token.json"

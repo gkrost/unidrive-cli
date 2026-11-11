@@ -67,6 +67,9 @@ internal data class PendingDeviceFlow(
     val handle: String,
     val deviceCode: String,
     val expiresAtMillis: Long,
+    // The authority the flow began at. The device code is only valid there, so a later process must poll there even when the
+    // profile's authority has changed since. Null in a file kept before this field: those flows were the personal authority.
+    val authEndpoint: String? = null,
 )
 
 internal const val PENDING_DEVICE_FLOW_FILE = "device-flow.json"

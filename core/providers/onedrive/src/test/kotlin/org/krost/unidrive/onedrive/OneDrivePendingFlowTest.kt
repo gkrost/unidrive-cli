@@ -45,8 +45,8 @@ class OneDrivePendingFlowTest {
         protector: CredentialProtector? = null,
     ) =
         object : OneDriveProviderFactory(protector) {
-            override fun newOAuthServiceForBegin(profileDir: Path): OAuthService =
-                OAuthService(OneDriveConfig(tokenPath = profileDir), HttpClient(engine))
+            override fun newOAuthServiceForBegin(profileDir: Path, config: OneDriveConfig): OAuthService =
+                OAuthService(config, HttpClient(engine))
 
             // No sign-in test reaches the real Graph: /me answers 404, so no account name is kept.
             override fun newGraphApiForIdentity(
@@ -124,6 +124,31 @@ class OneDrivePendingFlowTest {
         assertTrue(Files.exists(profileDir.resolve("token.json")))
         assertFalse(Files.exists(pendingFile), "a terminal outcome deletes the pending flow")
         assertEquals(null, OneDriveDeviceFlowRegistry.get(handle))
+    }
+
+    @Test
+    fun `a later process polls the authority the flow began at, not the profile's current one`() {
+        val organizations = "https://login.microsoftonline.com/organizations/oauth2/v2.0"
+        val token =
+            """{"access_token":"${"x".repeat(200)}","token_type":"Bearer","expires_in":3600,"refresh_token":"rt-789","scope":"Files.ReadWrite.All offline_access openid"}"""
+        val handle =
+            runBlocking {
+                factory(json(deviceCodeBody)).beginInteractiveAuth(profileDir, mapOf("authority_url" to organizations)).continuationHandle
+            }
+        OneDriveDeviceFlowRegistry.remove(handle)?.oauthService?.close()
+        assertTrue(organizations in Files.readString(pendingFile), "the flow keeps the authority it began at")
+
+        // The profile's authority has moved on (here: back to the personal default) before the second process completes.
+        val polled = mutableListOf<String>()
+        val recording =
+            MockEngine { request ->
+                polled += request.url.toString()
+                respond(ByteReadChannel(token), HttpStatusCode.OK, headersOf("Content-Type" to listOf("application/json")))
+            }
+        val result = runBlocking { factory(recording).completeInteractiveAuth(profileDir, handle, null, emptyMap()) }
+
+        assertEquals(CompleteAuthResult.Success(), result)
+        assertTrue(polled.isNotEmpty() && polled.all { it.startsWith(organizations) }, "the token was polled at: $polled")
     }
 
     @Test

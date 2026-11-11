@@ -66,8 +66,8 @@ class OneDriveAccountOwnerTest {
     /** A factory whose Graph `/me` always answers 403 (file-only scopes) and whose `/me/drive` answers [meJson], or 403 when it is null. */
     private fun factory(meJson: String?) =
         object : OneDriveProviderFactory() {
-            override fun newOAuthServiceForBegin(profileDir: Path): OAuthService =
-                OAuthService(OneDriveConfig(tokenPath = profileDir), HttpClient(authEngine))
+            override fun newOAuthServiceForBegin(profileDir: Path, config: OneDriveConfig): OAuthService =
+                OAuthService(config, HttpClient(authEngine))
 
             override fun newGraphApiForIdentity(
                 profileDir: Path,

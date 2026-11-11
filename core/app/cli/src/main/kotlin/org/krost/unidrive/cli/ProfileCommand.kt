@@ -418,7 +418,7 @@ class ProfileListCommand : Callable<Int> {
         description = [
             "Print the profiles as one JSON object: {\"default_profile\":...,\"profiles\":[{name, type, mode, label, " +
                 "sync_root, sync_path, hydration_cache_max_bytes, daemon_poll_seconds, honor_gitignore, ignore_rules, " +
-                "trash_folder_name, backups_folder_name, show_backups, shared_folder_name, shared_view, recents_folder_name, recents_view, recents_limit, favorites_folder_name, favorites_view, auth}]}. " +
+                "trash_folder_name, backups_folder_name, show_backups, shared_folder_name, shared_view, recents_folder_name, recents_view, recents_limit, favorites_folder_name, favorites_view, authority_url, auth}]}. " +
                 "Read-only; unknown values are null, never a made-up default (honor_gitignore, ignore_rules and " +
                 "shared_view, recents_view, recents_limit and favorites_view report their effective default, false, [], true, true, 50 and true, when unset).",
         ],

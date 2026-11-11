@@ -25,6 +25,7 @@ import java.time.Instant
  * (see [CredentialProtectors.atRestDefaultOrNull]). A token file written before is read as it is and rewritten
  * protected the first time it is loaded.
  */
+@Suppress("TooManyFunctions") // the interface's bare + properties overload pairs, and the device flow's own guarded steps; none of them hides another
 open class OneDriveProviderFactory(
     private val credentialProtector: CredentialProtector? = CredentialProtectors.atRestDefaultOrNull(),
 ) : ProviderFactory {
@@ -152,8 +153,18 @@ open class OneDriveProviderFactory(
 
     override fun supportsInteractiveAuth(): Boolean = true
 
-    override suspend fun beginInteractiveAuth(profileDir: Path): BeginAuthResult {
-        val oauth = newOAuthServiceForBegin(profileDir)
+    // The profile's authority decides where the sign-in asks Microsoft for a device code (and where the token is
+    // refreshed later): the default is the personal authority, a profile's authority_url moves it to organizations,
+    // common or one tenant. The properties-less overloads keep the personal default for callers that have no
+    // profile properties (the interface default routes the properties-taking calls to them — they must not).
+    override suspend fun beginInteractiveAuth(profileDir: Path): BeginAuthResult = beginInteractiveAuth(profileDir, emptyMap())
+
+    override suspend fun beginInteractiveAuth(
+        profileDir: Path,
+        properties: Map<String, String?>,
+    ): BeginAuthResult {
+        val config = beginConfig(profileDir, properties)
+        val oauth = newOAuthServiceForBegin(profileDir, config)
         val deviceCode =
             try {
                 oauth.getDeviceCode()
@@ -173,13 +184,26 @@ open class OneDriveProviderFactory(
             )
         val handle = OneDriveDeviceFlowRegistry.put(state)
         try {
-            pendingFlowStore(profileDir).save(PendingDeviceFlow(handle, state.deviceCode, state.expiresAtMillis))
+            pendingFlowStore(profileDir).save(PendingDeviceFlow(handle, state.deviceCode, state.expiresAtMillis, config.authEndpoint))
         } catch (e: java.io.IOException) {
             // The flow could not be kept for a later process; do not hand out a handle that cannot be completed.
             OneDriveDeviceFlowRegistry.remove(handle)
             oauth.close()
             throw e
         }
+
+        // The tenant-wide admin-consent URL beside the code, for a work or school authority: a tenant that leaves user
+        // consent off refuses the sign-in until its admin granted consent once, so the front-end shows the URL to send
+        // to the admin while the user's own wait is still running. Null (and no field) for the personal authority.
+        val fields =
+            linkedMapOf(
+                "verification_uri" to JsonPrimitive(deviceCode.verificationUri),
+                "user_code" to JsonPrimitive(deviceCode.userCode),
+                "interval_seconds" to JsonPrimitive(deviceCode.interval),
+                "expires_in" to JsonPrimitive(deviceCode.expiresIn),
+                "message" to JsonPrimitive(deviceCode.message),
+            )
+        config.adminConsentUrl()?.let { fields["admin_consent_url"] = JsonPrimitive(it) }
 
         return BeginAuthResult.of(
             continuationHandle = handle,
@@ -188,14 +212,7 @@ open class OneDriveProviderFactory(
             // on `interval` and `expiresIn` made every numeric field arrive
             // as a JSON string on the wire, breaking clients parsing it as
             // a number.
-            fields =
-                linkedMapOf(
-                    "verification_uri" to JsonPrimitive(deviceCode.verificationUri),
-                    "user_code" to JsonPrimitive(deviceCode.userCode),
-                    "interval_seconds" to JsonPrimitive(deviceCode.interval),
-                    "expires_in" to JsonPrimitive(deviceCode.expiresIn),
-                    "message" to JsonPrimitive(deviceCode.message),
-                ),
+            fields = fields,
             expiresAt = Instant.ofEpochMilli(state.expiresAtMillis),
             retryAfterSeconds = deviceCode.interval,
         )
@@ -205,6 +222,13 @@ open class OneDriveProviderFactory(
         profileDir: Path,
         continuationHandle: String,
         secret: String?,
+    ): CompleteAuthResult = completeInteractiveAuth(profileDir, continuationHandle, secret, emptyMap())
+
+    override suspend fun completeInteractiveAuth(
+        profileDir: Path,
+        continuationHandle: String,
+        secret: String?,
+        properties: Map<String, String?>,
     ): CompleteAuthResult {
         val state =
             OneDriveDeviceFlowRegistry.get(continuationHandle)
@@ -294,7 +318,7 @@ open class OneDriveProviderFactory(
 
     /**
      * The flow [handle] began in an earlier process (`auth begin` of the CLI), rebuilt from the
-     * profile folder; null when there is none for that handle.
+     * profile folder with the authority it began at (kept with it, not the profile's current one); null when there is none for that handle.
      */
     private fun restorePendingFlow(
         profileDir: Path,
@@ -302,8 +326,14 @@ open class OneDriveProviderFactory(
     ): OneDriveDeviceFlowState? {
         val pending = pendingFlowStore(profileDir).load() ?: return null
         if (pending.handle != handle) return null
+        val config =
+            OneDriveConfig(
+                tokenPath = profileDir,
+                authEndpoint = pending.authEndpoint ?: OneDriveConfig.DEFAULT_AUTH_ENDPOINT,
+                credentialProtector = credentialProtector,
+            )
         val state =
-            OneDriveDeviceFlowState(pending.deviceCode, pending.expiresAtMillis, newOAuthServiceForBegin(profileDir), profileDir)
+            OneDriveDeviceFlowState(pending.deviceCode, pending.expiresAtMillis, newOAuthServiceForBegin(profileDir, config), profileDir)
         OneDriveDeviceFlowRegistry.putWithHandle(handle, state)
         return state
     }
@@ -347,8 +377,21 @@ open class OneDriveProviderFactory(
      *  to inject a Ktor MockEngine-backed HttpClient. Production code
      *  uses the default. Open + internal so the test in the same module
      *  can override; never overridden in production. */
-    internal open fun newOAuthServiceForBegin(profileDir: Path): OAuthService =
-        OAuthService(OneDriveConfig(tokenPath = profileDir, credentialProtector = credentialProtector))
+    internal open fun newOAuthServiceForBegin(
+        profileDir: Path,
+        config: OneDriveConfig,
+    ): OAuthService = OAuthService(config)
+
+    /** The config the sign-in runs with: the profile's authority_url, else the personal default, over this factory's protector. */
+    private fun beginConfig(
+        profileDir: Path,
+        properties: Map<String, String?>,
+    ): OneDriveConfig =
+        OneDriveConfig(
+            tokenPath = profileDir,
+            authEndpoint = properties["authority_url"]?.trim()?.takeIf { it.isNotEmpty() } ?: OneDriveConfig.DEFAULT_AUTH_ENDPOINT,
+            credentialProtector = credentialProtector,
+        )
 }
 
 // The stored token as the provider reads it, through the same store (and protector) it was written with.

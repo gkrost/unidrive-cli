@@ -49,8 +49,8 @@ class OneDriveInteractiveAuthContractTest {
      *  into the OAuthService created inside beginInteractiveAuth. */
     private fun factoryWithEngine(engine: MockEngine): OneDriveProviderFactory =
         object : OneDriveProviderFactory() {
-            override fun newOAuthServiceForBegin(profileDir: Path): OAuthService =
-                OAuthService(OneDriveConfig(tokenPath = profileDir), HttpClient(engine))
+            override fun newOAuthServiceForBegin(profileDir: Path, config: OneDriveConfig): OAuthService =
+                OAuthService(config, HttpClient(engine))
 
             // No sign-in test reaches the real Graph: /me/drive answers 404, so no account name is kept.
             override fun newGraphApiForIdentity(
@@ -62,6 +62,21 @@ class OneDriveInteractiveAuthContractTest {
                     engine = MockEngine { respond(ByteReadChannel(""), HttpStatusCode.NotFound) },
                 ) { _, _ -> "t" }
         }
+
+    /** A device-code engine that records the URL every request went to, so a test can name the authority it asked. */
+    private fun recordingDeviceCodeEngine(): Pair<MockEngine, MutableList<String>> {
+        val urls = mutableListOf<String>()
+        val engine =
+            MockEngine { request ->
+                urls += request.url.toString()
+                respond(
+                    content = ByteReadChannel(deviceCodeResponseBody()),
+                    status = HttpStatusCode.OK,
+                    headers = headersOf("Content-Type" to listOf("application/json")),
+                )
+            }
+        return engine to urls
+    }
 
     /** Canned /devicecode response matching Azure's documented shape. */
     private fun deviceCodeResponseBody(): String =
@@ -264,6 +279,69 @@ class OneDriveInteractiveAuthContractTest {
             assertEquals(5L, result.retryAfterSeconds)
 
             // Cleanup so the next test starts with an empty registry.
+            factory.cancelInteractiveAuth(result.continuationHandle)
+        }
+
+    @Test
+    fun begin_follows_the_profile_authority_url_and_hands_out_the_admin_consent_url() =
+        runBlocking {
+            // gkrost/unidrive-cli#617: a work or school profile signs in at its own authority — the personal default
+            // refuses the account — and the tenant-wide admin-consent URL rides along for the front-end to show.
+            val (engine, urls) = recordingDeviceCodeEngine()
+            var seenConfig: OneDriveConfig? = null
+            val factory =
+                object : OneDriveProviderFactory() {
+                    override fun newOAuthServiceForBegin(profileDir: Path, config: OneDriveConfig): OAuthService {
+                        seenConfig = config
+                        return OAuthService(config, HttpClient(engine))
+                    }
+
+                    override fun newGraphApiForIdentity(
+                        profileDir: Path,
+                        token: org.krost.unidrive.onedrive.model.Token,
+                    ): GraphApiService =
+                        GraphApiService(
+                            OneDriveConfig(tokenPath = profileDir),
+                            engine = MockEngine { respond(ByteReadChannel(""), HttpStatusCode.NotFound) },
+                        ) { _, _ -> "t" }
+                }
+
+            val result = factory.beginInteractiveAuth(tmpProfileDir, mapOf("authority_url" to "https://login.microsoftonline.com/organizations/oauth2/v2.0"))
+
+            assertEquals(
+                "https://login.microsoftonline.com/organizations/oauth2/v2.0/devicecode",
+                urls.single(),
+                "the device code is asked at the profile's authority",
+            )
+            val consent = result.fields["admin_consent_url"]?.jsonPrimitive?.contentOrNull
+            val uri = java.net.URI(assertNotNull(consent, "an organizational authority carries the admin-consent URL"))
+            assertEquals("/organizations/v2.0/adminconsent", uri.rawPath)
+            val query =
+                uri.rawQuery.orEmpty().split("&").associate {
+                    val (name, value) = it.split("=", limit = 2)
+                    name to java.net.URLDecoder.decode(value, Charsets.UTF_8)
+                }
+            assertEquals(OneDriveConfig.DEFAULT_APP_ID, query["client_id"])
+            assertEquals(OneDriveConfig.GRAPH_FILES_SCOPE, query["scope"])
+            assertEquals(seenConfig!!.redirectUri, query["redirect_uri"], "the redirect is the registered localhost callback")
+
+            factory.cancelInteractiveAuth(result.continuationHandle)
+        }
+
+    @Test
+    fun begin_without_an_authority_asks_the_personal_endpoint_and_carries_no_admin_consent_url() =
+        runBlocking {
+            val (engine, urls) = recordingDeviceCodeEngine()
+            val factory = factoryWithEngine(engine)
+
+            val result = factory.beginInteractiveAuth(tmpProfileDir)
+
+            assertTrue(
+                urls.single().startsWith("https://login.microsoftonline.com/consumers/"),
+                "the default stays the personal authority (${urls.single()})",
+            )
+            assertEquals(null, result.fields["admin_consent_url"], "a personal account has no tenant admin to ask")
+
             factory.cancelInteractiveAuth(result.continuationHandle)
         }
 
