@@ -334,7 +334,7 @@ internal object ProfileSettings {
         key: String,
         raw: String,
     ): String {
-        val value = raw.trim().removeSuffix("/")
+        val value = raw.trim().trimEnd('/')
         val uri =
             try {
                 java.net.URI(value)

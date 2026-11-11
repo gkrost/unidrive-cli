@@ -184,7 +184,7 @@ open class OneDriveProviderFactory(
             )
         val handle = OneDriveDeviceFlowRegistry.put(state)
         try {
-            pendingFlowStore(profileDir).save(PendingDeviceFlow(handle, state.deviceCode, state.expiresAtMillis))
+            pendingFlowStore(profileDir).save(PendingDeviceFlow(handle, state.deviceCode, state.expiresAtMillis, config.authEndpoint))
         } catch (e: java.io.IOException) {
             // The flow could not be kept for a later process; do not hand out a handle that cannot be completed.
             OneDriveDeviceFlowRegistry.remove(handle)
@@ -232,7 +232,7 @@ open class OneDriveProviderFactory(
     ): CompleteAuthResult {
         val state =
             OneDriveDeviceFlowRegistry.get(continuationHandle)
-                ?: restorePendingFlow(profileDir, continuationHandle, properties)
+                ?: restorePendingFlow(profileDir, continuationHandle)
                 ?: return CompleteAuthResult.Failure(
                     "Unknown or expired continuation_handle. Call auth_begin again.",
                     CompleteAuthResult.Reason.UNKNOWN_HANDLE,
@@ -318,17 +318,22 @@ open class OneDriveProviderFactory(
 
     /**
      * The flow [handle] began in an earlier process (`auth begin` of the CLI), rebuilt from the
-     * profile folder with the authority the profile asks for now; null when there is none for that handle.
+     * profile folder with the authority it began at (kept with it, not the profile's current one); null when there is none for that handle.
      */
     private fun restorePendingFlow(
         profileDir: Path,
         handle: String,
-        properties: Map<String, String?>,
     ): OneDriveDeviceFlowState? {
         val pending = pendingFlowStore(profileDir).load() ?: return null
         if (pending.handle != handle) return null
+        val config =
+            OneDriveConfig(
+                tokenPath = profileDir,
+                authEndpoint = pending.authEndpoint ?: OneDriveConfig.DEFAULT_AUTH_ENDPOINT,
+                credentialProtector = credentialProtector,
+            )
         val state =
-            OneDriveDeviceFlowState(pending.deviceCode, pending.expiresAtMillis, newOAuthServiceForBegin(profileDir, beginConfig(profileDir, properties)), profileDir)
+            OneDriveDeviceFlowState(pending.deviceCode, pending.expiresAtMillis, newOAuthServiceForBegin(profileDir, config), profileDir)
         OneDriveDeviceFlowRegistry.putWithHandle(handle, state)
         return state
     }

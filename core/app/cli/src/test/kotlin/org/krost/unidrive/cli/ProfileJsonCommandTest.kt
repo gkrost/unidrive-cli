@@ -964,6 +964,10 @@ class ProfileJsonCommandTest {
         // The trailing slash is not stored: the sign-in and the token calls append their own one after the address.
         assertEquals(0, run("profile", "set", "work", "authority_url", "https://login.microsoftonline.com/organizations/oauth2/v2.0/", "--json"), stderr())
         assertEquals(organizations, json().getValue("value").jsonPrimitive.content)
+        // Every trailing slash goes, not only one: a doubled one would otherwise be stored and double the token path.
+        assertEquals(0, run("profile", "set", "work", "authority_url", "https://login.microsoftonline.com/organizations/oauth2/v2.0//", "--json"), stderr())
+        assertEquals(organizations, json().getValue("value").jsonPrimitive.content)
+        assertEquals(organizations, listed("work").getValue("authority_url").jsonPrimitive.content)
 
         assertEquals(0, run("profile", "set", "work", "authority_url", "--unset", "--json"), stderr())
         assertEquals(twoProfiles, config())
