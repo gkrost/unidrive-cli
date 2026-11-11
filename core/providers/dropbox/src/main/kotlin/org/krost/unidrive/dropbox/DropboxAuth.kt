@@ -16,7 +16,6 @@ import org.krost.unidrive.auth.awaitOAuthCallback
 import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.http.truncateErrorBody
 import org.krost.unidrive.io.openBrowser
-import java.nio.channels.UnresolvedAddressException
 import kotlin.time.Duration.Companion.minutes
 
 /**
@@ -243,18 +242,7 @@ class DropboxAuth(
         return fresh
     }
 
-    private fun isTransient(e: Throwable): Boolean {
-        var cause: Throwable? = e
-        repeat(2) {
-            when (val c = cause) {
-                null -> return false
-                is UnresolvedAddressException, is io.ktor.client.plugins.HttpRequestTimeoutException -> return true
-                is java.io.IOException -> if (HttpRetryBudget.isRetriableIoException(c)) return true
-            }
-            cause = cause?.cause
-        }
-        return false
-    }
+    private fun isTransient(e: Throwable): Boolean = HttpRetryBudget.isTransientTransportFailure(e)
 
     companion object {
         const val TOKEN_FILE = "token.json"
