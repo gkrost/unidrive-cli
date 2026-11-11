@@ -20,6 +20,8 @@ import java.util.HexFormat
 import java.util.concurrent.ConcurrentSkipListMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -122,11 +124,15 @@ class LoggingS3Server(
     private val peak = AtomicInteger()
     private val connectionIds = AtomicInteger()
     private val stopping = AtomicBoolean(false)
+    private val writeLock = Any()
     private val pool = Executors.newCachedThreadPool { r -> Thread(r, "logging-s3").apply { isDaemon = true } }
     private val server = ServerSocket(0, BACKLOG, InetAddress.getLoopbackAddress())
 
     /** `http://127.0.0.1:<port>`: what an `endpoint` setting takes (S3 clients treat a plain http endpoint as path-style). */
     val endpoint: String = "http://127.0.0.1:${server.localPort}"
+
+    /** True once close() has returned: the server's threads have ended and nothing of it runs on. */
+    val stopped: Boolean get() = pool.isTerminated
 
     init {
         pool.execute(::acceptLoop)
@@ -162,13 +168,18 @@ class LoggingS3Server(
 
     // ── the log ──
 
-    /** Where the log stands now: pass it to [requestsSince] to read what was sent after this point. */
-    fun mark(): Int = log.size
+    /**
+     * Where the log stands now: pass it to [requestsSince] to read what was sent after this point. It is the arrival number of
+     * the last request that has arrived, not a count of log entries: the log is written when a request is answered, so a request
+     * that is still being read at the mark is logged after later arrivals and a count would drop the wrong entries.
+     */
+    fun mark(): Long = seq.get()
 
     /** The requests logged so far, in arrival order. */
     fun requests(): List<Request> = log.sortedBy { it.seq }
 
-    fun requestsSince(mark: Int): List<Request> = requests().drop(mark)
+    /** The requests that arrived after [mark] was taken. */
+    fun requestsSince(mark: Long): List<Request> = requests().filter { it.seq > mark }
 
     fun connections(): List<Connection> = connectionLog.toList()
 
@@ -177,11 +188,14 @@ class LoggingS3Server(
 
     // ── serving ──
 
+    /** Stops accepting, closes every connection and waits for the server's threads: nothing of it runs on after the test. */
     override fun close() {
         stopping.set(true)
         runCatching { server.close() }
-        open.forEach { runCatching { it.close() } }
         pool.shutdownNow()
+        // Sockets are closed after the pool is shut down: one accepted in the meantime is closed by its acceptor (see acceptLoop).
+        open.forEach { runCatching { it.close() } }
+        check(pool.awaitTermination(CLOSE_WAIT_SECONDS, TimeUnit.SECONDS)) { "the logging S3 server's threads did not end" }
     }
 
     private fun acceptLoop() {
@@ -193,7 +207,14 @@ class LoggingS3Server(
                     return
                 }
             open += socket
-            pool.execute { serve(socket) }
+            try {
+                pool.execute { serve(socket) }
+            } catch (_: RejectedExecutionException) {
+                // close() won the race: this connection was accepted after the pool stopped, nobody would serve or close it.
+                runCatching { socket.close() }
+                open -= socket
+                return
+            }
         }
     }
 
@@ -345,18 +366,28 @@ class LoggingS3Server(
         val md5 = headers["content-md5"]
         val ifNoneMatch = headers["if-none-match"]
         val ifMatch = headers["if-match"]
-        val current = objects[key]
-        return when {
-            headers["x-amz-copy-source"] != null -> notImplemented("copy")
-            md5 != null && md5 != Base64.getEncoder().encodeToString(md5Bytes(body)) ->
-                failure(400, "BadDigest", "The Content-MD5 you specified did not match what we received.")
-            ifNoneMatch == "*" && current != null -> failure(412, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold")
-            ifMatch != null && current?.etag?.let { "\"$it\"" } != ifMatch -> failure(412, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold")
-            else -> {
-                val stored = StoredObject(body, headers.filterKeys { it.startsWith("x-amz-meta-") }, Instant.now())
-                objects[key] = stored
-                Response(200, mapOf("ETag" to "\"${stored.etag}\""))
+        if (headers["x-amz-copy-source"] != null) return notImplemented("copy")
+        if (md5 != null && md5 != Base64.getEncoder().encodeToString(md5Bytes(body))) {
+            return failure(400, "BadDigest", "The Content-MD5 you specified did not match what we received.")
+        }
+        val stored = StoredObject(body, headers.filterKeys { it.startsWith("x-amz-meta-") }, Instant.now())
+        // The check and the store are one step: of two concurrent creates with `If-None-Match: *`, one wins, as on S3.
+        val refused =
+            synchronized(writeLock) {
+                val current = objects[key]
+                val held =
+                    when {
+                        ifNoneMatch == "*" && current != null -> false
+                        ifMatch != null && current?.etag?.let { "\"$it\"" } != ifMatch -> false
+                        else -> true
+                    }
+                if (held) objects[key] = stored
+                !held
             }
+        return if (refused) {
+            failure(412, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold")
+        } else {
+            Response(200, mapOf("ETag" to "\"${stored.etag}\""))
         }
     }
 
@@ -458,6 +489,7 @@ class LoggingS3Server(
 
     companion object {
         private const val BACKLOG = 128
+        private const val CLOSE_WAIT_SECONDS = 10L
         private const val BUFFER = 64 * 1024
         private const val RADIX_HEX = 16
 

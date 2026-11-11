@@ -30,12 +30,18 @@ class S3ConnectionPatternTest {
 
     private val server = LoggingS3Server()
     private val tree = S3TransferTree()
-    private val s3 by lazy { S3ProviderFactory().create(server.profile(), tmp.newFolder("profile").toPath()) }
+    private val provider = lazy { S3ProviderFactory().create(server.profile(), tmp.newFolder("profile").toPath()) }
+    private val s3 by provider
 
+    // The server's port is released even when the provider's close throws, and a test that never needed the provider does not
+    // build one here only to close it.
     @After
     fun stop() {
-        s3.close()
-        server.close()
+        try {
+            if (provider.isInitialized()) s3.close()
+        } finally {
+            server.close()
+        }
     }
 
     private fun upload(local: Path) = S3TransferTree.inParallel(tree.files.keys.toList()) { s3.upload(local.resolve(tree.key(it)), it) }
@@ -79,24 +85,34 @@ class S3ConnectionPatternTest {
         val mark = server.mark()
         upload(tree.writeTo(tmp.newFolder("local").toPath()))
 
-        assertConnectionsBounded("upload", server.requestsSince(mark))
+        val requests = server.requestsSince(mark)
+        tree.files.forEach { (path, bytes) -> assertContentEquals(bytes, server.bytesOf(tree.key(path)), "the server holds the bytes of $path") }
+        assertConnectionsBounded("upload", requests)
     }
 
     @Test
     fun `a download uses about as many connections as it has transfers`() {
         tree.files.forEach { (path, bytes) -> server.seed(tree.key(path), bytes) }
         val mark = server.mark()
-        download()
+        val target = download()
 
-        assertConnectionsBounded("download", server.requestsSince(mark))
+        val requests = server.requestsSince(mark)
+        tree.files.forEach { (path, bytes) -> assertContentEquals(bytes, Files.readAllBytes(target.resolve(tree.key(path))), "downloaded $path") }
+        assertConnectionsBounded("download", requests)
     }
 
     // CIO made every request its own connection (gkrost/unidrive-cli#563: 651 requests on 651 connections), ended by the client;
-    // the pooling engine (gkrost/unidrive-cli#566) holds about as many as there are transfers.
+    // the pooling engine (gkrost/unidrive-cli#566) holds about as many as there are transfers. A bound on connections says
+    // nothing about a run that sent nothing, so the run must also have sent at least a request for every object it moved.
     private fun assertConnectionsBounded(
         phase: String,
         requests: List<LoggingS3Server.Request>,
     ) {
+        assertEquals(
+            tree.files.keys.map(tree::key).toSet(),
+            LoggingS3Server.perKey(requests).keys,
+            "$phase: a request for every object of the tree; ${LoggingS3Server.summary(requests)}",
+        )
         val connections = LoggingS3Server.connectionCount(requests)
         val limit = S3TransferTree.CONCURRENCY + CONNECTION_SLACK
         assertTrue(
