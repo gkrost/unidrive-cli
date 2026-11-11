@@ -8,7 +8,6 @@ import org.krost.unidrive.auth.awaitOAuthCallback
 import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.io.openBrowser
 import org.krost.unidrive.onedrive.model.Token
-import java.nio.channels.UnresolvedAddressException
 import kotlin.time.Duration.Companion.minutes
 
 class TokenManager(
@@ -302,14 +301,8 @@ class TokenManager(
         if (e is AuthenticationException) return false
         // The token endpoint answered 408 / 429 / 5xx (OAuthService.refreshToken): it said nothing about the token.
         if (e is TransientNetworkException) return true
-        if (e is UnresolvedAddressException) return true // DNS blip — transient.
-        if (e is io.ktor.client.plugins.HttpRequestTimeoutException) return true
-        if (e is java.io.IOException && HttpRetryBudget.isRetriableIoException(e)) return true
-        // Ktor wraps the underlying socket failure; walk one cause level for the
-        // common DNS-unresolved and retryable-IO shapes.
-        val cause = e.cause ?: return false
-        if (cause is UnresolvedAddressException) return true
-        if (cause is io.ktor.client.plugins.HttpRequestTimeoutException) return true
-        return cause is java.io.IOException && HttpRetryBudget.isRetriableIoException(cause)
+        // The network failed: DNS (UnresolvedAddressException under CIO, UnknownHostException under OkHttp), a timeout, a connection the
+        // server closed or reset. The shared test reads the whole cause chain.
+        return HttpRetryBudget.isTransientTransportFailure(e)
     }
 }

@@ -198,4 +198,80 @@ class S3DownloadTimeoutTest {
             api.close()
         }
     }
+
+    // ── a vendor whose GET answer declares no length, or declares the stored bytes of an encoded object ──
+
+    private fun chunked(vararg parts: String): (OutputStream) -> Unit =
+        { out ->
+            out.write("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nETag: \"e\"\r\n\r\n".toByteArray())
+            for (part in parts) out.write("${part.length.toString(16)}\r\n$part\r\n".toByteArray())
+            out.write("0\r\n\r\n".toByteArray())
+            out.flush()
+        }
+
+    @Test
+    fun `a chunked answer without Content-Length is written whole, with the flat cap asked for and no staging file left`() {
+        val dir = Files.createTempDirectory("s3-dl-chunked")
+        val destination = dir.resolve("a.bin")
+        ScriptedServer(chunked("hello", " world")).use { server ->
+            val asked = mutableListOf<Long?>()
+            val api =
+                S3Api(config(dir, server.endpoint), downloadBodyTimeoutMs = {
+                    asked += it
+                    10_000
+                })
+
+            val written = runBlocking { withTimeout(20_000) { api.get("a.bin", destination) } }
+
+            assertEquals(11L, written)
+            assertEquals("hello world", Files.readString(destination))
+            assertEquals(listOf<Long?>(null), asked, "no declared length: the cap policy is asked without one (the flat floor)")
+            assertEquals(listOf("a.bin"), Files.list(dir).use { s -> s.map { it.fileName.toString() }.toList() })
+            api.close()
+        }
+    }
+
+    @Test
+    fun `a chunked answer cut off in the middle of a chunk fails, leaving the destination and no staging file`() {
+        val dir = Files.createTempDirectory("s3-dl-chunked-cut")
+        val destination = dir.resolve("a.bin")
+        Files.writeString(destination, "PREVIOUS")
+        val cut: (OutputStream) -> Unit = { out ->
+            out.write("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".toByteArray())
+            out.write("14\r\n12345".toByteArray()) // 20 bytes announced, 5 sent
+            out.flush()
+            out.close()
+        }
+        ScriptedServer(cut).use { server ->
+            val api = S3Api(config(dir, server.endpoint))
+
+            runBlocking { withTimeout(20_000) { assertFailsWith<Exception> { api.get("a.bin", destination) } } }
+
+            assertEquals("PREVIOUS", Files.readString(destination))
+            assertEquals(emptyList(), stagingFiles(dir), "a cut body is a failure, not a short file, and its staging file goes")
+            api.close()
+        }
+    }
+
+    @Test
+    fun `an object stored with a content encoding comes down as the stored bytes, not decoded`() {
+        val dir = Files.createTempDirectory("s3-dl-encoded")
+        val destination = dir.resolve("a.bin")
+        val stored =
+            java.io.ByteArrayOutputStream().also { sink -> java.util.zip.GZIPOutputStream(sink).use { it.write("plain text of the object".toByteArray()) } }.toByteArray()
+        val answer: (OutputStream) -> Unit = { out ->
+            out.write("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: ${stored.size}\r\n\r\n".toByteArray())
+            out.write(stored)
+            out.flush()
+        }
+        ScriptedServer(answer).use { server ->
+            val api = S3Api(config(dir, server.endpoint))
+
+            val written = runBlocking { withTimeout(20_000) { api.get("a.bin", destination) } }
+
+            assertEquals(stored.size.toLong(), written)
+            assertTrue(stored.contentEquals(Files.readAllBytes(destination)), "the production client must not gunzip the stored bytes")
+            api.close()
+        }
+    }
 }

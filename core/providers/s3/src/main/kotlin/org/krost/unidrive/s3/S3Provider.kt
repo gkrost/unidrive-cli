@@ -39,7 +39,9 @@ import java.util.HexFormat
  * - **Conditional writes:** the engine's write token is the ETag it saw. Where the vendor honours `If-Match`
  *   (AWS), the write carries it and a 412 is a conflict. Elsewhere a HEAD compares first, which leaves a short race.
  *   A create carries `If-None-Match: *`, so a key taken since the plan is a conflict too; a vendor that refuses the
- *   header (501, 400) gets the HEAD check instead.
+ *   header (501, 400) gets a HEAD that checks the key is free; with the profile key `s3_create_from_listing = true` that HEAD
+ *   is left out and the listing that made the engine plan a create is trusted instead (#573: one request fewer per object, a
+ *   longer window for another writer's object to be replaced; off by default).
  * - **Copies** (moves) above 5 GiB go through UploadPartCopy on every vendor.
  */
 class S3Provider(
@@ -222,15 +224,22 @@ class S3Provider(
         val size = Files.size(localPath)
         val mtime = Files.getLastModifiedTime(localPath).toInstant()
         val sourceStats = mtime.toEpochMilli() to size
-        val digest = sha256Of(localPath)
+        val singlePart = size <= config.multipartThreshold
+        // One read of the file gives the SHA-256 proof and, for a single-part PUT, the MD5 that goes in Content-MD5 (#570): the
+        // proof pass was there already, so the header costs the MD5 arithmetic and no further read.
+        val (digest, contentMd5) = digestsOf(localPath, md5 = singlePart)
         if (localStats(localPath) != sourceStats) throw ProviderException("'$remotePath' changed while its upload proof was prepared")
         val meta = mapOf("mtime" to S3Api.epochText(mtime), "unidrive-sha256-v1" to digest)
         if (ifMatchETag != null && !config.vendor.conditionalWrites) requireUnchanged(key, ifMatchETag)
         val ifMatch = ifMatchETag?.takeIf { config.vendor.conditionalWrites }
         // gkrost/unidrive-cli#57: a create (nothing to replace, no token) must not replace an object that appeared after the plan.
         val create = existingRemoteId == null && ifMatchETag == null
-        if (size <= config.multipartThreshold) {
-            if (create) createGuarded(key) { api.put(key, localPath, meta, ifNoneMatch = it) } else api.put(key, localPath, meta, ifMatch)
+        if (singlePart) {
+            if (create) {
+                createGuarded(key) { api.put(key, localPath, meta, ifNoneMatch = it, contentMd5 = contentMd5) }
+            } else {
+                api.put(key, localPath, meta, ifMatch, contentMd5 = contentMd5)
+            }
         } else {
             uploadInParts(localPath, key, size, mtime.toEpochMilli(), meta, onProgress) { uploadId, parts ->
                 if (create) {
@@ -257,20 +266,29 @@ class S3Provider(
             null
         }
 
-    private suspend fun sha256Of(file: Path): String = withContext(Dispatchers.IO) {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(file).use { input ->
-            val bytes = ByteArray(64 * 1024)
-            while (true) {
-                // A cancelled upload must not keep hashing a multi-gigabyte file to the end (this pass runs twice per upload).
-                ensureActive()
-                val count = input.read(bytes)
-                if (count < 0) break
-                digest.update(bytes, 0, count)
+    private suspend fun sha256Of(file: Path): String = digestsOf(file, md5 = false).first
+
+    /** The SHA-256 of [file] as hex and, when [md5] is set, its MD5, both from one read. */
+    private suspend fun digestsOf(
+        file: Path,
+        md5: Boolean,
+    ): Pair<String, ByteArray?> =
+        withContext(Dispatchers.IO) {
+            val sha = MessageDigest.getInstance("SHA-256")
+            val md = if (md5) MessageDigest.getInstance("MD5") else null
+            Files.newInputStream(file).use { input ->
+                val bytes = ByteArray(64 * 1024)
+                while (true) {
+                    // A cancelled upload must not keep hashing a multi-gigabyte file to the end (this pass runs twice per upload).
+                    ensureActive()
+                    val count = input.read(bytes)
+                    if (count < 0) break
+                    sha.update(bytes, 0, count)
+                    md?.update(bytes, 0, count)
+                }
             }
+            HexFormat.of().formatHex(sha.digest()) to md?.digest()
         }
-        HexFormat.of().formatHex(digest.digest())
-    }
 
     // The racy form of a conditional write, for vendors without If-Match: the object must still carry the ETag the engine saw.
     private suspend fun requireUnchanged(
@@ -281,16 +299,24 @@ class S3Provider(
         if (current?.etag != etag) throw RemoteConflictException("'$key' changed on S3 since it was last synced")
     }
 
-    // gkrost/unidrive-cli#57: set once the vendor refused `If-None-Match` and the HEAD check took its place.
+    // gkrost/unidrive-cli#57: set once the vendor refused `If-None-Match` and a HEAD (or, opted in, the listing) took its place.
     @Volatile
     private var createGuardRefused = false
 
     /**
      * [write] as a create that a taken [key] refuses: with `If-None-Match: *` (AWS, MinIO, R2 answer 412, a conflict). A vendor
-     * that does not implement the header answers 501, or a 400 whose code names the header; then a HEAD checks that the key is
-     * free, the racy form a guarded modify without If-Match has too, the write goes without the header, and once that worked
-     * the header is not sent again. Any other 400 (`RequestTimeout`, `IncompleteBody`, …) is a real failure, and a vendor that
-     * supports conditional writes never loses its guard to a refused create.
+     * that does not implement the header answers 501, or a 400 whose code names the header; then the key must be free by a HEAD
+     * ([requireAbsent]), the write goes without the header, and once that worked the header is not sent again. The HEAD is the
+     * racy form a guarded modify without If-Match has too: it narrows the window in which another writer's object is replaced to
+     * the time between that HEAD and the PUT, and it costs one request per object.
+     *
+     * That HEAD is the default, and it is what keeps a create from replacing an object that is already there, whoever calls: the
+     * provider's upload receives no proof that the key was absent in a listing (the sync's plan knows, a mount's direct upload
+     * does not). Profile key `s3_create_from_listing = true` ([S3Config.createFromListing], gkrost/unidrive-cli#573) drops the
+     * HEAD for a vendor that refused the header: the listing that made the caller plan a create is then trusted, so a create may
+     * replace an object that appeared on S3 after that listing, or one that was there all along when the caller had no listing.
+     * A vendor that honours the header keeps its atomic guard either way. Any other 400 (`RequestTimeout`, `IncompleteBody`, …)
+     * is a real failure, and a vendor that supports conditional writes never loses its guard to a refused create.
      */
     private suspend fun <T> createGuarded(
         key: String,
@@ -301,12 +327,18 @@ class S3Provider(
                 return write(true)
             } catch (e: S3Exception) {
                 if (!createGuardRefusal(e)) throw e
-                log.info("S3 refused If-None-Match on '{}' ({} {}); checking that the key is free with a HEAD instead", key, e.status, e.code)
+                log.info(
+                    "S3 refused If-None-Match on '{}' ({} {}); {}",
+                    key,
+                    e.status,
+                    e.code,
+                    if (config.createFromListing) "a create is backed by the sync's listing from now on (s3_create_from_listing)" else "checking that the key is free with a HEAD instead",
+                )
             }
-            requireAbsent(key)
+            if (!config.createFromListing) requireAbsent(key)
             return write(false).also { createGuardRefused = true }
         }
-        requireAbsent(key)
+        if (!config.createFromListing) requireAbsent(key)
         return write(false)
     }
 

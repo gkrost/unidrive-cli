@@ -37,7 +37,8 @@ class S3RequestPatternTest {
     val tmp = TemporaryFolder()
 
     private val fake = FakeS3()
-    private val provider = lazy { S3Provider(S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", tmp.newFolder("profile").toPath()), fake.engine) }
+    private var createFromListing = false
+    private val provider = lazy { S3Provider(S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", tmp.newFolder("profile").toPath(), createFromListing = createFromListing), fake.engine) }
     private val s3 by provider
     private val tree = S3TransferTree()
 

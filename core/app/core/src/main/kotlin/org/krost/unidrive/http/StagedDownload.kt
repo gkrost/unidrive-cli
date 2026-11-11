@@ -59,7 +59,7 @@ internal class StagedDownloadSteps(
     val delayMs: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
 )
 
-@Suppress("TooGenericExceptionCaught") // whatever fails, the staging file goes and the failure is rethrown unchanged
+@Suppress("TooGenericExceptionCaught") // whatever fails (an Error too), the staging file goes and the failure is rethrown unchanged
 internal suspend fun writeStagedDownload(
     channel: ByteReadChannel,
     destination: Path,
@@ -100,7 +100,7 @@ internal suspend fun writeStagedDownload(
             }
             withLocalIoRetry(delayMs = steps.delayMs, windows = steps.windows) { steps.move(staging, destination) }
             written
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             // A cleanup that fails (the same scanner holds the staging file) must not replace the failure that matters.
             runCatching { Files.deleteIfExists(staging) }.exceptionOrNull()?.let(e::addSuppressed)
             throw e

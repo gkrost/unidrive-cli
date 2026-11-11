@@ -130,6 +130,51 @@ object CachePaths {
             return real != realFolder && real.startsWith(realFolder)
         }
 
+        /**
+         * The size of the regular file the cache holds for [logicalPath], with the containment of [resolveInside] and
+         * the size of `Files.size(resolveInside(path))`, at the price of one real-path walk per FOLDER the pass sees
+         * instead of one per file (gkrost/unidrive-cli#585: the real-path walk of a file, ~8 ms on a Windows box, was
+         * 80 % of a list of 2500 pending rows; the stat itself is ~0.25 ms). The folder above the file is resolved
+         * and checked once and remembered; the file itself is read as the entry it is, links not followed.
+         *
+         * The names that are not that plain case take the full walk, whose answers and exceptions they keep: a name
+         * with a `:` (a stream on Windows), a folder above that is absent or cannot be resolved, and an entry that is
+         * a link or anything but a regular file. Throws what [resolveInside] and `Files.size` throw; the caller that
+         * reads a size best effort (a stat failure falls back to the row's size) catches them all.
+         */
+        fun sizeOf(logicalPath: String): Long {
+            val absolute = absoluteInside(logicalPath)
+            val name = absolute.fileName
+            val parent = absolute.parent
+            if (name == null || parent == null || ':' in name.toString()) return Files.size(resolveInside(logicalPath))
+            val realFolder = folderReal() ?: throw folderUnavailable(logicalPath)
+            if (probe(parent) != Probe.EXISTS) return Files.size(resolveInside(logicalPath))
+            val realParent = present.getValue(parent)
+            if (realParent != realFolder && !realParent.startsWith(realFolder)) throw refused(logicalPath)
+            val attributes =
+                Files.readAttributes(realParent.resolve(name), java.nio.file.attribute.BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+            return if (attributes.isRegularFile) attributes.size() else Files.size(resolveInside(logicalPath))
+        }
+
+        // The first check of [resolveInside], before any filesystem access: the spelling leads into the folder.
+        private fun absoluteInside(logicalPath: String): Path {
+            val absolute =
+                try {
+                    root.resolve(logicalPath.trimStart('/')).normalize().toAbsolutePath().normalize()
+                } catch (_: java.io.IOError) {
+                    throw refused(logicalPath) // a drive-relative name of a drive that does not exist
+                }
+            if (absolute == root || !absolute.startsWith(root)) throw refused(logicalPath)
+            return absolute
+        }
+
+        // An absent folder holds no file ([resolveInside] lets the spelling decide, and `Files.size` then finds nothing); an unreadable one cannot be checked.
+        private fun folderUnavailable(logicalPath: String): Exception =
+            if (folderMissing) NoSuchFileException(root.toString()) else refused(logicalPath)
+
+        private fun refused(logicalPath: String) =
+            SecurityException("path does not resolve inside the hydration cache: '${CachePaths.forLog(logicalPath)}'")
+
         /** What the pass found when it probed a path. */
         private enum class Probe { EXISTS, ABSENT, UNRESOLVED }
 

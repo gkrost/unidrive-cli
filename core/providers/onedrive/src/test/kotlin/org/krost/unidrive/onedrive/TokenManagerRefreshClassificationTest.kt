@@ -10,6 +10,9 @@ import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.TransientNetworkException
 import org.krost.unidrive.onedrive.model.Token
+import java.io.EOFException
+import java.io.IOException
+import java.net.UnknownHostException
 import java.nio.channels.UnresolvedAddressException
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
@@ -75,6 +78,25 @@ class TokenManagerRefreshClassificationTest {
                 "a transient failure must not be recorded as an AuthenticationException latch",
             )
         }
+
+    // The shapes of the shipping engine (OkHttp): a name that does not resolve is an UnknownHostException (CIO threw an
+    // UnresolvedAddressException), a connection the server closed before it answered an IOException around an EOFException.
+    // Neither is a verdict on the refresh token.
+    @Test
+    fun `the network failures of the shipping engine are not latched as expired`() {
+        val shapes: Map<String, () -> Throwable> =
+            mapOf(
+                "UnknownHostException" to { UnknownHostException("login.example.test") },
+                "closed before an answer" to { IOException("unexpected end of stream on https://login.example.test/...", EOFException("\n not found: limit=0")) },
+            )
+        for ((name, failure) in shapes) {
+            runTest {
+                val manager = tokenManagerWith(MockEngine { throw failure() })
+                assertFailsWith<TransientNetworkException>(name) { manager.getValidToken() }
+                assertTrue(manager.lastRefreshFailure?.errorClass != "AuthenticationException", "$name must not be recorded as an AuthenticationException latch")
+            }
+        }
+    }
 
     @Test
     fun `invalid_grant_is_latched_as_expired`() =

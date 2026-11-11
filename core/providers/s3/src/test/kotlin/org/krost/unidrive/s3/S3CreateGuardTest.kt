@@ -12,8 +12,9 @@ import kotlin.test.assertNull
 /**
  * gkrost/unidrive-cli#57: a create must not replace an object that appeared after the plan. The PUT (or the multipart complete)
  * carries `If-None-Match: *`, and a taken key is a conflict. A vendor that does not implement the header answers 501, or a 400
- * whose code names the header: the provider then checks with a HEAD first and stops sending it. Any other 400 is a real
- * failure, and a vendor that supports conditional writes never loses its guard to one.
+ * whose code names the header: the provider then checks with a HEAD first and stops sending it, whether or not an earlier create
+ * went through (the caller offers no proof of absence). Only the profile key `s3_create_from_listing` (#573) drops that HEAD. Any
+ * other 400 is a real failure, and a vendor that supports conditional writes never loses its guard to one.
  */
 class S3CreateGuardTest {
     private val dir = Files.createTempDirectory("s3-create-guard")
@@ -23,10 +24,18 @@ class S3CreateGuardTest {
         fake: FakeS3,
         threshold: Long = S3Config.MULTIPART_THRESHOLD,
         vendor: S3Config.Vendor = S3Config.Vendor.of("http://localhost:9000"),
+        createFromListing: Boolean = false,
     ) = S3Provider(
-        S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", dir, multipartThreshold = threshold, minPartSize = mib, vendor = vendor),
+        S3Config(
+            "b", "us-east-1", "http://localhost:9000", "AK", "SK", dir,
+            multipartThreshold = threshold, minPartSize = mib, vendor = vendor, createFromListing = createFromListing,
+        ),
         fake.engine,
     )
+
+    private fun refuseHeader(fake: FakeS3, status: Int = 501, code: String = "NotImplemented") {
+        fake.failures += Triple({ r: FakeS3.Request -> r.headers.containsKey("if-none-match") }, status, code)
+    }
 
     private fun local(
         name: String,
@@ -90,6 +99,78 @@ class S3CreateGuardTest {
             assertFailsWith<RemoteConflictException> { s3.upload(local("a.txt", "mine again".toByteArray()), "/a.txt") }
             assertEquals("theirs", fake.text("a.txt"))
             assertEquals(listOf("*", null), puts(fake).map { it.headers["if-none-match"] }, "one refused attempt with it, one without")
+        }
+
+    // The reviewer's repro on #613: the key is taken before the very first create, the vendor refuses the header, and the caller
+    // (a mount's direct upload, or a sync whose listing is stale) offers no proof of absence. Nothing may be replaced.
+    @Test
+    fun `a taken key is a conflict on the very first create too, where the vendor refuses the header`() =
+        runTest {
+            val fake = FakeS3()
+            refuseHeader(fake)
+            fake.put("a.txt", "theirs")
+
+            assertFailsWith<RemoteConflictException> { provider(fake).upload(local("a.txt", "mine".toByteArray()), "/a.txt") }
+
+            assertEquals("theirs", fake.text("a.txt"), "the other device's object is untouched")
+            assertEquals(listOf("*"), puts(fake).map { it.headers["if-none-match"] }, "only the refused attempt wrote anything: no unconditional PUT")
+        }
+
+    @Test
+    fun `a multipart create on a vendor that refuses the header does not replace a taken key either`() =
+        runTest {
+            val fake = FakeS3()
+            refuseHeader(fake)
+            fake.put("big.bin", "theirs")
+            val bytes = ByteArray((2.5 * mib).toInt()) { (it % 251).toByte() }
+
+            assertFailsWith<RemoteConflictException> { provider(fake, threshold = mib).upload(local("big.bin", bytes), "/big.bin") }
+
+            assertEquals("theirs", fake.text("big.bin"), "the other device's object is untouched")
+            val completes = fake.requests.filter { it.method == HttpMethod.Post && it.key == "big.bin" && "uploadId" in it.query }
+            assertEquals(listOf("*"), completes.map { it.headers["if-none-match"] }, "the refused complete is the only one: the HEAD stopped the retry")
+        }
+
+    // gkrost/unidrive-cli#573: the opt-in. The profile key s3_create_from_listing drops the HEAD guard for a vendor that refuses the header.
+    @Test
+    fun `with s3_create_from_listing a vendor that refuses the header is written to without a HEAD guard, a taken key included`() =
+        runTest {
+            val fake = FakeS3()
+            refuseHeader(fake)
+            fake.put("a.txt", "theirs")
+            val s3 = provider(fake, createFromListing = true)
+
+            s3.upload(local("a.txt", "mine".toByteArray()), "/a.txt")
+            assertEquals("mine", fake.text("a.txt"), "the documented trade-off: the listing is trusted, the taken key is replaced")
+            s3.upload(local("a.txt", "mine again".toByteArray()), "/a.txt")
+            assertEquals("mine again", fake.text("a.txt"))
+            assertEquals(listOf("*", null, null), puts(fake).map { it.headers["if-none-match"] }, "one refused attempt with it, none after")
+            assertEquals(2, fake.requests.count { it.method == HttpMethod.Head && it.key == "a.txt" }, "only the two post-upload HEADs, no guard HEAD")
+        }
+
+    @Test
+    fun `without the opt-in a refusing vendor costs a guard HEAD before each create`() =
+        runTest {
+            val fake = FakeS3()
+            refuseHeader(fake)
+            val s3 = provider(fake)
+
+            s3.upload(local("a.txt", "mine".toByteArray()), "/a.txt")
+            s3.upload(local("b.txt", "mine".toByteArray()), "/b.txt")
+
+            assertEquals(listOf("PUT", "HEAD", "PUT", "HEAD"), fake.requests.filter { it.key == "a.txt" }.map { it.method.value }, "refused PUT, guard HEAD, PUT, post-upload HEAD")
+            assertEquals(listOf("HEAD", "PUT", "HEAD"), fake.requests.filter { it.key == "b.txt" }.map { it.method.value }, "guard HEAD, PUT, post-upload HEAD")
+        }
+
+    @Test
+    fun `the opt-in does not weaken a vendor that honours the header`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("a.txt", "theirs")
+            val s3 = provider(fake, vendor = S3Config.Vendor("aws", 10_000, conditionalWrites = true), createFromListing = true)
+
+            assertFailsWith<RemoteConflictException> { s3.upload(local("a.txt", "mine".toByteArray()), "/a.txt") }
+            assertEquals("theirs", fake.text("a.txt"))
         }
 
     @Test

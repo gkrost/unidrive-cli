@@ -7,7 +7,6 @@ import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.random.Random
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -22,8 +21,8 @@ import kotlin.test.assertTrue
  * The request counts per object are in [S3RequestPatternTest].
  *
  * The first test keeps the path alive and prints the numbers. The connection tests bound the distinct connections by the
- * transfers plus [CONNECTION_SLACK]; the test with an `@Ignore` states a target for the issue it names, whoever lands that
- * issue removes the `@Ignore`.
+ * transfers plus [CONNECTION_SLACK]. The last test is the wire half of #570: a body damaged on a real socket is refused by the
+ * server's Content-MD5 check.
  */
 class S3ConnectionPatternTest {
     @get:Rule
@@ -124,7 +123,6 @@ class S3ConnectionPatternTest {
     }
 
     // The server checks Content-MD5 as S3 does. Without the header the corrupted bytes are stored and the upload succeeds.
-    @Ignore("enable with #570")
     @Test
     fun `a byte flipped on the way makes the upload fail with BadDigest`() {
         val local = tmp.newFile("flip.bin").toPath().also { Files.write(it, Random(1).nextBytes(64 * 1024)) }

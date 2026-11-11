@@ -54,6 +54,9 @@ class FakeS3(
 
     @Volatile
     var onHead: ((key: String, count: Int) -> Unit)? = null
+
+    /** Runs when a request arrives, before its body is read: what a test uses to change a file between the client's pre-read and the PUT. */
+    var beforeBody: ((method: HttpMethod, key: String?) -> Unit)? = null
     private val headCount = java.util.concurrent.atomic.AtomicInteger()
     private val uploads = java.util.concurrent.ConcurrentHashMap<String, Pair<String, MutableMap<Int, Obj>>>()
     private val uploadMeta = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
@@ -115,6 +118,7 @@ class FakeS3(
             val segments = request.url.encodedPath.removePrefix("/").split("/", limit = 2)
             check(segments[0] == bucket) { "path-style request expected, got ${request.url.encodedPath}" }
             val key = segments.getOrNull(1)?.takeIf { it.isNotEmpty() }?.decodeURLPart()
+            beforeBody?.invoke(request.method, key)
             val auth = request.headers["Authorization"] ?: ""
             check(auth.startsWith("AWS4-HMAC-SHA256 Credential=") && request.headers["x-amz-date"] != null) { "unsigned request" }
             val r =
@@ -176,6 +180,8 @@ class FakeS3(
     }
 
     private fun MockRequestHandleScope.put(r: Request): HttpResponseData {
+        // Like S3: a Content-MD5 the body does not match is a 400 BadDigest and nothing is stored (#570).
+        digestRefusal(r)?.let { return it }
         val stored = Obj(r.body, r.body.size.toLong(), md5Hex(r.body), meta(r), nextTime())
         val ifMatch = r.headers["if-match"]?.trim('"')
         val refused =
@@ -189,6 +195,14 @@ class FakeS3(
             }
         if (refused != null) return error(refused, "PreconditionFailed")
         return respond("", HttpStatusCode.OK, headersOf("ETag", "\"${stored.etag}\""))
+    }
+
+    /** The 400 S3 answers when a PUT's `Content-MD5` is malformed (`InvalidDigest`) or is not the MD5 of its body (`BadDigest`); null when it is fine or absent. */
+    private fun MockRequestHandleScope.digestRefusal(r: Request): HttpResponseData? {
+        val declared = r.headers["content-md5"] ?: return null
+        if (runCatching { java.util.Base64.getDecoder().decode(declared).size }.getOrDefault(-1) != 16) return error(400, "InvalidDigest")
+        val actual = java.util.Base64.getEncoder().encodeToString(MessageDigest.getInstance("MD5").digest(r.body))
+        return if (declared == actual) null else error(400, "BadDigest")
     }
 
     private fun MockRequestHandleScope.multipart(r: Request): HttpResponseData {

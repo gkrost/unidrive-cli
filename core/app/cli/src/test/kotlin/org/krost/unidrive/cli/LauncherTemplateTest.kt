@@ -5,6 +5,7 @@ import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.junit.Assume.assumeTrue
 
@@ -35,6 +36,8 @@ class LauncherTemplateTest {
     private fun launcherArgs(
         vararg passArgs: String,
         env: Map<String, String> = emptyMap(),
+        jar: String = "unidrive.jar",
+        debugAgent: String = "",
     ): List<String> {
         val dir = Files.createTempDirectory("launcher-tmpl")
         try {
@@ -42,8 +45,8 @@ class LauncherTemplateTest {
                 .map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
             val rendered = templateFile().toFile().readText().replace("\r\n", "\n")
                 .replace("@STATIC_FLAGS_PS@", "\$javaArgs += @(" + flags.joinToString(", ") { "'$it'" } + ")")
-                .replace("@JAR@", "unidrive.jar")
-                .replace("@COROUTINES_DEBUG_AGENT@", "")
+                .replace("@JAR@", jar)
+                .replace("@COROUTINES_DEBUG_AGENT@", debugAgent)
                 // print the argument list instead of starting java (the stdin branch is not under test here)
                 .replace(JAVA_LINE, "\$javaArgs | ForEach-Object { 'ARG:' + \$_ }")
             val script = dir.resolve("launcher.ps1")
@@ -310,6 +313,62 @@ class LauncherTemplateTest {
             dir.resolve("jvm-flags.txt").toFile().readLines().none { !it.trimStart().startsWith("#") && "trustStore" in it },
             "jvm-flags.txt is read by the Linux launchers, where Windows-ROOT does not exist",
         )
+    }
+
+    // gkrost/unidrive-cli#572: the startup cache beside the jar, picked the way DaemonAutospawn picks it.
+    // The AOT cache of the bundled image wins when one lies beside the jar (and no agent is armed, because
+    // the agent disables the cache and errors); else the dynamic CDS archive, and only when the jar's
+    // folder is writable: an unwritable archive path makes the JVM exit 127 after a successful run. JDK 27
+    // refuses the two caches in one JVM, so exactly one of the two may be on the command line.
+    @Test
+    fun `the powershell launcher arms the dynamic CDS archive beside a writable jar folder`() {
+        assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
+        val jarDir = Files.createTempDirectory("launcher-tmpl-deploy")
+        try {
+            val args = launcherArgs("status", jar = jarDir.resolve("unidrive.jar").toString())
+            assertTrue("-XX:+AutoCreateSharedArchive" in args, args.toString())
+            assertTrue(args.any { it.startsWith("-XX:SharedArchiveFile=") && it.endsWith("unidrive.jsa") }, args.toString())
+            assertTrue("-Xlog:cds=off" in args, "the first run's CDS messages stay off stdout: $args")
+            assertTrue(args.indexOf("-XX:+AutoCreateSharedArchive") < args.indexOf("-jar"), args.toString())
+            assertFalse(Files.exists(jarDir.resolve(".unidrive-cds-probe")), "the write probe leaves nothing behind")
+        } finally {
+            jarDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `the powershell launcher prefers the AOT cache beside the jar`() {
+        assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
+        val jarDir = Files.createTempDirectory("launcher-tmpl-aot")
+        try {
+            Files.createFile(jarDir.resolve("unidrive.aot"))
+            val args = launcherArgs("status", jar = jarDir.resolve("unidrive.jar").toString())
+            assertTrue(args.any { it.startsWith("-XX:AOTCache=") && it.endsWith("unidrive.aot") }, args.toString())
+            assertTrue("-Xlog:aot=off" in args, "a stale cache prints to stdout, which the client parses: $args")
+            assertTrue(
+                args.none { it.startsWith("-XX:+AutoCreateSharedArchive") || it.startsWith("-XX:SharedArchiveFile=") },
+                "no CDS archive beside the AOT cache: $args",
+            )
+        } finally {
+            jarDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `the armed coroutine agent keeps the launcher off the AOT cache`() {
+        assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
+        val jarDir = Files.createTempDirectory("launcher-tmpl-agent")
+        try {
+            Files.createFile(jarDir.resolve("unidrive.aot"))
+            val agent = jarDir.resolve("coroutine-debug-agent.jar").toString()
+            Files.createFile(jarDir.resolve("coroutine-debug-agent.jar"))
+            val args = launcherArgs("status", jar = jarDir.resolve("unidrive.jar").toString(), debugAgent = agent, env = mapOf("UNIDRIVE_COROUTINE_DEBUG" to "1"))
+            assertTrue(args.any { it.startsWith("-javaagent:") }, "the agent is armed: $args")
+            assertTrue(args.none { it.startsWith("-XX:AOTCache=") }, "the agent disables the cache and errors: $args")
+            assertTrue("-XX:+AutoCreateSharedArchive" in args, "the CDS archive still applies: $args")
+        } finally {
+            jarDir.toFile().deleteRecursively()
+        }
     }
 
     // The runtime resolution and its floor, the Windows twin of LauncherShTemplateTest's cases: a stale JDK below

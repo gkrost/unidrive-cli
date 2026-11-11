@@ -3,9 +3,12 @@ package org.krost.unidrive.http
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.okhttp.OkHttp
+import okhttp3.Call
 import okhttp3.Connection
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
+import okhttp3.Dns
+import okhttp3.EventListener
 import okhttp3.Protocol
 import java.io.EOFException
 import java.io.IOException
@@ -40,8 +43,7 @@ import java.util.concurrent.TimeUnit
  *   timeout setting (a download is sized from its declared size) and gives each its own dispatcher unless told otherwise; the
  *   default dispatcher admits 5 calls per host, the retry budgets admit up to 16.
  * - The dispatcher's threads are daemons: an idle one must not keep a one-shot CLI process alive.
- * - Idle connections are dropped after 15 s, a conservative guess below the idle limits servers use (not measured per vendor),
- *   so that a request seldom meets a connection the server closed.
+ * - Idle connections are dropped after [IDLE_CONNECTION_SECONDS], see there for what the vendors document.
  *
  * **A pooled connection the server closed (stale).** OkHttp has no reader on an idle connection, so it learns that the server
  * closed one only when it uses it (it probes a connection only after 10 s idle, and only for requests other than GET). The
@@ -49,16 +51,27 @@ import java.util.concurrent.TimeUnit
  * fresh socket per request) never showed. OkHttp's own recovery, `retryOnConnectionFailure`, cannot stay on: it also re-sends a
  * body whose write was committed and whose answer was lost (see below). What the factory does instead retries only where the
  * request provably or harmlessly did not take effect:
- * - Before a request goes out on an HTTP/1.1 connection that has been idle for [PROBE_AFTER_IDLE_NANOS] or more, a network interceptor
- *   probes it (a 1 ms read, the check OkHttp itself makes). A connection found closed is dropped, together with every other idle
- *   one (the server closes them together), and the request is sent again on a fresh connection: nothing of it was written, so
- *   this is safe for every method, a PUT with a body included.
+ * - Before a request that cannot be sent again (any method but GET and HEAD) goes out on an HTTP/1.1 connection that has been
+ *   idle for [PROBE_AFTER_IDLE_NANOS] or more, a network interceptor probes it (a 1 ms read, the check OkHttp itself makes). A
+ *   connection found closed is dropped, together with every other idle one (the server closes them together), and the request
+ *   is sent again on a fresh connection: nothing of it was written, so this is safe for a PUT with a body too. A read is not
+ *   probed: the next bullet recovers it, and the probe is not free (on Windows the 1 ms read waits for the next timer tick: 2
+ *   to 16 ms measured on loopback, a blocked dispatcher thread per request). The idle time runs from the moment the connection
+ *   went back to the pool, that is when the response body has been read (`connectionReleased`), not from the response headers.
  * - A GET or HEAD that fails before its answer on a connection-level error (EOF, reset; not a timeout, not a refused connect, not
  *   a cancellation) is sent once more on a fresh connection, idle connections dropped: reads have no effect to duplicate.
  * - Nothing else is retried: a body that was written and whose answer was lost surfaces to the providers' ladders as before.
  */
 public fun unidriveHttpClient(
     tls: ClientTls? = null,
+    configure: HttpClientConfig<*>.() -> Unit,
+): HttpClient = buildUnidriveHttpClient(tls, configure = configure)
+
+/** Seams of the tests: the name lookup, and a count of the probes that read a connection (see [probeFindsItClosed]). */
+internal fun buildUnidriveHttpClient(
+    tls: ClientTls? = null,
+    lookup: Dns? = null,
+    onProbe: (() -> Unit)? = null,
     configure: HttpClientConfig<*>.() -> Unit,
 ): HttpClient {
     val pool = ConnectionPool(MAX_IDLE_CONNECTIONS, IDLE_CONNECTION_SECONDS, TimeUnit.SECONDS)
@@ -81,6 +94,19 @@ public fun unidriveHttpClient(
                 // successful conditional write into a conflict. The providers' retry ladders and the reconciliation
                 // own every retry; a lost answer surfaces to them as the failure it was.
                 retryOnConnectionFailure(false)
+                if (lookup != null) dns(lookup)
+                // The idle time of a pooled connection starts when the call that used it has let go of it: for a download that
+                // is the end of its body, not the arrival of its headers.
+                eventListener(
+                    object : EventListener() {
+                        override fun connectionReleased(
+                            call: Call,
+                            connection: Connection,
+                        ) {
+                            lastUse[connection] = System.nanoTime()
+                        }
+                    },
+                )
                 // The stale-connection recovery described above, outermost so that it sees what the others raise.
                 addInterceptor { chain ->
                     val request = chain.request()
@@ -106,17 +132,14 @@ public fun unidriveHttpClient(
                 }
                 addNetworkInterceptor { chain ->
                     val connection = chain.connection()
-                    if (connection != null) {
-                        val last = lastUse[connection]
-                        if (connection.probeFindsItClosed(last)) {
+                    if (connection != null && chain.request().method !in READ_METHODS) {
+                        if (connection.probeFindsItClosed(lastUse[connection], onProbe = onProbe)) {
                             pool.evictAll()
                             runCatching { connection.socket().close() }
                             throw StaleConnectionException()
                         }
                     }
-                    val response = chain.proceed(chain.request())
-                    if (connection != null) lastUse[connection] = System.nanoTime()
-                    response
+                    chain.proceed(chain.request())
                 }
                 protocols(listOf(Protocol.HTTP_1_1))
                 connectionPool(pool)
@@ -182,12 +205,31 @@ private fun Socket.isClosedByPeer(): Boolean {
 internal fun Connection.probeFindsItClosed(
     lastUseNanos: Long?,
     nowNanos: Long = System.nanoTime(),
+    onProbe: (() -> Unit)? = null,
 ): Boolean {
     if (protocol() != Protocol.HTTP_1_1 || lastUseNanos == null) return false
-    return nowNanos - lastUseNanos >= PROBE_AFTER_IDLE_NANOS && socket().isClosedByPeer()
+    if (nowNanos - lastUseNanos < PROBE_AFTER_IDLE_NANOS) return false
+    onProbe?.invoke()
+    return socket().isClosedByPeer()
 }
 
 internal const val PROBE_AFTER_IDLE_NANOS = 50_000_000L
 private const val MAX_IDLE_CONNECTIONS = 16
-private const val IDLE_CONNECTION_SECONDS = 15L
+
+/**
+ * How long a connection may sit idle in the pool: 15 s. A choice below what is documented, not a measurement per vendor.
+ * What the vendors say (none of the four documents a keep-alive limit for the API it serves in the 5 to 30 s
+ * range this setting lives in):
+ * - Internxt answers through Cloudflare, which documents 400 s for a client connection and 900 s towards the origin
+ *   (developers.cloudflare.com/fundamentals/reference/connection-limits).
+ * - Microsoft Graph and the Entra token endpoint: Microsoft documents none. Front Door, a front end of Azure services, is
+ *   reported by Microsoft Q&A answers (not by the product documentation) to close an idle client connection after 90 s.
+ * - Amazon S3 documents none either; an AWS re:Post question reports 3 to 5 s on a real bucket (a user's observation, no
+ *   figure from AWS). S3-compatible services (Scaleway, MinIO) set their own limits and are not documented to share one.
+ * - Dropbox documents no keep-alive limit; its forum answers speak only of a one hour limit on a download.
+ * So a server may close a connection in less than 15 s and the pool cannot know: that case is the stale-connection recovery
+ * above, which is why the setting is not the protection, only a way to make that case rare. A shorter value would cost a
+ * handshake for every request that follows a pause of more than that, a longer one buys nothing on S3.
+ */
+internal const val IDLE_CONNECTION_SECONDS = 15L
 private const val MAX_CALLS = 64

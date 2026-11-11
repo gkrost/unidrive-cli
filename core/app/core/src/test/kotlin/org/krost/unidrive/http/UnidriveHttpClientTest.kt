@@ -1,8 +1,11 @@
 package org.krost.unidrive.http
 
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.HttpTimeoutConfig
 import io.ktor.client.plugins.timeout
+import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.prepareGet
 import io.ktor.client.request.put
@@ -16,6 +19,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Dns
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
@@ -23,6 +27,7 @@ import java.net.ConnectException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -503,6 +508,219 @@ class UnidriveHttpClientTest {
                 assertTrue(askedEncoding.all { it == "identity" }, "the client asks for identity by default: $askedEncoding")
                 assertTrue(encoded.contentEquals(received), "the ${encoded.size} stored bytes arrive as they are stored, not the ${received.size} decoded ones")
             }
+        }
+    }
+
+    // ── the idle-connection probe: when it reads a connection, and from when a connection counts as idle ──
+
+    private fun probingClient(probes: AtomicInteger): HttpClient =
+        buildUnidriveHttpClient(onProbe = { probes.incrementAndGet() }) {
+            install(HttpTimeout) {
+                connectTimeoutMillis = 5_000
+                socketTimeoutMillis = 5_000
+                requestTimeoutMillis = 30_000
+            }
+        }
+
+    // Answers every request on the same keep-alive connection; /slow sends its body in ten pieces over about 600 ms.
+    private fun keepAliveServer() =
+        RawServer { s, _ ->
+            while (true) {
+                val req = readRequest(s) ?: break
+                if (req.first().contains(" /slow")) {
+                    s.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n".toByteArray())
+                    repeat(10) {
+                        s.getOutputStream().write(ByteArray(100))
+                        s.getOutputStream().flush()
+                        Thread.sleep(60)
+                    }
+                } else {
+                    ok(s, "x".toByteArray())
+                }
+            }
+        }
+
+    @Test
+    fun `a read after a pause is not probed, a write after the same pause is`() {
+        val probes = AtomicInteger()
+        keepAliveServer().use { server ->
+            probingClient(probes).use { c ->
+                runBlocking {
+                    c.get("http://127.0.0.1:${server.port}/a")
+                    Thread.sleep(300)
+                    c.get("http://127.0.0.1:${server.port}/b")
+                    assertEquals(0, probes.get(), "a GET is recovered by the retry; the probe's 1 ms read (2 to 16 ms on Windows) is not paid for it")
+                    Thread.sleep(300)
+                    c.put("http://127.0.0.1:${server.port}/c") { setBody(ByteArray(1_000)) }
+                    assertEquals(1, probes.get(), "a PUT cannot be sent again once written, so it is probed")
+                }
+            }
+            assertEquals(1, server.accepted.get(), "all on one connection")
+        }
+    }
+
+    @Test
+    fun `a connection that just finished a long download is not idle`() {
+        val probes = AtomicInteger()
+        keepAliveServer().use { server ->
+            probingClient(probes).use { c ->
+                runBlocking {
+                    drain(c, "http://127.0.0.1:${server.port}/slow") // headers at once, the body about 600 ms later
+                    c.put("http://127.0.0.1:${server.port}/next") { setBody(ByteArray(1_000)) }
+                }
+            }
+            assertEquals(0, probes.get(), "the connection went back to the pool a moment ago: it was not idle for the 600 ms of the body")
+            assertEquals(1, server.accepted.get())
+        }
+    }
+
+    @Test
+    fun `a watched streaming PUT on a connection the server closed meanwhile is sent once, on a fresh one`() {
+        val requests = Collections.synchronizedList(mutableListOf<String>())
+        closesAfterOneAnswer(requests).use { server ->
+            client().use { c ->
+                val data = ByteArray(300_000)
+                val progress = UploadProgress(data.size.toLong())
+                runBlocking {
+                    c.get("http://127.0.0.1:${server.port}/warm")
+                    Thread.sleep(300)
+                    val answer =
+                        withUploadWatchdog(progress, idleWindowMs = 5_000, responseWaitMs = 5_000, tickMs = 100, what = "test PUT") {
+                            c.put("http://127.0.0.1:${server.port}/obj") { setBody(progressTrackingBody(data, progress)) }
+                        }
+                    assertEquals(200, answer.status.value)
+                }
+                assertEquals(data.size.toLong(), progress.bytesWritten, "the body was written once, whole")
+            }
+            assertEquals(listOf("GET", "PUT"), requests.toList())
+            assertEquals(2, server.accepted.get())
+        }
+    }
+
+    // ── timeouts per request: what CIO's HttpTimeout gave every request path, on the shipping engine ──
+
+    // The answer's body arrives in [chunks] pieces of 100 bytes, [pauseMs] apart.
+    private fun trickleServer(
+        chunks: Int,
+        pauseMs: Long,
+    ) = RawServer { s, _ ->
+        readRequest(s) ?: return@RawServer
+        s.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: ${chunks * 100}\r\n\r\n".toByteArray())
+        s.getOutputStream().flush()
+        repeat(chunks) {
+            Thread.sleep(pauseMs)
+            s.getOutputStream().write(ByteArray(100))
+            s.getOutputStream().flush()
+        }
+    }
+
+    private fun drainWith(
+        client: HttpClient,
+        url: String,
+        timeouts: HttpRequestBuilder.() -> Unit,
+    ) = runBlocking {
+        client.prepareGet(url) { timeouts() }.execute { r ->
+            val ch = r.bodyAsChannel()
+            val buf = ByteArray(8192)
+            while (ch.readAvailable(buf) >= 0) Unit
+        }
+    }
+
+    @Test
+    fun `a socket timeout set on one request replaces the client's, longer or shorter`() {
+        trickleServer(chunks = 1, pauseMs = 1_500).use { server ->
+            client(socketMs = 400).use { c ->
+                // longer than the pause: the answer arrives
+                drainWith(c, "http://127.0.0.1:${server.port}/o") { timeout { socketTimeoutMillis = 8_000 } }
+            }
+        }
+        trickleServer(chunks = 1, pauseMs = 1_500).use { server ->
+            client(socketMs = 8_000).use { c ->
+                val failure = runCatching { drainWith(c, "http://127.0.0.1:${server.port}/o") { timeout { socketTimeoutMillis = 400 } } }.exceptionOrNull()
+                assertTrue(generateSequence(failure) { it.cause }.any { it is SocketTimeoutException }, "a shorter one cuts the stall: $failure")
+            }
+        }
+    }
+
+    @Test
+    fun `an unbounded request timeout and an unbounded socket timeout are not cut by the client's`() {
+        // The S3 download (an infinite request timeout, the cap is applied to the body) and the Internxt download of unknown size.
+        trickleServer(chunks = 4, pauseMs = 600).use { server ->
+            client(socketMs = 8_000, requestMs = 1_000).use { c ->
+                val control = runCatching { drainWith(c, "http://127.0.0.1:${server.port}/a") {} }.exceptionOrNull()
+                assertTrue(control is HttpRequestTimeoutException, "control: the client's request timeout of 1 s ends a 2.4 s body: $control")
+            }
+        }
+        trickleServer(chunks = 4, pauseMs = 600).use { server ->
+            client(socketMs = 8_000, requestMs = 1_000).use { c ->
+                drainWith(c, "http://127.0.0.1:${server.port}/b") { timeout { requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS } }
+            }
+        }
+        trickleServer(chunks = 1, pauseMs = 1_500).use { server ->
+            client(socketMs = 400, requestMs = 30_000).use { c ->
+                drainWith(c, "http://127.0.0.1:${server.port}/c") { timeout { socketTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS } }
+            }
+        }
+    }
+
+    // ── connections: routes, redirects, lifetime ──
+
+    @Test
+    fun `a connection refused on the first address goes on to the next one`() {
+        // retryOnConnectionFailure(false) must not take the fallback over the addresses of a name with it.
+        val refused = InetAddress.getByName("127.0.0.2")
+        val lookup = Dns { listOf(refused, InetAddress.getLoopbackAddress()) }
+        RawServer { s, _ ->
+            readRequest(s)
+            ok(s, "second address".toByteArray())
+        }.use { server ->
+            buildUnidriveHttpClient(lookup = lookup) {
+                install(HttpTimeout) { connectTimeoutMillis = 5_000 }
+            }.use { c ->
+                assertEquals("second address", runBlocking { c.get("http://service.test:${server.port}/").bodyAsText() })
+            }
+        }
+    }
+
+    @Test
+    fun `a redirect to another host does not carry the credential along`() {
+        val targetNames = Collections.synchronizedList(mutableListOf<String>())
+        RawServer { s, _ ->
+            val req = readRequest(s) ?: return@RawServer
+            targetNames += req.drop(1).map { it.substringBefore(':').lowercase() }
+            ok(s, "target".toByteArray())
+        }.use { target ->
+            RawServer { s, _ ->
+                readRequest(s) ?: return@RawServer
+                s.getOutputStream().write("HTTP/1.1 302 Found\r\nLocation: http://localhost:${target.port}/next\r\nContent-Length: 0\r\n\r\n".toByteArray())
+                s.getOutputStream().flush()
+            }.use { origin ->
+                client().use { c ->
+                    val body = runBlocking { c.get("http://127.0.0.1:${origin.port}/start") { headers.append("Authorization", "Bearer secret") }.bodyAsText() }
+                    assertEquals("target", body, "the redirect was followed")
+                }
+                assertTrue("authorization" !in targetNames, "the credential reached the other host: $targetNames")
+            }
+        }
+    }
+
+    @Test
+    fun `closing the client ends the engine's threads`() {
+        val before = Thread.getAllStackTraces().keys.toSet()
+        RawServer { s, _ ->
+            while (true) {
+                readRequest(s) ?: break
+                ok(s)
+            }
+        }.use { server ->
+            val c = client()
+            runBlocking { repeat(6) { c.get("http://127.0.0.1:${server.port}/t$it") } }
+            val started = Thread.getAllStackTraces().keys.filter { it !in before && it.name.startsWith("unidrive-http") }
+            assertTrue(started.isNotEmpty(), "the client started no thread of its own")
+            c.close()
+            val deadline = System.nanoTime() + 5_000_000_000L
+            while (started.any { it.isAlive } && System.nanoTime() < deadline) Thread.sleep(50)
+            assertTrue(started.none { it.isAlive }, "alive after close: ${started.filter { it.isAlive }.map { it.name }}")
         }
     }
 }
