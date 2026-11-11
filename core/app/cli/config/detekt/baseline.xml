@@ -14,6 +14,7 @@
     <ID>InstanceOfCheckForException:QuotaCommand.kt$QuotaCommand$e is IpcAuthException</ID>
     <ID>InstanceOfCheckForException:RefreshRpcHandler.kt$RefreshRpcHandler$e is IllegalStateException</ID>
     <ID>LargeClass:DaemonRuntimeTest.kt$DaemonRuntimeTest</ID>
+    <ID>LargeClass:IpcContractCorpusTest.kt$IpcContractCorpusTest</ID>
     <ID>LongMethod:DaemonRuntime.kt$DaemonRuntime$private suspend fun lifecycle()</ID>
     <ID>LongMethod:GetCommand.kt$GetCommand$override fun call(): Int</ID>
     <ID>LongMethod:LegacyInventory.kt$LegacyInventory$private fun classify( inputs: Inputs, lockFacts: LockFacts, state: State?, ): Report</ID>
