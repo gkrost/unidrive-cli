@@ -772,6 +772,16 @@ ADMIN class, both profile modes (archive#1240). The credential check of `unidriv
 
 Refusal tokens: `not_signed_in`, `credentials_rejected`, `network_error` (the provider could not be asked, or did not answer within the limit: not a verdict), `provider_error`, `unsupported`, `invalid_timeout`, `invalid_request`. One check runs at a time. The daemon does nothing of its own with the result: no `state.db` write, no event, no `daemon.status` field set from it (the call goes through the same provider code as every other request, so a token refresh it triggers is recorded as any refresh is). A daemon older than this verb answers `unknown_verb`, which the CLI reports as `daemon_too_old`.
 
+### 4.13 `share.create`
+
+WRITE class, both profile modes (#615). One share link for one remote path, what `unidrive share` does, served by the daemon's own provider instance instead of a second engine process: a client's share entry (an Explorer context menu) reaches the engine only through this wire.
+
+| verb | request body | reply |
+|---|---|---|
+| `share.create` | `"path"` (string, the remote path of one file or folder) | `{"ok":true,"url":"https://…"}` or `{"ok":false,"error":token,"message":..}` |
+
+The link's own properties are the engine's defaults for now (24 h expiry, no password — the same defaults as `CloudProvider.share`); a client that needs to choose them sends more fields, added to the wire additively. Refusal tokens: `missing_path` (no `path`, not a string, or empty), `unsupported` (the provider does not declare `Capability.Share`; the verb registers for every provider so a share-less daemon names itself instead of answering `unknown_verb`), `provider_error` (the provider threw; the message is redacted like `refresh.run`'s). The provider call runs on the IO dispatcher; a provider failure answers that one request and the daemon keeps serving. `daemon.status` lists the capability `share.create` only while the provider declares `Capability.Share` — that is a client's gate for showing its share entry for a mount. A daemon older than this verb answers `unknown_verb`, and its `daemon.status` lists no `share.create`.
+
 ## 5. Invariants and failure modes
 
 ### 5.1 Invariants

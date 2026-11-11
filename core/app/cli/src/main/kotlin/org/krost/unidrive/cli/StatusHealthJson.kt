@@ -69,6 +69,12 @@ internal const val CANCEL_READ_CAPABILITY = "hydration.cancel_read"
 internal const val HANDLE_STATUS_CAPABILITY = "hydration.handle_status"
 
 /**
+ * The `daemon.status` capability that says the daemon answers `share.create` (#615), present only while the provider
+ * declares `Capability.Share`: a client shows its share entry for a mount only then.
+ */
+internal const val SHARE_CREATE_CAPABILITY = "share.create"
+
+/**
  * `uploads.running` (archive#1200): the uploads holding a transfer permit right now, present only while there is one. `count` is all
  * of them, `items` the first [HydrationImpl.RUNNING_ITEMS_CAP] by start time, `more` the rest. Each item: `path`,
  * `started_at_ms` (epoch ms the attempt began), `bytes_done` (as the provider last reported) and `bytes_total` (null while the

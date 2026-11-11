@@ -642,6 +642,13 @@ class DaemonRuntime(
                     refreshHandler.handle(connId, json)
                 }
 
+                // share.create verb (§4.13, #615): one share link for one path, from the daemon's live provider. Both
+                // modes — it needs no mount. A provider without Capability.Share answers `unsupported` and
+                // daemon.status does not list the share.create capability for it (the client's visibility gate).
+                val shareCapable = Capability.Share in provider.capabilities()
+                val shareHandler = ShareRpcHandler(provider)
+                server.registerHandler("share.create") { _, json -> shareHandler.handle(json) }
+
                 // sync.enumerate verb (mount-view-refresh-design.md §4.1), mount-only (archive#603: a mirror
                 // daemon registered its wrong_mode refusal above). The handler is constructed above
                 // (shared with the subscribe-triggered enumerate); here we expose it as an explicit verb
@@ -793,7 +800,8 @@ class DaemonRuntime(
                     val capabilitiesJson = (
                         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
                             (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY)) +
-                            (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page"))
+                            (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
+                            (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList())
                     ).joinToString(",", "[", "]") { ndjsonString(it) }
                     // quota (archive#655): the account's storage plan snapshot. Absent entirely for
                     // providers without an account quota (ProviderMetadata hasQuota=false —
