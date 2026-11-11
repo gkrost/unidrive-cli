@@ -26,7 +26,7 @@ import kotlin.coroutines.coroutineContext
  * | Permanent client error    | 4xx except 429         | No     | Fail fast (a provider may single out one more) |
  * | Throttle                  | 429, 503 (Graph, Dropbox, S3, Internxt) | Yes | The server's `Retry-After` ([parseRetryAfterHeader]) or the body hint, else exponential; each provider caps the single wait |
  * | Server error              | 5xx                    | Provider-specific: Internxt retries 500/502/503/504, S3 retries 500/503, Graph and Dropbox retry only 503 | Exponential |
- * | Network error             | (no status)            | Provider-specific: Internxt's read loop retries it; the Graph, Dropbox and S3 send loops do not (a write whose answer was lost may have taken effect) and the error reaches the caller | Exponential where it retries, see [isRetriableIoException]; the token-refresh classifiers share that test |
+ * | Network error             | (no status)            | Provider-specific: Internxt's read loop retries it; the Graph, Dropbox and S3 send loops do not (a write whose answer was lost may have taken effect) and the error reaches the caller | Exponential where it retries, see [isRetriableIoException]; the token-refresh classifiers use [isTransientTransportFailure], which also counts a DNS failure |
  *
  * No client retries a 408 as a throttle.
  * Retry counts and caps are per provider (`MAX_THROTTLE_ATTEMPTS`, `MAX_TOTAL_THROTTLE_WAIT_MS`
@@ -447,6 +447,31 @@ class HttpRetryBudget(
             if (e is javax.net.ssl.SSLException) return hasTransientSocketMessage(e.message)
             return false
         }
+
+        /**
+         * Whether a token refresh that failed with [failure] says nothing about the credential: the network failed, so the refresh
+         * is tried again later and the session is not declared expired. The two token-refresh classifiers (OneDrive, Dropbox) share it.
+         *
+         * It reads the whole cause chain, because the engine's exception wraps the JDK's, and it knows the shapes of the engine in
+         * use. OkHttp reports a name that does not resolve as [java.net.UnknownHostException] (CIO: `UnresolvedAddressException`),
+         * a connection the server closed before it answered as an `IOException("unexpected end of stream")` around an
+         * [java.io.EOFException], and a handshake the server cut as an `SSLHandshakeException` around one. Unlike
+         * [isRetriableIoException], which serves a retry of the request itself and treats a DNS failure as a misconfiguration, a
+         * refresh must survive one: it is what a laptop without a network reports first after it wakes up.
+         * A certificate or protocol failure (an `SSLException` without a closed connection behind it) stays a failure.
+         */
+        fun isTransientTransportFailure(failure: Throwable): Boolean {
+            val chain = generateSequence(failure) { it.cause?.takeIf { cause -> cause !== it } }.take(MAX_CAUSE_DEPTH).toList()
+            return chain.any { t ->
+                t is java.nio.channels.UnresolvedAddressException ||
+                    t is java.net.UnknownHostException ||
+                    t is java.io.EOFException ||
+                    t is io.ktor.client.plugins.HttpRequestTimeoutException ||
+                    (t is java.io.IOException && isRetriableIoException(t))
+            }
+        }
+
+        private const val MAX_CAUSE_DEPTH = 8
 
         // The localised Windows TCP text the classifier matches on; see [isRetriableIoException].
         private fun hasTransientSocketMessage(msg: String?): Boolean {
