@@ -1270,6 +1270,10 @@ class MountEngine private constructor(
         // re-replays excluded files forever. remoteId stays null (nothing uploaded).
         val mtime = Files.getLastModifiedTime(cachePath).toMillis()
         val size = Files.size(cachePath)
+        // gkrost/unidrive-cli#585: the restamp is an upsert, which ends the row's record that no upload of it was ever
+        // submitted. It is written back only when the row had it: this branch alone cannot vouch for a history it did
+        // not witness (the path may have been included, and uploaded, before a rule excluded it).
+        val vouched = db.neverSubmitted(path)
         db.upsertEntry(
             inCloud?.copy(
                 localMtime = mtime,
@@ -1293,7 +1297,19 @@ class MountEngine private constructor(
                 cacheBacked = true,
             ),
         )
+        if (vouched) db.markNeverSubmitted(path)
         return UploadOutcome(sent = false, size = size, oldHash = null, newHash = null)
+    }
+
+    // gkrost/unidrive-cli#585: a never-uploaded row that vouched for a history without an upload stops vouching before the
+    // first provider call, durably (autocommit): a crash after the cloud took the bytes and before the row learned of it
+    // must leave a row that is probed when it is deleted, never one that says nothing was sent.
+    private fun endNeverSubmittedRecord(
+        path: String,
+        existingRemoteId: String?,
+        willSend: Boolean,
+    ) {
+        if (willSend && existingRemoteId == null) db.clearNeverSubmitted(path)
     }
 
     suspend fun uploadFromCache(
@@ -1365,6 +1381,7 @@ class MountEngine private constructor(
         val traceProgress = FileEvents.progress(FileEvents.Phase.UPLOAD_PROGRESS, path, sizeForLog)
         if (unchanged == null) FileEvents.event(FileEvents.Phase.UPLOAD_START, path, bytes = sizeForLog,
             retries = uploadEventRetries.attemptsFailed(path), tally = tally)
+        endNeverSubmittedRecord(path, existingRemoteId, willSend = unchanged == null)
         // gkrost/unidrive-cli#580: true while the result below is bytes this call sent; false for a skipped transfer.
         var wasSent = unchanged == null
         val result =

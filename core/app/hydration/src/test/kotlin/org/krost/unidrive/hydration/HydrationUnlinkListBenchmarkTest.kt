@@ -25,7 +25,7 @@ import kotlin.test.assertTrue
 /**
  * gkrost/unidrive-cli#585: the recorded benchmark of unlinking never-uploaded rows (`remote_id` null, a cache copy,
  * nothing on the cloud) and of listing a folder that holds them, phase by phase, on a counting fake provider.
- * Asserts the operation counts the timings are attributed with (no probe of an excluded never-failed row, the
+ * Asserts the operation counts the timings are attributed with (no probe of a row that records no upload was submitted, the
  * retained probe of an includable one, one live listing per TTL window); the wall-clock medians are printed as
  * `BENCH` lines and live in the PR, not asserted — a per-call timing test would be brittle. Run with:
  * `./gradlew :app:hydration:test --tests 'org.krost.unidrive.hydration.HydrationUnlinkListBenchmarkTest'`
@@ -94,6 +94,7 @@ class HydrationUnlinkListBenchmarkTest {
                         lastSynced = Instant.now(),
                     ),
                 )
+                db.markNeverSubmitted("$folder/~\$b$i.tmp") // what the create of an excluded name leaves
                 val cache = engine.resolveCachePath("$folder/~\$b$i.tmp")
                 Files.createDirectories(cache.parent)
                 Files.write(cache, byteArrayOf(1))
@@ -259,7 +260,11 @@ class HydrationUnlinkListBenchmarkTest {
             paths().map { path ->
                 timed { Files.size(engine.resolveCachePath(path)) }
             }
-        report("list_phase_cache_stat_per_row", size)
+        report("list_phase_cache_stat_per_row_resolve_each", size)
+
+        val cachePass = org.krost.unidrive.engine.CachePaths.Pass(engine.resolveCachePath("/"))
+        val passSize = paths().map { path -> timed { cachePass.sizeOf(path) } }
+        report("list_phase_cache_stat_per_row_one_pass", passSize)
 
         // Small sibling set, for the per-row scaling of the state-only answer.
         val small = freshSmall()
@@ -330,6 +335,7 @@ class HydrationUnlinkListBenchmarkTest {
                         lastSynced = Instant.now(),
                     ),
                 )
+                d.markNeverSubmitted("$folder/~\$b$i.tmp")
                 val cache = e.resolveCachePath("$folder/~\$b$i.tmp")
                 Files.createDirectories(cache.parent)
                 Files.write(cache, byteArrayOf(1))

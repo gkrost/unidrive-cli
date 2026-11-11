@@ -178,6 +178,68 @@ class CachePathsTest {
 
     // ---- forRow: passes over rows skip a path that does not resolve inside ----
 
+    // ---- Pass.sizeOf: the size of a cache file, one containment walk per folder (gkrost/unidrive-cli#585) ----
+
+    private fun sizeThroughResolve(logical: String): Long = Files.size(CachePaths.resolveInside(dir, logical))
+
+    @Test
+    fun `sizeOf answers what Files size of the resolved path answers, for files in several folders`() {
+        Files.writeString(write(dir.resolve("a").resolve("one.bin")), "12345")
+        Files.writeString(write(dir.resolve("a").resolve("deeper").resolve("two.bin")), "123")
+        Files.writeString(write(dir.resolve("root.bin")), "1234567")
+        val pass = CachePaths.Pass(dir)
+
+        for (logical in listOf("/a/one.bin", "/a/deeper/two.bin", "/root.bin", "/a/one.bin")) {
+            assertEquals(sizeThroughResolve(logical), pass.sizeOf(logical), logical)
+        }
+    }
+
+    @Test
+    fun `sizeOf refuses what resolveInside refuses and fails like Files size on a file that is not there`() {
+        write(dir.resolve("a").resolve("one.bin"))
+        val pass = CachePaths.Pass(dir)
+
+        for (p in listOf("/..", "/../x", "/a/../../x", "../x", "/")) {
+            assertFailsWith<SecurityException>(p) { pass.sizeOf(p) }
+        }
+        assertFailsWith<java.nio.file.NoSuchFileException> { pass.sizeOf("/a/missing.bin") }
+        assertFailsWith<java.nio.file.NoSuchFileException> { pass.sizeOf("/no/such/folder/x.bin") }
+        assertFailsWith<java.nio.file.NoSuchFileException> { CachePaths.Pass(base.resolve("absent-cache")).sizeOf("/x.bin") }
+    }
+
+    @Test
+    fun `sizeOf does not follow a link out of the folder and follows one inside`() {
+        val elsewhere = write(base.resolve("elsewhere.txt"))
+        Files.writeString(elsewhere, "0123456789")
+        val outDir = Files.createDirectories(base.resolve("outdir"))
+        Files.writeString(write(outDir.resolve("b.txt")), "01234")
+        val target = write(dir.resolve("real.txt"))
+        Files.writeString(target, "abc")
+        try {
+            Files.createSymbolicLink(dir.resolve("link.txt"), elsewhere)
+            Files.createSymbolicLink(dir.resolve("linked"), outDir)
+            Files.createSymbolicLink(dir.resolve("alias.txt"), target)
+        } catch (e: Exception) {
+            Assume.assumeTrue("symbolic links are not available here: ${e.message}", false)
+        }
+        val pass = CachePaths.Pass(dir)
+
+        assertFailsWith<SecurityException>("a file link that leaves the folder") { pass.sizeOf("/link.txt") }
+        assertFailsWith<SecurityException>("a file below a folder link that leaves it") { pass.sizeOf("/linked/b.txt") }
+        assertEquals(3L, pass.sizeOf("/alias.txt"), "a link inside the folder is read through, as Files.size does")
+    }
+
+    @Test
+    fun `sizeOf states the file as it is now, not as the pass first saw the folder`() {
+        val file = write(dir.resolve("a").resolve("grows.bin"))
+        val pass = CachePaths.Pass(dir)
+        assertEquals(1L, pass.sizeOf("/a/grows.bin"))
+
+        Files.writeString(file, "123456")
+
+        assertEquals(6L, pass.sizeOf("/a/grows.bin"))
+    }
+
     @Test
     fun `a row path that does not resolve inside the cache is skipped, not thrown`() {
         assertEquals(dir.resolve("a.txt"), CachePaths.forRow("/a.txt", log) { CachePaths.resolveInside(dir, it) })

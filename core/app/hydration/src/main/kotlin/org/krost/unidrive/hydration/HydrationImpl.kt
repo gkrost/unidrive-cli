@@ -2787,8 +2787,10 @@ class HydrationImpl(
             ViewPageResult.Failed(HydrationError.Generic(e.message ?: "view page failed"))
         }
 
-    // The wire entry of a row as `list` answers it; the blocked rows are read once, when the maker is made.
+    // The wire entry of a row as `list` answers it; the blocked rows are read once, when the maker is made, and the
+    // cache copies of its pending rows are stated through one containment pass (gkrost/unidrive-cli#585).
     private fun listEntryMaker(): (org.krost.unidrive.sync.model.SyncEntry) -> ListResult.Entry {
+        val cachePass by lazy(LazyThreadSafetyMode.NONE) { CachePaths.Pass(mount.hydrationCacheDir()) }
         val blockedRows = stateDb.blockedRows()
         val blockedByPath = blockedRows.associate { PathNormalizer.nfc(it.path) to it.block.reason }
         val blockedFolders = blockedRows.filter { it.isFolder }.map { it.path.trimEnd('/') + "/" }
@@ -2797,6 +2799,7 @@ class HydrationImpl(
                 e,
                 blockedByPath[PathNormalizer.nfc(e.path)]
                     ?: BLOCKED_BY_PARENT.takeIf { e.remoteId == null && blockedFolders.any { f -> e.path.startsWith(f) } },
+                cachePass,
             )
         }
     }
@@ -2816,6 +2819,7 @@ class HydrationImpl(
     private fun entryOf(
         e: org.krost.unidrive.sync.model.SyncEntry,
         blocked: String?,
+        pass: CachePaths.Pass? = null,
     ): ListResult.Entry {
         // Clamp to >= 0: a stale / i32-overflowed remoteSize (e.g. a multi-GB
         // folder size wrapped past Int.MAX to a negative) must never reach the
@@ -2828,7 +2832,7 @@ class HydrationImpl(
         // One stat per pending row; a resolve/stat failure (unreadable name,
         // no cache file) falls back to the recorded sizes.
         val pendingUpload = e.remoteId == null || uploadSlots.containsKey(e.path)
-        val size = reportedSize(e, pendingUpload)
+        val size = reportedSize(e, pendingUpload, pass)
         return ListResult.Entry(
             path = e.path,
             size = size,
@@ -2866,25 +2870,20 @@ class HydrationImpl(
      * upload whose cache file holds the bytes (a folder never has a cache file).
      * The recorded size is the fallback for every stat failure — [list] must not
      * fail a whole directory because one row's name will not resolve (archive#526 class).
+     *
+     * A row's recorded size does not prove the cache copy's (a failed or crashed edit leaves the old one, a truncate
+     * moves the copy without the row), so the copy is always stated. A [pass] of the caller (a list) states it through
+     * one containment walk per folder instead of one per row (gkrost/unidrive-cli#585).
      */
     private fun reportedSize(
         e: org.krost.unidrive.sync.model.SyncEntry,
         pendingUpload: Boolean,
+        pass: CachePaths.Pass?,
     ): Long {
         val recorded = (if (e.isHydrated) (e.localSize ?: e.remoteSize) else e.remoteSize).coerceAtLeast(0L)
         if (!pendingUpload || e.isFolder) return recorded
-        // gkrost/unidrive-cli#585: the stat resolves through the cache-containment walk (real-path
-        // probes per call), which a folder of never-uploaded rows pays per row on every list.
-        // The recorded size is the cache copy's own: the write verbs stamp it as the copy is
-        // closed (the keep-local branch at close, the upload's settlement). Only a row whose
-        // size is not on record yet (archive#524: a 0 on the wire reads as data loss and
-        // invites a delete), or whose bytes may still be moving under an open handle or a
-        // queued upload, is stated; the rest answer from the row.
-        if (recorded > 0L && !uploadSlots.containsKey(e.path) && openSets.values.none { it.containsValue(e.path) }) {
-            return recorded
-        }
         return runCatching {
-            Files.size(mount.resolveCachePath(e.path)).coerceAtLeast(0L)
+            (if (pass != null) pass.sizeOf(e.path) else Files.size(mount.resolveCachePath(e.path))).coerceAtLeast(0L)
         }.getOrDefault(recorded)
     }
 
@@ -3058,17 +3057,16 @@ class HydrationImpl(
             // the genuinely-local row (archive#1040 M7: an item of other size or
             // content is another device's file and stays).
             //
-            // gkrost/unidrive-cli#585: the probe is a provider round trip on every unlink of a
-            // never-uploaded row, and the row itself proves when none is owed. The durable
-            // keep-local rules exclude the path — no upload of it is ever submitted (the write
-            // verbs take the keep-local branch, the start-up replay skips it, the engine's
-            // planner refuses it) — and no attempt of it ever failed (every failed attempt
-            // stamps last_error_at), so no cloud write of this row's bytes can have landed:
-            // the local-only cleanup below is the whole unlink. Any other row keeps the
-            // probe: an includable path may carry an upload that committed cloud-side
-            // before its row was written (a lost response, a crash between commit and
-            // record), and a recorded failure may have landed after its answer was lost.
-            val probeOwed = !mount.isExcludedPath(normalised) || entry.lastErrorAt != null
+            // gkrost/unidrive-cli#585: the probe is a provider round trip on every unlink of a never-uploaded
+            // row, and a row can prove that none is owed: it records that no upload of it was ever submitted
+            // (StateDatabase.markNeverSubmitted: it was made while its path was kept local, and every writer of its
+            // bytes to the cloud ends that record before its first provider call), its path is kept local now, and no
+            // attempt of it failed. Anything else keeps the probe: the current rules are not a history (a file can
+            // upload, lose its row to a crash before it is adopted and have its path excluded at the next start), a
+            // row of an older build or of another path of creation has none, and a recorded failure may have
+            // landed after its answer was lost.
+            val probeOwed =
+                !mount.isExcludedPath(normalised) || entry.lastErrorAt != null || !stateDb.neverSubmitted(normalised)
             val ghost =
                 if (!probeOwed) {
                     null
@@ -3390,6 +3388,10 @@ class HydrationImpl(
                         lastSynced = now,
                     ),
                 )
+                // gkrost/unidrive-cli#585: a row made while its path is kept local has never had an upload submitted;
+                // the row says so (the row of this very create is the only history there is), so that its unlink owes
+                // the cloud no probe. A row made under another rule carries no such record.
+                if (excluded) stateDb.markNeverSubmitted(normalised)
                 registerHandle(connectionId, handleId, normalised)
                 // archive#450: the bytes that follow are the only copy until the upload lands.
                 touch(normalised)
