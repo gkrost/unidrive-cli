@@ -74,6 +74,15 @@ fun HttpRequestBuilder.requestId(): String? = attributes.getOrNull(RequestIdKey)
  * With no sink on the tap, nothing is recorded; the attempt is still classified, for the abandonment WARN and the
  * in-flight registry, which do not depend on the tap.
  */
+/**
+ * The process-wide sequence every request id is drawn from, initialized with randomness once at
+ * class-load: every client of this process shares it, so a client recreated mid-run cannot restart
+ * onto ids another client already used, and the random start makes two processes writing one shared
+ * log almost surely never overlap. One AtomicLong increment per request — no randomness on the
+ * request path. The counter masks to 32 bits, so the wrap needs 4.3G requests in one process.
+ */
+private val requestIdSequence = AtomicLong(UUID.randomUUID().mostSignificantBits and 0xFFFFFFFFL)
+
 @Suppress("TooGenericExceptionCaught") // the failure is classified, recorded and rethrown unchanged
 @OptIn(io.ktor.utils.io.InternalAPI::class) // the counted reply replaces the response body (see CountedReply)
 val RequestId =
@@ -86,12 +95,6 @@ val RequestId =
         val serverRequestIdHeaders = pluginConfig.serverRequestIdHeaders
         val inFlight = pluginConfig.inFlight
         val retries = RetryTracker()
-        // The id is a per-client random 2-char prefix plus a 6-char counter: no SecureRandom on the request
-        // path (UUID.randomUUID() shares one across every thread), and no two overlapping requests of this
-        // client ever share a counter value. The counter masks to 24 bits, so the wrap needs 16.7M requests
-        // in one client and only two requests that far apart could collide.
-        val idPrefix = UUID.randomUUID().toString().take(2)
-        val idCounter = AtomicLong()
 
         // Attempt metrics. The Send hook wraps one trip to the engine: it sees the failure of a request that never
         // got a response, and the response whose body is consumed later (its job completes then). Redirects and
@@ -184,7 +187,7 @@ val RequestId =
         }
 
         onRequest { request, _ ->
-            val id = idPrefix + "%06x".format(idCounter.getAndIncrement() and 0xFFFFFF)
+            val id = "%08x".format(requestIdSequence.getAndIncrement() and 0xFFFFFFFFL)
             request.attributes.put(CreatedNanosKey, System.nanoTime())
             request.attributes.put(RequestIdKey, id)
             request.headers.append("X-Unidrive-Request-Id", id)

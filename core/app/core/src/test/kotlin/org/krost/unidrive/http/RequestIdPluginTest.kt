@@ -697,6 +697,29 @@ class RequestIdPluginTest {
             assertEquals(seen.size, seen.toSet().size, "no id repeats")
         }
 
+    // The follow-up review of #571: the sequence is process-wide, so a client recreated mid-run cannot
+    // restart the counter onto ids another client already used. With the per-client prefix scheme this
+    // replaces, 257 first requests could draw at most 256 different ids (the prefix has 8 bits) and had
+    // to collide; here every freshly built client draws its own id from the one shared sequence.
+    @Test
+    fun `two hundred fifty-seven clients one request each never repeat an id`() =
+        runTest {
+            val seen = mutableListOf<String>()
+            val engine =
+                MockEngine { request ->
+                    seen += request.headers["X-Unidrive-Request-Id"].orEmpty()
+                    respond("ok", HttpStatusCode.OK, headers = headersOf("Content-Type", "text/plain"))
+                }
+            repeat(257) {
+                val client = HttpClient(engine) { install(RequestId) }
+                client.get("https://example.invalid/a")
+                client.close()
+            }
+            assertEquals(257, seen.size)
+            assertTrue(seen.all { Regex("[0-9a-f]{8}").matches(it) }, "8 hex characters each")
+            assertEquals(seen.size, seen.toSet().size, "no id repeats across clients")
+        }
+
     // The review of #571: the →/← DEBUG lines are not built when DEBUG is off, the header stays, and a
     // 4xx reply still logs its WARN line.
     @Test
