@@ -155,6 +155,7 @@ Issue and pull request numbers are of gkrost/unidrive-cli.
 - Mount: an upload that used all its attempts is offered again in the same process, five rounds 5, 15, 30, 60 and 60 minutes after the previous one (#70, PR #112)
 - `relocate`: two same-size files with different hashes are a conflict, not the same file (#62, PR #636)
 - `relocate`: each transfer gets its own scratch file, not one named by the leaf (#63, PR #647)
+- `relocate` is switched on again: `RELOCATE_ENABLED = true`, the full command path is tested localfs to localfs (delete scope, failed transfer, same-size different bytes, same-named files, hostile names) (#653)
 - S3: a move onto an existing destination no longer silently overwrites it (#176, PR #510)
 - Mount: a local folder delete cannot remove a child another device added moments before — the write journal orders the delete after the merge (#350, PR #383)
 - Mirror: a remote rename into a locally-deleted folder no longer deletes the folder — a move is a delete-blocker (#365, PR #372)
@@ -217,7 +218,7 @@ Issue and pull request numbers are of gkrost/unidrive-cli.
 
 Part of a larger issue; what is left is in `BACKLOG.md`.
 
-- `relocate` refuses to run until its data-loss defects are fixed (`RELOCATE_ENABLED = false`; #56, #61, #62, #63, PR #94) — all four defects are now fixed (#56, #61 closed; #62 PR #636; #63 PR #647); the flag flip is the owner's call
+- `relocate` refused to run while its data-loss defects were open (`RELOCATE_ENABLED = false`; #56, #61, #62, #63, PR #94); all four are fixed (#56, #61 closed; #62 PR #636; #63 PR #647) and the command is on again (#653)
 - OneDrive delta: items without `parentReference.path` get their folder's path, and `deleteById` / `moveById` use the id (#82, PR #103); the percent-encoded path of an item is decoded (#58 V3, PR #96); a download is timed from its declared size (#58 V6, PR #113); a chunked create that meets its own empty leftover completes into it (#69, PR #88)
 - Security hardening: an Internxt download whose shard hash cannot be checked, or whose shard is served over http, is refused (#83, PR #110); the OneDrive bearer token goes only to the Graph origin (#83, PR #116)
 - Mount: a read keeps a cache copy edited while the daemon was stopped (PR #101); a finished download does not replace the copy of an edit that began while it ran (PR #107); a same-size content change ends the hydration of the row (PR #114); an upload waiting for a queue place follows a rename of its folder (#76, PR #90); a daemon stop during an upload loses no data, and the upload limits are logged at start (#72, PR #117)

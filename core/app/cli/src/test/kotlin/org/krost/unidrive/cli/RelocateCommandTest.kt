@@ -502,107 +502,213 @@ class RelocateCommandTest {
         }
     }
 
-    @Test
-    fun `relocate end to end keeps siblings and deletes only the migrated subtree when the switch is on`() {
-        // The full command path is only reachable once the re-enable flips RELOCATE_ENABLED
-        // (gkrost/unidrive-cli#61 stays behind the #56/#62/#63 quarantine until then); until that
-        // this wiring test skips itself instead of failing on the refusal.
-        if (!RELOCATE_ENABLED) {
-            println("skipped: relocate is switched off; this pins the wiring for the re-enable")
-            return
-        }
-        val base = java.nio.file.Files.createTempDirectory("ud-relocate-61-e2e")
+    // -- the full command path (gkrost/unidrive-cli#653): relocate is on again, localfs to localfs, no cloud ------------
+
+    private class CliRun(
+        val exit: Int,
+        val out: String,
+        val err: String,
+    )
+
+    /** Runs `unidrive -c <configDir> <args>` in process with `stdin` as the confirmation answer. */
+    private fun runCli(
+        configDir: java.nio.file.Path,
+        stdin: String,
+        vararg args: String,
+    ): CliRun {
+        val out = java.io.ByteArrayOutputStream()
+        val err = java.io.ByteArrayOutputStream()
+        val origOut = System.out
+        val origErr = System.err
+        val origIn = System.`in`
+        val exit =
+            try {
+                System.setOut(java.io.PrintStream(out, true, Charsets.UTF_8))
+                System.setErr(java.io.PrintStream(err, true, Charsets.UTF_8))
+                System.setIn(java.io.ByteArrayInputStream(stdin.toByteArray()))
+                val c = CommandLine(Main())
+                c.executionExceptionHandler = cliExecutionExceptionHandler
+                c.execute("-c", configDir.toString(), *args)
+            } finally {
+                System.setOut(origOut)
+                System.setErr(origErr)
+                System.setIn(origIn)
+            }
+        return CliRun(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
+    }
+
+    /** A temp dir with `src/`, `dst/` and a config naming them as the localfs profiles `src` and `dst`. */
+    private fun withLocalProfiles(body: (src: java.nio.file.Path, dst: java.nio.file.Path, config: java.nio.file.Path) -> Unit) {
+        val base = java.nio.file.Files.createTempDirectory("ud-relocate-653")
         try {
-            val srcRoot = java.nio.file.Files.createDirectories(base.resolve("src"))
-            val dstRoot = java.nio.file.Files.createDirectories(base.resolve("dst"))
-            val configDir = java.nio.file.Files.createDirectories(base.resolve("config"))
-            java.nio.file.Files.createDirectories(srcRoot.resolve("docs"))
-            java.nio.file.Files.createDirectories(srcRoot.resolve("docs-old"))
-            java.nio.file.Files.writeString(srcRoot.resolve("docs/a.txt"), "a")
-            java.nio.file.Files.writeString(srcRoot.resolve("docs-old/b.txt"), "b")
-            java.nio.file.Files.writeString(srcRoot.resolve("keep.txt"), "k")
+            val src = java.nio.file.Files.createDirectories(base.resolve("src"))
+            val dst = java.nio.file.Files.createDirectories(base.resolve("dst"))
+            val config = java.nio.file.Files.createDirectories(base.resolve("config"))
             java.nio.file.Files.writeString(
-                configDir.resolve("config.toml"),
+                config.resolve("config.toml"),
                 """
                 |[providers.src]
                 |type = "localfs"
-                |root_path = "${toml(srcRoot)}"
+                |root_path = "${toml(src)}"
                 |
                 |[providers.dst]
                 |type = "localfs"
-                |root_path = "${toml(dstRoot)}"
+                |root_path = "${toml(dst)}"
                 """.trimMargin() + "\n",
             )
-            val out = java.io.ByteArrayOutputStream()
-            val err = java.io.ByteArrayOutputStream()
-            val origOut = System.out
-            val origErr = System.err
-            val origIn = System.`in`
-            val exit =
-                try {
-                    System.setOut(java.io.PrintStream(out, true, Charsets.UTF_8))
-                    System.setErr(java.io.PrintStream(err, true, Charsets.UTF_8))
-                    System.setIn(java.io.ByteArrayInputStream("yes\n".toByteArray()))
-                    val c = CommandLine(Main())
-                    c.executionExceptionHandler = cliExecutionExceptionHandler
-                    c.execute(
-                        "-c", configDir.toString(),
-                        "relocate", "--from", "src", "--to", "dst",
-                        "--source-path", "/docs/", "--target-path", "/docs", "--delete-source",
-                    )
-                } finally {
-                    System.setOut(origOut)
-                    System.setErr(origErr)
-                    System.setIn(origIn)
-                }
-
-            assertEquals(
-                0,
-                exit,
-                "relocate exits 0; stderr: ${err.toString(Charsets.UTF_8)}; stdout: ${out.toString(Charsets.UTF_8)}",
-            )
-            assertTrue(java.nio.file.Files.exists(dstRoot.resolve("docs/a.txt")), "the target received the migration")
-            assertTrue(!java.nio.file.Files.exists(srcRoot.resolve("docs")), "the migrated subtree is gone from the source")
-            assertTrue(
-                java.nio.file.Files.exists(srcRoot.resolve("docs-old/b.txt")),
-                "a sibling whose name only extends the source name survives",
-            )
-            assertTrue(java.nio.file.Files.exists(srcRoot.resolve("keep.txt")), "a file outside the subtree survives")
+            body(src, dst, config)
         } finally {
             base.toFile().deleteRecursively()
         }
     }
 
-    // -- relocate is switched off (gkrost/unidrive-cli#56, #61, #62, #63) -----------------------------------------
+    private fun write(
+        root: java.nio.file.Path,
+        rel: String,
+        content: String,
+    ) {
+        val f = root.resolve(rel)
+        java.nio.file.Files.createDirectories(f.parent)
+        java.nio.file.Files.writeString(f, content)
+    }
 
     @Test
-    fun `relocate refuses to run with a clear message, a non-zero exit and nothing touched`() {
-        val dir = java.nio.file.Files.createTempDirectory("ud-relocate-refuse")
-        try {
-            val src = java.nio.file.Files.createDirectories(dir.resolve("src"))
-            val keep = java.nio.file.Files.writeString(src.resolve("keep.txt"), "must survive")
-            val before = java.nio.file.Files.walk(dir).use { it.map { p -> dir.relativize(p).toString() }.sorted().toList() }
-            val out = java.io.ByteArrayOutputStream()
-            val err = java.io.ByteArrayOutputStream()
-            val origOut = System.out
-            val origErr = System.err
-            val exit =
-                try {
-                    System.setOut(java.io.PrintStream(out, true, Charsets.UTF_8))
-                    System.setErr(java.io.PrintStream(err, true, Charsets.UTF_8))
-                    val c = CommandLine(Main())
-                    c.executionExceptionHandler = cliExecutionExceptionHandler
-                    c.execute("-c", dir.toString(), "relocate", "--from", "a", "--to", "b", "--delete-source", "--force")
-                } finally {
-                    System.setOut(origOut)
-                    System.setErr(origErr)
-                }
+    fun `relocate is switched on`() {
+        assertTrue(RELOCATE_ENABLED, "the four data-loss defects (#56, #61, #62, #63) are fixed, see #653")
+    }
 
-            assertTrue(exit != 0, "relocate must exit non-zero while it is disabled")
-            val message = err.toString(Charsets.UTF_8)
-            assertTrue("relocate is disabled" in message, "the refusal must say so; got: $message")
-            assertTrue("#56" in message && "#61" in message && "#62" in message && "#63" in message, "names the issues; got: $message")
-            assertEquals("", out.toString(Charsets.UTF_8), "no pre-flight output: nothing was started")
+    @Test
+    fun `relocate end to end keeps siblings and deletes only the migrated subtree`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "docs/a.txt", "a")
+            write(src, "docs-old/b.txt", "b")
+            write(src, "keep.txt", "k")
+
+            val r =
+                runCli(
+                    config,
+                    "yes\n",
+                    "relocate",
+                    "--from",
+                    "src",
+                    "--to",
+                    "dst",
+                    "--source-path",
+                    "/docs/",
+                    "--target-path",
+                    "/docs",
+                    "--delete-source",
+                )
+
+            assertEquals(0, r.exit, "relocate exits 0; stderr: ${r.err}; stdout: ${r.out}")
+            assertEquals("a", java.nio.file.Files.readString(dst.resolve("docs/a.txt")), "the target received the migration")
+            assertTrue(!java.nio.file.Files.exists(src.resolve("docs")), "the migrated subtree is gone from the source")
+            assertTrue(
+                java.nio.file.Files.exists(src.resolve("docs-old/b.txt")),
+                "a sibling whose name only extends the source name survives (#61)",
+            )
+            assertTrue(java.nio.file.Files.exists(src.resolve("keep.txt")), "a file outside the subtree survives")
+        }
+    }
+
+    @Test
+    fun `relocate without --delete-source copies and leaves the source untouched`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "x/one.txt", "1")
+            write(src, "two.txt", "22")
+
+            val r = runCli(config, "", "relocate", "--from", "src", "--to", "dst")
+
+            assertEquals(0, r.exit, "stderr: ${r.err}; stdout: ${r.out}")
+            assertEquals("1", java.nio.file.Files.readString(dst.resolve("x/one.txt")))
+            assertEquals("22", java.nio.file.Files.readString(dst.resolve("two.txt")))
+            assertEquals("1", java.nio.file.Files.readString(src.resolve("x/one.txt")))
+            assertEquals("22", java.nio.file.Files.readString(src.resolve("two.txt")))
+        }
+    }
+
+    @Test
+    fun `63 - same-named files in different folders each arrive with their own bytes and the source is then deleted`() {
+        withLocalProfiles { src, dst, config ->
+            // Same leaf, same size, different bytes: a shared scratch name would let one overwrite the other.
+            write(src, "a/same.bin", "AAAAAAAA")
+            write(src, "b/same.bin", "BBBBBBBB")
+            write(src, "c/same.bin", "CCCCCCCC")
+
+            val r = runCli(config, "yes\n", "relocate", "--from", "src", "--to", "dst", "--delete-source")
+
+            assertEquals(0, r.exit, "stderr: ${r.err}; stdout: ${r.out}")
+            assertEquals("AAAAAAAA", java.nio.file.Files.readString(dst.resolve("a/same.bin")))
+            assertEquals("BBBBBBBB", java.nio.file.Files.readString(dst.resolve("b/same.bin")))
+            assertEquals("CCCCCCCC", java.nio.file.Files.readString(dst.resolve("c/same.bin")))
+            assertTrue(!java.nio.file.Files.exists(src.resolve("a/same.bin")), "a transferred file is deleted from the source")
+        }
+    }
+
+    @Test
+    fun `62 - a target file of the same size and other bytes is not taken for the migrated file, the source is kept`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "f.txt", "source-bytes")
+            write(dst, "f.txt", "target-bytes") // same size (12), different content
+            write(src, "g.txt", "g")
+
+            val r = runCli(config, "yes\n", "relocate", "--from", "src", "--to", "dst", "--delete-source")
+
+            assertTrue(r.exit != 0, "the delete pass must be refused; stdout: ${r.out}")
+            assertEquals("source-bytes", java.nio.file.Files.readString(src.resolve("f.txt")), "the source copy survives")
+            assertEquals("g", java.nio.file.Files.readString(src.resolve("g.txt")), "nothing else was deleted either")
+            assertEquals("target-bytes", java.nio.file.Files.readString(dst.resolve("f.txt")), "the target's own file is not overwritten")
+        }
+    }
+
+    @Test
+    fun `61 - a failed transfer refuses the delete pass and nothing is deleted from the source`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "ok.txt", "ok")
+            write(src, "blocked.txt", "blocked")
+            // A non-empty directory where the target file must go makes that one upload fail.
+            write(dst, "blocked.txt/inner/x", "x")
+
+            val r = runCli(config, "yes\n", "relocate", "--from", "src", "--to", "dst", "--delete-source", "--force")
+
+            assertTrue(r.exit != 0, "relocate must fail; stdout: ${r.out}; stderr: ${r.err}")
+            assertEquals("ok", java.nio.file.Files.readString(src.resolve("ok.txt")), "no source file is deleted")
+            assertEquals("blocked", java.nio.file.Files.readString(src.resolve("blocked.txt")), "no source file is deleted")
+        }
+    }
+
+    @Test
+    fun `56 - a remote name with backslashes and dots stays below the scratch dir and arrives under its own name`() {
+        // A name with a backslash is only a legal file name on POSIX; on Windows the host cannot hold it.
+        if (System.getProperty("os.name").lowercase().contains("win")) {
+            println("skipped: a backslash cannot be part of a Windows file name; CloudRelocatorTest covers the staging name")
+            return
+        }
+        val tmp = java.nio.file.Path.of(System.getProperty("java.io.tmpdir"))
+        val escapeName = "unidrive-653-escape-${System.nanoTime()}.txt"
+        withLocalProfiles { src, dst, config ->
+            val hostile = "..\\..\\$escapeName"
+            write(src, hostile, "payload")
+
+            val r = runCli(config, "yes\n", "relocate", "--from", "src", "--to", "dst", "--delete-source")
+
+            assertEquals(0, r.exit, "stderr: ${r.err}; stdout: ${r.out}")
+            assertEquals("payload", java.nio.file.Files.readString(dst.resolve(hostile)))
+            assertTrue(!java.nio.file.Files.exists(tmp.resolve(escapeName)), "nothing was written outside the scratch dir")
+            assertTrue(!java.nio.file.Files.exists(tmp.parent.resolve(escapeName)), "nothing was written outside the scratch dir")
+        }
+    }
+
+    @Test
+    fun `relocate with an unknown profile fails with a non-zero exit and creates nothing`() {
+        val dir = java.nio.file.Files.createTempDirectory("ud-relocate-unknown")
+        try {
+            val keep = java.nio.file.Files.writeString(dir.resolve("keep.txt"), "must survive")
+            val before = java.nio.file.Files.walk(dir).use { it.map { p -> dir.relativize(p).toString() }.sorted().toList() }
+
+            val r = runCli(dir, "", "relocate", "--from", "a", "--to", "b", "--delete-source", "--force")
+
+            assertTrue(r.exit != 0, "relocate must exit non-zero for unknown profiles")
             assertEquals("must survive", java.nio.file.Files.readString(keep))
             val after = java.nio.file.Files.walk(dir).use { it.map { p -> dir.relativize(p).toString() }.sorted().toList() }
             assertEquals(before, after, "no file was created or removed")
