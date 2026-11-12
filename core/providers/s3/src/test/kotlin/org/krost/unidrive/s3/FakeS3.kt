@@ -72,6 +72,13 @@ class FakeS3(
     /** Keys DeleteObjects reports as refused (an `Error` entry in its answer) and leaves in place. */
     val undeletable: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
+    /**
+     * The fake's own clock, when set: a request signed more than 15 minutes from it is refused the way S3 refuses it,
+     * 403 `RequestTimeTooSkewed` with `ServerTime` in the body (none for a HEAD) and the time in `Date`.
+     */
+    @Volatile
+    var serverClock: Instant? = null
+
     /** The `Retry-After` value every scripted failure carries, when set. */
     @Volatile
     var failureRetryAfter: String? = null
@@ -134,6 +141,7 @@ class FakeS3(
             // Finding the scripted failure and taking it out of the list is one step: it answers one request, however many are in flight.
             val failure = synchronized(failures) { failures.firstOrNull { it.first(r) }?.also { failures.remove(it) } }
             if (failure != null) return@MockEngine error(failure.second, failure.third)
+            serverClock?.let { now -> skewRefusal(r, now)?.let { return@MockEngine it } }
             serve(request, r)
         }
 
@@ -342,6 +350,26 @@ class FakeS3(
         r.headers.filterKeys { it.startsWith("x-amz-meta-") }.mapKeys { it.key.removePrefix("x-amz-meta-") }
 
     private fun nextTime(): Instant = tick.getAndUpdate { it.plusSeconds(1) }
+
+    private fun MockRequestHandleScope.skewRefusal(
+        r: Request,
+        now: Instant,
+    ): HttpResponseData? {
+        val signedAt =
+            java.time.LocalDateTime
+                .parse(r.headers.getValue("x-amz-date"), java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'"))
+                .toInstant(java.time.ZoneOffset.UTC)
+        if (kotlin.math.abs(java.time.Duration.between(signedAt, now).toMinutes()) < 15) return null
+        val date = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME.format(now.atZone(java.time.ZoneOffset.UTC))
+        val body =
+            if (r.method == HttpMethod.Head) {
+                ""
+            } else {
+                "<Error><Code>RequestTimeTooSkewed</Code><Message>skewed</Message><RequestTime>${r.headers["x-amz-date"]}</RequestTime>" +
+                    "<ServerTime>$now</ServerTime></Error>"
+            }
+        return respond(body, HttpStatusCode.Forbidden, headersOf("Content-Type" to listOf("application/xml"), "Date" to listOf(date)))
+    }
 
     private fun MockRequestHandleScope.xml(body: String) = respond(body, HttpStatusCode.OK, headersOf("Content-Type", "application/xml"))
 
