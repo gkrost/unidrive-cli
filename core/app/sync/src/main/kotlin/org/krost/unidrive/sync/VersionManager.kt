@@ -13,6 +13,11 @@ class VersionManager(
 ) {
     private val versionsDir: Path = syncRoot.resolve(".unidrive-versions")
 
+    // Test seam (gkrost/unidrive-cli#436): called on the thread that copies a snapshot, with the file it copies, so a
+    // test can tell that the sync engine does not copy on its event loop. Production code never sets it.
+    @Volatile
+    internal var copyObserver: ((Path) -> Unit)? = null
+
     data class VersionedItem(
         val timestamp: Instant,
         val originalPath: String,
@@ -29,6 +34,7 @@ class VersionManager(
         val timestamp = UtcSecondStamp.encode(Instant.now().truncatedTo(ChronoUnit.SECONDS))
         val dest = versionFolder(source).resolve(timestamp)
         dest.parent.createDirectories()
+        copyObserver?.invoke(source)
         Files.copy(source, dest)
         return dest
     }
