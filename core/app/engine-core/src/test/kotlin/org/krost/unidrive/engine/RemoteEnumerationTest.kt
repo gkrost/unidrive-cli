@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -288,6 +289,21 @@ class RemoteEnumerationTest {
             assertFalse(Files.exists(bCache), "and its cache copy evicted")
             assertNotNull(db.getEntry("/c.txt"), "an upload in flight defers the reap")
             assertTrue(Files.exists(cCache), "and keeps the only copy")
+        }
+
+    @Test
+    fun `a failure that is not a provider error counts the streak too`() =
+        runTest {
+            // windows#454 item 15: a gather failure that is not a ProviderException (a client bug surfacing as a
+            // RuntimeException) used to skip the failure streak, and the poller after a restart did not back off.
+            provider.items = listOf(file("1", "/a.txt"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            provider.rawFailure = IllegalStateException("the client is broken")
+
+            assertFailsWith<IllegalStateException> { enumeration.enumerate(reset = false) }
+
+            assertEquals("1", db.getSyncState(RemoteEnumeration.FAILURE_STREAK_KEY))
         }
 
     @Test
@@ -1725,6 +1741,9 @@ class RemoteEnumerationTest {
         var items: List<CloudItem> = emptyList()
         var failure: ProviderException? = null
 
+        // windows#454 item 15: a failure that is NOT a provider error (a client bug surfacing as a RuntimeException).
+        var rawFailure: RuntimeException? = null
+
         // The completeness the provider reports, the ids it could not place (DeltaPage.unreachableIds),
         // and the entries it could not read (DeltaPage.skippedPaths).
         var complete = true
@@ -1754,6 +1773,7 @@ class RemoteEnumerationTest {
             onPageProgress: ((itemsSoFar: Int) -> Unit)?,
             scanContext: ScanContext?,
         ): DeltaPage {
+            rawFailure?.let { throw it }
             failure?.let { throw it }
             onDelta?.invoke()
             listings++
