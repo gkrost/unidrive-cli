@@ -2236,6 +2236,16 @@ class StateDatabase(
                 }
         }
 
+    /** Mark a write only while the row read by its caller still names the same file. */
+    fun markEditedForWrite(expected: SyncEntry): Boolean =
+        locked("markEditedForWrite") {
+            beginWrite()
+            val current = getEntry(expected.path) ?: return false
+            if (current.remoteId != expected.remoteId || current.isFolder) return false
+            if (current.remoteId != null) markEdited(current.path, expected.writeToken.orEmpty())
+            true
+        }
+
     /** Why the drive refuses an entry by its name: a stable [reason] token and the conflicting [sibling]'s name when known. */
     data class NameBlock(
         val reason: String,

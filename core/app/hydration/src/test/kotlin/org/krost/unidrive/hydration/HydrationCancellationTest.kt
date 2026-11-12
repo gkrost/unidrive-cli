@@ -20,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertIs
 
 /** gkrost/unidrive-cli#438: a cancelled caller is not a failed request; no reply is made up for it. */
 class HydrationCancellationTest {
@@ -39,6 +40,25 @@ class HydrationCancellationTest {
 
         assertNull(reply, "the cancelled call made up a failure reply, got: $reply")
         assertEquals(null, env.stateDb.editBaseOf("/q/f.txt"), "nothing was marked or truncated")
+    }
+
+    @Test
+    fun `a write waiting for its cache lock refuses a row deleted meanwhile`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this)
+        val path = "/q/f.txt"
+        env.stateDb.insertUnhydratedEntry(path, remoteSize = 5, remoteHash = "v1")
+        env.syncEngine.seedCacheContent(path, "retained")
+        val swapLock = MountEngine.over(env.engine).cacheSwapLock(path)
+        var reply: OpenResult? = null
+        swapLock.withLock {
+            launch { reply = env.hydration.openWriteBegin("conn1", path, handleId = "h1") }
+            runCurrent()
+            env.engine.mountWiring.db.markDeleted(path)
+        }
+        runCurrent()
+
+        assertIs<OpenResult.Failed>(reply)
+        assertEquals("retained", Files.readString(env.syncEngine.resolveCachePath(path)))
     }
 
     // gkrost/unidrive-cli#452 (extends #438 item 9): mkdir and rmdir ran in a runCatching that turned a
