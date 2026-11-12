@@ -51,8 +51,12 @@ kotlin {
 //     service-loaded or reflective paths in the bundled libraries (JDBC
 //     driver, HTTP/WebSocket stacks) land here, plus the deliberate
 //     additions — the JDK HTTP client, the JUL binding those stacks bind
-//     to, TLS EC-certificate support, the optional charsets, locale data
-//     for non-US date/number formats, and the zip filesystem provider.
+//     to, the optional charsets, locale data for non-US date/number
+//     formats, and the zip filesystem provider. TLS EC certificates need
+//     no module of their own: SunEC has lived in java.base since JDK 22,
+//     and `jdk.crypto.ec` — the empty shell it left behind, deprecated for
+//     removal since then — must not come back (a later runtime JDK that
+//     removes it would fail the jlink, gkrost/unidrive-cli#456).
 // jdk.jfr: engine-core's StateDatabaseHold flight-recorder event (the hold-time diagnostic of the
 // state database); it also lets a flight recording run on the packaged image.
 // java.desktop deliberately absent: the OAuth browser opener uses the
@@ -74,7 +78,6 @@ val extraRuntimeModules =
     listOf(
         "java.net.http",
         "java.logging",
-        "jdk.crypto.ec",
         "jdk.charsets",
         "jdk.localedata",
         "jdk.zipfs",
