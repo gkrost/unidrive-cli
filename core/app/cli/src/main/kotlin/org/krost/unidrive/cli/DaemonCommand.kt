@@ -21,6 +21,7 @@ import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
 import java.nio.file.Files
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 
 @Command(
@@ -483,7 +484,7 @@ internal fun requestDaemonShutdown(endpoint: IpcEndpoint, timeoutMs: Long = 3_00
     return try {
         IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).use { channel ->
             channel.configureBlocking(false)
-            val deadline = System.currentTimeMillis() + timeoutMs
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
             val lines = IpcLineClient(channel)
             if (!lines.writeLine("""{"verb":"daemon.shutdown"}""", deadline)) return false
             written = true

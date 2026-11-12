@@ -12,6 +12,7 @@ import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 
 /**
  * archive#142: auto-spawn `unidrive daemon run` on the first client connection. The daemon-design spec used to
@@ -127,7 +128,7 @@ object DaemonAutospawn {
         return try {
             IpcAuthClient.connect(IpcEndpoint(socketPath, configDir, profileName), IpcAuth.Scope.READ).use { channel ->
                 channel.configureBlocking(false)
-                val deadline = System.currentTimeMillis() + replyTimeoutMs
+                val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(replyTimeoutMs)
                 val lines = IpcLineClient(channel)
                 if (!lines.writeLine("""{"verb":"daemon.status"}""", deadline)) return false
                 val reply = (lines.readLine(deadline) as? IpcLineRead.Line)?.text?.asJsonObjectOrNull()
@@ -365,8 +366,8 @@ private fun waitForDaemon(
     logFile: Path,
     child: SpawnedChild? = null,
 ): Boolean {
-    val deadline = System.currentTimeMillis() + waitTimeoutMs
-    while (System.currentTimeMillis() < deadline) {
+    val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitTimeoutMs)
+    while (System.nanoTime() < deadline) {
         if (probe(profileName, socketPath)) return true
         // gkrost/unidrive-cli#455: a daemon that exits at once (credentials refused, profile lock held, IPC token files not writable)
         // will never bind: say so now, with its exit code and the log's tail, instead of waiting out the deadline.

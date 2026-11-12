@@ -26,6 +26,7 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Callable
+import java.util.concurrent.TimeUnit
 
 /**
  * `unidrive [-p <profile>] rm [-r] [--yes] [--json] <remotePath>` — delete one remote file, or with `-r` one remote
@@ -395,7 +396,7 @@ internal fun askDaemon(
         }
     return channel.use {
         it.configureBlocking(false)
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
         val lines = IpcLineClient(it)
         // A request that is not written in full has no newline: the daemon never dispatches it.
         val written =

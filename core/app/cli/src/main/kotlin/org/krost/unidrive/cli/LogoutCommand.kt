@@ -31,6 +31,7 @@ import picocli.CommandLine.ParentCommand
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Callable
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 
 @Command(
@@ -471,7 +472,7 @@ internal fun sendDaemonRequest(
     return try {
         IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).use { channel ->
             channel.configureBlocking(false)
-            val deadline = System.currentTimeMillis() + timeoutMs
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
             val lines = IpcLineClient(channel)
             if (!lines.writeLine(request, deadline)) return null
             readReplyObject(lines, deadline)
