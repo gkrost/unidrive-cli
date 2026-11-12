@@ -64,22 +64,26 @@ class GoneFolderTombstone internal constructor(
         val id = folder.remoteId ?: return 0
         val cacheEvictions = mutableListOf<Triple<String, Path, Long?>>()
         val changed = mutableSetOf<String>()
-        db.batch {
-            val current = db.getEntry(folder.path)?.takeIf { it.isFolder && it.remoteId == id } ?: return@batch
-            val key = current.remotePath ?: current.path
-            val changes = mutableMapOf(key to CloudItem(id, key.substringAfterLast('/'), key, 0, true, null, null, null, null, deleted = true))
-            gather.expandFolderTombstones(changes)
-            for (path in changes.keys) {
-                val row = rowOfTombstone(db, path) ?: continue
-                if (row.path in keep || reapGuards.holdsUnsyncedEdit(row.path, row)) {
-                    log.info("#580: keeping {} below the folder gone in the cloud: it may hold the only copy of an unsent edit", row.path)
-                    continue
-                }
-                db.markDeleted(row.path)
-                CachePaths.forRow(row.path, log, reapGuards.cachePathOf)?.let { cachePath ->
-                    cacheEvictions.add(Triple(row.path, cachePath, runCatching { Files.getLastModifiedTime(cachePath).toMillis() }.getOrNull()))
-                }
-                changed += row.path
+        // windows#454 item 9: the row lookups and the file-stat guards run before the write, and the flips go through
+        // markDeletedChunked — a folder with tens of thousands of rows no longer holds the monitor and every writer
+        // behind it for one unbounded transaction.
+        val current = db.getEntry(folder.path)?.takeIf { it.isFolder && it.remoteId == id } ?: return 0
+        val key = current.remotePath ?: current.path
+        val changes = mutableMapOf(key to CloudItem(id, key.substringAfterLast('/'), key, 0, true, null, null, null, null, deleted = true))
+        gather.expandFolderTombstones(changes)
+        val rows = mutableListOf<String>()
+        for (path in changes.keys) {
+            val row = rowOfTombstone(db, path) ?: continue
+            if (row.path in keep || reapGuards.holdsUnsyncedEdit(row.path, row)) {
+                log.info("#580: keeping {} below the folder gone in the cloud: it may hold the only copy of an unsent edit", row.path)
+                continue
+            }
+            rows += row.path
+        }
+        changed += db.markDeletedChunked(rows).toSet()
+        for (path in changed) {
+            CachePaths.forRow(path, log, reapGuards.cachePathOf)?.let { cachePath ->
+                cacheEvictions.add(Triple(path, cachePath, runCatching { Files.getLastModifiedTime(cachePath).toMillis() }.getOrNull()))
             }
         }
         evictCacheCopies(cacheEvictions, reapGuards)

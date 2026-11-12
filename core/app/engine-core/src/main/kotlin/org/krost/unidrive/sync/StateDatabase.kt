@@ -1851,6 +1851,92 @@ class StateDatabase(
     }
 
     /**
+     * windows#454 item 10: deletes, in chunks that each commit, every alive row whose EFFECTIVE remote path
+     * (`remote_path`, else `path`) lies outside [trackScope] (a scope root or below one) and is not one of
+     * [ancestorPaths] (the scope roots' ancestor folders, which stay). The scope-narrowing of [ScopeTransition] used
+     * to load the whole table and issue one DELETE per row inside one transaction (372k rows on a large profile).
+     * Paths may hold SQL LIKE wildcards; they are escaped. Returns the rows deleted.
+     */
+    fun deleteOutOfScope(
+        trackScope: List<String>,
+        ancestorPaths: Set<String>,
+        chunkSize: Int = DELETE_CHUNK_ROWS,
+    ): Int {
+        require(chunkSize > 0) { "chunkSize must be positive" }
+        if (trackScope.isEmpty()) return 0 // the whole drive is tracked: nothing is out of scope
+        val keep = StringBuilder("(")
+        val params = mutableListOf<String>()
+        trackScope.map { escapeLike(it) }.forEachIndexed { i, escaped ->
+            if (i > 0) keep.append(" OR ")
+            keep.append("""COALESCE(remote_path, path) = ? OR COALESCE(remote_path, path) LIKE ? ESCAPE '\'""")
+            params += trackScope[i]
+            params += "$escaped/%"
+        }
+        if (ancestorPaths.isNotEmpty()) {
+            keep.append(" OR COALESCE(remote_path, path) IN (").append(ancestorPaths.joinToString(",") { "?" }).append(")")
+            params += ancestorPaths
+        }
+        keep.append(")")
+        var total = 0
+        locked("deleteOutOfScope") {
+            while (true) {
+                beginWrite()
+                val deleted =
+                    conn
+                        .prepareStatement(
+                            "DELETE FROM sync_entries WHERE rowid IN " +
+                                "(SELECT rowid FROM sync_entries WHERE status='EXISTS' AND NOT $keep LIMIT ?)",
+                        ).use { stmt ->
+                            var i = 0
+                            for (param in params) stmt.setString(++i, param)
+                            stmt.setInt(i + 1, chunkSize)
+                            stmt.executeUpdate()
+                        }
+                countAlive(-deleted)
+                total += deleted
+                if (deleted < chunkSize) break
+            }
+        }
+        return total
+    }
+
+    // Escapes the SQL LIKE wildcards of [path] for a `LIKE ... ESCAPE '\'` pattern.
+    private fun escapeLike(path: String): String = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    /**
+     * windows#454 item 9: flips every alive row of [paths] to `DELETED` (\`last_synced\` = now, exactly what
+     * [markDeleted] writes), in chunks of [chunkSize] rows. Each chunk is its own transaction commit unless a manual
+     * batch is open, so a large reap never holds the monitor — and every writer behind it — for one unbounded
+     * transaction (the merge was chunked for the same reason, archive#147). The caller does its row lookups and file
+     * checks BEFORE calling this. Returns the paths that were alive and are now deleted.
+     */
+    fun markDeletedChunked(
+        paths: Collection<String>,
+        chunkSize: Int = DELETE_CHUNK_ROWS,
+    ): List<String> {
+        val deleted = mutableListOf<String>()
+        locked("markDeletedChunked") {
+            val at = java.time.Instant.now().toString()
+            for (chunk in paths.chunked(chunkSize)) {
+                beginWrite()
+                conn
+                    .prepareStatement("UPDATE sync_entries SET status='DELETED', last_synced=? WHERE path=? AND status='EXISTS'")
+                    .use { stmt ->
+                        for (raw in chunk) {
+                            stmt.setString(1, at)
+                            stmt.setString(2, PathNormalizer.nfc(raw))
+                            if (stmt.executeUpdate() > 0) {
+                                countAlive(-1)
+                                deleted += raw
+                            }
+                        }
+                    }
+            }
+        }
+        return deleted
+    }
+
+    /**
      * archive#87: tombstone every alive row BELOW [folderPathRaw] in one statement, and return how many. A
      * folder deleted from the mount (hydration.rmdir) or by the reconciler used to tombstone only the
      * folder's own row — a subtree of ~133k rows stayed EXISTS, survived into the next fresh mount and
@@ -3553,6 +3639,9 @@ class StateDatabase(
          * time against commits for the merge (a commit costs more than the rows of a smaller step).
          */
         internal const val RENAME_CHUNK_ROWS = 1_000
+
+        /** Rows one chunk of [markDeletedChunked] flips: the merge's knee size (archive#147, archive#951). */
+        internal const val DELETE_CHUNK_ROWS = 1_000
 
         /** How many rows one step of [scanAliveRows] reads under the monitor. */
         internal const val ALIVE_SCAN_CHUNK_ROWS = 5_000
