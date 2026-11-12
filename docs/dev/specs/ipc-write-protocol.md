@@ -47,7 +47,8 @@ code. Request/reply byte shapes are pinned by the golden corpus under
   are never dropped: the queue holds them beyond 64 (up to 4096, then the
   oldest goes), so a `lost` never hides how a transfer ended. Progress, state
   and `view.invalidated` events can still be lost. A client must treat `lost` as
-  "resync your per-file state from `hydration.list`".
+  "resync your per-file state from `hydration.list`", or catch up with a
+  `since_seq` subscribe (section 4, "Sequence numbers and replay").
 - The daemon serves at most 32 connections at a time by default
   (`UNIDRIVE_IPC_MAX_CLIENTS`, `docs/env-vars.md`). A connection over that
   cap reads one line, `{"ok":false,"error":"too_many_clients"}`, and then end
@@ -396,13 +397,52 @@ is listed.
 | `failed` | `{"event":"failed","path":…,"error":"…"[,"retry_scheduled":true\|false]}` | attempt failed; uploads say whether the daemon will retry |
 | `completed` | `{"event":"completed","path":…,"handle_id":…,"direction":"upload\|download","ok":true\|false[,"error":"…"]}` | handle-scoped outcome — the in-sync signal. An upload that landed (`ok:true`) also carries, additively, `entry` (the row as state.db holds it once the upload's slot is released, in the exact shape of the `hydration.stat` entry: `etag`, `remote_id`, `remote_modified_ms`, `size`, `content_id`, `pending_upload:false`, …) and, when the cloud already held these bytes and nothing was sent, `"skipped":true` (the entry is then the unchanged row). No `entry` for a download, a failure, a kept-both conflict (the row at `path` is then the cloud's version) or a row that cannot be read: a client falls back to `hydration.stat`. A reader that ignores unknown members parses the event as before. Pinned by `events/completed-upload-entry.ndjson` |
 | `view.invalidated` | `{"event":"view.invalidated","paths":[…][,"moved":[{"from":…,"to":…}]]}` or `{"event":"view.invalidated","full":true}` | `full:true` stands alone, without `paths` (more than 256 changed paths, or the tracked scope was reshaped: drop every cache); otherwise `paths` is present. Enumeration changed the view, or `hydration.unlink` / `hydration.rmdir` removed `paths` (a delete through the daemon, e.g. `unidrive rm`, archive#1199); drop readdir/getattr caches |
-| `lost` | `{"event":"lost","since_last":N}` | your queue overflowed; resync from `hydration.list` |
+| `lost` | `{"event":"lost","since_last":N}` | your queue overflowed; resync from `hydration.list`, or subscribe again with `since_seq` (below) |
+
+**Sequence numbers and replay (gkrost/unidrive-cli#437).** Additive; the shape of `history.subscribe`
+([unidrive-daemon-design.md](unidrive-daemon-design.md) §4.8). Every event line carries `seq` right after its name
+(`{"event":"hydrated","seq":43,"path":"/a.txt","bytes":5}`): the events of this daemon run, numbered from 1 in the order the
+daemon sent them to its subscribers, the same number on every connection. `lost` carries none (it is not an event). `seq`
+restarts with the daemon, so it is read together with `run_id`, an opaque string that names the daemon run (a client compares
+it, never parses it). The reply to `hydration.subscribe` names both, and `tail_seq`, the last number given **before** the reply
+was made:
+
+```
+{"verb":"hydration.subscribe"}
+{"ok":true,"tail_seq":42,"run_id":"0123456789ab"}
+```
+
+A client that saw `lost`, or whose connection dropped, subscribes again (on a new connection, or the same one) with the last
+`seq` it applied and the `run_id` it was read in:
+
+```
+{"verb":"hydration.subscribe","since_seq":40,"run_id":"0123456789ab"}
+{"ok":true,"tail_seq":57,"run_id":"0123456789ab","replay":"complete"}
+```
+
+The stream then starts with the kept events after `since_seq`, in order, and goes on with the live ones (numbers above
+`tail_seq`); none is missing between the two and none comes twice. The reply is the connection's first line after the
+request: the replayed and live events never overtake it, whatever the event writer's scheduling. The daemon keeps the
+last 1024 events for this, except
+progress (`uploading`, `downloading`), which is numbered but never kept: the next progress line or the outcome supersedes it.
+A replay is never cut by the 64-event queue bound; the live events behind it are, as before.
+
+- `replay:"complete"`: every event after `since_seq` that the daemon keeps is in the replay.
+- `replay:"gap"`: some are not, because the 1024 moved past `since_seq`, the `run_id` is another run's (the daemon restarted),
+  or `since_seq` is above `tail_seq`. The stream still starts with every event the daemon keeps above `since_seq` (all of them
+  when the run differs), outcomes included, and the client resyncs as after `lost`.
+- `{"ok":false,"error":"invalid_since_seq"}`: `since_seq` is not a non-negative whole number; `{"ok":false,"error":"missing_run_id"}`:
+  `since_seq` without `run_id`. Nothing is subscribed (an earlier subscription of the connection stays).
+
+`replay` is present only when the request named `since_seq`. An engine that does this lists `hydration.subscribe_replay` in the
+`daemon.status` `capabilities`; an older engine ignores `since_seq` and answers `{"ok":true}`. Pinned by
+`hydration.subscribe.ndjson` and `events/hydrated-seq.ndjson`.
 
 `hydration.handle_status {"handle_id":"h1"}` answers how a handle's transfer ended, for a client whose subscribe connection
 dropped (a daemon restart, a reset socket) and that missed the `completed`. The daemon keeps the last `completed` of every
 handle for ten minutes (at most 4096) in memory, whether or not a subscriber was connected:
 
-- `{"ok":true,"state":"done","completed":{<the completed event exactly as the stream carries it>}}`
+- `{"ok":true,"state":"done","completed":{<the completed event exactly as the stream carries it, its seq included>}}`
 - `{"ok":true,"state":"unknown"}`: no outcome is recorded. The transfer may still run, the daemon may have restarted (the table
   is not persisted, and a crash-recovery replay reports under its own `recovery-` handle ids), or the outcome is older than ten
   minutes. A client keeps its own backstop for this answer.
@@ -713,6 +753,7 @@ noticed at once, not when the download ends. Requests the client sends while one
 | `invalid_path` | every verb with a path | a `.` or `..` segment, a control character, an empty segment other than that of a leading or trailing slash, or a segment over 255 UTF-16 units; a new name the host's file system cannot hold (create, mkdir, rename); a path whose cache file would lie outside the profile's hydration cache folder. Refused before anything is changed |
 | `invalid_handle_id` | open_read, open_write, open_write_begin, create | the client named a handle id with the prefix `dh-` of the ids the daemon issues (section 2); nothing was opened |
 | `unknown_view` | view.page | the profile shows no view of that kind (section 4.2) |
+| `invalid_since_seq` / `missing_run_id` | subscribe | a `since_seq` that is not a non-negative whole number, or one without the `run_id` it was read in (section 4); nothing was subscribed |
 | `missing_kind` / `invalid_offset` / `invalid_limit` | view.page | no `kind`, or an `offset` or `limit` that is not a whole number in its range (section 4.2); the provider was not asked |
 | `unknown_verb` / `missing_verb` | any | request-level refusal (startup-safe) |
 | `missing_handle_id` / `missing_path` / `missing_cache_path` / `missing_old_path` / `missing_new_path` / `missing_local_path` / `missing_prefix` | the hydration verbs that take the member | the member is absent (or, for `cache_path` and `local_path`, empty); nothing was touched. A path that is present but unusable answers `invalid_path` |

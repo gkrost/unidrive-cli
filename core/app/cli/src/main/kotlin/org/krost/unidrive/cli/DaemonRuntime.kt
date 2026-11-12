@@ -553,23 +553,26 @@ class DaemonRuntime(
                         val reply = ipc.handle(connectionId = connId, jsonRequest = json)
                         // A READ-scope subscribe (an observer such as a status UI) never starts the enumerate:
                         // observing must not scan the remote. archive#657
-                        if (verb == "hydration.subscribe" && reply.contains("\"ok\":true") &&
-                            subscribeEnumerates(server.authEnabled, server.scopeOf(connId))
-                        ) {
+                        if (verb == "hydration.subscribe" && reply.contains("\"ok\":true")) {
                             server.scheduleAfterReply(connId) {
-                                // Detached, not awaited: the post-reply hook runs on the connection's
-                                // reader coroutine, and the enumeration a fresh mount triggers can run for
-                                // hours — awaiting it here would leave the socket unread for the whole
-                                // pass (EOF unseen, close listeners delayed, the connection still counted
-                                // against the client cap). The in-flight guard still serialises it with
-                                // the sync.enumerate verb and the poller.
-                                serveScope.launch {
-                                    try {
-                                        enumerateHandler.runGuarded(reset = false)
-                                    } catch (e: CancellationException) {
-                                        throw e
-                                    } catch (e: Exception) {
-                                        log.warn("enumerate-on-subscribe failed", e)
+                                // gkrost/unidrive-cli#437: the reply line is out — a replayed subscriber may start
+                                // streaming, so the reply stays the connection's first line and the events follow it.
+                                ipc.onSubscribeReplyWritten(connId)
+                                if (subscribeEnumerates(server.authEnabled, server.scopeOf(connId))) {
+                                    // Detached, not awaited: the post-reply hook runs on the connection's
+                                    // reader coroutine, and the enumeration a fresh mount triggers can run for
+                                    // hours — awaiting it here would leave the socket unread for the whole
+                                    // pass (EOF unseen, close listeners delayed, the connection still counted
+                                    // against the client cap). The in-flight guard still serialises it with
+                                    // the sync.enumerate verb and the poller.
+                                    serveScope.launch {
+                                        try {
+                                            enumerateHandler.runGuarded(reset = false)
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            log.warn("enumerate-on-subscribe failed", e)
+                                        }
                                     }
                                 }
                             }
@@ -818,7 +821,7 @@ class DaemonRuntime(
                     // `hydration.cancel_read` (gkrost/unidrive-cli#23): hydration.cancel with a handle_id ends that open_read, and a download nobody waits for stops.
                     val capabilitiesJson = (
                         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-                            (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY)) +
+                            (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY)) +
                             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
                             (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList())
                     ).joinToString(",", "[", "]") { ndjsonString(it) }

@@ -1,2 +1,12 @@
 {"verb":"hydration.subscribe"}
-{"ok":true}
+{"ok":true,"tail_seq":0,"run_id":"0123456789ab"}
+{"verb":"hydration.subscribe","since_seq":0,"run_id":"0123456789ab"}
+{"ok":true,"tail_seq":0,"run_id":"0123456789ab","replay":"complete"}
+{"verb":"hydration.subscribe","since_seq":7,"run_id":"0123456789ab"}
+{"ok":true,"tail_seq":0,"run_id":"0123456789ab","replay":"gap"}
+{"verb":"hydration.subscribe","since_seq":0,"run_id":"another-run"}
+{"ok":true,"tail_seq":0,"run_id":"0123456789ab","replay":"gap"}
+{"verb":"hydration.subscribe","since_seq":"7","run_id":"0123456789ab"}
+{"ok":false,"error":"invalid_since_seq"}
+{"verb":"hydration.subscribe","since_seq":7}
+{"ok":false,"error":"missing_run_id"}

@@ -22,10 +22,9 @@ class HydrationHandleStatusTest {
         handler.dispatchEvent(completed("h1"))
         handler.dispatchEvent(completed("h2", ok = false, error = HydrationError.Cancelled))
 
-        assertEquals(
-            """{"ok":true,"state":"done","completed":${serialiseHydrationEvent(completed("h1"))}}""",
-            status(handler, "h1"),
-        )
+        // gkrost/unidrive-cli#437: the line as the stream carries it, so with its seq (the first event of the run).
+        val line = serialiseHydrationEvent(completed("h1")).replaceFirst(""""event":"completed",""", """"event":"completed","seq":1,""")
+        assertEquals("""{"ok":true,"state":"done","completed":$line}""", status(handler, "h1"))
         assertTrue(status(handler, "h2").contains(""""ok":false,"error":"cancelled""""), "a failure keeps its token")
         assertEquals("""{"ok":true,"state":"unknown"}""", status(handler, "h3"))
     }

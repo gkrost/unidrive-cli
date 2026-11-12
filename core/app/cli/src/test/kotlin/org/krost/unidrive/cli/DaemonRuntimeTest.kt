@@ -1265,7 +1265,8 @@ class DaemonRuntimeTest {
         try {
             channel.configureBlocking(false)
             channel.write(ByteBuffer.wrap(("""{"verb":"hydration.subscribe"}""" + "\n").toByteArray()))
-            assertEquals("""{"ok":true}""", readFirstReplyLine(channel, 5_000), "the reply does not depend on the scope")
+            val reply = readFirstReplyLine(channel, 5_000)
+            assertTrue(reply.startsWith("""{"ok":true,"tail_seq":"""), "the reply does not depend on the scope: $reply")
 
             // The enumerate of a full-scope subscribe pushes view.invalidated within milliseconds
             // (see the test above); give a wrongly scheduled one ample time to show.
