@@ -3,6 +3,7 @@ package org.krost.unidrive.auth
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import org.krost.unidrive.io.OwnerOnly
+import org.krost.unidrive.io.withLocalIoRetryBlocking
 import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import java.nio.file.Files
 import java.nio.file.Path
@@ -61,7 +62,10 @@ public class CredentialStore<T>(
         if (!Files.exists(file)) return null
 
         return try {
-            val raw = Files.readString(file)
+            // windows#454 item 3: a locked file (an antivirus, a backup tool) is not "not signed in" — it is an I/O
+            // failure, and reading it as null sent the daemon into a needless re-sign-in (CredentialProtector's own
+            // contract). One retry through the local-I/O lock window; every non-missing failure then propagates.
+            val raw = withLocalIoRetryBlocking { Files.readString(file) }
             val decoded = protector?.let { decodeWithAnyId(it, raw) }
             if (migrate && decoded != null && !decoded.protected) {
                 // Protect even malformed legacy content before parsing it. This removes any
@@ -88,9 +92,12 @@ public class CredentialStore<T>(
                 describeDecodeError(e),
             )
             null
+        } catch (e: NoSuchFileException) {
+            log.warn("Credential file at {} vanished while it was read; treating as signed out", file)
+            null
         } catch (e: Exception) {
             log.warn("Failed to load credentials from {}: {}", file, e.message)
-            null
+            throw e
         }
     }
 
