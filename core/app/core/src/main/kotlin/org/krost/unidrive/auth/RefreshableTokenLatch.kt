@@ -4,6 +4,9 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * UD-338: shared serialisation + cancellation-survival pattern for
@@ -74,7 +77,10 @@ class RefreshableTokenLatch {
     ): Boolean =
         generationLock.withLock {
             if (generation != seen) return false
-            commit()
+            // The persist is the part a cancellation must never tear in half between "the provider took the new
+            // token" and "it is in memory and on disk". windows#454 item 6: it is THIS block that is worth
+            // surviving, not the network call around it.
+            withContext(NonCancellable) { commit() }
             true
         }
 
@@ -87,10 +93,14 @@ class RefreshableTokenLatch {
      *   skipped. Use this to short-circuit when another coroutine refreshed
      *   the token while this one was queued at the mutex. Returning null
      *   means "still stale, please refresh."
-     * @param body the network call + persist. Runs inside
-     *   [kotlinx.coroutines.NonCancellable] so a parent-scope cancellation
-     *   can't tear it in half between "got new token" and "wrote it to
-     *   disk."
+     * @param body the network call + persist. Bounded by [REFRESH_TIMEOUT]
+     *   (windows#454 item 6): a token endpoint that accepts and then stalls
+     *   used to hold every request of the provider — and the daemon
+     *   shutdown — under the mutex until the client request timeout (up to
+     *   600 s), because the whole body ran inside
+     *   [kotlinx.coroutines.NonCancellable]. The persist itself survives a
+     *   cancellation through [commitIfCurrent], which is the part worth
+     *   surviving; the network call is ordinary cancellable work again.
      */
     suspend fun <T : Any> withRefresh(
         isAlreadyFresh: () -> T?,
@@ -98,6 +108,11 @@ class RefreshableTokenLatch {
     ): T =
         mutex.withLock {
             isAlreadyFresh()?.let { return@withLock it }
-            withContext(NonCancellable) { body() }
+            withTimeout(REFRESH_TIMEOUT) { body() }
         }
+
+    companion object {
+        /** How long one refresh (network call and persist) may take. */
+        val REFRESH_TIMEOUT: Duration = 60.seconds
+    }
 }
