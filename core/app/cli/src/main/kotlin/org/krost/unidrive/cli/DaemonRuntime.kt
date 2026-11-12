@@ -1145,6 +1145,9 @@ class DaemonRuntime(
     private fun cleanup() {
         runCatching { ipcServer?.close() }
         ipcServer = null
+        // gkrost/unidrive-cli#455: the provider's notification channel and HTTP client end with the daemon, not with the JVM:
+        // an in-process restart (and every test) would otherwise keep them open.
+        servingProvider?.let { provider -> runCatching { provider.close() }.onFailure { log.debug("closing the provider failed", it) } }
         servingProvider = null
         runCatching { quotaMonitor.retryQuotaPersist(db) }
         runCatching { db?.close() }
