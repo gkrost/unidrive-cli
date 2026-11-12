@@ -14,17 +14,25 @@ internal sealed interface IpcReply {
         val text: String,
     ) : IpcReply
 
-    /** The daemon closed the connection without a reply line. */
+    /** The request was written; the daemon closed (or reset) the connection without a reply line. */
     data object Closed : IpcReply
 
-    /** No whole reply line arrived within the deadline (or the request could not be written within it). */
+    /** The request was written; no whole reply line arrived within the deadline. */
     data object TimedOut : IpcReply
+
+    /**
+     * The connection was made, but the request was not written in full within the deadline (or the write failed): it
+     * carries no newline, so the daemon never dispatched it (gkrost/unidrive-cli#442).
+     */
+    data object NotWritten : IpcReply
 }
 
 /**
  * One request and its reply line on a fresh authenticated connection, bounded by [timeoutMs] from the moment the
- * handshake is done: a daemon that is stuck answers [IpcReply.TimedOut] instead of holding its client forever. Throws
- * [org.krost.unidrive.sync.IpcAuthException] and [IOException], as [IpcAuthClient.connect] does.
+ * handshake is done: a daemon that is stuck answers [IpcReply.TimedOut] instead of holding its client forever. The one
+ * round trip of the CLI's verb clients (gkrost/unidrive-cli#442); each maps the answers to its own outcome. Throws
+ * [org.krost.unidrive.sync.IpcAuthException] and [IOException] only when the connection cannot be made, as
+ * [IpcAuthClient.connect] does; an I/O failure after that is [IpcReply.NotWritten] or [IpcReply.Closed].
  */
 internal fun ipcRequest(
     endpoint: IpcEndpoint,
@@ -37,11 +45,22 @@ internal fun ipcRequest(
         channel.configureBlocking(false)
         val deadline = System.currentTimeMillis() + timeoutMs
         val lines = IpcLineClient(channel)
-        if (!lines.writeLine(line, deadline)) return IpcReply.TimedOut
-        when (val read = lines.readLine(deadline)) {
-            is IpcLineRead.Line -> IpcReply.Line(read.text)
-            IpcLineRead.Closed -> IpcReply.Closed
-            IpcLineRead.TimedOut -> IpcReply.TimedOut
+        val written =
+            try {
+                lines.writeLine(line, deadline)
+            } catch (_: IOException) {
+                false
+            }
+        if (!written) return IpcReply.NotWritten
+        try {
+            when (val read = lines.readLine(deadline)) {
+                is IpcLineRead.Line -> IpcReply.Line(read.text)
+                IpcLineRead.Closed -> IpcReply.Closed
+                IpcLineRead.TimedOut -> IpcReply.TimedOut
+            }
+        } catch (_: IOException) {
+            // A daemon closing its sockets can reset the connection before its reply is read (notably on Windows).
+            IpcReply.Closed
         }
     }
 

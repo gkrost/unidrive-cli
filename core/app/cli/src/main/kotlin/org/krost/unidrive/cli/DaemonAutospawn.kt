@@ -4,8 +4,6 @@ import org.krost.unidrive.io.Os
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcEndpoint
-import org.krost.unidrive.sync.IpcLineClient
-import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.slf4j.LoggerFactory
 import java.io.IOException
@@ -125,14 +123,10 @@ object DaemonAutospawn {
     ): Boolean {
         if (!Files.exists(socketPath)) return false
         return try {
-            IpcAuthClient.connect(IpcEndpoint(socketPath, configDir, profileName), IpcAuth.Scope.READ).use { channel ->
-                channel.configureBlocking(false)
-                val deadline = System.currentTimeMillis() + replyTimeoutMs
-                val lines = IpcLineClient(channel)
-                if (!lines.writeLine("""{"verb":"daemon.status"}""", deadline)) return false
-                val reply = (lines.readLine(deadline) as? IpcLineRead.Line)?.text?.asJsonObjectOrNull()
-                reply?.isOkReply() == true && reply.containsKey("protocol_version")
-            }
+            val endpoint = IpcEndpoint(socketPath, configDir, profileName)
+            val line = ipcRequest(endpoint, IpcAuth.Scope.READ, """{"verb":"daemon.status"}""", replyTimeoutMs) as? IpcReply.Line
+            val reply = line?.text?.asJsonObjectOrNull()
+            reply?.isOkReply() == true && reply.containsKey("protocol_version")
         } catch (_: IOException) {
             false
         }

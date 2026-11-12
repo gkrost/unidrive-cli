@@ -12,9 +12,7 @@ import org.krost.unidrive.ProviderException
 import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.sync.IpcAuth
-import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcEndpoint
-import org.krost.unidrive.sync.IpcLineClient
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProfileInfo
 import org.krost.unidrive.sync.ProfileMode
@@ -387,31 +385,17 @@ internal fun askDaemon(
     timeoutMs: Long,
 ): DaemonAnswer {
     if (!Files.exists(endpoint.socketPath)) return DaemonAnswer.NotReached
-    val channel =
+    val reply =
         try {
-            IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL)
+            ipcRequest(endpoint, IpcAuth.Scope.FULL, request, timeoutMs)
         } catch (_: IOException) {
             return DaemonAnswer.NotReached
         }
-    return channel.use {
-        it.configureBlocking(false)
-        val deadline = System.currentTimeMillis() + timeoutMs
-        val lines = IpcLineClient(it)
+    return when (reply) {
+        is IpcReply.Line -> reply.text.asJsonObjectOrNull()?.let { json -> DaemonAnswer.Reply(json) } ?: DaemonAnswer.NoReply
+        IpcReply.Closed, IpcReply.TimedOut -> DaemonAnswer.NoReply
         // A request that is not written in full has no newline: the daemon never dispatches it.
-        val written =
-            try {
-                lines.writeLine(request, deadline)
-            } catch (_: IOException) {
-                false
-            }
-        if (!written) return@use DaemonAnswer.NotReached
-        val reply =
-            try {
-                readReplyObject(lines, deadline)
-            } catch (_: IOException) {
-                null
-            }
-        reply?.let { json -> DaemonAnswer.Reply(json) } ?: DaemonAnswer.NoReply
+        IpcReply.NotWritten -> DaemonAnswer.NotReached
     }
 }
 

@@ -4,11 +4,8 @@ import org.krost.unidrive.AuthRequiredException
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.sync.IpcAuth
-import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcAuthException
 import org.krost.unidrive.sync.IpcEndpoint
-import org.krost.unidrive.sync.IpcLineClient
-import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessFacts
 import org.krost.unidrive.sync.StateDbCorruptException
@@ -291,7 +288,7 @@ internal fun requestDaemonStatus(
     when (val reply = ipcRequest(endpoint, IpcAuth.Scope.READ, """{"verb":"daemon.status"}""", timeoutMs)) {
         is IpcReply.Line -> reply.text
         IpcReply.Closed -> null
-        IpcReply.TimedOut -> throw IpcTimeoutException(timeoutMs)
+        IpcReply.TimedOut, IpcReply.NotWritten -> throw IpcTimeoutException(timeoutMs)
     }
 
 internal const val DAEMON_STATUS_TIMEOUT_MS = 10_000L
@@ -479,22 +476,14 @@ private fun awaitProcessExit(handle: ProcessHandle, timeoutMs: Long): Boolean {
  */
 internal fun requestDaemonShutdown(endpoint: IpcEndpoint, timeoutMs: Long = 3_000): Boolean {
     if (!Files.exists(endpoint.socketPath)) return false
-    var written = false
     return try {
-        IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).use { channel ->
-            channel.configureBlocking(false)
-            val deadline = System.currentTimeMillis() + timeoutMs
-            val lines = IpcLineClient(channel)
-            if (!lines.writeLine("""{"verb":"daemon.shutdown"}""", deadline)) return false
-            written = true
-            when (val reply = lines.readLine(deadline)) {
-                is IpcLineRead.Line -> reply.text.asJsonObjectOrNull()?.isOkReply() == true
-                IpcLineRead.Closed -> true
-                IpcLineRead.TimedOut -> false
-            }
+        when (val reply = ipcRequest(endpoint, IpcAuth.Scope.FULL, """{"verb":"daemon.shutdown"}""", timeoutMs)) {
+            is IpcReply.Line -> reply.text.asJsonObjectOrNull()?.isOkReply() == true
+            IpcReply.Closed -> true
+            IpcReply.TimedOut, IpcReply.NotWritten -> false
         }
     } catch (_: java.io.IOException) {
-        written
+        false
     }
 }
 
