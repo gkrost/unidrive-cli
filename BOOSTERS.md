@@ -14,11 +14,11 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 | `/drive/root/delta` with deltaLink persistence | used | dedupe by `id`; ignore `parentReference.path` |
 | `?token=latest` skip initial crawl on reconnect | used | `GraphApiService.getDelta` (`fromLatest`) |
 | 410 Gone `resyncChanges*` restart | used | `OneDriveProvider.getDeltaConverting410` → `DeltaCursorExpiredException` → full re-enumeration |
-| `$select` on delta to slim payload | gap | archive#127 |
+| `$select` on delta to slim payload | gap | #11 |
 | `Prefer: deltashow*` | n/a | SPO/ODB only |
-| Webhook subscription on driveItem | partial | `GraphApiService.createSubscription`; validation endpoint missing |
+| Change channel on the drive | used | `OneDriveChangeChannel` / `OneDriveChangeSocket` (Graph socket.io endpoint), wired in `OneDriveProvider` (#7); the webhook-subscription route is superseded |
 | Subscription lifetime auto-renewal | used | `SubscriptionRenewalScheduler` |
-| Lifecycle events handling | gap | archive#111 |
+| Lifecycle events handling | used | the channel rotates at the 30-minute expiry and backs off 1 s–60 s (#7) |
 | Periodic delta sweep as safety net | used | `AdaptiveInterval` |
 
 ### Upload
@@ -31,36 +31,36 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 | `deferCommit: true` | n/a | |
 | `If-Match` on createUploadSession | used | `ifMatchETag` on `createUploadSession`; stored sessions are bound to it |
 | `If-Match`/`@odata.etag` on mutating calls | used | `uploadSimple`, `moveItem`, `deleteItem` |
-| `fileSize` precheck → early 507 | gap | archive#154 |
+| `fileSize` precheck → early 507 | gap | #16 |
 
 ### Download
 | Capability | Status | Key refs |
 |---|---|---|
 | `@microsoft.graph.downloadUrl` preauth (~1h) | used | `GraphApiService.downloadFile`; refreshed when the tempauth token expires |
-| `Range` header parallel segments | gap | archive#125 |
-| `If-None-Match` + cTag conditional GET | gap | archive#126 |
+| `Range` header parallel segments | gap | #9 |
+| `If-None-Match` + cTag conditional GET | gap | #10 |
 
 ### Hashes and metadata
 | Capability | Status | Key refs |
 |---|---|---|
 | `file.hashes.quickXorHash`/`sha1Hash`/`sha256Hash` | used | `OneDriveProvider` prefers `quickXorHash`, falls back to `sha256Hash`; `hashAlgorithm()` is QuickXor |
 | `fileSystemInfo` round-trip | used | `GraphApiService.patchFileSystemInfo`, `FileSystemInfo` in `DriveItem.kt` |
-| `malware` facet skip download | used | `GraphApiService.refuseIfMalware` (archive#153) |
+| `malware` facet skip download | used | `GraphApiService.refuseIfMalware` (#15) |
 | `quota` facet on `/me/drive` | used | `GraphApiService.getQuota` |
 
 ### Batch / throttle
 | Capability | Status | Key refs |
 |---|---|---|
-| `$batch`, 20 subrequests, no `dependsOn` | partial | the delta-named URL read-ahead sends 20 `GET items/{id}` per `POST /$batch`; a throttled subresponse brakes the shared budget with its `Retry-After` (archive#124) |
+| `$batch`, 20 subrequests, no `dependsOn` | partial | the delta-named URL read-ahead sends 20 `GET items/{id}` per `POST /$batch`; a throttled subresponse brakes the shared budget with its `Retry-After` (#8) |
 | Per-inner 429 retry inside batch | gap | |
 | `Retry-After` strict + pause-all-threads on 429 | used | `HttpRetryBudget` (`:app:core`) |
-| Per-tenant concurrency calibration | gap | archive#130 |
-| `HttpRetryBudget` per-provider override | gap | archive#131 |
+| Per-tenant concurrency calibration | gap | #13 |
+| `HttpRetryBudget` per-provider override | used | `GraphApiService.throttleBudget` (8); per-host budgets in `InternxtApiService` (archive#131, drained) |
 
 ### Sharing
 | Capability | Status | Key refs |
 |---|---|---|
-| `createLink` idempotent | partial | `GraphApiService.createSharingLink`; client-side dedupe archive#129 |
+| `createLink` idempotent | partial | `GraphApiService.createSharingLink`; client-side dedupe #12 |
 
 ### Long-running
 | Capability | Status | Key refs |
@@ -151,21 +151,19 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 ## Adopt next — ranked
 
 High — correctness or large efficiency win:
-1. OneDrive lifecycle webhook events + notification endpoint (archive#111)
-2. Internxt WebSocket gateway: verify the live endpoint (archive#244)
+1. Internxt WebSocket gateway: verify the live endpoint (archive#244)
 
 Medium — efficiency:
-3. OneDrive `Range` parallel-segment download (archive#125)
-4. OneDrive `If-None-Match` + cTag conditional GET (archive#126)
-5. OneDrive `$select` slim delta payload (archive#127)
-6. OneDrive `$batch` with `dependsOn` + per-inner 429 retry (archive#124)
-7. OneDrive `createUploadSession` 416 branch
-8. OneDrive `conflictBehavior` user-selectable
-9. OneDrive `createLink` client-side dedupe (archive#129)
-10. OneDrive per-tenant concurrency calibration (archive#130)
-11. OneDrive `HttpRetryBudget` per-provider override (archive#131)
+2. OneDrive `Range` parallel-segment download (#9)
+3. OneDrive `If-None-Match` + cTag conditional GET (#10)
+4. OneDrive `$select` slim delta payload (#11)
+5. OneDrive `$batch` with `dependsOn` + per-inner 429 retry (#8)
+6. OneDrive `createUploadSession` 416 branch
+7. OneDrive `conflictBehavior` user-selectable
+8. OneDrive `createLink` client-side dedupe (#12)
+9. OneDrive per-tenant concurrency calibration (#13)
 
 Low — guards and UX:
-12. OneDrive `fileSize` precheck → early 507 (archive#154)
-13. Internxt `encryptVersion` legacy `02-rsa` support
-14. Document Internxt API limitations
+10. OneDrive `fileSize` precheck → early 507 (#16)
+11. Internxt `encryptVersion` legacy `02-rsa` support
+12. Document Internxt API limitations
