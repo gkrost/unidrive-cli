@@ -3197,9 +3197,11 @@ class HydrationImpl(
         // changed while the daemon was stopped): the delete would tombstone that row and evict its cache file, the
         // only copy. The user deletes such a file on its own first.
         if (!recursive) {
-            if (stateDb.hasEntriesBelow(below)) return RmdirResult.NotEmpty
-        } else if (stateDb.getEntriesByPrefix(below).any { holdsUnsyncedBytes(it) }) {
-            return RmdirResult.NotEmpty
+            if (stateDb.hasEntriesBelow(below)) return refusedNotEmpty(normalised, recursive, "alive_descendants")
+        } else {
+            stateDb.getEntriesByPrefix(below).firstOrNull { holdsUnsyncedBytes(it) }?.let {
+                return refusedNotEmpty(normalised, recursive, "unsynced_bytes", it.path)
+            }
         }
 
         return runCatching {
@@ -3217,19 +3219,37 @@ class HydrationImpl(
             // fallback covers providers that have not yet been wired to throw the
             // typed exception — their current wordings stay pinned by
             // rmdir_detects_provider_not_empty_substring.
+            (e as? UnobservedChildException ?: e.cause as? UnobservedChildException)?.let {
+                return@getOrElse refusedNotEmpty(normalised, recursive, it.reason, it.childPath)
+            }
             if (e is FolderNotEmptyException || e.cause is FolderNotEmptyException) {
-                return@getOrElse RmdirResult.NotEmpty
+                return@getOrElse refusedNotEmpty(normalised, recursive, "provider_not_empty")
             }
             permanentRefusalOrNull(e)?.let { refusal -> return RmdirResult.Failed(refusal) }
             val msg = e.message ?: ""
             if (msg.contains("not empty", ignoreCase = true) ||
                 msg.contains("non-empty", ignoreCase = true)
             ) {
-                RmdirResult.NotEmpty
+                refusedNotEmpty(normalised, recursive, "provider_not_empty")
             } else {
                 RmdirResult.Failed(HydrationError.Generic(msg.ifBlank { "rmdir failed" }))
             }
         }
+    }
+
+    // gkrost/unidrive-cli#635: every not_empty answer of rmdir says why in the log; the wire token stays not_empty.
+    private fun refusedNotEmpty(
+        path: String,
+        recursive: Boolean,
+        reason: String,
+        child: String? = null,
+    ): RmdirResult {
+        if (child == null) {
+            log.info("rmdir of {} refused: not_empty reason={} recursive={}", path, reason, recursive)
+        } else {
+            log.info("rmdir of {} refused: not_empty reason={} recursive={} child={}", path, reason, recursive, child)
+        }
+        return RmdirResult.NotEmpty
     }
 
     // The enumeration's reap and refresh.run's reset ask this same question before they drop a row or its cache copy;

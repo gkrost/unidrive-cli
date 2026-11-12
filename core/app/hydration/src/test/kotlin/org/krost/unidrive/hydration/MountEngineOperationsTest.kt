@@ -24,11 +24,13 @@ class MountEngineOperationsTest {
     private lateinit var db: StateDatabase
     private lateinit var engine: SyncEngine
     private lateinit var provider: FakeCloudProvider
+    private lateinit var dbFile: Path
 
     @BeforeTest
     fun setUp() {
         syncRoot = Files.createTempDirectory("unidrive-engine-test")
-        db = StateDatabase(Files.createTempDirectory("unidrive-engine-db").resolve("state.db"))
+        dbFile = Files.createTempDirectory("unidrive-engine-db").resolve("state.db")
+        db = StateDatabase(dbFile)
         db.initialize()
         provider = FakeCloudProvider()
         engine =
@@ -142,6 +144,115 @@ class MountEngineOperationsTest {
         engine.deleteRemote("/dir")
         assertEquals(listOf("/dir"), provider.deletedPaths)
         assertNull(db.getEntry(row.path))
+    }
+
+    // ── gkrost/unidrive-cli#635: the listing still shows the children this mount deleted a moment ago ───────────
+    // `rm -rf` deletes the files first, then the folder. A listing that lags the trash (Internxt's does by minutes) still
+    // returns the deleted children, and the snapshot guard, which compares against the alive rows only, took them for
+    // children it had never seen: the strict rmdir of a folder emptied a second before answered not_empty.
+
+    private fun unchangedCloudItem(row: SyncEntry): CloudItem =
+        cloudItem(row.path, size = row.remoteSize, isFolder = row.isFolder).copy(
+            id = row.remoteId!!,
+            modified = row.remoteModified,
+            hash = row.remoteHash,
+        )
+
+    @Test
+    fun `#635 a folder emptied through the mount is deleted while the listing still shows the deleted file`() = runTest {
+        val dir = trackedRow("/dir", isFolder = true)
+        val file = trackedRow("/dir/a.txt", isFolder = false)
+        db.upsertEntry(dir)
+        db.upsertEntry(file)
+        provider.childrenByParent["/dir"] = listOf(unchangedCloudItem(file)) // the listing lags the trash below
+
+        engine.deleteRemote("/dir/a.txt")
+        engine.deleteRemote("/dir")
+
+        assertEquals(listOf("/dir/a.txt", "/dir"), provider.deletedPaths)
+        assertNull(db.getEntry("/dir"))
+    }
+
+    @Test
+    fun `#635 a deleted subfolder the listing still shows is not taken for an unseen child, nor is what it held`() = runTest {
+        val dir = trackedRow("/dir", isFolder = true)
+        val sub = trackedRow("/dir/sub", isFolder = true)
+        val file = trackedRow("/dir/sub/b.txt", isFolder = false)
+        for (row in listOf(dir, sub, file)) db.upsertEntry(row)
+        provider.childrenByParent["/dir"] = listOf(unchangedCloudItem(sub))
+        provider.childrenByParent["/dir/sub"] = listOf(unchangedCloudItem(file))
+
+        engine.deleteRemote("/dir/sub/b.txt")
+        engine.deleteRemote("/dir/sub")
+        engine.deleteRemote("/dir")
+
+        assertEquals(listOf("/dir/sub/b.txt", "/dir/sub", "/dir"), provider.deletedPaths)
+        assertEquals(
+            listOf("/dir/sub", "/dir"),
+            provider.listChildrenCalls,
+            "a subfolder this mount deleted is not descended into",
+        )
+    }
+
+    @Test
+    fun `#635 a new item at a deleted file's name still refuses the folder delete`() = runTest {
+        val dir = trackedRow("/dir", isFolder = true)
+        val file = trackedRow("/dir/a.txt", isFolder = false)
+        db.upsertEntry(dir)
+        db.upsertEntry(file)
+        engine.deleteRemote("/dir/a.txt")
+        // Another device put a file of the same name there since: another cloud id, the mount has never seen it.
+        provider.childrenByParent["/dir"] = listOf(unchangedCloudItem(file).copy(id = "id-other"))
+
+        assertFailsWith<FolderNotEmptyException> { engine.deleteRemote("/dir") }
+        assertEquals(listOf("/dir/a.txt"), provider.deletedPaths)
+        assertNotNull(db.getEntry("/dir"))
+    }
+
+    @Test
+    fun `#635 a deleted file that is alive again under another path still refuses the folder delete`() = runTest {
+        val dir = trackedRow("/dir", isFolder = true)
+        val file = trackedRow("/dir/a.txt", isFolder = false)
+        db.upsertEntry(dir)
+        db.upsertEntry(file)
+        engine.deleteRemote("/dir/a.txt")
+        // Restored and seen by a poll: an alive row holds the id again, so the listing's item is not a lagging one.
+        db.upsertEntry(file.copy(path = "/elsewhere/a.txt"))
+        provider.childrenByParent["/dir"] = listOf(unchangedCloudItem(file))
+
+        assertFailsWith<FolderNotEmptyException> { engine.deleteRemote("/dir") }
+        assertNotNull(db.getEntry("/dir"))
+    }
+
+    @Test
+    fun `#635 a tombstone that is not the mount's own delete, or an old one, does not hide a listed child`() = runTest {
+        for (case in listOf("not a mount delete", "outside the lagging window")) {
+            setUp()
+            val dir = trackedRow("/dir", isFolder = true)
+            val file = trackedRow("/dir/a.txt", isFolder = false)
+            db.upsertEntry(dir)
+            db.upsertEntry(file)
+            if (case == "not a mount delete") {
+                db.markDeleted(file.path) // a reconciler delete or a reap: no mount delete receipt
+            } else {
+                engine.deleteRemote(file.path)
+                val old = Instant.now().minus(laggingWindow).minusSeconds(60).toString()
+                rawUpdate("UPDATE sync_entries SET mount_deleted_at = '$old' WHERE path = '${file.path}'")
+            }
+            provider.childrenByParent["/dir"] = listOf(unchangedCloudItem(file))
+
+            assertFailsWith<FolderNotEmptyException>(case) { engine.deleteRemote("/dir") }
+            assertNotNull(db.getEntry("/dir"), case)
+            tearDown()
+        }
+        setUp() // the @AfterTest closes this one
+    }
+
+    private val laggingWindow = org.krost.unidrive.engine.RemoteGather.LAGGING_LISTING_WINDOW
+
+    // A second connection, as an older tombstone has no writer of its own in StateDatabase.
+    private fun rawUpdate(sql: String) {
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$dbFile").use { c -> c.createStatement().use { it.executeUpdate(sql) } }
     }
 
     // ── archive#87 (WB-3): a folder delete forgets its subtree ─────────────────────────────────────────

@@ -1974,36 +1974,62 @@ class MountEngine private constructor(
     // or a file whose cloud version moved on. Snapshot the rows before the first listing; a concurrent poll must
     // not make a newly discovered child look like part of this delete. The provider has no atomic subtree guard,
     // so a write after this probe can still race the delete.
+    //
+    // gkrost/unidrive-cli#635: a listing can also lag this mount's own deletes (Internxt's lags a trash by minutes), so
+    // `rm -rf`, which deletes the files and then their folder, met the files it had just trashed and was refused. A
+    // listed child with no row is passed over when the mount deleted that very cloud id within the lagging window and no
+    // alive row holds the id again: the receipt RemoteGather's poll honours too (archive#1199). It is never descended
+    // into. A new id at the same name, a tombstone of another kind or an older one, and a restored id still refuse.
     private suspend fun checkFolderDeleteSnapshot(folder: SyncEntry) {
         val prefix = folder.path.trimEnd('/') + "/"
         val observed = db.getEntriesByPrefix(prefix).filter { it.remoteId != null }.associateBy { it.remoteId }
+        // Read once, and only when a listed child has no row: the common delete never pays for the query.
+        val ownDeletes by lazy {
+            db.recovery.recentlyDeletedRemoteIds(Instant.now().minus(RemoteGather.LAGGING_LISTING_WINDOW))
+        }
         val pending = ArrayDeque<String>()
         val root = remotePathOf(folder.path, folder)
         pending.add(root)
         val visited = mutableSetOf<String>()
-        var unobserved = false
-        while (!unobserved && pending.isNotEmpty()) {
+        var passedOver = 0
+        while (pending.isNotEmpty()) {
             val path = pending.removeFirst()
-            if (!visited.add(path)) {
-                unobserved = true // a listing that repeats a folder cannot be compared with the rows
-                continue
+            // a listing that repeats a folder cannot be compared with the rows
+            if (!visited.add(path)) throw UnobservedChildException(UnobservedChildException.REPEATED_LISTING, path)
+            val children = snapshotListing(path, root) ?: return
+            val (lagging, live) = children.filter { !it.deleted && !it.trashed }.partition { child ->
+                observed[child.id] == null && child.id in ownDeletes && db.getEntryByRemoteId(child.id) == null
             }
-            val children = try {
-                provider.listChildren(path)
-            } catch (e: Exception) {
-                if (path == root && isAlreadyGone(e)) return
-                throw e
-            }
-            for (child in children.filter { !it.deleted && !it.trashed }) {
-                if (differsFromObserved(child, observed[child.id])) {
-                    unobserved = true
-                    break
-                }
+            passedOver += lagging.size
+            for (child in live) {
+                val row = observed[child.id]
+                if (differsFromObserved(child, row)) throw unobservedChild(child, row)
                 if (child.isFolder) pending.add(child.path)
             }
         }
-        if (unobserved) throw FolderNotEmptyException("Remote folder contains an unobserved or changed child")
+        if (passedOver > 0) {
+            log.debug("#635: the listing below {} still shows {} item(s) this mount just deleted; passed over", folder.path, passedOver)
+        }
     }
+
+    // The listing of [path], or null when [root] itself is already gone in the cloud: nothing is left to compare.
+    private suspend fun snapshotListing(
+        path: String,
+        root: String,
+    ): List<CloudItem>? =
+        try {
+            provider.listChildren(path)
+        } catch (e: Exception) {
+            if (path == root && isAlreadyGone(e)) null else throw e
+        }
+
+    private fun unobservedChild(
+        child: CloudItem,
+        row: SyncEntry?,
+    ) = UnobservedChildException(
+        if (row == null) UnobservedChildException.UNOBSERVED else UnobservedChildException.CHANGED,
+        child.path,
+    )
 
     // True when a live child is not the row the mount observed: no row, a file turned folder (or the reverse), or a file whose
     // size, time or recorded identity moved. Folder metadata alone never counts.
@@ -2405,4 +2431,20 @@ sealed interface ExistingFolder {
 
     /** Nothing provable: the caller's refusal stands. */
     data object Unknown : ExistingFolder
+}
+
+/**
+ * gkrost/unidrive-cli#635: the folder delete's snapshot guard refused: the listing has a child the rows do not account
+ * for. [reason] names which ([UNOBSERVED], [CHANGED], [REPEATED_LISTING]) and [childPath] the listed item, so the refusal
+ * that reaches the client as not_empty leaves a line in the log that says why.
+ */
+class UnobservedChildException(
+    val reason: String,
+    val childPath: String,
+) : FolderNotEmptyException("Remote folder contains an unobserved or changed child") {
+    companion object {
+        const val UNOBSERVED = "remote_unobserved"
+        const val CHANGED = "remote_changed"
+        const val REPEATED_LISTING = "remote_listing_repeats"
+    }
 }
