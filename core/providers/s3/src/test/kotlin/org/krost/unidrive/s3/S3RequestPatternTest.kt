@@ -251,9 +251,8 @@ class S3RequestPatternTest {
 
     // ── integrity ──
 
-    // The MD5 of a file is not at hand at the PUT (the engine hashes with SHA-256 after the upload), so #570 costs a read of
-    // the file or a change in what the engine hands down; this test only states the wire format it must end in.
-    @Ignore("enable with #570")
+    // #570 (#628): a single-part PUT carries the Content-MD5 taken from the proof read it already makes, so every PUT of the
+    // tree names the MD5 of exactly the bytes it sends.
     @Test
     fun `a single-part PUT carries the Content-MD5 of its body`() {
         val local = writeLocal()
