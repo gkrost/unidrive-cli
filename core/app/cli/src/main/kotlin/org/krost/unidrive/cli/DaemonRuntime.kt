@@ -849,7 +849,7 @@ class DaemonRuntime(
                     // not move IPC_PROTOCOL_VERSION, so this is the age signal a client gates its
                     // engine minimum on (additive, read-only). archive#574: a dev build carries the commit id
                     // as semver build metadata (VERSION+COMMIT[.dirty]), so the release part orders.
-                    """{"ok":true,"protocol_version":$IPC_PROTOCOL_VERSION,"engine_version":$engineVersionJson,"engine_build_time_ms":$engineBuildTimeJson,"mode":$modeJson,"capabilities":$capabilitiesJson,"uptime_ms":$uptimeMs,"clients_connected":$clientCount,"refresh_in_flight":$refreshInFlight,"refresh_job_id":$jobIdJson,"sync_paths":$syncPathsJson,"provider":$providerJson,"provider_name":$providerNameJson,"authenticated":${provider.isAuthenticated},"enumeration":$enumerationJson,"poll_interval_ms":$pollIntervalMs""" +
+                    """{"ok":true,"protocol_version":$IPC_PROTOCOL_VERSION,"contract_level":$IPC_CONTRACT_LEVEL,"engine_version":$engineVersionJson,"engine_build_time_ms":$engineBuildTimeJson,"mode":$modeJson,"capabilities":$capabilitiesJson,"uptime_ms":$uptimeMs,"clients_connected":$clientCount,"refresh_in_flight":$refreshInFlight,"refresh_job_id":$jobIdJson,"sync_paths":$syncPathsJson,"provider":$providerJson,"provider_name":$providerNameJson,"authenticated":${provider.isAuthenticated},"enumeration":$enumerationJson,"poll_interval_ms":$pollIntervalMs""" +
                         (quotaJson?.let { ",\"quota\":$it" } ?: "") +
                         healthJson +
                         ",\"provider_health\":$providerHealth" +
@@ -1223,6 +1223,12 @@ class DaemonRuntime(
         // shape (IpcContractCorpusTest). Version 2 authenticates every
         // connection (IpcAuth, docs/dev/specs/ipc-authentication.md).
         const val IPC_PROTOCOL_VERSION: Int = IpcAuth.PROTOCOL_VERSION
+
+        // contract_level (gkrost/unidrive-cli#445): an integer raised by one with every additive IPC change (a new
+        // verb, capability or field), so a client orders engine builds by what they answer; protocol_version moves only
+        // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
+        // of each level and fails when the surface changes without a raise.
+        const val IPC_CONTRACT_LEVEL: Int = 1
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a
