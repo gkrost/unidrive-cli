@@ -59,6 +59,9 @@ internal const val LIST_CONTENT_ID_CAPABILITY = "hydration.list_content_id"
 /** The `daemon.status` capability that says the daemon answers `hydration.stat` (gkrost/unidrive-cli#415). */
 internal const val HYDRATION_STAT_CAPABILITY = "hydration.stat"
 
+/** The `daemon.status` capability that says the daemon answers `hydration.locate` (gkrost/unidrive-cli#632). */
+internal const val HYDRATION_LOCATE_CAPABILITY = "hydration.locate"
+
 /**
  * The `daemon.status` capability that says `hydration.cancel` with a `handle_id` ends the `open_read` of that handle and no upload,
  * and that a cancel or a closing connection stops a download nobody waits for (gkrost/unidrive-cli#23).

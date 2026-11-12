@@ -100,6 +100,19 @@ interface Hydration {
     suspend fun stat(path: String): StatResult = StatResult.Unknown("not_supported")
 
     /**
+     * Where the items with the given remote ids are now (`hydration.locate`, gkrost/unidrive-cli#632), one answer per
+     * id in request order. The STATE of an item is what the provider answers by its id — [LocatedItem.Listed] for an
+     * item served in its live namespace (a move by another client keeps it there), [LocatedItem.Trashed] for one in
+     * the provider's trash, [LocatedItem.Unknown] for one no side can name (the provider cannot tell, or it answered
+     * and has no such item). The path shown beside a [LocatedItem.Listed] is the one this daemon's rows hold, which
+     * can lag a move done by another client until the next listing; the state never comes from those rows. A provider
+     * that cannot answer by id at all falls back to them: a live row is [LocatedItem.Listed], no row is
+     * [LocatedItem.Unknown]. The default fails the whole request for a front-end without a cloud behind it.
+     */
+    suspend fun locate(remoteIds: List<String>): LocateResult =
+        LocateResult.Failed(HydrationError.Generic("not_supported"))
+
+    /**
      * Whether the plain file [localPath] holds exactly the bytes of the cloud copy of [path], proven WITHOUT downloading that copy
      * (`hydration.matches_local`, archive#1219). The caller reads the answer as: [MatchesLocalResult.Same] (a real comparison
      * found them equal: adopt the file, upload nothing), [MatchesLocalResult.Differs] (a real comparison found them different), or
@@ -326,6 +339,33 @@ sealed class StatResult {
     data class Unknown(val reason: String) : StatResult()
 
     data class Failed(val error: HydrationError) : StatResult()
+}
+
+/** The answer of `hydration.locate` (gkrost/unidrive-cli#632): one [Located] per requested id, in request order. */
+sealed class LocateResult {
+    data class Ok(val items: List<Located>) : LocateResult()
+
+    data class Failed(val error: HydrationError) : LocateResult()
+}
+
+/** One id's answer. The state is the provider's; [LocatedItem.Listed]'s path is what this daemon's rows hold. */
+data class Located(
+    val remoteId: String,
+    val found: LocatedItem,
+)
+
+sealed class LocatedItem {
+    /** The provider serves the item live; [path] is the path this daemon's rows hold (null when none does), and [isFolder] the provider's or the rows' word when either has one. */
+    data class Listed(
+        val path: String?,
+        val isFolder: Boolean?,
+    ) : LocatedItem()
+
+    /** The item sits in the provider's trash; [isFolder] the provider's word when it has one. */
+    data class Trashed(val isFolder: Boolean?) : LocatedItem()
+
+    /** No side can name the item: the provider cannot tell or has no such item, and no live row says otherwise. */
+    data object Unknown : LocatedItem()
 }
 
 sealed class MkdirResult {

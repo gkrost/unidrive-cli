@@ -89,7 +89,7 @@ Classified by the exact wire string; a verb that is not listed is `admin` (defau
 
 | Class | Verbs |
 |---|---|
-| read | `daemon.status`, `hydration.list`, `hydration.stat`, `hydration.handle_status`, `hydration.last_synced`, `hydration.subscribe`, `sync.subscribe`, `hydration.open_read`, `history.list`, `history.subscribe`, `metrics.query`, `ignore.explain`, `view.page` |
+| read | `daemon.status`, `hydration.list`, `hydration.stat`, `hydration.locate`, `hydration.handle_status`, `hydration.last_synced`, `hydration.subscribe`, `sync.subscribe`, `hydration.open_read`, `history.list`, `history.subscribe`, `metrics.query`, `ignore.explain`, `view.page` |
 | write | `hydration.hydrate`, `hydration.dehydrate`, `hydration.create`, `hydration.open_write`, `hydration.open_write_begin`, `hydration.close_handle`, `hydration.mkdir`, `hydration.unlink`, `hydration.rmdir`, `hydration.rename`, `hydration.cancel`, `sync.enumerate`, `hydration.matches_local`, `hydration.refuse_name`, `share.create` |
 | admin | `daemon.shutdown`, `daemon.pause`, `daemon.resume`, `refresh.run`, `auth.logout`, `auth.begin`, `auth.complete`, `auth.login`, `auth.check` |
 
@@ -105,7 +105,7 @@ on another verb than the one checked. `hello` and `hello.proof` after authentica
 triggers after its reply: an observer (a status UI) cannot make the daemon scan the remote. Of the read
 class, only `hydration.open_read` does work: it downloads and caches the file's content, so a front-end that
 only observes must not call it. The other read verbs (`daemon.status`, `hydration.list`,
-`hydration.stat`, `hydration.handle_status`, `hydration.last_synced`, `sync.subscribe`, `metrics.query`, `ignore.explain`) answer from state the daemon already holds.
+`hydration.stat`, `hydration.locate`, `hydration.handle_status`, `hydration.last_synced`, `sync.subscribe`, `metrics.query`, `ignore.explain`) answer from state the daemon already holds.
 Two may ask the provider for a view's list (ipc-write-protocol.md section 4.2): `hydration.list` of a view's folder and
 `view.page`. Both are bounded by the view's cache: one request in flight per view, and no new request within its time to live
 for a list no longer than one already asked for (`view.page` rounds its size up to a multiple of 50, at most 1,000 references),

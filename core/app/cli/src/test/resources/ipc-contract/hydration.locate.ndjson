@@ -1,0 +1,10 @@
+{"verb":"hydration.locate","remote_ids":["rid-live","rid-folder","rid-trashed","rid-gone","rid-norow"]}
+{"ok":true,"items":[{"remote_id":"rid-live","state":"listed","path":"/docs/report.txt","is_folder":false},{"remote_id":"rid-folder","state":"listed","path":"/docs","is_folder":true},{"remote_id":"rid-trashed","state":"trashed"},{"remote_id":"rid-gone","state":"unknown"},{"remote_id":"rid-norow","state":"listed","path":null}]}
+{"verb":"hydration.locate","remote_ids":[]}
+{"ok":true,"items":[]}
+{"verb":"hydration.locate"}
+{"ok":false,"error":"missing_remote_ids"}
+{"verb":"hydration.locate","remote_ids":"rid-live"}
+{"ok":false,"error":"missing_remote_ids"}
+{"verb":"hydration.locate","remote_ids":["a","b"],"nonsense_member":true}
+{"ok":true,"items":[{"remote_id":"a","state":"listed","path":"/docs/report.txt","is_folder":false},{"remote_id":"b","state":"listed","path":"/docs/report.txt","is_folder":false}]}

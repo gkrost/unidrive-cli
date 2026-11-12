@@ -937,6 +937,18 @@ class OneDriveProvider(
             }
         }
 
+    // gkrost/unidrive-cli#632: a move keeps the item's id, so a 200 on GET /items/{id} says the item is live in the
+    // drive (under whatever parent another client moved it to). A 404 cannot tell the recycle bin from a delete for
+    // good without a bin walk, and an answer that proves nothing must not decide: NotFound, which the caller reads as
+    // "not listed" rather than "in the trash".
+    override suspend fun itemStateById(remoteId: String): ItemRemoteState =
+        try {
+            ItemRemoteState.Live(graphApi.getItemById(remoteId).isFolder)
+        } catch (e: GraphApiException) {
+            if (e.statusCode != 404) throw e
+            ItemRemoteState.NotFound
+        }
+
     // A shared-with-me entry as the engine sees it. The entry itself is a stub in the caller's drive; the item is
     // `remoteItem`, and its drive is `remoteItem.parentReference.driveId` (on OneDrive Business the stub has no
     // parentReference at all, and the file or folder facet and the hashes are only on `remoteItem`). The pair is

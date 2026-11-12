@@ -82,6 +82,23 @@ import java.util.concurrent.atomic.AtomicLong
  *                         {"ok":false,"error":"<msg>"}              EIO
  *               daemon.status lists "hydration.stat" in capabilities on an engine that answers it.
  *
+ *   locate     (gkrost/unidrive-cli#632) request: {"verb":"hydration.locate","remote_ids":["id1","id2",...]}
+ *               Where the items with the given remote ids are now, one answer per id in request order. The STATE of an
+ *               item is what the provider answers by its id (an item another client moved still answers, under its new
+ *               parent); the path shown is what this daemon's rows hold and can lag such a move until the next listing.
+ *               At most [LOCATE_MAX_IDS] ids answer in one request; more refuse with "too_many_ids".
+ *               reply:    {"ok":true,"items":[
+ *                          {"remote_id":"...","state":"listed","path":"/current/path"|"null"[,"is_folder":true|false]},
+ *                          {"remote_id":"...","state":"trashed"[,"is_folder":true|false]},
+ *                          {"remote_id":"...","state":"unknown"}]}
+ *                         "path" is null when no row of this daemon names the id; "is_folder" only where the provider's
+ *                         or the rows' word exists.
+ *                         A provider that cannot answer by id falls back to the rows: a live row answers listed, no row unknown.
+ *                         {"ok":false,"error":"missing_remote_ids"}   the member is absent or not an array of strings
+ *                         {"ok":false,"error":"too_many_ids"}            more than [LOCATE_MAX_IDS] ids
+ *                         {"ok":false,"error":"<msg>"}                   the provider could not be asked
+ *               daemon.status lists "hydration.locate" in capabilities on an engine that answers it.
+ *
  *   mkdir       request:  {"verb":"hydration.mkdir","path":"/foo"[,"parents":true]}
  *               reply:    {"ok":true}
  *                         {"ok":true,"existed":true}                the folder was there already; with "parents":true the
@@ -446,6 +463,7 @@ class HydrationIpcHandler(
             "hydration.matches_local",
             "hydration.list",
             "hydration.stat",
+            LOCATE,
             "hydration.mkdir",
             "hydration.unlink",
             "hydration.rmdir",
@@ -465,6 +483,12 @@ class HydrationIpcHandler(
 
         /** One page of a read-only view for a front-end's own list (the Recents list's "more" button). */
         const val VIEW_PAGE = "view.page"
+
+        /** Where the items with the given remote ids are now (gkrost/unidrive-cli#632); also the daemon.status capability. */
+        const val LOCATE = "hydration.locate"
+
+        // The most ids one locate request names; a client's reconciler checks tens to hundreds at a time.
+        const val LOCATE_MAX_IDS = 5000
 
         // A page holds this many references when the request names no limit, and at most the most a provider's route answers.
         private const val VIEW_PAGE_DEFAULT_LIMIT = 50
@@ -689,6 +713,7 @@ class HydrationIpcHandler(
                     is CreateResult.Failed -> reply(ok = false, error = r.error.message)
                 }
             }
+            LOCATE -> locateReply(request)
             REFUSE_NAME -> {
                 // Not guarded by name_clash: two spellings of one name are exactly what this verb reports.
                 val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
@@ -862,6 +887,35 @@ class HydrationIpcHandler(
             is ViewPageResult.Ok -> serialiseViewPage(r)
             ViewPageResult.UnknownView -> reply(ok = false, error = "unknown_view")
             is ViewPageResult.Failed -> reply(ok = false, error = r.error.message)
+        }
+    }
+
+    // hydration.locate: where the items with the given remote ids are now (gkrost/unidrive-cli#632).
+    private suspend fun locateReply(request: HydrationRequest): String {
+        val ids = request.strings("remote_ids") ?: return reply(ok = false, error = "missing_remote_ids")
+        if (ids.size > LOCATE_MAX_IDS) return reply(ok = false, error = "too_many_ids")
+        return when (val r = hydration.locate(ids)) {
+            is LocateResult.Ok -> {
+                val sb = StringBuilder("""{"ok":true,"items":[""")
+                r.items.forEachIndexed { i, item ->
+                    if (i > 0) sb.append(',')
+                    sb.append("""{"remote_id":""").append(jsonEsc(item.remoteId)).append(""","state":""")
+                    when (val found = item.found) {
+                        is LocatedItem.Listed -> {
+                            sb.append("\"listed\",\"path\":").append(found.path?.let { jsonEsc(it) } ?: "null")
+                            found.isFolder?.let { sb.append(""","is_folder":""").append(it) }
+                        }
+                        is LocatedItem.Trashed -> {
+                            sb.append("\"trashed\"")
+                            found.isFolder?.let { sb.append(""","is_folder":""").append(it) }
+                        }
+                        LocatedItem.Unknown -> sb.append("\"unknown\"")
+                    }
+                    sb.append('}')
+                }
+                sb.append("]}").toString()
+            }
+            is LocateResult.Failed -> reply(ok = false, error = r.error.message)
         }
     }
 }

@@ -35,6 +35,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.krost.unidrive.FolderNotEmptyException
+import org.krost.unidrive.ItemRemoteState
 import org.krost.unidrive.RemoteContentRefusedDownloadException
 import org.krost.unidrive.RemoteIncompleteDownloadException
 import org.krost.unidrive.RemoteObjectMissingDownloadException
@@ -2785,6 +2786,31 @@ class HydrationImpl(
             throw e
         } catch (e: Exception) {
             ViewPageResult.Failed(HydrationError.Generic(e.message ?: "view page failed"))
+        }
+
+    // gkrost/unidrive-cli#632: one answer per id, in request order. The state is the provider's by-id word; the rows
+    // only name the path (and only decide when the provider cannot answer by id at all). One provider failure fails
+    // the whole request: a partial answer would let a caller release a hold the missing ids never proved.
+    override suspend fun locate(remoteIds: List<String>): LocateResult =
+        try {
+            LocateResult.Ok(
+                remoteIds.map { id ->
+                    val row = stateDb.getEntryByRemoteId(id)
+                    when (val state = mount.itemStateById(id)) {
+                        is ItemRemoteState.Live -> Located(id, LocatedItem.Listed(row?.path, state.isFolder ?: row?.isFolder))
+                        is ItemRemoteState.Trashed -> Located(id, LocatedItem.Trashed(state.isFolder ?: row?.isFolder))
+                        ItemRemoteState.NotFound, ItemRemoteState.Unknown ->
+                            Located(
+                                id,
+                                if (row != null) LocatedItem.Listed(row.path, row.isFolder) else LocatedItem.Unknown,
+                            )
+                    }
+                },
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LocateResult.Failed(HydrationError.Generic(e.message ?: "locate failed"))
         }
 
     // The wire entry of a row as `list` answers it; the blocked rows are read once, when the maker is made, and the
