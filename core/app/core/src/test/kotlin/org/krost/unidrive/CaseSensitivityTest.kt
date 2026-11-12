@@ -58,10 +58,8 @@ class CaseSensitivityTest {
         assertEquals(expected, CaseSensitivity.ofDirectory(dir))
     }
 
-    // The root has its own case rule and its parent another: the root's rule is the one its names live under. NTFS lets
-    // one folder be case-sensitive inside a folder that folds (fsutil, no elevation needed where it is available).
-    @Test
-    fun `a case-sensitive folder inside a folder that folds is answered by its own rule`() {
+    // A folder whose case flag fsutil set inside a temp folder that folds; the test is skipped where that cannot be done.
+    private fun caseSensitiveFolderInFoldingParent(): Path {
         val parent = Files.createTempDirectory("caseprobe")
         assumeTrue("a parent that folds case", folds(parent))
         val root = Files.createDirectory(parent.resolve("root"))
@@ -76,8 +74,25 @@ class CaseSensitivityTest {
                     }
             }.getOrDefault(false)
         assumeTrue("per-directory case sensitivity (fsutil)", flagged)
+        return root
+    }
+
+    // The root has its own case rule and its parent another: the root's rule is the one its names live under. NTFS lets
+    // one folder be case-sensitive inside a folder that folds (fsutil, no elevation needed where it is available).
+    @Test
+    fun `a case-sensitive folder inside a folder that folds is answered by its own rule`() {
+        val root = caseSensitiveFolderInFoldingParent()
         Files.createFile(root.resolve("Probe.txt"))
 
         assertEquals(CaseSensitivity.SENSITIVE, CaseSensitivity.ofDirectory(root))
+    }
+
+    // On Windows the folder's own flag answers, so an empty sync root is answered by its rule too.
+    @Test
+    fun `an empty case-sensitive folder is answered by its own flag`() {
+        val root = caseSensitiveFolderInFoldingParent()
+
+        assertEquals(CaseSensitivity.SENSITIVE, CaseSensitivity.ofDirectory(root))
+        assertEquals(CaseSensitivity.INSENSITIVE_PRESERVING, CaseSensitivity.ofDirectory(root.parent))
     }
 }

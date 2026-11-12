@@ -1,6 +1,7 @@
 package org.krost.unidrive
 
 import org.krost.unidrive.io.Os
+import org.krost.unidrive.io.WindowsCaseFlag
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -23,16 +24,26 @@ enum class CaseSensitivity {
 
     companion object {
         /**
-         * The case behaviour of [dir]'s own entries, found by asking the file system: a name is looked up again with its
-         * case swapped, and the two lookups name one file only where case folds. The name is one of [dir]'s children
-         * when it has one with a cased letter, because the rule that counts is the one of the directory the names live
-         * in (a FAT stick mounted under an ext4 folder, an NTFS folder with its own case flag). Otherwise the nearest
-         * existing segment of the path is asked, which answers for the directory that holds it. Nothing is written.
-         * Null when nothing can tell (no cased letter, nothing exists, an I/O error).
+         * The case behaviour of [dir]'s own entries; the rule that counts is the one of the directory the names live in
+         * (a FAT stick mounted under an ext4 folder, an NTFS folder with its own case flag), not its parent's. On
+         * Windows the directory's own case-sensitivity flag answers, empty directory or not. Where there is no flag (or
+         * it cannot be read), the file system is asked: one of [dir]'s entries with a cased letter is looked up again
+         * with its case swapped, and the two lookups name one file only where case folds. Without such an entry the
+         * nearest existing segment of the path is asked, which answers for the directory that holds it. Nothing is
+         * written. Null when nothing can tell (no cased letter, nothing exists, an I/O error).
          */
         fun ofDirectory(dir: Path): CaseSensitivity? {
             val abs = dir.toAbsolutePath().normalize()
-            return ofChildren(abs) ?: ofNearestSegment(abs)
+            return ofWindowsFlag(abs) ?: ofChildren(abs) ?: ofNearestSegment(abs)
+        }
+
+        private val onWindows: Boolean = Os.of(System.getProperty("os.name")).isWindows
+
+        // The directory's own flag on Windows; null elsewhere, for a path that is no directory, or when it cannot be read.
+        private fun ofWindowsFlag(dir: Path): CaseSensitivity? {
+            if (!onWindows || !Files.isDirectory(dir)) return null
+            val sensitive = runCatching { WindowsCaseFlag.isCaseSensitive(dir) }.getOrNull() ?: return null
+            return if (sensitive) SENSITIVE else INSENSITIVE_PRESERVING
         }
 
         // How many entries of a directory are looked at for a name with a cased letter before the path is asked instead.
