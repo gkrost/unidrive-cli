@@ -14,7 +14,10 @@ import io.ktor.http.content.OutgoingContent
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
+import org.krost.unidrive.CloudItem
 import org.krost.unidrive.ProviderException
+import org.krost.unidrive.internxt.model.InternxtFolder
+import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -35,6 +38,7 @@ class InternxtAmbiguousPathTest {
     private var folderFilesJson = "[]"
     private val fileMetaByUuid = mutableMapOf<String, String>() // uuid → JSON
     private val folderMetaByUuid = mutableMapOf<String, String>()
+    private val folderContentsByUuid = mutableMapOf<String, String>()
     private val fileMeta404 = mutableSetOf<String>()
     private val folderMeta404 = mutableSetOf<String>()
     private val requestLog = mutableListOf<String>()
@@ -50,7 +54,8 @@ class InternxtAmbiguousPathTest {
     private fun folderJson(
         uuid: String,
         plainName: String,
-    ) = """{"uuid":"$uuid","plainName":"$plainName","parentUuid":"$rootUuid","status":"EXISTS"}"""
+        parent: String = rootUuid,
+    ) = """{"uuid":"$uuid","plainName":"$plainName","parentUuid":"$parent","status":"EXISTS"}"""
 
     private fun newProvider(): InternxtProvider {
         val payload = """{"exp":9999999999}"""
@@ -84,6 +89,12 @@ class InternxtAmbiguousPathTest {
             path == "/drive/folders/content/$rootUuid" && method == HttpMethod.Get ->
                 respond(
                     """{"children":$folderChildrenJson,"files":$folderFilesJson}""",
+                    HttpStatusCode.OK,
+                    jsonHeaders,
+                )
+            path.startsWith("/drive/folders/content/") && method == HttpMethod.Get ->
+                respond(
+                    folderContentsByUuid.getValue(path.removePrefix("/drive/folders/content/")),
                     HttpStatusCode.OK,
                     jsonHeaders,
                 )
@@ -256,6 +267,95 @@ class InternxtAmbiguousPathTest {
             assertTrue("GET /drive/files/twin-a/meta" in requestLog)
             assertTrue(trashBody?.contains("\"file\"") == true)
         }
+
+    // ---- gkrost/unidrive-cli#634: the refusal climb asks nothing where a listing already proved the chain ----
+
+    @Test
+    fun `a folder a listing walked through climbs no ancestors on delete`() =
+        runTest {
+            folderChildrenJson = "[${folderJson("docs-uuid", "docs")}]"
+            folderContentsByUuid["docs-uuid"] =
+                """{"children":[${folderJson("sub-uuid", "sub", "docs-uuid")}],"files":[]}"""
+            folderMetaByUuid["sub-uuid"] = folderJson("sub-uuid", "sub", "docs-uuid")
+            val provider = newProvider()
+            provider.listChildren("/docs")
+            provider.deleteById("sub-uuid", "/docs/sub", isFolder = true)
+            assertTrue("GET /drive/folders/sub-uuid/meta" in requestLog, "log: $requestLog")
+            assertTrue(
+                "GET /drive/folders/docs-uuid/meta" !in requestLog,
+                "the parent chain was seeded by the listing; log: $requestLog",
+            )
+            assertTrue(trashBody?.contains("sub-uuid") == true)
+        }
+
+    @Test
+    fun `an unlisted path still climbs to prove the drive root`() =
+        runTest {
+            folderMetaByUuid["sub-uuid"] = folderJson("sub-uuid", "sub", "docs-uuid")
+            folderMetaByUuid["docs-uuid"] = folderJson("docs-uuid", "docs")
+            newProvider().deleteById("sub-uuid", "/docs/sub", isFolder = true)
+            assertTrue("GET /drive/folders/docs-uuid/meta" in requestLog, "the climb is the fallback; log: $requestLog")
+            assertTrue(trashBody?.contains("sub-uuid") == true)
+        }
+
+    @Test
+    fun `a delta chain that reaches the root seeds the climb`() =
+        runTest {
+            val provider = newProvider()
+            val folderMap =
+                mapOf(
+                    "docs-uuid" to InternxtFolder(uuid = "docs-uuid", plainName = "docs", parentUuid = rootUuid),
+                    "sub-uuid" to InternxtFolder(uuid = "sub-uuid", plainName = "sub", parentUuid = "docs-uuid"),
+                )
+            provider.seedInsideDriveChains(
+                listOf(folderItem("sub-uuid", parent = "docs-uuid")),
+                folderMap,
+                rootUuid,
+                HashSet(),
+            )
+            folderMetaByUuid["sub-uuid"] = folderJson("sub-uuid", "sub", "docs-uuid")
+            provider.deleteById("sub-uuid", "/docs/sub", isFolder = true)
+            assertTrue("GET /drive/folders/docs-uuid/meta" !in requestLog, "log: $requestLog")
+            assertTrue(trashBody?.contains("sub-uuid") == true)
+        }
+
+    @Test
+    fun `a chain that ends at an unknown folder seeds nothing`() =
+        runTest {
+            val provider = newProvider()
+            val folderMap =
+                mapOf(
+                    // docs hangs below an orphan top the pass does not know: nothing is proven.
+                    "docs-uuid" to InternxtFolder(uuid = "docs-uuid", plainName = "docs", parentUuid = "orphan-uuid"),
+                )
+            provider.seedInsideDriveChains(
+                listOf(folderItem("docs-uuid", parent = "orphan-uuid")),
+                folderMap,
+                rootUuid,
+                HashSet(),
+            )
+            folderMetaByUuid["docs-uuid"] = folderJson("docs-uuid", "docs", "orphan-uuid")
+            folderMetaByUuid["orphan-uuid"] =
+                """{"uuid":"orphan-uuid","plainName":"orphan","parentUuid":null,"status":"EXISTS"}"""
+            assertFailsWith<ProviderException> { newProvider().deleteById("docs-uuid", "/docs", isFolder = true) }
+            assertTrue("GET /drive/folders/orphan-uuid/meta" in requestLog, "the climb still ran; log: $requestLog")
+        }
+
+    private fun folderItem(
+        id: String,
+        parent: String,
+    ) = CloudItem(
+        id = id,
+        name = "f",
+        path = "/f",
+        size = 0,
+        isFolder = true,
+        modified = Instant.parse("2026-11-12T00:00:00Z"),
+        created = Instant.parse("2026-11-12T00:00:00Z"),
+        hash = null,
+        mimeType = null,
+        parentId = parent,
+    )
 
     @Test
     fun `deleteById on an unknown uuid surfaces not-found`() =
