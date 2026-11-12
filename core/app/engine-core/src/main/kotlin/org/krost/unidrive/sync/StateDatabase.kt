@@ -2627,10 +2627,14 @@ class StateDatabase(
      * for (archive#753): a row with a real remote id is the cloud's truth and is never touched here. True when a
      * row went away.
      */
-    fun deleteLocalPendingRow(path: String): Boolean =
+    fun deleteLocalPendingRow(pathRaw: String): Boolean =
         locked("deleteLocalPendingRow") {
+            // The one write pair without beginWrite() (windows#454 item 11): a hydration delete that joins another
+            // thread's open manual batch rolls back with it and resurrects the row (archive#300 class), and the alive
+            // count then lies. The path is normalised like every other writer's.
+            beginWrite()
             conn.prepareStatement("DELETE FROM sync_entries WHERE path=? AND $PENDING_UPLOAD_ROWS").use { stmt ->
-                stmt.setString(1, path)
+                stmt.setString(1, PathNormalizer.nfc(pathRaw))
                 val deleted = stmt.executeUpdate()
                 countAlive(-deleted)
                 return deleted > 0
@@ -2644,6 +2648,7 @@ class StateDatabase(
      */
     fun deleteLocalEmptyRow(path: String): Boolean =
         locked("deleteLocalEmptyRow") {
+            beginWrite() // windows#454 item 11: same reasoning as deleteLocalPendingRow
             conn
                 .prepareStatement(
                     "DELETE FROM sync_entries WHERE path=? AND status='EXISTS' AND remote_id GLOB 'local:*' AND is_folder=0 AND is_hydrated=0",
