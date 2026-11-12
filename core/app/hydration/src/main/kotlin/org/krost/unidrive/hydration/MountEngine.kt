@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.TypedDeleteProvider
 import org.krost.unidrive.ContentProof
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.FolderState
@@ -1951,6 +1952,7 @@ class MountEngine private constructor(
                 when {
                     permanent && remoteId != null -> provider.deletePermanentlyById(remoteId, remotePath)
                     permanent -> provider.deletePermanently(remotePath)
+                    remoteId != null && provider is TypedDeleteProvider -> provider.deleteById(remoteId, remotePath, entryBefore.isFolder)
                     remoteId != null -> provider.deleteById(remoteId, remotePath)
                     else -> provider.delete(remotePath)
                 }

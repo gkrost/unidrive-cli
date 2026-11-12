@@ -885,6 +885,23 @@ class MountEngineOperationsTest {
             assertEquals(org.krost.unidrive.sync.model.EntryStatus.EXISTS, db.statusOf("/dup.txt"), "the item at the name is untouched")
         }
 
+    @Test
+    fun `a tracked folder sends its kind to a provider that supports typed delete`() =
+        runTest {
+            val calls = mutableListOf<Triple<String, String, Boolean>>()
+            val typed =
+                object : CloudProvider by provider, org.krost.unidrive.TypedDeleteProvider {
+                    override suspend fun deleteById(remoteId: String, remotePath: String, isFolder: Boolean) {
+                        calls += Triple(remoteId, remotePath, isFolder)
+                    }
+                }
+            val mountEngine = SyncEngine(provider = typed, db = db, syncRoot = syncRoot, reporter = ProgressReporter.Silent)
+            val row = trackedRow("/folder", isFolder = true)
+            db.upsertEntry(row)
+            mountEngine.deleteRemote("/folder")
+            assertEquals(listOf(Triple(row.remoteId, "/folder", true)), calls)
+        }
+
     // ── archive#511: the write token of a provider with versions of its own (OneDrive: the Graph eTag) ─────────────────────
 
     /**

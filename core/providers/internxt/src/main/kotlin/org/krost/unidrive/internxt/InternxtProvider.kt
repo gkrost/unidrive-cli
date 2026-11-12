@@ -35,6 +35,7 @@ import java.util.HexFormat
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
+@Suppress("LargeClass", "TooManyFunctions") // existing provider-wide detekt baseline; the typed SPI changes its baseline key
 class InternxtProvider(
     private val config: InternxtConfig = InternxtConfig(),
     // Tests hand in a client on a MockEngine; production builds the default one.
@@ -43,7 +44,7 @@ class InternxtProvider(
     credentials: InternxtCredentials? = null,
     // Tests hand in a crypto that counts its seed derivations; production uses the default one.
     private val crypto: InternxtCrypto = InternxtCrypto(),
-) : CloudProvider,
+) : CloudProvider, TypedDeleteProvider,
     org.krost.unidrive.RequestStatusReporting {
     override val id = "internxt"
     override val displayName = "Internxt Drive"
@@ -2590,15 +2591,32 @@ class InternxtProvider(
         throw ProviderException(if (inBackupFolder(item.parentId)) backupRefusal(remotePath) else outsideDriveRefusal(remotePath))
     }
 
-    override suspend fun deleteById(remoteId: String, remotePath: String) {
-        // The trash endpoint needs file-vs-folder; resolve it by uuid (see metadataById)
-        // so same-name siblings can't redirect the delete to the wrong twin.
+    override suspend fun deleteById(remoteId: String, remotePath: String) = deleteByIdWithHint(remoteId, remotePath, false)
+
+    override suspend fun deleteById(remoteId: String, remotePath: String, isFolder: Boolean) =
+        deleteByIdWithHint(remoteId, remotePath, isFolder)
+
+    private suspend fun deleteByIdWithHint(remoteId: String, remotePath: String, isFolder: Boolean) {
         refuseBackupDevice(remoteId, remotePath)
-        val metadata = metadataById(remoteId, parentPathOf(remotePath), remotePath)
+        val parent = parentPathOf(remotePath)
+        val metadata = if (isFolder) folderFirstMetadataById(remoteId, parent, remotePath) else metadataById(remoteId, parent, remotePath)
         refuseOutsideDrive(metadata, remotePath)
         val type = if (metadata.isFolder) "folder" else "file"
         api.trashItems(listOf(metadata.id to type))
     }
+
+    private suspend fun folderFirstMetadataById(remoteId: String, parent: String, path: String): CloudItem =
+        try {
+            api.getFolderMeta(remoteId).toCloudItem(parent)
+        } catch (e: InternxtApiException) {
+            if (e.statusCode != 404) throw e
+            try {
+                api.getFileMeta(remoteId).toCloudItem(parent)
+            } catch (e2: InternxtApiException) {
+                if (e2.statusCode != 404) throw e2
+                throw ProviderException("Item not found: $path (remoteId=$remoteId)")
+            }
+        }
 
     // archive#1178: the permanent primitives behind rm --permanent (DELETE /files/{uuid} / DELETE /folders/{uuid}), the
     // explicit purge the trash flow of delete/deleteById deliberately leaves to the operator.

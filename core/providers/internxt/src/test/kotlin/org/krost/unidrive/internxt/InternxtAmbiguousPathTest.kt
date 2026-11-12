@@ -236,6 +236,28 @@ class InternxtAmbiguousPathTest {
         }
 
     @Test
+    fun `a known folder is resolved without probing file metadata`() =
+        runTest {
+            fileMeta404 += "folder-a"
+            folderMetaByUuid["folder-a"] = folderJson("folder-a", "dup")
+            newProvider().deleteById("folder-a", "/dup", isFolder = true)
+            assertTrue("GET /drive/folders/folder-a/meta" in requestLog, "log: $requestLog")
+            assertTrue("GET /drive/files/folder-a/meta" !in requestLog, "log: $requestLog")
+            assertTrue(trashBody?.contains("folder-a") == true)
+        }
+
+    @Test
+    fun `a stale folder hint falls back to the file with that identity`() =
+        runTest {
+            folderMeta404 += "twin-a"
+            fileMetaByUuid["twin-a"] = fileJson("twin-a", "dup")
+            newProvider().deleteById("twin-a", "/dup.txt", isFolder = true)
+            assertTrue("GET /drive/folders/twin-a/meta" in requestLog)
+            assertTrue("GET /drive/files/twin-a/meta" in requestLog)
+            assertTrue(trashBody?.contains("\"file\"") == true)
+        }
+
+    @Test
     fun `deleteById on an unknown uuid surfaces not-found`() =
         runTest {
             fileMeta404 += "gone-uuid"

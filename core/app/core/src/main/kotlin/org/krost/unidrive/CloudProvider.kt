@@ -647,3 +647,8 @@ sealed interface ItemRemoteState {
     /** The provider cannot tell (the default for a provider without a lookup by id). */
     data object Unknown : ItemRemoteState
 }
+
+/** Optional provider SPI: a tracked kind guides lookup without changing the ID or safety checks. */
+interface TypedDeleteProvider {
+    suspend fun deleteById(remoteId: String, remotePath: String, isFolder: Boolean)
+}

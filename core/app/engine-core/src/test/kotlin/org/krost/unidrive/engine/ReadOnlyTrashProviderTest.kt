@@ -7,6 +7,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.ScanContext
+import org.krost.unidrive.TypedDeleteProvider
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
@@ -62,10 +63,30 @@ class ReadOnlyTrashProviderTest {
             // A row that has not been moved yet still addresses the item by its old place: the path is no help, the id is.
             assertFailsWith<TrashReadOnlyException> { provider.upload(local, "/Old/a.txt", existingRemoteId = "f-in-trash") }
             assertFailsWith<TrashReadOnlyException> { provider.deleteById("f-in-trash", "/Old/a.txt") }
+            assertFailsWith<TrashReadOnlyException> { provider.deleteById("f-in-trash", "/Old/a.txt", isFolder = false) }
             assertFailsWith<TrashReadOnlyException> { provider.moveById("f-in-trash", "/Old/a.txt", "/New/a.txt") }
             assertFailsWith<TrashReadOnlyException> { provider.deleteById(TrashNamespace.ROOT_ID, "/anything") }
 
             assertEquals(emptyList(), inner.calls)
+        }
+
+    @Test
+    fun `typed deletes keep the guard and forward the hint or fall back`() =
+        runTest {
+            val calls = mutableListOf<String>()
+            val typed =
+                object : CloudProvider by inner, TypedDeleteProvider {
+                    override suspend fun deleteById(remoteId: String, remotePath: String, isFolder: Boolean) {
+                        calls += "$remoteId $remotePath $isFolder"
+                    }
+                }
+            val guarded = ReadOnlyTrashProvider(typed, trash)
+            enterTrash()
+            assertFailsWith<TrashReadOnlyException> { guarded.deleteById("f-in-trash", "/Old/a.txt", true) }
+            guarded.deleteById("live", "/Live.txt", true)
+            assertEquals(listOf("live /Live.txt true"), calls)
+            provider.deleteById("live", "/Live.txt", true)
+            assertEquals(listOf("deleteById live /Live.txt"), inner.calls)
         }
 
     @Test
