@@ -7,6 +7,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.ScanContext
+import org.krost.unidrive.TypedDeleteProvider
 import org.krost.unidrive.engine.DuplicateNames
 import org.krost.unidrive.sync.model.SyncAction
 import java.nio.file.Files
@@ -130,6 +131,38 @@ class WrongTwinGuardTest {
         }
 
     @Test
+    fun `a tracked folder delete carries the row's kind to a provider that takes typed deletes`() =
+        runTest {
+            val typed = TypedTwinFake(provider)
+            val engineOnTyped =
+                SyncEngine(
+                    provider = typed,
+                    db = db,
+                    syncRoot = syncRoot,
+                    reporter = reporter,
+                    cacheRoot = cacheRoot,
+                    cacheKey = "twin-typed",
+                    skippedOpsLogPath = skippedOpsPath,
+                )
+            provider.deltaItems = listOf(folder("/tree", id = "f-tree"))
+            engine.syncOnce() // binds the folder row to the remote id
+            assertEquals("f-tree", db.getEntry("/tree")?.remoteId)
+            Files.delete(syncRoot.resolve("tree"))
+
+            engineOnTyped.syncOnce()
+
+            assertEquals(
+                listOf(Triple("f-tree", "/tree", true)),
+                typed.typedDeletes,
+                "the row's kind rides along (gkrost/unidrive-cli#634): a folder delete skips the file-meta probe",
+            )
+            assertTrue(
+                provider.deletedByIds.isEmpty(),
+                "the two-argument call must not also run behind the provider's back",
+            )
+        }
+
+    @Test
     fun `a path-addressed action on a collided path is refused and audited`() =
         runTest {
             engine.syncOnce() // gather flags /dup.txt as collided in this engine instance
@@ -155,6 +188,21 @@ class WrongTwinGuardTest {
         path = path,
         size = size,
         isFolder = false,
+        modified = Instant.parse("2026-01-01T00:00:00Z"),
+        created = Instant.parse("2026-01-01T00:00:00Z"),
+        hash = null,
+        mimeType = null,
+    )
+
+    private fun folder(
+        path: String,
+        id: String,
+    ) = CloudItem(
+        id = id,
+        name = path.substringAfterLast('/'),
+        path = path,
+        size = 0,
+        isFolder = true,
         modified = Instant.parse("2026-01-01T00:00:00Z"),
         created = Instant.parse("2026-01-01T00:00:00Z"),
         hash = null,
@@ -289,5 +337,18 @@ class WrongTwinGuardTest {
         ): DeltaPage = DeltaPage(items = deltaItems, cursor = "c1", hasMore = false, complete = true)
 
         override suspend fun quota(): QuotaInfo = QuotaInfo(total = 0, used = 0, remaining = 0)
+    }
+
+    // The typed-delete SPI (gkrost/unidrive-cli#634): records the kind the sync route passes for a tracked folder.
+    private class TypedTwinFake(val inner: TwinFakeProvider) : CloudProvider by inner, TypedDeleteProvider {
+        val typedDeletes = mutableListOf<Triple<String, String, Boolean>>()
+
+        override suspend fun deleteById(
+            remoteId: String,
+            remotePath: String,
+            isFolder: Boolean,
+        ) {
+            typedDeletes += Triple(remoteId, remotePath, isFolder)
+        }
     }
 }

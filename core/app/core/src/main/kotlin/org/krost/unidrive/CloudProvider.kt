@@ -648,7 +648,12 @@ sealed interface ItemRemoteState {
     data object Unknown : ItemRemoteState
 }
 
-/** Optional provider SPI: a tracked kind guides lookup without changing the ID or safety checks. */
+/**
+ * Optional provider SPI: a tracked kind guides the lookup without changing the identity or the safety checks
+ * (gkrost/unidrive-cli#634). The hint is advisory: a provider whose hinted endpoint answers 404 probes the other
+ * kind with the same id before it reports absence, so a stale hint cannot turn a live item into a false not-found.
+ * A provider without the interface keeps the two-argument deleteById; callers fall back to it when one is all they get.
+ */
 interface TypedDeleteProvider {
     suspend fun deleteById(remoteId: String, remotePath: String, isFolder: Boolean)
 }

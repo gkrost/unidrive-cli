@@ -17,6 +17,7 @@ import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
+import org.krost.unidrive.TypedDeleteProvider
 import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.currentTransferMeter
 import org.krost.unidrive.TransferMeter
@@ -4120,8 +4121,11 @@ open class SyncEngine(
             if (remoteId != null && !remoteId.startsWith("local:")) {
                 // archive#402: the row's real cloud uuid addresses the twin the engine
                 // actually tracks; path resolution would pick the first of any
-                // same-named siblings and could trash the wrong one.
-                provider.deleteById(remoteId, remotePath)
+                // same-named siblings and could trash the wrong one. The row's kind
+                // rides along when the provider takes a typed delete (gkrost/unidrive-cli#634):
+                // a folder then skips the file-meta probe a folder can only answer 404.
+                if (provider is TypedDeleteProvider) provider.deleteById(remoteId, remotePath, priorEntry?.isFolder ?: false)
+                else provider.deleteById(remoteId, remotePath)
             } else {
                 if (refuseCollidedPath(action)) return false
                 provider.delete(remotePath)

@@ -2471,21 +2471,23 @@ class InternxtProvider(
     }
 
     // archive#402: resolve an item's CloudItem by uuid instead of by path — same-name siblings
-    // make path-based lookup an arbitrary pick. Files are probed first; a 404 falls
-    // through to the folder probe. Any other status propagates unchanged: a transient
-    // 5xx must not surface as "Item not found" (the engine treats that as already-gone
-    // and would tombstone the row).
+    // make path-based lookup an arbitrary pick. One kind is probed first ([folderFirst] picks
+    // which); a 404 falls through to the probe of the other kind by the same uuid, so a stale
+    // kind hint (gkrost/unidrive-cli#634) cannot turn a live item into a false not-found. Any
+    // other status propagates unchanged: a transient 5xx must not surface as "Item not found"
+    // (the engine treats that as already-gone and would tombstone the row).
     private suspend fun metadataById(
         remoteId: String,
         parentPath: String,
         path: String,
+        folderFirst: Boolean = false,
     ): CloudItem =
         try {
-            api.getFileMeta(remoteId).toCloudItem(parentPath)
+            if (folderFirst) api.getFolderMeta(remoteId).toCloudItem(parentPath) else api.getFileMeta(remoteId).toCloudItem(parentPath)
         } catch (e: InternxtApiException) {
             if (e.statusCode != 404) throw e
             try {
-                api.getFolderMeta(remoteId).toCloudItem(parentPath)
+                if (folderFirst) api.getFileMeta(remoteId).toCloudItem(parentPath) else api.getFolderMeta(remoteId).toCloudItem(parentPath)
             } catch (e2: InternxtApiException) {
                 if (e2.statusCode != 404) throw e2
                 throw ProviderException("Item not found: $path (remoteId=$remoteId)")
@@ -2598,25 +2600,11 @@ class InternxtProvider(
 
     private suspend fun deleteByIdWithHint(remoteId: String, remotePath: String, isFolder: Boolean) {
         refuseBackupDevice(remoteId, remotePath)
-        val parent = parentPathOf(remotePath)
-        val metadata = if (isFolder) folderFirstMetadataById(remoteId, parent, remotePath) else metadataById(remoteId, parent, remotePath)
+        val metadata = metadataById(remoteId, parentPathOf(remotePath), remotePath, isFolder)
         refuseOutsideDrive(metadata, remotePath)
         val type = if (metadata.isFolder) "folder" else "file"
         api.trashItems(listOf(metadata.id to type))
     }
-
-    private suspend fun folderFirstMetadataById(remoteId: String, parent: String, path: String): CloudItem =
-        try {
-            api.getFolderMeta(remoteId).toCloudItem(parent)
-        } catch (e: InternxtApiException) {
-            if (e.statusCode != 404) throw e
-            try {
-                api.getFileMeta(remoteId).toCloudItem(parent)
-            } catch (e2: InternxtApiException) {
-                if (e2.statusCode != 404) throw e2
-                throw ProviderException("Item not found: $path (remoteId=$remoteId)")
-            }
-        }
 
     // archive#1178: the permanent primitives behind rm --permanent (DELETE /files/{uuid} / DELETE /folders/{uuid}), the
     // explicit purge the trash flow of delete/deleteById deliberately leaves to the operator.
