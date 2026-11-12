@@ -207,9 +207,12 @@ import java.util.concurrent.atomic.AtomicLong
  *                            handle_id is OPTIONAL: present → registers a JVM open-set entry (O_TRUNC live open);
  *                            absent → no registration (one-shot setattr/bare-truncate, backward-compatible).
  *
- *   subscribe   request:  {"verb":"hydration.subscribe"}
- *   subscribe   reply:    {"ok":true} — and from then on, the connection becomes a one-way
- *                         event stream (server-pushed NDJSON of HydrationEvent serializations)
+ *   subscribe   request:  {"verb":"hydration.subscribe"[,"since_seq":N,"run_id":"<run>"]}
+ *   subscribe   reply:    {"ok":true,"tail_seq":T,"run_id":"<run>"[,"replay":"complete"|"gap"]} — and from then on, the
+ *                         connection becomes a one-way event stream (server-pushed NDJSON of HydrationEvent serializations,
+ *                         each with "seq" after its event name). With since_seq the stream starts with the kept events after
+ *                         it (gkrost/unidrive-cli#437: the last REPLAY_CAPACITY, progress not kept); "gap" says some are gone.
+ *                         errs: invalid_since_seq, missing_run_id
  *
  * Subscribe pipeline: each subscribed connection gets its own bounded queue
  * (capacity 64). The single fan-out site (dispatchEvent) deals events to all
@@ -278,21 +281,42 @@ class HydrationIpcHandler(
 
     private fun issueHandleId(): String = issuedHandlePrefix + issuedHandles.incrementAndGet()
 
+    /** gkrost/unidrive-cli#437: an event with its stream number and its line as every subscriber is pushed it (`seq` included). */
+    private class Sequenced(val seq: Long, val event: HydrationEvent, val line: String)
+
+    // gkrost/unidrive-cli#437: numbering, the replay ring and the fan-out happen under one lock, so a subscribe that replays
+    // from the ring and registers for the live events can neither miss one between the two nor be sent one twice.
+    private val fanOutLock = Any()
+    private var lastSeq = 0L
+    private val replayRing = ArrayDeque<Sequenced>()
+
+    // The highest seq of a replayable event that has left the ring: a since_seq below it misses events.
+    private var replayFloor = 0L
+
+    // The run part of the issued handle ids doubles as the id of this daemon run's stream: seq restarts with the daemon.
+    private val runId = handleIdRun
+
     /**
      * One subscribed connection's queue. [events] is guarded by its own monitor; [wake] (conflated) tells the writer
-     * coroutine that [events] is not empty; closing [wake] ends the writer once it has drained [events].
+     * coroutine that [events] is not empty; closing [wake] ends the writer once it has drained [events]. [capacity] is
+     * [SUBSCRIBER_QUEUE_CAPACITY] plus the replay it started with, so a replay is never cut by the live queue's bound.
      */
-    private class SubscriberQueue {
-        val events = ArrayDeque<HydrationEvent>()
+    private class SubscriberQueue(replay: List<Sequenced>) {
+        val events = ArrayDeque(replay)
         val wake = Channel<Unit>(Channel.CONFLATED)
         val dropped = AtomicInteger(0)
+        private val capacity = SUBSCRIBER_QUEUE_CAPACITY + replay.size
+
+        init {
+            if (replay.isNotEmpty()) wake.trySend(Unit)
+        }
 
         /** Add [event]; when over capacity, drop the oldest event that is not terminal (see [isTerminalForSubscriber]). */
-        fun offer(event: HydrationEvent) {
+        fun offer(event: Sequenced) {
             synchronized(events) {
                 events.addLast(event)
-                if (events.size > SUBSCRIBER_QUEUE_CAPACITY) {
-                    val victim = events.indexOfFirst { !it.isTerminalForSubscriber() }
+                if (events.size > capacity) {
+                    val victim = events.indexOfFirst { !it.event.isTerminalForSubscriber() }
                     if (victim >= 0) {
                         events.removeAt(victim)
                         dropped.incrementAndGet()
@@ -306,7 +330,7 @@ class HydrationIpcHandler(
             wake.trySend(Unit)
         }
 
-        fun poll(): HydrationEvent? = synchronized(events) { events.removeFirstOrNull() }
+        fun poll(): Sequenced? = synchronized(events) { events.removeFirstOrNull() }
 
         fun close() {
             wake.close()
@@ -363,11 +387,19 @@ class HydrationIpcHandler(
      * The single collector at the caller site drains hydration.events into here.
      */
     fun dispatchEvent(event: HydrationEvent) {
-        if (event is HydrationEvent.Completed && event.handleId.isNotEmpty()) {
-            outcomes.record(event.handleId, serialiseHydrationEvent(event))
-        }
-        for (sub in subscribers.values) {
-            sub.queue.offer(event)
+        synchronized(fanOutLock) {
+            val seq = ++lastSeq
+            val sequenced = Sequenced(seq, event, withSeq(serialiseHydrationEvent(event), seq))
+            if (event is HydrationEvent.Completed && event.handleId.isNotEmpty()) {
+                outcomes.record(event.handleId, sequenced.line)
+            }
+            if (event.isReplayable()) {
+                replayRing.addLast(sequenced)
+                if (replayRing.size > REPLAY_CAPACITY) replayFloor = replayRing.removeFirst().seq
+            }
+            for (sub in subscribers.values) {
+                sub.queue.offer(sequenced)
+            }
         }
     }
 
@@ -389,13 +421,34 @@ class HydrationIpcHandler(
         sub.queue.close()
     }
 
-    private fun registerSubscriber(connectionId: String) {
+    /**
+     * gkrost/unidrive-cli#437: subscribe [connectionId] and answer the reply. With [sinceSeq] (and the [clientRunId] it was read
+     * in) the queue starts with the ring's events after it; `replay` says whether that is all of them (`complete`) or some
+     * are gone (`gap`: the ring moved past [sinceSeq], or the number is from another daemon run or ahead of this one's).
+     */
+    private fun subscribe(connectionId: String, sinceSeq: Long?, clientRunId: String?): String =
+        synchronized(fanOutLock) {
+            val tail = lastSeq
+            var replayState: String? = null
+            var replay: List<Sequenced> = emptyList()
+            if (sinceSeq != null) {
+                val sameRun = clientRunId == runId && sinceSeq <= tail
+                val from = if (sameRun) sinceSeq else 0L
+                replay = replayRing.filter { it.seq > from }
+                replayState = if (sameRun && sinceSeq >= replayFloor) "complete" else "gap"
+            }
+            registerSubscriber(connectionId, replay)
+            val replayMember = replayState?.let { ""","replay":"$it"""" } ?: ""
+            """{"ok":true,"tail_seq":$tail,"run_id":${jsonEsc(runId)}$replayMember}"""
+        }
+
+    private fun registerSubscriber(connectionId: String, replay: List<Sequenced>) {
         val scope = subscriberScope ?: return  // pre-start() subscribe: caller didn't wire the pipeline
         val writer = subscriberWriter ?: return
         // Repeat-subscribe on the same connection: tear down the prior subscriber first
         // so we never have two writer coroutines competing on the same connection.
         subscribers.remove(connectionId)?.let { it.job.cancel(); it.queue.close() }
-        val queue = SubscriberQueue()
+        val queue = SubscriberQueue(replay)
         val job = scope.launch {
             try {
                 while (true) {
@@ -410,7 +463,7 @@ class HydrationIpcHandler(
                         val ok = writer(connectionId, """{"event":"lost","since_last":$lost}""")
                         if (!ok) break
                     }
-                    val ok = writer(connectionId, serialiseHydrationEvent(event))
+                    val ok = writer(connectionId, event.line)
                     if (!ok) break
                 }
             } finally {
@@ -435,6 +488,22 @@ class HydrationIpcHandler(
 
         // The most outcomes (completed, failed for good) one subscriber's queue keeps when nothing else is left to drop.
         const val SUBSCRIBER_TERMINAL_HARD_CAP = 4096
+
+        // gkrost/unidrive-cli#437: how many events (progress not counted, it is never replayed) a `since_seq` subscribe can catch up on.
+        const val REPLAY_CAPACITY = 1024
+
+        // The start of every event line: the event name follows, and `seq` goes after it.
+        private const val EVENT_LINE_PREFIX = "{\"event\":\""
+
+        /** [line] (one serialised event) with `"seq":[seq]` after its event name, the place `history.row` carries it. */
+        private fun withSeq(line: String, seq: Long): String {
+            check(line.startsWith(EVENT_LINE_PREFIX)) { "an event line starts with its name" }
+            val nameEnd = line.indexOf('"', EVENT_LINE_PREFIX.length) + 1
+            return line.substring(0, nameEnd) + ",\"seq\":" + seq + line.substring(nameEnd)
+        }
+
+        // Progress is superseded by the next progress line or the outcome: a replay of it tells a client nothing.
+        private fun HydrationEvent.isReplayable(): Boolean = this !is HydrationEvent.Uploading && this !is HydrationEvent.Downloading
 
         // The longest name NTFS and the common Linux file systems hold, in UTF-16 units.
         private const val MAX_SEGMENT_UTF16_UNITS = 255
@@ -781,8 +850,12 @@ class HydrationIpcHandler(
                 }
             }
             "hydration.subscribe" -> {
-                registerSubscriber(connectionId)
-                reply(ok = true)
+                // gkrost/unidrive-cli#437: since_seq (with the run_id it was read in) asks for the events after it first.
+                val sinceSeq = request.wholeNumber("since_seq")
+                if (request.has("since_seq") && sinceSeq == null) return reply(ok = false, error = "invalid_since_seq")
+                val clientRunId = request.string("run_id")
+                if (sinceSeq != null && clientRunId.isNullOrEmpty()) return reply(ok = false, error = "missing_run_id")
+                subscribe(connectionId, sinceSeq, clientRunId)
             }
             VIEW_PAGE -> viewPage(request)
             else -> reply(ok = false, error = "unknown_verb")

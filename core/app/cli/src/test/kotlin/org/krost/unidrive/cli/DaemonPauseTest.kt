@@ -296,9 +296,10 @@ class DaemonPauseTest {
             syncSub.send("""{"verb":"daemon.pause","reason":"metered","auto":true}""")
             val syncPaused = awaitIpcLine(syncSub, "paused event on sync.subscribe") { it.contains("\"event\":\"paused\"") }
             val hydrationPaused = awaitIpcLine(hydrationSub, "paused event on hydration.subscribe") { it.contains("\"event\":\"paused\"") }
-            for (line in listOf(syncPaused, hydrationPaused)) {
+            // gkrost/unidrive-cli#437: the hydration stream numbers its events; the sync stream does not.
+            for ((line, extra) in listOf(syncPaused to emptySet<String>(), hydrationPaused to setOf("seq"))) {
                 val event = Json.parseToJsonElement(line).jsonObject
-                assertEquals(setOf("event", "reason", "since_ms", "auto"), event.keys)
+                assertEquals(setOf("event", "reason", "since_ms", "auto") + extra, event.keys)
                 assertEquals("metered", event.getValue("reason").jsonPrimitive.content)
                 assertTrue(event.getValue("auto").jsonPrimitive.boolean)
             }

@@ -99,7 +99,7 @@ class HydrationIpcHandlerWireTest {
         assertEquals("""{"ok":true}""", run(fake, """{"verb":"hydration.unlink","path":"/docs/report.txt"}"""))
         assertEquals("""{"ok":true}""", run(fake, """{"verb":"hydration.rmdir","path":"/docs/sub"}"""))
         assertEquals("""{"ok":true}""", run(fake, """{"verb":"hydration.rename","old_path":"/a.txt","new_path":"/b.txt"}"""))
-        assertEquals("""{"ok":true}""", run(fake, """{"verb":"hydration.subscribe"}"""))
+        assertEquals("""{"ok":true,"tail_seq":0,"run_id":"0123456789ab"}""", run(fake, """{"verb":"hydration.subscribe"}"""))
         assertEquals("""{"ok":true,"mtime_ms":1234567890123}""", run(fake, """{"verb":"hydration.last_synced","path":"/docs/report.txt"}"""))
         assertEquals("""{"ok":true,"cancelled":false}""", run(fake, """{"verb":"hydration.cancel","path":"/docs/idle.txt"}"""))
         fake.cancelled = true

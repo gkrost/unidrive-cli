@@ -33,8 +33,9 @@ class HydrationSubscribeTest {
         suspend fun write(connectionId: String, line: String): Boolean {
             if (rejectAll) return false
             gate?.await()
+            // gkrost/unidrive-cli#437: these tests pin the queue, not the numbering (HydrationSubscribeReplayTest does).
             lines.computeIfAbsent(connectionId) { java.util.Collections.synchronizedList(mutableListOf()) }
-                .add(line)
+                .add(line.replace(SEQ_MEMBER, ""))
             return true
         }
 
@@ -77,7 +78,7 @@ class HydrationSubscribeTest {
         handler.start(this) { id, line -> writer.write(id, line) }
 
         val reply = handler.handle("conn1", """{"verb":"hydration.subscribe"}""")
-        assertEquals("""{"ok":true}""", reply.trim())
+        assertTrue(reply.trim().startsWith("""{"ok":true,"tail_seq":0,"run_id":"""), reply)
 
         handler.dispatchEvent(HydrationEvent.Hydrating("/foo.txt"))
         handler.dispatchEvent(HydrationEvent.Hydrated("/foo.txt", bytes = 42))
@@ -282,3 +283,5 @@ class HydrationSubscribeTest {
         handler.onSubscriberDisconnect("conn1")
     }
 }
+
+private val SEQ_MEMBER = Regex(""","seq":\d+""")

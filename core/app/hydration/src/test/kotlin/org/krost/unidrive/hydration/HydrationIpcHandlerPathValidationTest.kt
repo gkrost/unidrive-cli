@@ -8,6 +8,7 @@ import java.nio.file.Paths
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
 
 /**
  * Every logical path a hydration verb takes is validated once, at the IPC boundary, before the verb runs: a `.` or
@@ -261,6 +262,6 @@ class HydrationIpcHandlerPathValidationTest {
             val handler = HydrationIpcHandler(fake)
 
             assertEquals("""{"ok":true}""", handler.handle("c1", """{"verb":"hydration.close_handle","handle_id":"../h"}""").trim())
-            assertEquals("""{"ok":true}""", handler.handle("c1", """{"verb":"hydration.subscribe"}""").trim())
+            assertTrue(handler.handle("c1", """{"verb":"hydration.subscribe"}""").trim().startsWith("""{"ok":true,"""))
         }
 }

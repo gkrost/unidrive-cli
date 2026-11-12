@@ -549,7 +549,9 @@ class IpcContractCorpusTest {
                 val deadline = System.currentTimeMillis() + 10_000
                 var seen = false
                 while (!seen && System.currentTimeMillis() < deadline) {
-                    seen = Json.parseToJsonElement(readLine(subscriber, pending, timeoutMs = 5_000)) == expected
+                    // gkrost/unidrive-cli#437: the pushed line carries its seq; events/hydrated-seq pins where.
+                    val pushed = Json.parseToJsonElement(readLine(subscriber, pending, timeoutMs = 5_000)) as JsonObject
+                    seen = JsonObject(pushed - "seq") == expected
                 }
                 assertTrue(seen, "the subscriber was pushed $expected")
             } finally {
@@ -658,6 +660,23 @@ class IpcContractCorpusTest {
         val row = ListResult.Entry("/docs/report.docx", 5, 1000, true, false, 2000, "r1", "e1", "c1")
         val event = HydrationEvent.Completed("/docs/report.docx", "h1", HydrationEvent.Completed.Direction.UPLOAD, ok = true, entry = row, skipped = true)
         assertJsonMatches(Json.parseToJsonElement(loadEventLine("completed-upload-entry")), Json.parseToJsonElement(serialiseHydrationEvent(event)), "events/completed-upload-entry")
+    }
+
+    // gkrost/unidrive-cli#437: `events/hydrated-seq.ndjson`, the line a subscriber is pushed: the event with its `seq` after the name.
+    @Test
+    fun pushed_event_line_carries_its_seq() = runBlocking {
+        val handler = HydrationIpcHandler(ScriptedHydration(), handleIdRun = "0123456789ab")
+        val pushed = CompletableDeferred<String>()
+        val scope = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.Job())
+        try {
+            handler.start(scope) { _, line -> pushed.complete(line); true }
+            handler.handle("conn-contract", """{"verb":"hydration.subscribe"}""")
+            handler.dispatchEvent(HydrationEvent.Hydrated("/docs/report.docx", 5))
+            val line = kotlinx.coroutines.withTimeout(5_000) { pushed.await() }
+            assertEquals(loadEventLine("hydrated-seq"), line, "events/hydrated-seq: byte for byte, `seq` after the name")
+        } finally {
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
     }
 
     /** `events/view.invalidated-recents.ndjson` is the line the daemon's serialiser makes of the event the view's cache sends. */

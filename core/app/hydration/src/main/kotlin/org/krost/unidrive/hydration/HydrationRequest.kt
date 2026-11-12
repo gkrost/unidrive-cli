@@ -54,9 +54,25 @@ internal class HydrationRequest private constructor(private val members: JsonObj
         return digits.toLong().takeIf { it in range.first..range.last }?.toInt()
     }
 
+    /** True when the request names [key] at the top level, whatever its value (null included). */
+    fun has(key: String): Boolean = key in members
+
+    /**
+     * A non-negative whole-number member as a Long (a stream sequence number, gkrost/unidrive-cli#437); null when absent or
+     * anything else (a string, null, a fraction, an exponent, a sign, a number past Long).
+     */
+    fun wholeNumber(key: String): Long? {
+        val digits = (members[key] as? JsonPrimitive)?.takeIf { !it.isString }?.content ?: return null
+        if (digits.isEmpty() || digits.length > MAX_LONG_DIGITS || !digits.all { it in '0'..'9' }) return null
+        return digits.toLongOrNull()
+    }
+
     companion object {
         // A count longer than this cannot be an Int; read it no further.
         private const val MAX_COUNT_DIGITS = 10
+
+        // A whole number longer than this cannot be a Long; read it no further.
+        private const val MAX_LONG_DIGITS = 19
 
         // The depth IpcServer.parseVerb allows a request line.
         private const val MAX_DEPTH = 64

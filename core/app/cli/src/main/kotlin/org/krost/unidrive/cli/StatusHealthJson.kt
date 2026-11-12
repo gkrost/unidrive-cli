@@ -72,6 +72,12 @@ internal const val CANCEL_READ_CAPABILITY = "hydration.cancel_read"
 internal const val HANDLE_STATUS_CAPABILITY = "hydration.handle_status"
 
 /**
+ * The `daemon.status` capability that says every hydration event carries `seq` and `hydration.subscribe` replays from a `since_seq`
+ * (gkrost/unidrive-cli#437).
+ */
+internal const val SUBSCRIBE_REPLAY_CAPABILITY = "hydration.subscribe_replay"
+
+/**
  * The `daemon.status` capability that says the daemon answers `share.create` (#615), present only while the provider
  * declares `Capability.Share`: a client shows its share entry for a mount only then.
  */
