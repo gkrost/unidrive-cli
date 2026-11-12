@@ -3,6 +3,7 @@ package org.krost.unidrive.engine
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.ProviderException
+import org.krost.unidrive.TypedDeleteProvider
 import java.nio.file.Path
 
 /** A write was addressed to the trash namespace, which the engine never writes to. */
@@ -35,7 +36,7 @@ class ReadOnlyTrashProvider(
     private val trash: TrashNamespace,
     private val views: ViewNamespaces = ViewNamespaces.NONE,
     private val backups: BackupsNamespace = BackupsNamespace(),
-) : CloudProvider by inner {
+) : CloudProvider by inner, TypedDeleteProvider {
     override fun newNameIssue(path: String): String? = inner.newNameIssue(path)
 
     override fun existingNameIssue(path: String): String? = inner.existingNameIssue(path)
@@ -94,6 +95,17 @@ class ReadOnlyTrashProvider(
         refuse(remotePath)
         refuseId(remoteId, remotePath)
         inner.deleteById(remoteId, remotePath)
+    }
+
+    override suspend fun deleteById(
+        remoteId: String,
+        remotePath: String,
+        isFolder: Boolean,
+    ) {
+        refuse(remotePath)
+        refuseId(remoteId, remotePath)
+        if (inner is TypedDeleteProvider) inner.deleteById(remoteId, remotePath, isFolder)
+        else inner.deleteById(remoteId, remotePath)
     }
 
     // archive#1178: a delete for good is a delete; `CloudProvider by inner` would hand it past the guard.

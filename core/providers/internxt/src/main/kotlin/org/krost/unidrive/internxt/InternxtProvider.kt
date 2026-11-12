@@ -35,6 +35,7 @@ import java.util.HexFormat
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
+@Suppress("LargeClass", "TooManyFunctions") // existing provider-wide detekt baseline; the typed SPI changes its baseline key
 class InternxtProvider(
     private val config: InternxtConfig = InternxtConfig(),
     // Tests hand in a client on a MockEngine; production builds the default one.
@@ -43,7 +44,7 @@ class InternxtProvider(
     credentials: InternxtCredentials? = null,
     // Tests hand in a crypto that counts its seed derivations; production uses the default one.
     private val crypto: InternxtCrypto = InternxtCrypto(),
-) : CloudProvider,
+) : CloudProvider, TypedDeleteProvider,
     org.krost.unidrive.RequestStatusReporting {
     override val id = "internxt"
     override val displayName = "Internxt Drive"
@@ -2470,21 +2471,23 @@ class InternxtProvider(
     }
 
     // archive#402: resolve an item's CloudItem by uuid instead of by path — same-name siblings
-    // make path-based lookup an arbitrary pick. Files are probed first; a 404 falls
-    // through to the folder probe. Any other status propagates unchanged: a transient
-    // 5xx must not surface as "Item not found" (the engine treats that as already-gone
-    // and would tombstone the row).
+    // make path-based lookup an arbitrary pick. One kind is probed first ([folderFirst] picks
+    // which); a 404 falls through to the probe of the other kind by the same uuid, so a stale
+    // kind hint (gkrost/unidrive-cli#634) cannot turn a live item into a false not-found. Any
+    // other status propagates unchanged: a transient 5xx must not surface as "Item not found"
+    // (the engine treats that as already-gone and would tombstone the row).
     private suspend fun metadataById(
         remoteId: String,
         parentPath: String,
         path: String,
+        folderFirst: Boolean = false,
     ): CloudItem =
         try {
-            api.getFileMeta(remoteId).toCloudItem(parentPath)
+            if (folderFirst) api.getFolderMeta(remoteId).toCloudItem(parentPath) else api.getFileMeta(remoteId).toCloudItem(parentPath)
         } catch (e: InternxtApiException) {
             if (e.statusCode != 404) throw e
             try {
-                api.getFolderMeta(remoteId).toCloudItem(parentPath)
+                if (folderFirst) api.getFileMeta(remoteId).toCloudItem(parentPath) else api.getFolderMeta(remoteId).toCloudItem(parentPath)
             } catch (e2: InternxtApiException) {
                 if (e2.statusCode != 404) throw e2
                 throw ProviderException("Item not found: $path (remoteId=$remoteId)")
@@ -2590,11 +2593,14 @@ class InternxtProvider(
         throw ProviderException(if (inBackupFolder(item.parentId)) backupRefusal(remotePath) else outsideDriveRefusal(remotePath))
     }
 
-    override suspend fun deleteById(remoteId: String, remotePath: String) {
-        // The trash endpoint needs file-vs-folder; resolve it by uuid (see metadataById)
-        // so same-name siblings can't redirect the delete to the wrong twin.
+    override suspend fun deleteById(remoteId: String, remotePath: String) = deleteByIdWithHint(remoteId, remotePath, false)
+
+    override suspend fun deleteById(remoteId: String, remotePath: String, isFolder: Boolean) =
+        deleteByIdWithHint(remoteId, remotePath, isFolder)
+
+    private suspend fun deleteByIdWithHint(remoteId: String, remotePath: String, isFolder: Boolean) {
         refuseBackupDevice(remoteId, remotePath)
-        val metadata = metadataById(remoteId, parentPathOf(remotePath), remotePath)
+        val metadata = metadataById(remoteId, parentPathOf(remotePath), remotePath, isFolder)
         refuseOutsideDrive(metadata, remotePath)
         val type = if (metadata.isFolder) "folder" else "file"
         api.trashItems(listOf(metadata.id to type))
