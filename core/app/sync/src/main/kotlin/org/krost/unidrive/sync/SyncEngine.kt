@@ -2379,7 +2379,7 @@ open class SyncEngine(
             log.warn("ignore rule file {} cannot be downloaded before the plan ({}): its folder waits for it", path, e.toString())
             return false
         }
-        if (!HashVerifier.verify(local, item.hash, provider.hashAlgorithm())) {
+        if (!offLoop { HashVerifier.verify(local, item.hash, provider.hashAlgorithm()) }) {
             // Not the cloud's copy: it is not read as the rules. The plan downloads it again.
             runCatching { Files.deleteIfExists(local) }
             if (previous != null) db.upsertEntry(previous) else db.deleteEntry(path)
@@ -3063,13 +3063,7 @@ open class SyncEngine(
 
     private suspend fun applyUpdatePlaceholder(action: SyncAction.UpdatePlaceholder) {
         val item = action.remoteItem
-        if (versionManager != null && action.wasHydrated && !item.isFolder) {
-            val localPath = placeholder.resolveLocal(action.path)
-            if (Files.isRegularFile(localPath) && Files.size(localPath) > 0) {
-                versionManager.snapshot(action.path)
-                versionManager.pruneByCount(action.path, maxVersions)
-            }
-        }
+        if (versionManager != null && action.wasHydrated && !item.isFolder) snapshotVersion(action.path, placeholder.resolveLocal(action.path))
         var downloadReceipt: DownloadReceipt? = null
         var downloadedHash: String? = null
         withEchoSuppression(action.path) {
@@ -3250,10 +3244,7 @@ open class SyncEngine(
                 preTransferStats,
                 absent = preTransferStats == null && !Files.exists(localPath, java.nio.file.LinkOption.NOFOLLOW_LINKS),
             )
-        if (versionManager != null && Files.isRegularFile(localPath) && Files.size(localPath) > 0) {
-            versionManager.snapshot(action.path)
-            versionManager.pruneByCount(action.path, maxVersions)
-        }
+        snapshotVersion(action.path, localPath)
         // UD-113: capture pre-action hash for the audit oldHash field.
         val prevHash = db.getEntry(action.path)?.remoteHash
         try {
@@ -3657,7 +3648,8 @@ open class SyncEngine(
         localPath: Path,
     ): Boolean =
         try {
-            HashVerifier.matches(localPath, item.hash, provider.hashAlgorithm()) ||
+            // #436: a read of the whole file, so off the event loop (the other transfers run on it).
+            offLoop { HashVerifier.matches(localPath, item.hash, provider.hashAlgorithm()) } ||
                 provider.contentMatchesLocal(item.id, item.path, localPath)?.same == true
         } catch (e: CancellationException) {
             throw e
@@ -4760,6 +4752,27 @@ open class SyncEngine(
     // was when the read was a plain call. The caller resumes on its own dispatcher (the loop), so a manual batch it owns
     // stays on its thread.
     private suspend fun <T> offLoop(block: () -> T): T = withContext(NonCancellable + Dispatchers.IO) { block() }
+
+    // gkrost/unidrive-cli#436: the snapshot of the local file a download replaces is a copy of the whole file, so it runs
+    // on an IO thread like the hashes of #567, as uncancellable as the plain call was. The monitor keeps snapshots and
+    // their prunes one at a time, as they were on the loop: a prune that removes an emptied version folder never meets a
+    // snapshot of another transfer creating one beside it.
+    private val versionSnapshotLock = Any()
+
+    private suspend fun snapshotVersion(
+        path: String,
+        localPath: Path,
+    ) {
+        val versions = versionManager ?: return
+        offLoop {
+            synchronized(versionSnapshotLock) {
+                if (Files.isRegularFile(localPath) && Files.size(localPath) > 0) {
+                    versions.snapshot(path)
+                    versions.pruneByCount(path, maxVersions)
+                }
+            }
+        }
+    }
 
     // A provider that hashes its plaintext while writing can return the staged file's stats. Check
     // the installed destination against those stats before restoring the remote mtime; an edit
