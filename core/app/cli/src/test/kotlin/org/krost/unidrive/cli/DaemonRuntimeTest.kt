@@ -477,6 +477,7 @@ class DaemonRuntimeTest {
                     """{"verb":"hydration.matches_local","path":"/startup/ml.txt","local_path":${kotlinx.serialization.json.JsonPrimitive(tempDir.resolve("ml.bin").toString())}}""", // archive#1219: no such row is an answer ("unknown"), not silence
                     """{"verb":"hydration.list","prefix":"/"}""",
                     """{"verb":"hydration.stat","path":"/startup/stat.txt"}""", // gkrost/unidrive-cli#415: no such row is an answer ("unknown_path"), not silence
+                    """{"verb":"hydration.locate","remote_ids":["startup-remote-id"]}""", // gkrost/unidrive-cli#632: an id no row or provider knows is an answer ("unknown"), not silence
                     """{"verb":"hydration.mkdir","path":"/startup"}""",
                     """{"verb":"hydration.unlink","path":"/startup/unlink.txt"}""",
                     """{"verb":"hydration.rmdir","path":"/startup/rmdir.txt"}""",
