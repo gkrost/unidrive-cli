@@ -99,16 +99,17 @@ public object OwnerOnly {
         return if (owner == uid) null else "it is owned by uid $owner, not by uid $uid"
     }
 
-    /** The real uid of this process (POSIX `getuid`). */
-    public fun posixUid(): Int {
+    // The downcall handle is built once, not per call (windows#454 item 8).
+    private val getuid: java.lang.invoke.MethodHandle by lazy {
         val linker = Linker.nativeLinker()
-        val getuid =
-            linker.downcallHandle(
-                linker.defaultLookup().find("getuid").orElseThrow { IOException("getuid not found") },
-                FunctionDescriptor.of(ValueLayout.JAVA_INT),
-            )
-        return getuid.invoke() as Int
+        linker.downcallHandle(
+            linker.defaultLookup().find("getuid").orElseThrow { IOException("getuid not found") },
+            FunctionDescriptor.of(ValueLayout.JAVA_INT),
+        )
     }
+
+    /** The real uid of this process (POSIX `getuid`). */
+    public fun posixUid(): Int = getuid.invoke() as Int
 
     internal fun windowsOwnerAccepted(
         ownerSid: String,
@@ -139,7 +140,8 @@ public object OwnerOnly {
         return 'P' in flags && aces(current) == aces(desired)
     }
 
-    private fun aces(dacl: String): Set<String> = Regex("""\(([^()]*)\)""").findAll(dacl).map { it.groupValues[1] }.toSet()
+    private val ACES = Regex("""\(([^()]*)\)""")
+    private fun aces(dacl: String): Set<String> = ACES.findAll(dacl).map { it.groupValues[1] }.toSet()
 
     private fun requireRestricted(
         path: Path,
