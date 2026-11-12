@@ -190,6 +190,60 @@ class CloudRelocatorTest {
             )
         }
 
+    // -- gkrost/unidrive-cli#63: the scratch file is per transfer, not per leaf name ---------------------------
+
+    @Test
+    fun `63 - two same-named files from different folders reach their own targets unchanged when transferred together`() =
+        runTest {
+            source.children["/"] = listOf(cloudItem("/a", isFolder = true), cloudItem("/b", isFolder = true))
+            source.children["/a"] = listOf(cloudItem("/a/report.pdf", size = 5))
+            source.children["/b"] = listOf(cloudItem("/b/report.pdf", size = 5))
+            source.fileContents["/a/report.pdf"] = "AAAAA".toByteArray()
+            source.fileContents["/b/report.pdf"] = "BBBBB".toByteArray()
+            // Hold both transfers after their download until both have written their scratch file, so a shared path
+            // would be overwritten by the second download before either upload reads it.
+            val bothDownloaded = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val downloaded = java.util.concurrent.atomic.AtomicInteger()
+            source.afterDownload = {
+                if (downloaded.incrementAndGet() == 2) bothDownloaded.complete(Unit)
+                bothDownloaded.await()
+            }
+
+            val events = CloudRelocator(source, target, maxConcurrentTransfers = 4).migrate("/", "/").toList()
+
+            assertEquals(0, events.filterIsInstance<MigrateEvent.Completed>().single().errorCount)
+            assertEquals("AAAAA", String(target.uploadedContents.getValue("/a/report.pdf")))
+            assertEquals("BBBBB", String(target.uploadedContents.getValue("/b/report.pdf")))
+            assertNotEquals(
+                source.downloadDestinations.getValue("/a/report.pdf"),
+                source.downloadDestinations.getValue("/b/report.pdf"),
+                "each transfer owns its scratch file",
+            )
+        }
+
+    @Test
+    fun `63 - one transfer failing does not remove the other transfer's scratch file`() =
+        runTest {
+            source.children["/"] = listOf(cloudItem("/a", isFolder = true), cloudItem("/b", isFolder = true))
+            source.children["/a"] = listOf(cloudItem("/a/report.pdf", size = 5))
+            source.children["/b"] = listOf(cloudItem("/b/report.pdf", size = 5))
+            source.fileContents["/a/report.pdf"] = "AAAAA".toByteArray()
+            source.fileContents["/b/report.pdf"] = "BBBBB".toByteArray()
+            val bothDownloaded = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val downloaded = java.util.concurrent.atomic.AtomicInteger()
+            source.afterDownload = { path ->
+                if (downloaded.incrementAndGet() == 2) bothDownloaded.complete(Unit)
+                bothDownloaded.await()
+                if (path == "/a/report.pdf") error("Simulated failure after download")
+            }
+
+            val events = CloudRelocator(source, target, maxConcurrentTransfers = 4).migrate("/", "/").toList()
+
+            assertEquals(1, events.filterIsInstance<MigrateEvent.Completed>().single().errorCount)
+            assertEquals("BBBBB", String(target.uploadedContents.getValue("/b/report.pdf")))
+            assertFalse(target.uploadedPaths.contains("/a/report.pdf"))
+        }
+
     // -- skip-if-exists ---------------------------------------------------------
 
     @Test
@@ -1050,6 +1104,16 @@ class CloudRelocatorTest {
 
         var listChildrenCount = 0
 
+        // gkrost/unidrive-cli#63: runs after a download has written its file and before download returns, so a test
+        // can hold several transfers inside the download/upload window at once.
+        var afterDownload: (suspend (String) -> Unit)? = null
+
+        // The bytes the provider read from the local file at upload time, by remote path.
+        val uploadedContents = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+
+        // The local files handed to download, by remote path.
+        val downloadDestinations = java.util.concurrent.ConcurrentHashMap<String, Path>()
+
         override suspend fun authenticate() {}
 
         override suspend fun logout() {}
@@ -1088,6 +1152,8 @@ class CloudRelocatorTest {
             val content = fileContents[remotePath] ?: ByteArray(0)
             Files.createDirectories(destination.parent)
             Files.write(destination, content)
+            downloadDestinations[remotePath] = destination
+            afterDownload?.invoke(remotePath)
             return content.size.toLong()
         }
 
@@ -1099,6 +1165,7 @@ class CloudRelocatorTest {
             onProgress: ((Long, Long) -> Unit)?,
         ): CloudItem {
             uploadedPaths.add(remotePath)
+            uploadedContents[remotePath] = Files.readAllBytes(localPath)
             val size = Files.size(localPath)
             return CloudItem(
                 id = "id-$remotePath",
