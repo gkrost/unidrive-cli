@@ -84,6 +84,23 @@ class ShareCommandTest {
     }
 
     @Test
+    fun `an expiry of 0 asks for a link without expiry and a negative one is refused`() {
+        assertEquals(null, expiryProblem(0))
+        assertEquals(null, expiryProblem(24))
+        assertTrue(expiryProblem(-1)!!.contains("--expiry"))
+    }
+
+    @Test
+    fun `a negative --expiry ends the command with a usage error`() {
+        val cli = CommandLine(Main())
+        val errBuf = java.io.StringWriter()
+        cli.err = java.io.PrintWriter(errBuf)
+
+        assertEquals(2, cli.execute("share", "/foo", "--expiry", "-3"))
+        assertTrue(errBuf.toString().contains("--expiry"), errBuf.toString())
+    }
+
+    @Test
     fun `--expiry default value is 24`() {
         val shareCmd = cmd.subcommands["share"]!!
         val expiryOption = shareCmd.commandSpec.options().find { it.longestName() == "--expiry" }
