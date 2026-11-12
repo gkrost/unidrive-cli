@@ -2750,7 +2750,13 @@ class HydrationImpl(
             views.listing(normalised, entryOf)?.let { return ListResult.Ok(it) }
             // gkrost/unidrive-cli#27: a folder the first scan has not brought in yet is read from the provider.
             val rows = mount.listFolderLive(normalised) ?: stateDb.listDirectChildren(normalised)
-            ListResult.Ok(rows.map(entryOf) + (if (normalised.isEmpty()) views.rootEntries() else emptyList()))
+            // gkrost/unidrive-cli#445: whether these rows are the whole folder, asked after the live listing above.
+            val coverage = mount.listingCoverage(normalised)
+            ListResult.Ok(
+                rows.map(entryOf) + (if (normalised.isEmpty()) views.rootEntries() else emptyList()),
+                complete = coverage.complete,
+                listedAtMs = coverage.listedAtMs,
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -3170,10 +3176,16 @@ class HydrationImpl(
         permanent: Boolean,
     ): RmdirResult = rmdirRow(path, recursive, permanent).also { if (it is RmdirResult.Ok) announceRemoved(path) }
 
+    override suspend fun rmdirDiscardingLocal(
+        path: String,
+        permanent: Boolean,
+    ): RmdirResult = rmdirRow(path, recursive = true, permanent, discardLocal = true).also { if (it is RmdirResult.Ok) announceRemoved(path) }
+
     private suspend fun rmdirRow(
         path: String,
         recursive: Boolean,
         permanent: Boolean,
+        discardLocal: Boolean = false,
     ): RmdirResult {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
         if (mount.isReadOnlyPath(normalised)) return RmdirResult.Failed(HydrationError.ReadOnly)
@@ -3195,9 +3207,14 @@ class HydrationImpl(
         // The recursive opt-in is the client saying it means the whole tree; it is still refused while a file below
         // holds bytes only this computer has (a never-uploaded file, an edit that failed to upload, a cache copy
         // changed while the daemon was stopped): the delete would tombstone that row and evict its cache file, the
-        // only copy. The user deletes such a file on its own first.
+        // only copy. The user deletes such a file on its own first, or the client says it did (discardLocal,
+        // gkrost/unidrive-cli#445: "discard_local":true): then those bytes go with the tree.
         if (!recursive) {
             if (stateDb.hasEntriesBelow(below)) return refusedNotEmpty(normalised, recursive, "alive_descendants")
+        } else if (discardLocal) {
+            stateDb.getEntriesByPrefix(below).count { holdsUnsyncedBytes(it) }.takeIf { it > 0 }?.let {
+                log.info("rmdir of {}: discard_local, {} file(s) below with bytes only this computer had", normalised, it)
+            }
         } else {
             stateDb.getEntriesByPrefix(below).firstOrNull { holdsUnsyncedBytes(it) }?.let {
                 return refusedNotEmpty(normalised, recursive, "unsynced_bytes", it.path)

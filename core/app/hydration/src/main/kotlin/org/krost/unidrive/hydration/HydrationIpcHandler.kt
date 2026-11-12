@@ -121,11 +121,12 @@ import java.util.concurrent.atomic.AtomicLong
  *                         {"ok":false,"error":"path_is_folder"}     EISDIR
  *                         {"ok":false,"error":"<msg>"}              EIO
  *
- *   rmdir       request:  {"verb":"hydration.rmdir","path":"/foo"[,"recursive":true]}
+ *   rmdir       request:  {"verb":"hydration.rmdir","path":"/foo"[,"recursive":true[,"discard_local":true]]}
  *               reply:    {"ok":true}
  *                         {"ok":false,"error":"path_is_file"}       ENOTDIR
  *                         {"ok":false,"error":"not_empty"}          ENOTEMPTY: alive rows below (plain), or a file
- *                                                                   below holds bytes only this computer has (recursive, archive#1035)
+ *                                                                   below holds bytes only this computer has (recursive, archive#1035;
+ *                                                                   not with discard_local, gkrost/unidrive-cli#445)
  *                         {"ok":false,"error":"busy"}               an upload below is in flight (archive#87)
  *                         {"ok":false,"error":"<msg>"}              EIO
  *
@@ -719,7 +720,7 @@ class HydrationIpcHandler(
                 val prefix = request.string("prefix")?.let { requireLogicalPath(it) }
                     ?: return reply(ok = false, error = "missing_prefix")
                 when (val r = hydration.list(prefix)) {
-                    is ListResult.Ok -> serialiseListEntries(r.entries)
+                    is ListResult.Ok -> serialiseListEntries(r.entries, r.complete, r.listedAtMs)
                     is ListResult.Failed -> reply(ok = false, error = r.error.message)
                 }
             }
@@ -765,8 +766,11 @@ class HydrationIpcHandler(
                 // archive#1035: plain rmdir is strict; "recursive":true is the client meaning the whole tree.
                 val recursive = request.bool("recursive") == true
                 val permanent = request.bool("permanent") == true
+                // gkrost/unidrive-cli#445: with recursive, the caller vouches the local copies below were deleted by the user.
+                val discardLocal = recursive && request.bool("discard_local") == true
                 nameClash(rawPath(request, "path"))?.let { return it }
-                when (val r = hydration.rmdir(path, recursive, permanent)) {
+                val result = if (discardLocal) hydration.rmdirDiscardingLocal(path, permanent) else hydration.rmdir(path, recursive, permanent)
+                when (val r = result) {
                     is RmdirResult.Ok -> {
                         spellings.forget(rawPath(request, "path"))
                         reply(ok = true)
@@ -1031,13 +1035,20 @@ private fun serialiseViewPage(r: ViewPageResult.Ok): String {
     return sb.toString()
 }
 
-private fun serialiseListEntries(entries: List<ListResult.Entry>): String {
+private fun serialiseListEntries(
+    entries: List<ListResult.Entry>,
+    complete: Boolean? = null,
+    listedAtMs: Long? = null,
+): String {
     val sb = StringBuilder("""{"ok":true,"entries":[""")
     entries.forEachIndexed { i, e ->
         if (i > 0) sb.append(',')
         appendListEntry(sb, e)
     }
-    sb.append("]}")
+    sb.append(']')
+    // gkrost/unidrive-cli#445: present only where the listing says; listed_at_ms is null while complete is false.
+    if (complete != null) sb.append(""","complete":$complete,"listed_at_ms":${listedAtMs ?: "null"}""")
+    sb.append('}')
     return sb.toString()
 }
 

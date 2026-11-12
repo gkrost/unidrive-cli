@@ -208,7 +208,8 @@ class HydrationIpcHandlerTest {
 
         val reply = handler.handle("conn1", """{"verb":"hydration.list","prefix":"/Empty"}""")
 
-        assertEquals("""{"ok":true,"entries":[]}""", reply.trim())
+        // The folder's completeness follows the entries (gkrost/unidrive-cli#445).
+        assertTrue(reply.trim().startsWith("""{"ok":true,"entries":[]"""), reply)
     }
 
     @Test
@@ -279,7 +280,7 @@ class HydrationIpcHandlerTest {
         val stat = handler.handle("conn1", """{"verb":"hydration.stat","path":"/docs/foo.txt"}""")
         val list = handler.handle("conn1", """{"verb":"hydration.list","prefix":"/docs"}""")
 
-        val entry = list.substringAfter("\"entries\":[").removeSuffix("]}")
+        val entry = list.substringAfter("\"entries\":[").substringBeforeLast("]")
         assertEquals("""{"ok":true,"entry":$entry}""", stat.trim())
         assertTrue(entry.contains("\"path\":\"/docs/foo.txt\""), "the row's path: $entry")
         assertTrue(entry.contains("\"size\":42"), "the row's size: $entry")
@@ -308,7 +309,7 @@ class HydrationIpcHandlerTest {
         val after = handler.handle("conn1", """{"verb":"hydration.list","prefix":"/docs"}""")
 
         assertEquals(first, second, "the same row twice")
-        val entry = after.substringAfter("\"entries\":[").removeSuffix("]}")
+        val entry = after.substringAfter("\"entries\":[").substringBeforeLast("]")
         assertEquals("""{"ok":true,"entry":$entry}""", first.trim(), "the row is as the listing still shows it")
     }
 

@@ -1591,6 +1591,9 @@ class IpcContractCorpusTest {
                             pendingUpload = true, hasError = true, blocked = "similar_name",
                         ),
                     ),
+                    // gkrost/unidrive-cli#445: the whole folder, as of the last enumeration.
+                    complete = true,
+                    listedAtMs = FIXED_REMOTE_MS,
                 )
             } else if (prefix == "/") {
                 // The top level of a mount with a trash and backups: a live file, the trash root and the backups root (their
@@ -1656,6 +1659,9 @@ class IpcContractCorpusTest {
                         ),
                     ),
                 )
+            } else if (prefix == "/empty") {
+                // A folder no completed scan and no live listing covers (gkrost/unidrive-cli#445).
+                ListResult.Ok(emptyList(), complete = false)
             } else {
                 ListResult.Ok(emptyList())
             }

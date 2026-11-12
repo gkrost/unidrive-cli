@@ -108,6 +108,9 @@ class IpcContractLevelTest {
                     "capability:refresh", "capability:status", "capability:uploads.running", "capability:sync", "capability:apply",
                     "capability:sweep", "capability:views", "capability:view_page", "capability:share.create",
                 ),
+                // 2 (gkrost/unidrive-cli#445): hydration.list says whether a folder is listed whole, rmdir takes discard_local,
+                // ignore.explain answers a batch of paths.
+                setOf("capability:hydration.list_complete", "capability:hydration.rmdir_discard_local", "capability:ignore.explain_batch"),
             )
     }
 }

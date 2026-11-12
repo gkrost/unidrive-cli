@@ -66,6 +66,9 @@ class HydrationIpcHandlerWireTest {
             """{"verb":"hydration.rmdir","path":"/docs/sub"}""" to HydrationCall("rmdir", listOf("/docs/sub", false, false)),
             """{"verb":"hydration.rmdir","path":"/docs/sub","recursive":true}""" to HydrationCall("rmdir", listOf("/docs/sub", true, false)),
             """{"verb":"hydration.rmdir","path":"/docs/sub","recursive":true,"permanent":true}""" to HydrationCall("rmdir", listOf("/docs/sub", true, true)),
+            // gkrost/unidrive-cli#445: discard_local only with recursive; without it the flag is not read.
+            """{"verb":"hydration.rmdir","path":"/docs/sub","recursive":true,"discard_local":true}""" to HydrationCall("rmdir_discard_local", listOf("/docs/sub", false)),
+            """{"verb":"hydration.rmdir","path":"/docs/sub","discard_local":true}""" to HydrationCall("rmdir", listOf("/docs/sub", false, false)),
             """{"verb":"hydration.create","handle_id":"h-2","path":"/docs/new.txt"}""" to HydrationCall("create", listOf("c1", "h-2", "/docs/new.txt")),
             """{"verb":"hydration.create","path":"/docs/new.txt"}""" to HydrationCall("create", listOf("c1", "dh-0123456789ab-1", "/docs/new.txt")),
             """{"verb":"hydration.rename","old_path":"/docs/report.txt","new_path":"/docs/renamed.txt"}""" to

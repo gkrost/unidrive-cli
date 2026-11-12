@@ -77,6 +77,15 @@ internal const val HANDLE_STATUS_CAPABILITY = "hydration.handle_status"
  */
 internal const val SUBSCRIBE_REPLAY_CAPABILITY = "hydration.subscribe_replay"
 
+/** The `daemon.status` capability that says a `hydration.list` reply carries `complete` and `listed_at_ms` (gkrost/unidrive-cli#445). */
+internal const val LIST_COMPLETE_CAPABILITY = "hydration.list_complete"
+
+/** The `daemon.status` capability that says `hydration.rmdir` with `recursive` takes `discard_local` (gkrost/unidrive-cli#445). */
+internal const val RMDIR_DISCARD_LOCAL_CAPABILITY = "hydration.rmdir_discard_local"
+
+/** The `daemon.status` capability that says `ignore.explain` answers a batch of `paths` (gkrost/unidrive-cli#445). */
+internal const val IGNORE_EXPLAIN_BATCH_CAPABILITY = "ignore.explain_batch"
+
 /**
  * The `daemon.status` capability that says the daemon answers `share.create` (#615), present only while the provider
  * declares `Capability.Share`: a client shows its share entry for a mount only then.

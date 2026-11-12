@@ -64,6 +64,12 @@ internal class LiveFolderList(
     // When a folder was last found empty in the cloud (epoch ms).
     private val foundEmpty = ConcurrentHashMap<String, Long>()
 
+    // When this daemon last listed a folder from the cloud, empty or not (epoch ms; gkrost/unidrive-cli#445).
+    private val listedAt = ConcurrentHashMap<String, Long>()
+
+    /** When this daemon last listed [folder] (an NFC engine path, "" the root) from the cloud in full, or null. */
+    fun listedAtMs(folder: String): Long? = listedAt[folder]
+
     /**
      * The rows of [folder] after a live listing, or null when the folder is answered from state.db as it always was.
      * [folder] is the engine path without the trailing slash ("" is the root).
@@ -96,6 +102,8 @@ internal class LiveFolderList(
                 log.info("live list: {} is gone in the cloud; answering from state", path)
                 return null
             }
+        if (listedAt.size >= EMPTY_MEMORY_CAP) listedAt.clear()
+        listedAt[path] = nowMs()
         val changes = admitted(listed, remoteFolder.trimEnd('/'))
         if (changes.isEmpty()) {
             noteEmpty(path)
