@@ -421,7 +421,9 @@ A client that saw `lost`, or whose connection dropped, subscribes again (on a ne
 ```
 
 The stream then starts with the kept events after `since_seq`, in order, and goes on with the live ones (numbers above
-`tail_seq`); none is missing between the two and none comes twice. The daemon keeps the last 1024 events for this, except
+`tail_seq`); none is missing between the two and none comes twice. The reply is the connection's first line after the
+request: the replayed and live events never overtake it, whatever the event writer's scheduling. The daemon keeps the
+last 1024 events for this, except
 progress (`uploading`, `downloading`), which is numbered but never kept: the next progress line or the outcome supersedes it.
 A replay is never cut by the 64-event queue bound; the live events behind it are, as before.
 

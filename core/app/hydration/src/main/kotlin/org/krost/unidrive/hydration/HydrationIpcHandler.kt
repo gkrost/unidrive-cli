@@ -1,6 +1,7 @@
 package org.krost.unidrive.hydration
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -340,6 +341,11 @@ class HydrationIpcHandler(
     private data class Subscriber(
         val queue: SubscriberQueue,
         val job: Job,
+        // gkrost/unidrive-cli#437: released when the daemon's reply to the subscribe has been written to the connection
+        // (the post-reply hook), so the stream's first line cannot overtake the reply line the write protocol pins. A
+        // subscribe without a replay starts completed: today's plain subscribe already holds its lines back until the
+        // first event, and it keeps exactly that behavior.
+        val startGate: CompletableDeferred<Unit>,
     )
 
     private val subscribers = ConcurrentHashMap<String, Subscriber>()
@@ -422,6 +428,15 @@ class HydrationIpcHandler(
     }
 
     /**
+     * gkrost/unidrive-cli#437: the daemon's reply to this connection's subscribe has been written to the wire (the IpcServer's
+     * post-reply hook); a subscriber that holds a replay may start streaming it. No-op for a connection without a
+     * subscriber (a refusal never subscribes) and for one whose gate is already open (a plain subscribe, a re-subscribe).
+     */
+    fun onSubscribeReplyWritten(connectionId: String) {
+        subscribers[connectionId]?.startGate?.complete(Unit)
+    }
+
+    /**
      * gkrost/unidrive-cli#437: subscribe [connectionId] and answer the reply. With [sinceSeq] (and the [clientRunId] it was read
      * in) the queue starts with the ring's events after it; `replay` says whether that is all of them (`complete`) or some
      * are gone (`gap`: the ring moved past [sinceSeq], or the number is from another daemon run or ahead of this one's).
@@ -449,8 +464,13 @@ class HydrationIpcHandler(
         // so we never have two writer coroutines competing on the same connection.
         subscribers.remove(connectionId)?.let { it.job.cancel(); it.queue.close() }
         val queue = SubscriberQueue(replay)
+        val startGate =
+            if (replay.isEmpty()) CompletableDeferred(Unit).apply { complete(Unit) } else CompletableDeferred()
         val job = scope.launch {
             try {
+                // A replayed subscriber holds its lines back until the reply has gone out (see [startGate]); the events
+                // dispatched meanwhile are already in the queue and follow the replay in order.
+                startGate.await()
                 while (true) {
                     val event = queue.poll()
                     if (event == null) {
@@ -473,7 +493,7 @@ class HydrationIpcHandler(
                 queue.close()
             }
         }
-        subscribers[connectionId] = Subscriber(queue, job)
+        subscribers[connectionId] = Subscriber(queue, job, startGate)
     }
 
     companion object {

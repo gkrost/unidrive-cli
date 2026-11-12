@@ -78,6 +78,7 @@ class HydrationSubscribeReplayTest {
 
         val reply = handler.handle("c2", """{"verb":"hydration.subscribe","since_seq":3,"run_id":"0123456789ab"}""").trim()
         assertEquals("""{"ok":true,"tail_seq":5,"run_id":"0123456789ab","replay":"complete"}""", reply)
+        handler.onSubscribeReplyWritten("c2")
         handler.dispatchEvent(HydrationEvent.Hydrated("/f6", 6))
         advanceUntilIdle()
 
@@ -111,6 +112,7 @@ class HydrationSubscribeReplayTest {
 
         val reply = handler.handle("c2", """{"verb":"hydration.subscribe","since_seq":$lastSeen,"run_id":"0123456789ab"}""")
         assertTrue(reply.contains(""""replay":"complete""""), reply)
+        handler.onSubscribeReplyWritten("c2")
         advanceUntilIdle()
         val out = writer.linesFor("c2")
         assertTrue(out.none { it.contains(""""event":"lost"""") }, "a replay larger than the live queue is not cut: $out")
@@ -129,6 +131,7 @@ class HydrationSubscribeReplayTest {
         handler.dispatchEvent(HydrationEvent.Hydrated("/b", 9))
 
         handler.handle("c", """{"verb":"hydration.subscribe","since_seq":0,"run_id":"0123456789ab"}""")
+        handler.onSubscribeReplyWritten("c")
         advanceUntilIdle()
         assertEquals(listOf(3L), writer.linesFor("c").map(::seqOf))
         handler.onSubscriberDisconnect("c")
@@ -144,6 +147,7 @@ class HydrationSubscribeReplayTest {
 
         val reply = handler.handle("c", """{"verb":"hydration.subscribe","since_seq":5,"run_id":"0123456789ab"}""").trim()
         assertEquals("""{"ok":true,"tail_seq":$total,"run_id":"0123456789ab","replay":"gap"}""", reply)
+        handler.onSubscribeReplyWritten("c")
         advanceUntilIdle()
         val seqs = writer.linesFor("c").map(::seqOf)
         assertEquals(HydrationIpcHandler.REPLAY_CAPACITY, seqs.size)
@@ -166,13 +170,37 @@ class HydrationSubscribeReplayTest {
 
         val otherRun = handler.handle("c", """{"verb":"hydration.subscribe","since_seq":2,"run_id":"ffffffffffff"}""")
         assertTrue(otherRun.contains(""""replay":"gap""""), otherRun)
+        handler.onSubscribeReplyWritten("c")
         val ahead = handler.handle("d", """{"verb":"hydration.subscribe","since_seq":9,"run_id":"0123456789ab"}""")
         assertTrue(ahead.contains(""""replay":"gap""""), ahead)
+        handler.onSubscribeReplyWritten("d")
         advanceUntilIdle()
         assertEquals(listOf(1L, 2L, 3L), writer.linesFor("c").map(::seqOf))
         assertEquals(listOf(1L, 2L, 3L), writer.linesFor("d").map(::seqOf))
         handler.onSubscriberDisconnect("c")
         handler.onSubscriberDisconnect("d")
+    }
+
+    @Test
+    fun `a replayed subscriber holds its lines back until the reply is written`() = runTest {
+        val handler = newHandler()
+        val writer = FakeWriter()
+        handler.start(this) { id, line -> writer.write(id, line) }
+        for (i in 1..2) handler.dispatchEvent(HydrationEvent.Hydrated("/f$i", i.toLong()))
+
+        val reply = handler.handle("c", """{"verb":"hydration.subscribe","since_seq":0,"run_id":"0123456789ab"}""")
+        assertTrue(reply.contains(""""replay":"complete""""), reply)
+        handler.dispatchEvent(HydrationEvent.Hydrated("/f3", 3))
+        advanceUntilIdle()
+        assertTrue(
+            writer.linesFor("c").isEmpty(),
+            "the replay and the live events wait for the reply; the write protocol pins the reply as the first line",
+        )
+
+        handler.onSubscribeReplyWritten("c")
+        advanceUntilIdle()
+        assertEquals(listOf(1L, 2L, 3L), writer.linesFor("c").map(::seqOf), "replay first, then the live events, in order")
+        handler.onSubscriberDisconnect("c")
     }
 
     @Test
