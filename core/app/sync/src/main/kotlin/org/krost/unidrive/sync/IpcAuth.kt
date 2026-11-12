@@ -6,13 +6,13 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
 import org.krost.unidrive.io.OwnerOnly
+import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import org.krost.unidrive.io.grantProblem
 import org.krost.unidrive.io.string
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
@@ -200,8 +200,6 @@ class IpcAuth(
 
         private const val AUTH_REQUIRED = """{"ok":false,"error":"auth_required"}"""
         private const val AUTH_FAILED = """{"ok":false,"error":"auth_failed"}"""
-        private const val MOVE_ATTEMPTS = 20
-        private const val MOVE_RETRY_MS = 50L
 
         /**
          * The verb class of every verb the daemon registers, keyed by the exact wire string. Scope `read`
@@ -289,40 +287,24 @@ class IpcAuth(
             token: ByteArray,
             grantProblem: (Path) -> String?,
         ) {
-            val dir = target.parent
-            val temp =
-                try {
-                    Files.createTempFile(dir, ".ipc-token-", ".tmp")
-                } catch (e: IOException) {
-                    throw StartupRefused("a token file cannot be created (${e.message})", dir)
-                }
+            // gkrost/unidrive-cli#456: the one local replace — owner-only before the first byte, forced to disk (a power
+            // loss never leaves a renamed-but-empty token behind), the move retried while a reader holds the old file.
+            // The verify hook keeps the paranoid re-check the old hand-rolled loop had: the written temp file is
+            // owner-only before it replaces the target, by the caller's own answer.
             try {
-                val restricted = OwnerOnly.restrictFile(temp)
-                if (!restricted.restricted) throw StartupRefused("a token file cannot be restricted to the current user ($restricted)", temp)
-                grantProblem(temp)?.let { throw StartupRefused("a new token file is not owner-only, $it", temp) }
-                Files.write(temp, encode(token).toByteArray(Charsets.US_ASCII))
-                moveOver(temp, target)
-            } finally {
-                runCatching { Files.deleteIfExists(temp) }
+                OwnerOnlyAtomicWrite.replace(
+                    target,
+                    encode(token).toByteArray(Charsets.US_ASCII),
+                    verify = { temp ->
+                        grantProblem(temp)?.let { problem ->
+                            throw IOException("a new token file is not owner-only, $problem")
+                        }
+                    },
+                )
+            } catch (e: IOException) {
+                throw StartupRefused("the token file cannot be written (${e.message})", target)
             }
             grantProblem(target)?.let { throw StartupRefused("the token file is not owner-only, $it", target) }
-        }
-
-        // A reader that holds the old file open can make the replace fail on Windows for a moment.
-        private fun moveOver(
-            temp: Path,
-            target: Path,
-        ) {
-            var attempt = 1
-            while (true) {
-                try {
-                    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                    return
-                } catch (e: IOException) {
-                    if (attempt++ >= MOVE_ATTEMPTS) throw StartupRefused("the token file cannot be replaced (${e.message})", target)
-                    Thread.sleep(MOVE_RETRY_MS)
-                }
-            }
         }
 
         /** The decoded token in [file] (one line of base64url; surrounding whitespace is ignored). */

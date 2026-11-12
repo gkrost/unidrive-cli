@@ -3,7 +3,6 @@ package org.krost.unidrive.internxt
 import java.nio.file.AccessDeniedException
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.FileTime
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -15,8 +14,11 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * archive#1203: on Windows the rename of the sidecar over an existing one fails with AccessDeniedException while another handle holds the
- * target; the write tries a few times before the caller sees it, and a write that finally fails leaves no temp file behind.
+ * The sidecar write goes through [OwnerOnlyAtomicWrite] (gkrost/unidrive-cli#456), whose own suite owns the
+ * replace-and-retry contract — owner-only before the bytes, forced to disk, the move retried while a reader
+ * holds the target (archive#1203: the Windows AccessDeniedException of a held sidecar), no temp left on a
+ * failure. What stays this class's is the store's own contract: what a write lands, and that an injected
+ * failure leaves neither sidecar nor temp behind.
  */
 class UploadTombstoneStoreWriteTest {
     private val dir: Path = Files.createTempDirectory("ud-tomb-write-")
@@ -45,65 +47,16 @@ class UploadTombstoneStoreWriteTest {
         bridgeFileId = bridgeFileId,
     )
 
-    private fun realMove(
-        tmp: Path,
-        target: Path,
-    ) {
-        Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-    }
-
     @Test
-    fun `a rename that is refused twice is tried again and the write lands`() {
-        var tries = 0
-        val pauses = mutableListOf<Long>()
-        val store =
-            UploadTombstoneStore(
-                dir,
-                move = { tmp, target ->
-                    if (++tries <= 2) throw AccessDeniedException(tmp.toString(), target.toString(), null)
-                    realMove(tmp, target)
-                },
-                pause = { pauses += it },
-            )
-
-        store.write("h1", tombstone())
-
-        assertEquals(3, tries)
-        assertEquals(listOf(20L, 40L), pauses, "the pauses grow, the caller is not held for long")
-        assertNotNull(store.read("h1"), "the sidecar is there")
-        assertFalse(Files.exists(dir.resolve("h1.json.tmp")), "the temp file went with the successful rename")
-    }
-
-    @Test
-    fun `a rename that never works throws after five tries and removes the temp file`() {
-        var tries = 0
-        val pauses = mutableListOf<Long>()
-        val store =
-            UploadTombstoneStore(
-                dir,
-                move = { tmp, target ->
-                    tries++
-                    throw AccessDeniedException(tmp.toString(), target.toString(), null)
-                },
-                pause = { pauses += it },
-            )
+    fun `a write whose failure the test injects leaves neither sidecar nor temp behind`() {
+        val store = UploadTombstoneStore(dir)
+        store.writeFailure = { AccessDeniedException("injected", null, null) }
 
         assertFailsWith<AccessDeniedException> { store.write("h2", tombstone()) }
 
-        assertEquals(5, tries)
-        assertEquals(listOf(20L, 40L, 60L, 80L), pauses)
-        assertFalse(Files.exists(dir.resolve("h2.json.tmp")), "a failed write leaves no half-written temp file")
-        assertNull(store.read("h2"), "and no sidecar")
-    }
-
-    @Test
-    fun `a failure that is not a file system error is not retried`() {
-        var tries = 0
-        val store = UploadTombstoneStore(dir, move = { _, _ -> tries++; error("not ours") }, pause = {})
-
-        assertFailsWith<IllegalStateException> { store.write("h3", tombstone()) }
-
-        assertEquals(1, tries)
+        assertFalse(Files.exists(dir.resolve("h2.json")), "a failed write leaves no sidecar")
+        assertFalse(Files.exists(dir.resolve("h2.json.tmp")), "and no half-written temp file")
+        assertNull(store.read("h2"))
     }
 
     @Test

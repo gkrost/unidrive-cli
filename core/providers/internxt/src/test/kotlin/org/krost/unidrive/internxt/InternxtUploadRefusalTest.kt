@@ -161,16 +161,11 @@ class InternxtUploadRefusalTest {
             }
         }
 
-    // archive#1203: the provider's sidecar store with a rename the test controls (a Windows rename that is refused while a scanner holds the target).
-    private fun InternxtProvider.withSidecarRename(move: (Path, Path) -> Unit) {
-        tombstoneStore = UploadTombstoneStore(tmp.resolve("upload-tombstones"), move = move, pause = {})
-    }
-
-    private fun realMove(
-        from: Path,
-        to: Path,
-    ) {
-        Files.move(from, to, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+    // The provider's sidecar store with a write failure the test controls. The rename itself is OwnerOnlyAtomicWrite's
+    // contract since gkrost/unidrive-cli#456 (its own suite holds the archive#1203 retry tests); what stays testable
+    // here is what a sidecar write that fails does to the upload.
+    private fun InternxtProvider.withSidecarWriteFailure(failure: (UploadTombstone) -> java.io.IOException?) {
+        tombstoneStore.writeFailure = failure
     }
 
     @Test
@@ -185,9 +180,12 @@ class InternxtUploadRefusalTest {
                     scenario = UploadScenario(onStart = { starts.incrementAndGet() }, onPut = { puts.incrementAndGet() }, onFinish = { finishes.incrementAndGet() }),
                 )
             // The record of the finished commit cannot be written, whatever is tried: the file id is in hand and the upload goes on to createFile.
-            provider.withSidecarRename { from, to ->
-                if ("FINISH_DONE" in Files.readString(from)) throw java.nio.file.AccessDeniedException(from.toString(), to.toString(), null)
-                realMove(from, to)
+            provider.withSidecarWriteFailure { tombstone ->
+                if (tombstone.stage == UploadTombstone.Stage.FINISH_DONE) {
+                    java.nio.file.AccessDeniedException("injected", null, null)
+                } else {
+                    null
+                }
             }
             try {
                 val item = provider.upload(local(), "/f.txt", existingRemoteId = null, onProgress = null)
@@ -202,7 +200,7 @@ class InternxtUploadRefusalTest {
         }
 
     @Test
-    fun `a sidecar rename that is refused for a moment is tried again and the upload is untouched`() =
+    fun `a sidecar write that fails before the put fails the upload instead of losing the record silently`() =
         runTest {
             val starts = AtomicInteger()
             val finishes = AtomicInteger()
@@ -211,18 +209,19 @@ class InternxtUploadRefusalTest {
                     HttpStatusCode.OK,
                     scenario = UploadScenario(onStart = { starts.incrementAndGet() }, onFinish = { finishes.incrementAndGet() }),
                 )
-            var refusals = 0
-            provider.withSidecarRename { from, to ->
-                if (refusals++ < 3) throw java.nio.file.AccessDeniedException(from.toString(), to.toString(), null)
-                realMove(from, to)
+            provider.withSidecarWriteFailure { tombstone ->
+                if (tombstone.stage == UploadTombstone.Stage.PUT_PENDING) {
+                    java.nio.file.AccessDeniedException("injected", null, null)
+                } else {
+                    null
+                }
             }
             try {
-                val item = provider.upload(local(), "/f.txt", existingRemoteId = null, onProgress = null)
-
-                assertEquals("drive-file-1", item.id)
-                assertEquals(1, starts.get())
-                assertEquals(1, finishes.get())
-                assertTrue(refusals >= 3, "the refusals really happened")
+                assertFailsWith<java.nio.file.AccessDeniedException> {
+                    provider.upload(local(), "/f.txt", existingRemoteId = null, onProgress = null)
+                }
+                assertEquals(0, starts.get(), "the failure surfaced before any bridge session was opened")
+                assertEquals(0, finishes.get(), "nothing was finished behind a record that never landed")
             } finally {
                 provider.close()
             }

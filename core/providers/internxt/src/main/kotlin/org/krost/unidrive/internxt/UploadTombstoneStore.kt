@@ -3,30 +3,14 @@ package org.krost.unidrive.internxt
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.krost.unidrive.UnidriveJson
+import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.util.HexFormat
-
-// The rename of [UploadTombstoneStore.write]: atomic where the file system can, a plain replace where it cannot.
-private fun moveIntoPlace(
-    tmpPath: Path,
-    finalPath: Path,
-) {
-    try {
-        Files.move(tmpPath, finalPath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-    } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-        // Some filesystems (e.g. cross-volume tmpfs on certain CI runners)
-        // refuse ATOMIC_MOVE; fall back to a plain replace. The non-atomic
-        // window is small and the read path handles a malformed file as
-        // "no tombstone", so the worst case is a forced re-encrypt.
-        Files.move(tmpPath, finalPath, StandardCopyOption.REPLACE_EXISTING)
-    }
-}
 
 /**
  * Compensates for Internxt's missing resumable-upload protocol by recording
@@ -41,10 +25,10 @@ private fun moveIntoPlace(
  * where the platform supports it (Internxt creds live next door on the
  * same mode). The directory is created lazily on first write.
  *
- * Atomicity: the JSON sidecar is written to a `.tmp` sibling then renamed
- * with `ATOMIC_MOVE`, so a crash mid-write never leaves a half-parsed
- * tombstone visible. The ciphertext temp file is overwritten in place;
- * if a crash truncates it the resume path detects the size mismatch
+ * Atomicity: the JSON sidecar goes through [OwnerOnlyAtomicWrite.replace] — a `.tmp` sibling that is owner-only
+ * before its first byte and forced to disk, then an atomic rename where the file system can (a plain replace
+ * where it cannot), so a crash mid-write never leaves a half-parsed or empty tombstone visible. The ciphertext
+ * temp file is overwritten in place; if a crash truncates it the resume path detects the size mismatch
  * against `encrypted_size` and rotates the tombstone.
  *
  * Staleness is the caller's call. The store hands back what's on disk and
@@ -54,10 +38,11 @@ private fun moveIntoPlace(
  */
 internal class UploadTombstoneStore(
     private val tombstoneDir: Path,
-    // The two seams of [write]'s local retry (archive#1203): the rename into place, and the pause between two tries. Tests pass their own.
-    private val move: (Path, Path) -> Unit = ::moveIntoPlace,
-    private val pause: (Long) -> Unit = { Thread.sleep(it) },
 ) {
+    // Test seam (gkrost/unidrive-cli#456): the failure [write] injects, so a test can hold a sidecar write back
+    // without controlling the rename (which OwnerOnlyAtomicWrite owns now). Production never sets it.
+    @Volatile
+    internal var writeFailure: (UploadTombstone) -> java.io.IOException? = { null }
     /**
      * Read the tombstone at [pathHash] if present. Returns null when the
      * sidecar is absent, malformed, unreadable right now, or its schema
@@ -104,34 +89,24 @@ internal class UploadTombstoneStore(
      * responsible for refreshing [UploadTombstone.tombstoneWrittenAtMillis]
      * to `Instant.now().toEpochMilli()` on every transition — the store
      * just persists what's handed in.
+     *
+     * gkrost/unidrive-cli#456: the one local replace does the whole dance the store used to keep by hand — the bytes
+     * land on an owner-only temp file that is forced to disk before the move (a power loss never leaves an empty
+     * tombstone behind, which used to force a re-encrypt), and the move is retried while a reader holds the target
+     * (archive#1203: on Windows the rename over an existing sidecar fails with AccessDeniedException while another
+     * handle holds it without delete sharing; that is brief).
      */
     fun write(
         pathHash: String,
         tombstone: UploadTombstone,
     ) {
+        writeFailure(tombstone)?.let { throw it }
         ensureDir()
         val finalPath = tombstoneDir.resolve("$pathHash.json")
-        val tmpPath = tombstoneDir.resolve("$pathHash.json.tmp")
-        val body = json.encodeToString(UploadTombstone.serializer(), tombstone)
-        // archive#1203: on Windows the rename over an existing sidecar fails with AccessDeniedException while another handle holds the target
-        // without delete sharing (a scanner that just looked at the file, a reader of the same path). That is brief, so try a few times
-        // before the caller sees it; the half-written temp file is removed when the write finally fails.
-        var attempt = 0
-        while (true) {
-            try {
-                Files.writeString(tmpPath, body)
-                move(tmpPath, finalPath)
-                break
-            } catch (e: java.nio.file.FileSystemException) {
-                attempt++
-                if (attempt >= WRITE_ATTEMPTS) {
-                    runCatching { Files.deleteIfExists(tmpPath) }
-                    throw e
-                }
-                pause(WRITE_PAUSE_MS * attempt)
-            }
-        }
-        tryRestrictPermissions(finalPath)
+        OwnerOnlyAtomicWrite.replace(
+            finalPath,
+            json.encodeToString(UploadTombstone.serializer(), tombstone).toByteArray(),
+        )
     }
 
     /**
@@ -269,10 +244,6 @@ internal class UploadTombstoneStore(
 
     companion object {
         private val json: Json = UnidriveJson
-
-        /** archive#1203: how often a write tries the rename into place, and the first pause (the n-th pause is n times this: 20, 40, 80, 160 ms). */
-        private const val WRITE_ATTEMPTS = 5
-        private const val WRITE_PAUSE_MS = 20L
 
         /**
          * Head/tail window size for [contentFingerprint]. Files at or below
