@@ -189,6 +189,8 @@ class InternxtProvider(
     // one per device). Nothing below one is part of the drive: the listing leaves it out, and a write addressed to it by
     // id is refused ([refuseOutsideDrive]). Process-lifetime, like [folderCache]: the folders known to be the top of
     // such a tree or below one, and the folders known to hang below the drive root, so each chain is climbed once.
+    // gkrost/unidrive-cli#634: the inside set is also seeded — by every path resolution, by the listings it consults and
+    // by the delta pass's proven chains — so the refusal climb of a delete on a synced path asks no ancestor at all.
     private val outsideDriveFolders: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val insideDriveFolders: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
@@ -519,6 +521,8 @@ class InternxtProvider(
         val folderUuid = resolveFolder(path)
         val content = api.getFolderContents(folderUuid)
         val liveContent = filterLiveContent(content)
+        // The listing answers for every subfolder it returns: their folders hang below the drive root (#634).
+        liveContent.children.forEach { insideDriveFolders.add(it.uuid) }
         return liveContent.children.map { it.toCloudItem(path) } + liveContent.files.map { it.toCloudItem(path) }
     }
 
@@ -2321,6 +2325,8 @@ class InternxtProvider(
                     else -> throwAmbiguous(children.size, segment, path)
                 }
             folderCache.put(currentUuid, segment, child.uuid)
+            // Walked from the drive root by name: the folder hangs below it (#634).
+            insideDriveFolders.add(child.uuid)
             currentUuid = child.uuid
         }
         return currentUuid
@@ -2591,6 +2597,32 @@ class InternxtProvider(
             }
         if (!outside) return
         throw ProviderException(if (inBackupFolder(item.parentId)) backupRefusal(remotePath) else outsideDriveRefusal(remotePath))
+    }
+
+    // gkrost/unidrive-cli#634: the parent chains of [items] as far as [folderMap] carries them toward [rootUuid]: every
+    // chain that reaches the root marks its uuids in [insideDriveFolders], so the refusal climb ([isOutsideDrive]) of a
+    // later delete of any of them asks no ancestor. A chain that ends at a folder the pass does not know, or at one
+    // without a parent (a tree of its own), proves nothing and marks nothing. [memo] dedups the walk across one delta
+    // pass's items. Called by the delta assembly with the items it kept in the drive — the outside ones went to the
+    // trees above, the kept ones' chains are the proof.
+    internal fun seedInsideDriveChains(
+        items: List<CloudItem>,
+        folderMap: Map<String, InternxtFolder>,
+        rootUuid: String,
+        memo: MutableSet<String>,
+    ) {
+        for (item in items) {
+            if (item.backup) continue
+            var uuid = if (item.isFolder) item.id else item.parentId ?: continue
+            val chain = ArrayList<String>()
+            var reachesRoot = false
+            while (uuid != rootUuid && memo.add(uuid)) {
+                chain += uuid
+                uuid = folderMap[uuid]?.parentUuid ?: break
+                if (uuid == rootUuid) reachesRoot = true
+            }
+            if (reachesRoot) insideDriveFolders.addAll(chain)
+        }
     }
 
     override suspend fun deleteById(remoteId: String, remotePath: String) = deleteByIdWithHint(remoteId, remotePath, false)
@@ -3821,6 +3853,9 @@ class InternxtProvider(
         private val listBackups = listsBackups
         private val listedIds = HashSet<String>()
         private val devicesListed = HashSet<String>()
+
+        // The folder uuids whose chain to the drive root this pass has already walked ([seedInsideDriveChains]).
+        private val seededInside = HashSet<String>()
         private var deviceListing: DeviceListing? = null
         private val censusFiles = HashMap<String, Int>()
         private val censusFolders = HashMap<String, Int>()
@@ -4027,6 +4062,7 @@ class InternxtProvider(
                 listed.mapTo(listedIds) { it.id }
             }
             val items = if (outside.isEmpty()) placed else placed.filter { it.id !in outside } + listed
+            seedInsideDriveChains(items, folderMap, rootUuid, seededInside)
             for (item in items) {
                 if (!item.trashed) continue
                 inTrash++
@@ -4903,6 +4939,10 @@ class InternxtProvider(
             // UD-357: cache the discovered UUID too — subsequent resolveFolder
             // calls on the same parent skip the round-trip.
             folderCache.put(currentUuid, segment, child.uuid)
+            // The walk ran from the drive root by name: every folder it passed, and every live subfolder the consulted
+            // listing returned, hangs below the root (#634).
+            insideDriveFolders.add(child.uuid)
+            content.children.filter { it.isLive() }.forEach { insideDriveFolders.add(it.uuid) }
             currentUuid = child.uuid
         }
         return currentUuid
