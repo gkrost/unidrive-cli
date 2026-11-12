@@ -289,7 +289,10 @@ internal object WindowsSecurity {
 
     /** Use Win32's extended-length namespace before the classic MAX_PATH limit is reached. */
     internal fun win32Path(path: Path): String {
-        val absolute = path.toAbsolutePath().toString()
+        // windows#454 item 7: GetNamedSecurityInfoW does not resolve ".." inside an extended-length path, so a
+        // >247-character path carrying one failed outright; normalise first, like every other consumer of the
+        // extended-length namespace does.
+        val absolute = path.toAbsolutePath().normalize().toString()
         if (absolute.length <= EXTENDED_PATH_THRESHOLD || absolute.startsWith("\\\\?\\")) return absolute
         return if (absolute.startsWith("\\\\")) {
             "\\\\?\\UNC\\" + absolute.substring(2)
