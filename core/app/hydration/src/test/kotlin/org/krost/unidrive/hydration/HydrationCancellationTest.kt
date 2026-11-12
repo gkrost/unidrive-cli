@@ -2,7 +2,6 @@ package org.krost.unidrive.hydration
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.Capability
@@ -27,9 +26,8 @@ class HydrationCancellationTest {
     fun `a cancelled open_write_begin gives no failure reply`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this)
         env.stateDb.insertUnhydratedEntry("/q/f.txt", remoteSize = 5, remoteHash = "v1")
-        val swapLock = MountEngine.over(env.engine).cacheSwapLock("/q/f.txt")
         var reply: OpenResult? = null
-        swapLock.withLock {
+        MountEngine.over(env.engine).withCacheSwapLock("/q/f.txt") {
             val caller = launch { reply = env.hydration.openWriteBegin("conn1", "/q/f.txt", handleId = "h1") }
             runCurrent() // the truncate waits for the swap lock
             caller.cancel()

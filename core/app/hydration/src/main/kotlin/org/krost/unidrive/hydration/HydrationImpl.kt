@@ -348,10 +348,9 @@ class HydrationImpl(
     // same cache file (clobbering one writer's content) and both
     // return Ok. The mutex serialises the check+materialise+upsert
     // tuple per-path; the second caller wakes after the first's
-    // upsert and correctly returns PathExists. Entries stay in the
-    // map for the daemon's lifetime — bounded by the number of
-    // distinct paths ever created, which is small per-session.
-    private val createMutexes = ConcurrentHashMap<String, Mutex>()
+    // upsert and correctly returns PathExists. gkrost/unidrive-cli#438: a
+    // path's entry lives only while somebody holds or waits for it.
+    private val createLocks = PathLocks()
 
     // Per-path serialization for background uploads.
     //
@@ -3363,7 +3362,7 @@ class HydrationImpl(
             // place (MountEngine.cacheSwapLock): the download either sees the mark and drops its bytes, or has finished and
             // its copy is the one emptied here.
             val cachePath =
-                mount.cacheSwapLock(normalised).withLock {
+                mount.withCacheSwapLock(normalised) {
                     if (entry.remoteId != null) stateDb.markEdited(normalised, entry.writeToken.orEmpty())
                     prepareEmptyCache(normalised)
                 }
@@ -3390,8 +3389,7 @@ class HydrationImpl(
         if (refusedNewName(normalised)) return CreateResult.Failed(HydrationError.InvalidPath)
         // archive#1040 M4: a file created at the old name of a rename whose cache copy is still there would truncate it.
         if (renames.blocks(normalised)) return CreateResult.Failed(HydrationError.Generic(BUSY_TOKEN))
-        val mutex = createMutexes.computeIfAbsent(normalised) { Mutex() }
-        return mutex.withLock {
+        return createLocks.withLock(normalised) {
             // Scope guard: a file created outside the profile's sync_path set
             // would upload to the cloud but never show in the mounted view.
             // Read-only before scope, as for mkdir (archive#1074).
@@ -3459,8 +3457,7 @@ class HydrationImpl(
     ): RefuseNameResult {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
         if (normalised == "/" || !resolvesInsideCache(normalised)) return RefuseNameResult.Failed(HydrationError.InvalidPath)
-        val mutex = createMutexes.computeIfAbsent(normalised) { Mutex() }
-        return mutex.withLock {
+        return createLocks.withLock(normalised) {
             if (mount.isReadOnlyPath(normalised)) return@withLock RefuseNameResult.Failed(HydrationError.ReadOnly)
             if (mount.isOutOfScope(normalised)) return@withLock RefuseNameResult.Failed(HydrationError.OutOfScope)
             val existing = stateDb.getEntry(normalised)
@@ -3495,8 +3492,7 @@ class HydrationImpl(
 
     override suspend fun clearNameRefusal(path: String): Boolean {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
-        val mutex = createMutexes.computeIfAbsent(normalised) { Mutex() }
-        return mutex.withLock {
+        return createLocks.withLock(normalised) {
             if (stateDb.nameBlock(normalised)?.reason != HydrationError.NAME_COLLIDES_TOKEN) return@withLock false
             // A row that is only the refusal goes; one with bytes in the cache (created before its twin arrived) keeps them.
             stateDb.deleteLocalEmptyRow(normalised) || stateDb.clearNameBlock(normalised)
