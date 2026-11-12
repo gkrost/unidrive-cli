@@ -386,6 +386,9 @@ class AuthCheckTest {
             assertEquals("invalid_request", notObject.getValue("error").jsonPrimitive.content)
             val badTimeout = Json.parseToJsonElement(handler.check("""{"verb":"auth.check","timeout_seconds":0}""")).jsonObject
             assertEquals("invalid_timeout", badTimeout.getValue("error").jsonPrimitive.content)
+            // gkrost/unidrive-cli#442: a count is a JSON number, as in every other verb.
+            val stringTimeout = Json.parseToJsonElement(handler.check("""{"verb":"auth.check","timeout_seconds":"5"}""")).jsonObject
+            assertEquals("invalid_timeout", stringTimeout.getValue("error").jsonPrimitive.content)
             assertEquals(0, provider.checks)
             val ok = Json.parseToJsonElement(handler.check("""{"verb":"auth.check"}""")).jsonObject
             assertTrue(ok.getValue("ok").jsonPrimitive.boolean)

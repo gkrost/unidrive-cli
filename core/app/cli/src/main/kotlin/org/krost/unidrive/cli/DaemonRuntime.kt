@@ -553,7 +553,7 @@ class DaemonRuntime(
                         val reply = ipc.handle(connectionId = connId, jsonRequest = json)
                         // A READ-scope subscribe (an observer such as a status UI) never starts the enumerate:
                         // observing must not scan the remote. archive#657
-                        if (verb == "hydration.subscribe" && reply.contains("\"ok\":true")) {
+                        if (verb == "hydration.subscribe" && isOkReplyLine(reply)) {
                             server.scheduleAfterReply(connId) {
                                 // gkrost/unidrive-cli#437: the reply line is out — a replayed subscriber may start
                                 // streaming, so the reply stays the connection's first line and the events follow it.

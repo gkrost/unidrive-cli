@@ -61,7 +61,7 @@ internal class AuthLogoutRpcHandler(
         val force =
             when (val element = body?.get("force")) {
                 null -> false
-                else -> (element as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toBooleanStrictOrNull() ?: return INVALID_FORCE
+                else -> element.strictBooleanOrNull() ?: return INVALID_FORCE
             }
         if (!force) {
             val split = pendingRows()
