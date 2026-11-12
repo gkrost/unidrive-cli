@@ -828,6 +828,10 @@ class MountEngine private constructor(
                     throw IllegalStateException("Integrity check failed for hydration cache: $path")
                 }
             }
+            // gkrost/unidrive-cli#438: the SHA-256 the row records for a provider without a content hash is read from the staged
+            // bytes here, before the swap lock: a save over the file (open_write_begin) waits for that lock, and a hash of a
+            // large file under it held the save for as long as the read took.
+            val prehashed = stagedHashIfOwed(staged, entry, fetched)
             // The last look at the row, the move of the bytes into place and the row write are one step for a truncate
             // ([cacheSwapLock]): a truncate before it is seen below, one after it empties the copy the download put there.
             cacheSwapLock(path).withLock {
@@ -868,7 +872,14 @@ class MountEngine private constructor(
                 // copy's bytes: keeping a hash recorded for the previous contents would pair stale
                 // bytes with a fresh mtime/size and let a later touch be absorbed as unchanged.
                 db.upsertEntry(
-                    withDownloadedHash(rebaselined, cachePath, rebaselined.localMtime!! to rebaselined.localSize!!, fetched.receipt, tally),
+                    withDownloadedHash(
+                        rebaselined,
+                        cachePath,
+                        rebaselined.localMtime!! to rebaselined.localSize!!,
+                        fetched.receipt,
+                        tally,
+                        prehashed,
+                    ),
                 )
             }
             recordProviderContact()
@@ -2342,15 +2353,52 @@ class MountEngine private constructor(
         stats: Pair<Long, Long>,
         receipt: DownloadReceipt,
         tally: FileEventTally,
+        prehashed: StagedHash? = null,
     ): SyncEntry {
         val (mtime, size) = stats
         val streamed =
             receipt.plaintextSha256?.takeIf {
                 receipt.stagedSize == size && receipt.stagedMtimeMillis != null && receipt.stagedMtimeMillis == mtime
             }
-        return Transfers.withLocalHash(entry, local, stats, provider.hashAlgorithm(), log, streamed) { fromProvider, ms ->
-            FileEvents.event(FileEvents.Phase.HASH_DONE, entry.path, bytes = size, ms = ms, tally = tally,
-                extra = listOf("via" to if (fromProvider) "provider" else "file"))
+        // A hash of the staged bytes counts only while the placed copy has the stats the staged file had when it was read.
+        val staged = if (streamed == null) prehashed?.takeIf { it.mtime == mtime && it.size == size } else null
+        return Transfers.withLocalHash(entry, local, stats, provider.hashAlgorithm(), log, streamed ?: staged?.sha256) { fromProvider, ms ->
+            val via = if (staged != null) "file" else if (fromProvider) "provider" else "file"
+            FileEvents.event(FileEvents.Phase.HASH_DONE, entry.path, bytes = size, ms = staged?.readMs ?: ms, tally = tally,
+                extra = listOf("via" to via))
+        }
+    }
+
+    // gkrost/unidrive-cli#438: the SHA-256 of the staged bytes, read before the swap lock, with the stats they had.
+    private class StagedHash(
+        val sha256: String,
+        val mtime: Long,
+        val size: Long,
+        val readMs: Long,
+    )
+
+    // The hash the row will owe for this download, read from [staged] now; null when it owes none (the provider names the content
+    // by a hash of its own, or the download streamed one for these very bytes) or the file cannot be read (the row write then reads
+    // the placed copy, as before).
+    private fun stagedHashIfOwed(
+        staged: Path,
+        entry: SyncEntry,
+        fetched: Fetched,
+    ): StagedHash? {
+        if (provider.hashAlgorithm() != null && !(fetched.liveItem?.hash ?: entry.remoteHash).isNullOrEmpty()) return null
+        return try {
+            val mtime = Files.getLastModifiedTime(staged).toMillis()
+            val size = Files.size(staged)
+            val receipt = fetched.receipt
+            if (receipt.plaintextSha256 != null && receipt.stagedSize == size && receipt.stagedMtimeMillis == mtime) return null
+            val startedNs = System.nanoTime()
+            val sha = HashVerifier.computeSha256Hex(staged)
+            val readMs = (System.nanoTime() - startedNs) / 1_000_000
+            // Changed while it was read: no hash, the row write reads the placed copy.
+            if (Files.getLastModifiedTime(staged).toMillis() != mtime || Files.size(staged) != size) null else StagedHash(sha, mtime, size, readMs)
+        } catch (e: java.io.IOException) {
+            log.debug("staged bytes of {} not hashed before the swap: {}", entry.path, e.message)
+            null
         }
     }
 
