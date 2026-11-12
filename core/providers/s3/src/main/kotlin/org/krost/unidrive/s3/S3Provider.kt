@@ -3,6 +3,8 @@ package org.krost.unidrive.s3
 import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.Capability
@@ -513,17 +515,20 @@ class S3Provider(
         if (failed > 0) throw ProviderException("S3 could not delete $failed of ${keys.size} object(s) under '$prefix'")
     }
 
-    private suspend fun allKeys(prefix: String): List<String> {
-        val keys = mutableListOf<String>()
+    private suspend fun allKeys(prefix: String): List<String> = allObjects(prefix).map { it.key }
+
+    /** Every object under [prefix] as the listing reports it: key, size and ETag, no HEAD per key. */
+    private suspend fun allObjects(prefix: String): List<S3Object> {
+        val objects = mutableListOf<S3Object>()
         val pages = PageTokenGuard("The S3 listing under '$prefix'")
         var token: String? = null
         do {
             val page = api.list(prefix, token = token)
-            page.objects.forEach { keys += it.key }
+            objects += page.objects
             pages.follow(page.nextToken)
             token = page.nextToken
         } while (token != null)
-        return keys
+        return objects
     }
 
     /** Every key under [prefix] with its ETag: what a move's destination already holds (#176). */
@@ -566,13 +571,14 @@ class S3Provider(
             api.delete(from)
             return fileItem(api.head(to) ?: throw ProviderException("S3 does not show '$to' right after the copy"))
         }
-        val keys = allKeys("$from/")
-        if (keys.isEmpty()) throw S3Exception("S3 has nothing at '$fromPath'", 404, "NoSuchKey")
-        val sources = keys.mapNotNull { key -> api.head(key)?.let { key to it } }
+        // The listing carries what the guard and a single copy need (key, size, ETag): no HEAD per key. Only an object
+        // above the single-copy limit is HEADed, for the mtime its multipart copy writes again.
+        val listed = allObjects("$from/")
+        if (listed.isEmpty()) throw S3Exception("S3 has nothing at '$fromPath'", 404, "NoSuchKey")
+        val keys = listed.map { it.key }
+        val sources = listed.map { it.key to it }
         refuseTakenFolderDestination(sources, from, to)
-        for ((key, obj) in sources) {
-            copyObject(obj, "$to/" + key.removePrefix("$from/"))
-        }
+        copyAll(sources.map { (key, obj) -> obj to "$to/" + key.removePrefix("$from/") })
         // The source goes the way a folder delete goes: a key the store refuses to delete, or a vendor without
         // DeleteObjects, must not leave the source standing beside its copy under a success (archive#1063).
         deleteKeys(keys, "$from/")
@@ -622,6 +628,30 @@ class S3Provider(
         left: String?,
         right: String?,
     ): Boolean = left != null && right != null && left == right
+
+    /**
+     * The copies of a folder move, [MOVE_COPY_CONCURRENCY] at a time (the shared budget still paces every request). A
+     * source key gone since the listing is skipped, as a HEAD that found nothing used to drop it. The first other
+     * failure cancels the copies still running and is thrown; the source is untouched then, as before.
+     */
+    private suspend fun copyAll(copies: List<Pair<S3Object, String>>) {
+        val permits = kotlinx.coroutines.sync.Semaphore(MOVE_COPY_CONCURRENCY)
+        kotlinx.coroutines.coroutineScope {
+            for ((listed, target) in copies) {
+                launch {
+                    permits.withPermit {
+                        val source = if (listed.size > S3Config.MAX_SINGLE_COPY) api.head(listed.key) ?: return@withPermit else listed
+                        try {
+                            copyObject(source, target)
+                        } catch (e: S3Exception) {
+                            if (e.status != 404 || e.code != "NoSuchKey") throw e
+                            log.info("'{}' is gone since the listing; the move copies the rest", listed.key)
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // One CopyObject up to 5 GiB; above, a multipart upload whose parts are copied server-side (every vendor, not only AWS).
     @Suppress("TooGenericExceptionCaught") // the half-made copy is aborted, then the failure is rethrown unchanged
@@ -725,6 +755,7 @@ class S3Provider(
         private const val FULL_LISTING = "full-listing"
         private const val MAX_PRESIGN_SECONDS = 7L * 24 * 3600
         private const val COPY_PART_SIZE = 512L * 1024 * 1024
+        private const val MOVE_COPY_CONCURRENCY = 8
         private val MD5_ETAG = Regex("[0-9a-fA-F]{32}")
         private val SHA256_HEX = Regex("[0-9a-fA-F]{64}")
         private const val SHA256_PROOF = "s3_sha256_metadata"
