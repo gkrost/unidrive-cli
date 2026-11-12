@@ -33,13 +33,12 @@ import org.krost.unidrive.http.assertNotHtml
 import org.krost.unidrive.http.writeStagedDownload
 import org.krost.unidrive.http.parseRetryAfterHeader
 import org.krost.unidrive.http.throttleWaitMs
-import org.krost.unidrive.http.progressTrackingBody
+import org.krost.unidrive.http.progressTrackingFileRangeBody
 import org.krost.unidrive.http.readBoundedErrorBody
 import org.krost.unidrive.http.truncateErrorBody
 import org.krost.unidrive.http.withUploadWatchdog
 import org.krost.unidrive.onedrive.model.*
 import org.slf4j.LoggerFactory
-import java.io.RandomAccessFile
 import java.net.URLEncoder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -1001,18 +1000,10 @@ class GraphApiService(
         try {
             while (offset < fileSize) {
                 val currentChunkSize = minOf(chunkSize, fileSize - offset).toInt()
-                val bytes =
-                    withContext(Dispatchers.IO) {
-                        val buf = ByteArray(currentChunkSize)
-                        RandomAccessFile(localPath.toFile(), "r").use { raf ->
-                            raf.seek(offset)
-                            raf.readFully(buf)
-                        }
-                        buf
-                    }
-
                 val endByte = offset + currentChunkSize - 1
-                val chunkResult = uploadChunkWithRetry(uploadUrl, bytes, offset, endByte, fileSize)
+                // The chunk is streamed from the file for each try, never held on the heap: the bytes are on disk
+                // already, and a retry that resumes inside the chunk just starts its range later.
+                val chunkResult = uploadChunkWithRetry(uploadUrl, localPath, offset, endByte, fileSize)
                 if (chunkResult is ChunkUploadResult.Committed) {
                     offset = chunkResult.nextOffset
                     finalChunkConfirmedByProbe = offset >= fileSize
@@ -1350,13 +1341,12 @@ class GraphApiService(
      */
     private suspend fun uploadChunkWithRetry(
         uploadUrl: String,
-        bytes: ByteArray,
+        localPath: Path,
         offset: Long,
         endByte: Long,
         fileSize: Long,
     ): ChunkUploadResult {
         var currentOffset = offset
-        var currentBytes = bytes
         // Set once a try ended without the chunk's answer (it broke off, or met a status after which the session is
         // probed): the server may hold the chunk although nothing said so.
         var answerLost = false
@@ -1368,7 +1358,7 @@ class GraphApiService(
             throttleBudget.awaitSlot()
             val response =
                 try {
-                    putChunk(uploadUrl, currentBytes, currentOffset, endByte, fileSize)
+                    putChunk(uploadUrl, localPath, currentOffset, endByte, fileSize)
                 } catch (e: java.io.IOException) {
                     if (lastTry) throw e
                     log.info(
@@ -1409,9 +1399,7 @@ class GraphApiService(
                 return ChunkUploadResult.Committed(nextStart)
             }
             if (nextStart > currentOffset) {
-                // Server committed some bytes; trim the chunk to what's still needed (counted from the chunk's start,
-                // the bytes may have been trimmed before).
-                currentBytes = bytes.copyOfRange((nextStart - offset).toInt(), bytes.size)
+                // Server committed some bytes; the next try sends only the rest of the chunk's range.
                 currentOffset = nextStart
             }
         }
@@ -1439,12 +1427,12 @@ class GraphApiService(
     // idle window. The engine's own timeouts become the outer net behind both.
     private suspend fun putChunk(
         uploadUrl: String,
-        data: ByteArray,
+        localPath: Path,
         from: Long,
         endByte: Long,
         fileSize: Long,
     ): HttpResponse {
-        val size = data.size.toLong()
+        val size = endByte - from + 1
         val progress = UploadProgress(size)
         val responseWaitMs = UploadTimeoutPolicy.computeResponseWaitMs(size, uploadWatchdog.responseWaitFloorMs)
         val outerLimitMs =
@@ -1457,7 +1445,7 @@ class GraphApiService(
                         socketTimeoutMillis = outerLimitMs
                     }
                     header("Content-Range", "bytes $from-$endByte/$fileSize")
-                    setBody(progressTrackingBody(data, progress))
+                    setBody(progressTrackingFileRangeBody(localPath, from, size, progress))
                 }
             }
         } catch (e: UploadWatchdogException) {
