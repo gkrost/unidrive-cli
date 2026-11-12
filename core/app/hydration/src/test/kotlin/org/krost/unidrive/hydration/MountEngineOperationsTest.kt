@@ -798,11 +798,13 @@ class MountEngineOperationsTest {
 
             val expectedCachePath = cacheRoot.resolve("unidrive/hydration/default/corrupt.txt")
 
-            assertFailsWith<IllegalStateException>(
-                "ensureHydrated must throw when the downloaded file fails the integrity check",
-            ) {
-                engineWithIntegrity.ensureHydrated("/corrupt.txt")
-            }
+            val refused =
+                assertFailsWith<org.krost.unidrive.RemoteContentRefusedDownloadException>(
+                    "ensureHydrated must throw when the downloaded file fails the integrity check",
+                ) {
+                    engineWithIntegrity.ensureHydrated("/corrupt.txt")
+                }
+            assertEquals(RemoteIncompleteMemory.HASH_MISMATCH_REASON, refused.reason)
             assertFalse(
                 Files.exists(expectedCachePath),
                 "corrupted cache file must be deleted after integrity failure",
