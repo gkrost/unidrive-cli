@@ -239,7 +239,8 @@ class HydrationIpcHandler(
     /**
      * gkrost/unidrive-cli#437: the last outcome of every handle, kept [OUTCOME_TTL_MS] (at most [OUTCOME_CAP]) in memory. It is fed at the
      * single fan-out site, so it does not depend on a subscriber being connected: a client that reconnects asks
-     * `hydration.handle_status` instead of listing rows to guess whether its transfer ended. It does not survive a daemon restart.
+     * `hydration.handle_status` instead of listing rows to guess whether its transfer ended. The table does not survive a daemon
+     * restart; the upload does, and its replay reports under the client's handle id ([HydrationImpl.replayPendingUploads]).
      */
     private class OutcomeTable(private val nowMs: () -> Long) {
         private class Outcome(val atMs: Long, val line: String)

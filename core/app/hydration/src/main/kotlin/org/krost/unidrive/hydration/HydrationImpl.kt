@@ -874,9 +874,45 @@ class HydrationImpl(
         // co-daemon's cache_scanner replay (which fires recovery- handles on next mount).
         // On failure: stamp the row so `unidrive doctor` can surface the unsynced gap.
         registerHandle(connectionId, handleId, path)
+        rememberClientHandle(path, handleId)
         launchSerializedUpload(path, cachePath, handleId, baseEtag)
         return OpenResult.Ok(cachePath)
     }
+
+    // gkrost/unidrive-cli#437: the client's handle of this upload outlives a daemon stop, so the replay at the next start reports
+    // under it and `hydration.handle_status` answers the client's own id. A record that cannot be written only costs that.
+    private fun rememberClientHandle(
+        path: String,
+        handleId: String,
+    ) {
+        try {
+            stateDb.recordUploadHandle(path, handleId)
+        } catch (e: Exception) {
+            log.debug("handle {} of the upload of {} not recorded: {}", handleId, path, e.message)
+        }
+    }
+
+    // gkrost/unidrive-cli#437: the upload of [handleId] ended, so no replay reports under it again.
+    private fun forgetClientHandle(handleId: String) {
+        try {
+            stateDb.forgetUploadHandle(handleId)
+        } catch (e: Exception) {
+            log.debug("record of handle {} not removed: {}", handleId, e.message)
+        }
+    }
+
+    // gkrost/unidrive-cli#437: the id a replay of [path] reports under: the client's handle the unfinished upload ran for, else the
+    // engine's own [fallback].
+    private fun replayHandleOf(
+        path: String,
+        fallback: String,
+    ): String =
+        try {
+            stateDb.uploadHandleOf(path) ?: fallback
+        } catch (e: Exception) {
+            log.debug("recorded handle of {} not read: {}", path, e.message)
+            fallback
+        }
 
     // Submits a background upload for [path] from [cachePath] to the daemon's
     // upload queue. Same-path uploads queue FIFO (the per-path mutex in
@@ -939,6 +975,7 @@ class HydrationImpl(
             // cancelUpload ended the wait: the submission is cancelled like a queued worker would be (same end of the
             // handle's correlation), and the caller's request goes on.
             tx?.finish(TransferResult.INTERRUPTED, errorClass = "cancelled", attempted = tx.hasStarted)
+            if (!stopping) forgetClientHandle(handleId)
             _events.emit(
                 HydrationEvent.Completed(
                     path = path,
@@ -1004,6 +1041,9 @@ class HydrationImpl(
                     // handle's correlation must end with a cause, not hang.
                     // archive#652: neither a success nor a failure: the row, if the transfer had started, ends interrupted.
                     tx?.finish(TransferResult.INTERRUPTED, errorClass = "cancelled", attempted = tx.hasStarted)
+                    // gkrost/unidrive-cli#437: a cancel by the client ends the handle; a stop leaves the upload owed, and the
+                    // next start's replay reports under the handle.
+                    if (!stopping) forgetClientHandle(handleId)
                     // gkrost/unidrive-cli#452: this completed is terminal — cancelUpload promises it to
                     // every aborted submission — so tryEmit must not run it: with the event buffer full
                     // a tryEmit returns false and the event is lost before any subscriber queue, leaving
@@ -1041,7 +1081,10 @@ class HydrationImpl(
             }
             // The path is no longer pinned by its upload: the budget may have been waiting for that.
             requestEviction()
-            completed?.let { _events.emit(withLandedRow(it)) }
+            completed?.let {
+                forgetClientHandle(handleId)
+                _events.emit(withLandedRow(it))
+            }
         }
         slot.jobs.add(worker)
     }
@@ -1579,6 +1622,12 @@ class HydrationImpl(
         }
         // Before the replay walks the rows: the ones whose file is gone leave state.db (#86).
         dropGonePendingRows()
+        // gkrost/unidrive-cli#437: client handles of uploads whose row went while no daemon ran have nothing left to report.
+        try {
+            stateDb.pruneUploadHandles()
+        } catch (e: Exception) {
+            log.debug("records of client handles not pruned: {}", e.message)
+        }
         for (path in stateDb.pendingUploadPaths()) {
             // archive#678: the walk between records is blocking file-system work with no suspension
             // point, so a stop is only honoured if the loop itself checks for it.
@@ -1589,7 +1638,7 @@ class HydrationImpl(
             if (refusedEarlier(path, cachePath) != null) { refused++; continue } // archive#493: not replayed at every start
             if (failedReplayDelayMs > 0 && stateDb.getEntry(path)?.lastErrorAt != null) {
                 deferred++
-                val handleId = "engine-replay-late-$deferred"
+                val fallbackId = "engine-replay-late-$deferred"
                 recoveryUploadScope.launch {
                     delay(failedReplayDelayMs)
                     val entry = stateDb.getEntry(path)
@@ -1597,11 +1646,11 @@ class HydrationImpl(
                     if (uploadSlots.containsKey(path) || !replayable(path)) return@launch
                     if (replaceReserves(path)) return@launch // gkrost/unidrive-cli#311: a replace still owes this name
                     if (refusedEarlier(path, mount.resolveCachePath(path)) != null) return@launch // refused meanwhile
-                    launchSerializedUpload(path, mount.resolveCachePath(path), handleId, baseEtag = null)
+                    launchSerializedUpload(path, mount.resolveCachePath(path), replayHandleOf(path, fallbackId), baseEtag = null)
                 }
                 continue
             }
-            launchSerializedUpload(path, cachePath, "engine-replay-${queued + 1}", baseEtag = null)
+            launchSerializedUpload(path, cachePath, replayHandleOf(path, "engine-replay-${queued + 1}"), baseEtag = null)
             queued++
         }
         // archive#605 (U6 cutover): dirty overwrites. A row whose bytes reached the cloud at least once is
@@ -1645,7 +1694,7 @@ class HydrationImpl(
             if (refusedEarlier(path, cachePath) != null) { refused++; continue }
             if (failedReplayDelayMs > 0 && entry.lastErrorAt != null) {
                 dirtyDeferred++
-                val handleId = "engine-dirty-late-$dirtyDeferred"
+                val fallbackId = "engine-dirty-late-$dirtyDeferred"
                 recoveryUploadScope.launch {
                     delay(failedReplayDelayMs)
                     val now = stateDb.getEntry(path) ?: return@launch
@@ -1654,11 +1703,11 @@ class HydrationImpl(
                     if (replaceReserves(path)) return@launch // gkrost/unidrive-cli#311: a replace still owes this name
                     val cp = mount.resolveCachePath(path)
                     if (refusedEarlier(path, cp) != null) return@launch
-                    launchDirtyReplay(now, cp, handleId)
+                    launchDirtyReplay(now, cp, replayHandleOf(path, fallbackId))
                 }
                 continue
             }
-            if (launchDirtyReplay(entry, cachePath, "engine-dirty-${dirty + 1}")) dirty++
+            if (launchDirtyReplay(entry, cachePath, replayHandleOf(path, "engine-dirty-${dirty + 1}"))) dirty++
         }
         if (deferred > 0) {
             log.info(
@@ -1700,6 +1749,7 @@ class HydrationImpl(
         val current = entry.writeToken
         if (!base.isNullOrEmpty() && current != null && !entry.isBasedOn(base)) {
             runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
+            forgetClientHandle(handleId)
             _events.emit(HydrationEvent.Failed(path, HydrationError.Conflict, retryScheduled = false))
             _events.emit(
                 HydrationEvent.Completed(
