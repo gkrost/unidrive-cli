@@ -272,7 +272,43 @@ class MountEngine private constructor(
      * front-ends: an overlapping call returns `skipped = true`. See `RemoteEnumeration` (archive#560 U2b)
      * and docs/dev/specs/mount-view-refresh-design.md.
      */
-    override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult = wiring.enumeration.enumerate(reset)
+    override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult =
+        wiring.enumeration.enumerate(reset).also { result ->
+            // gkrost/unidrive-cli#22: after a listing that succeeded, a scope root only the local side has is created.
+            if (result.ok && !result.skipped) scopeRoots.createMissing()
+        }
+
+    // gkrost/unidrive-cli#22: see ScopeRootCreator.
+    private val scopeRoots =
+        ScopeRootCreator(
+            object : ScopeRootCreator.Ops {
+                override fun creatableRoots() = gather.creatableScopeRoots()
+
+                override fun hasRemoteRow(path: String) = !db.getEntry(path)?.remoteId.isNullOrEmpty()
+
+                override fun isNameBlocked(path: String) = this@MountEngine.isNameBlocked(path)
+
+                override suspend fun listChildren(path: String) =
+                    watchingCredentials { provider.listChildren(remotePathOf(path)) }.also { recordProviderContact() }
+
+                override suspend fun createFolder(path: String) =
+                    watchingCredentials { createRemoteFolder(path) }.also { recordProviderContact() }
+
+                override suspend fun adoptExisting(path: String) = existingFolderAt(path)
+
+                override fun recordRefused(
+                    path: String,
+                    reason: String,
+                    sibling: String?,
+                ) = recordBlockedFolder(path, reason, sibling)
+
+                override fun folderChanged(parent: String) = gather.invalidateView(setOf(parent), false)
+            },
+            log,
+        )
+
+    /** gkrost/unidrive-cli#22: what became of each `sync_path` root that only the local side had, in this daemon run. */
+    internal fun scopeRootOutcomes(): Map<String, ScopeRootCreator.Outcome> = scopeRoots.outcomes()
 
     /**
      * What a client may be told about the enumeration right now. A running attempt is answered from
