@@ -43,7 +43,12 @@ class ResumeSessionStore<T : Any>(
         // quarantine the file — the sessions in it are still resumable, and moving it aside (or the next replace()
         // over the moved-aside name) would restart every one of them from byte 0. The read is retried through a
         // short lock window and rethrows; only a file that WAS read and cannot be parsed is torn.
-        val text = withLocalIoRetryBlocking { Files.readString(storeFile) }
+        val text = try {
+            withLocalIoRetryBlocking { Files.readString(storeFile) }
+        } catch (cause: java.nio.charset.CharacterCodingException) {
+            quarantine(cause)
+            return emptyMap()
+        }
         val root = try {
             json.parseToJsonElement(text).jsonObject
         } catch (cause: kotlinx.serialization.SerializationException) {

@@ -50,6 +50,18 @@ class ResumeSessionStoreTest {
     }
 
     @Test
+    fun `a file torn in a UTF-8 path is quarantined and the store can be reused`() {
+        val target = dir.resolve(ResumeSessionStore.FILE_NAME)
+        Files.write(target, byteArrayOf(0x7b, 0x22, 0x2f, 0xc3.toByte()))
+
+        assertEquals(emptyMap(), store().load())
+        assertEquals(0, folder().count { it == ResumeSessionStore.FILE_NAME })
+        assertEquals(1, folder().count { it.startsWith(ResumeSessionStore.FILE_NAME + ".torn-") })
+
+        store().replace(mapOf("/a" to Entry("u1", 5)))
+        assertEquals(mapOf("/a" to Entry("u1", 5)), store().load())
+    }
+    @Test
     fun `a read that fails is an error, not an empty store, and the file is not quarantined`() {
         // windows#454 item 2: an I/O failure (here: the store name is a DIRECTORY, so readString throws) must
         // propagate — the sessions in the file are still resumable, and quarantining on it would restart every
