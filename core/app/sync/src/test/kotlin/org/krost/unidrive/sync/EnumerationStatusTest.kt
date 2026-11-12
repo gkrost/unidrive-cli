@@ -213,6 +213,29 @@ class EnumerationStatusTest {
             assertEquals(0, engine.enumerationStatus().attempt)
         }
 
+    // gkrost/unidrive-cli#442: a caller that met the running pass can wait for it and gets that pass's result.
+    @Test
+    fun `the running pass can be waited for, and nothing runs when none does`() =
+        runTest {
+            assertEquals(null, engine.awaitRunningEnumeration(), "no pass runs")
+            val entered = CompletableDeferred<Unit>()
+            val gate = CompletableDeferred<Unit>()
+            provider.duringDelta = { _, _, _ ->
+                entered.complete(Unit)
+                gate.await()
+            }
+            val first = async { engine.enumerateRemoteIntoState(reset = false) }
+            entered.await()
+            val waiter = async { engine.awaitRunningEnumeration() }
+            testScheduler.runCurrent()
+            assertTrue(!waiter.isCompleted, "the wait lasts while the pass runs")
+
+            gate.complete(Unit)
+            val ran = first.await()
+            assertEquals(ran, waiter.await(), "the waiter gets the running pass's own result")
+            assertEquals(null, engine.awaitRunningEnumeration(), "the pass has ended")
+        }
+
     // ---- how an enumeration ends ---------------------------------------------------------------------------------------
 
     @Test

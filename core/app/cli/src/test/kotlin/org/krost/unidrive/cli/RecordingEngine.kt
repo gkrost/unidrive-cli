@@ -47,6 +47,11 @@ class RecordingEngine(
      */
     val entered: CompletableDeferred<Unit> = CompletableDeferred()
 
+    // gkrost/unidrive-cli#442: the pass a skipped enumeration met; null = none runs.
+    @Volatile var runningPass: CompletableDeferred<EnumerateResult>? = null
+
+    override suspend fun awaitRunningEnumeration(): EnumerateResult? = runningPass?.await()
+
     override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult {
         enumerateCalled = true
         enumerateCount.incrementAndGet()

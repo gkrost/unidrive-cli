@@ -116,6 +116,10 @@ class RemoteEnumeration(
     // CAS is a no-op (skipped=true).
     internal val enumerateInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    // gkrost/unidrive-cli#442: the result of the pass that runs now, for a caller that met it and waits for it
+    // ([runningPassResult]). Set by the pass that won the flag, completed and cleared when it ends.
+    @Volatile private var runningPass: kotlinx.coroutines.CompletableDeferred<EnumerateResult>? = null
+
     // Paths a prior COMPLETE enumeration flagged missing-but-deferred under the
     // bulk-disappearance corroboration guard (mount-view-refresh-design.md §3.2).
     // Carried in-memory across enumerations on a long-lived daemon engine; a path
@@ -147,12 +151,25 @@ class RemoteEnumeration(
         if (!enumerateInFlight.compareAndSet(false, true)) {
             return EnumerateResult(ok = true, skipped = true)
         }
+        val pass = kotlinx.coroutines.CompletableDeferred<EnumerateResult>()
+        runningPass = pass
+        var outcome: EnumerateResult? = null
         return try {
-            enumerateRemoteIntoStateLocked(reset)
+            enumerateRemoteIntoStateLocked(reset).also { outcome = it }
         } finally {
+            runningPass = null
             enumerateInFlight.set(false)
+            // A pass that threw (or was cancelled) has no result: a waiter gets a failure, never a success it did not have.
+            pass.complete(outcome ?: EnumerateResult(ok = false, error = "the enumeration did not finish"))
         }
     }
+
+    /**
+     * gkrost/unidrive-cli#442: the result of the pass that runs now, to wait for; null when none runs. A refresh that met a
+     * running pass answers once that pass has ended, with its outcome: the view it promises is then the one the pass wrote,
+     * not the one it was still writing.
+     */
+    val runningPassResult: kotlinx.coroutines.Deferred<EnumerateResult>? get() = runningPass
 
     // Records the attempt for enumerationStatus: its start, its end, and a failure that escapes. The
     // provider failures that end as an EnumerateResult are recorded where they are caught.

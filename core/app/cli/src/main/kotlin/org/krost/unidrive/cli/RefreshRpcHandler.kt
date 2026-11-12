@@ -102,7 +102,14 @@ class RefreshRpcHandler(
                             log.info("refresh.run routed to enumerate (mount client connected): job_id=$jobId reset=$reset")
                             // enumerateRemoteIntoState converts provider failures into EnumerateResult(ok=false)
                             // rather than throwing, so a false result must be surfaced — not emitted as success.
-                            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { engine.enumerateRemoteIntoState(reset) }
+                            var result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { engine.enumerateRemoteIntoState(reset) }
+                            if (result.ok && result.skipped && !reset) {
+                                // gkrost/unidrive-cli#442: another pass held the single-flight flag. It refreshes the view, but
+                                // `done` now would come before it has: a client that lists right after would not see the
+                                // change yet. The refresh answers once that pass has ended, with its outcome.
+                                log.info("refresh.run waits for the enumeration already running: job_id=$jobId")
+                                result = engine.awaitRunningEnumeration() ?: result
+                            }
                             if (result.ok && result.skipped && reset) {
                                 // archive#1037: another pass held the single-flight flag, so the cursor reset never ran. A plain
                                 // refresh is served by that pass; a reset is not, and "done" would leave an operator who

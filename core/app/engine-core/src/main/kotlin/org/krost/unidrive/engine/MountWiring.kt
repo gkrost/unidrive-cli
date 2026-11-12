@@ -93,4 +93,11 @@ interface AuditSink {
  */
 interface EnumerationEntryPoint {
     suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult
+
+    /**
+     * gkrost/unidrive-cli#442: waits for the enumeration that runs now and answers its result; null when none runs (an
+     * [enumerateRemoteIntoState] that came back `skipped` met one that has ended since, or the flag was held for a moment
+     * by something that is no pass).
+     */
+    suspend fun awaitRunningEnumeration(): EnumerateResult? = null
 }
