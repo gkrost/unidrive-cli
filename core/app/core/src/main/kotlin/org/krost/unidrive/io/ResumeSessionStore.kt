@@ -39,11 +39,20 @@ class ResumeSessionStore<T : Any>(
     @Synchronized
     fun load(): Map<String, T> {
         if (!Files.exists(storeFile)) return emptyMap()
-        val root = runCatching { json.parseToJsonElement(Files.readString(storeFile)).jsonObject }
-            .getOrElse { cause ->
-                quarantine(cause)
-                return emptyMap()
-            }
+        // The READ is not the parse: a transient lock (an antivirus, an indexer) or any other I/O failure must not
+        // quarantine the file — the sessions in it are still resumable, and moving it aside (or the next replace()
+        // over the moved-aside name) would restart every one of them from byte 0. The read is retried through a
+        // short lock window and rethrows; only a file that WAS read and cannot be parsed is torn.
+        val text = withLocalIoRetryBlocking { Files.readString(storeFile) }
+        val root = try {
+            json.parseToJsonElement(text).jsonObject
+        } catch (cause: kotlinx.serialization.SerializationException) {
+            quarantine(cause)
+            return emptyMap()
+        } catch (cause: IllegalArgumentException) {
+            quarantine(cause)
+            return emptyMap()
+        }
         // Entry-by-entry: one legacy or damaged entry is dropped, not allowed to nuke the whole store.
         val map = root.mapNotNull { (path, element) ->
             runCatching { json.decodeFromJsonElement(serializer, element) }.getOrNull()?.let { path to it }
