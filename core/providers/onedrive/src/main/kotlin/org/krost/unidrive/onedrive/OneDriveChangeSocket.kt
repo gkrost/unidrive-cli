@@ -2,13 +2,11 @@ package org.krost.unidrive.onedrive
 
 import io.socket.client.IO
 import io.socket.client.Socket
+import org.krost.unidrive.DaemonThreadSerialScheduler
 import org.slf4j.LoggerFactory
 import java.net.URI
 import java.security.MessageDigest
 import java.util.HexFormat
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ScheduledThreadPoolExecutor
-import java.util.concurrent.TimeUnit
 
 /**
  * The drive's socket.io endpoint as `GET /me/drive/root/subscriptions/socketIo` answers it. [notificationUrl] carries
@@ -99,7 +97,8 @@ private class SocketIoChangeSocket(
 /**
  * Where [OneDriveChangeChannel] runs its work (the endpoint GET is a suspend HTTP round-trip that must not block
  * socket.io's event thread) and its timers. One thread, so the channel's state needs no lock. A seam so tests drive
- * time by hand.
+ * time by hand; the engine behind it is the one [org.krost.unidrive.DaemonThreadSerialScheduler]
+ * (gkrost/unidrive-cli#456).
  */
 internal interface ChangeChannelScheduler {
     /** Run [task] on the channel's thread as soon as possible. */
@@ -117,31 +116,14 @@ internal interface ChangeChannelScheduler {
 
 /** One daemon thread, so a channel that is left open cannot keep the JVM alive. */
 internal class ThreadChangeChannelScheduler : ChangeChannelScheduler {
-    private val executor =
-        ScheduledThreadPoolExecutor(1) { task ->
-            Thread(task, "unidrive-onedrive-notifications").apply { isDaemon = true }
-        }.apply { removeOnCancelPolicy = true }
+    private val worker = DaemonThreadSerialScheduler("unidrive-onedrive-notifications")
 
-    override fun execute(task: Runnable) {
-        try {
-            executor.execute(task)
-        } catch (_: RejectedExecutionException) {
-            // shut down by stop(); nothing left to do
-        }
-    }
+    override fun execute(task: Runnable) = worker.execute(task)
 
     override fun schedule(
         delayMs: Long,
         task: Runnable,
-    ) {
-        try {
-            executor.schedule(task, delayMs, TimeUnit.MILLISECONDS)
-        } catch (_: RejectedExecutionException) {
-            // shut down by stop(); nothing left to do
-        }
-    }
+    ) = worker.schedule(delayMs, task)
 
-    override fun shutdown() {
-        executor.shutdownNow()
-    }
+    override fun shutdown() = worker.shutdown()
 }

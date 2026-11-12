@@ -2,11 +2,9 @@ package org.krost.unidrive.internxt
 
 import io.socket.client.IO
 import io.socket.client.Socket
+import org.krost.unidrive.DaemonThreadSerialScheduler
 import org.slf4j.LoggerFactory
 import java.net.URI
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ScheduledThreadPoolExecutor
-import java.util.concurrent.TimeUnit
 
 /**
  * The slice of socket.io's [Socket] that [NotificationsClient] uses. A seam so
@@ -101,35 +99,18 @@ internal interface NotificationsScheduler {
 }
 
 /**
- * One daemon worker thread, created on first use, so a client that never needs
- * a refresh costs no thread and a leaked one cannot keep the JVM alive.
+ * The notifications worker: the engine behind the seam is the one
+ * [DaemonThreadSerialScheduler] (gkrost/unidrive-cli#456).
  */
 internal class ThreadNotificationsScheduler : NotificationsScheduler {
-    private val executor =
-        ScheduledThreadPoolExecutor(1) { task ->
-            Thread(task, "unidrive-internxt-notifications-refresh").apply { isDaemon = true }
-        }.apply { removeOnCancelPolicy = true }
+    private val worker = DaemonThreadSerialScheduler("unidrive-internxt-notifications-refresh")
 
-    override fun execute(task: Runnable) {
-        try {
-            executor.execute(task)
-        } catch (_: RejectedExecutionException) {
-            // shut down by disconnect(); nothing left to do
-        }
-    }
+    override fun execute(task: Runnable) = worker.execute(task)
 
     override fun schedule(
         delayMs: Long,
         task: Runnable,
-    ) {
-        try {
-            executor.schedule(task, delayMs, TimeUnit.MILLISECONDS)
-        } catch (_: RejectedExecutionException) {
-            // shut down by disconnect(); nothing left to do
-        }
-    }
+    ) = worker.schedule(delayMs, task)
 
-    override fun shutdown() {
-        executor.shutdownNow()
-    }
+    override fun shutdown() = worker.shutdown()
 }
