@@ -806,27 +806,8 @@ class RemoteGather(
                 backups = guard.backups.enabled,
             )
 
-        suspend fun nextPage(c: String?): DeltaPage {
-            val page =
-                if (useShared) {
-                    when (val r = provider.deltaWithShared(c)) {
-                        is CapabilityResult.Success -> r.value
-                        is CapabilityResult.Unsupported -> provider.delta(c, onPageProgress, scanContext)
-                    }
-                } else {
-                    provider.delta(c, onPageProgress, scanContext)
-                }
-            // UD-751: single canonical "Delta: N items, hasMore=X" line, lifted out
-            // of the five providers that used to emit the same data per-page.
-            log.debug("Delta: {} items, hasMore={}", page.items.size, page.hasMore)
-            if (!page.complete) {
-                allComplete = false
-            }
-            val placed = placeTrashed(page)
-            unreachable.addAll(placed.unreachableIds)
-            skippedPaths.addAll(page.skippedPaths)
-            return placed
-        }
+        // (windows#454 item 18: the per-page call is inside pageAll below, which takes the scan context as its
+        // argument — the main pass and the 410 recovery pass share it.)
 
         // Persist the running completeness flag alongside the cursor.
         // Promotion now happens unconditionally (see promotePendingCursor):
@@ -860,8 +841,32 @@ class RemoteGather(
         // throws ProviderException the exception propagates to the caller which
         // treats it as an enumeration failure (deletes suppressed) — no infinite
         // loop, no recursive recovery.
-        try {
-            var page = nextPage(cursor)
+        //
+        // windows#454 item 18: the main pass and the recovery pass share ONE paging loop ([pageAll]) instead of two
+        // copies of admit/persist/heartbeat per page that could drift.
+        suspend fun pageAll(start: String?, context: org.krost.unidrive.ScanContext, label: String) {
+            suspend fun nextPage(c: String?): DeltaPage {
+                val page =
+                    if (useShared) {
+                        when (val r = provider.deltaWithShared(c)) {
+                            is CapabilityResult.Success -> r.value
+                            is CapabilityResult.Unsupported -> provider.delta(c, onPageProgress, context)
+                        }
+                    } else {
+                        provider.delta(c, onPageProgress, context)
+                    }
+                // UD-751: single canonical "Delta: N items, hasMore=X" line, lifted out
+                // of the five providers that used to emit the same data per-page.
+                log.debug("Delta{}: {} items, hasMore={}", label, page.items.size, page.hasMore)
+                if (!page.complete) {
+                    allComplete = false
+                }
+                val placed = placeTrashed(page)
+                unreachable.addAll(placed.unreachableIds)
+                skippedPaths.addAll(page.skippedPaths)
+                return placed
+            }
+            var page = nextPage(start)
             for (item in page.items) {
                 val resolved = resolveItemPath(item) ?: continue
                 admitChange(resolved)
@@ -883,6 +888,10 @@ class RemoteGather(
                 persistPendingCursor(page.cursor)
                 reportGathered()
             }
+        }
+
+        try {
+            pageAll(cursor, scanContext, label = "")
         } catch (e: DeltaCursorExpiredException) {
             // The resumed cursor aged out / the drive re-keyed (Graph 410). Clear the
             // persisted cursor and re-enumerate the FULL inventory from a null cursor
@@ -909,23 +918,6 @@ class RemoteGather(
                     stagedPage = { after, limit -> db.loadStagedPage(recoveryScanId, after, limit) },
                     backups = guard.backups.enabled,
                 )
-            suspend fun nextPageRecovery(c: String?): DeltaPage {
-                val p =
-                    if (useShared) {
-                        when (val r = provider.deltaWithShared(c)) {
-                            is CapabilityResult.Success -> r.value
-                            is CapabilityResult.Unsupported -> provider.delta(c, onPageProgress, recoveryScanContext)
-                        }
-                    } else {
-                        provider.delta(c, onPageProgress, recoveryScanContext)
-                    }
-                log.debug("Delta (recovery): {} items, hasMore={}", p.items.size, p.hasMore)
-                if (!p.complete) allComplete = false
-                val placed = placeTrashed(p)
-                unreachable.addAll(placed.unreachableIds)
-                skippedPaths.addAll(p.skippedPaths)
-                return placed
-            }
             // Reset all mutable accumulation state for the recovery pass.
             changes = mutableMapOf()
             keyToPath.clear()
@@ -934,25 +926,10 @@ class RemoteGather(
             skippedPaths.clear()
             allComplete = true
             isFullSync = true
-            // Recovery: full enumeration from null cursor. Any ProviderException here
-            // propagates to the caller (treated as an enumeration failure, deletes
-            // suppressed) — never recover recursively.
-            var rPage = nextPageRecovery(null)
-            for (item in rPage.items) {
-                val resolved = resolveItemPath(item) ?: continue
-                admitChange(resolved)
-            }
-            persistPendingCursor(rPage.cursor)
-            reportGathered()
-            while (rPage.hasMore) {
-                rPage = nextPageRecovery(rPage.cursor)
-                for (item in rPage.items) {
-                    val resolved = resolveItemPath(item) ?: continue
-                    admitChange(resolved)
-                }
-                persistPendingCursor(rPage.cursor)
-                reportGathered()
-            }
+            // Recovery: full enumeration from null cursor, through the same paging loop as the main pass (windows#454
+            // item 18). Any ProviderException here propagates to the caller (treated as an enumeration failure,
+            // deletes suppressed) — never recover recursively.
+            pageAll(null, recoveryScanContext, label = " (recovery)")
             if (allComplete) {
                 db.completeScan(recoveryScanId)
             }
