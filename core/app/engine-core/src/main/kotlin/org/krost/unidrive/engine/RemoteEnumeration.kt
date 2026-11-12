@@ -311,7 +311,7 @@ class RemoteEnumeration(
         db.setSyncState(FULL_ENUMERATION_MS_KEY, listingMs.toString())
     }
 
-    @Suppress("CyclomaticComplexMethod") // The enumeration phases and their recovery guards run in one ordered transaction flow.
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "NestedBlockDepth") // The enumeration phases and their recovery guards run in one ordered transaction flow.
     private suspend fun runEnumeration(reset: Boolean): EnumerateResult {
         // reset clears only delta_cursor (NOT db.resetAll) so a gather that then fails never
         // leaves the mount serving an empty view. A reset forces a full re-enumeration whose

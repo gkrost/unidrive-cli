@@ -1855,7 +1855,7 @@ class StateDatabase(
      * (`remote_path`, else `path`) lies outside [trackScope] (a scope root or below one) and is not one of
      * [ancestorPaths] (the scope roots' ancestor folders, which stay). The scope-narrowing of [ScopeTransition] used
      * to load the whole table and issue one DELETE per row inside one transaction (372k rows on a large profile).
-     * Paths may hold SQL LIKE wildcards; they are escaped. Returns the rows deleted.
+     * Matching is case-sensitive. Returns the rows deleted.
      */
     fun deleteOutOfScope(
         trackScope: List<String>,
@@ -1866,11 +1866,13 @@ class StateDatabase(
         if (trackScope.isEmpty()) return 0 // the whole drive is tracked: nothing is out of scope
         val keep = StringBuilder("(")
         val params = mutableListOf<String>()
-        trackScope.map { escapeLike(it) }.forEachIndexed { i, escaped ->
+        trackScope.forEachIndexed { i, root ->
             if (i > 0) keep.append(" OR ")
-            keep.append("""COALESCE(remote_path, path) = ? OR COALESCE(remote_path, path) LIKE ? ESCAPE '\'""")
-            params += trackScope[i]
-            params += "$escaped/%"
+            keep.append("(COALESCE(remote_path, path) = ? OR (COALESCE(remote_path, path) >= ? AND COALESCE(remote_path, path) < ?))")
+            val prefix = if (root.endsWith("/")) root else "$root/"
+            params += root
+            params += prefix
+            params += prefixUpperBound(prefix)
         }
         if (ancestorPaths.isNotEmpty()) {
             keep.append(" OR COALESCE(remote_path, path) IN (").append(ancestorPaths.joinToString(",") { "?" }).append(")")
@@ -1878,30 +1880,29 @@ class StateDatabase(
         }
         keep.append(")")
         var total = 0
-        locked("deleteOutOfScope") {
-            while (true) {
-                beginWrite()
-                val deleted =
-                    conn
-                        .prepareStatement(
-                            "DELETE FROM sync_entries WHERE rowid IN " +
-                                "(SELECT rowid FROM sync_entries WHERE status='EXISTS' AND NOT $keep LIMIT ?)",
-                        ).use { stmt ->
-                            var i = 0
-                            for (param in params) stmt.setString(++i, param)
-                            stmt.setInt(i + 1, chunkSize)
-                            stmt.executeUpdate()
-                        }
-                countAlive(-deleted)
-                total += deleted
-                if (deleted < chunkSize) break
+        while (true) {
+            val deleted = locked("deleteOutOfScope") {
+                batch {
+                    val count =
+                        conn
+                            .prepareStatement(
+                                "DELETE FROM sync_entries WHERE rowid IN " +
+                                    "(SELECT rowid FROM sync_entries WHERE status='EXISTS' AND NOT $keep LIMIT ?)",
+                            ).use { stmt ->
+                                var i = 0
+                                for (param in params) stmt.setString(++i, param)
+                                stmt.setInt(i + 1, chunkSize)
+                                stmt.executeUpdate()
+                            }
+                    countAlive(-count)
+                    count
+                }
             }
+            total += deleted
+            if (deleted < chunkSize) break
         }
         return total
     }
-
-    // Escapes the SQL LIKE wildcards of [path] for a `LIKE ... ESCAPE '\'` pattern.
-    private fun escapeLike(path: String): String = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     /**
      * windows#454 item 9: flips every alive row of [paths] to `DELETED` (\`last_synced\` = now, exactly what
@@ -1915,22 +1916,23 @@ class StateDatabase(
         chunkSize: Int = DELETE_CHUNK_ROWS,
     ): List<String> {
         val deleted = mutableListOf<String>()
-        locked("markDeletedChunked") {
-            val at = java.time.Instant.now().toString()
-            for (chunk in paths.chunked(chunkSize)) {
-                beginWrite()
-                conn
-                    .prepareStatement("UPDATE sync_entries SET status='DELETED', last_synced=? WHERE path=? AND status='EXISTS'")
-                    .use { stmt ->
-                        for (raw in chunk) {
-                            stmt.setString(1, at)
-                            stmt.setString(2, PathNormalizer.nfc(raw))
-                            if (stmt.executeUpdate() > 0) {
-                                countAlive(-1)
-                                deleted += raw
+        val at = java.time.Instant.now().toString()
+        for (chunk in paths.chunked(chunkSize)) {
+            locked("markDeletedChunked") {
+                batch {
+                    conn
+                        .prepareStatement("UPDATE sync_entries SET status='DELETED', last_synced=? WHERE path=? AND status='EXISTS'")
+                        .use { stmt ->
+                            for (raw in chunk) {
+                                stmt.setString(1, at)
+                                stmt.setString(2, PathNormalizer.nfc(raw))
+                                if (stmt.executeUpdate() > 0) {
+                                    countAlive(-1)
+                                    deleted += raw
+                                }
                             }
                         }
-                    }
+                }
             }
         }
         return deleted
