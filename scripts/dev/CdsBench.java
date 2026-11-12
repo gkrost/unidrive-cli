@@ -108,7 +108,7 @@ public class CdsBench {
                     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
                     boolean ready = false;
                     while (System.nanoTime() < deadline && daemonProc.isAlive()) {
-                        if (Files.exists(socket) && ready(daemonLog)) { ready = true; break; }
+                        if (Files.exists(socket) && ready(applicationLog(run))) { ready = true; break; }
                         Thread.sleep(5);
                     }
                     ms = elapsed(start);
@@ -154,12 +154,12 @@ public class CdsBench {
         return all;
     }
 
-    /** One flag per line; blank lines and lines whose first non-blank character is '#' are skipped. */
+    /** One flag per line; # starts a comment. */
     static List<String> readFlags(Path file) throws IOException {
         List<String> flags = new ArrayList<>();
         for (String raw : Files.readAllLines(file)) {
-            String line = raw.trim();
-            if (!line.isEmpty() && !line.startsWith("#")) flags.add(line);
+            String line = raw.split("#", 2)[0].trim();
+            if (!line.isEmpty()) flags.add(line);
         }
         return flags;
     }
@@ -189,6 +189,8 @@ public class CdsBench {
 
     static String path(Path p) { return p.toAbsolutePath().toString().replace('\\', '/'); }
     static double elapsed(long start) { return (System.nanoTime() - start) / 1_000_000.0; }
+
+    static Path applicationLog(Path run) { return run.resolve("data/unidrive/unidrive.log"); }
 
     /** The daemon's own startup line says the IPC server is bound; no wire probe, no protocol version in the way. */
     static boolean ready(Path daemonLog) throws IOException {
