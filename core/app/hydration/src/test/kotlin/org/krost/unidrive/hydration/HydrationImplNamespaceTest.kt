@@ -700,6 +700,72 @@ class HydrationImplNamespaceTest {
         return cached
     }
 
+    // gkrost/unidrive-cli#635: `rm -rf` through the mount: unlink each file, then the strict rmdir of the folder. The
+    // listing still shows the file just trashed (it lags the trash), and the rmdir answered not_empty on its first try.
+    private fun listed(row: SyncEntry) = CloudItem(
+        id = row.remoteId!!,
+        name = row.path.substringAfterLast('/'),
+        path = row.path,
+        size = row.remoteSize,
+        isFolder = row.isFolder,
+        modified = row.remoteModified,
+        created = null,
+        hash = row.remoteHash,
+        mimeType = null,
+    )
+
+    private inline fun <T> capturingLog(block: () -> T): Pair<T, List<String>> {
+        val logger = org.slf4j.LoggerFactory.getLogger(HydrationImpl::class.java) as ch.qos.logback.classic.Logger
+        val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().also { it.start() }
+        logger.addAppender(appender)
+        try {
+            return block() to appender.list.map { it.formattedMessage }
+        } finally {
+            logger.detachAppender(appender)
+        }
+    }
+
+    @Test
+    fun rmdir_of_a_folder_just_emptied_by_unlink_succeeds_while_the_listing_still_shows_the_file() = runTest {
+        val env = freshEnv()
+        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
+        val file = row("/dir/a.txt", "rid-a", isHydrated = false)
+        env.db.upsertEntry(file)
+        env.provider.children = listOf(listed(file))
+
+        assertEquals(UnlinkResult.Ok, env.impl.unlink("/dir/a.txt"))
+        val (result, lines) = capturingLog { env.impl.rmdir("/dir") }
+
+        assertEquals(RmdirResult.Ok, result, "refusal logged: $lines")
+        assertEquals("/dir", env.provider.lastDeletedPath)
+        assertEquals(null, env.db.getEntry("/dir"))
+    }
+
+    @Test
+    fun rmdir_refusal_names_its_reason_in_the_log() = runTest {
+        val env = freshEnv()
+        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
+        env.db.upsertEntry(row("/dir/a.txt", "rid-a", isHydrated = false))
+        val (strict, strictLines) = capturingLog { env.impl.rmdir("/dir") }
+        assertEquals(RmdirResult.NotEmpty, strict)
+        assertTrue(
+            strictLines.any { it == "rmdir of /dir refused: not_empty reason=alive_descendants recursive=false" },
+            "lines: $strictLines",
+        )
+
+        val other = freshEnv()
+        other.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
+        other.provider.children = listOf(listed(row("/dir/new.txt", "rid-new")))
+        val (snapshot, snapshotLines) = capturingLog { other.impl.rmdir("/dir") }
+        assertEquals(RmdirResult.NotEmpty, snapshot)
+        assertTrue(
+            snapshotLines.any {
+                it == "rmdir of /dir refused: not_empty reason=remote_unobserved recursive=false child=/dir/new.txt"
+            },
+            "lines: $snapshotLines",
+        )
+    }
+
     @Test
     fun rmdir_refuses_a_folder_with_a_never_uploaded_child_before_any_provider_call() = runTest {
         val env = freshEnv()
