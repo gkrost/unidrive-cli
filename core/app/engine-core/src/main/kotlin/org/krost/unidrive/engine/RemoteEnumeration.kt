@@ -209,6 +209,10 @@ class RemoteEnumeration(
             settleStatus()
             throw e
         } catch (e: Exception) {
+            // windows#454 item 15: a failure that is not a ProviderException (a client bug surfacing as an
+            // IllegalStateException, a decode error thrown outside the provider wrapper) used to skip the failure
+            // streak, and the poller after a restart did not back off for it. It counts like any other failure.
+            recordEnumerateFailureStreak()
             settleStatus()
             tracker.failed(e.message ?: e.javaClass.simpleName, authRejected = isCredentialRejection(e), code = errorCodeOf(e))
             throw e
