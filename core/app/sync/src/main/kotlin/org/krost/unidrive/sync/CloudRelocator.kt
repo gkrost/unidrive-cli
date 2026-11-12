@@ -396,7 +396,9 @@ class CloudRelocator(
                         val outerScope: kotlinx.coroutines.CoroutineScope = this
                         launch {
                             transferSemaphore.withPermit {
-                                val tempFile = tempDir.resolve(itemName)
+                                // gkrost/unidrive-cli#63: one opaque scratch path per transfer (not pre-created, as before). Naming it by the leaf
+                                // would make /a/x and /b/x share a path while they run side by side.
+                                val tempFile = tempDir.resolve("transfer-${java.util.UUID.randomUUID()}.part")
                                 try {
                                     val size =
                                         withContext(Dispatchers.IO) {
