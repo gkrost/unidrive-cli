@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.junit.Assume.assumeTrue
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -447,6 +448,45 @@ class DaemonAutospawnTest {
             )
         assertTrue(ok)
     }
+
+    // gkrost/unidrive-cli#455: the spawned daemon does not die with the client's terminal.
+    @Test
+    fun `off Windows the daemon starts under setsid when there is one, otherwise as before`() {
+        val command = listOf("java", "-jar", "unidrive.jar", "daemon", "run", "p")
+        assertEquals(
+            listOf(Path.of("/usr/bin/setsid").toString()) + command,
+            detachedCommand(command, windows = false) { Path.of("/usr/bin/setsid") },
+        )
+        assertEquals(command, detachedCommand(command, windows = false) { null }, "no setsid: unchanged")
+        assertEquals(command, detachedCommand(command, windows = true) { error("not asked on Windows") })
+    }
+
+    @Test
+    fun `a detached child runs in a session of its own, is the started process itself and reads no terminal`() {
+        assumeTrue("Linux: the session id is read from /proc", Files.isReadable(Path.of("/proc/self/stat")))
+        assumeTrue("setsid (util-linux) is installed", listOf("/usr/bin/setsid", "/bin/setsid").any { Files.isExecutable(Path.of(it)) })
+        val dir = Files.createTempDirectory("autospawn-detach")
+        val child = startDetached(listOf("sh", "-c", "read x; echo read=\$x; exec sleep 30"), dir.resolve("spawn.log"))
+        try {
+            // setsid execs the command in the started process: the pid becomes the shell, then sleep.
+            val stat = Path.of("/proc/${child.pid()}/stat")
+            val deadline = System.currentTimeMillis() + 10_000
+            while (!Files.readString(Path.of("/proc/${child.pid()}/cmdline")).startsWith("sleep")) {
+                check(child.isAlive && System.currentTimeMillis() < deadline) { "the child did not reach sleep: ${Files.readString(dir.resolve("spawn.log"))}" }
+                Thread.sleep(20)
+            }
+            assertTrue(child.isAlive, "the started process is the command, not a setsid that forked and left")
+            assertTrue(sessionOf(stat) != sessionOf(Path.of("/proc/self/stat")), "a session of its own")
+            assertEquals(child.pid(), sessionOf(stat), "the child leads its session")
+            assertEquals("read=\n", Files.readString(dir.resolve("spawn.log")), "stdin is the null device")
+        } finally {
+            child.destroyForcibly()
+        }
+    }
+
+    // Field 6 of /proc/<pid>/stat; the command name (field 2) is in parentheses and may hold spaces.
+    private fun sessionOf(stat: Path): Long =
+        Files.readString(stat).substringAfterLast(')').trim().split(' ')[3].toLong()
 
     @Test
     fun `logTail of a missing file is empty`() {
