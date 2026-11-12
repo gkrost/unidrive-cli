@@ -5,7 +5,6 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
 import org.slf4j.Logger
-import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -71,21 +70,20 @@ class GoneFolderTombstone internal constructor(
         val key = current.remotePath ?: current.path
         val changes = mutableMapOf(key to CloudItem(id, key.substringAfterLast('/'), key, 0, true, null, null, null, null, deleted = true))
         gather.expandFolderTombstones(changes)
-        val rows = mutableListOf<String>()
+        val rows = mutableListOf<SyncEntry>()
+        val snapshots = mutableMapOf<String, Triple<String, Path, Long?>>()
         for (path in changes.keys) {
             val row = rowOfTombstone(db, path) ?: continue
+            val snapshot = cacheEvictionSnapshot(row.path, reapGuards, log)
             if (row.path in keep || reapGuards.holdsUnsyncedEdit(row.path, row)) {
                 log.info("#580: keeping {} below the folder gone in the cloud: it may hold the only copy of an unsent edit", row.path)
                 continue
             }
-            rows += row.path
+            rows += row
+            if (snapshot != null) snapshots[row.path] = snapshot
         }
-        changed += db.markDeletedChunked(rows).toSet()
-        for (path in changed) {
-            CachePaths.forRow(path, log, reapGuards.cachePathOf)?.let { cachePath ->
-                cacheEvictions.add(Triple(path, cachePath, runCatching { Files.getLastModifiedTime(cachePath).toMillis() }.getOrNull()))
-            }
-        }
+        changed += db.markDeletedChunked(rows.map { it.path }, expectedRows = rows.associateBy { it.path }).toSet()
+        for (path in changed) snapshots[path]?.let(cacheEvictions::add)
         evictCacheCopies(cacheEvictions, reapGuards)
         // As after a reap: a row it tombstoned may have been the trash root's.
         gather.refreshTrash()

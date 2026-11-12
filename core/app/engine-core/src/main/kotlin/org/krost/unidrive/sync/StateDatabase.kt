@@ -1909,23 +1909,35 @@ class StateDatabase(
      * [markDeleted] writes), in chunks of [chunkSize] rows. Each chunk is its own transaction commit unless a manual
      * batch is open, so a large reap never holds the monitor — and every writer behind it — for one unbounded
      * transaction (the merge was chunked for the same reason, archive#147). The caller does its row lookups and file
-     * checks BEFORE calling this. Returns the paths that were alive and are now deleted.
+     * checks BEFORE calling this. When [expectedRows] is supplied, each flip also requires the same remote identity
+     * and hydration state, no edit base and no pending local action. This keeps a write begun after the caller's
+     * check from being tombstoned. Returns only paths actually flipped.
      */
     fun markDeletedChunked(
         paths: Collection<String>,
         chunkSize: Int = DELETE_CHUNK_ROWS,
+        expectedRows: Map<String, SyncEntry>? = null,
     ): List<String> {
         val deleted = mutableListOf<String>()
         val at = java.time.Instant.now().toString()
+        val guard = if (expectedRows == null) "" else
+            " AND remote_id IS ? AND remote_path IS ? AND edit_base IS NULL AND is_hydrated = ? AND pending_local IS NULL"
         for (chunk in paths.chunked(chunkSize)) {
             locked("markDeletedChunked") {
                 batch {
                     conn
-                        .prepareStatement("UPDATE sync_entries SET status='DELETED', last_synced=? WHERE path=? AND status='EXISTS'")
+                        .prepareStatement("UPDATE sync_entries SET status='DELETED', last_synced=? WHERE path=? AND status='EXISTS'$guard")
                         .use { stmt ->
                             for (raw in chunk) {
+                                val expected = expectedRows?.get(raw)
+                                if (expectedRows != null && (expected == null || expected.editBase != null)) continue
                                 stmt.setString(1, at)
                                 stmt.setString(2, PathNormalizer.nfc(raw))
+                                if (expected != null) {
+                                    stmt.setString(3, expected.remoteId)
+                                    stmt.setString(4, expected.remotePath)
+                                    stmt.setInt(5, if (expected.isHydrated) 1 else 0)
+                                }
                                 if (stmt.executeUpdate() > 0) {
                                     countAlive(-1)
                                     deleted += raw

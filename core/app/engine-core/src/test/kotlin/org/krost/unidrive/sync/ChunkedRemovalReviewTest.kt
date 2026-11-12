@@ -126,6 +126,29 @@ class ChunkedRemovalReviewTest {
         }
     }
 
+    @Test
+    fun `guarded removal keeps changed identity edit and pending rows`() {
+        val db = StateDatabase(Files.createTempDirectory("removal-guard").resolve("state.db"))
+        db.initialize()
+        try {
+            val paths = listOf("/identity", "/edited", "/pending", "/clean")
+            paths.forEach { db.upsertEntry(entry(it)) }
+            val expected = paths.associateWith { assertNotNull(db.getEntry(it)) }
+            db.markDeleted("/identity")
+            db.upsertEntry(entry("/identity").copy(remoteId = "replacement"))
+            db.markEdited("/edited", "base")
+            db.setPendingLocal("/pending", "delete")
+
+            assertEquals(listOf("/clean"), db.markDeletedChunked(paths, chunkSize = 2, expectedRows = expected))
+            assertEquals("replacement", assertNotNull(db.getEntry("/identity")).remoteId)
+            assertEquals("base", assertNotNull(db.getEntry("/edited")).editBase)
+            assertNotNull(db.getEntry("/pending"))
+            assertNull(db.getEntry("/clean"))
+        } finally {
+            db.close()
+        }
+    }
+
     private class RemovalRecordingConnector : StateDatabaseConnector by JdbcStateDatabaseConnector {
         val autoCommitUpdates = mutableListOf<Boolean>()
         var commits = 0

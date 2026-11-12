@@ -427,8 +427,10 @@ class RemoteEnumeration(
             // the flips go through markDeletedChunked — a large reap no longer holds the monitor and every writer
             // behind it for one unbounded transaction (the merge was chunked for the same reason, archive#147).
             val rows = mutableListOf<Pair<String, SyncEntry>>()
+            val snapshots = mutableMapOf<String, Triple<String, Path, Long?>>()
             for (path in corroborated) {
                 val row = rowOfTombstone(db, path) ?: continue
+                val snapshot = cacheEvictionSnapshot(row.path, reapGuards, log)
                 // archive#301: refuse to reap a path whose hydration cache may hold the
                 // only copy of user bytes. A queued or in-flight upload means an
                 // edit written through the mount has not landed yet; a cache file
@@ -449,15 +451,14 @@ class RemoteEnumeration(
                 }
                 deferredReapWarned.remove(path)
                 rows += path to row
+                if (snapshot != null) snapshots[row.path] = snapshot
             }
-            val reapedPaths = db.markDeletedChunked(rows.map { it.second.path }).toHashSet()
+            val reapedPaths = db.markDeletedChunked(
+                rows.map { it.second.path }, expectedRows = rows.associate { it.second.path to it.second },
+            ).toHashSet()
             for ((_, row) in rows) {
                 if (row.path !in reapedPaths) continue
-                CachePaths.forRow(row.path, log, reapGuards.cachePathOf)?.let { cachePath ->
-                    cacheEvictions.add(
-                        Triple(row.path, cachePath, runCatching { Files.getLastModifiedTime(cachePath).toMillis() }.getOrNull()),
-                    )
-                }
+                snapshots[row.path]?.let(cacheEvictions::add)
                 reapedViewPaths.add(applyReverseTop(row.path, canonicalToLocalTop))
                 reaped++
             }
@@ -610,6 +611,15 @@ class RemoteEnumeration(
     }
 }
 
+// Take the snapshot before the safety check: a later write must not become the baseline for eviction.
+internal fun cacheEvictionSnapshot(
+    path: String,
+    guards: RemoteEnumeration.ReapGuards,
+    log: Logger,
+): Triple<String, Path, Long?>? = CachePaths.forRow(path, log, guards.cachePathOf)?.let { cache ->
+    Triple(path, cache, runCatching { Files.getLastModifiedTime(cache).toMillis() }.getOrNull())
+}
+
 // archive#149: the cache copies of reaped rows go after the batch commits — a filesystem delete is a non-transactional side effect
 // and must not lengthen the SQLite lock window (errors swallowed: the row flip is the truth and the cache copy is a
 // disk-space concern). The lock window is gone, so a hydration write may have recreated the path in between (archive#301 class):
@@ -621,8 +631,9 @@ internal fun evictCacheCopies(
 ) {
     for ((path, cachePath, mtimeAtReap) in cacheEvictions) {
         runCatching {
+            if (mtimeAtReap == null || reapGuards.uploadInFlight(path)) return@runCatching
             val unchanged = runCatching { Files.getLastModifiedTime(cachePath).toMillis() }.getOrNull() == mtimeAtReap
-            if (!reapGuards.uploadInFlight(path) && unchanged) {
+            if (unchanged) {
                 Files.deleteIfExists(cachePath)
                 if (!Files.exists(cachePath)) reapGuards.onCacheCopyDropped(path)
             }
