@@ -462,6 +462,25 @@ class DaemonAutospawnTest {
     }
 
     @Test
+    fun `the detached child's stdin is the null device on every platform`() {
+        assertEquals(java.io.File("NUL"), nullDevice(windows = true))
+        assertEquals(java.io.File("/dev/null"), nullDevice(windows = false))
+    }
+
+    @Test
+    fun `on Windows a detached child that reads stdin sees the end of input at once`() {
+        assumeTrue("Windows only", System.getProperty("os.name").orEmpty().startsWith("Windows"))
+        val dir = Files.createTempDirectory("autospawn-detach-win")
+        // `sort` reads stdin to its end: with a pipe or an inherited console it would wait for input and never exit.
+        val child = startDetached(listOf("cmd", "/c", "sort"), dir.resolve("spawn.log"))
+        try {
+            assertTrue(child.waitFor(10, java.util.concurrent.TimeUnit.SECONDS), "stdin is the null device: the read ends at once")
+        } finally {
+            child.destroyForcibly()
+        }
+    }
+
+    @Test
     fun `a detached child runs in a session of its own, is the started process itself and reads no terminal`() {
         assumeTrue("Linux: the session id is read from /proc", Files.isReadable(Path.of("/proc/self/stat")))
         assumeTrue("setsid (util-linux) is installed", listOf("/usr/bin/setsid", "/bin/setsid").any { Files.isExecutable(Path.of(it)) })
