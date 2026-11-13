@@ -15,18 +15,20 @@ import kotlin.time.Duration.Companion.seconds
  * Lifted from the two near-identical loops in
  * `OneDriveProvider.TokenManager.getValidToken` (UD-310 + UD-111) and
  * `InternxtProvider.AuthService.refreshToken` (UD-331). Both used the
- * same skeleton:
+ * same skeleton, which windows#454 item 6 reshaped:
  *
  *   refreshMutex.withLock {
  *       // re-read the current value under the lock
  *       // double-check: did a previous caller already refresh while we waited?
  *       if (work-already-done-by-prior-caller) return current
  *
- *       withContext(NonCancellable) {
- *           // network call + persist
- *           // wrapped so a cancellation between "got new token" and
- *           // "wrote it to disk" can't leave in-memory + on-disk
- *           // states disagreeing.
+ *       withTimeout(REFRESH_TIMEOUT) {
+ *           // network call: ordinary cancellable work, bounded
+ *           commitIfCurrent(generation) {
+ *               // persist: NonCancellable, so a cancellation between
+ *               // "got new token" and "wrote it to disk" can't leave
+ *               // in-memory + on-disk states disagreeing.
+ *           }
  *       }
  *   }
  *

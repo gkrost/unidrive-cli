@@ -48,6 +48,10 @@ public class CredentialStore<T>(
      *   - [validate] returns `false` (UD-312 lineage — caller-supplied
      *     shape guard for "syntactically parseable but obviously bad",
      *     e.g. empty access_token).
+     *
+     * Every other failure throws rather than reading as "signed out": a [CredentialProtectionException] and any
+     * I/O failure on a file that exists (a lock that outlasts the one retry, a permission error) propagate to the
+     * caller (windows#454 item 3). Only a missing file, corrupt content and a failed [validate] are `null`.
      */
     public fun load(): T? = load(migrate = true)
 
@@ -93,7 +97,7 @@ public class CredentialStore<T>(
             )
             null
         } catch (e: NoSuchFileException) {
-            log.warn("Credential file at {} vanished while it was read; treating as signed out", file)
+            log.warn("Credential file at {} vanished while it was read; treating as signed out", file, e)
             null
         } catch (e: Exception) {
             log.warn("Failed to load credentials from {}: {}", file, e.message)

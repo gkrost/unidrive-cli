@@ -1,15 +1,16 @@
 package org.krost.unidrive.auth
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * windows#454 item 6: the whole refresh body ran inside NonCancellable under the mutex, so a token endpoint that
@@ -30,15 +31,18 @@ class RefreshableTokenLatchTest {
             runCurrent()
             entered.await()
 
-            assertFailsWith<kotlinx.coroutines.TimeoutCancellationException> {
-                withTimeout(5_000) {
-                    // A second caller queued at the mutex: it must not wait for the stalled refresh beyond the
-                    // refresh timeout. Virtual time: advance past it.
-                    latch.withRefresh(isAlreadyFresh = { null }, body = { "second" })
-                }
-            }
-            advanceTimeBy(RefreshableTokenLatch.REFRESH_TIMEOUT.inWholeMilliseconds + 1)
+            // A second caller queued at the mutex behind the stalled refresh (virtual time).
+            val second = async { latch.withRefresh(isAlreadyFresh = { null }, body = { "second" }) }
             runCurrent()
+            advanceTimeBy(RefreshableTokenLatch.REFRESH_TIMEOUT.inWholeMilliseconds - 1_000)
+            runCurrent()
+            assertFalse(second.isCompleted, "still queued before the refresh timeout")
+
+            // Past the timeout the stalled body is cancelled, the mutex frees, and the queued caller runs.
+            advanceTimeBy(2_000)
+            runCurrent()
+            assertTrue(second.isCompleted, "the queued caller completes once the stalled refresh is cut off")
+            assertEquals("second", second.await())
         }
 
     @Test

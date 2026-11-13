@@ -18,7 +18,9 @@ class WindowsSecurityPathTest {
         val prefix = "\\\\?\\"   // the extended-length prefix: backslash backslash question backslash
         assertTrue(win32.startsWith(prefix), win32)
         assertTrue(!win32.contains(".."), "the prefix would make GetNamedSecurityInfoW keep the dots: $win32")
-        assertTrue(win32.endsWith("\\leaf.txt"), win32)
+        // Separator-agnostic: the JVM default filesystem joins with "/" on Linux and "\" on Windows.
+        assertTrue(win32.endsWith("leaf.txt"), win32)
+        assertTrue(!win32.contains("sub"), "the dot-dot segment must have consumed sub: $win32")
     }
 
     @Test
