@@ -5,6 +5,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -187,9 +188,10 @@ internal class AuthCheckRpcHandler(
     suspend fun check(jsonRequest: String): String {
         val body = jsonRequest.asJsonObjectOrNull() ?: return INVALID_REQUEST
         // gkrost/unidrive-cli#442: a timeout is a JSON number, as every other count of the IPC verbs; a string "5" is refused.
+        // An explicit null is absent (the default), as in metrics.query.
         val seconds =
             when (val element = body["timeout_seconds"]) {
-                null -> AUTH_CHECK_DEFAULT_TIMEOUT_SECONDS
+                null, JsonNull -> AUTH_CHECK_DEFAULT_TIMEOUT_SECONDS
                 else -> element.strictLongOrNull() ?: return INVALID_TIMEOUT
             }
         return oneAtATime.withLock {

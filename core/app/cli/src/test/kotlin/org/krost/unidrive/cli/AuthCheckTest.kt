@@ -393,5 +393,8 @@ class AuthCheckTest {
             val ok = Json.parseToJsonElement(handler.check("""{"verb":"auth.check"}""")).jsonObject
             assertTrue(ok.getValue("ok").jsonPrimitive.boolean)
             assertNull(ok["account"])
+            // An explicit null is absent: the default timeout, as in metrics.query.
+            val nullTimeout = Json.parseToJsonElement(handler.check("""{"verb":"auth.check","timeout_seconds":null}""")).jsonObject
+            assertTrue(nullTimeout.getValue("ok").jsonPrimitive.boolean)
         }
 }
