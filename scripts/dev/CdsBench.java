@@ -1,29 +1,53 @@
 import java.io.*;
-import java.net.UnixDomainSocketAddress;
-import java.nio.ByteBuffer;
-import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * Measures daemon start (ready to serve IPC) and `status` (profile load) for two JVM variants, the tool
+ * gkrost/unidrive-cli#444's AOT/CDS decision is measured with.
+ *
+ * Usage: baselineJava cdsJava jar scratch samples [baselineFlagsFile cdsFlagsFile]
+ *
+ * Each variant runs the plain `java` binary named on its side of the argument list, with the flags of
+ * jvm-flags.txt from beside the jar when that file is there (as the launchers and DaemonAutospawn read it),
+ * plus the flags of its own file (one flag per line, '#' starts a comment) — this is how one side gets
+ * `-XX:AOTCache=...` / `-XX:AOTCacheOutput=...` / `-Xshare:off` / `-XX:+UseCompactObjectHeaders` and the
+ * other does not, which is the comparison #444 needs. Readiness is the daemon log's own line that the IPC
+ * server is bound ("IPC: transport pool size="), not a wire probe: a probe would speak the IPC protocol,
+ * whose unauthenticated fallback is scheduled for removal (gkrost/unidrive-cli#33).
+ */
 public class CdsBench {
     static final boolean WINDOWS = System.getProperty("os.name").toLowerCase().contains("win");
     static final Map<String, List<Double>> measurements = new LinkedHashMap<>();
+    static final String READY_MARKER = "IPC: transport pool size=";
+    static final String FLAGS_FILE_NAME = "jvm-flags.txt";
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 5) throw new IllegalArgumentException("baselineJava cdsJava jar scratch samples");
+        if (args.length != 5 && args.length != 7)
+            throw new IllegalArgumentException("baselineJava cdsJava jar scratch samples [baselineFlagsFile cdsFlagsFile]");
         Path[] javaBins = {Path.of(args[0]), Path.of(args[1])};
         Path jar = Path.of(args[2]);
         Path scratch = Path.of(args[3]);
         int samples = Integer.parseInt(args[4]);
         if (samples < 1) throw new IllegalArgumentException("samples must be positive");
+        List<List<String>> variantFlags = new ArrayList<>();
+        variantFlags.add(commonFlags(jar));
+        variantFlags.add(commonFlags(jar));
+        if (args.length == 7) {
+            variantFlags.set(0, plusFile(variantFlags.get(0), Path.of(args[5])));
+            variantFlags.set(1, plusFile(variantFlags.get(1), Path.of(args[6])));
+        }
         for (Path path : javaBins) if (!Files.isRegularFile(path)) throw new IllegalArgumentException("missing Java: " + path);
         if (!Files.isRegularFile(jar)) throw new IllegalArgumentException("missing jar: " + jar);
-        Files.createDirectories(scratch);
         System.err.printf("OS=%s, arch=%s, helper_jdk=%s, processors=%d%n",
             System.getProperty("os.name"), System.getProperty("os.arch"),
             System.getProperty("java.runtime.version"), Runtime.getRuntime().availableProcessors());
+        for (int variant = 0; variant < 2; variant++) {
+            String label = variant == 0 ? "baseline" : "cds";
+            System.err.println(label + "_java=" + javaBins[variant] + " flags=" + variantFlags.get(variant));
+        }
         System.out.println("variant,iteration,metric,milliseconds,exit_code,detail");
         for (int i = -1; i < samples; i++) {
             int[] order = i % 2 == 0 ? new int[]{0, 1} : new int[]{1, 0};
@@ -47,7 +71,7 @@ public class CdsBench {
                 Files.writeString(config.resolve("config.toml"), toml);
                 String metric = i < 0 ? "warmup" : "status";
                 Path statusLog = run.resolve("status.log");
-                ProcessBuilder status = command(javaBins[variant], jar, run, config, "status");
+                ProcessBuilder status = command(javaBins[variant], variantFlags.get(variant), jar, run, config, "status");
                 status.redirectErrorStream(true).redirectOutput(statusLog.toFile());
                 long start = System.nanoTime();
                 Process statusProc = status.start();
@@ -63,7 +87,7 @@ public class CdsBench {
                 print(label, i, metric, ms, statusProc.exitValue(), "ok");
 
                 Path daemonLog = run.resolve("daemon.log");
-                ProcessBuilder daemon = command(javaBins[variant], jar, run, config, "daemon", "run", "--poll-interval", "0");
+                ProcessBuilder daemon = command(javaBins[variant], variantFlags.get(variant), jar, run, config, "daemon", "run", "--poll-interval", "0");
                 daemon.redirectErrorStream(true).redirectOutput(daemonLog.toFile());
                 Path socket;
                 if (WINDOWS) {
@@ -84,7 +108,7 @@ public class CdsBench {
                     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
                     boolean ready = false;
                     while (System.nanoTime() < deadline && daemonProc.isAlive()) {
-                        if (Files.exists(socket) && probe(socket)) { ready = true; break; }
+                        if (Files.exists(socket) && ready(applicationLog(run))) { ready = true; break; }
                         Thread.sleep(5);
                     }
                     ms = elapsed(start);
@@ -111,9 +135,39 @@ public class CdsBench {
         }
     }
 
-    static ProcessBuilder command(Path javaBin, Path jar, Path run, Path config, String... command) {
+    /**
+     * The flags of jvm-flags.txt from beside the jar, when it is there — the same file the launchers and
+     * DaemonAutospawn read, so the bench sees the production start (its CDS/AOT cache lines are machine-gated
+     * and never plain lines; the per-variant files above are where a variant gets them).
+     */
+    static List<String> commonFlags(Path jar) throws IOException {
+        Path flagsFile = jar.toAbsolutePath().getParent().resolve(FLAGS_FILE_NAME);
+        return Files.isRegularFile(flagsFile) ? readFlags(flagsFile) : new ArrayList<>();
+    }
+
+    static List<String> plusFile(
+        List<String> flags,
+        Path file
+    ) throws IOException {
+        List<String> all = new ArrayList<>(flags);
+        all.addAll(readFlags(file));
+        return all;
+    }
+
+    /** One flag per line; # starts a comment. */
+    static List<String> readFlags(Path file) throws IOException {
+        List<String> flags = new ArrayList<>();
+        for (String raw : Files.readAllLines(file)) {
+            String line = raw.split("#", 2)[0].trim();
+            if (!line.isEmpty()) flags.add(line);
+        }
+        return flags;
+    }
+
+    static ProcessBuilder command(Path javaBin, List<String> flags, Path jar, Path run, Path config, String... command) {
         List<String> argv = new ArrayList<>();
         argv.add(javaBin.toString());
+        argv.addAll(flags);
         argv.add("-Djava.io.tmpdir=" + run.resolve("tmp"));
         argv.add("-Duser.home=" + run.resolve("home"));
         argv.add("-jar");
@@ -135,26 +189,15 @@ public class CdsBench {
 
     static String path(Path p) { return p.toAbsolutePath().toString().replace('\\', '/'); }
     static double elapsed(long start) { return (System.nanoTime() - start) / 1_000_000.0; }
-    static boolean probe(Path socket) {
-        try (SocketChannel channel = SocketChannel.open(UnixDomainSocketAddress.of(socket))) {
-            channel.configureBlocking(false);
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
-            ByteBuffer request = ByteBuffer.wrap("{\"verb\":\"daemon.status\"}\n".getBytes(StandardCharsets.UTF_8));
-            while (request.hasRemaining() && System.nanoTime() < deadline) {
-                if (channel.write(request) == 0) Thread.sleep(1);
-            }
-            if (request.hasRemaining()) return false;
-            ByteBuffer reply = ByteBuffer.allocate(4096);
-            while (System.nanoTime() < deadline) {
-                int read = channel.read(reply);
-                if (read < 0) return false;
-                String response = new String(reply.array(), 0, reply.position(), StandardCharsets.UTF_8);
-                if (response.contains("\"ok\":true") && response.contains("\"protocol_version\"")) return true;
-                if (read == 0) Thread.sleep(1);
-            }
-        } catch (IOException | InterruptedException ignored) { }
-        return false;
+
+    static Path applicationLog(Path run) { return run.resolve("data/unidrive/unidrive.log"); }
+
+    /** The daemon's own startup line says the IPC server is bound; no wire probe, no protocol version in the way. */
+    static boolean ready(Path daemonLog) throws IOException {
+        if (!Files.isRegularFile(daemonLog)) return false;
+        return Files.readString(daemonLog).contains(READY_MARKER);
     }
+
     static String unixUid() throws Exception {
         Process p = new ProcessBuilder("id", "-u").start();
         String result = new String(p.getInputStream().readAllBytes()).trim();

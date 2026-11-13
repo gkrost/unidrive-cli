@@ -181,10 +181,13 @@ open class OneDriveProviderFactory(
                 expiresAtMillis = System.currentTimeMillis() + deviceCode.expiresIn * 1000L,
                 oauthService = oauth,
                 profileDir = profileDir,
+                intervalSeconds = deviceCode.interval.coerceAtLeast(1L),
             )
         val handle = OneDriveDeviceFlowRegistry.put(state)
         try {
-            pendingFlowStore(profileDir).save(PendingDeviceFlow(handle, state.deviceCode, state.expiresAtMillis, config.authEndpoint))
+            pendingFlowStore(profileDir).save(
+                PendingDeviceFlow(handle, state.deviceCode, state.expiresAtMillis, config.authEndpoint, state.intervalSeconds),
+            )
         } catch (e: java.io.IOException) {
             // The flow could not be kept for a later process; do not hand out a handle that cannot be completed.
             OneDriveDeviceFlowRegistry.remove(handle)
@@ -255,7 +258,7 @@ open class OneDriveProviderFactory(
         // error. Either way we drain the registry and surface Failure.
         val outcome: OAuthService.DevicePollOutcome =
             try {
-                oauth.pollOnceForToken(state.deviceCode)
+                oauth.pollOnceForToken(state.deviceCode, state.intervalSeconds)
             } catch (e: Exception) {
                 finishFlow(profileDir, continuationHandle)
                 oauth.close()
@@ -264,8 +267,12 @@ open class OneDriveProviderFactory(
             }
 
         return when (outcome) {
-            is OAuthService.DevicePollOutcome.Pending ->
+            is OAuthService.DevicePollOutcome.Pending -> {
+                if (outcome.retryAfterSeconds != state.intervalSeconds) {
+                    keepSlowerInterval(profileDir, continuationHandle, state, outcome.retryAfterSeconds)
+                }
                 CompleteAuthResult.Pending(outcome.retryAfterSeconds)
+            }
             is OAuthService.DevicePollOutcome.Success -> {
                 // Who signed in is read once, now, with the token just issued and BEFORE it is saved: another user than
                 // the one the profile's state belongs to (AccountOwner) is refused and the stored token stays (archive#1241).
@@ -333,9 +340,35 @@ open class OneDriveProviderFactory(
                 credentialProtector = credentialProtector,
             )
         val state =
-            OneDriveDeviceFlowState(pending.deviceCode, pending.expiresAtMillis, newOAuthServiceForBegin(profileDir, config), profileDir)
+            OneDriveDeviceFlowState(
+                pending.deviceCode,
+                pending.expiresAtMillis,
+                newOAuthServiceForBegin(profileDir, config),
+                profileDir,
+                pending.intervalSeconds ?: DEFAULT_DEVICE_POLL_INTERVAL_SECONDS,
+            )
         OneDriveDeviceFlowRegistry.putWithHandle(handle, state)
         return state
+    }
+
+    /**
+     * A `slow_down` raised the flow's interval: it holds for every later poll, in this process and in the next
+     * `auth complete` (RFC 8628 section 3.5). A failed save of the pending file costs only the raise in a later process.
+     */
+    private fun keepSlowerInterval(
+        profileDir: Path,
+        handle: String,
+        state: OneDriveDeviceFlowState,
+        intervalSeconds: Long,
+    ) {
+        OneDriveDeviceFlowRegistry.putWithHandle(handle, state.copy(intervalSeconds = intervalSeconds))
+        try {
+            val store = pendingFlowStore(profileDir)
+            val pending = store.load()
+            if (pending?.handle == handle) store.save(pending.copy(intervalSeconds = intervalSeconds))
+        } catch (_: java.io.IOException) {
+            // The process that keeps polling holds the raise in memory; only a later process would start lower again.
+        }
     }
 
     /** A terminal outcome: forget the flow in memory and on disk. */

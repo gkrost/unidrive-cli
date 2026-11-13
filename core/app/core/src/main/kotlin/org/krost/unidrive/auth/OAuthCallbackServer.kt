@@ -5,9 +5,13 @@ import io.ktor.http.parseQueryString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.AuthenticationException
+import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
@@ -60,6 +64,26 @@ public suspend fun awaitOAuthCallback(
     providerLabel: String,
     timeout: Duration = DEFAULT_OAUTH_CALLBACK_TIMEOUT,
     bindFailureHint: String? = null,
+): String = awaitOAuthCallback(port, expectedState, providerLabel, timeout, bindFailureHint, CallbackIo())
+
+// How the listener reads a request and writes a page; a parameter so tests can make a write fail or let a silent
+// connection hold its read for longer than the test waits.
+internal class CallbackIo(
+    val readTimeoutMs: Int = CALLBACK_READ_TIMEOUT_MS,
+    val writePage: (Socket, String) -> Unit = { client, page -> client.getOutputStream().write(page.toByteArray()) },
+)
+
+// How long one connection may take to send its request line. Each connection is read on its own thread, so a
+// connection that sends nothing (a browser's speculative preconnect) delays only itself, never the real redirect.
+private const val CALLBACK_READ_TIMEOUT_MS = 10_000
+
+internal suspend fun awaitOAuthCallback(
+    port: Int,
+    expectedState: String,
+    providerLabel: String,
+    timeout: Duration,
+    bindFailureHint: String?,
+    io: CallbackIo,
 ): String =
     withContext(Dispatchers.IO) {
         val server =
@@ -77,29 +101,28 @@ public suspend fun awaitOAuthCallback(
         try {
             // archive#1054 S1: the timeout is for the whole wait, and a connection that is not the provider's redirect (a port
             // probe, a speculative browser connect, a favicon request) gets a 404 and does not end it.
-            val (client, requestLine) = acceptCallback(server, deadline)
+            val (client, requestLine) = CallbackListener(server, io).use { it.next(deadline) }
 
-            try {
-                val code = parseAndValidateCallback(requestLine, expectedState, providerLabel)
+            client.use {
+                val code =
+                    try {
+                        parseAndValidateCallback(requestLine, expectedState, providerLabel)
+                    } catch (e: AuthenticationException) {
+                        // The message can carry text the sender chose (error_description): it is escaped, never reflected as markup.
+                        val html =
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +
+                                "<html><body><h1>Authentication failed</h1><p>${escapeHtml(e.message ?: "")}</p></body></html>"
+                        writeBestEffort(io, client, html)
+                        throw e
+                    }
                 val html =
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +
                         "<html><body><h1>${escapeHtml(providerLabel)} authentication complete!</h1>" +
                         "<p>You can close this window.</p></body></html>"
-                client.getOutputStream().write(html.toByteArray())
-                client.close()
+                // The code is valid and can be redeemed only once: a browser that closed or reset the connection before
+                // the page arrived must not cost the sign-in.
+                writeBestEffort(io, client, html)
                 code
-            } catch (e: AuthenticationException) {
-                // The message can carry text the sender chose (error_description): it is escaped, never reflected as markup.
-                val html =
-                    "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +
-                        "<html><body><h1>Authentication failed</h1><p>${escapeHtml(e.message ?: "")}</p></body></html>"
-                try {
-                    client.getOutputStream().write(html.toByteArray())
-                    client.close()
-                } catch (_: Exception) {
-                    // best-effort; caller still gets the exception
-                }
-                throw e
             }
         } catch (_: SocketTimeoutException) {
             throw AuthenticationException(
@@ -110,29 +133,84 @@ public suspend fun awaitOAuthCallback(
         }
     }
 
-// The next connection that is the provider's redirect, with its request line; anything else is answered 404 and skipped.
-// Throws SocketTimeoutException once [deadlineNanos] has passed.
-private fun acceptCallback(
-    server: ServerSocket,
-    deadlineNanos: Long,
-): Pair<java.net.Socket, String> {
-    while (true) {
+private fun writeBestEffort(
+    io: CallbackIo,
+    client: Socket,
+    page: String,
+) {
+    try {
+        io.writePage(client, page)
+    } catch (_: IOException) {
+        // the page is a courtesy to the browser; the caller still gets the code or the failure
+    }
+}
+
+// Accepts connections on [server] and reads each on its own virtual thread. A connection whose request line can be the
+// provider's redirect is handed to [next]; anything else is answered 404 and closed. Closing the listener closes every
+// redirect that arrived but was not taken; the accepting thread ends when the caller closes [server].
+private class CallbackListener(
+    private val server: ServerSocket,
+    private val io: CallbackIo,
+) : AutoCloseable {
+    private val arrived = LinkedBlockingQueue<Pair<Socket, String>>()
+    private val lock = Any()
+    private var closed = false
+
+    init {
+        Thread.ofVirtual().name("oauth-callback-accept").start {
+            while (true) {
+                val client =
+                    try {
+                        server.accept()
+                    } catch (_: IOException) {
+                        break // the server socket was closed: the wait is over
+                    }
+                Thread.ofVirtual().name("oauth-callback-read").start { read(client) }
+            }
+        }
+    }
+
+    // The next redirect; throws SocketTimeoutException once [deadlineNanos] has passed.
+    fun next(deadlineNanos: Long): Pair<Socket, String> {
         val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000L
         if (remainingMs <= 0) throw SocketTimeoutException()
-        server.soTimeout = remainingMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        val client = server.accept()
-        client.soTimeout = 10_000
+        return arrived.poll(remainingMs, TimeUnit.MILLISECONDS) ?: throw SocketTimeoutException()
+    }
+
+    private fun read(client: Socket) {
         val requestLine =
             try {
+                client.soTimeout = io.readTimeoutMs
                 client.getInputStream().bufferedReader().readLine() ?: ""
-            } catch (_: SocketTimeoutException) {
-                ""
+            } catch (_: IOException) {
+                "" // a connection that sent nothing in time, or that broke, is not the redirect
             }
-        if (looksLikeCallback(requestLine)) return client to requestLine
-        runCatching {
-            client.getOutputStream().write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".toByteArray())
-            client.close()
+        // A broken percent escape in a redirect-looking query is handed on too: the parse turns it into the failure page.
+        val isCallback =
+            try {
+                looksLikeCallback(requestLine)
+            } catch (_: AuthenticationException) {
+                true
+            }
+        if (!isCallback) {
+            runCatching { client.use { io.writePage(it, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n") } }
+            return
         }
+        val taken =
+            synchronized(lock) {
+                if (!closed) arrived.add(client to requestLine)
+                !closed
+            }
+        if (!taken) runCatching { client.close() }
+    }
+
+    override fun close() {
+        val left =
+            synchronized(lock) {
+                closed = true
+                buildList { arrived.drainTo(this) }
+            }
+        for ((client, _) in left) runCatching { client.close() }
     }
 }
 

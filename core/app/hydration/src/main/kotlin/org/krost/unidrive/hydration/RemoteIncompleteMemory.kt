@@ -17,9 +17,15 @@ import java.util.concurrent.ConcurrentHashMap
  * Both are remembered here, each recalled with its own token.
  *
  * Keyed by remote id, in memory only: a restart forgets, and the first read afterwards asks once more. An entry
- * answers repeats only while the row still describes the same cloud version it was recorded against (size, hash and
- * modification time, so a re-upload or a repaired object is noticed at the next read) and for [ttlMs]; after that
- * one real attempt revalidates it (a success removes it, a refusal records it afresh).
+ * answers repeats only while the row still describes the same cloud version it was recorded against (size, hash,
+ * modification time, the provider's version token and the content id, so a re-upload or a repaired object is noticed at
+ * the next read) and for [ttlMs]; after that one real attempt revalidates it (a success removes it, a refusal records it
+ * afresh).
+ *
+ * gkrost/unidrive-cli#438: the engine's own integrity check (`verify_integrity`) refusing the bytes against the row's
+ * recorded hash is remembered the same way, with no [ttlMs]: the same version reads the same bytes, so only a new version
+ * of the row (a changed hash, version token or content id, which a cloud file that changed while it was read brings with
+ * the next listing) asks again.
  */
 internal class RemoteIncompleteMemory(
     @Volatile var ttlMs: Long = DEFAULT_TTL_MS,
@@ -29,12 +35,16 @@ internal class RemoteIncompleteMemory(
         val size: Long,
         val hash: String?,
         val modified: Instant?,
+        val versionToken: String?,
+        val contentId: String?,
     )
 
     private data class Seen(
         val refusal: Refusal,
         val observedAtMs: Long,
         val version: Version,
+        // True for a refusal no time revalidates (the engine's own hash mismatch): only another version does.
+        val untilVersionChanges: Boolean = false,
     )
 
     private sealed interface Refusal {
@@ -68,7 +78,7 @@ internal class RemoteIncompleteMemory(
             seen.remove(id, s)
             return null
         }
-        if (clock() - s.observedAtMs >= ttlMs) return null
+        if (!s.untilVersionChanges && clock() - s.observedAtMs >= ttlMs) return null
         return when (val r = s.refusal) {
             is Refusal.Incomplete -> {
                 val comparison = if (r.storedBytes < r.declaredBytes) "shorter" else "longer"
@@ -91,6 +101,7 @@ internal class RemoteIncompleteMemory(
     fun remember(
         entry: SyncEntry,
         refusal: PermanentDownloadFailureException,
+        untilVersionChanges: Boolean = false,
     ): Boolean {
         val id = idOf(entry) ?: return false
         val remembered =
@@ -99,7 +110,7 @@ internal class RemoteIncompleteMemory(
                 is RemoteContentRefusedDownloadException -> Refusal.ContentRefused(refusal.reason)
                 else -> return false
             }
-        seen[id] = Seen(remembered, clock(), versionOf(entry))
+        seen[id] = Seen(remembered, clock(), versionOf(entry), untilVersionChanges)
         return warned.add(id)
     }
 
@@ -110,10 +121,14 @@ internal class RemoteIncompleteMemory(
 
     private fun idOf(entry: SyncEntry): String? = entry.remoteId?.takeIf { it.isNotEmpty() }
 
-    private fun versionOf(entry: SyncEntry) = Version(entry.remoteSize, entry.remoteHash, entry.remoteModified)
+    private fun versionOf(entry: SyncEntry) =
+        Version(entry.remoteSize, entry.remoteHash, entry.remoteModified, entry.remoteVersion, entry.remoteContentId)
 
     companion object {
         /** One hour: after it the next read revalidates with one real attempt. */
         const val DEFAULT_TTL_MS: Long = 60L * 60 * 1000
+
+        /** gkrost/unidrive-cli#438: the `content_refused` reason of a download whose bytes do not hash to the row's recorded hash. */
+        const val HASH_MISMATCH_REASON = "hash_mismatch"
     }
 }

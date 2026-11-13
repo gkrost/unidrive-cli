@@ -728,6 +728,28 @@ class DaemonRuntime(
                 val credentialHealth = CredentialHealthMonitor(credentialHealthCheck, credentialHealthTtlMs, serveScope)
                 credentialHealth.refreshAsync()
 
+                // mode + capabilities (archive#603 U4): what this daemon serves, so a client can check the
+                // hosting contract before it sends a verb the profile refuses (additive, read-only). Fixed for the run, so
+                // rendered once here, not at every status request (gkrost/unidrive-cli#442).
+                val modeJson = ndjsonString(profileMode.wireName)
+                // `views` is a capability only where the profile shows a view: a daemon without one answers as it always did.
+                // `view_page` with it: such a daemon answers view.page for its views.
+                // `notifications.status` (archive#111): this reply carries the `notifications` object.
+                // `hydration.refuse_name` (gkrost/unidrive-cli#24): the daemon records a client's refusal of a twin.
+                // `hydration.list_live` (gkrost/unidrive-cli#27): hydration.list reads a folder from the cloud while the first scan has not brought it in.
+                // `hydration.list_content_id` (gkrost/unidrive-cli#171): a hydration.list file entry names its bytes (`content_id`) where the row does.
+                // `hydration.stat` (gkrost/unidrive-cli#415): the daemon answers one row without the folder listing.
+                // `hydration.cancel_read` (gkrost/unidrive-cli#23): hydration.cancel with a handle_id ends that open_read, and a download nobody waits for stops.
+                // `hydration.list_complete`, `hydration.rmdir_discard_local`, `ignore.explain_batch` (gkrost/unidrive-cli#445): hydration.list
+                // says whether a folder is listed whole, rmdir takes discard_local, ignore.explain takes paths.
+                val capabilitiesJson = (
+                    profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
+                        (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY)) +
+                        (if (engine.uploadIgnore == null) emptyList() else listOf(IGNORE_EXPLAIN_BATCH_CAPABILITY)) +
+                        (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
+                        (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList())
+                ).joinToString(",", "[", "]") { ndjsonString(it) }
+
                 // daemon.status verb (spec §4.3). protocol_version is the
                 // additive cross-repo handshake field (IPC_PROTOCOL_VERSION):
                 // co-clients warn/refuse on mismatch instead of failing on a
@@ -762,11 +784,9 @@ class DaemonRuntime(
                     // front-end must never read an unknown as "nothing pending". Neither read blocks this reply
                     // behind state.db or the cache directory: the previous reading is served (uploadHealthSnapshot),
                     // and the cache walk runs off this request (bytes null until the first).
-                    val healthJson = hydration?.let { h ->
-                        h.requestCacheMeasurement()
-                        val uploads = h.uploadHealthSnapshot()
-                        (uploads?.let { ",\"uploads\":${it.toJson()}" } ?: "") + ",\"cache\":${h.cacheHealth().toJson()}"
-                    } ?: ""
+                    hydration?.requestCacheMeasurement()
+                    val uploadsJson = hydration?.uploadHealthSnapshot()?.toJson()?.toString()
+                    val cacheJson = hydration?.cacheHealth()?.toJson()?.toString()
                     val lastContactMs = lastProviderContactMs(enumerationStatus.lastSuccessAtMs, mount.lastProviderContactAtMs)
                     // strict_names (issue 29): present only for a provider with a strict-name mode; the count reads the rows
                     // (the same ones `uploads.blocked` lists), so a busy state.db can hold the reply briefly, like any reader.
@@ -798,8 +818,8 @@ class DaemonRuntime(
                             // total (gkrost/unidrive-cli#460): attempts per endpoint class since the daemon started.
                             val totalJson =
                                 status.totals.entries.joinToString(",") { "${ndjsonString(it.key)}:${it.value}" }
-                            ""","requests":{"in_flight":$inFlightJson,"free_slots":{$slotsJson},"total":{$totalJson}}"""
-                        } ?: ""
+                            """{"in_flight":$inFlightJson,"free_slots":{$slotsJson},"total":{$totalJson}}"""
+                        }
                     // credential_health (archive#586): the last offline check, or `expired` at once when the provider rejected the
                     // credentials after the check (a transfer or an enumeration failed authentication and nothing worked since).
                     val credentialReading =
@@ -808,26 +828,6 @@ class DaemonRuntime(
                     val credentialHealthJson = credentialReading.toJson(System.currentTimeMillis())
                     // auth (unidrive-cli#387): the same reading as a sign-in question, with the profile folder the check looked in.
                     val authJson = authStatusOf(credentialReading.state, lockFile.parent).toJson().toString()
-                    // mode + capabilities (archive#603 U4): what this daemon serves, so a client can check the
-                    // hosting contract before it sends a verb the profile refuses (additive, read-only).
-                    val modeJson = ndjsonString(profileMode.wireName)
-                    // `views` is a capability only where the profile shows a view: a daemon without one answers as it always did.
-                    // `view_page` with it: such a daemon answers view.page for its views.
-                    // `notifications.status` (archive#111): this reply carries the `notifications` object.
-                    // `hydration.refuse_name` (gkrost/unidrive-cli#24): the daemon records a client's refusal of a twin.
-                    // `hydration.list_live` (gkrost/unidrive-cli#27): hydration.list reads a folder from the cloud while the first scan has not brought it in.
-                    // `hydration.list_content_id` (gkrost/unidrive-cli#171): a hydration.list file entry names its bytes (`content_id`) where the row does.
-                    // `hydration.stat` (gkrost/unidrive-cli#415): the daemon answers one row without the folder listing.
-                    // `hydration.cancel_read` (gkrost/unidrive-cli#23): hydration.cancel with a handle_id ends that open_read, and a download nobody waits for stops.
-                    // `hydration.list_complete`, `hydration.rmdir_discard_local`, `ignore.explain_batch` (gkrost/unidrive-cli#445): hydration.list
-                    // says whether a folder is listed whole, rmdir takes discard_local, ignore.explain takes paths.
-                    val capabilitiesJson = (
-                        profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-                            (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY)) +
-                            (if (engine.uploadIgnore == null) emptyList() else listOf(IGNORE_EXPLAIN_BATCH_CAPABILITY)) +
-                            (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
-                            (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList())
-                    ).joinToString(",", "[", "]") { ndjsonString(it) }
                     // quota (archive#655): the account's storage plan snapshot. Absent entirely for
                     // providers without an account quota (ProviderMetadata hasQuota=false —
                     // localfs probes machine storage). A client-connected status request is
@@ -852,49 +852,71 @@ class DaemonRuntime(
                     // not move IPC_PROTOCOL_VERSION, so this is the age signal a client gates its
                     // engine minimum on (additive, read-only). archive#574: a dev build carries the commit id
                     // as semver build metadata (VERSION+COMMIT[.dirty]), so the release part orders.
-                    """{"ok":true,"protocol_version":$IPC_PROTOCOL_VERSION,"contract_level":$IPC_CONTRACT_LEVEL,"engine_version":$engineVersionJson,"engine_build_time_ms":$engineBuildTimeJson,"mode":$modeJson,"capabilities":$capabilitiesJson,"uptime_ms":$uptimeMs,"clients_connected":$clientCount,"refresh_in_flight":$refreshInFlight,"refresh_job_id":$jobIdJson,"sync_paths":$syncPathsJson,"provider":$providerJson,"provider_name":$providerNameJson,"authenticated":${provider.isAuthenticated},"enumeration":$enumerationJson,"poll_interval_ms":$pollIntervalMs""" +
-                        (quotaJson?.let { ",\"quota\":$it" } ?: "") +
-                        healthJson +
-                        ",\"provider_health\":$providerHealth" +
-                        requestsJson +
-                        ",\"credential_health\":$credentialHealthJson" +
+                    // gkrost/unidrive-cli#442: the members in the order the IPC contract corpus pins; JsonMembers writes the
+                    // separators, and a null value leaves its member out.
+                    JsonMembers()
+                        .put("ok", "true")
+                        .put("protocol_version", IPC_PROTOCOL_VERSION.toString())
+                        .put("contract_level", IPC_CONTRACT_LEVEL.toString())
+                        .put("engine_version", engineVersionJson)
+                        .put("engine_build_time_ms", engineBuildTimeJson)
+                        .put("mode", modeJson)
+                        .put("capabilities", capabilitiesJson)
+                        .put("uptime_ms", uptimeMs.toString())
+                        .put("clients_connected", clientCount.toString())
+                        .put("refresh_in_flight", refreshInFlight.toString())
+                        .put("refresh_job_id", jobIdJson)
+                        .put("sync_paths", syncPathsJson)
+                        .put("provider", providerJson)
+                        .put("provider_name", providerNameJson)
+                        .put("authenticated", provider.isAuthenticated.toString())
+                        .put("enumeration", enumerationJson)
+                        .put("poll_interval_ms", pollIntervalMs.toString())
+                        .put("quota", quotaJson)
+                        // uploads and cache: a mount profile's hydration layer only; uploads also only once the queue was read.
+                        .put("uploads", uploadsJson)
+                        .put("cache", cacheJson)
+                        .put("provider_health", providerHealth.toString())
+                        .put("requests", requestsJson)
+                        .put("credential_health", credentialHealthJson.toString())
                         // state_recovery (gkrost/unidrive-cli#581): present only when this start found state.db corrupt and moved it aside.
-                        (stateRecovery?.let { ",\"state_recovery\":${stateRecoveryJson(it)}" } ?: "") +
-                        ",\"auth\":$authJson" +
+                        .put("state_recovery", stateRecovery?.let { stateRecoveryJson(it).toString() })
+                        .put("auth", authJson)
                         // notifications (archive#111): the provider's remote-change push channel; `unsupported` where it has none.
-                        ",\"notifications\":${notificationsStatusJson(provider.remoteChangeChannelStatus())}" +
+                        .put("notifications", notificationsStatusJson(provider.remoteChangeChannelStatus()).toString())
                         // ignore (archive#660): present where the ignore rules apply; held_back counts the folders
                         // whose uploads wait for a rule file that cannot be read.
-                        (engine.uploadIgnore?.let { ",\"ignore\":${ignoreHealthJson(it.heldBack())}" } ?: "") +
+                        .put("ignore", engine.uploadIgnore?.let { ignoreHealthJson(it.heldBack()).toString() })
                         // trash: present only while something is in the provider's trash. The read-only folder that shows it,
                         // by the path it has now, the name it has on disk (suffixed when a live top-level item holds the
                         // configured name) and the name the profile asks for (trash_folder_name).
-                        (trash.rootPath()?.let { ",\"trash\":${trashStatusJson(it, trash.configuredName)}" } ?: "") +
+                        .put("trash", trash.rootPath()?.let { trashStatusJson(it, trash.configuredName).toString() })
                         // backups: present only while the backups folder exists (the profile shows them and the account has a
                         // backup device), as trash, with the number of devices listed in it.
-                        (
+                        .put(
+                            "backups",
                             backups.rootPath()?.let { root ->
                                 val devices = db?.listDirectChildren(root)?.count { it.isFolder } ?: 0
-                                ",\"backups\":${backupsStatusJson(root, backups.configuredName, devices)}"
-                            } ?: ""
-                        ) +
+                                backupsStatusJson(root, backups.configuredName, devices).toString()
+                            },
+                        )
                         // views: present only while the profile shows a read-only view (Recents, ...), one object per view; the
                         // state of each is the last answer the provider gave (nothing here asks it).
-                        (hydration?.viewStatuses()?.takeIf { it.isNotEmpty() }?.let { ",\"views\":${viewsStatusJson(it)}" } ?: "") +
+                        .put("views", hydration?.viewStatuses()?.takeIf { it.isNotEmpty() }?.let { viewsStatusJson(it).toString() })
                         // remote_incomplete: present only while a truncated cloud object is remembered (count only, no names).
-                        (mount.remoteIncompleteCount().takeIf { it > 0 }?.let { ",\"remote_incomplete\":${remoteIncompleteJson(it)}" } ?: "") +
+                        .put("remote_incomplete", mount.remoteIncompleteCount().takeIf { it > 0 }?.let { remoteIncompleteJson(it).toString() })
                         // paused (archive#778): present only while the daemon is paused; uploads and quota above keep reporting.
-                        (pause.current?.let { ",\"paused\":${it.toJson()}" } ?: "") +
+                        .put("paused", pause.current?.toJson()?.toString())
                         // archive#578: the effective part parallelism of the provider's multipart uploads
                         // (null when it does not upload in parts). Additive, read-only.
-                        ",\"upload_concurrency\":${provider.multipartUploadConcurrency()?.let { kotlinx.serialization.json.JsonPrimitive(it).toString() } ?: "null"}" +
+                        .put("upload_concurrency", provider.multipartUploadConcurrency()?.let { kotlinx.serialization.json.JsonPrimitive(it).toString() } ?: "null")
                         // gkrost/unidrive-cli#392: how many hydration downloads a client should run at once (the download
                         // budget's small-file width, the transfer cap for a while after a throttle). Additive, read-only.
-                        ",\"transfer_budget\":${mount.downloadBudget.recommended}" +
+                        .put("transfer_budget", mount.downloadBudget.recommended.toString())
                         // ipc (gkrost/unidrive-cli#460): the requests each verb's handler served since the daemon started, so a
                         // client's change of verbs can be checked on a live daemon. Additive, read-only, always present.
-                        ",\"ipc\":${ipcStatusJson(server.requestCounts())}" +
-                        "}"
+                        .put("ipc", ipcStatusJson(server.requestCounts()).toString())
+                        .render()
                 }
 
                 // ignore.explain (archive#660): a read verb; the daemon's own rules answer it, so it says what the upload path
@@ -1127,6 +1149,9 @@ class DaemonRuntime(
     private fun cleanup() {
         runCatching { ipcServer?.close() }
         ipcServer = null
+        // gkrost/unidrive-cli#455: the provider's notification channel and HTTP client end with the daemon, not with the JVM:
+        // an in-process restart (and every test) would otherwise keep them open.
+        servingProvider?.let { provider -> runCatching { provider.close() }.onFailure { log.debug("closing the provider failed", it) } }
         servingProvider = null
         runCatching { quotaMonitor.retryQuotaPersist(db) }
         runCatching { db?.close() }

@@ -422,6 +422,62 @@ class OneDriveInteractiveAuthContractTest {
             assertEquals(0, OneDriveDeviceFlowRegistry.sizeForTest())
         }
 
+    /** RFC 8628 section 3.5: each slow_down adds 5 s, and the raised interval holds for every later poll. */
+    private fun deviceCodeThenPollErrorsEngine(vararg errors: String): MockEngine {
+        var call = 0
+        return MockEngine { _ ->
+            call += 1
+            if (call == 1) {
+                respond(
+                    content = ByteReadChannel(deviceCodeResponseBody()),
+                    status = HttpStatusCode.OK,
+                    headers = headersOf("Content-Type" to listOf("application/json")),
+                )
+            } else {
+                respond(
+                    content = ByteReadChannel("""{"error":"${errors[(call - 2).coerceAtMost(errors.size - 1)]}"}"""),
+                    status = HttpStatusCode.BadRequest,
+                    headers = headersOf("Content-Type" to listOf("application/json")),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun slow_down_raises_the_interval_by_five_seconds_and_keeps_it() =
+        runBlocking {
+            val factory =
+                factoryWithEngine(
+                    deviceCodeThenPollErrorsEngine("slow_down", "authorization_pending", "slow_down", "authorization_pending"),
+                )
+            val begin = factory.beginInteractiveAuth(tmpProfileDir)
+            val waits =
+                (1..4).map {
+                    val outcome = factory.completeInteractiveAuth(tmpProfileDir, begin.continuationHandle)
+                    assertTrue(outcome is CompleteAuthResult.Pending, "poll $it: $outcome")
+                    outcome.retryAfterSeconds
+                }
+
+            // Before: 10, 5, 10, 5 (doubled once, then back to the default).
+            assertEquals(listOf(10L, 10L, 15L, 15L), waits)
+            factory.cancelInteractiveAuth(begin.continuationHandle)
+        }
+
+    @Test
+    fun a_later_process_keeps_the_interval_a_slow_down_raised() =
+        runBlocking {
+            val factory = factoryWithEngine(deviceCodeThenPollErrorsEngine("slow_down", "authorization_pending"))
+            val begin = factory.beginInteractiveAuth(tmpProfileDir)
+            val first = factory.completeInteractiveAuth(tmpProfileDir, begin.continuationHandle)
+            assertEquals(10L, (first as CompleteAuthResult.Pending).retryAfterSeconds)
+
+            // `auth complete` in a new process: the registry is empty, the flow is rebuilt from the profile folder.
+            OneDriveDeviceFlowRegistry.remove(begin.continuationHandle)?.oauthService?.close()
+            val second = factory.completeInteractiveAuth(tmpProfileDir, begin.continuationHandle)
+            assertEquals(10L, (second as CompleteAuthResult.Pending).retryAfterSeconds)
+            factory.cancelInteractiveAuth(begin.continuationHandle)
+        }
+
     @Test
     fun complete_expired_token_returns_error_and_forgets_handle() =
         runBlocking {
