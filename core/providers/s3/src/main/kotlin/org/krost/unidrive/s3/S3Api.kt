@@ -103,7 +103,7 @@ data class S3Part(
 class S3Api(
     private val config: S3Config,
     engine: HttpClientEngine? = null,
-    clock: () -> Instant = Instant::now,
+    private val clock: () -> Instant = Instant::now,
     private val budget: HttpRetryBudget = HttpRetryBudget(maxConcurrency = MAX_CONCURRENCY),
     private val uploadWatchdog: UploadWatchdogLimits = UploadWatchdogLimits.DEFAULT,
     // How long the body of a GET may take once its headers are in, from the Content-Length they declare. A test passes a short one.
@@ -112,7 +112,12 @@ class S3Api(
     socketTimeoutMs: Long = HttpDefaults.SOCKET_TIMEOUT_MS,
 ) : AutoCloseable {
     private val log = org.slf4j.LoggerFactory.getLogger(S3Api::class.java)
-    private val signer = SigV4Signer(config.accessKey, config.secretKey, config.region, clock)
+    // How far S3's clock is ahead of this host's (negative: behind), learned from a RequestTimeTooSkewed answer. A
+    // signature carries its time and S3 refuses one more than 15 minutes off; a VM resumed with a stale clock signed
+    // every request wrong and read as refused keys (#453 item 4). Every later signature carries the corrected time.
+    @Volatile
+    private var clockOffsetMs: Long = 0L
+    private val signer = SigV4Signer(config.accessKey, config.secretKey, config.region) { clock().plusMillis(clockOffsetMs) }
     private val metrics = RequestMetricsTap()
     private val httpClient: HttpClient = s3HttpClient(metrics, config, engine, socketTimeoutMs)
     private val base = config.endpoint.trimEnd('/')
@@ -202,7 +207,7 @@ class S3Api(
         key: String,
         destination: Path,
     ): Long =
-        budget.retrying { _, retries ->
+        budget.retrying { corrected, retries ->
             val statement =
                 httpClient.prepareRequest {
                     signed(HttpMethod.Get, key, emptyList(), emptyMap(), SigV4Signer.EMPTY_SHA256)
@@ -212,7 +217,10 @@ class S3Api(
                 when {
                     isRetryable(response.status.value) && retries < MAX_ATTEMPTS ->
                         RetryOutcome.Retry(backoffMs(response, retries), throttle = isThrottle(response.status.value))
-                    !response.status.isSuccess() -> throw failure(response, readBoundedErrorBody(response), "GET")
+                    !response.status.isSuccess() -> {
+                        val body = readBoundedErrorBody(response)
+                        if (!corrected && learnedClockSkew(response, body)) RetryOutcome.RetryAuth else throw failure(response, body, "GET")
+                    }
                     else -> {
                         budget.recordSuccess()
                         val declared = response.contentLength()
@@ -435,7 +443,7 @@ class S3Api(
         watched: WatchedBody? = null,
         body: (() -> Any)? = null,
     ): HttpResponse =
-        budget.retrying { _, retries ->
+        budget.retrying { corrected, retries ->
             val response =
                 if (watched != null) {
                     watchedRequest(watched, method, key, query, headers, payloadHash)
@@ -445,7 +453,10 @@ class S3Api(
                         if (body != null) setBody(body())
                     }
                 }
-            if (isRetryable(response.status.value) && retries < MAX_ATTEMPTS) {
+            if (!corrected && response.status.value == 403 && learnedClockSkew(response, skewBody(response))) {
+                // Signed again with the corrected time, once: the loop's one "refresh" is this client's re-sign.
+                RetryOutcome.RetryAuth
+            } else if (isRetryable(response.status.value) && retries < MAX_ATTEMPTS) {
                 val waitMs = backoffMs(response, retries)
                 log.warn("S3 answered {} on {} {}; retrying in {} ms", response.status.value, method.value, key ?: "(bucket)", waitMs)
                 RetryOutcome.Retry(waitMs, throttle = isThrottle(response.status.value))
@@ -454,6 +465,36 @@ class S3Api(
                 RetryOutcome.Done(response)
             }
         }
+
+    // The error body of a refused request (a HEAD has none). It is read again by the caller when this is no skew: the
+    // client keeps a response body it did not stream, so reading it here takes nothing from the caller.
+    private suspend fun skewBody(response: HttpResponse): String =
+        if (response.call.request.method == HttpMethod.Head) "" else runCatching { response.bodyAsText() }.getOrDefault("")
+
+    /**
+     * True when [response] refused the request for its signing time, and the offset to S3's clock is learned from it:
+     * the `ServerTime` S3 names in a RequestTimeTooSkewed body, else the response's `Date`. A HEAD has no body to name
+     * the code, so for a 403 without one the `Date` alone counts when it is further off than S3 allows.
+     */
+    private fun learnedClockSkew(
+        response: HttpResponse,
+        body: String,
+    ): Boolean {
+        if (response.status.value != 403) return false
+        val root = body.takeIf { it.isNotBlank() }?.let { runCatching { xml(it) }.getOrNull() }
+        val code = root?.text("Code")
+        if (code != null && code != SKEWED_CODE) return false
+        val serverTime = root?.text("ServerTime")?.let(::parseIso) ?: response.headers["Date"]?.let(::parseHttpDate) ?: return false
+        val offsetMs = serverTime.toEpochMilli() - clock().toEpochMilli()
+        if (code == null && kotlin.math.abs(offsetMs - clockOffsetMs) < MAX_SIGNATURE_SKEW_MS) return false
+        clockOffsetMs = offsetMs
+        log.warn(
+            "S3 refused a request signed at this host's time: its clock is {} s {}; later requests are signed with its time",
+            kotlin.math.abs(offsetMs) / 1000,
+            if (offsetMs > 0) "ahead" else "behind",
+        )
+        return true
+    }
 
     /** An upload body of [size] bytes, built afresh for every attempt around that attempt's progress record. */
     private class WatchedBody(
@@ -566,6 +607,10 @@ class S3Api(
         const val MAX_BATCH_DELETE = 1000
         const val MAX_CONCURRENCY = 16
         private const val MAX_ATTEMPTS = 5
+        private const val SKEWED_CODE = "RequestTimeTooSkewed"
+
+        // S3 refuses a signature more than 15 minutes from its own clock.
+        private const val MAX_SIGNATURE_SKEW_MS = 15L * 60L * 1000L
 
         // The error codes with which a 403 says "these credentials are no good" (as opposed to "not this object").
         private val CREDENTIAL_CODES =
