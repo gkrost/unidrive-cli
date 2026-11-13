@@ -734,6 +734,8 @@ dependencies {
     implementation(project(":providers:dropbox"))
     implementation(project(":providers:s3"))
     implementation(project(":app:sync"))
+    // The X-tra client-side-encryption layer (config key xtra_encryption) wraps the providers here.
+    implementation(project(":app:xtra"))
     // StateDatabase, SyncEntry, PathNormalizer and SyncScope live in :app:engine-core (archive#560 U2).
     implementation(project(":app:engine-core"))
     // The CliExtension SPI that CliExtensionLoader discovers implementations of (archive#560).
