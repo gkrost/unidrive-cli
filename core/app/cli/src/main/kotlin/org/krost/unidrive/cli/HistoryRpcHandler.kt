@@ -95,7 +95,7 @@ class HistoryRpcHandler(
         server.registerHandler("history.subscribe") { connId, _ ->
             val reply = subscribe(connId)
             // The reply goes out first; the stream starts after it, so the subscriber's first line is the reply.
-            if (reply.contains("\"ok\":true")) server.scheduleAfterReply(connId) { beginStreaming(connId) }
+            if (isOkReplyLine(reply)) server.scheduleAfterReply(connId) { beginStreaming(connId) }
             reply
         }
         server.registerConnectionCloseListener { connId -> onConnectionClosed(connId) }

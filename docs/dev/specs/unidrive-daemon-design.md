@@ -768,7 +768,7 @@ ADMIN class, both profile modes (archive#1240). The credential check of `unidriv
 
 | verb | request body | reply |
 |---|---|---|
-| `auth.check` | optional `"timeout_seconds"` (1 to 300, default 20) | as `auth check --json`: `{"ok":true,"profile":..,"status":"authenticated","account":..}` (`account` only when the provider says it) or the refusal `{"ok":false,"error":token,"message":..}` |
+| `auth.check` | optional `"timeout_seconds"` (a JSON number, 1 to 300, default 20; anything else is `invalid_timeout`) | as `auth check --json`: `{"ok":true,"profile":..,"status":"authenticated","account":..}` (`account` only when the provider says it) or the refusal `{"ok":false,"error":token,"message":..}` |
 
 Refusal tokens: `not_signed_in`, `credentials_rejected`, `network_error` (the provider could not be asked, or did not answer within the limit: not a verdict), `provider_error`, `unsupported`, `invalid_timeout`, `invalid_request`. One check runs at a time. The daemon does nothing of its own with the result: no `state.db` write, no event, no `daemon.status` field set from it (the call goes through the same provider code as every other request, so a token refresh it triggers is recorded as any refresh is). A daemon older than this verb answers `unknown_verb`, which the CLI reports as `daemon_too_old`.
 
