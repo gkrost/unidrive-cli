@@ -180,7 +180,7 @@ class InternxtShardPutWatchdogTest {
                             ?.groupValues
                             ?.get(1)
                     assertTrue(idleSeconds != null, text)
-                    assertAtLeast("idle time named in the cut message", (idleSeconds!!.toDouble() * 1000).toLong(), idleWindowMs)
+                    assertAtLeast("idle time named in the cut message", (idleSeconds.toDouble() * 1000).toLong(), idleWindowMs)
                     assertTrue(text.contains(" of 67,108,864 bytes sent in "), text)
                     assertTrue(text.contains("(average "), text)
                     // Well before the engine's socket timer and the server's own sleep: only the watchdog could have cut.
@@ -330,7 +330,7 @@ class InternxtShardPutWatchdogTest {
                     assertTrue(job.isCancelled)
                     val t = outcome.get()
                     assertTrue(t is CancellationException, "the caller's cancellation, not a watchdog verdict: $t")
-                    assertTrue(t !is UploadWatchdogException && t?.cause !is UploadWatchdogException, "$t")
+                    assertTrue(t.cause !is UploadWatchdogException, "the cancellation does not wrap a watchdog verdict: $t")
                     val ended = connectionEnded.await(connectionEndBudgetMs, TimeUnit.MILLISECONDS)
                     val waitedMs = (System.nanoTime() - cancelAtMs) / 1_000_000
                     assertTrue(

@@ -95,7 +95,7 @@ class InternxtDownloadTimeoutTest {
                     assertFailsWith<InternxtDownloadBudgetExhaustedException> {
                         api.downloadFileStreaming("https://shard-host.invalid/get/shard-0", cipher(), destination, expectedSize = 4096L, expectedShardHash = null)
                     }
-                assertTrue(e is java.io.IOException, "stays an IOException: a later sync pass still retries it")
+                assertTrue(java.io.IOException::class.java.isInstance(e), "stays an IOException: a later sync pass still retries it")
                 assertTrue(e.cause is HttpRequestTimeoutException)
                 assertTrue(Files.notExists(destination))
             }

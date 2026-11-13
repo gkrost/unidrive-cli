@@ -66,7 +66,6 @@ class RefreshableTokenLatchTest {
                         // The "network call": cancelled while the persist is reached, as withTimeout does.
                         persistReached.complete(Unit)
                         latch.commitIfCurrent(generation) { committed = "stored" }
-                        "first"
                     })
                 }
             runCurrent()
