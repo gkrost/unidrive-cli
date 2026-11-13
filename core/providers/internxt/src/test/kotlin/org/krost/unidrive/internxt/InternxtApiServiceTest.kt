@@ -77,37 +77,37 @@ class InternxtApiServiceTest {
         // account this is the difference between a sub-second incremental
         // walk and a multi-minute one.
         val cursor = "2026-03-29T18:30:00.000Z"
-        val rewound = InternxtProvider.rewindCursor(cursor)
+        val rewound = rewindCursor(cursor)
         assertEquals("2026-03-29T18:28:00Z", rewound)
     }
 
     @Test
     fun `delta cursor rewind crosses midnight (still only 120 seconds back)`() {
         val cursor = "2026-03-29T00:01:00.000Z"
-        val rewound = InternxtProvider.rewindCursor(cursor)
+        val rewound = rewindCursor(cursor)
         assertEquals("2026-03-28T23:59:00Z", rewound)
     }
 
     @Test
     fun `UD-369 stripExtension removes the last dot-separated segment`() {
-        assertEquals("report", InternxtProvider.stripExtension("report.docx"))
-        assertEquals("archive.tar", InternxtProvider.stripExtension("archive.tar.gz"))
-        assertEquals("noext", InternxtProvider.stripExtension("noext"))
+        assertEquals("report", stripExtension("report.docx"))
+        assertEquals("archive.tar", stripExtension("archive.tar.gz"))
+        assertEquals("noext", stripExtension("noext"))
         // A dotfile keeps its whole name: the drive refuses an empty plainName.
-        assertEquals(".dotfile", InternxtProvider.stripExtension(".dotfile"))
+        assertEquals(".dotfile", stripExtension(".dotfile"))
         // Names the listing would join into another name stay whole as well (see InternxtNameRoundTripTest).
-        assertEquals("a.txt.txt", InternxtProvider.stripExtension("a.txt.txt"))
-        assertEquals("a.", InternxtProvider.stripExtension("a."))
+        assertEquals("a.txt.txt", stripExtension("a.txt.txt"))
+        assertEquals("a.", stripExtension("a."))
     }
 
     @Test
     fun `UD-369 newFileType returns the bare extension or null`() {
-        assertEquals("docx", InternxtProvider.newFileType("report.docx"))
-        assertEquals("gz", InternxtProvider.newFileType("archive.tar.gz"))
-        assertEquals(null, InternxtProvider.newFileType("noext"))
-        assertEquals(null, InternxtProvider.newFileType(".dotfile"))
-        assertEquals(null, InternxtProvider.newFileType("a.txt.txt"))
-        assertEquals(null, InternxtProvider.newFileType("a."))
+        assertEquals("docx", newFileType("report.docx"))
+        assertEquals("gz", newFileType("archive.tar.gz"))
+        assertEquals(null, newFileType("noext"))
+        assertEquals(null, newFileType(".dotfile"))
+        assertEquals(null, newFileType("a.txt.txt"))
+        assertEquals(null, newFileType("a."))
     }
 
     @Test

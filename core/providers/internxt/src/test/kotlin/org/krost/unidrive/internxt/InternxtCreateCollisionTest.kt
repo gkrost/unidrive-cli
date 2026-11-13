@@ -1163,9 +1163,9 @@ class InternxtCreateCollisionTest {
     @Test
     fun `conflict_name_helper_appends_counter_on_second_collision`() {
         val date = "2026-05-26"
-        val first = InternxtProvider.conflictName("AGENTS", date, 1)
-        val second = InternxtProvider.conflictName("AGENTS", date, 2)
-        val third = InternxtProvider.conflictName("AGENTS", date, 3)
+        val first = conflictName("AGENTS", date, 1)
+        val second = conflictName("AGENTS", date, 2)
+        val third = conflictName("AGENTS", date, 3)
 
         assertEquals("AGENTS (conflict $date)", first)
         assertEquals("AGENTS (conflict $date) (2)", second)
