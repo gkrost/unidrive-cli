@@ -436,11 +436,11 @@ open class Main : Runnable {
         val console = System.console() ?: run {
             System.err.println("Error: xtra_encryption is on but no passphrase is available.")
             System.err.println("Configure UNIDRIVE_XTRA_PASS or a systemd credential named unidrive-xtra-pass.")
-            throw IllegalStateException("no X-tra passphrase available")
+            error("no X-tra passphrase available")
         }
         return console.readPassword("X-tra passphrase: ") ?: run {
             System.err.println("Error: could not read passphrase.")
-            throw IllegalStateException("no X-tra passphrase available")
+            error("no X-tra passphrase available")
         }
     }
 
