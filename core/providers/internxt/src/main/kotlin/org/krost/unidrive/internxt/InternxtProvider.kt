@@ -5647,10 +5647,15 @@ class InternxtProvider(
             if (!plainName.isNullOrBlank() || encryptedName.isNullOrEmpty() || mnemonic.isNullOrEmpty() || parentUuid.isNullOrEmpty()) {
                 return plainName ?: encryptedName ?: ""
             }
-            return runCatching { InternxtCrypto().decryptName(encryptedName, "$mnemonic-$parentUuid") }
-                .onFailure { legacyNameLog.debug("#314: could not decrypt a legacy name: {}", it.message) }
-                .getOrNull() ?: encryptedName
+            return legacyNames.resolve(encryptedName, mnemonic, parentUuid) ?: encryptedName
         }
+
+        // One crypto for every row (its SecureRandom is not needed to decrypt), and each row derived once per process.
+        private val legacyNameCrypto = InternxtCrypto()
+        private val legacyNames =
+            LegacyNameCache(onFailure = { legacyNameLog.debug("#314: could not decrypt a legacy name: {}", it.message) }) { encrypted, password ->
+                legacyNameCrypto.decryptName(encrypted, password)
+            }
 
         internal fun fileToCloudItem(
             file: InternxtFile,
