@@ -10,3 +10,7 @@
 {"ok":true,"path":"/work/proj/.git/config","excluded":true,"ignored":true,"layer":"default","file":null,"line":1,"pattern":".git","decided_at":"/work/proj/.git","reason":null,"exclude_pattern":null}
 {"verb":"ignore.explain","path":"/.unidrive-trash","is_dir":true}
 {"ok":true,"path":"/.unidrive-trash","excluded":true,"ignored":true,"layer":"operational","file":null,"line":1,"pattern":"/.unidrive-trash","decided_at":"/.unidrive-trash","reason":null,"exclude_pattern":null}
+{"verb":"ignore.explain","paths":["/notes/todo.txt",{"path":"/.unidrive-trash","is_dir":true},"/work/../secret",{"path":"/work","is_dir":"yes"}]}
+{"ok":true,"results":[{"path":"/notes/todo.txt","excluded":false,"ignored":false,"layer":null,"file":null,"line":null,"pattern":null,"decided_at":null,"reason":null,"exclude_pattern":null},{"path":"/.unidrive-trash","excluded":true,"ignored":true,"layer":"operational","file":null,"line":1,"pattern":"/.unidrive-trash","decided_at":"/.unidrive-trash","reason":null,"exclude_pattern":null},{"path":"/work/../secret","error":"invalid_path"},{"path":"/work","error":"invalid_is_dir"}]}
+{"verb":"ignore.explain","paths":"/notes/todo.txt"}
+{"ok":false,"error":"invalid_paths"}

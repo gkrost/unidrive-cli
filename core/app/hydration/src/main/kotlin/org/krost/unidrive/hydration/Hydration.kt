@@ -174,6 +174,17 @@ interface Hydration {
         recursive: Boolean = false,
         permanent: Boolean = false,
     ): RmdirResult
+
+    /**
+     * gkrost/unidrive-cli#445: a recursive [rmdir] whose caller vouches that the local copies below were deleted by the user
+     * (`"discard_local":true`), so a file below that holds bytes only this computer has does not refuse the tree: those
+     * bytes are discarded with it. Everything else answers as the recursive [rmdir] does (an upload below is still busy).
+     * The default is the recursive [rmdir], for a front-end that keeps the guard.
+     */
+    suspend fun rmdirDiscardingLocal(
+        path: String,
+        permanent: Boolean = false,
+    ): RmdirResult = rmdir(path, recursive = true, permanent = permanent)
     suspend fun create(connectionId: String, handleId: String, path: String): CreateResult
     suspend fun openWriteBegin(connectionId: String, path: String, handleId: String? = null): OpenResult
     /**
@@ -267,7 +278,16 @@ sealed class ViewPageResult {
 }
 
 sealed class ListResult {
-    data class Ok(val entries: List<Entry>) : ListResult()
+    /**
+     * [complete] and [listedAtMs] (gkrost/unidrive-cli#445): whether the entries are the whole folder as the cloud held it
+     * at [listedAtMs] (epoch ms), see [MountEngine.listingCoverage]. Null for a listing that does not say (a view's folder),
+     * and then absent on the wire.
+     */
+    data class Ok(
+        val entries: List<Entry>,
+        val complete: Boolean? = null,
+        val listedAtMs: Long? = null,
+    ) : ListResult()
     data class Failed(val error: HydrationError) : ListResult()
 
     data class Entry(

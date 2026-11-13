@@ -267,6 +267,11 @@ class HydrationLiveListTest {
         val scan = heldScan()
 
         assertEquals(listOf("/solo.txt"), names("/"))
+        // The scan still owes both twins: the rows are not the whole folder.
+        val listed = hydration.list("/")
+        assertIs<ListResult.Ok>(listed)
+        assertEquals(false, listed.complete, "withheld twins leave the listing not complete")
+        assertEquals(null, listed.listedAtMs)
         scan.cancel()
     }
 
@@ -310,6 +315,34 @@ class HydrationLiveListTest {
 
         assertEquals(listOf("/", "/void"), provider.listCalls.toList())
         scan.cancel()
+    }
+
+    // gkrost/unidrive-cli#445: `complete` says whether the rows are the whole folder.
+    @Test
+    fun `a listing is complete when listed live or after a completed scan, not from rows an earlier scan left`() = runBlocking {
+        db.upsertEntry(row("/old.txt", remoteId = "id-old"))
+        seedDrive()
+        val scan = heldScan()
+
+        val fromState = hydration.list("/")
+        assertIs<ListResult.Ok>(fromState)
+        assertEquals(false, fromState.complete, "rows an earlier scan left may lack items")
+        assertEquals(null, fromState.listedAtMs)
+
+        db.upsertEntry(row("/docs", remoteId = "id-docs", folder = true))
+        val before = System.currentTimeMillis()
+        val live = hydration.list("/docs")
+        assertIs<ListResult.Ok>(live)
+        assertEquals(true, live.complete, "a live listing is the whole folder")
+        assertTrue(live.listedAtMs!! >= before)
+        val again = hydration.list("/docs")
+        assertIs<ListResult.Ok>(again)
+        assertEquals(true to live.listedAtMs, again.complete to again.listedAtMs, "the rows that listing saved stay covered")
+
+        finishScan(scan)
+        val afterScan = hydration.list("/")
+        assertIs<ListResult.Ok>(afterScan)
+        assertEquals(true, afterScan.complete, "a completed scan covers every folder")
     }
 
     @Test

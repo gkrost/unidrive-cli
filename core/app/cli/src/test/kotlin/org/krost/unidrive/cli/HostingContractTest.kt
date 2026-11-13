@@ -127,7 +127,7 @@ type = "$type"
                 val statusObj = Json.parseToJsonElement(status) as JsonObject
                 assertEquals("mirror", statusObj["mode"]!!.jsonPrimitive.content, "daemon.status reports the mode")
                 assertEquals(
-                    JsonArray((ProfileMode.MIRROR.capabilities + NOTIFICATIONS_STATUS_CAPABILITY).map { JsonPrimitive(it) }),
+                    JsonArray((ProfileMode.MIRROR.capabilities + NOTIFICATIONS_STATUS_CAPABILITY + IGNORE_EXPLAIN_BATCH_CAPABILITY).map { JsonPrimitive(it) }),
                     statusObj["capabilities"],
                     "daemon.status reports the mode's capabilities",
                 )
@@ -164,7 +164,7 @@ type = "$type"
                 val statusObj = Json.parseToJsonElement(status) as JsonObject
                 assertEquals("mount", statusObj["mode"]!!.jsonPrimitive.content)
                 assertEquals(
-                    JsonArray((ProfileMode.MOUNT.capabilities + NOTIFICATIONS_STATUS_CAPABILITY + RUNNING_UPLOADS_CAPABILITY + MATCHES_LOCAL_CAPABILITY + REFUSE_NAME_CAPABILITY + LIST_LIVE_CAPABILITY + LIST_CONTENT_ID_CAPABILITY + HYDRATION_STAT_CAPABILITY + CANCEL_READ_CAPABILITY + HANDLE_STATUS_CAPABILITY + HYDRATION_LOCATE_CAPABILITY + SUBSCRIBE_REPLAY_CAPABILITY).map { JsonPrimitive(it) }),
+                    JsonArray((ProfileMode.MOUNT.capabilities + NOTIFICATIONS_STATUS_CAPABILITY + RUNNING_UPLOADS_CAPABILITY + MATCHES_LOCAL_CAPABILITY + REFUSE_NAME_CAPABILITY + LIST_LIVE_CAPABILITY + LIST_CONTENT_ID_CAPABILITY + HYDRATION_STAT_CAPABILITY + CANCEL_READ_CAPABILITY + HANDLE_STATUS_CAPABILITY + HYDRATION_LOCATE_CAPABILITY + SUBSCRIBE_REPLAY_CAPABILITY + LIST_COMPLETE_CAPABILITY + RMDIR_DISCARD_LOCAL_CAPABILITY + IGNORE_EXPLAIN_BATCH_CAPABILITY).map { JsonPrimitive(it) }),
                     statusObj["capabilities"],
                 )
             } finally {

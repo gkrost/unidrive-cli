@@ -217,7 +217,7 @@ errors: old_path_not_found / new_parent_not_found / new_path_exists /
 
 ```
 hydration.unlink {path[,permanent]}   -> {"ok":true} | {"ok":false,"error":"path_is_folder"} | ...
-hydration.rmdir   {path[,recursive][,permanent]} -> {"ok":true} | {"ok":false,"error":"path_is_file"} |
+hydration.rmdir   {path[,recursive[,discard_local]][,permanent]} -> {"ok":true} | {"ok":false,"error":"path_is_file"} |
                                           {"ok":false,"error":"not_empty"} | ...
 ```
 
@@ -237,6 +237,14 @@ hydration.rmdir   {path[,recursive][,permanent]} -> {"ok":true} | {"ok":false,"e
   that is `not_empty` too, and the user deletes such a file on its own (`unlink`). An engine
   before archive#1035 ignores the flag and deletes the tree either way, so a client may
   always send it.
+- `"discard_local":true` with `"recursive":true` (gkrost/unidrive-cli#445; `contract_level` 2; `daemon.status` lists
+  `hydration.rmdir_discard_local`): the caller vouches that the user deleted the local copies below, so a file
+  below that holds bytes only this computer has does not refuse the tree; those bytes go with it (the engine logs how
+  many such files there were). Everything else answers as the recursive form does: an upload queued or running below
+  is still `busy` (cancel it first, §5), the trash and the views are still `read_only`. Without `recursive` the
+  flag is not read. It deletes the user's only copy of those bytes, so a client sends it only for a delete the user
+  made, never to get past a refusal. An engine without the capability ignores the flag and answers `not_empty` as
+  before.
 
 ### 3.8 Mkdir / rmdir
 
@@ -324,6 +332,28 @@ the same entries (cloud-only rows: `hydrated:false`, `remote_id` and `remote_mod
   asked again for ten seconds. A client that lists many folders together may do so; the later ones wait for a permit.
 - A client needs no new handling: it may read the capability to know that a folder lists at once during the first scan
   (to drop a "waiting for the scan" state for folders it can open), and treats an older engine as before.
+
+**Is the listing the whole folder (`hydration.list_complete`).** On an engine that lists `hydration.list_complete` in
+the `daemon.status` `capabilities` (gkrost/unidrive-cli#445; `contract_level` 2), a `hydration.list` reply carries two more fields beside
+`entries`: `"complete":true|false` and `"listed_at_ms":<epoch ms>|null`. `complete` is true when the folder is
+**covered**, that is when one of these holds at the time of the reply:
+
+- **A completed scan.** A full enumeration has completed since the last cursor reset (`daemon.status`
+  `enumeration.first` is false), its last gather did not end incomplete (`enumeration.last_scan_complete` is not
+  `false`) and no recovery listing runs (`enumeration.recovery` is not true). The polls since keep state.db current,
+  so every folder in scope is covered. `listed_at_ms` is when the last enumeration succeeded
+  (`enumeration.last_success_at_ms`), `null` when the daemon does not know it.
+- **A live listing.** This daemon read the folder from the cloud (`hydration.list_live` above), in this call or an
+  earlier one: `listed_at_ms` is that listing. A later change in the cloud reaches the folder with the next
+  enumeration, as for any folder.
+
+Anything else is not covered: `complete` is false and `listed_at_ms` is `null`. That is the folder state.db holds in
+part, filled by an earlier scan that did not finish (the case a live listing does not touch, because state.db knows the
+folder), or a folder below a scan that skipped a folder it could not list. A client treats a folder that is not covered
+as possibly short: an item it has locally and the listing lacks is not proof that the cloud lacks it (do not upload it
+again as new, do not delete it). A covered folder's listing is the cloud as of `listed_at_ms`. A folder in a view (§4.2)
+and a reply of an older engine carry neither field; a client reads their absence as "not known" and keeps its own
+guards.
 
 **Telling a rename from new bytes (`hydration.list_content_id`).** `etag` is the write token, and `remote_modified_ms`
 the cloud's modified time. On some providers a rename or move changes both (Internxt stamps a new modification time, and

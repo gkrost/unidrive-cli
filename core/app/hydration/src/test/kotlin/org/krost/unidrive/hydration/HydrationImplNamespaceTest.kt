@@ -900,6 +900,20 @@ class HydrationImplNamespaceTest {
     }
 
     @Test
+    fun rmdir_discarding_local_deletes_the_tree_a_local_only_file_would_refuse() = runTest {
+        // gkrost/unidrive-cli#445: the caller vouches that the user deleted the local copies, so the guard above gives way.
+        val env = freshEnv()
+        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
+        env.db.upsertEntry(row("/dir/old.txt", "rid-old").copy(lastSynced = Instant.now().minusSeconds(60)))
+        val cached = env.cacheBytes("/dir/old.txt")
+        assertEquals(RmdirResult.NotEmpty, env.impl.rmdir("/dir", recursive = true), "precondition: the guard refuses")
+
+        assertEquals(RmdirResult.Ok, env.impl.rmdirDiscardingLocal("/dir"))
+        assertEquals("/dir", env.provider.lastDeletedPath)
+        assertTrue(!Files.exists(cached), "the cache copy goes with the tree")
+    }
+
+    @Test
     fun rmdir_recursive_deletes_a_cloud_only_tree_with_no_cache_copies() = runTest {
         val env = freshEnv()
         env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))

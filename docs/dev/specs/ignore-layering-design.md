@@ -165,6 +165,18 @@ of a held-back folder, and the first matching `exclude_patterns` entry. An IPC v
 answer must be the one the upload path acts on, from the same rule files read at the same moment, and a front-end
 needs it while the daemon runs. A mirror daemon answers it from the rules its scan and plan ask.
 
+**Many paths at once** (gkrost/unidrive-cli#445; `contract_level` 2; `daemon.status` lists `ignore.explain_batch` where the verb is
+answered). A front-end that marks excluded files in its own view, or decides which local files to adopt, asks for the
+verdicts of a whole folder instead of copying the patterns and the matcher: `{"verb":"ignore.explain","paths":["/a",
+{"path":"/b","is_dir":true},...]}` (a string is a file, an object carries `is_dir` as the single form does). The reply
+`{"ok":true,"results":[...]}` answers each path in request order with the object the single form answers, without
+`ok`; a path the single form would refuse answers `{"path":<as sent>,"error":"invalid_path"|"invalid_is_dir"|
+"missing_path"}` in its place, and the rest are answered. At most 1,000 paths per request: more answers
+`{"ok":false,"error":"too_many_paths","max":1000}` (the request line itself is capped at 64 KiB). `paths` that is
+not an array answers `invalid_paths`; with `paths` present the top-level `path` and `is_dir` are not read. The one
+matcher stays in the engine, so a client never drifts from the rules the upload path applies. An engine without the
+capability reads `path` only and answers `missing_path` to a batch.
+
 ## Not decided here
 
 - Live reload by a file watcher, a rules snapshot for clients and the `unidrive ignore check` command are later

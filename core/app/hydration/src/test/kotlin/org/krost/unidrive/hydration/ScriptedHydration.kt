@@ -100,6 +100,11 @@ internal class ScriptedHydration : Hydration {
         return RmdirResult.Ok
     }
 
+    override suspend fun rmdirDiscardingLocal(path: String, permanent: Boolean): RmdirResult {
+        calls += HydrationCall("rmdir_discard_local", listOf(path, permanent))
+        return RmdirResult.Ok
+    }
+
     override suspend fun create(connectionId: String, handleId: String, path: String): CreateResult {
         calls += HydrationCall("create", listOf(connectionId, handleId, path))
         return create

@@ -14,3 +14,7 @@
 {"ok":false,"error":"read_only"}
 {"verb":"hydration.rmdir","path":"/Recents"}
 {"ok":false,"error":"read_only"}
+{"verb":"hydration.rmdir","path":"/docs/nonempty","recursive":true,"discard_local":true}
+{"ok":false,"error":"not_empty"}
+{"verb":"hydration.rmdir","path":"/docs/sub","recursive":true,"discard_local":true}
+{"ok":true}
