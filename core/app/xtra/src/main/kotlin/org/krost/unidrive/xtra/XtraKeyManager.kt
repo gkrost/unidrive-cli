@@ -49,7 +49,7 @@ class XtraKeyManager(private val keyPath: Path) {
     fun exists(): Boolean = Files.exists(keyPath)
 
     fun generate(passphrase: CharArray) {
-        requireMinLength(passphrase)
+        require(passphrase.size >= MIN_PASSPHRASE_LENGTH) { "Passphrase must be at least $MIN_PASSPHRASE_LENGTH characters" }
         val keyGen = KeyPairGenerator.getInstance("RSA")
         keyGen.initialize(RSA_KEY_SIZE, SecureRandom())
         val pair = keyGen.generateKeyPair()
@@ -62,7 +62,7 @@ class XtraKeyManager(private val keyPath: Path) {
     fun load(passphrase: CharArray) {
         val blob = Files.readAllBytes(keyPath)
         if (blob.size < SALT_LENGTH + IV_LENGTH + GCM_TAG_BITS / 8) {
-            throw IllegalStateException("X-tra key file is corrupted or too short: $keyPath")
+            error("X-tra key file is corrupted or too short: $keyPath")
         }
         val salt = blob.copyOfRange(0, SALT_LENGTH)
         val iv = blob.copyOfRange(SALT_LENGTH, SALT_LENGTH + IV_LENGTH)
@@ -79,7 +79,7 @@ class XtraKeyManager(private val keyPath: Path) {
     /** Re-encrypts the loaded key under [newPassphrase]; the key pair itself is unchanged. */
     fun changePassphrase(newPassphrase: CharArray) {
         val priv = checkNotNull(privateKey) { "Key not loaded — call load() first" }
-        requireMinLength(newPassphrase)
+        require(newPassphrase.size >= MIN_PASSPHRASE_LENGTH) { "Passphrase must be at least $MIN_PASSPHRASE_LENGTH characters" }
         writeKeyFile(newPassphrase, priv.encoded)
     }
 
@@ -108,10 +108,6 @@ class XtraKeyManager(private val keyPath: Path) {
     }
 
     // ── Internal ─────────────────────────────────────────────────────────────
-
-    private fun requireMinLength(passphrase: CharArray) {
-        require(passphrase.size >= MIN_PASSPHRASE_LENGTH) { "Passphrase must be at least $MIN_PASSPHRASE_LENGTH characters" }
-    }
 
     private fun publicOf(priv: java.security.PrivateKey): java.security.PublicKey {
         val rsaPriv = priv as RSAPrivateCrtKey
