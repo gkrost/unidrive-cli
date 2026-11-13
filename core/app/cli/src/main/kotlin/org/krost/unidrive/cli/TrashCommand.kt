@@ -1,6 +1,11 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.Capability
 import org.krost.unidrive.CloudProvider
@@ -55,7 +60,15 @@ class TrashListCommand : Callable<Int> {
     )
     var remote: Boolean = false
 
+    @Spec
+    lateinit var spec: CommandSpec
+
+    @Option(names = ["--json"], description = ["With --remote: print the trash (or the refusal) as one JSON object on stdout"])
+    var json: Boolean = false
+
     override fun call(): Int {
+        if (json && !remote) throw ParameterException(spec.commandLine(), "--json answers the provider's trash; pass --remote")
+        if (json) return jsonReply { remoteTrashListJson(withRemoteTrashProvider(parent.parent, resolveFirst = true) { it.listTrash() }) }
         if (!remote) {
             val config = parent.parent.loadSyncConfig()
             val manager = TrashManager(config.syncRoot)
@@ -169,6 +182,12 @@ class TrashPurgeCommand : Callable<Int> {
     @Option(names = ["-y", "--yes"], description = ["Do not ask before purging (for scripts)"])
     var yes: Boolean = false
 
+    @Option(
+        names = ["--json"],
+        description = ["With --remote: print the result (or the refusal) as one JSON object on stdout; never asks, so it needs --yes"],
+    )
+    var json: Boolean = false
+
     /** The system console as the asker; a test seam, like RmCommand's. */
     internal var console: () -> ((String) -> Boolean)? = { systemConsoleConfirm() }
 
@@ -181,6 +200,7 @@ class TrashPurgeCommand : Callable<Int> {
                 )
             }
         }
+        if (json && !remote) throw ParameterException(spec.commandLine(), "--json answers the provider's trash; pass --remote")
         if (!remote) {
             if (ids.isNotEmpty() || paths.isNotEmpty()) {
                 throw ParameterException(spec.commandLine(), "--id/--path act on the provider's trash; pass --remote")
@@ -206,27 +226,25 @@ class TrashPurgeCommand : Callable<Int> {
         if (!purgeAll && ids.isEmpty() && paths.isEmpty()) {
             throw ParameterException(spec.commandLine(), "--remote needs a target: --all, or --id/--path")
         }
-        return withRemoteTrashProvider(parent.parent) { provider ->
+        if (json) return jsonReply { purgeRemote().json() }
+        println(purgeRemote().consoleLine())
+        return 0
+    }
+
+    /** Purges what the options name from the provider's trash, behind the consent; every refusal is a [LifecycleError]. */
+    private fun purgeRemote(): RemotePurgeResult =
+        withRemoteTrashProvider(parent.parent, resolveFirst = json) { provider ->
             val items = provider.listTrash()
             if (purgeAll) {
                 requireConsent("Empty the provider's whole remote trash (${items.size} item(s)) FOR GOOD? This cannot be undone.")
-                when (provider.emptyTrash()) {
-                    TrashEmptyOutcome.Completed -> println("Remote trash emptied (${items.size} item(s)).")
-                    TrashEmptyOutcome.Queued ->
-                        println(
-                            "Remote trash deletion queued (${items.size} item(s) at listing time); " +
-                                "the provider deletes in the background and the quota follows when it finishes.",
-                        )
-                }
+                RemotePurgeResult.Emptied(items.size, provider.emptyTrash())
             } else {
                 val selected = select(items)
                 requireConsent("Purge ${selected.size} item(s) FOR GOOD from the provider's remote trash? This cannot be undone.")
                 provider.purgeTrash(selected)
-                println("Purged ${selected.size} item(s) from the remote trash.")
+                RemotePurgeResult.Purged(selected.size)
             }
-            0
         }
-    }
 
     /** The items the requested ids and names name; each request must name exactly one item of the trash. */
     private fun select(items: List<TrashItem>): List<TrashItem> {
@@ -267,8 +285,9 @@ class TrashPurgeCommand : Callable<Int> {
     /** The ask, on the console; `--yes` skips it and a non-terminal run without `--yes` is refused. */
     private fun requireConsent(question: String) {
         if (yes) return
+        // A JSON caller is a script: stdout carries one object, so there is no prompt to answer.
         val confirm =
-            console() ?: throw LifecycleError(
+            (if (json) null else console()) ?: throw LifecycleError(
                 "confirmation_required",
                 "purging the remote trash needs a confirmation: run this on a console, or pass --yes",
             )
@@ -283,8 +302,12 @@ class TrashPurgeCommand : Callable<Int> {
  */
 private fun <T> withRemoteTrashProvider(
     main: Main,
+    // A JSON caller gets the profile's refusals typed (config_not_found, profile_not_found, ...) instead of the
+    // console's exit; the console path keeps its wording.
+    resolveFirst: Boolean = false,
     block: suspend (CloudProvider) -> T,
 ): T {
+    if (resolveFirst) resolveProfileTarget(main, null)
     val provider = main.createProvider()
     return try {
         runBlocking {
@@ -295,7 +318,11 @@ private fun <T> withRemoteTrashProvider(
     } catch (e: AuthenticationException) {
         throw LifecycleError("auth_required", "profile is not signed in; run `unidrive auth`", e)
     } catch (e: ProviderException) {
-        throw LifecycleError("remote_trash_failed", "the provider's trash could not be read or purged: ${e.message}", e)
+        throw LifecycleError(
+            if (unreachableCause(e) != null) "network_error" else "remote_trash_failed",
+            "the provider's trash could not be read or purged: ${e.message}",
+            e,
+        )
     } finally {
         provider.close()
     }
@@ -309,5 +336,97 @@ private fun requireRemoteTrash(provider: CloudProvider) {
             "the provider of this profile does not expose its trash to unidrive (no remote-trash capability); " +
                 "empty it in the provider's own app",
         )
+    }
+}
+
+/**
+ * The JSON reply of a `trash --remote --json` verb: [block]'s object and exit 0, or a refusal in the lifecycle shape
+ * and exit 1, like `rm --json`. Whatever else goes wrong is still one JSON refusal: `network_error` when the provider
+ * could not be reached, else `internal_error` worded by the exception's type only (its message could quote a response).
+ */
+@Suppress("TooGenericExceptionCaught")
+private fun jsonReply(block: () -> JsonObject): Int =
+    try {
+        emitJson(block())
+        0
+    } catch (e: LifecycleError) {
+        emitJson(lifecycleErrorJson(e))
+        1
+    } catch (e: Exception) {
+        val refusal = unreachableRefusal(e) ?: LifecycleError("internal_error", "unexpected failure: ${e.javaClass.simpleName}")
+        emitJson(lifecycleErrorJson(refusal))
+        1
+    }
+
+/** `trash list --remote --json`: the items, their count and the bytes of the files whose size the provider reports. */
+internal fun remoteTrashListJson(items: List<TrashItem>): JsonObject =
+    buildJsonObject {
+        putJsonArray("items") {
+            for (item in items) {
+                addJsonObject {
+                    put("id", item.id)
+                    put("kind", if (item.isFolder) "folder" else "file")
+                    put("name", item.name)
+                    put("size_bytes", item.sizeBytes)
+                    put("deleted_at_ms", item.deletedAtMs)
+                }
+            }
+        }
+        put("count", items.size)
+        put("file_bytes", items.filter { !it.isFolder }.sumOf { it.sizeBytes ?: 0L })
+    }
+
+/** What `trash purge --remote` did, for the console line and the JSON reply. */
+internal sealed class RemotePurgeResult {
+    abstract fun consoleLine(): String
+
+    abstract fun json(): JsonObject
+
+    /**
+     * `--all`: [count] items were in the trash at listing time. A provider that only enqueued the deletion
+     * ([TrashEmptyOutcome.Queued]) stopped before deleting anything inline, so the JSON reply is `partial` with the
+     * listed items still `remaining` and `queued` true; the quota follows when the provider finishes.
+     */
+    class Emptied(
+        val count: Int,
+        val outcome: TrashEmptyOutcome,
+    ) : RemotePurgeResult() {
+        override fun consoleLine(): String =
+            when (outcome) {
+                TrashEmptyOutcome.Completed -> "Remote trash emptied ($count item(s))."
+                TrashEmptyOutcome.Queued ->
+                    "Remote trash deletion queued ($count item(s) at listing time); " +
+                        "the provider deletes in the background and the quota follows when it finishes."
+            }
+
+        override fun json(): JsonObject =
+            buildJsonObject {
+                put("ok", true)
+                when (outcome) {
+                    TrashEmptyOutcome.Completed -> {
+                        put("result", "emptied")
+                        put("count", count)
+                    }
+                    TrashEmptyOutcome.Queued -> {
+                        put("result", "partial")
+                        put("remaining", count)
+                        put("queued", true)
+                    }
+                }
+            }
+    }
+
+    /** `--id`/`--path`: [count] selected items were purged. */
+    class Purged(
+        val count: Int,
+    ) : RemotePurgeResult() {
+        override fun consoleLine(): String = "Purged $count item(s) from the remote trash."
+
+        override fun json(): JsonObject =
+            buildJsonObject {
+                put("ok", true)
+                put("result", "purged")
+                put("count", count)
+            }
     }
 }
