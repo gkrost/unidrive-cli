@@ -350,6 +350,8 @@ ipcServer.registerConnectionCloseListener { connId ->
 }
 ```
 
+The sync socket appears only after sign-in succeeded (gkrost/unidrive-cli#442): `sync.subscribe` is registered before the bind, but the bind itself follows `authenticateAndLog()`. A client that connects early therefore finds no socket, and a missing socket during sign-in means "starting" or "sign-in failed", not necessarily "not running"; progress the run reports before the bind reaches no subscriber.
+
 ### 3.4 IpcProgressReporter changes
 
 **None.** `IpcProgressReporter.emit(...)` (`IpcProgressReporter.kt:23`) still calls `server.emit(json.toString())`. The broadcast loop's subscriber-set filter (§3.2.5) silently gates the fanout. The Reporter doesn't know or care; its call sites in `SyncEngine` don't change.
