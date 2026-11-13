@@ -2347,7 +2347,7 @@ class MountEngine private constructor(
     // same test as SyncEngine.stagedLocalHash, gkrost/unidrive-cli#410: a same-size write leaves the size alone, so the size
     // alone proves nothing); a receipt without a staged mtime, any other copy, and a receipt without a hash are read and hashed
     // as before. The stat guard of Transfers.withLocalHash then drops either hash if the copy changed meanwhile.
-    private fun withDownloadedHash(
+    internal fun withDownloadedHash(
         entry: SyncEntry,
         local: Path,
         stats: Pair<Long, Long>,
@@ -2370,7 +2370,7 @@ class MountEngine private constructor(
     }
 
     // gkrost/unidrive-cli#438: the SHA-256 of the staged bytes, read before the swap lock, with the stats they had.
-    private class StagedHash(
+    internal class StagedHash(
         val sha256: String,
         val mtime: Long,
         val size: Long,
