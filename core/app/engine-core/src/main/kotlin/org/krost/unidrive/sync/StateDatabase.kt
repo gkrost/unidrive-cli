@@ -2454,10 +2454,10 @@ class StateDatabase(
     fun nameBlock(pathRaw: String): NameBlock? =
         read("nameBlock") { c ->
             val path = PathNormalizer.nfc(pathRaw)
-            c.prepareStatement("SELECT name_block FROM alive_entries WHERE path=?").use { stmt ->
+            // windows#454 item 14: asked per item on the gather's hot path (RemoteGather): the statement is cached.
+            c.cached(NAME_BLOCK_SQL) { stmt ->
                 stmt.setString(1, path)
-                val rs = stmt.executeQuery()
-                return if (rs.next()) rs.getString(1)?.let { parseNameBlock(it) } else null
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1)?.let { parseNameBlock(it) } else null }
             }
         }
 
@@ -2495,11 +2495,10 @@ class StateDatabase(
      */
     fun countNameBlocked(reasonPrefix: String): Int =
         read("countNameBlocked") { c ->
-            c.prepareStatement("SELECT COUNT(*) FROM alive_entries WHERE name_block IS NOT NULL AND substr(name_block, 1, length(?)) = ?").use { stmt ->
+            c.cached(COUNT_NAME_BLOCKED_SQL) { stmt ->
                 stmt.setString(1, reasonPrefix)
                 stmt.setString(2, reasonPrefix)
-                val rs = stmt.executeQuery()
-                return if (rs.next()) rs.getInt(1) else 0
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
             }
         }
 
@@ -2507,17 +2506,11 @@ class StateDatabase(
     fun blockedAncestor(pathRaw: String): String? =
         read("blockedAncestor") { c ->
             val path = PathNormalizer.nfc(pathRaw)
-            c
-                .prepareStatement(
-                    "SELECT path FROM alive_entries WHERE name_block IS NOT NULL AND is_folder=1 " +
-                        "AND length(path) < length(?) AND substr(?, 1, length(path) + 1) = path || '/' " +
-                        "ORDER BY length(path) DESC LIMIT 1",
-                ).use { stmt ->
-                    stmt.setString(1, path)
-                    stmt.setString(2, path)
-                    val rs = stmt.executeQuery()
-                    return if (rs.next()) rs.getString(1) else null
-                }
+            c.cached(BLOCKED_ANCESTOR_SQL) { stmt ->
+                stmt.setString(1, path)
+                stmt.setString(2, path)
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
         }
 
     private fun parseNameBlock(stored: String): NameBlock =
@@ -3828,6 +3821,12 @@ class StateDatabase(
         // The SQL of the calls that go through [cached]; the text is the cache key.
         private const val GET_ENTRY_SQL = "SELECT * FROM alive_entries WHERE path = ?"
         private const val GET_ENTRY_BY_REMOTE_ID_SQL = "SELECT * FROM alive_entries WHERE remote_id = ?"
+        private const val NAME_BLOCK_SQL = "SELECT name_block FROM alive_entries WHERE path=?"
+        private const val COUNT_NAME_BLOCKED_SQL = "SELECT COUNT(*) FROM alive_entries WHERE name_block IS NOT NULL AND substr(name_block, 1, length(?)) = ?"
+        private const val BLOCKED_ANCESTOR_SQL =
+            "SELECT path FROM alive_entries WHERE name_block IS NOT NULL AND is_folder=1 " +
+                "AND length(path) < length(?) AND substr(?, 1, length(path) + 1) = path || '/' " +
+                "ORDER BY length(path) DESC LIMIT 1"
         private const val GET_SYNC_STATE_SQL = "SELECT value FROM sync_state WHERE key = ?"
         private const val SET_SYNC_STATE_SQL = "INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)"
 

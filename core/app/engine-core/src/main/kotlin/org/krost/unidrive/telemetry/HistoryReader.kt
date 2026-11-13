@@ -1,10 +1,8 @@
 package org.krost.unidrive.telemetry
 
 import org.slf4j.LoggerFactory
-import org.sqlite.SQLiteConfig
 import java.nio.file.Path
 import java.sql.Connection
-import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.sql.SQLException
 import java.util.Base64
@@ -83,11 +81,10 @@ class HistoryReader internal constructor(
     @Synchronized
     private fun connection(): Connection {
         conn?.let { if (!it.isClosed) return it }
-        val config = SQLiteConfig().apply {
-            setReadOnly(true)
-            setBusyTimeout(BUSY_TIMEOUT_MS)
-        }
-        val opened = DriverManager.getConnection("jdbc:sqlite:$dbPath", config.toProperties())
+        // windows#454 item 17: the shared connector opens the file by URI (a raw jdbc path breaks on a "?" in a
+        // Linux path, where the driver starts reading pragmas), and the reader then sets query_only itself.
+        val opened = org.krost.unidrive.sync.JdbcStateDatabaseConnector.openReadOnly(dbPath)
+        opened.createStatement().use { it.execute("PRAGMA query_only=1") }
         conn = opened
         return opened
     }
@@ -210,7 +207,6 @@ class HistoryReader internal constructor(
     }
 
     companion object {
-        private const val BUSY_TIMEOUT_MS = 5_000
         private val log = LoggerFactory.getLogger(HistoryReader::class.java)
     }
 }
