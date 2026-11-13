@@ -17,6 +17,10 @@ import org.krost.unidrive.io.withLocalIoRetry
 private const val CHUNKED_UPLOAD_THRESHOLD = 4L * 1024 * 1024
 private const val MAX_FOLDER_CHAIN = 256
 
+// The folders [OneDriveProvider] keeps between delta pages; past this many it starts over (a bound on memory, not a limit
+// on the walk: a folder it no longer holds is asked for again).
+private const val MAX_KNOWN_FOLDERS = 100_000
+
 class OneDriveProvider(
     internal val config: OneDriveConfig = OneDriveConfig(),
     // Tests hand in a MockEngine for the Graph calls; production lets Ktor pick the engine.
@@ -42,6 +46,13 @@ class OneDriveProvider(
     override fun skippedEntries(): org.krost.unidrive.SkippedEntries =
         org.krost.unidrive.SkippedEntries(vaultSkips.get(), packageSkips.get())
     private val loggedPackageIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    // The folders delta pages and id lookups showed, by id, kept across the pages of a walk and across walks: a drive
+    // that sends no parentReference.path (Business, SharePoint) placed every page's items through one GET per parent
+    // folder not in that page, again on every page (#453). A folder is kept as its item (name and parent id), never as a
+    // path: a later page that renames or moves it replaces the item, and its descendants' paths follow at once. A
+    // folder tombstone removes it.
+    private val knownFolders = java.util.concurrent.ConcurrentHashMap<String, DriveItem>()
 
     private val graphApi =
         graphApi ?: GraphApiService(config, engine = engine) { forceRefresh, rejectedToken ->
@@ -815,6 +826,8 @@ class OneDriveProvider(
         // staging slice is therefore redundant here; only ScanContext.readOnly is
         // honoured (a preview must not stamp delta_last_seen). See CloudProvider.kt
         // for the contract.
+        // A walk from the start sends every folder again: nothing a skipped stretch of the change feed renamed survives.
+        if (cursor == null) knownFolders.clear()
         val result = getDeltaConverting410(cursor, readOnly = scanContext?.readOnly == true)
         val visibleItems =
             result.items
@@ -867,6 +880,8 @@ class OneDriveProvider(
 
     override suspend fun deltaFromLatest(scanContext: org.krost.unidrive.ScanContext?): CapabilityResult<DeltaPage> {
         // A preview's bootstrap must not stamp delta_last_seen — same readOnly contract as delta().
+        // From the latest token on, the changes before it are never seen: a folder kept from earlier may be renamed there.
+        knownFolders.clear()
         val result = graphApi.getDelta(fromLatest = true, readOnly = scanContext?.readOnly == true)
         val items = placed(result.items.filterNot { it.isRootItem() || noteAndSkipPackage(it) }, known = result.items)
         return CapabilityResult.Success(
@@ -888,6 +903,7 @@ class OneDriveProvider(
                 "includeShared is disabled in provider config",
             )
         }
+        if (cursor == null) knownFolders.clear()
         val result = getDeltaConverting410(cursor)
 
         val mainItems =
@@ -1020,8 +1036,14 @@ class OneDriveProvider(
         items: List<DriveItem>,
         known: List<DriveItem>,
     ): List<CloudItem> {
-        val folders = HashMap<String, DriveItem>()
-        for (item in known) if (!item.isTombstone() && (item.isFolder || item.root != null)) folders[item.id] = item
+        if (knownFolders.size > MAX_KNOWN_FOLDERS) knownFolders.clear()
+        for (item in known) {
+            when {
+                item.isTombstone() -> knownFolders.remove(item.id)
+                item.isFolder || item.root != null -> knownFolders[item.id] = item
+            }
+        }
+        val folders = knownFolders
         val resolved = HashMap<String, String?>()
         val placedItems = ArrayList<CloudItem>(items.size)
         for (item in items) {
@@ -1040,10 +1062,11 @@ class OneDriveProvider(
         return placedItems
     }
 
-    // The path of the folder [id], or null when it is gone (404). [resolved] remembers every answer for the page.
+    // The path of the folder [id], or null when it is gone (404). [resolved] remembers every answer for the page; a folder
+    // asked for by id joins [folders] for later pages.
     private suspend fun folderPath(
         id: String,
-        folders: Map<String, DriveItem>,
+        folders: MutableMap<String, DriveItem>,
         resolved: MutableMap<String, String?>,
         depth: Int,
     ): String? {
@@ -1051,9 +1074,10 @@ class OneDriveProvider(
         if (depth > MAX_FOLDER_CHAIN) throw ProviderException("The OneDrive folder chain above '$id' is longer than $MAX_FOLDER_CHAIN levels or loops")
         val folder =
             folders[id] ?: try {
-                graphApi.getItemById(id)
+                graphApi.getItemById(id).also { if (it.isFolder || it.root != null) folders[id] = it }
             } catch (e: GraphApiException) {
                 if (e.statusCode == 404) {
+                    folders.remove(id)
                     resolved[id] = null
                     return null
                 }
@@ -1066,7 +1090,7 @@ class OneDriveProvider(
 
     private suspend fun pathOfFolder(
         folder: DriveItem,
-        folders: Map<String, DriveItem>,
+        folders: MutableMap<String, DriveItem>,
         resolved: MutableMap<String, String?>,
         depth: Int,
     ): String? {
