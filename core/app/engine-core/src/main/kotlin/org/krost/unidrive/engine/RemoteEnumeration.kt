@@ -116,6 +116,9 @@ class RemoteEnumeration(
     // CAS is a no-op (skipped=true).
     internal val enumerateInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    // gkrost/unidrive-cli#442: the flag together with the pass that holds it, for a caller that meets the pass and waits for it.
+    private val passes = PassGate(enumerateInFlight)
+
     // Paths a prior COMPLETE enumeration flagged missing-but-deferred under the
     // bulk-disappearance corroboration guard (mount-view-refresh-design.md §3.2).
     // Carried in-memory across enumerations on a long-lived daemon engine; a path
@@ -139,18 +142,24 @@ class RemoteEnumeration(
      * delete, and NEVER evaluates the empty-sync_root / max_delete_* guards. Remote-observed
      * deletions flip state.db rows only on a COMPLETE enumeration (see reaping below). See
      * docs/dev/specs/mount-view-refresh-design.md.
+     *
+     * gkrost/unidrive-cli#442: with [joinWaitMs] set, a caller that loses the single-flight flag to a running pass waits for
+     * that pass and answers its outcome (a failure included), not `skipped`: the view the caller promises is then the one
+     * the pass wrote, not the one it was still writing. The pass is the one the caller lost to, taken in the same step as the
+     * flag, so one that ends (or fails) before the wait starts still answers its own result. The wait ends after [joinWaitMs]
+     * with a failure (the pass goes on), so it does not hold what the caller holds for a pass that never ends. A flag held by
+     * something that is no pass (the gone-folder tombstone) answers `skipped` either way.
      */
-    suspend fun enumerate(reset: Boolean): EnumerateResult {
+    suspend fun enumerate(
+        reset: Boolean,
+        joinWaitMs: Long? = null,
+    ): EnumerateResult {
         // Single-flight: a caller that loses the CAS returns immediately as a no-op so
         // it can never run a concurrent pass against the same engine/DB state (cursor
         // promotion, corroboration). The winning pass is already refreshing the view.
-        if (!enumerateInFlight.compareAndSet(false, true)) {
-            return EnumerateResult(ok = true, skipped = true)
-        }
-        return try {
-            enumerateRemoteIntoStateLocked(reset)
-        } finally {
-            enumerateInFlight.set(false)
+        return when (val claim = passes.claim()) {
+            is PassGate.Claim.Won -> passes.runClaimed(claim.pass) { enumerateRemoteIntoStateLocked(reset) }
+            is PassGate.Claim.Lost -> if (joinWaitMs == null) EnumerateResult(ok = true, skipped = true) else passes.join(claim, joinWaitMs)
         }
     }
 
@@ -315,7 +324,7 @@ class RemoteEnumeration(
         db.setSyncState(FULL_ENUMERATION_MS_KEY, listingMs.toString())
     }
 
-    @Suppress("CyclomaticComplexMethod") // The enumeration phases and their recovery guards run in one ordered transaction flow.
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "NestedBlockDepth") // The enumeration phases and their recovery guards run in one ordered transaction flow.
     private suspend fun runEnumeration(reset: Boolean): EnumerateResult {
         // reset clears only delta_cursor (NOT db.resetAll) so a gather that then fails never
         // leaves the mount serving an empty view. A reset forces a full re-enumeration whose
@@ -415,63 +424,69 @@ class RemoteEnumeration(
         for (old in merges.flatMap { it.replaced }) dropReplacedCacheCopy(old, reapGuards, log)
         // The reap needs the merge committed and runs as its own transaction; a crash
         // between the chunks and this batch leaves the reap to the next enumeration.
-        db.batch {
-            if (complete) {
-                // Reap ONLY on a complete enumeration (spec §3.1). The deleted items are
-                // already present in remoteChanges: RemoteGather.gather runs
-                // detectMissingAfterFullSync on a full (cursor-null) gather, injecting
-                // deleted=true CloudItems for DB rows absent from the live set; incremental
-                // gathers carry provider tombstones the same way. updateRemoteEntries skips
-                // them, so we flip state.db here directly — never via provider.delete.
-                val missingNow = remoteChanges.filterValues { it.deleted }.keys
-                val bulk = missingNow.size > bulkThreshold
-                val corroborated = if (bulk) missingNow.intersect(deferredMissing) else missingNow
-                // archive#1033: the key of a tombstone is the item's REMOTE path and its row can live under another local path.
-                // A tombstone no row belongs to reaps nothing and is not counted.
-                val toReap = corroborated.asSequence().mapNotNull { path -> rowOfTombstone(db, path)?.let { path to it } }
-                for ((path, row) in toReap) {
-                    // archive#301: refuse to reap a path whose hydration cache may hold the
-                    // only copy of user bytes. A queued or in-flight upload means an
-                    // edit written through the mount has not landed yet; a cache file
-                    // newer than the row's last-synced watermark means the same for an
-                    // edit whose upload crashed or failed (the co-daemon's recovery
-                    // scanner replays exactly this watermark). Deleting the cache in
-                    // that window destroyed the bytes everywhere — the upload then hit
-                    // a missing cache path, and the remote copy (if any) was stale.
-                    // Defer the whole reap: the row stays alive and the next complete
-                    // enumeration re-evaluates once the upload has landed (or failed).
-                    // A row whose path does not resolve inside the cache has no cache copy to
-                    // protect or evict: its cache side is skipped (logged once), the row is reaped.
-                    val cachePath = CachePaths.forRow(row.path, log, reapGuards.cachePathOf)
-                    if (reapGuards.holdsUnsyncedEdit(row.path, row)) {
-                        // The daemon enumerates every poll interval: warn once per path, not once per poll.
-                        val msg = "enumerate: deferring reap of {} — its hydration cache may hold the only copy of an un-uploaded edit"
-                        if (deferredReapWarned.add(path)) log.warn(msg, path) else log.debug(msg, path)
-                        continue
-                    }
-                    deferredReapWarned.remove(path)
-                    db.markDeleted(row.path)
-                    if (cachePath != null) {
-                        cacheEvictions.add(
-                            Triple(row.path, cachePath, runCatching { Files.getLastModifiedTime(cachePath).toMillis() }.getOrNull()),
-                        )
-                    }
-                    reapedViewPaths.add(applyReverseTop(row.path, canonicalToLocalTop))
-                    reaped++
+        if (complete) {
+            // Reap ONLY on a complete enumeration (spec §3.1). The deleted items are
+            // already present in remoteChanges: RemoteGather.gather runs
+            // detectMissingAfterFullSync on a full (cursor-null) gather, injecting
+            // deleted=true CloudItems for DB rows absent from the live set; incremental
+            // gathers carry provider tombstones the same way. updateRemoteEntries skips
+            // them, so we flip state.db here directly — never via provider.delete.
+            val missingNow = remoteChanges.filterValues { it.deleted }.keys
+            val bulk = missingNow.size > bulkThreshold
+            val corroborated = if (bulk) missingNow.intersect(deferredMissing) else missingNow
+            // archive#1033: the key of a tombstone is the item's REMOTE path and its row can live under another local path.
+            // A tombstone no row belongs to reaps nothing and is not counted.
+            // windows#454 item 9: the per-row lookups and the file-stat guards run BEFORE any write transaction, and
+            // the flips go through markDeletedChunked — a large reap no longer holds the monitor and every writer
+            // behind it for one unbounded transaction (the merge was chunked for the same reason, archive#147).
+            val rows = mutableListOf<Pair<String, SyncEntry>>()
+            val snapshots = mutableMapOf<String, Triple<String, Path, Long?>>()
+            for (path in corroborated) {
+                val row = rowOfTombstone(db, path) ?: continue
+                val snapshot = cacheEvictionSnapshot(row.path, reapGuards, log)
+                // archive#301: refuse to reap a path whose hydration cache may hold the
+                // only copy of user bytes. A queued or in-flight upload means an
+                // edit written through the mount has not landed yet; a cache file
+                // newer than the row's last-synced watermark means the same for an
+                // edit whose upload crashed or failed (the co-daemon's recovery
+                // scanner replays exactly this watermark). Deleting the cache in
+                // that window destroyed the bytes everywhere — the upload then hit
+                // a missing cache path, and the remote copy (if any) was stale.
+                // Defer the whole reap: the row stays alive and the next complete
+                // enumeration re-evaluates once the upload has landed (or failed).
+                // A row whose path does not resolve inside the cache has no cache copy to
+                // protect or evict: its cache side is skipped (logged once), the row is reaped.
+                if (reapGuards.holdsUnsyncedEdit(row.path, row)) {
+                    // The daemon enumerates every poll interval: warn once per path, not once per poll.
+                    val msg = "enumerate: deferring reap of {} — its hydration cache may hold the only copy of an un-uploaded edit"
+                    if (deferredReapWarned.add(path)) log.warn(msg, path) else log.debug(msg, path)
+                    continue
                 }
-                if (bulk) {
-                    val deferred = missingNow - corroborated
-                    nextDeferred = missingNow
-                    if (deferred.isNotEmpty()) {
-                        reapsDeferred = true
-                        log.warn(
-                            "enumerate: bulk disappearance ({} paths > threshold {}); " +
-                                "deferring {} uncorroborated path(s) to the next complete enumeration",
-                            missingNow.size,
-                            bulkThreshold,
-                            deferred.size,
-                        )
-                    }
+                deferredReapWarned.remove(path)
+                rows += path to row
+                if (snapshot != null) snapshots[row.path] = snapshot
+            }
+            val reapedPaths = db.markDeletedChunked(
+                rows.map { it.second.path }, expectedRows = rows.associate { it.second.path to it.second },
+            ).toHashSet()
+            for ((_, row) in rows) {
+                if (row.path !in reapedPaths) continue
+                snapshots[row.path]?.let(cacheEvictions::add)
+                reapedViewPaths.add(applyReverseTop(row.path, canonicalToLocalTop))
+                reaped++
+            }
+            if (bulk) {
+                val deferred = missingNow - corroborated
+                nextDeferred = missingNow
+                if (deferred.isNotEmpty()) {
+                    reapsDeferred = true
+                    log.warn(
+                        "enumerate: bulk disappearance ({} paths > threshold {}); " +
+                            "deferring {} uncorroborated path(s) to the next complete enumeration",
+                        missingNow.size,
+                        bulkThreshold,
+                        deferred.size,
+                    )
                 }
             }
         }
@@ -581,6 +596,9 @@ class RemoteEnumeration(
 
     companion object {
         private const val CAUSE_DEPTH = 8
+
+        // gkrost/unidrive-cli#442: how long a refresh that met a running pass waits for it (see enumerateOrJoin).
+        const val JOIN_MAX_WAIT_MS: Long = 600_000
         // archive#517 R3: sync_state key counting consecutive enumerations that ended in a
         // provider failure. The daemon's enumerate poller seeds its backoff from it
         // at start, so a restart into a known-bad remote doesn't re-run the doomed
@@ -609,6 +627,15 @@ class RemoteEnumeration(
     }
 }
 
+// Take the snapshot before the safety check: a later write must not become the baseline for eviction.
+internal fun cacheEvictionSnapshot(
+    path: String,
+    guards: RemoteEnumeration.ReapGuards,
+    log: Logger,
+): Triple<String, Path, Long?>? = CachePaths.forRow(path, log, guards.cachePathOf)?.let { cache ->
+    Triple(path, cache, runCatching { Files.getLastModifiedTime(cache).toMillis() }.getOrNull())
+}
+
 // archive#149: the cache copies of reaped rows go after the batch commits — a filesystem delete is a non-transactional side effect
 // and must not lengthen the SQLite lock window (errors swallowed: the row flip is the truth and the cache copy is a
 // disk-space concern). The lock window is gone, so a hydration write may have recreated the path in between (archive#301 class):
@@ -620,8 +647,9 @@ internal fun evictCacheCopies(
 ) {
     for ((path, cachePath, mtimeAtReap) in cacheEvictions) {
         runCatching {
+            if (mtimeAtReap == null || reapGuards.uploadInFlight(path)) return@runCatching
             val unchanged = runCatching { Files.getLastModifiedTime(cachePath).toMillis() }.getOrNull() == mtimeAtReap
-            if (!reapGuards.uploadInFlight(path) && unchanged) {
+            if (unchanged) {
                 Files.deleteIfExists(cachePath)
                 if (!Files.exists(cachePath)) reapGuards.onCacheCopyDropped(path)
             }

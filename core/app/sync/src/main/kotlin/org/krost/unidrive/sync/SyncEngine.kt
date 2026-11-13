@@ -793,6 +793,8 @@ open class SyncEngine(
      */
     override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult = enumeration.enumerate(reset)
 
+    override suspend fun enumerateOrJoin(reset: Boolean): EnumerateResult = enumeration.enumerate(reset, RemoteEnumeration.JOIN_MAX_WAIT_MS)
+
     // Thread confinement (concurrency audit): one sync pass keeps its run state in PLAIN collections —
     // `changes`, `safeAccumulator` and `deferredSlices` in the streaming gather, `appliedCounts` in the
     // apply loop, `remoteTopLevelByName` below. They are safe only because every caller runs a pass
@@ -1896,109 +1898,21 @@ open class SyncEngine(
                     // file-locked-by-prior-write race.
                     if (action.path in executedPaths) continue
                     when (action) {
-                        is SyncAction.DownloadContent -> {
+                        is SyncAction.DownloadContent, is SyncAction.Upload -> {
                             workers.launch {
                                 withContext(Priority.Foreground) {
                                     // Reserve the shared budget first: the wait for this transfer's line
                                     // slot runs while no permit is held (see [BandwidthPacer]).
                                     paced(transferBytes(action), transferSemaphore) {
                                         try {
-                                            applyDownload(action)
-                                            downloaded.incrementAndGet()
-                                        } catch (e: AuthenticationException) {
-                                            // UD-253: include exception class + full stack.
-                                            log.error(
-                                                "Authentication failed during download of {}: {}: {}",
-                                                action.path,
-                                                e.javaClass.simpleName,
-                                                e.message,
-                                                e,
+                                            runTransfer(
+                                                action = action,
+                                                streaming = false,
+                                                succeeded = if (action is SyncAction.Upload) uploaded else downloaded,
+                                                transferFailures = transferFailures,
+                                                authFailure = authFailure,
+                                                stopPass = { this@coroutineScope.cancel() },
                                             )
-                                            restoreToPlaceholder(action.path, action.remoteItem)
-                                            transferFailures.incrementAndGet()
-                                            authFailure.compareAndSet(null, e)
-                                            this@coroutineScope.cancel()
-                                        } catch (e: CancellationException) {
-                                            restoreToPlaceholder(action.path, action.remoteItem)
-                                            throw e
-                                        } catch (e: PermanentDownloadFailureException) {
-                                            handlePermanentDownloadFailure(action, e)
-                                            transferFailures.incrementAndGet()
-                                        } catch (e: Exception) {
-                                            // archive#530: one WARN line, the stack trace at DEBUG.
-                                            log.warn(
-                                                "Download failed for {}: {}: {}",
-                                                action.path,
-                                                e.javaClass.simpleName,
-                                                e.message,
-                                            )
-                                            log.debug(
-                                                "Download failed for {}: {}: {}",
-                                                action.path,
-                                                e.javaClass.simpleName,
-                                                e.message,
-                                                e,
-                                            )
-                                            reporter.onWarning("Failed: ${action.path} - ${e.message}")
-                                            logFailure(action, e)
-                                            restoreToPlaceholder(action.path, action.remoteItem)
-                                            transferFailures.incrementAndGet()
-                                        } finally {
-                                            reporter.onActionProgress(
-                                                completedActions.incrementAndGet(),
-                                                actions.size,
-                                                actionLabel(action),
-                                                displayPath(action),
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        is SyncAction.Upload -> {
-                            workers.launch {
-                                withContext(Priority.Foreground) {
-                                    // Reserve the shared budget first: the wait for this transfer's line
-                                    // slot runs while no permit is held (see [BandwidthPacer]).
-                                    paced(transferBytes(action), transferSemaphore) {
-                                        try {
-                                            applyUpload(action)
-                                            uploaded.incrementAndGet()
-                                        } catch (e: AuthenticationException) {
-                                            // UD-253: include exception class + full stack.
-                                            log.error(
-                                                "Authentication failed during upload of {}: {}: {}",
-                                                action.path,
-                                                e.javaClass.simpleName,
-                                                e.message,
-                                                e,
-                                            )
-                                            transferFailures.incrementAndGet()
-                                            authFailure.compareAndSet(null, e)
-                                            this@coroutineScope.cancel()
-                                        } catch (e: CancellationException) {
-                                            throw e
-                                        } catch (e: PermanentUploadFailureException) {
-                                            handlePermanentUploadFailure(action, e)
-                                            transferFailures.incrementAndGet()
-                                        } catch (e: Exception) {
-                                            // archive#530: one WARN line, the stack trace at DEBUG.
-                                            log.warn(
-                                                "Upload failed for {}: {}: {}",
-                                                action.path,
-                                                e.javaClass.simpleName,
-                                                e.message,
-                                            )
-                                            log.debug(
-                                                "Upload failed for {}: {}: {}",
-                                                action.path,
-                                                e.javaClass.simpleName,
-                                                e.message,
-                                                e,
-                                            )
-                                            reporter.onWarning("Failed: ${action.path} - ${e.message}")
-                                            logFailure(action, e)
-                                            transferFailures.incrementAndGet()
                                         } finally {
                                             reporter.onActionProgress(
                                                 completedActions.incrementAndGet(),
@@ -2171,9 +2085,9 @@ open class SyncEngine(
         return out
     }
 
-    private suspend fun dispatchStreamingDownload(
-        action: SyncAction.DownloadContent,
-        downloaded: AtomicInteger,
+    private suspend fun dispatchStreamingTransfer(
+        action: SyncAction,
+        succeeded: AtomicInteger,
         transferFailures: AtomicInteger,
         authFailure: java.util.concurrent.atomic.AtomicReference<AuthenticationException?>,
         executedPaths: MutableSet<String>,
@@ -2184,118 +2098,84 @@ open class SyncEngine(
             // Reserve the shared budget first: the wait for this transfer's line
             // slot runs while no permit is held (see [BandwidthPacer]).
             paced(transferBytes(action), transferSemaphore) {
-                try {
-                    applyDownload(action)
-                    downloaded.incrementAndGet()
-                    executedPaths.add(action.path)
-                } catch (e: AuthenticationException) {
-                    log.error(
-                        "Authentication failed during streaming download of {}: {}: {}",
-                        action.path,
-                        e.javaClass.simpleName,
-                        e.message,
-                        e,
-                    )
-                    restoreToPlaceholder(action.path, action.remoteItem)
-                    transferFailures.incrementAndGet()
-                    executedPaths.add(action.path)
-                    authFailure.compareAndSet(null, e)
-                    gatherScope.cancel()
-                } catch (e: CancellationException) {
-                    restoreToPlaceholder(action.path, action.remoteItem)
-                    throw e
-                } catch (e: PermanentDownloadFailureException) {
-                    handlePermanentDownloadFailure(action, e)
-                    transferFailures.incrementAndGet()
-                    executedPaths.add(action.path)
-                } catch (e: Exception) {
-                    // archive#530: one WARN line, the stack trace at DEBUG.
-                    log.warn(
-                        "Streaming download failed for {}: {}: {}",
-                        action.path,
-                        e.javaClass.simpleName,
-                        e.message,
-                    )
-                    log.debug(
-                        "Streaming download failed for {}: {}: {}",
-                        action.path,
-                        e.javaClass.simpleName,
-                        e.message,
-                        e,
-                    )
-                    reporter.onWarning("Failed: ${action.path} - ${e.message}")
-                    logFailure(action, e)
-                    restoreToPlaceholder(action.path, action.remoteItem)
-                    transferFailures.incrementAndGet()
-                    // UD-225 recovery picks failed downloads up on the next
-                    // pass; mark executed so Pass 2 of *this* run doesn't
-                    // double-dispatch.
-                    executedPaths.add(action.path)
-                }
+                runTransfer(
+                    action = action,
+                    streaming = true,
+                    succeeded = succeeded,
+                    transferFailures = transferFailures,
+                    authFailure = authFailure,
+                    stopPass = { gatherScope.cancel() },
+                    // UD-225 / UD-901: recovery picks a failed transfer up on the next pass; marking it executed
+                    // keeps Pass 2 of *this* run from dispatching it a second time. A cancelled one is not marked.
+                    settled = { executedPaths.add(action.path) },
+                )
             }
         }
     }
 
-    private suspend fun dispatchStreamingUpload(
-        action: SyncAction.Upload,
-        uploaded: AtomicInteger,
+    /**
+     * The one catch ladder of a transfer, for Pass 2 and the streaming executor, download and upload, so that a fix to
+     * one outcome cannot miss a copy. A success counts into [succeeded]. An auth failure is recorded in [authFailure]
+     * (the first one wins) and ends the pass through [stopPass]. A cancel puts a download back to its placeholder and is
+     * rethrown, never counted. A permanent refusal goes to its handler; any other failure is logged and recorded and,
+     * for a download, puts the placeholder back. Every outcome but a cancel runs [settled].
+     */
+    private suspend fun runTransfer(
+        action: SyncAction,
+        streaming: Boolean,
+        succeeded: AtomicInteger,
         transferFailures: AtomicInteger,
         authFailure: java.util.concurrent.atomic.AtomicReference<AuthenticationException?>,
-        executedPaths: MutableSet<String>,
-        gatherScope: kotlinx.coroutines.CoroutineScope,
-        transferSemaphore: kotlinx.coroutines.sync.Semaphore,
+        stopPass: () -> Unit,
+        settled: () -> Unit = {},
     ) {
-        withContext(Priority.Foreground) {
-            // Reserve the shared budget first: the wait for this transfer's line
-            // slot runs while no permit is held (see [BandwidthPacer]).
-            paced(transferBytes(action), transferSemaphore) {
-                try {
-                    applyUpload(action)
-                    uploaded.incrementAndGet()
-                    executedPaths.add(action.path)
-                } catch (e: AuthenticationException) {
-                    log.error(
-                        "Authentication failed during streaming upload of {}: {}: {}",
-                        action.path,
-                        e.javaClass.simpleName,
-                        e.message,
-                        e,
-                    )
-                    transferFailures.incrementAndGet()
-                    executedPaths.add(action.path)
-                    authFailure.compareAndSet(null, e)
-                    gatherScope.cancel()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: PermanentUploadFailureException) {
-                    handlePermanentUploadFailure(action, e)
-                    transferFailures.incrementAndGet()
-                    executedPaths.add(action.path)
-                } catch (e: Exception) {
-                    // archive#530: one WARN line, the stack trace at DEBUG.
-                    log.warn(
-                        "Streaming upload failed for {}: {}: {}",
-                        action.path,
-                        e.javaClass.simpleName,
-                        e.message,
-                    )
-                    log.debug(
-                        "Streaming upload failed for {}: {}: {}",
-                        action.path,
-                        e.javaClass.simpleName,
-                        e.message,
-                        e,
-                    )
-                    reporter.onWarning("Failed: ${action.path} - ${e.message}")
-                    logFailure(action, e)
-                    transferFailures.incrementAndGet()
-                    // UD-901 recovery picks failed uploads up on the next
-                    // pass; mark executed so Pass 2 of *this* run doesn't
-                    // double-dispatch.
-                    executedPaths.add(action.path)
-                }
-            }
+        val download = action as? SyncAction.DownloadContent
+        val upload = action as? SyncAction.Upload
+        require(download != null || upload != null) { "not a transfer: ${action::class.simpleName}" }
+        val what = (if (streaming) "streaming " else "") + (if (download != null) "download" else "upload")
+        try {
+            if (download != null) applyDownload(download) else applyUpload(upload!!)
+            succeeded.incrementAndGet()
+            settled()
+        } catch (e: AuthenticationException) {
+            // UD-253: include exception class + full stack.
+            log.error("Authentication failed during {} of {}: {}: {}", what, action.path, e.javaClass.simpleName, e.message, e)
+            download?.let { restoreToPlaceholder(it.path, it.remoteItem) }
+            transferFailures.incrementAndGet()
+            settled()
+            authFailure.compareAndSet(null, e)
+            stopPass()
+        } catch (e: CancellationException) {
+            download?.let { restoreToPlaceholder(it.path, it.remoteItem) }
+            throw e
+        } catch (e: PermanentDownloadFailureException) {
+            if (download != null) handlePermanentDownloadFailure(download, e) else transferFailed(action, what, e)
+            transferFailures.incrementAndGet()
+            settled()
+        } catch (e: PermanentUploadFailureException) {
+            if (upload != null) handlePermanentUploadFailure(upload, e) else transferFailed(action, what, e)
+            transferFailures.incrementAndGet()
+            settled()
+        } catch (e: Exception) {
+            transferFailed(action, what, e)
+            transferFailures.incrementAndGet()
+            settled()
         }
+    }
+
+    // A transfer failure that is no auth failure, no cancel and no permanent refusal of the transfer's own kind.
+    private fun transferFailed(
+        action: SyncAction,
+        what: String,
+        e: Exception,
+    ) {
+        val text = what.replaceFirstChar { it.uppercaseChar() } + " failed for {}: {}: {}"
+        // archive#530: one WARN line, the stack trace at DEBUG.
+        log.warn(text, action.path, e.javaClass.simpleName, e.message)
+        log.debug(text, action.path, e.javaClass.simpleName, e.message, e)
+        reporter.onWarning("Failed: ${action.path} - ${e.message}")
+        logFailure(action, e)
+        if (action is SyncAction.DownloadContent) restoreToPlaceholder(action.path, action.remoteItem)
     }
 
     private suspend fun publishPassListing(
@@ -2754,27 +2634,13 @@ open class SyncEngine(
                     for (action in executorChannel) {
                         val prior = lastJobPerPath[action.path]
                         when (action) {
-                            is SyncAction.DownloadContent ->
+                            is SyncAction.DownloadContent, is SyncAction.Upload ->
                                 lastJobPerPath[action.path] =
                                     workers.launch {
                                         prior?.join()
-                                        dispatchStreamingDownload(
+                                        dispatchStreamingTransfer(
                                             action = action,
-                                            downloaded = downloaded,
-                                            transferFailures = transferFailures,
-                                            authFailure = authFailure,
-                                            executedPaths = executedPaths,
-                                            gatherScope = gatherScope,
-                                            transferSemaphore = transferSemaphore,
-                                        )
-                                    }
-                            is SyncAction.Upload ->
-                                lastJobPerPath[action.path] =
-                                    workers.launch {
-                                        prior?.join()
-                                        dispatchStreamingUpload(
-                                            action = action,
-                                            uploaded = uploaded,
+                                            succeeded = if (action is SyncAction.Upload) uploaded else downloaded,
                                             transferFailures = transferFailures,
                                             authFailure = authFailure,
                                             executedPaths = executedPaths,

@@ -182,7 +182,15 @@ class OAuthService(
         ) : DevicePollOutcome()
     }
 
-    suspend fun pollOnceForToken(deviceCode: String): DevicePollOutcome {
+    /**
+     * One poll of the token endpoint. [intervalSeconds] is the wait the flow is at: the server's `interval` from the
+     * device-code response, raised by every `slow_down` so far. A `slow_down` answers it plus 5 s, and the caller keeps
+     * that for every later poll (RFC 8628 section 3.5); `authorization_pending` answers it unchanged.
+     */
+    suspend fun pollOnceForToken(
+        deviceCode: String,
+        intervalSeconds: Long = DEFAULT_DEVICE_POLL_INTERVAL_SECONDS,
+    ): DevicePollOutcome {
         val response =
             try {
                 postWithFlakeRetry("pollOnceForToken") {
@@ -219,11 +227,10 @@ class OAuthService(
             }
         val error = parsed["error"]?.let { (it as kotlinx.serialization.json.JsonPrimitive).content }
 
-        // Azure may advertise a bumped interval on slow_down; default to 5s.
-        val fallbackInterval = 5L
+        val interval = intervalSeconds.coerceAtLeast(1L)
         return when (error) {
-            "authorization_pending" -> DevicePollOutcome.Pending(fallbackInterval)
-            "slow_down" -> DevicePollOutcome.Pending(fallbackInterval * 2)
+            "authorization_pending" -> DevicePollOutcome.Pending(interval)
+            "slow_down" -> DevicePollOutcome.Pending(slowedDown(interval))
             "expired_token" ->
                 DevicePollOutcome.Failed(
                     "Device code expired. Please try again.",
@@ -242,6 +249,7 @@ class OAuthService(
         deviceCode: String,
         interval: Long,
     ): Token {
+        var currentInterval = interval.coerceAtLeast(1L)
         while (true) {
             val response =
                 postWithFlakeRetry("pollForToken") {
@@ -271,8 +279,12 @@ class OAuthService(
             val error = parsed["error"]?.let { (it as kotlinx.serialization.json.JsonPrimitive).content }
 
             when (error) {
-                "authorization_pending" -> delay(TimeUnit.SECONDS.toMillis(interval))
-                "slow_down" -> delay(TimeUnit.SECONDS.toMillis(interval * 2))
+                "authorization_pending" -> delay(TimeUnit.SECONDS.toMillis(currentInterval))
+                "slow_down" -> {
+                    // The raised interval holds for every later poll, not just the next one (RFC 8628 section 3.5).
+                    currentInterval = slowedDown(currentInterval)
+                    delay(TimeUnit.SECONDS.toMillis(currentInterval))
+                }
                 "expired_token" -> throw AuthenticationException("Device code expired. Please try again.")
                 else -> throw AuthenticationException("Device code error: $error - $body")
             }
@@ -351,6 +363,14 @@ class OAuthService(
 }
 
 private const val MAX_AUTH_FLAKE_ATTEMPTS = 3
+
+/** The poll interval RFC 8628 prescribes when the device-code response names none. */
+internal const val DEFAULT_DEVICE_POLL_INTERVAL_SECONDS = 5L
+
+private const val SLOW_DOWN_STEP_SECONDS = 5L
+
+/** RFC 8628 section 3.5: on `slow_down` the client adds 5 seconds to its interval for this and all later polls. */
+internal fun slowedDown(intervalSeconds: Long): Long = intervalSeconds.coerceAtLeast(1L) + SLOW_DOWN_STEP_SECONDS
 
 // A decode error's message quotes the JSON it choked on — for a token response that is the access and
 // refresh token themselves. Rethrow with the same exception family (callers already classify it) and only

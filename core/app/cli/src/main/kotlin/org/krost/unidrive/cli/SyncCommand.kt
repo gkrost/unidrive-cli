@@ -450,7 +450,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         // archive#560 U6: a mirror profile keeps no hydration cache, so only the logs are restricted here.
         StoragePermissions.restrictLogDir(StoragePermissions.defaultLogDir())
         // New IPC tokens for this run, before the socket listens (docs/dev/specs/ipc-authentication.md):
-        // the sync serves the same verbs as the daemon, so it authenticates its clients the same way and
+        // the sync serves sync.subscribe as the daemon does, so it authenticates its clients the same way and
         // never runs without its IPC (the refusal is already reported as one line).
         val ipcAuth =
             try {
@@ -631,32 +631,19 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                 // run under it; the IPC accept loop is a child too, and the finally below closes it once the body is left.
                 shutdown.attach(coroutineContext.job)
                 try {
-                    ipcServer.start(this)
-
                     // archive#560 U6 (cutover): a mirror profile runs no hydration runtime and serves no
                     // hydration verbs — its local bytes live in the sync root its reconcile owns, and
                     // there is no cache. A mount profile is served by `daemon run` (the hosting
                     // contract, archive#603), which constructs the hydration layer there.
 
-                    // Register sync.subscribe verb (spec docs/dev/specs/sync-progress-subscriber-set-design.md).
-                    // Symmetric with hydration.subscribe at the wire level: client issues the
-                    // verb, reads {"ok":true} as the first line, then receives the state dump
-                    // followed by live events. The post-reply hook (mechanism β) defers the
-                    // state dump + subscriber-set registration until after dispatchRequest has
-                    // written the reply, so subscribers never see events interleaved with the
-                    // reply.
-                    ipcServer.registerHandler("sync.subscribe") { connId, _ ->
-                        ipcServer.scheduleAfterReply(connId) {
-                            ipcServer.flushStateDumpTo(connId)
-                            ipcServer.registerSyncSubscriber(connId)
-                        }
-                        """{"ok":true}"""
-                    }
-                    ipcServer.registerConnectionCloseListener { connId ->
-                        ipcServer.unregisterSyncSubscriber(connId)
-                    }
+                    // gkrost/unidrive-cli#442: the daemon's rule, here too: every verb is registered before the socket
+                    // binds (a request in between got unknown_verb), and nothing binds until authentication succeeded (a
+                    // sync that cannot sign in publishes no socket). The progress the run reports meanwhile reaches no
+                    // subscriber, as before a client connected.
+                    ipcServer.registerSyncSubscribeVerb()
 
                     provider.authenticateAndLog()
+                    ipcServer.start(this)
 
                     // A profile signed in before ids were kept has no account_id (AccountOwner): once per run, one bounded
                     // identity call with the credentials just authenticated records it. A failure never stops the run. A

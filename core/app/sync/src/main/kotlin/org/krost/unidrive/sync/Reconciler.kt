@@ -1542,6 +1542,8 @@ class Reconciler(
         val candidateHashes = HashMap<String, String?>()
 
         val matchedUploads = mutableSetOf<String>()
+        // The delete and upload of each pair, taken out of the plan after the loop.
+        val pairedActions = identitySet<SyncAction>()
         for (del in deletes) {
             if (del.path in matchedFolderDeletes) continue
             val entry = entryByPath[del.path] ?: continue
@@ -1581,8 +1583,8 @@ class Reconciler(
                 candidates.singleOrNull()?.takeIf {
                     movesVerifiedBytes(entry, it.path, candidateHashes)
                 } ?: continue
-            actions.remove(del)
-            actions.remove(candidate)
+            pairedActions.add(del)
+            pairedActions.add(candidate)
             actions.add(
                 SyncAction.MoveRemote(
                     path = candidate.path,
@@ -1596,6 +1598,10 @@ class Reconciler(
             )
             matchedUploads.add(candidate.path)
         }
+        // One pass instead of a linear `remove` per pair (two data-class scans of the whole plan per move, quadratic
+        // for a batch rename). The pairs are the very objects of the plan, so they are removed by identity; nothing
+        // in the loop reads the plan, and the moves stay appended in the order they were found.
+        actions.removeAll { it in pairedActions }
     }
 
     // archive#439: does [candidatePath] hold the bytes the delete row describes? The row's localHash (archive#396)
@@ -1668,6 +1674,11 @@ class Reconciler(
             }
         if (candidates.isEmpty()) return
 
+        // Taken out of the plan after the loop in one pass, not by a linear scan of the plan per rename: the candidates
+        // a move replaces (removed by identity), and the deletes planned at the old paths. The loop never adds a
+        // delete and never reads one, so removing them later removes the same ones.
+        val replacedCandidates = identitySet<SyncAction>()
+        val movedFromPaths = HashSet<String>()
         for (candidate in candidates) {
             // The remote delta key is canonical; the candidate path is real-local.
             val canonicalPath = if (alias.isEmpty) candidate.path else alias.localToRemote(candidate.path)
@@ -1682,13 +1693,11 @@ class Reconciler(
             val becameTwin = oldEntry.path != candidate.path && DuplicateNames.keyOf(canonicalPath, remoteItem.path) != null
             if (oldEffectiveRemote == remoteItem.path && !becameTwin) continue
 
-            actions.remove(candidate)
+            replacedCandidates.add(candidate)
             // The old path's remote id is the item that now lives at the new path. A DeleteRemote of the old
             // path (the folder was deleted locally, so the scan reports the child deleted too) addresses that
             // id and would destroy the renamed item. The move keeps it.
-            actions.removeAll {
-                it.path == oldEntry.path && (it is SyncAction.DeleteLocal || it is SyncAction.DeleteRemote)
-            }
+            movedFromPaths.add(oldEntry.path)
             // Another live item took the folder's old place (the trash root moves aside for a folder of its name): what
             // is planned below that place is that item's, not left over from the move.
             val oldPlaceTaken = remoteChanges[oldEffectiveRemote]?.let { !it.deleted && it.id != remoteItem.id } == true
@@ -1708,6 +1717,15 @@ class Reconciler(
                 ),
             )
             keepContentAction(actions, candidate.path, remoteItem, oldEntry, localChanges[oldEntry.path])
+        }
+        if (replacedCandidates.isNotEmpty()) {
+            actions.removeAll { action ->
+                action in replacedCandidates ||
+                    (
+                        (action is SyncAction.DeleteLocal || action is SyncAction.DeleteRemote) &&
+                            action.path in movedFromPaths
+                    )
+            }
         }
         dropMovesCarriedByFolderMoves(actions)
     }
@@ -2315,3 +2333,7 @@ private fun deleteOfInFlightDownload(
 ): Boolean =
     remoteState == ChangeState.DELETED && localState == ChangeState.UNCHANGED && entry == null &&
         landedRemoteId(path) == tombstone.id
+
+// A set that tells its members apart by identity: the actions of a plan are data classes, and two equal ones are
+// still two entries of the plan.
+private fun <T> identitySet(): MutableSet<T> = java.util.Collections.newSetFromMap(java.util.IdentityHashMap())

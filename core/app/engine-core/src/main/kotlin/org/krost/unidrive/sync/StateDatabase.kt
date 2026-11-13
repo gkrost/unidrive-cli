@@ -781,6 +781,17 @@ class StateDatabase(
                 )
                 """,
             )
+            // gkrost/unidrive-cli#437: the client's handle id of each upload that has not ended, so the replay at the next start
+            // reports under it ([recordUploadHandle]). A table of its own, additive like rename_intents: no schema_version bump,
+            // an older file simply has no record and its replays report under the engine's own ids, as before.
+            stmt.executeUpdate(
+                """
+                CREATE TABLE IF NOT EXISTS upload_handles (
+                    path      TEXT PRIMARY KEY,
+                    handle_id TEXT NOT NULL
+                )
+                """,
+            )
             // Permanent-failure quarantine columns on `sync_entries`: an additive
             // column with no schema_version bump because the columns carry safe
             // defaults (0 / NULL) so any pre-quarantine row reads as
@@ -1851,6 +1862,106 @@ class StateDatabase(
     }
 
     /**
+     * windows#454 item 10: deletes, in chunks that each commit, every alive row whose EFFECTIVE remote path
+     * (`remote_path`, else `path`) lies outside [trackScope] (a scope root or below one) and is not one of
+     * [ancestorPaths] (the scope roots' ancestor folders, which stay). The scope-narrowing of [ScopeTransition] used
+     * to load the whole table and issue one DELETE per row inside one transaction (372k rows on a large profile).
+     * Matching is case-sensitive. Returns the rows deleted.
+     */
+    fun deleteOutOfScope(
+        trackScope: List<String>,
+        ancestorPaths: Set<String>,
+        chunkSize: Int = DELETE_CHUNK_ROWS,
+    ): Int {
+        require(chunkSize > 0) { "chunkSize must be positive" }
+        if (trackScope.isEmpty()) return 0 // the whole drive is tracked: nothing is out of scope
+        val keep = StringBuilder("(")
+        val params = mutableListOf<String>()
+        trackScope.forEachIndexed { i, root ->
+            if (i > 0) keep.append(" OR ")
+            keep.append("(COALESCE(remote_path, path) = ? OR (COALESCE(remote_path, path) >= ? AND COALESCE(remote_path, path) < ?))")
+            val prefix = if (root.endsWith("/")) root else "$root/"
+            params += root
+            params += prefix
+            params += prefixUpperBound(prefix)
+        }
+        if (ancestorPaths.isNotEmpty()) {
+            keep.append(" OR COALESCE(remote_path, path) IN (").append(ancestorPaths.joinToString(",") { "?" }).append(")")
+            params += ancestorPaths
+        }
+        keep.append(")")
+        var total = 0
+        while (true) {
+            val deleted = locked("deleteOutOfScope") {
+                batch {
+                    val count =
+                        conn
+                            .prepareStatement(
+                                "DELETE FROM sync_entries WHERE rowid IN " +
+                                    "(SELECT rowid FROM sync_entries WHERE status='EXISTS' AND NOT $keep LIMIT ?)",
+                            ).use { stmt ->
+                                var i = 0
+                                for (param in params) stmt.setString(++i, param)
+                                stmt.setInt(i + 1, chunkSize)
+                                stmt.executeUpdate()
+                            }
+                    countAlive(-count)
+                    count
+                }
+            }
+            total += deleted
+            if (deleted < chunkSize) break
+        }
+        return total
+    }
+
+    /**
+     * windows#454 item 9: flips every alive row of [paths] to `DELETED` (\`last_synced\` = now, exactly what
+     * [markDeleted] writes), in chunks of [chunkSize] rows. Each chunk is its own transaction commit unless a manual
+     * batch is open, so a large reap never holds the monitor — and every writer behind it — for one unbounded
+     * transaction (the merge was chunked for the same reason, archive#147). The caller does its row lookups and file
+     * checks BEFORE calling this. When [expectedRows] is supplied, each flip also requires the same remote identity
+     * and hydration state, no edit base and no pending local action. This keeps a write begun after the caller's
+     * check from being tombstoned. Returns only paths actually flipped.
+     */
+    fun markDeletedChunked(
+        paths: Collection<String>,
+        chunkSize: Int = DELETE_CHUNK_ROWS,
+        expectedRows: Map<String, SyncEntry>? = null,
+    ): List<String> {
+        val deleted = mutableListOf<String>()
+        val at = java.time.Instant.now().toString()
+        val guard = if (expectedRows == null) "" else
+            " AND remote_id IS ? AND remote_path IS ? AND edit_base IS NULL AND is_hydrated = ? AND pending_local IS NULL"
+        for (chunk in paths.chunked(chunkSize)) {
+            locked("markDeletedChunked") {
+                batch {
+                    conn
+                        .prepareStatement("UPDATE sync_entries SET status='DELETED', last_synced=? WHERE path=? AND status='EXISTS'$guard")
+                        .use { stmt ->
+                            for (raw in chunk) {
+                                val expected = expectedRows?.get(raw)
+                                if (expectedRows != null && (expected == null || expected.editBase != null)) continue
+                                stmt.setString(1, at)
+                                stmt.setString(2, PathNormalizer.nfc(raw))
+                                if (expected != null) {
+                                    stmt.setString(3, expected.remoteId)
+                                    stmt.setString(4, expected.remotePath)
+                                    stmt.setInt(5, if (expected.isHydrated) 1 else 0)
+                                }
+                                if (stmt.executeUpdate() > 0) {
+                                    countAlive(-1)
+                                    deleted += raw
+                                }
+                            }
+                        }
+                }
+            }
+        }
+        return deleted
+    }
+
+    /**
      * archive#87: tombstone every alive row BELOW [folderPathRaw] in one statement, and return how many. A
      * folder deleted from the mount (hydration.rmdir) or by the reconciler used to tombstone only the
      * folder's own row — a subtree of ~133k rows stayed EXISTS, survived into the next fresh mount and
@@ -2136,6 +2247,16 @@ class StateDatabase(
                 }
         }
 
+    /** Mark a write only while the row read by its caller still names the same file. */
+    fun markEditedForWrite(expected: SyncEntry): Boolean =
+        locked("markEditedForWrite") {
+            beginWrite()
+            val current = getEntry(expected.path) ?: return false
+            if (current.remoteId != expected.remoteId || current.isFolder) return false
+            if (current.remoteId != null) markEdited(current.path, expected.writeToken.orEmpty())
+            true
+        }
+
     /** Why the drive refuses an entry by its name: a stable [reason] token and the conflicting [sibling]'s name when known. */
     data class NameBlock(
         val reason: String,
@@ -2257,14 +2378,86 @@ class StateDatabase(
         }
     }
 
+    /**
+     * gkrost/unidrive-cli#437: the upload of [pathRaw] runs for the client handle [handleId]. Kept until the handle's upload
+     * ends ([forgetUploadHandle]); a daemon that stops or dies before that leaves it, and the replay at the next start reports
+     * the upload's events under it. A newer submission for the path replaces the record.
+     */
+    fun recordUploadHandle(
+        pathRaw: String,
+        handleId: String,
+    ) {
+        locked("recordUploadHandle") {
+            beginWrite()
+            conn.prepareStatement("INSERT OR REPLACE INTO upload_handles (path, handle_id) VALUES (?, ?)").use { stmt ->
+                stmt.setString(1, PathNormalizer.nfc(pathRaw))
+                stmt.setString(2, handleId)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    /** gkrost/unidrive-cli#437: the client handle the unfinished upload of [pathRaw] ran for ([recordUploadHandle]), or null. */
+    fun uploadHandleOf(pathRaw: String): String? =
+        locked("uploadHandleOf") {
+            conn.prepareStatement("SELECT handle_id FROM upload_handles WHERE path=?").use { stmt ->
+                stmt.setString(1, PathNormalizer.nfc(pathRaw))
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
+        }
+
+    /** gkrost/unidrive-cli#437: every recorded client handle of an unfinished upload, by path. */
+    fun uploadHandles(): Map<String, String> =
+        locked("uploadHandles") {
+            conn.prepareStatement("SELECT path, handle_id FROM upload_handles").use { stmt ->
+                stmt.executeQuery().use { rs ->
+                    buildMap {
+                        while (rs.next()) put(rs.getString(1), rs.getString(2))
+                    }
+                }
+            }
+        }
+
+    /**
+     * gkrost/unidrive-cli#437: the upload of [handleId] for [pathRaw] has ended (landed, failed for good or cancelled by its
+     * client): its record goes. Scoped by path as well: two connections can hold the same handle id for different paths, and a
+     * record a newer submission wrote under another id stays.
+     */
+    fun forgetUploadHandle(
+        pathRaw: String,
+        handleId: String,
+    ) {
+        locked("forgetUploadHandle") {
+            beginWrite()
+            conn.prepareStatement("DELETE FROM upload_handles WHERE path=? AND handle_id=?").use { stmt ->
+                stmt.setString(1, PathNormalizer.nfc(pathRaw))
+                stmt.setString(2, handleId)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    /**
+     * gkrost/unidrive-cli#437: drops the records of paths that have no alive row any more (deleted or renamed away while no
+     * daemon ran): nothing is left to replay under them. Returns how many records went.
+     */
+    fun pruneUploadHandles(): Int =
+        locked("pruneUploadHandles") {
+            beginWrite()
+            conn
+                .prepareStatement(
+                    "DELETE FROM upload_handles WHERE NOT EXISTS (SELECT 1 FROM alive_entries e WHERE e.path = upload_handles.path)",
+                ).use { it.executeUpdate() }
+        }
+
     /** The name block recorded by [markNameBlocked] for this alive row, or null. */
     fun nameBlock(pathRaw: String): NameBlock? =
         read("nameBlock") { c ->
             val path = PathNormalizer.nfc(pathRaw)
-            c.prepareStatement("SELECT name_block FROM alive_entries WHERE path=?").use { stmt ->
+            // windows#454 item 14: asked per item on the gather's hot path (RemoteGather): the statement is cached.
+            c.cached(NAME_BLOCK_SQL) { stmt ->
                 stmt.setString(1, path)
-                val rs = stmt.executeQuery()
-                return if (rs.next()) rs.getString(1)?.let { parseNameBlock(it) } else null
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1)?.let { parseNameBlock(it) } else null }
             }
         }
 
@@ -2302,11 +2495,10 @@ class StateDatabase(
      */
     fun countNameBlocked(reasonPrefix: String): Int =
         read("countNameBlocked") { c ->
-            c.prepareStatement("SELECT COUNT(*) FROM alive_entries WHERE name_block IS NOT NULL AND substr(name_block, 1, length(?)) = ?").use { stmt ->
+            c.cached(COUNT_NAME_BLOCKED_SQL) { stmt ->
                 stmt.setString(1, reasonPrefix)
                 stmt.setString(2, reasonPrefix)
-                val rs = stmt.executeQuery()
-                return if (rs.next()) rs.getInt(1) else 0
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
             }
         }
 
@@ -2314,17 +2506,11 @@ class StateDatabase(
     fun blockedAncestor(pathRaw: String): String? =
         read("blockedAncestor") { c ->
             val path = PathNormalizer.nfc(pathRaw)
-            c
-                .prepareStatement(
-                    "SELECT path FROM alive_entries WHERE name_block IS NOT NULL AND is_folder=1 " +
-                        "AND length(path) < length(?) AND substr(?, 1, length(path) + 1) = path || '/' " +
-                        "ORDER BY length(path) DESC LIMIT 1",
-                ).use { stmt ->
-                    stmt.setString(1, path)
-                    stmt.setString(2, path)
-                    val rs = stmt.executeQuery()
-                    return if (rs.next()) rs.getString(1) else null
-                }
+            c.cached(BLOCKED_ANCESTOR_SQL) { stmt ->
+                stmt.setString(1, path)
+                stmt.setString(2, path)
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
         }
 
     private fun parseNameBlock(stored: String): NameBlock =
@@ -3559,6 +3745,9 @@ class StateDatabase(
          */
         internal const val RENAME_CHUNK_ROWS = 1_000
 
+        /** Rows one chunk of [markDeletedChunked] flips: the merge's knee size (archive#147, archive#951). */
+        internal const val DELETE_CHUNK_ROWS = 1_000
+
         /** How many rows one step of [scanAliveRows] reads under the monitor. */
         internal const val ALIVE_SCAN_CHUNK_ROWS = 5_000
 
@@ -3632,6 +3821,12 @@ class StateDatabase(
         // The SQL of the calls that go through [cached]; the text is the cache key.
         private const val GET_ENTRY_SQL = "SELECT * FROM alive_entries WHERE path = ?"
         private const val GET_ENTRY_BY_REMOTE_ID_SQL = "SELECT * FROM alive_entries WHERE remote_id = ?"
+        private const val NAME_BLOCK_SQL = "SELECT name_block FROM alive_entries WHERE path=?"
+        private const val COUNT_NAME_BLOCKED_SQL = "SELECT COUNT(*) FROM alive_entries WHERE name_block IS NOT NULL AND substr(name_block, 1, length(?)) = ?"
+        private const val BLOCKED_ANCESTOR_SQL =
+            "SELECT path FROM alive_entries WHERE name_block IS NOT NULL AND is_folder=1 " +
+                "AND length(path) < length(?) AND substr(?, 1, length(path) + 1) = path || '/' " +
+                "ORDER BY length(path) DESC LIMIT 1"
         private const val GET_SYNC_STATE_SQL = "SELECT value FROM sync_state WHERE key = ?"
         private const val SET_SYNC_STATE_SQL = "INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)"
 

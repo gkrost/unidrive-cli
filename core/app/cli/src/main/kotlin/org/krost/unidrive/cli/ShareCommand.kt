@@ -21,7 +21,11 @@ class ShareCommand : Runnable {
     @Parameters(index = "0", description = ["Remote path to share"])
     lateinit var path: String
 
-    @Option(names = ["-e", "--expiry"], description = ["Link expiry in hours (default: 24)"], defaultValue = "24")
+    @Option(
+        names = ["-e", "--expiry"],
+        description = ["Link expiry in hours (default: 24); 0 for a link without expiry where the provider allows one"],
+        defaultValue = "24",
+    )
     var expiryHours: Int = 24
 
     @Option(names = ["--password"], description = ["Password-protect the share link"])
@@ -52,12 +56,7 @@ class ShareCommand : Runnable {
     lateinit var spec: CommandSpec
 
     override fun run() {
-        if (expiryHours <= 0) {
-            throw CommandLine.ParameterException(
-                spec.commandLine(),
-                "--expiry must be > 0 (got $expiryHours)",
-            )
-        }
+        expiryProblem(expiryHours)?.let { throw CommandLine.ParameterException(spec.commandLine(), it) }
         runBlocking {
             val provider =
                 try {
@@ -137,3 +136,9 @@ class ShareCommand : Runnable {
         }
     }
 }
+
+/**
+ * Why [expiryHours] is not a valid `--expiry`, or null when it is. 0 asks for a link without expiry (the providers read
+ * `expiryHours <= 0` that way); some accounts allow only links without one, and a provider's own error advice names it.
+ */
+internal fun expiryProblem(expiryHours: Int): String? = if (expiryHours < 0) "--expiry must be 0 (no expiry) or more hours (got $expiryHours)" else null

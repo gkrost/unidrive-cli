@@ -19,10 +19,7 @@ import org.krost.unidrive.TokenRevocation
 import org.krost.unidrive.auth.CredentialProtectionException
 import org.krost.unidrive.localfs.LocalFsProviderFactory
 import org.krost.unidrive.sync.IpcAuth
-import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcEndpoint
-import org.krost.unidrive.sync.IpcLineClient
-import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.StateDatabase
 import picocli.CommandLine.Command
@@ -31,7 +28,6 @@ import picocli.CommandLine.ParentCommand
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Callable
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 
 @Command(
@@ -470,23 +466,11 @@ internal fun sendDaemonRequest(
 ): JsonObject? {
     if (!Files.exists(endpoint.socketPath)) return null
     return try {
-        IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).use { channel ->
-            channel.configureBlocking(false)
-            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
-            val lines = IpcLineClient(channel)
-            if (!lines.writeLine(request, deadline)) return null
-            readReplyObject(lines, deadline)
-        }
+        (ipcRequest(endpoint, IpcAuth.Scope.FULL, request, timeoutMs) as? IpcReply.Line)?.text?.asJsonObjectOrNull()
     } catch (_: Exception) {
         null
     }
 }
-
-/** The next reply line of [lines] as a JSON object, read by [deadline]; null when none arrives or it is not an object. */
-internal fun readReplyObject(
-    lines: IpcLineClient,
-    deadline: Long,
-): JsonObject? = (lines.readLine(deadline) as? IpcLineRead.Line)?.text?.asJsonObjectOrNull()
 
 /** A JSON boolean member, or null when it is absent or not a boolean literal. */
 private fun JsonObject.optBoolean(key: String): Boolean? =

@@ -308,6 +308,12 @@ class FakeCloudProvider : CloudProvider {
         if (refuseUpload?.invoke(remotePath, existingRemoteId, ifMatchETag) == true) {
             throw RemoteConflictException("'$remotePath' changed since it was last synced")
         }
+        if (enforceIfMatch && ifMatchETag != null) {
+            val current = versionTokenOf(remotePath)
+            if (current != null && current != ifMatchETag) {
+                throw RemoteConflictException("'$remotePath' changed since it was last synced")
+            }
+        }
         lastUploadExistingRemoteId = existingRemoteId
         if (authFailOnUpload) throw AuthenticationException("Token expired")
         if (uploadFailCount > 0) {
@@ -333,16 +339,46 @@ class FakeCloudProvider : CloudProvider {
             hash = hash,
             mimeType = null,
             sentSha256 = reportSentSha256?.invoke(content),
-        )
+        ).also(::answered)
+    }
+
+    // gkrost/unidrive-cli#187: the conditional write, on by default. An upload whose ifMatchETag names another version than
+    // the one the fake holds at the path is refused as a conflict, as a provider with conditional writes refuses it. The
+    // version the fake holds is the token of its own last answer for the path (an upload's or a move's: the item's
+    // version, else its hash), unless a test set metadataOverride, the provider's current view; for a path it never
+    // answered for, the seeded listing's item. A path with none of these is not checked: the fake cannot tell.
+    // A test that wants the old permissive fake sets this false.
+    var enforceIfMatch: Boolean = true
+
+    // Opt-in: a hashless stand-in answers a fresh token per upload instead of the constant, so a stale writer racing a
+    // second hashless upload is told apart (with the constant, every hashless upload leaves the token the next one echoes).
+    var uniqueUploadTokens: Boolean = false
+    private val uploadTokenSeq = java.util.concurrent.atomic.AtomicInteger()
+    private val answeredTokens = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun tokenOf(item: CloudItem): String? = item.version ?: item.hash
+
+    private fun answered(item: CloudItem) {
+        if (item.isFolder) return
+        tokenOf(item)?.let { answeredTokens[item.path] = it } ?: answeredTokens.remove(item.path)
+    }
+
+    /** The version token the fake holds for [path], or null when it cannot tell (see [enforceIfMatch]). */
+    fun versionTokenOf(path: String): String? {
+        if (deletedPaths.any { d -> path == d || path.startsWith("$d/") } && !answeredTokens.containsKey(path)) return null
+        metadataOverride[path]?.takeIf { it !in retiredSeeds && !it.deleted && !it.isFolder }?.let { return tokenOf(it) }
+        answeredTokens[path]?.let { return it }
+        return deltaItems.lastOrNull { it.path == path && it !in retiredSeeds }?.takeIf { !it.deleted && !it.isFolder }?.let(::tokenOf)
     }
 
     // gkrost/unidrive-cli#187: a hash-capable stand-in answers the bytes' own hash, the one HashVerifier computes, so a
     // row whose recorded remote hash a regression corrupts no longer compares equal to every upload. A hashless
-    // stand-in (the default) still answers the constant, which is not a content hash. ifMatchETag stays recorded and
-    // is still enforced only through refuseUpload: a faithful precondition needs the token the engine will echo, and
-    // turning that on by default is the rest of #187.
+    // stand-in (the default) still answers the constant, which is not a content hash; the conditional write is
+    // enforced against it like any token (see enforceIfMatch).
     private fun hashOf(bytes: ByteArray): String {
-        val algorithm = hashAlgorithmOverride ?: return "uploaded"
+        val algorithm =
+            hashAlgorithmOverride
+                ?: return if (uniqueUploadTokens) "uploaded-${uploadTokenSeq.incrementAndGet()}" else "uploaded"
         val tmp = Files.createTempFile("unidrive-fake-hash", ".bin")
         try {
             Files.write(tmp, bytes)
@@ -380,6 +416,7 @@ class FakeCloudProvider : CloudProvider {
         }
         deletedPaths.add(remotePath)
         liveItems.keys.removeIf { it == remotePath || it.startsWith("$remotePath/") }
+        answeredTokens.keys.removeIf { it == remotePath || it.startsWith("$remotePath/") }
     }
 
     override suspend fun createFolder(path: String): CloudItem {
@@ -498,7 +535,16 @@ class FakeCloudProvider : CloudProvider {
         val movedFolderMarkers = remoteFoldersExisting.filter { it == fromPath || it.startsWith("$fromPath/") }
         remoteFoldersExisting.removeAll(movedFolderMarkers.toSet())
         movedFolderMarkers.forEach { remoteFoldersExisting.add(toPath + it.substring(fromPath.length)) }
+        // The versions the fake holds at and under the source go along; read before the seeds there are retired.
+        val carriedTokens =
+            (liveSeeds().map { it.first } + answeredTokens.keys)
+                .filter { it == fromPath || it.startsWith("$fromPath/") }
+                .distinct()
+                .mapNotNull { p -> versionTokenOf(p)?.let { p to it } }
+                .toMap()
         carryLiveState(fromPath, toPath, movedFolder = content == null)
+        answeredTokens.keys.removeIf { it == fromPath || it.startsWith("$fromPath/") }
+        carriedTokens.forEach { (p, token) -> answeredTokens[toPath + p.substring(fromPath.length)] = token }
         movedPaths.add(Pair(fromPath, toPath))
         val id = carriedId ?: "id-$fromPath"
         return if (content != null) {
@@ -510,9 +556,10 @@ class FakeCloudProvider : CloudProvider {
                 isFolder = false,
                 modified = Instant.now(),
                 created = Instant.now(),
-                hash = hashOf(content),
+                // A hashless stand-in's hash is its version token, which the move keeps; a content hash is the bytes'.
+                hash = if (hashAlgorithmOverride == null) carriedTokens[fromPath] ?: hashOf(content) else hashOf(content),
                 mimeType = null,
-            )
+            ).also(::answered)
         } else {
             CloudItem(
                 id = id,

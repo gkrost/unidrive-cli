@@ -1,5 +1,6 @@
 package org.krost.unidrive.engine
 
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.Capability
@@ -1353,6 +1354,144 @@ class RemoteEnumerationTest {
     // ---- archive#580: the tombstone of a folder the provider confirmed gone by its id ----
 
     @Test
+    fun `an edit begun after its reap check keeps its only cache copy`() = runTest {
+        provider.items = deletedFolderDelta()
+        enumeration().enumerate(reset = false)
+        val firstPath = "/p/c.txt"
+        val editedCache = cacheFile(firstPath)
+        cacheFile("/p/s/e.txt")
+        var checkedFirst = false
+        var injected = false
+        val guards = RemoteEnumeration.ReapGuards(
+            uploadInFlight = { path ->
+                if (path == firstPath) {
+                    checkedFirst = true
+                } else if (checkedFirst && !injected) {
+                    injected = true
+                    // The operations of open_write_begin and the editor's first write, before dirty close queues an upload.
+                    db.markEdited(firstPath, "base-before-edit")
+                    Files.writeString(editedCache, "the only copy of the new edit")
+                    Files.setLastModifiedTime(editedCache, FileTime.from(Instant.now().plusSeconds(3600)))
+                }
+                false
+            },
+            cachePathOf = ::cachePath,
+        )
+        val enumeration = RemoteEnumeration(
+            gather = gather(),
+            db = db,
+            tracker = EnumerationTracker(),
+            reapGuards = guards,
+            log = LoggerFactory.getLogger(RemoteEnumerationTest::class.java),
+        )
+
+        enumeration.goneFolders.tombstone(db.getEntry("/p")!!)
+
+        assertTrue(injected, "the edit was written after its own preflight check")
+        assertEquals("base-before-edit", assertNotNull(db.getEntry(firstPath)).editBase)
+        assertTrue(Files.exists(editedCache), "a later mtime must not become the baseline for evicting an unsent edit")
+        assertEquals("the only copy of the new edit", Files.readString(editedCache))
+    }
+
+    @Test
+    fun `an edit begun during enumeration keeps its row and cache`() = runTest {
+        provider.items = listOf(file("1", "/a.txt"), file("2", "/b.txt"), file("3", "/c.txt"))
+        enumeration().enumerate(reset = false)
+        cacheFile("/b.txt")
+        cacheFile("/c.txt")
+        var first: String? = null
+        var injected = false
+        val guards = RemoteEnumeration.ReapGuards(
+            uploadInFlight = { path ->
+                if (path == "/b.txt" || path == "/c.txt") {
+                    if (first == null) first = path
+                    else if (path != first && !injected) {
+                        injected = true
+                        val edited = requireNotNull(first)
+                        db.markEdited(edited, "base-before-edit")
+                        Files.writeString(cachePath(edited), "the only copy of the new edit")
+                        Files.setLastModifiedTime(cachePath(edited), FileTime.from(Instant.now().plusSeconds(3600)))
+                    }
+                }
+                false
+            },
+            cachePathOf = ::cachePath,
+        )
+        val enumeration = RemoteEnumeration(gather(), db, EnumerationTracker(), guards, LoggerFactory.getLogger(RemoteEnumerationTest::class.java))
+        provider.items = listOf(file("1", "/a.txt"))
+        enumeration.enumerate(reset = true)
+
+        assertTrue(injected)
+        val edited = first!!
+        assertEquals("base-before-edit", assertNotNull(db.getEntry(edited)).editBase)
+        assertEquals("the only copy of the new edit", Files.readString(cachePath(edited)))
+    }
+
+    @Test
+    fun `a write during the eviction guard keeps its cache copy`() {
+        val path = "/race.txt"
+        val cache = cacheFile(path)
+        val before = Files.getLastModifiedTime(cache).toMillis()
+        val guards = RemoteEnumeration.ReapGuards(
+            uploadInFlight = {
+                Files.writeString(cache, "new bytes")
+                Files.setLastModifiedTime(cache, FileTime.from(Instant.now().plusSeconds(3600)))
+                false
+            },
+            cachePathOf = ::cachePath,
+        )
+        evictCacheCopies(listOf(Triple(path, cache, before)), guards)
+        assertEquals("new bytes", Files.readString(cache))
+    }
+
+    @Test
+    fun `a write after the tombstone commits does not become its eviction baseline`() = runTest {
+        provider.items = deletedFolderDelta()
+        enumeration().enumerate(reset = false)
+        val path = "/p/c.txt"
+        val cache = cacheFile(path)
+        var injected = false
+        db.batchCommitHook = {
+            if (!injected && db.getEntry(path) == null) {
+                injected = true
+                Files.writeString(cache, "later bytes")
+                Files.setLastModifiedTime(cache, FileTime.from(Instant.now().plusSeconds(3600)))
+            }
+        }
+        try {
+            enumeration().goneFolders.tombstone(db.getEntry("/p")!!)
+        } finally {
+            db.batchCommitHook = null
+        }
+        assertTrue(injected)
+        assertEquals("later bytes", Files.readString(cache))
+    }
+
+    @Test
+    fun `a write after the enumeration reap commits keeps its cache copy`() = runTest {
+        provider.items = listOf(file("1", "/a.txt"), file("2", "/b.txt"))
+        val enumeration = enumeration()
+        enumeration.enumerate(reset = false)
+        val cache = cacheFile("/b.txt")
+        var injected = false
+        db.batchCommitHook = {
+            if (!injected && db.getEntry("/b.txt") == null) {
+                injected = true
+                Files.writeString(cache, "later bytes")
+                Files.setLastModifiedTime(cache, FileTime.from(Instant.now().plusSeconds(3600)))
+            }
+        }
+        try {
+            provider.items = listOf(file("1", "/a.txt"))
+            enumeration.enumerate(reset = true)
+        } finally {
+            db.batchCommitHook = null
+        }
+        assertTrue(injected)
+        assertEquals("later bytes", Files.readString(cache))
+    }
+
+    @Test
     fun `a folder confirmed gone by its id takes its subtree along after a full listing, keeping unsent rows`() =
         runTest {
             // A full listing ran last: the delta expansion would skip, the id-confirmed tombstone must not.
@@ -1391,6 +1530,41 @@ class RemoteEnumerationTest {
             assertEquals(0, enumeration.goneFolders.tombstone(asRead))
             assertNotNull(db.getEntry("/p"))
             assertNotNull(db.getEntry("/p/c.txt"))
+        }
+
+    // gkrost/unidrive-cli#442: the wait of a caller that met a running pass is bounded; the pass goes on and ends normally.
+    @Test
+    fun `a caller that met a running pass stops waiting after the bound and the pass still ends`() =
+        runBlocking(kotlinx.coroutines.Dispatchers.Default) {
+            provider.items = listOf(file("a", "/a.txt"))
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            provider.onDelta = {
+                entered.countDown()
+                release.await(10, TimeUnit.SECONDS)
+            }
+            val enumeration = enumeration()
+            val first = async { enumeration.enumerate(reset = false) }
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+
+            val joined = enumeration.enumerate(reset = false, joinWaitMs = 200)
+
+            assertFalse(joined.ok, "the wait ran out: not a success")
+            assertFalse(joined.skipped)
+            assertTrue(joined.error.orEmpty().contains("did not end"), joined.error)
+            release.countDown()
+            assertTrue(first.await().ok, "the pass itself is not cancelled by the waiter giving up")
+        }
+
+    @Test
+    fun `a flag held by no pass answers skipped to a caller that would join`() =
+        runTest {
+            val enumeration = enumeration()
+            enumeration.enumerateInFlight.set(true)
+
+            val result = enumeration.enumerate(reset = false, joinWaitMs = 1_000)
+
+            assertTrue(result.ok && result.skipped, "nothing to wait for: the same answer as enumerate")
         }
 
     @Test

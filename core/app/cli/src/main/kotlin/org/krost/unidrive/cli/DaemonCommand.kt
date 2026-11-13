@@ -4,11 +4,8 @@ import org.krost.unidrive.AuthRequiredException
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.sync.IpcAuth
-import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcAuthException
 import org.krost.unidrive.sync.IpcEndpoint
-import org.krost.unidrive.sync.IpcLineClient
-import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessFacts
 import org.krost.unidrive.sync.StateDbCorruptException
@@ -21,7 +18,6 @@ import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
 import java.nio.file.Files
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 
 @Command(
@@ -282,7 +278,7 @@ class DaemonStatusCommand : Runnable {
 /**
  * One `daemon.status` round trip over a read-scope connection: the reply line, or null when the daemon answers no line.
  * The reply carries the enumeration object and the account quota, so it can run to many KiB. A daemon that does not
- * answer within [timeoutMs] is an [IpcTimeoutException]. Throws [IpcAuthException] and [java.io.IOException].
+ * answer within [timeoutMs] is an [IpcTimeoutException]; a request that could not be written is an [java.io.IOException]. Throws [IpcAuthException] and [java.io.IOException].
  */
 internal fun requestDaemonStatus(
     endpoint: IpcEndpoint,
@@ -293,6 +289,8 @@ internal fun requestDaemonStatus(
         is IpcReply.Line -> reply.text
         IpcReply.Closed -> null
         IpcReply.TimedOut -> throw IpcTimeoutException(timeoutMs)
+        // The request never left this process, so the daemon is not shown to be stuck: say the write failed.
+        IpcReply.NotWritten -> throw java.io.IOException("the daemon.status request could not be written to the daemon socket")
     }
 
 internal const val DAEMON_STATUS_TIMEOUT_MS = 10_000L
@@ -463,11 +461,20 @@ internal fun stopDaemonProcess(
     return if (awaitExit(forcedDeadlineMs)) DaemonStopOutcome.FORCED else DaemonStopOutcome.FAILED
 }
 
-private fun awaitProcessExit(handle: ProcessHandle, timeoutMs: Long): Boolean {
-    handle.onExit().orTimeout(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-        .handle { _, _ -> true }.get()
-    return !handle.isAlive
-}
+// gkrost/unidrive-cli#455: the one wait for an engine process to exit, shared by `daemon stop` and the deploy stopper. Waits on
+// [exit] (the handle's own onExit; a test passes one that never completes) for at most [timeoutMs] and answers whether the
+// process is gone. No polling: the wait ends the moment the process does.
+internal fun awaitProcessExit(
+    handle: ProcessHandle,
+    timeoutMs: Long,
+    exit: java.util.concurrent.CompletableFuture<ProcessHandle> = handle.onExit(),
+): Boolean =
+    try {
+        exit.get(timeoutMs.coerceAtLeast(0), java.util.concurrent.TimeUnit.MILLISECONDS)
+        !handle.isAlive
+    } catch (_: java.util.concurrent.TimeoutException) {
+        !handle.isAlive
+    }
 
 /**
  * Send `daemon.shutdown` to the daemon listening on [endpoint] and wait for its ack. Returns true
@@ -480,22 +487,14 @@ private fun awaitProcessExit(handle: ProcessHandle, timeoutMs: Long): Boolean {
  */
 internal fun requestDaemonShutdown(endpoint: IpcEndpoint, timeoutMs: Long = 3_000): Boolean {
     if (!Files.exists(endpoint.socketPath)) return false
-    var written = false
     return try {
-        IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).use { channel ->
-            channel.configureBlocking(false)
-            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
-            val lines = IpcLineClient(channel)
-            if (!lines.writeLine("""{"verb":"daemon.shutdown"}""", deadline)) return false
-            written = true
-            when (val reply = lines.readLine(deadline)) {
-                is IpcLineRead.Line -> reply.text.asJsonObjectOrNull()?.isOkReply() == true
-                IpcLineRead.Closed -> true
-                IpcLineRead.TimedOut -> false
-            }
+        when (val reply = ipcRequest(endpoint, IpcAuth.Scope.FULL, """{"verb":"daemon.shutdown"}""", timeoutMs)) {
+            is IpcReply.Line -> reply.text.asJsonObjectOrNull()?.isOkReply() == true
+            IpcReply.Closed -> true
+            IpcReply.TimedOut, IpcReply.NotWritten -> false
         }
     } catch (_: java.io.IOException) {
-        written
+        false
     }
 }
 

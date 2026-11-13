@@ -22,8 +22,14 @@ internal class MultipartStore(
         val proofSha256: String? = null,
     )
 
+    // The entry's file name is the key's digest: one file is read, not every entry of the profile. The key inside is
+    // compared too, so a digest prefix two keys share can never hand one key's upload to the other.
     @Synchronized
-    fun find(key: String): Pending? = all().firstOrNull { it.key == key }
+    fun find(key: String): Pending? {
+        val file = fileOf(key)
+        if (!Files.isRegularFile(file)) return null
+        return read(file)?.takeIf { it.key == key }
+    }
 
     @Synchronized
     fun all(): List<Pending> {
@@ -55,6 +61,8 @@ internal class MultipartStore(
         Files.deleteIfExists(fileOf(key))
     }
 
+    // An entry that cannot be read (a torn write, a hand edit) is left where it is and named once per read, at WARN: the
+    // multipart upload it describes is still open on S3 and holds its parts until a lifecycle rule or an abort ends it.
     private fun read(file: Path): Pending? =
         runCatching {
             val props = Properties().apply { Files.newInputStream(file).use { load(it) } }
@@ -67,11 +75,14 @@ internal class MultipartStore(
                 partSize = props.getProperty("partSize").toLong(),
                 proofSha256 = props.getProperty("proofSha256"),
             )
+        }.onFailure {
+            log.warn("S3 multipart record {} cannot be read and is ignored ({}); its upload stays open on S3", file.fileName, it.javaClass.simpleName)
         }.getOrNull()
 
     private fun fileOf(key: String): Path = dir.resolve(SigV4Signer.sha256Hex(key.toByteArray(Charsets.UTF_8)).take(32) + SUFFIX)
 
     private companion object {
         const val SUFFIX = ".upload"
+        val log: org.slf4j.Logger = org.slf4j.LoggerFactory.getLogger(MultipartStore::class.java)
     }
 }

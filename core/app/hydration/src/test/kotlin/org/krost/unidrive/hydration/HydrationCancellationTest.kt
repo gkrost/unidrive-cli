@@ -2,7 +2,6 @@ package org.krost.unidrive.hydration
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.Capability
@@ -20,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertIs
 
 /** gkrost/unidrive-cli#438: a cancelled caller is not a failed request; no reply is made up for it. */
 class HydrationCancellationTest {
@@ -27,9 +27,8 @@ class HydrationCancellationTest {
     fun `a cancelled open_write_begin gives no failure reply`() = runTest {
         val env = HydrationTestEnv(recoveryUploadScope = this)
         env.stateDb.insertUnhydratedEntry("/q/f.txt", remoteSize = 5, remoteHash = "v1")
-        val swapLock = MountEngine.over(env.engine).cacheSwapLock("/q/f.txt")
         var reply: OpenResult? = null
-        swapLock.withLock {
+        MountEngine.over(env.engine).withCacheSwapLock("/q/f.txt") {
             val caller = launch { reply = env.hydration.openWriteBegin("conn1", "/q/f.txt", handleId = "h1") }
             runCurrent() // the truncate waits for the swap lock
             caller.cancel()
@@ -39,6 +38,24 @@ class HydrationCancellationTest {
 
         assertNull(reply, "the cancelled call made up a failure reply, got: $reply")
         assertEquals(null, env.stateDb.editBaseOf("/q/f.txt"), "nothing was marked or truncated")
+    }
+
+    @Test
+    fun `a write waiting for its cache lock refuses a row deleted meanwhile`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this)
+        val path = "/q/f.txt"
+        env.stateDb.insertUnhydratedEntry(path, remoteSize = 5, remoteHash = "v1")
+        env.syncEngine.seedCacheContent(path, "retained")
+        var reply: OpenResult? = null
+        MountEngine.over(env.engine).withCacheSwapLock(path) {
+            launch { reply = env.hydration.openWriteBegin("conn1", path, handleId = "h1") }
+            runCurrent()
+            env.engine.mountWiring.db.markDeleted(path)
+        }
+        runCurrent()
+
+        assertIs<OpenResult.Failed>(reply)
+        assertEquals("retained", Files.readString(env.syncEngine.resolveCachePath(path)))
     }
 
     // gkrost/unidrive-cli#452 (extends #438 item 9): mkdir and rmdir ran in a runCatching that turned a

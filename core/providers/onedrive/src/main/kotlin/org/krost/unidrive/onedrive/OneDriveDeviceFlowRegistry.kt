@@ -27,6 +27,8 @@ internal data class OneDriveDeviceFlowState(
     val oauthService: OAuthService,
     /** The profile folder holding the flow's [PendingDeviceFlow] file, so a cancel can delete it too. */
     val profileDir: java.nio.file.Path? = null,
+    /** The wait between polls: the server's interval, raised by each `slow_down` (RFC 8628 section 3.5). */
+    val intervalSeconds: Long = DEFAULT_DEVICE_POLL_INTERVAL_SECONDS,
 )
 
 internal object OneDriveDeviceFlowRegistry {
@@ -70,6 +72,9 @@ internal data class PendingDeviceFlow(
     // The authority the flow began at. The device code is only valid there, so a later process must poll there even when the
     // profile's authority has changed since. Null in a file kept before this field: those flows were the personal authority.
     val authEndpoint: String? = null,
+    // The poll interval the flow is at, so a later process keeps a slow_down the server asked for. Null in a file kept
+    // before this field: the RFC's default applies.
+    val intervalSeconds: Long? = null,
 )
 
 internal const val PENDING_DEVICE_FLOW_FILE = "device-flow.json"
