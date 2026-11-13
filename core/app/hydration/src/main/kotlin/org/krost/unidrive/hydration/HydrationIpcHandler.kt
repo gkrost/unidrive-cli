@@ -767,11 +767,8 @@ class HydrationIpcHandler(
                 // archive#1035: plain rmdir is strict; "recursive":true is the client meaning the whole tree.
                 val recursive = request.bool("recursive") == true
                 val permanent = request.bool("permanent") == true
-                // gkrost/unidrive-cli#445: with recursive, the caller vouches the local copies below were deleted by the user.
-                val discardLocal = recursive && request.bool("discard_local") == true
                 nameClash(rawPath(request, "path"))?.let { return it }
-                val result = if (discardLocal) hydration.rmdirDiscardingLocal(path, permanent) else hydration.rmdir(path, recursive, permanent)
-                when (val r = result) {
+                when (val r = if (recursive && request.bool("discard_local") == true) hydration.rmdirDiscardingLocal(path, permanent) else hydration.rmdir(path, recursive, permanent)) {
                     is RmdirResult.Ok -> {
                         spellings.forget(rawPath(request, "path"))
                         reply(ok = true)
@@ -1034,53 +1031,6 @@ private fun serialiseViewPage(r: ViewPageResult.Ok): String {
         .append(",\"as_of_ms\":").append(r.asOfMs?.toString() ?: "null")
         .append('}')
     return sb.toString()
-}
-
-private fun serialiseListEntries(
-    entries: List<ListResult.Entry>,
-    complete: Boolean? = null,
-    listedAtMs: Long? = null,
-): String {
-    val sb = StringBuilder("""{"ok":true,"entries":[""")
-    entries.forEachIndexed { i, e ->
-        if (i > 0) sb.append(',')
-        appendListEntry(sb, e)
-    }
-    sb.append(']')
-    // gkrost/unidrive-cli#445: present only where the listing says; listed_at_ms is null while complete is false.
-    if (complete != null) sb.append(""","complete":$complete,"listed_at_ms":${listedAtMs ?: "null"}""")
-    sb.append('}')
-    return sb.toString()
-}
-
-// One entry exactly as hydration.list writes it, and hydration.stat under `entry`: the single serializer keeps
-// the two shapes identical, so a client parses both with its list-entry parser (gkrost/unidrive-cli#415). It
-// appends into the caller's builder — a listing of many rows builds one string, not one per row.
-private fun appendListEntry(
-    sb: StringBuilder,
-    e: ListResult.Entry,
-) {
-    sb.append("{\"path\":").append(jsonEsc(e.path))
-        .append(",\"size\":").append(e.size)
-        .append(",\"mtime_ms\":").append(e.mtimeEpochMillis)
-        .append(",\"hydrated\":").append(e.isHydrated)
-        .append(",\"folder\":").append(e.isFolder)
-        .append(",\"remote_modified_ms\":").append(e.remoteModifiedEpochMillis?.toString() ?: "null")
-        .append(",\"remote_id\":").append(e.remoteId?.let { jsonEsc(it) } ?: "null")
-        .append(",\"etag\":").append(e.etag?.let { jsonEsc(it) } ?: "null")
-    // gkrost/unidrive-cli#171: additive, beside the etag, and only where the row names its bytes (daemon.status
-    // capability `hydration.list_content_id`).
-    if (e.contentId != null) sb.append(",\"content_id\":").append(jsonEsc(e.contentId))
-    sb.append(",\"pending_upload\":").append(e.pendingUpload)
-        .append(",\"error\":").append(e.hasError)
-    if (e.excluded) sb.append(",\"excluded\":true")
-    if (e.readOnly) sb.append(",\"read_only\":true")
-    if (e.trashRoot) sb.append(",\"trash_root\":true")
-    if (e.backupsRoot) sb.append(",\"backups_root\":true")
-    if (e.blocked != null) sb.append(",\"blocked\":").append(jsonEsc(e.blocked))
-    if (e.view != null) sb.append(",\"view\":").append(jsonEsc(e.view))
-    if (e.viewTarget != null) sb.append(",\"view_target\":").append(jsonEsc(e.viewTarget))
-    sb.append('}')
 }
 
 fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {

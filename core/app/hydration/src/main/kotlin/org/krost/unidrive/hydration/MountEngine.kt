@@ -21,7 +21,6 @@ import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.RemoteContentRefusedDownloadException
 import org.krost.unidrive.RemoteIncompleteDownloadException
-import org.krost.unidrive.engine.CursorState
 import org.krost.unidrive.engine.AuditSink
 import org.krost.unidrive.engine.CachePaths
 import org.krost.unidrive.engine.EnumerationEntryPoint
@@ -329,38 +328,10 @@ class MountEngine private constructor(
             log = log,
         )
 
-    /**
-     * gkrost/unidrive-cli#27: the rows of [folder] (the engine path without the trailing slash, "" for the root) after
-     * a live listing, or null when the folder is answered from state.db. A live listing happens only while no enumeration
-     * has completed and state.db holds no cloud row of the folder; the rows are saved as the scan saves them. A failed
-     * listing throws. See [LiveFolderList].
-     */
     suspend fun listFolderLive(folder: String): List<SyncEntry>? = liveFolders.rowsOrNull(folder)
 
-    /** Whether a folder listing is the whole folder, and as of when (gkrost/unidrive-cli#445; see [listingCoverage]). */
-    data class ListingCoverage(
-        val complete: Boolean,
-        val listedAtMs: Long?,
-    )
-
-    /**
-     * gkrost/unidrive-cli#445: whether the rows state.db holds for [folder] are the whole folder (`hydration.list`
-     * `complete`). A folder is covered when
-     *  - a full enumeration has completed since the last cursor reset (the delta cursor is set), its last gather did not end
-     *    incomplete and no recovery listing runs: the polls since keep state.db current. `listedAtMs` is when the last
-     *    enumeration succeeded (null when this process does not know), or
-     *  - this daemon listed the folder live from the provider ([listFolderLive]): `listedAtMs` is that listing.
-     * Anything else is not covered (`complete` false, `listedAtMs` null): a folder that an earlier, interrupted scan
-     * filled in part answers from state.db but may lack items.
-     */
-    fun listingCoverage(folder: String): ListingCoverage {
-        val path = PathNormalizer.nfc(folder)
-        if (!CursorState(db).deltaCursor.isNullOrEmpty()) {
-            val status = enumerationStatus()
-            if (status.lastScanComplete != false && !status.recovery) return ListingCoverage(true, status.lastSuccessAtMs)
-        }
-        return liveFolders.listedAtMs(path)?.let { ListingCoverage(true, it) } ?: ListingCoverage(false, null)
-    }
+    /** gkrost/unidrive-cli#445: whether [folder]'s rows are the whole folder (`hydration.list` `complete`); see [LiveFolderList.coverage]. */
+    fun listingCoverage(folder: String): ListingCoverage = liveFolders.coverage(folder, enumerationStatus())
 
     // gkrost/unidrive-cli#225: the backfill logs under a name of its own, not the engine's, so its lines can be told apart.
     private val contentIdLog: Logger = LoggerFactory.getLogger(ContentIdBackfill::class.java)

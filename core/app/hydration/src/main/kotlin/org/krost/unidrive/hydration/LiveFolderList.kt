@@ -9,6 +9,7 @@ import org.krost.unidrive.engine.CursorState
 import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.engine.RemoteOperationGuard
+import org.krost.unidrive.sync.EnumerationStatus
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
@@ -69,6 +70,27 @@ internal class LiveFolderList(
 
     /** When this daemon last listed [folder] (an NFC engine path, "" the root) from the cloud in full, or null. */
     fun listedAtMs(folder: String): Long? = listedAt[folder]
+
+    /**
+     * gkrost/unidrive-cli#445: whether the rows state.db holds for [folder] (the engine path, "" the root) are the whole
+     * folder (`hydration.list` `complete`), given the enumeration [status] the caller asked for. A folder is covered when
+     *  - a full enumeration has completed since the last cursor reset (the delta cursor is set), its last gather did not end
+     *    incomplete and no recovery listing runs: the polls since keep state.db current. `listedAtMs` is when the last
+     *    enumeration succeeded (null when this process does not know), or
+     *  - this daemon listed the folder live from the provider ([rowsOrNull]): `listedAtMs` is that listing.
+     * Anything else is not covered (`complete` false, `listedAtMs` null): a folder that an earlier, interrupted scan
+     * filled in part answers from state.db but may lack items.
+     */
+    fun coverage(
+        folder: String,
+        status: EnumerationStatus,
+    ): ListingCoverage {
+        if (!CursorState(db).deltaCursor.isNullOrEmpty() && status.lastScanComplete != false && !status.recovery) {
+            return ListingCoverage(true, status.lastSuccessAtMs)
+        }
+        val path = PathNormalizer.nfc(folder)
+        return listedAtMs(path)?.let { ListingCoverage(true, it) } ?: ListingCoverage(false, null)
+    }
 
     /**
      * The rows of [folder] after a live listing, or null when the folder is answered from state.db as it always was.
@@ -171,3 +193,9 @@ internal class LiveFolderList(
         private const val EMPTY_MEMORY_CAP: Int = 4_096
     }
 }
+
+/** Whether a folder listing is the whole folder, and as of when (gkrost/unidrive-cli#445; see [LiveFolderList.coverage]). */
+data class ListingCoverage(
+    val complete: Boolean,
+    val listedAtMs: Long?,
+)

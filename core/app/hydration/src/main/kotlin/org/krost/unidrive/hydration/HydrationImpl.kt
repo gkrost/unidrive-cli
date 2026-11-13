@@ -2818,8 +2818,7 @@ class HydrationImpl(
             val coverage = mount.listingCoverage(normalised)
             ListResult.Ok(
                 rows.map(entryOf) + (if (normalised.isEmpty()) views.rootEntries() else emptyList()),
-                complete = coverage.complete,
-                listedAtMs = coverage.listedAtMs,
+                coverage.complete, coverage.listedAtMs,
             )
         } catch (e: CancellationException) {
             throw e
@@ -3240,10 +3239,8 @@ class HydrationImpl(
         permanent: Boolean,
     ): RmdirResult = rmdirRow(path, recursive, permanent).also { if (it is RmdirResult.Ok) announceRemoved(path) }
 
-    override suspend fun rmdirDiscardingLocal(
-        path: String,
-        permanent: Boolean,
-    ): RmdirResult = rmdirRow(path, recursive = true, permanent, discardLocal = true).also { if (it is RmdirResult.Ok) announceRemoved(path) }
+    override suspend fun rmdirDiscardingLocal(path: String, permanent: Boolean): RmdirResult =
+        rmdirRow(path, recursive = true, permanent, discardLocal = true).also { if (it is RmdirResult.Ok) announceRemoved(path) }
 
     private suspend fun rmdirRow(
         path: String,
@@ -3274,14 +3271,13 @@ class HydrationImpl(
         // only copy. The user deletes such a file on its own first, or the client says it did (discardLocal,
         // gkrost/unidrive-cli#445: "discard_local":true): then those bytes go with the tree.
         if (!recursive) {
-            if (stateDb.hasEntriesBelow(below)) return refusedNotEmpty(normalised, recursive, "alive_descendants")
+            if (stateDb.hasEntriesBelow(below)) return refusedNotEmpty(log, normalised, recursive, "alive_descendants")
         } else if (discardLocal) {
-            stateDb.getEntriesByPrefix(below).count { holdsUnsyncedBytes(it) }.takeIf { it > 0 }?.let {
-                log.info("rmdir of {}: discard_local, {} file(s) below with bytes only this computer had", normalised, it)
-            }
+            val discarded = stateDb.getEntriesByPrefix(below).count { holdsUnsyncedBytes(it) }
+            if (discarded > 0) log.info("rmdir of {}: discard_local, {} file(s) below with bytes only this computer had", normalised, discarded)
         } else {
             stateDb.getEntriesByPrefix(below).firstOrNull { holdsUnsyncedBytes(it) }?.let {
-                return refusedNotEmpty(normalised, recursive, "unsynced_bytes", it.path)
+                return refusedNotEmpty(log, normalised, recursive, "unsynced_bytes", it.path)
             }
         }
 
@@ -3301,37 +3297,24 @@ class HydrationImpl(
             // typed exception — their current wordings stay pinned by
             // rmdir_detects_provider_not_empty_substring.
             (e as? UnobservedChildException ?: e.cause as? UnobservedChildException)?.let {
-                return@getOrElse refusedNotEmpty(normalised, recursive, it.reason, it.childPath)
+                return@getOrElse refusedNotEmpty(log, normalised, recursive, it.reason, it.childPath)
             }
             if (e is FolderNotEmptyException || e.cause is FolderNotEmptyException) {
-                return@getOrElse refusedNotEmpty(normalised, recursive, "provider_not_empty")
+                return@getOrElse refusedNotEmpty(log, normalised, recursive, "provider_not_empty")
             }
             permanentRefusalOrNull(e)?.let { refusal -> return RmdirResult.Failed(refusal) }
             val msg = e.message ?: ""
             if (msg.contains("not empty", ignoreCase = true) ||
                 msg.contains("non-empty", ignoreCase = true)
             ) {
-                refusedNotEmpty(normalised, recursive, "provider_not_empty")
+                refusedNotEmpty(log, normalised, recursive, "provider_not_empty")
             } else {
                 RmdirResult.Failed(HydrationError.Generic(msg.ifBlank { "rmdir failed" }))
             }
         }
     }
 
-    // gkrost/unidrive-cli#635: every not_empty answer of rmdir says why in the log; the wire token stays not_empty.
-    private fun refusedNotEmpty(
-        path: String,
-        recursive: Boolean,
-        reason: String,
-        child: String? = null,
-    ): RmdirResult {
-        if (child == null) {
-            log.info("rmdir of {} refused: not_empty reason={} recursive={}", path, reason, recursive)
-        } else {
-            log.info("rmdir of {} refused: not_empty reason={} recursive={} child={}", path, reason, recursive, child)
-        }
-        return RmdirResult.NotEmpty
-    }
+
 
     // The enumeration's reap and refresh.run's reset ask this same question before they drop a row or its cache copy;
     // an upload in flight is answered separately (rmdir's busy), so no slot is consulted here.
