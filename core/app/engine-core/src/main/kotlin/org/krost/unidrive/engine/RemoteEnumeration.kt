@@ -116,6 +116,9 @@ class RemoteEnumeration(
     // CAS is a no-op (skipped=true).
     internal val enumerateInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    // gkrost/unidrive-cli#442: the flag together with the pass that holds it, for a caller that meets the pass and waits for it.
+    private val passes = PassGate(enumerateInFlight)
+
     // Paths a prior COMPLETE enumeration flagged missing-but-deferred under the
     // bulk-disappearance corroboration guard (mount-view-refresh-design.md §3.2).
     // Carried in-memory across enumerations on a long-lived daemon engine; a path
@@ -139,18 +142,24 @@ class RemoteEnumeration(
      * delete, and NEVER evaluates the empty-sync_root / max_delete_* guards. Remote-observed
      * deletions flip state.db rows only on a COMPLETE enumeration (see reaping below). See
      * docs/dev/specs/mount-view-refresh-design.md.
+     *
+     * gkrost/unidrive-cli#442: with [joinWaitMs] set, a caller that loses the single-flight flag to a running pass waits for
+     * that pass and answers its outcome (a failure included), not `skipped`: the view the caller promises is then the one
+     * the pass wrote, not the one it was still writing. The pass is the one the caller lost to, taken in the same step as the
+     * flag, so one that ends (or fails) before the wait starts still answers its own result. The wait ends after [joinWaitMs]
+     * with a failure (the pass goes on), so it does not hold what the caller holds for a pass that never ends. A flag held by
+     * something that is no pass (the gone-folder tombstone) answers `skipped` either way.
      */
-    suspend fun enumerate(reset: Boolean): EnumerateResult {
+    suspend fun enumerate(
+        reset: Boolean,
+        joinWaitMs: Long? = null,
+    ): EnumerateResult {
         // Single-flight: a caller that loses the CAS returns immediately as a no-op so
         // it can never run a concurrent pass against the same engine/DB state (cursor
         // promotion, corroboration). The winning pass is already refreshing the view.
-        if (!enumerateInFlight.compareAndSet(false, true)) {
-            return EnumerateResult(ok = true, skipped = true)
-        }
-        return try {
-            enumerateRemoteIntoStateLocked(reset)
-        } finally {
-            enumerateInFlight.set(false)
+        return when (val claim = passes.claim()) {
+            is PassGate.Claim.Won -> passes.runClaimed(claim.pass) { enumerateRemoteIntoStateLocked(reset) }
+            is PassGate.Claim.Lost -> if (joinWaitMs == null) EnumerateResult(ok = true, skipped = true) else passes.join(claim, joinWaitMs)
         }
     }
 
@@ -587,6 +596,9 @@ class RemoteEnumeration(
 
     companion object {
         private const val CAUSE_DEPTH = 8
+
+        // gkrost/unidrive-cli#442: how long a refresh that met a running pass waits for it (see enumerateOrJoin).
+        const val JOIN_MAX_WAIT_MS: Long = 600_000
         // archive#517 R3: sync_state key counting consecutive enumerations that ended in a
         // provider failure. The daemon's enumerate poller seeds its backoff from it
         // at start, so a restart into a known-bad remote doesn't re-run the doomed

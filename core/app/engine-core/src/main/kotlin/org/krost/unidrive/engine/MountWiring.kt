@@ -93,4 +93,11 @@ interface AuditSink {
  */
 interface EnumerationEntryPoint {
     suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult
+
+    /**
+     * gkrost/unidrive-cli#442: [enumerateRemoteIntoState], except that a call that meets a running pass waits for it and
+     * answers its result (a failure, or a timeout of the wait, included) instead of `skipped`. The pass is taken in the same
+     * step that lost the single-flight flag, so one that ends before the wait starts still answers its own result.
+     */
+    suspend fun enumerateOrJoin(reset: Boolean): EnumerateResult = enumerateRemoteIntoState(reset)
 }
