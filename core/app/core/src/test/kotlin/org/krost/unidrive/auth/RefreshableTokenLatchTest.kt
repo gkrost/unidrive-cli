@@ -1,16 +1,20 @@
 package org.krost.unidrive.auth
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * windows#454 item 6: the whole refresh body ran inside NonCancellable under the mutex, so a token endpoint that
@@ -21,28 +25,31 @@ import kotlin.test.assertTrue
 class RefreshableTokenLatchTest {
     @Test
     fun `a refresh whose endpoint stalls is cut off at the timeout and frees the mutex`() =
-        runTest {
-            val latch = RefreshableTokenLatch()
+        runBlocking<Unit> {
+            // The deadline is real time, so this runs on the real clock with a short timeout.
+            val latch = RefreshableTokenLatch(timeout = 300.milliseconds)
             val entered = CompletableDeferred<Unit>()
 
             launch {
                 latch.withRefresh(isAlreadyFresh = { null }, body = { entered.complete(Unit); awaitCancellation() })
             }
-            runCurrent()
             entered.await()
 
-            // A second caller queued at the mutex behind the stalled refresh (virtual time).
+            // A second caller queued at the mutex behind the stalled refresh.
             val second = async { latch.withRefresh(isAlreadyFresh = { null }, body = { "second" }) }
-            runCurrent()
-            advanceTimeBy(RefreshableTokenLatch.REFRESH_TIMEOUT.inWholeMilliseconds - 1_000)
-            runCurrent()
+            delay(100)
             assertFalse(second.isCompleted, "still queued before the refresh timeout")
 
-            // Past the timeout the stalled body is cancelled, the mutex frees, and the queued caller runs.
-            advanceTimeBy(2_000)
-            runCurrent()
-            assertTrue(second.isCompleted, "the queued caller completes once the stalled refresh is cut off")
-            assertEquals("second", second.await())
+            assertEquals("second", withTimeout(10_000) { second.await() })
+        }
+
+    @Test
+    fun `the refresh deadline is not fired by a test dispatcher's virtual clock`() =
+        runTest {
+            val latch = RefreshableTokenLatch()
+            // Real I/O the virtual scheduler cannot see: runTest would jump 60 virtual seconds while this runs.
+            val answer = latch.withRefresh(isAlreadyFresh = { null }, body = { withContext(Dispatchers.IO) { Thread.sleep(200); "answered" } })
+            assertEquals("answered", answer)
         }
 
     @Test
@@ -65,7 +72,7 @@ class RefreshableTokenLatchTest {
             runCurrent()
             persistReached.await()
             job.cancel()
-            runCurrent()
+            job.join() // the body runs on a real dispatcher now: wait for it rather than for the test scheduler
 
             // The commit is NonCancellable: what the provider accepted is in memory and on disk, even though
             // the job was cancelled while the persist ran.

@@ -1,5 +1,6 @@
 package org.krost.unidrive.auth
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -47,7 +48,9 @@ import kotlin.time.Duration.Companion.seconds
  * lets future maintainers add per-latch observability (e.g. wait-time
  * histograms for UD-111 telemetry) without changing every call site.
  */
-class RefreshableTokenLatch {
+class RefreshableTokenLatch(
+    private val timeout: Duration = REFRESH_TIMEOUT,
+) {
     private val mutex = Mutex()
 
     // Credential generations: a sign-out or a reload of the stored credentials starts a new one. A refresh that began
@@ -110,7 +113,9 @@ class RefreshableTokenLatch {
     ): T =
         mutex.withLock {
             isAlreadyFresh()?.let { return@withLock it }
-            withTimeout(REFRESH_TIMEOUT) { body() }
+            // The deadline is wall-clock time: on Dispatchers.Default the timer is the real one, so a test dispatcher's
+            // virtual clock (runTest jumps to the next deadline whenever its thread idles on real I/O) cannot fire it.
+            withContext(Dispatchers.Default) { withTimeout(timeout) { body() } }
         }
 
     companion object {
