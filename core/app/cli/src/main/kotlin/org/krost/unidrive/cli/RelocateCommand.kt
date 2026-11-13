@@ -17,19 +17,18 @@ import java.util.Locale
 import kotlin.math.max
 
 /**
- * `relocate` is switched off while four data-loss defects are open: a remote item name used as a path below the temp
+ * `relocate` was switched off while four data-loss defects were open: a remote item name used as a path below the temp
  * dir (gkrost/unidrive-cli#56), `--delete-source` deleting by string prefix and ignoring failed transfers (#61), two
  * files of equal size and different hash treated as the same file (#62), and a temp file named by the leaf only (#63).
- *
- * To switch it on again, fix those four issues and set this to `true`; `RelocateCommandTest` then has to be changed
- * from "refuses" to the tests of the fixed behaviour. The code below is kept as it is for that.
+ * All four are fixed and the command is on again (#653). The switch stays as one place to turn it off if a new defect
+ * of that kind is found; `RelocateCommandTest` runs the full command path against it.
  */
-internal const val RELOCATE_ENABLED: Boolean = false
+internal const val RELOCATE_ENABLED: Boolean = true
 
 internal const val RELOCATE_DISABLED_MESSAGE =
-    "relocate is disabled: it can overwrite or delete files that were never migrated " +
-        "(gkrost/unidrive-cli#56, #61, #62, #63). Nothing was read or changed. " +
-        "Copy the data with the provider's own tools until these are fixed."
+    "relocate is disabled: it can overwrite or delete files that were never migrated. " +
+        "Nothing was read or changed. " +
+        "Copy the data with the provider's own tools until this is fixed."
 
 /**
  * What one migrate run reported: its `Completed` event (null when the flow ended without one) and every
@@ -42,7 +41,7 @@ internal data class MigrationOutcome(
 
 @Command(
     name = "relocate",
-    description = ["Migrate data between cloud providers (disabled: refuses to run, see #56, #61, #62, #63)"],
+    description = ["Migrate data between cloud providers"],
     mixinStandardHelpOptions = true,
 )
 class RelocateCommand : Runnable {
