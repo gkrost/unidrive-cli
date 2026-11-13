@@ -701,6 +701,99 @@ class InternxtCreateCollisionTest {
             }
         }
 
+    /**
+     * Invariant guarded: a live file of the same BASE name but a DIFFERENT extension
+     * (`NOTES.MD` while `/notes.txt` is created) is not a near-miss — the case fold runs on
+     * the full recomposed name only, so a different extension can never be adopted or
+     * conflict-copied by mistake. The 409 is rethrown.
+     */
+    @Test
+    fun `create collision with a same-base file of a different extension is not adopted and rethrows`() =
+        runTest {
+            val tmp = java.nio.file.Files.createTempDirectory("ud-coll-ext-")
+            val local =
+                java.nio.file.Files
+                    .createTempFile(tmp, "notes-", ".txt")
+                    .also { p -> java.nio.file.Files.write(p, ByteArray(64) { 0x41 }) }
+            try {
+                val createFileCalls = AtomicInteger(0)
+                val replaceFileCalls = AtomicInteger(0)
+
+                val engine =
+                    io.ktor.client.engine.mock.MockEngine { request ->
+                        val url = request.url.toString()
+                        when {
+                            url.contains("/v2/buckets/") && url.contains("/files/start") ->
+                                respond(
+                                    content = """{"uploads":[{"index":0,"uuid":"shard-u","url":"$shardUrl"}]}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            url == shardUrl -> respond("", HttpStatusCode.OK)
+                            url.contains("/v2/buckets/") && url.contains("/files/finish") ->
+                                respond(
+                                    content = """{"id":"$localFileId","index":"${"ee".repeat(32)}","bucket":"6928426c1a2316b856c9ab81","name":"enc-notes"}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            url.startsWith("https://gateway.internxt.com/drive/files") &&
+                                request.method == HttpMethod.Post -> {
+                                createFileCalls.incrementAndGet()
+                                respond(
+                                    content = """{"statusCode":409,"message":"File already exists","error":"Conflict"}""",
+                                    status = HttpStatusCode.Conflict,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            }
+                            url.startsWith("https://gateway.internxt.com/drive/files/") &&
+                                request.method == HttpMethod.Put -> {
+                                replaceFileCalls.incrementAndGet()
+                                respond(
+                                    content = """{"uuid":"other-ext-uuid","plainName":"NOTES","type":"MD","size":"64","bucket":"6928426c1a2316b856c9ab81","fileId":"$localFileId","status":"EXISTS"}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            }
+                            url.contains("/drive/folders/content/") ->
+                                // Same base name, DIFFERENT extension: `NOTES.MD`, provably
+                                // identical by fileId+size. It must NOT be adopted for /notes.txt.
+                                respond(
+                                    content =
+                                        """{"children":[],"files":[{
+                                            "uuid":"other-ext-uuid",
+                                            "fileId":"$localFileId",
+                                            "plainName":"NOTES",
+                                            "type":"MD",
+                                            "size":"64",
+                                            "bucket":"6928426c1a2316b856c9ab81",
+                                            "folderUuid":"root-folder-uuid",
+                                            "status":"EXISTS"
+                                        }]}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            else -> error("unexpected URL in collision-ext test: $url (method=${request.method})")
+                        }
+                    }
+
+                val provider = newProviderRooted(tmp, engine)
+                try {
+                    val thrown =
+                        kotlin.test.assertFailsWith<org.krost.unidrive.internxt.InternxtApiException> {
+                            provider.upload(local, "/notes.txt", existingRemoteId = null, onProgress = null)
+                        }
+                    assertEquals(409, thrown.statusCode, "the original 409 is rethrown, not translated")
+                    assertEquals(1, createFileCalls.get(), "no conflict copy for a name the listing cannot tie to the refusal")
+                    assertEquals(0, replaceFileCalls.get(), "a different-extension sibling must never be replaced")
+                } finally {
+                    provider.close()
+                }
+            } finally {
+                local.toFile().deleteRecursively()
+                tmp.toFile().deleteRecursively()
+            }
+        }
+
     private class SameSizeCollision(
         val localBytes: ByteArray,
         val remoteBytes: ByteArray,

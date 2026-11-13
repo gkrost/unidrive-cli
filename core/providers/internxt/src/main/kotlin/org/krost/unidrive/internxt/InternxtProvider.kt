@@ -571,11 +571,71 @@ class InternxtProvider(
     private fun fileMatchesFullName(
         file: InternxtFile,
         name: String,
-    ): Boolean {
+    ): Boolean = recomposedFullName(file) == name
+
+    // The full name a stored plainName + type pair spells: the type appended unless the base
+    // already ends in it. Case-preserving — the exact matcher must stay exact; the 409
+    // near-miss below folds case on this same recomposition and nothing else.
+    private fun recomposedFullName(file: InternxtFile): String {
         val baseName = sanitizeName(file.plainName ?: file.name ?: "")
         val cleanType = file.type?.let { sanitizeName(it) }
-        val fullName = if (!cleanType.isNullOrEmpty() && !baseName.endsWith(".$cleanType")) "$baseName.$cleanType" else baseName
-        return fullName == name
+        return if (!cleanType.isNullOrEmpty() && !baseName.endsWith(".$cleanType")) "$baseName.$cleanType" else baseName
+    }
+
+    // UD-366 keep-both: land the local content under a conflict-suffixed name, reusing the
+    // already-committed bucket entry (same fileId). The original name's holder — whatever the
+    // collision ladder found it to be — stays untouched. Retries the suffix while Internxt
+    // refuses the conflict name too; exhausted attempts surface as the original 409 shape.
+    private suspend fun uploadConflictCopy(
+        bucket: String,
+        folderUuid: String,
+        plainName: String,
+        ext: String?,
+        size: Long,
+        bucketEntryId: String,
+        modificationTime: java.time.Instant?,
+        remotePath: String,
+        mnemonic: String,
+    ): org.krost.unidrive.internxt.model.InternxtFile {
+        val today =
+            java.time.format.DateTimeFormatter
+                .ofPattern("yyyy-MM-dd")
+                .withZone(java.time.ZoneOffset.UTC)
+                .format(java.time.Instant.now())
+        var conflictResult: org.krost.unidrive.internxt.model.InternxtFile? = null
+        for (counter in 1..MAX_KEEP_OVERWRITTEN_RETRIES) {
+            val conflictPlainName = conflictName(plainName, today, counter, ext, strict = config.strictNames)
+            val conflictEncryptedName =
+                crypto.encryptName(conflictPlainName, "$mnemonic-$folderUuid")
+            try {
+                conflictResult =
+                    api.createFile(
+                        bucket = bucket,
+                        folderUuid = folderUuid,
+                        plainName = conflictPlainName,
+                        encryptedName = conflictEncryptedName,
+                        size = size,
+                        type = ext,
+                        fileId = bucketEntryId,
+                        modificationTime = modificationTime,
+                    )
+                break
+            } catch (ce: InternxtApiException) {
+                if (ce.statusCode == 409 && counter < MAX_KEEP_OVERWRITTEN_RETRIES) {
+                    log.warn(
+                        "UD-366: conflict name '{}' also taken; trying counter {}",
+                        conflictPlainName, counter + 1,
+                    )
+                    continue
+                }
+                throw ce
+            }
+        }
+        return conflictResult
+            ?: throw InternxtApiException(
+                message = "UD-366: exhausted $MAX_KEEP_OVERWRITTEN_RETRIES conflict-name attempts for $remotePath",
+                statusCode = 409,
+            )
     }
 
     private fun throwAmbiguous(
@@ -2160,22 +2220,21 @@ class InternxtProvider(
                         val nearMisses =
                             folderContent.files.filter { candidate ->
                                 candidate.isLive() &&
-                                    !fileMatchesFullName(candidate, wantedName) &&
-                                    sanitizeName(candidate.plainName ?: candidate.name ?: "")
-                                        .equals(plainName, ignoreCase = true)
+                                    recomposedFullName(candidate).equals(wantedName, ignoreCase = true)
                             }
                         val hiddenHolders =
                             folderContent.files.filter { candidate ->
                                 !candidate.isLive() && fileMatchesFullName(candidate, wantedName)
                             }
                         when {
-                            // One live file of the same base name whose type split or case form
-                            // recomposes a different full name: run the same content-identity
-                            // ladder on it. A wrong guess can only end in a conflict copy —
-                            // the adopt paths still demand fileId/size/byte proof.
+                            // One live file whose recomposed full name is the wanted name in
+                            // another case form: run the same content-identity ladder on it.
+                            // Only the case folds — a different extension is a different name
+                            // and stays a stranger. A wrong guess can only end in a conflict
+                            // copy; the adopt paths still demand fileId/size/byte proof.
                             nearMisses.size == 1 -> {
                                 log.warn(
-                                    "UD-366: 409 on POST /files for {}: no live file of that exact full name, but one live file of the same base name differs only in its type split or case form; running the content-identity check on it",
+                                    "UD-366: 409 on POST /files for {}: no live file of that exact full name, but one live file spells the same full name in another case form; running the content-identity check on it",
                                     remotePath,
                                 )
                                 remoteFile = nearMisses.single()
@@ -2227,52 +2286,22 @@ class InternxtProvider(
                         remoteFile
                     } else {
                         // KEEP BOTH: leave remote untouched; land local under a conflict name.
-                        val today =
-                            java.time.format.DateTimeFormatter
-                                .ofPattern("yyyy-MM-dd")
-                                .withZone(java.time.ZoneOffset.UTC)
-                                .format(java.time.Instant.now())
                         log.warn(
                             "UD-366: collision on {} — remote fileId={} size={} differs from local fileId={} size={}; " +
                                 "preserving remote untouched, uploading local as conflict copy",
                             remotePath, remoteFileId, remoteSize, bucketEntry.id, fileSize,
                         )
-                        // Upload conflict copy: reuse the already-committed bucket entry
-                        // (same fileId) under a conflict-suffixed name.
-                        var conflictResult: org.krost.unidrive.internxt.model.InternxtFile? = null
-                        for (counter in 1..MAX_KEEP_OVERWRITTEN_RETRIES) {
-                            val conflictPlainName = conflictName(plainName, today, counter, ext, strict = config.strictNames)
-                            val conflictEncryptedName =
-                                crypto.encryptName(conflictPlainName, "${creds.mnemonic}-$parentUuid")
-                            try {
-                                conflictResult =
-                                    api.createFile(
-                                        bucket = bucket,
-                                        folderUuid = parentUuid,
-                                        plainName = conflictPlainName,
-                                        encryptedName = conflictEncryptedName,
-                                        size = fileSize,
-                                        type = ext,
-                                        fileId = bucketEntry.id,
-                                        modificationTime = localMtime,
-                                    )
-                                break
-                            } catch (ce: InternxtApiException) {
-                                if (ce.statusCode == 409 && counter < MAX_KEEP_OVERWRITTEN_RETRIES) {
-                                    log.warn(
-                                        "UD-366: conflict name '{}' also taken; trying counter {}",
-                                        conflictPlainName, counter + 1,
-                                    )
-                                    continue
-                                }
-                                throw ce
-                            }
-                        }
-                        conflictResult
-                            ?: throw InternxtApiException(
-                                message = "UD-366: exhausted $MAX_KEEP_OVERWRITTEN_RETRIES conflict-name attempts for $remotePath",
-                                statusCode = 409,
-                            )
+                        uploadConflictCopy(
+                            bucket = bucket,
+                            folderUuid = parentUuid,
+                            plainName = plainName,
+                            ext = ext,
+                            size = fileSize,
+                            bucketEntryId = bucketEntry.id,
+                            modificationTime = localMtime,
+                            remotePath = remotePath,
+                            mnemonic = creds.mnemonic,
+                        )
                     }
                 } catch (e: java.io.IOException) {
                     // The createFile response was lost (truncated / "server
