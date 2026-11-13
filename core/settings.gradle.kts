@@ -1,5 +1,3 @@
-rootProject.name = "unidrive"
-
 // Maven Central rate-limits by client IP, and GitHub-hosted CI runners share
 // egress ranges — a build can fail with `429 Too Many Requests` from
 // repo.maven.apache.org (Gradle retries with backoff, but a rate-limit window
@@ -53,6 +51,16 @@ pluginManagement {
         mavenCentral()
     }
 }
+
+// Gradle 10 refuses a JDK it had to download without a toolchain repository ("installed via auto-provisioning without
+// toolchain repositories"). The Foojay resolver is that repository for the JDKs the build asks for (25 to compile, 27 for
+// the runtime legs). CI installs both with setup-java and never downloads; a developer machine without them does, once.
+// It stays above rootProject.name and include: a settings `plugins {}` block may only be preceded by pluginManagement.
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
+}
+
+rootProject.name = "unidrive"
 
 include(
     "app:core", "app:engine-core", "app:sync", "app:sync-tracking", "app:hydration", "app:xtra", "app:cli", "app:cli-spi",
