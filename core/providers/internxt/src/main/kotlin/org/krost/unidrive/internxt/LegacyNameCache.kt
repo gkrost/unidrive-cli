@@ -1,10 +1,12 @@
 package org.krost.unidrive.internxt
 
+import java.security.MessageDigest
+
 /**
  * The decrypted names of legacy rows (archive#314), kept so a listing pays the PBKDF2-SHA512 derivation once per row
  * and not once per row per pass. A name that does not decrypt is kept as a miss too: it fails the same way every
- * pass. Keyed by the ciphertext and its parent scope; the mnemonic enters only as its hash code, so the cache holds
- * no copy of it. Bounded: the least recently used entry goes first.
+ * pass. Keyed by the ciphertext and its parent scope; the mnemonic enters only as a truncated SHA-256 digest, so the
+ * cache holds no copy of it and two mnemonics do not share entries. Bounded: the least recently used entry goes first.
  */
 internal class LegacyNameCache(
     private val maxEntries: Int = DEFAULT_MAX_ENTRIES,
@@ -14,7 +16,7 @@ internal class LegacyNameCache(
     private data class Key(
         val encryptedName: String,
         val parentUuid: String,
-        val scope: Int,
+        val scope: String,
     )
 
     // A miss is kept as null; containsKey tells it apart from an entry never tried.
@@ -29,7 +31,7 @@ internal class LegacyNameCache(
         mnemonic: String,
         parentUuid: String,
     ): String? {
-        val key = Key(encryptedName, parentUuid, mnemonic.hashCode())
+        val key = Key(encryptedName, parentUuid, mnemonicScope(mnemonic))
         synchronized(entries) {
             if (entries.containsKey(key)) return entries[key]
         }
@@ -39,7 +41,15 @@ internal class LegacyNameCache(
         return plain
     }
 
+    private fun mnemonicScope(mnemonic: String): String =
+        MessageDigest
+            .getInstance("SHA-256")
+            .digest(mnemonic.toByteArray(Charsets.UTF_8))
+            .copyOf(DIGEST_BYTES)
+            .joinToString("") { "%02x".format(it) }
+
     private companion object {
+        const val DIGEST_BYTES = 16
         const val DEFAULT_MAX_ENTRIES = 10_000
         const val INITIAL_CAPACITY = 64
         const val LOAD_FACTOR = 0.75f
