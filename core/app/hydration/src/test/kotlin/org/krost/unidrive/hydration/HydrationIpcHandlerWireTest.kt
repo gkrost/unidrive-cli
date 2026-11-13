@@ -121,6 +121,11 @@ class HydrationIpcHandlerWireTest {
         assertEquals("""{"ok":true,"cache_path":$cacheJson}""", run(fake, read))
         fake.open = OpenResult.Ok(fake.cache, contentId = "obj-report|42")
         assertEquals("""{"ok":true,"cache_path":$cacheJson,"content_id":"obj-report|42"}""", run(fake, read))
+        // gkrost/unidrive-cli#707: the etag of the version served comes after the content id, and alone where the provider names no bytes.
+        fake.open = OpenResult.Ok(fake.cache, contentId = "obj-report|42", etag = "etag-report")
+        assertEquals("""{"ok":true,"cache_path":$cacheJson,"content_id":"obj-report|42","etag":"etag-report"}""", run(fake, read))
+        fake.open = OpenResult.Ok(fake.cache, etag = "etag-report")
+        assertEquals("""{"ok":true,"cache_path":$cacheJson,"etag":"etag-report"}""", run(fake, read))
         fake.open = OpenResult.Ok(fake.cache, excluded = true)
         val write = """{"verb":"hydration.open_write","handle_id":"h-1","path":"/docs/report.txt","cache_path":"/cache/unidrive/hydration/docs/report.txt"}"""
         assertEquals("""{"ok":true,"cache_path":$cacheJson,"excluded":true}""", run(fake, write))
