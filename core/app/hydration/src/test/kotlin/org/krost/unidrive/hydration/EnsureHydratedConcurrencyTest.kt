@@ -92,6 +92,21 @@ class EnsureHydratedConcurrencyTest {
             assertContentEquals(content, Files.readAllBytes(a.await()))
         }
 
+    // gkrost/unidrive-cli#438: the per-path locks are held in memory only while they are used, not for every path ever opened.
+    @Test
+    fun `the per-path locks are released once the opens are served`() =
+        runTest {
+            val paths = (1..50).map { "/f$it.txt" }
+            for (p in paths) {
+                provider.files[p] = content
+                seedRemoteBackedRow(p)
+            }
+
+            paths.map { p -> async { engine.ensureHydrated(p) } }.forEach { it.await() }
+
+            assertEquals(0, MountEngine.over(engine).heldPathLocks, "no lock entry outlives its users")
+        }
+
     @Test
     fun `a failed re-download leaves the previous cache copy intact and stages nothing`() =
         runTest {

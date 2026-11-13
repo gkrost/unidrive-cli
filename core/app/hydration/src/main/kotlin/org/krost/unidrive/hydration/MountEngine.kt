@@ -3,9 +3,7 @@ package org.krost.unidrive.hydration
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.AuthenticationException
@@ -534,18 +532,25 @@ class MountEngine private constructor(
     // Without it, a second open whose warm-cache size check fails re-downloads with
     // TRUNCATE_EXISTING into the cache file while a first handle is still reading it
     // (silent short/garbage reads on POSIX), and two concurrent cold opens
-    // double-download the same file. Entries persist for the daemon session — the
-    // same lifetime tradeoff as HydrationImpl.createMutexes, bounded by the number
-    // of distinct paths ever hydrated.
-    private val hydrateMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    // double-download the same file. gkrost/unidrive-cli#438: a path's entry lives only while
+    // somebody holds or waits for it ([PathLocks]).
+    private val hydrateLocks = PathLocks()
 
     // The truncate of open_write_begin and the end of a download of the same path, one at a time. The truncate does not wait
     // for the hydrate lock (a download can run for minutes); it waits for this short end only: the download's last look at
     // the row, the move, local hash and row write. A truncate in between had its edit's
     // mark wiped by the row write, or emptied a copy the move then replaced (the editor's bytes went to the old file).
-    private val cacheSwapMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    @PublishedApi
+    internal val cacheSwapLocks = PathLocks()
 
-    internal fun cacheSwapLock(path: String): Mutex = cacheSwapMutexes.computeIfAbsent(PathNormalizer.nfc(path)) { Mutex() }
+    /** Runs [block] holding the swap lock of [path] (its NFC form). */
+    internal suspend inline fun <T> withCacheSwapLock(
+        path: String,
+        block: () -> T,
+    ): T = cacheSwapLocks.withLock(PathNormalizer.nfc(path), block)
+
+    /** gkrost/unidrive-cli#438: how many paths the hydrate and the swap locks hold now (a test seam). */
+    internal val heldPathLocks: Int get() = hydrateLocks.size + cacheSwapLocks.size
 
     // gkrost/unidrive-cli#23: the transfer of the download running for each path (at most one: the hydrate lock), read by
     // [downloadProgress].
@@ -662,7 +667,7 @@ class MountEngine private constructor(
         val tally = FileEventTally()
         val started = System.nanoTime()
         try {
-            val result = hydrateMutexes.computeIfAbsent(path) { Mutex() }.withLock { ensureHydratedLocked(path, history, tally) }
+            val result = hydrateLocks.withLock(path) { ensureHydratedLocked(path, history, tally) }
             FileEvents.event(FileEvents.Phase.HYDRATE_SERVED, path, bytes = runCatching { Files.size(result.path) }.getOrNull(),
                 ms = (System.nanoTime() - started) / 1_000_000, tally = tally, extra = listOf("cache_hit" to !result.fetched))
             return result
@@ -818,7 +823,7 @@ class MountEngine private constructor(
                     // down owns the cache copy now (open_write_begin truncates it without this path's hydrate lock).
                     // The row is also checked for identity: a row that was removed or replaced while the download ran is
                     // another file's row, and the cache path may hold that replacement's only bytes.
-                    cacheSwapLock(path).withLock {
+                    withCacheSwapLock(path) {
                         val rowNow = requireRowUnchanged(path, entry)
                         if (rowNow.editBase != null && entry.editBase == null) {
                             log.info("integrity failure of {} leaves the cache copy: an edit began while the download ran", path)
@@ -840,8 +845,8 @@ class MountEngine private constructor(
                 }
             }
             // The last look at the row, the move of the bytes into place and the row write are one step for a truncate
-            // ([cacheSwapLock]): a truncate before it is seen below, one after it empties the copy the download put there.
-            cacheSwapLock(path).withLock {
+            // ([withCacheSwapLock]): a truncate before it is seen below, one after it empties the copy the download put there.
+            withCacheSwapLock(path) {
                 val rowNow = requireRowUnchanged(path, entry)
                 // M1 of archive#1040: open_write_begin does not take this path's hydrate lock, so an edit may have begun while
                 // the bytes came down. Its truncated copy is the start of that edit, the only copy of it: the finished download
@@ -1205,7 +1210,7 @@ class MountEngine private constructor(
         onUnhydrated: suspend (String) -> Unit = {},
         observed: Pair<Long, Long>? = null,
     ): Long? =
-        hydrateMutexes.computeIfAbsent(path) { Mutex() }.withLock {
+        hydrateLocks.withLock(path) {
             // archive#728: one row read decides both the classification and the baseline question below: this
             // is the re-check that counts, so it must not ask the database twice per evicted file.
             val entry = db.getEntry(path) ?: return@withLock null
