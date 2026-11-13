@@ -14,7 +14,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
-import io.ktor.utils.io.readRemaining
+import io.ktor.utils.io.readBuffer
 import kotlinx.io.readByteArray
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -238,7 +238,7 @@ class InternxtMultipartUploadTest {
         coroutineScope {
             // Read while the writer writes: the channel buffer is small, so a
             // reader that waits for the writer to finish deadlocks it.
-            val reader = launch { drained.set(channel.readRemaining().readByteArray()) }
+            val reader = launch { drained.set(channel.readBuffer().readByteArray()) }
             launch {
                 content.writeTo(channel)
                 channel.flushAndClose()
@@ -471,7 +471,7 @@ class InternxtMultipartUploadTest {
                 tomb.copy(
                     multipart =
                         tomb.multipart!!.copy(
-                            urls = tomb.multipart!!.urls.take(1),
+                            urls = tomb.multipart.urls.take(1),
                             issuedAtMillis = System.currentTimeMillis(),
                         ),
                 ),

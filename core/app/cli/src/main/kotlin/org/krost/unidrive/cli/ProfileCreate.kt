@@ -317,7 +317,7 @@ internal object ProfileCreator {
                 "standard input holds one secret but ${missingSecrets.size} are missing: ${missingSecrets.joinToString(", ")}",
             )
         }
-        val line = generateSequence { readLine() }.firstOrNull()?.removeSuffix("\r") ?: ""
+        val line = readlnOrNull()?.removeSuffix("\r") ?: ""
         if (line.isEmpty()) throw LifecycleError("empty_secret", "--secret-stdin was given but standard input held no secret")
         return line
     }

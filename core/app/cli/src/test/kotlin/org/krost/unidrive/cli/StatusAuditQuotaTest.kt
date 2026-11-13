@@ -47,7 +47,7 @@ class StatusAuditQuotaTest {
             localPath: Path,
             remotePath: String,
             existingRemoteId: String?,
-            previousVersion: String?,
+            ifMatchETag: String?,
             onProgress: ((Long, Long) -> Unit)?,
         ): CloudItem = error("not used")
 

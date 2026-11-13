@@ -53,11 +53,11 @@ class InternxtSocketTimeoutLoopbackTest {
                         object : OutgoingContent.WriteChannelContent() {
                             override val contentLength: Long = bodyBytes.toLong()
 
-                            override suspend fun writeTo(sink: ByteWriteChannel) {
+                            override suspend fun writeTo(channel: ByteWriteChannel) {
                                 val chunk = ByteArray(64 * 1024)
                                 var left = bodyBytes.toLong()
                                 while (left > 0) {
-                                    sink.writeByteArray(chunk)
+                                    channel.writeByteArray(chunk)
                                     left -= chunk.size
                                     delay(50)
                                 }

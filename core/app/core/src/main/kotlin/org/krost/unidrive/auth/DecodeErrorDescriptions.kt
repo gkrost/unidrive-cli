@@ -5,6 +5,7 @@ package org.krost.unidrive.auth
  * exceptions quote the JSON text they choked on in their message, and for these payloads that text is the secret
  * itself; only the exception's class and, for a missing field, the absent field names are safe to log.
  */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class) // MissingFieldException names the absent fields
 public fun describeDecodeError(e: kotlinx.serialization.SerializationException): String =
     (e as? kotlinx.serialization.MissingFieldException)
         ?.missingFields

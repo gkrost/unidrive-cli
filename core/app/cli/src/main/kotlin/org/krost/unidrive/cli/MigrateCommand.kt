@@ -358,7 +358,10 @@ class MigrateInventoryCommand : Runnable {
                         },
                     )
                 }
-            return Json { prettyPrint = true }.encodeToString(JsonElement.serializer(), root)
+            return prettyJson.encodeToString(JsonElement.serializer(), root)
         }
     }
 }
+
+// One instance for the pretty-printed output of this file: a Json format is expensive to build per use.
+private val prettyJson = Json { prettyPrint = true }
