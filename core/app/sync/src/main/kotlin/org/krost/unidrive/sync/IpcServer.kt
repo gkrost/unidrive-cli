@@ -18,11 +18,8 @@ import java.net.ConnectException
 import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
 import java.nio.ByteBuffer
-import java.nio.channels.SelectionKey
-import java.nio.channels.Selector
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
-import java.util.concurrent.TimeUnit
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -816,26 +813,7 @@ class IpcServer(
     // read side is kept open and drained until the peer's end of stream or [refusalLingerMs], whichever
     // comes first. That wait runs on a coroutine of its own: the accept loop never sleeps for it.
     // At most MAX_LINGERING_REFUSALS wait at once; past that a refusal drains what has arrived and closes.
-    // gkrost/unidrive-cli#456: the wait for writability is a selector wait, not a sleep-poll. A peer that reads
-    // nothing used to pin one of the transport threads for the whole timeout in 5 ms sleeps — a few wedged
-    // connections starved the pool without any request ever being malformed. The thread now sits in select() and
-    // wakes the moment the peer takes bytes (or the timeout ends).
-    private fun writeWhileWritable(
-        sc: SocketChannel,
-        line: ByteBuffer,
-        deadline: Long,
-    ) {
-        Selector.open().use { selector ->
-            sc.register(selector, SelectionKey.OP_WRITE)
-            while (line.hasRemaining() && System.nanoTime() < deadline) {
-                sc.write(line)
-                if (!line.hasRemaining()) break
-                val remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
-                if (remainingMs <= 0) break
-                selector.select(remainingMs)
-            }
-        }
-    }
+    // gkrost/unidrive-cli#456: the wait for writability is a selector wait, not a sleep-poll — [writeWhileWritable].
 
     private fun refuse(
         sc: SocketChannel,
