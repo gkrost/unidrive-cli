@@ -63,7 +63,7 @@ class LinuxSecretServiceCredentialProtector(
         run(listOf("clear", "application", "unidrive", "credential", key, "revision", revision), "")
     }
 
-    private val STREAM_DRAINS = java.util.concurrent.Executors.newThreadPerTaskExecutor(java.lang.Thread.ofVirtual().factory())
+    private val streamDrains = java.util.concurrent.Executors.newThreadPerTaskExecutor(java.lang.Thread.ofVirtual().factory())
 
     private fun run(
         args: List<String>,
@@ -76,10 +76,10 @@ class LinuxSecretServiceCredentialProtector(
         // blocking 10-second reads could park. Virtual threads: one per drain, nothing shared.
         val output = CompletableFuture.supplyAsync({
             process.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-        }, STREAM_DRAINS)
+        }, streamDrains)
         val errorOutput = CompletableFuture.supplyAsync({
             process.errorStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-        }, STREAM_DRAINS)
+        }, streamDrains)
         val finished =
             runCatching {
                 process.outputStream.bufferedWriter(StandardCharsets.UTF_8).use { writer ->

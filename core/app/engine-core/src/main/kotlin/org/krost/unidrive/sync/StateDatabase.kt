@@ -2264,8 +2264,7 @@ class StateDatabase(
             // windows#454 item 14: asked per item on the gather's hot path (RemoteGather): the statement is cached.
             c.cached(NAME_BLOCK_SQL) { stmt ->
                 stmt.setString(1, path)
-                val rs = stmt.executeQuery()
-                if (rs.next()) rs.getString(1)?.let { parseNameBlock(it) } else null
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1)?.let { parseNameBlock(it) } else null }
             }
         }
 
@@ -2306,8 +2305,7 @@ class StateDatabase(
             c.cached(COUNT_NAME_BLOCKED_SQL) { stmt ->
                 stmt.setString(1, reasonPrefix)
                 stmt.setString(2, reasonPrefix)
-                val rs = stmt.executeQuery()
-                if (rs.next()) rs.getInt(1) else 0
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
             }
         }
 
@@ -2318,8 +2316,7 @@ class StateDatabase(
             c.cached(BLOCKED_ANCESTOR_SQL) { stmt ->
                 stmt.setString(1, path)
                 stmt.setString(2, path)
-                val rs = stmt.executeQuery()
-                if (rs.next()) rs.getString(1) else null
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
             }
         }
 
