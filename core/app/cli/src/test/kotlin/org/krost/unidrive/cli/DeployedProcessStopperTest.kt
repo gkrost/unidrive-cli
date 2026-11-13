@@ -73,7 +73,7 @@ class DeployedProcessStopperTest {
 
     @Test
     fun `waiting for a live holder times out as a false result`() {
-        assertEquals(false, awaitDeployedProcessExit(ProcessHandle.current(), 1, java.util.concurrent.CompletableFuture()))
+        assertEquals(false, awaitProcessExit(ProcessHandle.current(), 1, java.util.concurrent.CompletableFuture()))
     }
 
     @Test

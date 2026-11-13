@@ -3363,7 +3363,7 @@ class HydrationImpl(
             // its copy is the one emptied here.
             val cachePath =
                 mount.withCacheSwapLock(normalised) {
-                    if (entry.remoteId != null) stateDb.markEdited(normalised, entry.writeToken.orEmpty())
+                    if (!stateDb.markEditedForWrite(entry)) return OpenResult.Failed(HydrationError.UnknownPath)
                     prepareEmptyCache(normalised)
                 }
             // archive#728: a truncate of a cached copy frees its bytes; the accounting follows the file.
