@@ -33,11 +33,12 @@ class HydrationReplayHandleIdTest {
     private class Daemon(
         dirs: Dirs,
         val provider: MinimalFakeProvider,
+        replayDelayMs: Long = 0,
     ) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val db = StateDatabase(dirs.dbPath).also { it.initialize() }
         val engine = SyncEngine(provider = provider, db = db, syncRoot = dirs.syncRoot, cacheRoot = dirs.cacheRoot)
-        val hydration = HydrationImpl(syncEngine = engine, stateDb = db, recoveryUploadScope = scope, failedReplayDelayMs = 0)
+        val hydration = HydrationImpl(syncEngine = engine, stateDb = db, recoveryUploadScope = scope, failedReplayDelayMs = replayDelayMs)
         val handler = HydrationIpcHandler(hydration)
         val completed = CopyOnWriteArrayList<HydrationEvent.Completed>()
         private val collector =
@@ -168,6 +169,37 @@ class HydrationReplayHandleIdTest {
         try {
             assertEquals(0, second.hydration.replayPendingUploads())
             assertNull(second.db.uploadHandleOf("/gone.bin"))
+        } finally {
+            second.stop()
+        }
+    }
+
+    @Test
+    fun `a late replay whose record a resubmission replaced meanwhile reports under the engine's id`() = runBlocking {
+        val dirs = Dirs()
+        val provider = MinimalFakeProvider()
+        provider.uploadGate = CompletableDeferred()
+
+        val first = Daemon(dirs, provider)
+        first.write("/late.bin", "bytes owed", "h1")
+        withTimeout(10_000) { while (provider.uploadAttempts() < 1) delay(20) }
+        first.stop()
+        val marker = StateDatabase(dirs.dbPath).also { it.initialize() }
+        marker.markUploadFailed("/late.bin", java.time.Instant.now()) // a failed attempt: the replay is deferred
+        marker.close()
+
+        provider.uploadGate = null
+        val second = Daemon(dirs, provider, replayDelayMs = 1_500)
+        try {
+            assertEquals("h1", second.db.uploadHandleOf("/late.bin"))
+            assertEquals(0, second.hydration.replayPendingUploads(), "deferred, not queued")
+            second.db.recordUploadHandle("/late.bin", "h2") // the client resubmitted during the delay
+            val done =
+                withTimeout(15_000) {
+                    while (second.completed.isEmpty()) delay(20)
+                    second.completed.first()
+                }
+            assertEquals("engine-replay-late-1", done.handleId, "the replaced record is a miss: ${second.completed}")
         } finally {
             second.stop()
         }

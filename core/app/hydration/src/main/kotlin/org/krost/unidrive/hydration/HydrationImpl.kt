@@ -893,11 +893,14 @@ class HydrationImpl(
     }
 
     // gkrost/unidrive-cli#437: the upload of [handleId] ended, so no replay reports under it again.
-    private fun forgetClientHandle(handleId: String) {
+    private fun forgetClientHandle(
+        path: String,
+        handleId: String,
+    ) {
         try {
-            stateDb.forgetUploadHandle(handleId)
+            stateDb.forgetUploadHandle(path, handleId)
         } catch (e: Exception) {
-            log.debug("record of handle {} not removed: {}", handleId, e.message)
+            log.debug("record of handle {} of {} not removed: {}", handleId, path, e.message)
         }
     }
 
@@ -906,13 +909,23 @@ class HydrationImpl(
     private fun replayHandleOf(
         path: String,
         fallback: String,
-    ): String =
+    ): String = recordedHandleOf(path) ?: fallback
+
+    private fun recordedHandleOf(path: String): String? =
         try {
-            stateDb.uploadHandleOf(path) ?: fallback
+            stateDb.uploadHandleOf(path)
         } catch (e: Exception) {
             log.debug("recorded handle of {} not read: {}", path, e.message)
-            fallback
+            null
         }
+
+    // gkrost/unidrive-cli#437: a late replay keeps the handle that was on record when it was scheduled ([snapshot]). A record a
+    // client's resubmission replaced during the delay belongs to that submission's own upload: the replay is a miss then.
+    private fun lateReplayHandleOf(
+        path: String,
+        snapshot: String?,
+        fallback: String,
+    ): String = if (snapshot != null && recordedHandleOf(path) == snapshot) snapshot else fallback
 
     // Submits a background upload for [path] from [cachePath] to the daemon's
     // upload queue. Same-path uploads queue FIFO (the per-path mutex in
@@ -975,7 +988,7 @@ class HydrationImpl(
             // cancelUpload ended the wait: the submission is cancelled like a queued worker would be (same end of the
             // handle's correlation), and the caller's request goes on.
             tx?.finish(TransferResult.INTERRUPTED, errorClass = "cancelled", attempted = tx.hasStarted)
-            if (!stopping) forgetClientHandle(handleId)
+            if (!stopping) forgetClientHandle(path, handleId)
             _events.emit(
                 HydrationEvent.Completed(
                     path = path,
@@ -1043,7 +1056,7 @@ class HydrationImpl(
                     tx?.finish(TransferResult.INTERRUPTED, errorClass = "cancelled", attempted = tx.hasStarted)
                     // gkrost/unidrive-cli#437: a cancel by the client ends the handle; a stop leaves the upload owed, and the
                     // next start's replay reports under the handle.
-                    if (!stopping) forgetClientHandle(handleId)
+                    if (!stopping) forgetClientHandle(path, handleId)
                     // gkrost/unidrive-cli#452: this completed is terminal — cancelUpload promises it to
                     // every aborted submission — so tryEmit must not run it: with the event buffer full
                     // a tryEmit returns false and the event is lost before any subscriber queue, leaving
@@ -1082,7 +1095,7 @@ class HydrationImpl(
             // The path is no longer pinned by its upload: the budget may have been waiting for that.
             requestEviction()
             completed?.let {
-                forgetClientHandle(handleId)
+                forgetClientHandle(path, handleId)
                 _events.emit(withLandedRow(it))
             }
         }
@@ -1639,6 +1652,7 @@ class HydrationImpl(
             if (failedReplayDelayMs > 0 && stateDb.getEntry(path)?.lastErrorAt != null) {
                 deferred++
                 val fallbackId = "engine-replay-late-$deferred"
+                val snapshot = recordedHandleOf(path)
                 recoveryUploadScope.launch {
                     delay(failedReplayDelayMs)
                     val entry = stateDb.getEntry(path)
@@ -1646,7 +1660,7 @@ class HydrationImpl(
                     if (uploadSlots.containsKey(path) || !replayable(path)) return@launch
                     if (replaceReserves(path)) return@launch // gkrost/unidrive-cli#311: a replace still owes this name
                     if (refusedEarlier(path, mount.resolveCachePath(path)) != null) return@launch // refused meanwhile
-                    launchSerializedUpload(path, mount.resolveCachePath(path), replayHandleOf(path, fallbackId), baseEtag = null)
+                    launchSerializedUpload(path, mount.resolveCachePath(path), lateReplayHandleOf(path, snapshot, fallbackId), baseEtag = null)
                 }
                 continue
             }
@@ -1695,6 +1709,7 @@ class HydrationImpl(
             if (failedReplayDelayMs > 0 && entry.lastErrorAt != null) {
                 dirtyDeferred++
                 val fallbackId = "engine-dirty-late-$dirtyDeferred"
+                val snapshot = recordedHandleOf(path)
                 recoveryUploadScope.launch {
                     delay(failedReplayDelayMs)
                     val now = stateDb.getEntry(path) ?: return@launch
@@ -1703,7 +1718,7 @@ class HydrationImpl(
                     if (replaceReserves(path)) return@launch // gkrost/unidrive-cli#311: a replace still owes this name
                     val cp = mount.resolveCachePath(path)
                     if (refusedEarlier(path, cp) != null) return@launch
-                    launchDirtyReplay(now, cp, replayHandleOf(path, fallbackId))
+                    launchDirtyReplay(now, cp, lateReplayHandleOf(path, snapshot, fallbackId))
                 }
                 continue
             }
@@ -1749,7 +1764,7 @@ class HydrationImpl(
         val current = entry.writeToken
         if (!base.isNullOrEmpty() && current != null && !entry.isBasedOn(base)) {
             runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
-            forgetClientHandle(handleId)
+            forgetClientHandle(path, handleId)
             _events.emit(HydrationEvent.Failed(path, HydrationError.Conflict, retryScheduled = false))
             _events.emit(
                 HydrationEvent.Completed(

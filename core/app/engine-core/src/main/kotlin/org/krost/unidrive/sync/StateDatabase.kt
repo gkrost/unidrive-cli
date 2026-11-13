@@ -2309,14 +2309,19 @@ class StateDatabase(
         }
 
     /**
-     * gkrost/unidrive-cli#437: the upload of [handleId] has ended (landed, failed for good or cancelled by its client): its
-     * record goes, wherever a rename moved the upload. A record a newer submission wrote under another id stays.
+     * gkrost/unidrive-cli#437: the upload of [handleId] for [pathRaw] has ended (landed, failed for good or cancelled by its
+     * client): its record goes. Scoped by path as well: two connections can hold the same handle id for different paths, and a
+     * record a newer submission wrote under another id stays.
      */
-    fun forgetUploadHandle(handleId: String) {
+    fun forgetUploadHandle(
+        pathRaw: String,
+        handleId: String,
+    ) {
         locked("forgetUploadHandle") {
             beginWrite()
-            conn.prepareStatement("DELETE FROM upload_handles WHERE handle_id=?").use { stmt ->
-                stmt.setString(1, handleId)
+            conn.prepareStatement("DELETE FROM upload_handles WHERE path=? AND handle_id=?").use { stmt ->
+                stmt.setString(1, PathNormalizer.nfc(pathRaw))
+                stmt.setString(2, handleId)
                 stmt.executeUpdate()
             }
         }

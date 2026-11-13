@@ -51,10 +51,10 @@ class UploadHandlesStateDbTest {
         assertEquals("h1", db.uploadHandleOf("/a.txt"))
 
         db.recordUploadHandle("/a.txt", "h2")
-        db.forgetUploadHandle("h1") // the older submission ends: the newer record stays
+        db.forgetUploadHandle("/a.txt", "h1") // the older submission ends: the newer record stays
         assertEquals(mapOf("/a.txt" to "h2"), db.uploadHandles())
 
-        db.forgetUploadHandle("h2")
+        db.forgetUploadHandle("/a.txt", "h2")
         assertNull(db.uploadHandleOf("/a.txt"))
     }
 
@@ -66,5 +66,15 @@ class UploadHandlesStateDbTest {
 
         assertEquals(1, db.pruneUploadHandles())
         assertEquals(mapOf("/kept.txt" to "h1"), db.uploadHandles())
+    }
+
+    @Test
+    fun `an end removes only the record of its own path when two connections share a handle id`() {
+        db.recordUploadHandle("/a.txt", "wh-1")
+        db.recordUploadHandle("/b.txt", "wh-1")
+
+        db.forgetUploadHandle("/a.txt", "wh-1")
+
+        assertEquals(mapOf("/b.txt" to "wh-1"), db.uploadHandles())
     }
 }
