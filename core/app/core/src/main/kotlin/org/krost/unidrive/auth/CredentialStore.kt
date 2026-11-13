@@ -6,6 +6,7 @@ import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.io.withLocalIoRetryBlocking
 import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 
 /**
@@ -40,6 +41,10 @@ public class CredentialStore<T>(
 
     private val file: Path get() = dir.resolve(fileName)
 
+    // Test seam: a file that vanishes between the exists() check and the read throws java.nio's NoSuchFileException,
+    // which a test cannot provoke deterministically otherwise.
+    internal var readFile: (Path) -> String = { Files.readString(it) }
+
     /**
      * Load and parse the credential file. Returns `null` if:
      *   - the file does not exist, or
@@ -69,7 +74,7 @@ public class CredentialStore<T>(
             // windows#454 item 3: a locked file (an antivirus, a backup tool) is not "not signed in" — it is an I/O
             // failure, and reading it as null sent the daemon into a needless re-sign-in (CredentialProtector's own
             // contract). One retry through the local-I/O lock window; every non-missing failure then propagates.
-            val raw = withLocalIoRetryBlocking { Files.readString(file) }
+            val raw = withLocalIoRetryBlocking { readFile(file) }
             val decoded = protector?.let { decodeWithAnyId(it, raw) }
             if (migrate && decoded != null && !decoded.protected) {
                 // Protect even malformed legacy content before parsing it. This removes any

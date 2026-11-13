@@ -93,6 +93,17 @@ class CredentialStoreTest {
     }
 
     @Test
+    fun `a file that vanishes between the exists check and the read is signed out, not an error`() {
+        // The read throws java.nio.file.NoSuchFileException (not kotlin.io's): the file existed for exists() and was
+        // gone for the read. The catch must name the NIO type, or this reaches the rethrow arm.
+        val s = store()
+        Files.writeString(dir.resolve("creds.json"), "{}")
+        s.readFile = { throw java.nio.file.NoSuchFileException(it.toString()) }
+
+        assertNull(s.load())
+    }
+
+    @Test
     fun `save then load round-trips the value`() {
         val s = store()
         val saved = Sample(accessToken = "abc.def.ghi", expiresAt = 12345L)
