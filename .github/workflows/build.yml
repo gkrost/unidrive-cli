@@ -104,6 +104,9 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       full: ${{ steps.filter.outputs.full }}
+      runtime_image: ${{ steps.filter.outputs.runtime_image }}
+      s3: ${{ steps.filter.outputs.s3 }}
+      ignore_oracle: ${{ steps.filter.outputs.ignore_oracle }}
     steps:
       - id: filter
         env:
@@ -114,11 +117,11 @@ jobs:
         run: |
           # Anything that is not Markdown or under docs/ is code, and so is a docs file a test reads. Pushes (main) and
           # manual runs always build, in full; if the file list cannot be read, build in full rather than skip.
-          if [ "$EVENT" != pull_request ]; then printf 'code=true\nfull=true\n' >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$EVENT" != pull_request ]; then printf 'code=true\nfull=true\nruntime_image=true\ns3=true\nignore_oracle=true\n' >> "$GITHUB_OUTPUT"; exit 0; fi
           # A rename lists only the new name in `filename`; `previous_filename` is the old one, so moving code under docs/
           # (or to a .md name) still shows the code path.
           if ! files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq ".[] | .filename, (.previous_filename // empty)"); then
-            printf 'code=true\nfull=true\n' >> "$GITHUB_OUTPUT"; exit 0
+            printf 'code=true\nfull=true\nruntime_image=true\ns3=true\nignore_oracle=true\n' >> "$GITHUB_OUTPUT"; exit 0
           fi
           docs_read_by_tests='^docs/config-schema/'
           if [ -z "$files" ] || printf '%s\n' "$files" | grep -qvE '(^docs/|\.md$)' || printf '%s\n' "$files" | grep -qE "$docs_read_by_tests"; then
@@ -127,7 +130,27 @@ jobs:
             echo code=false >> "$GITHUB_OUTPUT"
             echo "Docs-only change: Gradle jobs skipped."
           fi
+          # gkrost/unidrive-cli#596: runtime-image, s3-minio and ignore-oracle run on a pull request only when a path they
+          # build or test changes (or the build itself, or the ci:full label); pushes to main and manual runs always run
+          # them (the early exit above). Each list is what the job's Gradle task reads:
+          #  - runtime-image: the shadow jar of :app:cli (every module of core/), the launcher templates it boots and the
+          #    notices bundled into the jar.
+          #  - s3-minio: :providers:s3 and :app:core, its only project dependency.
+          #  - ignore-oracle: the matcher and tests in :app:sync, its dependencies :app:core and :app:engine-core, and the
+          #    pinned-git action that builds the oracle.
+          runtime_image_files='^core/|^dist/launcher/|^(LICENSE|NOTICE|THIRD-PARTY-NOTICES[^/]*)$'
+          s3_files='^core/providers/s3/|^core/app/core/'
+          ignore_oracle_files='^core/app/(sync|core|engine-core)/|^\.github/actions/pinned-git/'
           build_files='(^|/)[^/]*\.gradle\.kts$|^core/gradle\.properties$|^core/[^/]*\.lockfile$|^core/gradle/|^core/gradlew|^\.github/workflows/build\.yml$'
+          for leg in runtime_image:"$runtime_image_files" s3:"$s3_files" ignore_oracle:"$ignore_oracle_files"; do
+            name=${leg%%:*}; pattern=${leg#*:}
+            if [ "$FULL_LABEL" = true ] || printf '%s\n' "$files" | grep -qE "$build_files|$pattern"; then
+              echo "$name=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$name=false" >> "$GITHUB_OUTPUT"
+              echo "$name skipped: no path it builds or tests changed."
+            fi
+          done
           if [ "$FULL_LABEL" = true ]; then
             echo full=true >> "$GITHUB_OUTPUT"
             echo "Label ci:full: check-windows and check-runtime-jdk run."
@@ -308,7 +331,7 @@ jobs:
   # required checks (repository ruleset).
   runtime-image:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.runtime_image == 'true'
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -502,7 +525,7 @@ jobs:
   s3-minio:
     name: s3-minio
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.s3 == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -534,7 +557,7 @@ jobs:
   ignore-oracle:
     name: ignore-oracle (git ${{ matrix.git }})
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.ignore_oracle == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     continue-on-error: ${{ matrix.informational }}

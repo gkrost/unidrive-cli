@@ -462,11 +462,20 @@ internal fun stopDaemonProcess(
     return if (awaitExit(forcedDeadlineMs)) DaemonStopOutcome.FORCED else DaemonStopOutcome.FAILED
 }
 
-private fun awaitProcessExit(handle: ProcessHandle, timeoutMs: Long): Boolean {
-    handle.onExit().orTimeout(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-        .handle { _, _ -> true }.get()
-    return !handle.isAlive
-}
+// gkrost/unidrive-cli#455: the one wait for an engine process to exit, shared by `daemon stop` and the deploy stopper. Waits on
+// [exit] (the handle's own onExit; a test passes one that never completes) for at most [timeoutMs] and answers whether the
+// process is gone. No polling: the wait ends the moment the process does.
+internal fun awaitProcessExit(
+    handle: ProcessHandle,
+    timeoutMs: Long,
+    exit: java.util.concurrent.CompletableFuture<ProcessHandle> = handle.onExit(),
+): Boolean =
+    try {
+        exit.get(timeoutMs.coerceAtLeast(0), java.util.concurrent.TimeUnit.MILLISECONDS)
+        !handle.isAlive
+    } catch (_: java.util.concurrent.TimeoutException) {
+        !handle.isAlive
+    }
 
 /**
  * Send `daemon.shutdown` to the daemon listening on [endpoint] and wait for its ack. Returns true

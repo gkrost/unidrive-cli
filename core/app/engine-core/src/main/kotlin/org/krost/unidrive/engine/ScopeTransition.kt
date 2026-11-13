@@ -40,16 +40,13 @@ object ScopeTransition {
         val widened =
             trackScope.isEmpty() || (prior.isNotEmpty() && trackScope.any { !SyncScope.contains(it, prior) })
         val ancestors = SyncScope.ancestors(trackScope)
-        var untracked = 0
+        // windows#454 item 10: the narrowing used to load the whole table and issue one DELETE per row inside the
+        // batch (372k objects and statements under the monitor on a large profile). The rows go through chunked,
+        // commit-bound deleteOutOfScope INSTEAD of the batch: a crash mid-chunks leaves the scope key at its old
+        // value, so the next run narrows again and finds nothing more. The batch keeps only the cursor and the key,
+        // the two writes that must land together.
+        val untracked = if (narrowed) db.deleteOutOfScope(trackScope, ancestors) else 0
         db.batch {
-            if (narrowed) {
-                for (entry in db.getAllEntries()) {
-                    val remotePath = entry.remotePath ?: entry.path
-                    if (SyncScope.contains(remotePath, trackScope) || remotePath in ancestors) continue
-                    db.deleteEntry(entry.path)
-                    untracked++
-                }
-            }
             if (widened) {
                 CursorState(db).setDeltaCursor("")
                 db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID)?.let { db.completeScan(it) }

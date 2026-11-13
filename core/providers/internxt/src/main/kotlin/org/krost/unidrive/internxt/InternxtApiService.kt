@@ -1518,17 +1518,20 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                         try {
                             Files.newOutputStream(tmpPath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING).use { out ->
                                 val buf = ByteArray(256 * 1024)
+                                // One output buffer for the whole body: the allocating update made a new array per read
+                                // (about 4,000 per GiB). AES-CTR gives as many bytes as it takes; the size is asked anyway.
+                                val plain = ByteArray(cipher.getOutputSize(buf.size))
                                 while (!channel.isClosedForRead) {
                                     val n = channel.readAvailable(buf)
                                     if (n <= 0) break
                                     ciphertextBytes += n
                                     onProgress?.invoke(ciphertextBytes)
                                     ciphertextDigest.update(buf, 0, n)
-                                    val decrypted = cipher.update(buf, 0, n)
-                                    if (decrypted != null) {
-                                        out.write(decrypted)
-                                        plaintextDigest.update(decrypted)
-                                        written += decrypted.size
+                                    val m = cipher.update(buf, 0, n, plain, 0)
+                                    if (m > 0) {
+                                        out.write(plain, 0, m)
+                                        plaintextDigest.update(plain, 0, m)
+                                        written += m
                                     }
                                 }
                                 requireBodyEnded(channel, announcedLength, response.headers[HttpHeaders.ContentEncoding], ciphertextBytes, destination)

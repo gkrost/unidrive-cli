@@ -609,8 +609,9 @@ class MountEngine private constructor(
         path: String,
         entry: SyncEntry,
         refusal: PermanentDownloadFailureException,
+        untilVersionChanges: Boolean = false,
     ): PermanentDownloadFailureException {
-        if (remoteIncomplete.remember(entry, refusal)) {
+        if (remoteIncomplete.remember(entry, refusal, untilVersionChanges)) {
             log.warn("download of {} refused: {}", path, refusal.message)
         } else {
             log.debug("download of {} refused again: {}", path, refusal.message)
@@ -825,7 +826,17 @@ class MountEngine private constructor(
                             Files.deleteIfExists(cachePath)
                         }
                     }
-                    throw IllegalStateException("Integrity check failed for hydration cache: $path")
+                    // gkrost/unidrive-cli#438: the same version reads the same bytes: the refusal is remembered until the row
+                    // names another version, so a preview, a thumbnail or a retry does not download the whole file again.
+                    throw remembered(
+                        path,
+                        entry,
+                        RemoteContentRefusedDownloadException(
+                            "Integrity check failed for hydration cache: $path",
+                            reason = RemoteIncompleteMemory.HASH_MISMATCH_REASON,
+                        ),
+                        untilVersionChanges = true,
+                    )
                 }
             }
             // The last look at the row, the move of the bytes into place and the row write are one step for a truncate

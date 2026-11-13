@@ -5,20 +5,6 @@ import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.SyncConfig
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
-
-internal fun awaitDeployedProcessExit(
-    handle: ProcessHandle,
-    timeoutMs: Long,
-    exit: java.util.concurrent.CompletableFuture<ProcessHandle>,
-): Boolean =
-    try {
-        exit.get(timeoutMs, TimeUnit.MILLISECONDS)
-        !handle.isAlive
-    } catch (_: TimeoutException) {
-        false
-    }
 
 /**
  * archive#1194: the running engine processes a `deploy` must stop before it overwrites the jar. `ProcessHandle`'s command
@@ -116,7 +102,7 @@ internal class DeployedProcessStopper(
                     }
                 },
                 requestShutdown = { endpoint -> requestDaemonShutdown(endpoint) },
-                awaitExit = { pid, timeoutMs -> holders[pid]?.let { awaitDeployedProcessExit(it, timeoutMs, it.onExit()) } ?: true },
+                awaitExit = { pid, timeoutMs -> holders[pid]?.let { awaitProcessExit(it, timeoutMs) } ?: true },
                 destroyForcibly = { pid -> holders[pid]?.takeIf { it.isAlive }?.destroyForcibly() },
             ).stopAll()
         }

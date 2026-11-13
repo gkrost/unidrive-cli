@@ -231,6 +231,11 @@ subprojects {
             common("detekt")
             baseline.from(files(baselinePath).filter { it.exists() })
             createBaseline.set(false)
+            // gkrost/unidrive-cli#596: every input is declared (classpath, sources, config, baseline, the
+            // launcher's JVM via the toolchain), and a run that finds issues throws, so only a clean run is
+            // stored; the CI build cache serves it to a pull request whose module did not change. Not the
+            // baseline task: it writes a file that is not a declared output and never gates.
+            outputs.cacheIf("a clean detekt run is reproducible from its declared inputs") { true }
         }
         tasks.register<DetektTask>("detektBaseline") {
             group = "verification"
