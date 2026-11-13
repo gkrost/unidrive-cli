@@ -21,7 +21,8 @@ import org.slf4j.Logger
  *
  * Those three are settled for this daemon run: the root is not asked for again until the next start. A failure that is
  * none of them (an outage, a listing that fails) is left for the next enumeration ([Outcome.Failed]), which the poller
- * spaces out.
+ * spaces out. A root that fails [MAX_CONSECUTIVE_FAILURES] enumerations in a row (a quota, a read-only account or a refused
+ * permission look like an outage from here) is given up on as well, until the next start; a success resets the count.
  */
 internal class ScopeRootCreator(
     private val ops: Ops,
@@ -75,6 +76,9 @@ internal class ScopeRootCreator(
 
     private val outcomes = java.util.concurrent.ConcurrentHashMap<String, Outcome>()
 
+    // Consecutive Failed outcomes per root; a root at MAX_CONSECUTIVE_FAILURES is not asked for again in this run.
+    private val failures = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
     /** The outcome of every scope root this run looked at. */
     fun outcomes(): Map<String, Outcome> = outcomes.toMap()
 
@@ -83,14 +87,28 @@ internal class ScopeRootCreator(
         val asked = LinkedHashMap<String, Outcome>()
         val roots =
             ops.creatableRoots()
-                .filter { root -> outcomes[root].let { it == null || it is Outcome.Failed } && !ops.isNameBlocked(root) }
+                .filter { root -> isOpen(root) && !ops.isNameBlocked(root) }
                 .sortedBy { it.count { c -> c == '/' } }
         for (root in roots) {
             val outcome = create(root)
             outcomes[root] = outcome
             asked[root] = outcome
+            if (outcome is Outcome.Failed) {
+                val count = failures.merge(root, 1, Int::plus) ?: 1
+                if (count >= MAX_CONSECUTIVE_FAILURES) {
+                    log.warn("#22: the scope root {} failed {} enumerations in a row; not tried again until the next start", root, count)
+                }
+            } else {
+                failures.remove(root)
+            }
         }
         return asked
+    }
+
+    // A root nobody settled that has not used up its failures.
+    private fun isOpen(root: String): Boolean {
+        val outcome = outcomes[root]
+        return outcome == null || (outcome is Outcome.Failed && (failures[root] ?: 0) < MAX_CONSECUTIVE_FAILURES)
     }
 
     @Suppress("TooGenericExceptionCaught") // any failure but the settled ones is left for the next enumeration
@@ -132,11 +150,14 @@ internal class ScopeRootCreator(
     ): LevelResult? {
         val name = PathNormalizer.nfc(level.substringAfterLast('/'))
         // A parent created a moment ago has no children to look at.
+        // The exact spelling wins over a case-variant twin, whatever the listing order (a case-sensitive provider can hold both).
         val sameName =
             if (parentWasCreated) {
                 null
             } else {
-                ops.listChildren(parentOf(level)).firstOrNull { !it.deleted && PathNormalizer.nfc(it.name).equals(name, ignoreCase = true) }
+                val live = ops.listChildren(parentOf(level)).filter { !it.deleted }
+                live.firstOrNull { PathNormalizer.nfc(it.name) == name }
+                    ?: live.firstOrNull { PathNormalizer.nfc(it.name).equals(name, ignoreCase = true) }
             }
         if (sameName != null) {
             if (!sameName.isFolder || PathNormalizer.nfc(sameName.name) != name) return nameTaken(level, sameName.name)
@@ -179,5 +200,10 @@ internal class ScopeRootCreator(
     private fun levelsOf(root: String): List<String> {
         val segments = root.split('/').filter { it.isNotEmpty() }
         return segments.indices.map { "/" + segments.take(it + 1).joinToString("/") }
+    }
+
+    private companion object {
+        /** Failed enumerations in a row after which a root is left alone until the next daemon start. */
+        const val MAX_CONSECUTIVE_FAILURES = 3
     }
 }

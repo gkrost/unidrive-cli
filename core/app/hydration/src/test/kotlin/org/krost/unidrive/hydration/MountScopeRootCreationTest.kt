@@ -210,6 +210,34 @@ class MountScopeRootCreationTest {
         }
 
     @Test
+    fun `a root that keeps failing is given up on after three enumerations in a row`() =
+        runTest {
+            localFolder("/new")
+            fake.createFolderFailPaths += "/new"
+            val mount = mount(listOf("/new"))
+
+            repeat(6) { assertTrue(mount.enumerateRemoteIntoState(reset = false).ok) }
+
+            assertEquals(3, createCalls, "no retry past the third consecutive failure")
+            assertIs<ScopeRootCreator.Outcome.Failed>(mount.scopeRootOutcomes()["/new"])
+        }
+
+    @Test
+    fun `the exact spelling is taken even when a case-variant twin is listed first`() =
+        runTest {
+            localFolder("/new")
+            fake.childrenByParent["/"] = listOf(folder("/New"), folder("/new"))
+            fake.remoteFoldersExisting += "/new"
+            val mount = mount(listOf("/new"))
+
+            assertTrue(mount.enumerateRemoteIntoState(reset = false).ok)
+
+            assertEquals(0, createCalls)
+            assertEquals("exists-/new", db.getEntry("/new")?.remoteId)
+            assertEquals(ScopeRootCreator.Outcome.Created(emptyList()), mount.scopeRootOutcomes()["/new"])
+        }
+
+    @Test
     fun `a root neither side has fails the enumeration and creates nothing`() =
         runTest {
             val mount = mount(listOf("/typo"))
