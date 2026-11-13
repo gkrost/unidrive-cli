@@ -295,6 +295,23 @@ class IpcServer(
     internal val syncSubscribersSnapshot: Set<String>
         get() = syncSubscribers.toSet()
 
+    /**
+     * `sync.subscribe` (spec docs/dev/specs/sync-progress-subscriber-set-design.md), as both hosts serve it, the daemon and
+     * `unidrive sync` (gkrost/unidrive-cli#442): the client reads `{"ok":true}` as the first line, then the state dump, then the
+     * live events. The post-reply hook defers the dump and the registration until the reply is written, so no event is
+     * interleaved with it; a closed connection leaves the subscriber set.
+     */
+    fun registerSyncSubscribeVerb() {
+        registerHandler("sync.subscribe") { connId, _ ->
+            scheduleAfterReply(connId) {
+                flushStateDumpTo(connId)
+                registerSyncSubscriber(connId)
+            }
+            """{"ok":true}"""
+        }
+        registerConnectionCloseListener { connId -> unregisterSyncSubscriber(connId) }
+    }
+
     fun start(scope: CoroutineScope) {
         reclaimStaleSocket()
 

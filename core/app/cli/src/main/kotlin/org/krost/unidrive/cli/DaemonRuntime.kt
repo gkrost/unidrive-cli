@@ -627,17 +627,8 @@ class DaemonRuntime(
                     }
                 }
 
-                // sync.subscribe — symmetric to SyncCommand's wiring.
-                server.registerHandler("sync.subscribe") { connId, _ ->
-                    server.scheduleAfterReply(connId) {
-                        server.flushStateDumpTo(connId)
-                        server.registerSyncSubscriber(connId)
-                    }
-                    """{"ok":true}"""
-                }
-                server.registerConnectionCloseListener { connId ->
-                    server.unregisterSyncSubscriber(connId)
-                }
+                // sync.subscribe — the same wiring as SyncCommand's (gkrost/unidrive-cli#442).
+                server.registerSyncSubscribeVerb()
 
                 // history.list / history.subscribe (archive#653): read verbs over the transfer history. A mirror daemon, or a mount
                 // daemon whose history did not open, answers history_unavailable (never an empty list).

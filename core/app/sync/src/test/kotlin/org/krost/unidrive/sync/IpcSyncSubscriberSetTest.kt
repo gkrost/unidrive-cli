@@ -134,15 +134,8 @@ class IpcSyncSubscriberSetTest {
                     ),
                 )
 
-                // Register sync.subscribe handler — production code lives in
-                // SyncCommand, but the test only exercises IpcServer mechanics.
-                s.registerHandler("sync.subscribe") { connId, _ ->
-                    s.scheduleAfterReply(connId) {
-                        s.flushStateDumpTo(connId)
-                        s.registerSyncSubscriber(connId)
-                    }
-                    """{"ok":true}"""
-                }
+                // The verb as both hosts register it (gkrost/unidrive-cli#442).
+                s.registerSyncSubscribeVerb()
 
                 val client = connectClient()
                 delay(100)
@@ -230,13 +223,7 @@ class IpcSyncSubscriberSetTest {
                         lastPath = """/docs/"hello"\bs.txt""",
                     ),
                 )
-                s.registerHandler("sync.subscribe") { connId, _ ->
-                    s.scheduleAfterReply(connId) {
-                        s.flushStateDumpTo(connId)
-                        s.registerSyncSubscriber(connId)
-                    }
-                    """{"ok":true}"""
-                }
+                s.registerSyncSubscribeVerb()
                 val client = connectClient()
                 delay(100)
                 val req = """{"verb":"sync.subscribe"}""" + "\n"
@@ -265,8 +252,8 @@ class IpcSyncSubscriberSetTest {
     /**
      * T4 from spec §3.5: when a subscriber disconnects, its connId is
      * removed from syncSubscribers within the close-listener cycle.
-     * Pins the SyncCommand-side cleanup contract; this test exercises
-     * IpcServer in isolation by registering a close-listener inline.
+     * Pins the cleanup contract both hosts get from
+     * [IpcServer.registerSyncSubscribeVerb].
      */
     @Test
     fun subscriber_set_is_cleaned_up_on_disconnect() =
@@ -275,15 +262,7 @@ class IpcSyncSubscriberSetTest {
             try {
                 val s = IpcServer(socketPath)
                 server = s
-                s.registerConnectionCloseListener { connId ->
-                    s.unregisterSyncSubscriber(connId)
-                }
-                s.registerHandler("sync.subscribe") { connId, _ ->
-                    s.scheduleAfterReply(connId) {
-                        s.registerSyncSubscriber(connId)
-                    }
-                    """{"ok":true}"""
-                }
+                s.registerSyncSubscribeVerb()
                 s.start(serverScope)
 
                 val client = connectClient()
