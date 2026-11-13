@@ -83,4 +83,55 @@ class XtraKeyManagerTest {
         assertFailsWith<IllegalArgumentException> { km.importKey(ByteArray(10)) }
         assertFalse(km.exists())
     }
+
+    // The replaced key decrypts files already in the account; an import (a mistyped --input, the other machine's
+    // older key) never silently retires it.
+    @Test
+    fun `import refuses to replace an existing key without force and keeps no backup then`() {
+        val dir = Files.createTempDirectory("xtra-key-test")
+        val km = XtraKeyManager(dir.resolve("xtra.key"))
+        km.generate("testpass1234".toCharArray())
+        val fileKey = ByteArray(32) { 5 }
+        val wrapped = km.wrapKey(fileKey)
+
+        val other = XtraKeyManager(dir.resolve("other.key"))
+        other.generate("otherpass1234".toCharArray())
+        assertFailsWith<IllegalStateException> { other.importKey(km.exportKey()) }
+
+        // The local key is untouched, and no backup of it was moved aside.
+        val reloaded = XtraKeyManager(dir.resolve("xtra.key"))
+        reloaded.load("testpass1234".toCharArray())
+        assertContentEquals(fileKey, reloaded.unwrapKey(wrapped))
+        assertTrue(backupNames(dir).isEmpty())    }
+
+    @Test
+    fun `a forced import replaces the key and keeps the retired one as a backup`() {
+        val dir = Files.createTempDirectory("xtra-key-test")
+        val km = XtraKeyManager(dir.resolve("xtra.key"))
+        km.generate("testpass1234".toCharArray())
+        val fileKey = ByteArray(32) { 11 }
+        val wrapped = km.wrapKey(fileKey)
+
+        val exported = km.exportKey()
+        km.generate("retiredpass1234".toCharArray())
+
+        val importer = XtraKeyManager(dir.resolve("xtra.key"))
+        importer.importKey(exported, force = true)
+
+        // The retired key survives as a .bak beside the new one, still loadable under its passphrase.
+        val backup = backupNames(dir).single()
+        val retired = XtraKeyManager(dir.resolve(backup))
+        retired.load("retiredpass1234".toCharArray())
+        assertTrue(retired.isLoaded)
+
+        // The installation's key is the imported one again.
+        val reloaded = XtraKeyManager(dir.resolve("xtra.key"))
+        reloaded.load("testpass1234".toCharArray())
+        assertContentEquals(fileKey, reloaded.unwrapKey(wrapped))
+    }
+
+    private fun backupNames(dir: java.nio.file.Path): List<String> =
+        Files.newDirectoryStream(dir).use { stream ->
+            stream.asIterable().map { it.fileName.toString() }.filter { it.startsWith("xtra.key.bak-") }
+        }
 }

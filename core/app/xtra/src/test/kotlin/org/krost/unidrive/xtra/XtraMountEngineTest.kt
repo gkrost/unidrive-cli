@@ -37,7 +37,9 @@ class XtraMountEngineTest {
         lazy {
             XtraKeyManager(base.resolve("xtra.key")).also { it.generate("xtra-mount-pass".toCharArray()) }
         }
-    private val provider = XtraEncryptedProvider(inner, keys)
+    // The chain the CLI wires: the listings decorator (plaintext sizes) below the cipher.
+    private val strategy = AesGcmStrategy()
+    private val provider = XtraEncryptedProvider(XtraPlaintextListings(inner, strategy), keys, strategy)
     private val engine =
         SyncEngine(
             provider = provider,

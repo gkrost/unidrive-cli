@@ -1,6 +1,7 @@
 package org.krost.unidrive.xtra
 
 import org.krost.unidrive.Capability
+import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
@@ -25,11 +26,20 @@ class XtraEncryptedProviderTest {
         return lazy { km }
     }
 
+    // The chain the CLI wires: the listings decorator (plaintext sizes) below the cipher.
+    private fun provider(
+        inner: CloudProvider,
+        keys: Lazy<XtraKeyManager>,
+    ): CloudProvider {
+        val strategy = AesGcmStrategy()
+        return XtraEncryptedProvider(XtraPlaintextListings(inner, strategy), keys, strategy)
+    }
+
     @Test
     fun `upload encrypts and download decrypts round-trip`() {
         val tmpDir = Files.createTempDirectory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
-        val xtra = XtraEncryptedProvider(InMemoryProvider(storage), keys(tmpDir))
+        val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
 
         val localFile = tmpDir.resolve("test.txt")
         Files.writeString(localFile, "Hello, X-tra!")
@@ -49,7 +59,7 @@ class XtraEncryptedProviderTest {
     fun `downloadWithHash answers the plaintext bytes and digest`() {
         val tmpDir = Files.createTempDirectory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
-        val xtra = XtraEncryptedProvider(InMemoryProvider(storage), keys(tmpDir))
+        val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
 
         val localFile = tmpDir.resolve("hashed.txt")
         val original = "hash me".toByteArray()
@@ -70,7 +80,7 @@ class XtraEncryptedProviderTest {
     fun `downloadById and downloadByIdWithHash also decrypt`() {
         val tmpDir = Files.createTempDirectory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
-        val xtra = XtraEncryptedProvider(InMemoryProvider(storage), keys(tmpDir))
+        val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
 
         val localFile = tmpDir.resolve("byid.txt")
         Files.writeString(localFile, "ById test")
@@ -91,7 +101,7 @@ class XtraEncryptedProviderTest {
         val tmpDir = Files.createTempDirectory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         storage["/plain.txt"] = "not encrypted".toByteArray()
-        val xtra = XtraEncryptedProvider(InMemoryProvider(storage), keys(tmpDir))
+        val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
 
         val dest = tmpDir.resolve("plain.txt")
         assertFailsWith<ProviderException> {
@@ -103,7 +113,7 @@ class XtraEncryptedProviderTest {
     fun `empty file round-trip`() {
         val tmpDir = Files.createTempDirectory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
-        val xtra = XtraEncryptedProvider(InMemoryProvider(storage), keys(tmpDir))
+        val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
 
         val emptyFile = tmpDir.resolve("empty.dat")
         Files.createFile(emptyFile)
@@ -122,7 +132,7 @@ class XtraEncryptedProviderTest {
     fun `large file round-trip`() {
         val tmpDir = Files.createTempDirectory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
-        val xtra = XtraEncryptedProvider(InMemoryProvider(storage), keys(tmpDir))
+        val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
 
         val localFile = tmpDir.resolve("large.bin")
         val original = ByteArray(500_000).also { java.security.SecureRandom().nextBytes(it) }
@@ -140,7 +150,7 @@ class XtraEncryptedProviderTest {
         val storage = mutableMapOf<String, ByteArray>()
         var loaded = false
         val keys = lazy { loaded = true; XtraKeyManager(tmpDir.resolve("xtra.key")) }
-        val xtra = XtraEncryptedProvider(InMemoryProvider(storage), keys)
+        val xtra = provider(InMemoryProvider(storage), keys)
 
         kotlinx.coroutines.runBlocking { xtra.listChildren("/") }
         assertEquals(false, loaded)
@@ -157,7 +167,7 @@ class XtraEncryptedProviderTest {
     fun `upload forwards the replace and conditional-write parameters`() {
         val tmpDir = Files.createTempDirectory("xtra-provider-test")
         val inner = InMemoryProvider(mutableMapOf<String, ByteArray>())
-        val xtra = XtraEncryptedProvider(inner, keys(tmpDir))
+        val xtra = provider(inner, keys(tmpDir))
 
         val localFile = tmpDir.resolve("fwd.txt")
         Files.writeString(localFile, "forwarded")
@@ -173,7 +183,7 @@ class XtraEncryptedProviderTest {
     fun `listings and metadata answer the plaintext size`() {
         val tmpDir = Files.createTempDirectory("xtra-provider-test")
         val inner = FakeCloudProvider()
-        val xtra = XtraEncryptedProvider(inner, keys(tmpDir))
+        val xtra = provider(inner, keys(tmpDir))
 
         val localFile = tmpDir.resolve("sized.txt")
         val original = "Hello, sized world!"
@@ -201,7 +211,7 @@ class XtraEncryptedProviderTest {
     fun `the hash variants apply the target mtime and answer the decrypted stats`() {
         val tmpDir = Files.createTempDirectory("xtra-provider-test")
         val inner = FakeCloudProvider()
-        val xtra = XtraEncryptedProvider(inner, keys(tmpDir))
+        val xtra = provider(inner, keys(tmpDir))
 
         val localFile = tmpDir.resolve("mtime.txt")
         val original = "timed content"
@@ -218,6 +228,42 @@ class XtraEncryptedProviderTest {
         assertEquals(target, receipt.stagedMtimeMillis)
         assertEquals(true, receipt.mtimeAppliedBeforePlacement)
         assertContentEquals(original.toByteArray(), Files.readAllBytes(dest))
+    }
+
+    // The provider's hash answers name the ciphertext, while the bytes the engines see are the plaintext: the
+    // wrapper answers "cannot tell" for all of them (the seal's AEAD tag is the integrity check; a tampered
+    // stream fails its decrypt, and a content id would name bytes the client does not hold).
+    @Test
+    fun `the hash answers cross the boundary as cannot tell`() {
+        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val inner = FakeCloudProvider()
+        inner.hashAlgorithmOverride = org.krost.unidrive.HashAlgorithm.Sha256Hex
+        val xtra = provider(inner, keys(tmpDir))
+
+        assertEquals(null, xtra.hashAlgorithm())
+        assertEquals(false, xtra.reportsContentIds)
+        kotlinx.coroutines.runBlocking {
+            assertEquals(null, xtra.contentMatchesLocal("id-1", "/a.txt", tmpDir.resolve("a.txt")))
+        }
+    }
+
+    // A share link would serve the stored object, which is the ciphertext — unreadable to whoever follows it.
+    // The layer refuses instead of creating one; links that already exist stay listable and revocable.
+    @Test
+    fun `share refuses instead of handing out a link to ciphertext`() {
+        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val supporting = object : CloudProvider by FakeCloudProvider() {
+            override suspend fun share(
+                path: String,
+                expiryHours: Int,
+                password: String?,
+            ): CapabilityResult<String> = CapabilityResult.Success("https://share")
+        }
+        val xtra = provider(supporting, keys(tmpDir))
+
+        val answer = kotlinx.coroutines.runBlocking { xtra.share("/a.txt", 24) }
+        assertTrue(answer is CapabilityResult.Unsupported, "$answer")
+        assertTrue(answer.reason.contains("X-tra"), answer.reason)
     }
 }
 

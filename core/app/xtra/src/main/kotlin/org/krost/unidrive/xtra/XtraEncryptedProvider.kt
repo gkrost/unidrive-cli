@@ -1,13 +1,12 @@
 package org.krost.unidrive.xtra
 
+import org.krost.unidrive.Capability
 import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.ContentProof
 import org.krost.unidrive.DownloadReceipt
-import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.ProviderException
-import org.krost.unidrive.ScanContext
-import org.krost.unidrive.TrashItem
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.file.Files
@@ -18,17 +17,22 @@ import java.security.SecureRandom
 import java.util.HexFormat
 
 /**
- * The X-tra layer (client-side encryption of a profile's file content, config key `xtra_encryption`): a
- * [CloudProvider] decorator that encrypts every file on its way to the inner provider and decrypts it on the way
- * back. The inner provider — and through it the cloud — sees only opaque ciphertext with a self-describing
- * [XtraHeader]; paths, names and the tree stay as they are, so listings, moves and the delta work unchanged.
+ * The content half of the X-tra layer (client-side encryption of a profile's file content, config key
+ * `xtra_encryption`): a [CloudProvider] decorator that encrypts every file on its way to the inner provider and
+ * decrypts it on the way back, so the inner provider — and through it the cloud — sees only opaque ciphertext
+ * with a self-describing [XtraHeader]. Paths, names and the tree stay as they are; the sizes a listing carries
+ * are the plaintext's, answered by [XtraPlaintextListings], which the CLI wires below this decorator.
  *
- * Sizes cross this boundary on the plaintext side: the engines' size contracts hold what a listing said against
- * the bytes a download writes (the #80 confirmation, the mirror's completeness check, the warm-cache size match
- * and the incomplete-hydration guard), so every item that crosses up answers the plaintext size — the provider's
- * ciphertext size minus the strategy's [XtraEncryptionStrategy.overheadBytes] — and a download receipt names the
- * bytes the decryption wrote. The provider still sees the ciphertext's size, which is the metadata leak the
- * design accepts.
+ * The download receipts answer about the plaintext that lands in the destination: the byte count, the staged
+ * stats and the digest the engines compare against the placed copy (the streamed-hash guard), and the target
+ * mtime the decryption of a fresh file would otherwise lose. The inner provider's identity fields ride along
+ * unchanged — they name the ciphertext object the row stands for, and the listings name it too.
+ *
+ * The hash answers cross this boundary as "cannot tell", deliberately: the provider's content hash names the
+ * ciphertext, while the bytes the engines see are the plaintext, so [hashAlgorithm] is null (the engines skip
+ * their content-hash verification; the AEAD tag of the seal is the integrity check, and a tampered stream fails
+ * its decrypt), [contentMatchesLocal] yields no proof, and [reportsContentIds] is false (the row's content id
+ * would name bytes the client does not hold).
  *
  * [keys] is lazy on purpose: the wrap happens for every provider of an opted-in profile, including commands that
  * never touch content (auth, status, quota, listings), and only those that upload or download may demand the
@@ -42,8 +46,32 @@ import java.util.HexFormat
 class XtraEncryptedProvider(
     private val inner: CloudProvider,
     private val keys: Lazy<XtraKeyManager>,
-    private val strategy: XtraEncryptionStrategy = AesGcmStrategy(),
+    private val strategy: XtraEncryptionStrategy,
 ) : CloudProvider by inner {
+    // The provider's content hash is the ciphertext's (the strategy seals with a per-file key and an AEAD tag of
+    // its own), so the engines' hash answers below say "cannot tell" for the plaintext side of this boundary.
+    override fun hashAlgorithm() = null
+
+    override suspend fun contentMatchesLocal(
+        remoteId: String,
+        remotePath: String,
+        local: Path,
+    ): ContentProof? = null
+
+    override val reportsContentIds: Boolean get() = false
+
+    // A share link would hand out the stored object, which is the ciphertext: unreadable to whoever follows it
+    // (and a metadata leak of the file it names), so the layer refuses instead of creating one. Links that exist
+    // already stay listable and revocable, which the delegation below answers.
+    override suspend fun share(
+        path: String,
+        expiryHours: Int,
+        password: String?,
+    ): CapabilityResult<String> =
+        CapabilityResult.Unsupported(
+            Capability.Share,
+            "X-tra encrypts this profile's content on the client — a share link would serve ciphertext its readers cannot open",
+        )
 
     override suspend fun upload(
         localPath: Path,
@@ -65,7 +93,7 @@ class XtraEncryptedProvider(
                     strategy.encrypt(input, out, fileKey, iv)
                 }
             }
-            return plaintextSized(strategy, inner.upload(tmp, remotePath, existingRemoteId, ifMatchETag, onProgress))
+            return inner.upload(tmp, remotePath, existingRemoteId, ifMatchETag, onProgress).plaintextSized(strategy)
         } finally {
             Files.deleteIfExists(tmp)
         }
@@ -99,51 +127,6 @@ class XtraEncryptedProvider(
             Files.deleteIfExists(tmp)
         }
     }
-
-    // What the engines' size contracts need (see the class KDoc): every item crossing up answers the plaintext
-    // size, the provider's ciphertext size minus the strategy's fixed overhead. The overrides live on the class;
-    // their helpers are file-level functions (they take the strategy and the lazy keys), so the class stays
-    // under detekt's function count.
-
-    override suspend fun listChildren(path: String): List<CloudItem> = inner.listChildren(path).map { plaintextSized(strategy, it) }
-
-    override suspend fun getMetadata(path: String): CloudItem = plaintextSized(strategy, inner.getMetadata(path))
-
-    override suspend fun delta(
-        cursor: String?,
-        onPageProgress: ((Int) -> Unit)?,
-        scanContext: ScanContext?,
-    ): DeltaPage =
-        inner.delta(cursor, onPageProgress, scanContext).let { page ->
-            page.copy(items = page.items.map { plaintextSized(strategy, it) })
-        }
-
-    override suspend fun deltaWithShared(cursor: String?): CapabilityResult<DeltaPage> =
-        when (val result = inner.deltaWithShared(cursor)) {
-            is CapabilityResult.Success ->
-                CapabilityResult.Success(result.value.copy(items = result.value.items.map { plaintextSized(strategy, it) }))
-            is CapabilityResult.Unsupported -> result
-        }
-
-    override suspend fun deltaFromLatest(scanContext: ScanContext?): CapabilityResult<DeltaPage> =
-        when (val result = inner.deltaFromLatest(scanContext)) {
-            is CapabilityResult.Success ->
-                CapabilityResult.Success(result.value.copy(items = result.value.items.map { plaintextSized(strategy, it) }))
-            is CapabilityResult.Unsupported -> result
-        }
-
-    override suspend fun move(
-        fromPath: String,
-        toPath: String,
-    ): CloudItem = plaintextSized(strategy, inner.move(fromPath, toPath))
-
-    override suspend fun moveById(
-        remoteId: String,
-        fromPath: String,
-        toPath: String,
-    ): CloudItem = plaintextSized(strategy, inner.moveById(remoteId, fromPath, toPath))
-
-    override suspend fun listTrash(): List<TrashItem> = inner.listTrash().map { plaintextSizedTrash(strategy, it) }
 
     /**
      * The hash variants answer about the plaintext that lands in [destination]: the receipt keeps the inner
@@ -183,24 +166,6 @@ class XtraEncryptedProvider(
 
 // The helpers of [XtraEncryptedProvider], file-level so the class stays under detekt's function count. They take
 // the class's private strategy and lazy keys as parameters.
-
-// What a listing may say about a file's size: the plaintext (see the class KDoc). A folder's size and one that
-// could not be a well-formed X-tra file — smaller than the fixed overhead — go through unchanged; the download
-// of such a file fails closed on the missing header anyway.
-private fun plaintextSized(
-    strategy: XtraEncryptionStrategy,
-    item: CloudItem,
-): CloudItem =
-    if (item.isFolder || item.size < strategy.overheadBytes) item else item.copy(size = item.size - strategy.overheadBytes)
-
-private fun plaintextSizedTrash(
-    strategy: XtraEncryptionStrategy,
-    item: TrashItem,
-): TrashItem =
-    when {
-        item.isFolder || (item.sizeBytes ?: 0L) < strategy.overheadBytes -> item
-        else -> item.copy(sizeBytes = item.sizeBytes!! - strategy.overheadBytes)
-    }
 
 private fun decryptToDestination(
     strategy: XtraEncryptionStrategy,

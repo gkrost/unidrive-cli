@@ -14,7 +14,9 @@ import org.krost.unidrive.sync.RawSyncConfig
 import org.krost.unidrive.sync.NoDefaultProfileException
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
+import org.krost.unidrive.xtra.AesGcmStrategy
 import org.krost.unidrive.xtra.XtraEncryptedProvider
+import org.krost.unidrive.xtra.XtraPlaintextListings
 import org.krost.unidrive.xtra.XtraKeyManager
 import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.childProcessBuilder
@@ -423,7 +425,15 @@ open class Main : Runnable {
             System.exit(1)
             throw IllegalStateException("unreachable")
         }
-        return XtraEncryptedProvider(provider, lazy { XtraKeyManager(keyPath).also { it.load(xtraPassphrase()) } })
+        val strategy = AesGcmStrategy()
+        // The listings decorator sits below the cipher, so both halves see the same provider: the listings answer
+        // the plaintext size the engines' size contracts hold downloads against, and the cipher seals the content
+        // and answers the hash questions with "cannot tell" (the AEAD tag is the integrity check).
+        return XtraEncryptedProvider(
+            XtraPlaintextListings(provider, strategy),
+            lazy { XtraKeyManager(keyPath).also { it.load(xtraPassphrase()) } },
+            strategy,
+        )
     }
 
     /** The X-tra passphrase, resolved like the vault's: env, a systemd credential, or a console prompt. */

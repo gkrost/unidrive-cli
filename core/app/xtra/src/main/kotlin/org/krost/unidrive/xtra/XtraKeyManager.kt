@@ -100,11 +100,25 @@ class XtraKeyManager(private val keyPath: Path) {
 
     fun exportKey(): ByteArray = Files.readAllBytes(keyPath)
 
-    fun importKey(data: ByteArray) {
+    fun importKey(
+        data: ByteArray,
+        force: Boolean = false,
+    ) {
         // The key file is the only copy of what decrypts the account's content, so it is never truncated in place
-        // (archive#1053, the vault's rule). Parseability needs a passphrase the import does not have; the length
-        // floor is what can be checked here — a wrong file fails the first load, with the old one kept until then.
+        // (archive#1053, the vault's rule), and an import never silently replaces one: a mistyped --input, or the
+        // other machine's older key, would make every file this installation already encrypted undecryptable.
+        val replaced = exists()
+        check(force || !replaced) { "A key already exists at $keyPath; import with --force to replace it, after an export of it is safe" }
+        // Parseability needs a passphrase the import itself does not have; the length floor is what can be checked
+        // here — the command loads the imported bytes from a temp path first, and a wrong file fails that load
+        // instead of replacing a key.
         require(data.size >= SALT_LENGTH + IV_LENGTH + GCM_TAG_BITS / 8) { "The imported bytes are not an X-tra key file (too short)" }
+        if (replaced) {
+            // A forced replace keeps the key it retires beside the new one, so the files the old key encrypted
+            // stay decryptable after the import turns out to be the wrong one.
+            val retired = keyPath.resolveSibling("${keyPath.fileName}.bak-${System.currentTimeMillis()}")
+            OwnerOnlyAtomicWrite.replace(retired, produce = { Files.readAllBytes(keyPath) })
+        }
         OwnerOnlyAtomicWrite.replace(keyPath, data)
     }
 

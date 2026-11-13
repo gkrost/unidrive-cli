@@ -8,6 +8,11 @@ import java.io.OutputStream
  * `xtra_encryption`): [encrypt] and [decrypt] a stream under a per-file key. The properties describe the file-header
  * fields the strategy needs, so [XtraHeader] reads variable-length headers by algorithm and a second strategy can
  * ship without a format change.
+ *
+ * The size contract joins the two halves of the decorator: what the provider stores is the header plus the
+ * sealed content, and [plaintextSizeOf] inverts that for a well-formed file, so a listing can answer the
+ * plaintext size the engines' size contracts hold downloads against. Null for a size no well-formed file of
+ * this algorithm could have (the caller leaves such an item alone; its download fails closed on the header).
  */
 interface XtraEncryptionStrategy {
     /** The header's algorithm byte; identifies the strategy that must decrypt the file. */
@@ -20,13 +25,10 @@ interface XtraEncryptionStrategy {
     val wrappedKeyLength: Int
 
     /**
-     * The bytes the wrapper adds around a file's content: the header (magic, version, algorithm id, the two length
-     * prefixes, the wrapped key and the IV) plus the AEAD tag. Constant per algorithm, so the provider's size for a
-     * well-formed file names the plaintext size too: the engines' size contracts hold a listing's size against the
-     * bytes a download writes (the #80 confirmation, the mirror's completeness check, the warm-cache size match),
-     * and the wrapper keeps both on the plaintext side of this difference.
+     * The plaintext size a stored file of [ciphertextSize] bytes holds, or null when no well-formed file of this
+     * algorithm has that size. The inverse of what [encrypt] writes for the same plaintext.
      */
-    val overheadBytes: Int
+    fun plaintextSizeOf(ciphertextSize: Long): Long?
 
     fun encrypt(
         input: InputStream,

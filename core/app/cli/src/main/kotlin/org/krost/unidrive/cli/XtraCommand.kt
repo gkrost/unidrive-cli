@@ -72,8 +72,14 @@ class XtraExportCommand : Runnable {
         val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra.key")
         if (!Files.exists(keyPath)) { System.err.println("No key found. Run 'unidrive xtra init' first."); return }
         val dest = Paths.get(output).resolve("xtra.key")
+        if (Files.exists(dest)) {
+            System.err.println("A file already exists at $dest; remove it or export elsewhere — an export never overwrites one.")
+            return
+        }
         Files.createDirectories(dest.parent)
-        Files.write(dest, XtraKeyManager(keyPath).exportKey())
+        // The export is the backup that decrypts everything; it is written owner-only and atomically, like the
+        // installation's own copy.
+        org.krost.unidrive.io.OwnerOnlyAtomicWrite.replace(dest, XtraKeyManager(keyPath).exportKey())
         println("Key exported to $dest")
         println("WARNING: this file decrypts everything the key encrypts — store it accordingly.")
     }
@@ -89,10 +95,35 @@ class XtraImportCommand : Runnable {
     @Option(names = ["--input"], required = true, description = ["Directory that holds xtra.key"])
     lateinit var input: String
 
+    @Option(
+        names = ["--force"],
+        description = ["Replace an existing key (every file the replaced key encrypted becomes unreadable unless it was exported)"],
+    )
+    var force: Boolean = false
+
+    // Whatever the probe load throws, the answer is the same: refuse, the local key stays.
+    @Suppress("TooGenericExceptionCaught")
     override fun run() {
         val src = Paths.get(input).resolve("xtra.key")
         if (!Files.exists(src)) { System.err.println("No key found at $src"); return }
-        XtraKeyManager(xtraCmd.parent.configBaseDir().resolve("xtra.key")).importKey(Files.readAllBytes(src))
+        val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra.key")
+        val data = Files.readAllBytes(src)
+        // The passphrase the imported key must work under is this installation's — the daemon loads the imported
+        // key with xtraPassphrase(), so it is resolved here, before the probe, where its own error stands.
+        val passphrase = xtraCmd.parent.xtraPassphrase()
+        // Prove the import is a key before it can replace one: it must load from a temp path, so a wrong file
+        // fails here with the installation's key untouched.
+        val probe = Files.createTempFile("xtra-import-", ".key")
+        try {
+            Files.write(probe, data)
+            XtraKeyManager(probe).load(passphrase)
+        } catch (e: Exception) {
+            System.err.println("The imported file is not a usable X-tra key (${e.javaClass.simpleName}: ${e.message}); the local key is untouched.")
+            return
+        } finally {
+            Files.deleteIfExists(probe)
+        }
+        XtraKeyManager(keyPath).importKey(data, force)
         println("Key imported from $src")
     }
 }

@@ -92,12 +92,64 @@ class AesGcmStrategyTest {
         }
     }
 
-    // The constant the wrapper subtracts from the provider's size to answer the plaintext's (XtraEncryptedProvider):
-    // the header [XtraHeader.write] lays down — magic(4) ‖ version(1) ‖ algorithmId(1) ‖ wrappedKeyLen(2) ‖
-    // wrappedKey(256) ‖ ivLen(2) ‖ iv(12) — plus the 16-byte GCM tag. If this ever drifts from the header layout,
-    // every listing size of an X-tra profile is wrong.
+    // The size math the listings decorator answers from (XtraPlaintextListings): a stored file is the header —
+    // magic(4) ‖ version(1) ‖ algorithmId(1) ‖ wrappedKeyLen(2) ‖ wrappedKey(256) ‖ ivLen(2) ‖ iv(12) — plus the
+    // plaintext plus one 16-byte tag per 64 KiB segment (an empty file is one final empty segment). The inverse
+    // must be exact on every image and null on every size no well-formed file can have, or a listing of an
+    // X-tra profile would answer a wrong size.
     @Test
-    fun `the overhead is the header plus the tag`() {
-        assertEquals(10 + 256 + 12 + 16, AesGcmStrategy().overheadBytes)
+    fun `the size math inverts exactly and refuses foreign sizes`() {
+        val strategy = AesGcmStrategy()
+        val fixed = 10L + 256 + 12
+        val seg = 65536L
+        val tag = 16L
+        for (p in listOf(0L, 1L, seg - 1, seg, seg + 1, 2 * seg, 2 * seg + 7, 500_000L)) {
+            val stored = fixed + p + tag * maxOf(1L, (p + seg - 1) / seg)
+            assertEquals(p, strategy.plaintextSizeOf(stored), "plaintext $p from stored $stored")
+        }
+        assertEquals(null, strategy.plaintextSizeOf(fixed), "a header without a tag is not a file")
+        assertEquals(null, strategy.plaintextSizeOf(fixed + 5), "below the empty file's single tag")
+        // In the gap the segment jump leaves at a boundary: the sizes a well-formed file never has.
+        assertEquals(null, strategy.plaintextSizeOf(fixed + seg + tag + 5))
+    }
+
+    // The whole point of the segments: the decrypt holds two segments, not the file, and a stream cut at a
+    // segment boundary fails the final segment's tag instead of yielding short plaintext.
+    @Test
+    fun `a stream truncated at a segment boundary fails the decrypt`() {
+        val strategy = AesGcmStrategy()
+        val key = fileKey()
+        val iv = iv(strategy)
+        val plaintext = ByteArray(3 * 65536).also { SecureRandom().nextBytes(it) }
+        val encrypted = ByteArrayOutputStream().also { out ->
+            strategy.encrypt(ByteArrayInputStream(plaintext), out, key, iv)
+        }.toByteArray()
+        assertEquals(3 * 65536 + 3 * 16, encrypted.size)
+
+        val cut = encrypted.copyOfRange(0, 2 * (65536 + 16))
+        assertFailsWith<Exception> {
+            strategy.decrypt(ByteArrayInputStream(cut), ByteArrayOutputStream(), key, iv)
+        }
+    }
+
+    @Test
+    fun `a spliced stream fails the decrypt`() {
+        val strategy = AesGcmStrategy()
+        val key = fileKey()
+        val iv = iv(strategy)
+        val encryptedOfA = ByteArrayOutputStream().also { out ->
+            strategy.encrypt(ByteArrayInputStream(ByteArray(2 * 65536)), out, key, iv)
+        }.toByteArray()
+        // Segment 2 of another file with the same IV, spliced in: its nonce names segment 2, so the splice is a
+        // legal-looking frame — the header IV's random prefix is what makes such a frame never verify.
+        val otherIv = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val other = ByteArrayOutputStream().also { out ->
+            strategy.encrypt(ByteArrayInputStream(ByteArray(65536)), out, key, otherIv)
+        }.toByteArray()
+        val spliced = encryptedOfA.copyOfRange(0, 65536 + 16) + other.copyOfRange(65536, 65536 + 16)
+
+        assertFailsWith<Exception> {
+            strategy.decrypt(ByteArrayInputStream(spliced), ByteArrayOutputStream(), key, iv)
+        }
     }
 }
