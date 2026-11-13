@@ -1,5 +1,6 @@
 package org.krost.unidrive.dropbox
 
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.AccountName
 import org.krost.unidrive.AuthenticationException
@@ -43,8 +44,10 @@ class DropboxCheckCredentialsTest {
         }
 
     @Test
+    // runBlocking, not runTest: the refresh runs under withTimeout(REFRESH_TIMEOUT), and runTest's virtual clock jumps
+    // to that deadline whenever the test thread is idle waiting on the engine's real I/O (flaky in CI).
     fun `a grant Dropbox refuses is an authentication failure`() =
-        runTest {
+        runBlocking<Unit> {
             FakeDropbox.provider(fake, dir).close()
             fake.on("users/get_space_usage") { Answer(401, """{"error_summary":"invalid_access_token/.."}""") }
             fake.on("oauth2/token") { Answer(400, """{"error":"invalid_grant"}""") }
