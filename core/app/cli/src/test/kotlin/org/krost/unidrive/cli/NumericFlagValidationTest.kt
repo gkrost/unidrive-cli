@@ -97,18 +97,20 @@ class NumericFlagValidationTest {
 
     // ── share --expiry ───────────────────────────────────────────────────────
 
+    // --expiry is validated first thing in ShareCommand.run(), before any provider is built, so a
+    // negative value fails with exit 2 without reaching System.exit. Zero is valid (no expiry), so
+    // it is checked through expiryProblem instead of the real command, whose body would run.
     @Test
-    fun `share rejects expiry zero`() {
-        val (exit, err) = run("share", "/some/path", "--expiry", "0")
-        assertEquals(2, exit)
-        assertTrue(err.contains("--expiry must be > 0"), err)
+    fun `share accepts expiry zero as no expiry`() {
+        assertEquals(null, expiryProblem(0))
+        assertEquals(null, expiryProblem(24))
     }
 
     @Test
     fun `share rejects negative expiry`() {
         val (exit, err) = run("share", "/some/path", "--expiry", "-5")
         assertEquals(2, exit)
-        assertTrue(err.contains("--expiry must be > 0"), err)
+        assertTrue(err.contains("--expiry must be 0 (no expiry) or more hours"), err)
     }
 
     // ── backup add --name ────────────────────────────────────────────────────

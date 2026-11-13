@@ -49,12 +49,12 @@ class PauseRpcHandler(
         val auto =
             when (val element = body["auto"]) {
                 null -> false
-                else -> (element as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toBooleanStrictOrNull() ?: return INVALID_AUTO
+                else -> element.strictBooleanOrNull() ?: return INVALID_AUTO
             }
         val untilMs =
             when (val element = body["until_ms"]) {
                 null -> null
-                else -> (element as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull() ?: return INVALID_UNTIL
+                else -> element.strictLongOrNull() ?: return INVALID_UNTIL
             }
         if (untilMs != null && untilMs <= gate.clockMs()) return UNTIL_IN_PAST
         // State, abort and event in one step: two requests at once cannot swap their events.

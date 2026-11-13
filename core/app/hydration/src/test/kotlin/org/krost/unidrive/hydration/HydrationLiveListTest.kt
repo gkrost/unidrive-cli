@@ -267,6 +267,11 @@ class HydrationLiveListTest {
         val scan = heldScan()
 
         assertEquals(listOf("/solo.txt"), names("/"))
+        // The scan still owes both twins: the rows are not the whole folder.
+        val listed = hydration.list("/")
+        assertIs<ListResult.Ok>(listed)
+        assertEquals(false, listed.complete, "withheld twins leave the listing not complete")
+        assertEquals(null, listed.listedAtMs)
         scan.cancel()
     }
 

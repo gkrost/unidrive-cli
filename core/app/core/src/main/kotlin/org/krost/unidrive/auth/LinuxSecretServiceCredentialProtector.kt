@@ -63,6 +63,8 @@ class LinuxSecretServiceCredentialProtector(
         run(listOf("clear", "application", "unidrive", "credential", key, "revision", revision), "")
     }
 
+    private val streamDrains = java.util.concurrent.Executors.newThreadPerTaskExecutor(java.lang.Thread.ofVirtual().factory())
+
     private fun run(
         args: List<String>,
         stdin: String,
@@ -70,12 +72,14 @@ class LinuxSecretServiceCredentialProtector(
         val process =
             runCatching { org.krost.unidrive.io.childProcessBuilder(listOf(executable) + args).start() }
                 .getOrElse { processFailure(it) }
-        val output = CompletableFuture.supplyAsync {
+        // windows#454 item 8: the drains used to run on ForkJoinPool.commonPool(), whose few platform threads two
+        // blocking 10-second reads could park. Virtual threads: one per drain, nothing shared.
+        val output = CompletableFuture.supplyAsync({
             process.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-        }
-        val errorOutput = CompletableFuture.supplyAsync {
+        }, streamDrains)
+        val errorOutput = CompletableFuture.supplyAsync({
             process.errorStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-        }
+        }, streamDrains)
         val finished =
             runCatching {
                 process.outputStream.bufferedWriter(StandardCharsets.UTF_8).use { writer ->

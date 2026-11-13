@@ -163,6 +163,50 @@ class DownloadBudgetTest {
             assertEquals(1_000, currentTime)
         }
 
+    // gkrost/unidrive-cli#438: a freed slot goes to the download that waited longest and fits, not to whoever comes next.
+    @Test
+    fun `a large download waiting for the pool is not overtaken by small ones that arrive after it`() =
+        runTest {
+            val budget = DownloadBudget(smallPermits = 2, largePermits = 2, clock = { currentTime })
+            val order = mutableListOf<String>()
+            // Two small reads hold the pool; the large one queues at 1 ms; small ones arrive at 100 ms, the instant the first
+            // holder ends (their timers fire before the large one's wake-up would run).
+            val holders = (1..2).map { i -> async { budget.withPermit(small) { delay(100L * i) } } }
+            val big = async { delay(1); budget.withPermit(large) { order += "large"; delay(1_000) } }
+            val stream = (1..6).map { i -> async { delay(100); budget.withPermit(small) { order += "small$i"; delay(100) } } }
+            (holders + big + stream).awaitAll()
+
+            assertEquals("large", order.first(), "the first slot freed goes to the large download that waited first: $order")
+        }
+
+    @Test
+    fun `waiting downloads start in the order they arrived`() =
+        runTest {
+            val budget = DownloadBudget(smallPermits = 1, largePermits = 1, clock = { currentTime })
+            val order = mutableListOf<Int>()
+            val holder = async { budget.withPermit(small) { delay(100) } }
+            delay(1)
+            val queued = (1..5).map { i -> async { budget.withPermit(small) { order += i; delay(10) } }.also { delay(1) } }
+            (listOf(holder) + queued).awaitAll()
+
+            assertEquals(listOf(1, 2, 3, 4, 5), order)
+        }
+
+    @Test
+    fun `a small download passes a large one that waits only for the large pool`() =
+        runTest {
+            val budget = DownloadBudget(smallPermits = 4, largePermits = 1, clock = { currentTime })
+            val order = mutableListOf<String>()
+            val bigRunning = async { budget.withPermit(large) { delay(1_000) } }
+            delay(1)
+            val bigWaiting = async { budget.withPermit(large) { order += "large" } }
+            delay(1)
+            val smallOne = async { budget.withPermit(small) { order += "small" } }
+            listOf(bigRunning, bigWaiting, smallOne).awaitAll()
+
+            assertEquals(listOf("small", "large"), order, "the whole pool had room; only the large pool was full")
+        }
+
     @Test
     fun `a provider without a small-file width runs as before`() =
         runTest {

@@ -473,10 +473,16 @@ dropped (a daemon restart, a reset socket) and that missed the `completed`. The 
 handle for ten minutes (at most 4096) in memory, whether or not a subscriber was connected:
 
 - `{"ok":true,"state":"done","completed":{<the completed event exactly as the stream carries it, its seq included>}}`
-- `{"ok":true,"state":"unknown"}`: no outcome is recorded. The transfer may still run, the daemon may have restarted (the table
-  is not persisted, and a crash-recovery replay reports under its own `recovery-` handle ids), or the outcome is older than ten
-  minutes. A client keeps its own backstop for this answer.
+- `{"ok":true,"state":"unknown"}`: no outcome is recorded. The transfer may still run, the daemon may have restarted and its
+  replay of the upload not ended yet (the table itself is not persisted), or the outcome is older than ten minutes. A client
+  keeps its own backstop for this answer.
 - `{"ok":false,"error":"missing_handle_id"}`
+
+Across a restart: the engine keeps the handle id of every upload a client submitted with `open_write` in state.db until that
+upload ends (lands, fails for good, or is cancelled by the client). A daemon that stops or dies before that replays the upload at
+its next start under the same handle id, so its `uploading` and `completed` events, and this verb once it ends, carry the
+client's own id. A replay with no recorded handle (a state.db from an older engine, a newer submission that replaced the record)
+uses the engine's own ids (`engine-replay-<n>`, `engine-dirty-<n>`); the co-daemon's `recovery-<n>` handles keep their ids.
 
 The verb is read class (the stream's events are read scope too). An engine that answers it lists `hydration.handle_status` in the
 `daemon.status` `capabilities`. Pinned by `hydration.handle_status.ndjson` and the capability list of `daemon.status.ndjson`.

@@ -3,9 +3,7 @@ package org.krost.unidrive.hydration
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.AuthenticationException
@@ -273,7 +271,45 @@ class MountEngine private constructor(
      * front-ends: an overlapping call returns `skipped = true`. See `RemoteEnumeration` (archive#560 U2b)
      * and docs/dev/specs/mount-view-refresh-design.md.
      */
-    override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult = wiring.enumeration.enumerate(reset)
+    override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult =
+        wiring.enumeration.enumerate(reset).also { result ->
+            // gkrost/unidrive-cli#22: after a listing that succeeded, a scope root only the local side has is created.
+            if (result.ok && !result.skipped) scopeRoots.createMissing()
+        }
+
+    // gkrost/unidrive-cli#22: see ScopeRootCreator.
+    private val scopeRoots =
+        ScopeRootCreator(
+            object : ScopeRootCreator.Ops {
+                override fun creatableRoots() = gather.creatableScopeRoots()
+
+                override fun hasRemoteRow(path: String) = !db.getEntry(path)?.remoteId.isNullOrEmpty()
+
+                override fun isNameBlocked(path: String) = this@MountEngine.isNameBlocked(path)
+
+                override suspend fun listChildren(path: String) =
+                    watchingCredentials { provider.listChildren(remotePathOf(path)) }.also { recordProviderContact() }
+
+                override suspend fun createFolder(path: String) =
+                    watchingCredentials { createRemoteFolder(path) }.also { recordProviderContact() }
+
+                override suspend fun adoptExisting(path: String) = existingFolderAt(path)
+
+                override fun recordRefused(
+                    path: String,
+                    reason: String,
+                    sibling: String?,
+                ) = recordBlockedFolder(path, reason, sibling)
+
+                override fun folderChanged(parent: String) = gather.invalidateView(setOf(parent), false)
+            },
+            log,
+        )
+
+    /** gkrost/unidrive-cli#22: what became of each `sync_path` root that only the local side had, in this daemon run. */
+    internal fun scopeRootOutcomes(): Map<String, ScopeRootCreator.Outcome> = scopeRoots.outcomes()
+
+    override suspend fun enumerateOrJoin(reset: Boolean): EnumerateResult = wiring.enumeration.enumerate(reset, RemoteEnumeration.JOIN_MAX_WAIT_MS)
 
     /**
      * What a client may be told about the enumeration right now. A running attempt is answered from
@@ -560,18 +596,25 @@ class MountEngine private constructor(
     // Without it, a second open whose warm-cache size check fails re-downloads with
     // TRUNCATE_EXISTING into the cache file while a first handle is still reading it
     // (silent short/garbage reads on POSIX), and two concurrent cold opens
-    // double-download the same file. Entries persist for the daemon session — the
-    // same lifetime tradeoff as HydrationImpl.createMutexes, bounded by the number
-    // of distinct paths ever hydrated.
-    private val hydrateMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    // double-download the same file. gkrost/unidrive-cli#438: a path's entry lives only while
+    // somebody holds or waits for it ([PathLocks]).
+    private val hydrateLocks = PathLocks()
 
     // The truncate of open_write_begin and the end of a download of the same path, one at a time. The truncate does not wait
     // for the hydrate lock (a download can run for minutes); it waits for this short end only: the download's last look at
     // the row, the move, local hash and row write. A truncate in between had its edit's
     // mark wiped by the row write, or emptied a copy the move then replaced (the editor's bytes went to the old file).
-    private val cacheSwapMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    @PublishedApi
+    internal val cacheSwapLocks = PathLocks()
 
-    internal fun cacheSwapLock(path: String): Mutex = cacheSwapMutexes.computeIfAbsent(PathNormalizer.nfc(path)) { Mutex() }
+    /** Runs [block] holding the swap lock of [path] (its NFC form). */
+    internal suspend inline fun <T> withCacheSwapLock(
+        path: String,
+        block: () -> T,
+    ): T = cacheSwapLocks.withLock(PathNormalizer.nfc(path), block)
+
+    /** gkrost/unidrive-cli#438: how many paths the hydrate and the swap locks hold now (a test seam). */
+    internal val heldPathLocks: Int get() = hydrateLocks.size + cacheSwapLocks.size
 
     // gkrost/unidrive-cli#23: the transfer of the download running for each path (at most one: the hydrate lock), read by
     // [downloadProgress].
@@ -688,7 +731,7 @@ class MountEngine private constructor(
         val tally = FileEventTally()
         val started = System.nanoTime()
         try {
-            val result = hydrateMutexes.computeIfAbsent(path) { Mutex() }.withLock { ensureHydratedLocked(path, history, tally) }
+            val result = hydrateLocks.withLock(path) { ensureHydratedLocked(path, history, tally) }
             FileEvents.event(FileEvents.Phase.HYDRATE_SERVED, path, bytes = runCatching { Files.size(result.path) }.getOrNull(),
                 ms = (System.nanoTime() - started) / 1_000_000, tally = tally, extra = listOf("cache_hit" to !result.fetched))
             return result
@@ -844,7 +887,7 @@ class MountEngine private constructor(
                     // down owns the cache copy now (open_write_begin truncates it without this path's hydrate lock).
                     // The row is also checked for identity: a row that was removed or replaced while the download ran is
                     // another file's row, and the cache path may hold that replacement's only bytes.
-                    cacheSwapLock(path).withLock {
+                    withCacheSwapLock(path) {
                         val rowNow = requireRowUnchanged(path, entry)
                         if (rowNow.editBase != null && entry.editBase == null) {
                             log.info("integrity failure of {} leaves the cache copy: an edit began while the download ran", path)
@@ -865,9 +908,13 @@ class MountEngine private constructor(
                     )
                 }
             }
+            // gkrost/unidrive-cli#438: the SHA-256 the row records for a provider without a content hash is read from the staged
+            // bytes here, before the swap lock: a save over the file (open_write_begin) waits for that lock, and a hash of a
+            // large file under it held the save for as long as the read took.
+            val prehashed = stagedHashIfOwed(staged, entry, fetched)
             // The last look at the row, the move of the bytes into place and the row write are one step for a truncate
-            // ([cacheSwapLock]): a truncate before it is seen below, one after it empties the copy the download put there.
-            cacheSwapLock(path).withLock {
+            // ([withCacheSwapLock]): a truncate before it is seen below, one after it empties the copy the download put there.
+            withCacheSwapLock(path) {
                 val rowNow = requireRowUnchanged(path, entry)
                 // M1 of archive#1040: open_write_begin does not take this path's hydrate lock, so an edit may have begun while
                 // the bytes came down. Its truncated copy is the start of that edit, the only copy of it: the finished download
@@ -905,7 +952,14 @@ class MountEngine private constructor(
                 // copy's bytes: keeping a hash recorded for the previous contents would pair stale
                 // bytes with a fresh mtime/size and let a later touch be absorbed as unchanged.
                 db.upsertEntry(
-                    withDownloadedHash(rebaselined, cachePath, rebaselined.localMtime!! to rebaselined.localSize!!, fetched.receipt, tally),
+                    withDownloadedHash(
+                        rebaselined,
+                        cachePath,
+                        rebaselined.localMtime!! to rebaselined.localSize!!,
+                        fetched.receipt,
+                        tally,
+                        prehashed,
+                    ),
                 )
             }
             recordProviderContact()
@@ -1231,7 +1285,7 @@ class MountEngine private constructor(
         onUnhydrated: suspend (String) -> Unit = {},
         observed: Pair<Long, Long>? = null,
     ): Long? =
-        hydrateMutexes.computeIfAbsent(path) { Mutex() }.withLock {
+        hydrateLocks.withLock(path) {
             // archive#728: one row read decides both the classification and the baseline question below: this
             // is the re-check that counts, so it must not ask the database twice per evicted file.
             val entry = db.getEntry(path) ?: return@withLock null
@@ -2373,21 +2427,58 @@ class MountEngine private constructor(
     // same test as SyncEngine.stagedLocalHash, gkrost/unidrive-cli#410: a same-size write leaves the size alone, so the size
     // alone proves nothing); a receipt without a staged mtime, any other copy, and a receipt without a hash are read and hashed
     // as before. The stat guard of Transfers.withLocalHash then drops either hash if the copy changed meanwhile.
-    private fun withDownloadedHash(
+    internal fun withDownloadedHash(
         entry: SyncEntry,
         local: Path,
         stats: Pair<Long, Long>,
         receipt: DownloadReceipt,
         tally: FileEventTally,
+        prehashed: StagedHash? = null,
     ): SyncEntry {
         val (mtime, size) = stats
         val streamed =
             receipt.plaintextSha256?.takeIf {
                 receipt.stagedSize == size && receipt.stagedMtimeMillis != null && receipt.stagedMtimeMillis == mtime
             }
-        return Transfers.withLocalHash(entry, local, stats, provider.hashAlgorithm(), log, streamed) { fromProvider, ms ->
-            FileEvents.event(FileEvents.Phase.HASH_DONE, entry.path, bytes = size, ms = ms, tally = tally,
-                extra = listOf("via" to if (fromProvider) "provider" else "file"))
+        // A hash of the staged bytes counts only while the placed copy has the stats the staged file had when it was read.
+        val staged = if (streamed == null) prehashed?.takeIf { it.mtime == mtime && it.size == size } else null
+        return Transfers.withLocalHash(entry, local, stats, provider.hashAlgorithm(), log, streamed ?: staged?.sha256) { fromProvider, ms ->
+            val via = if (staged != null) "file" else if (fromProvider) "provider" else "file"
+            FileEvents.event(FileEvents.Phase.HASH_DONE, entry.path, bytes = size, ms = staged?.readMs ?: ms, tally = tally,
+                extra = listOf("via" to via))
+        }
+    }
+
+    // gkrost/unidrive-cli#438: the SHA-256 of the staged bytes, read before the swap lock, with the stats they had.
+    internal class StagedHash(
+        val sha256: String,
+        val mtime: Long,
+        val size: Long,
+        val readMs: Long,
+    )
+
+    // The hash the row will owe for this download, read from [staged] now; null when it owes none (the provider names the content
+    // by a hash of its own, or the download streamed one for these very bytes) or the file cannot be read (the row write then reads
+    // the placed copy, as before).
+    private fun stagedHashIfOwed(
+        staged: Path,
+        entry: SyncEntry,
+        fetched: Fetched,
+    ): StagedHash? {
+        if (provider.hashAlgorithm() != null && !(fetched.liveItem?.hash ?: entry.remoteHash).isNullOrEmpty()) return null
+        return try {
+            val mtime = Files.getLastModifiedTime(staged).toMillis()
+            val size = Files.size(staged)
+            val receipt = fetched.receipt
+            if (receipt.plaintextSha256 != null && receipt.stagedSize == size && receipt.stagedMtimeMillis == mtime) return null
+            val startedNs = System.nanoTime()
+            val sha = HashVerifier.computeSha256Hex(staged)
+            val readMs = (System.nanoTime() - startedNs) / 1_000_000
+            // Changed while it was read: no hash, the row write reads the placed copy.
+            if (Files.getLastModifiedTime(staged).toMillis() != mtime || Files.size(staged) != size) null else StagedHash(sha, mtime, size, readMs)
+        } catch (e: java.io.IOException) {
+            log.debug("staged bytes of {} not hashed before the swap: {}", entry.path, e.message)
+            null
         }
     }
 

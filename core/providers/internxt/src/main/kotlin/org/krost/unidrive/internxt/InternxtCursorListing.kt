@@ -289,6 +289,12 @@ internal fun cursorResumeOf(
     return CursorResume(decoded, mine, staged.filter { it.hash == CURSOR_ANCESTOR_TAG })
 }
 
+/**
+ * The most pages one stream is followed in one call: ten times the per-folder listing's cap, far beyond any account
+ * (at 1000 rows a page, a hundred million rows). A stream it stops resumes from its persisted position next time.
+ */
+internal const val MAX_STREAM_PAGES: Int = InternxtApiService.MAX_LISTING_PAGES * 10
+
 /** How a stream ended: [COMPLETE] when the server said there is no next page, [CUT_SHORT] when a guard stopped it. */
 internal enum class StreamEnd { COMPLETE, CUT_SHORT }
 
@@ -305,11 +311,13 @@ internal class CursorListingUnavailable(
  * with the position the stream stands at once the page is stored; it is called before the next request, so a
  * persisted position never runs ahead of its rows.
  *
- * The server ends a stream by a page without `nextCursor`. Two guards keep a misbehaving server from looping
+ * The server ends a stream by a page without `nextCursor`. Four guards keep a misbehaving server from looping
  * the client: a page with items whose `nextCursor` was already asked for ends the stream (its rows are kept,
  * its position is not advanced), and a second empty page in a row ends it (the first one is tolerated: an
- * empty page that carries a cursor is not the end). A stream a guard ended is [StreamEnd.CUT_SHORT]: nobody
- * saw its end, so the listing must not be taken for complete.
+ * empty page that carries a cursor is not the end). A server that mints a fresh cursor for every page cannot be
+ * caught by the asked set: a page with the same items as the page before it ends the stream (its position is not
+ * advanced), and so does a page past [maxPages] in one call. A stream a guard ended is [StreamEnd.CUT_SHORT]:
+ * nobody saw its end, so the listing must not be taken for complete.
  *
  * [CursorListingUnavailable] is thrown for a 404, 405 or 501 on the first page only. Every other failure,
  * and the same statuses on a later page, propagates unchanged: the stream stands where its last page left it.
@@ -319,12 +327,19 @@ internal suspend fun <T> pageCursorStream(
     start: StreamPosition,
     fetch: suspend (cursor: String?) -> SyncPage<T>,
     onPage: suspend (items: List<T>, position: StreamPosition) -> Unit,
+    maxPages: Int = MAX_STREAM_PAGES,
 ): StreamEnd {
     if (start.done) return StreamEnd.COMPLETE
     var position = start
     val asked = HashSet<String>()
     var emptyInARow = 0
+    var previousItems: List<T>? = null
+    var pages = 0
     while (true) {
+        if (++pages > maxPages) {
+            log.warn("The {} listing went on past {} pages in one pass: ending the stream, the listing is incomplete", stream, maxPages)
+            return StreamEnd.CUT_SHORT
+        }
         val sent = position.cursor
         if (sent != null) asked.add(sent)
         val page =
@@ -355,8 +370,13 @@ internal suspend fun <T> pageCursorStream(
                 onPage(page.items, position)
                 return StreamEnd.CUT_SHORT
             }
+            page.items == previousItems -> {
+                log.warn("The {} listing returned the same page again under a new cursor: ending the stream, the listing is incomplete", stream)
+                return StreamEnd.CUT_SHORT
+            }
             else -> {
                 emptyInARow = 0
+                previousItems = page.items
                 position = StreamPosition(cursor = next)
                 onPage(page.items, position)
             }

@@ -58,7 +58,7 @@ class MetricsRpcHandler(
         val limit =
             when {
                 limitElement == null || limitElement is JsonNull -> RollupQuery.DEFAULT_LIMIT
-                else -> (limitElement as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toIntOrNull()?.takeIf { it in 1..RollupQuery.MAX_LIMIT }
+                else -> limitElement.strictLongOrNull()?.takeIf { it in 1..RollupQuery.MAX_LIMIT.toLong() }?.toInt()
                     ?: return INVALID_LIMIT
             }
 
@@ -76,7 +76,7 @@ class MetricsRpcHandler(
     private fun JsonObject.nonNegativeLong(key: String): Long? {
         val element = this[key] ?: return null
         if (element is JsonNull) return null
-        val value = (element as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()
+        val value = element.strictLongOrNull()
         return if (value == null || value < 0) INVALID else value
     }
 

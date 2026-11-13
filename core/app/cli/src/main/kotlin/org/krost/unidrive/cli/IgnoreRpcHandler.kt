@@ -84,9 +84,7 @@ class IgnoreRpcHandler(
         val isDir =
             when (val element = body["is_dir"]) {
                 null, JsonNull -> false
-                else ->
-                    (element as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toBooleanStrictOrNull()
-                        ?: return Verdict.Refused("invalid_is_dir")
+                else -> element.strictBooleanOrNull() ?: return Verdict.Refused("invalid_is_dir")
             }
         val path = logicalPath(raw) ?: return Verdict.Refused("invalid_path")
         val v = ignore.explain(path, isDir)

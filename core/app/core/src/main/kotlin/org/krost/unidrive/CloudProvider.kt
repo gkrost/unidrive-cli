@@ -213,13 +213,18 @@ interface CloudProvider {
      * Path-based resolution picks the first of same-named siblings, so a delete can
      * trash the wrong twin; callers that hold the row's real cloud id (non-`local:`)
      * route here. [remotePath] is carried for error messages and for providers
-     * without an id-addressed delete — the default falls back to [delete].
+     * without an id-addressed delete — the default falls back to [delete], but only where a path names one item: on a
+     * provider that [allowsDuplicateNames] the path may name the twin, so the default refuses there and the provider
+     * must override this (#268).
      * Precedent: [downloadById] / [upload]'s `existingRemoteId`.
      */
     suspend fun deleteById(
         remoteId: String,
         remotePath: String,
-    ) = delete(remotePath)
+    ) {
+        refusePathFallbackWithTwins(this, "deleteById", remotePath)
+        delete(remotePath)
+    }
 
     /**
      * archive#1178: delete the item at [remotePath] FOR GOOD, bypassing the provider's trash where it has one (Internxt,
@@ -232,12 +237,16 @@ interface CloudProvider {
 
     /**
      * archive#1178: [deletePermanently] by the row's cloud id, as [deleteById] is to [delete]: a delete for good must not reach
-     * the wrong one of two same-named siblings. The default falls back to the path.
+     * the wrong one of two same-named siblings. The default falls back to the path, and refuses on a provider that
+     * [allowsDuplicateNames], as [deleteById] does.
      */
     suspend fun deletePermanentlyById(
         remoteId: String,
         remotePath: String,
-    ) = deletePermanently(remotePath)
+    ) {
+        refusePathFallbackWithTwins(this, "deletePermanentlyById", remotePath)
+        deletePermanently(remotePath)
+    }
 
     /**
      * #500: the items of the provider's OWN trash, the whole of it (the provider pages internally). Not the local
@@ -316,13 +325,17 @@ interface CloudProvider {
      * archive#402: move the item with [remoteId] instead of resolving [fromPath] by name —
      * same rationale as [deleteById]. The default falls back to [move] so providers
      * without an id-addressed move keep working; the engine routes through here
-     * whenever the source row carries a real cloud id.
+     * whenever the source row carries a real cloud id. Like [deleteById], the default refuses on a provider that
+     * [allowsDuplicateNames].
      */
     suspend fun moveById(
         remoteId: String,
         fromPath: String,
         toPath: String,
-    ): CloudItem = move(fromPath, toPath)
+    ): CloudItem {
+        refusePathFallbackWithTwins(this, "moveById", fromPath)
+        return move(fromPath, toPath)
+    }
 
     /**
      * Walk the remote and return the change set since [cursor].
@@ -453,7 +466,7 @@ interface CloudProvider {
      */
     suspend fun itemStateById(remoteId: String): ItemRemoteState = ItemRemoteState.Unknown
 
-    /** Generate a shareable link for a file/folder. */
+    /** Generate a shareable link for a file/folder, expiring after [expiryHours]; 0 or less asks for a link without expiry. */
     suspend fun share(
         path: String,
         expiryHours: Int = 24,
@@ -656,4 +669,21 @@ sealed interface ItemRemoteState {
  */
 interface TypedDeleteProvider {
     suspend fun deleteById(remoteId: String, remotePath: String, isFolder: Boolean)
+}
+
+/**
+ * #268: the id-addressed defaults fall back to the path, which is the same item only where names are unique per folder. A
+ * provider that [CloudProvider.allowsDuplicateNames] and forgot an override would act on whichever twin the path
+ * resolves to, without a word; it fails here instead, before any request.
+ */
+internal fun refusePathFallbackWithTwins(
+    provider: CloudProvider,
+    operation: String,
+    path: String,
+) {
+    if (provider.allowsDuplicateNames) {
+        throw UnsupportedOperationException(
+            "${provider.id} allows same-named siblings and must override $operation: a path may name the other twin (path: $path)",
+        )
+    }
 }

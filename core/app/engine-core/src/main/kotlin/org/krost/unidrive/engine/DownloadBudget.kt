@@ -1,6 +1,7 @@
 package org.krost.unidrive.engine
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 import org.krost.unidrive.http.AttemptOutcome
 import org.krost.unidrive.http.RequestMetricsSink
@@ -28,6 +29,11 @@ import java.util.concurrent.atomic.AtomicLong
  * a slot is granted, and waiting downloads are re-checked when a download ends, when a throttle is noted and when the
  * quiet window runs out. A waiting download that is cancelled gives up its place and holds no slot.
  *
+ * gkrost/unidrive-cli#438: the waiting downloads queue in arrival order, and a newcomer queues behind them. A freed slot is
+ * handed to the first waiting download that fits (a large one that the large pool does not take yet is passed over, never a
+ * large one that waits for the whole pool), and only that one is woken: a burst of a thousand thumbnail reads no longer
+ * wakes every waiter at every release, and a stream of small reads can no longer keep a large one waiting for good.
+ *
  * Separate from [RemoteOperationGuard.transferBudget] (the uploads and the sync pass): hydration downloads never took
  * a permit of that one, and a read must not wait behind an upload burst.
  */
@@ -49,15 +55,30 @@ class DownloadBudget(
     private val lock = Any()
     private var activeAll = 0
     private var activeLarge = 0
-    private val waiters = ArrayList<CompletableDeferred<Unit>>()
+
+    // The downloads waiting for a slot, in arrival order; [Waiter.granted] completes once a slot is theirs (counted already).
+    private class Waiter(
+        val large: Boolean,
+    ) {
+        val granted = CompletableDeferred<Unit>()
+    }
+
+    private val waiters = ArrayDeque<Waiter>()
+
+    // Completed (and replaced) when a throttle is noted: the waiters then learn the time the quiet window ends.
+    private var throttleNoted = CompletableDeferred<Unit>()
 
     // Sentinel well below any clock, so a test clock starting at 0 does not read as "throttled at 0".
     private val lastThrottleAtMs = AtomicLong(Long.MIN_VALUE / 2)
 
     /** The provider throttled a request (429 or Retry-After): downloads fall back to [throttledPermits] for a while. */
     fun noteThrottle() {
-        lastThrottleAtMs.set(clock())
-        wakeWaiters()
+        val noted =
+            synchronized(lock) {
+                lastThrottleAtMs.set(clock())
+                throttleNoted.also { throttleNoted = CompletableDeferred() }
+            }
+        noted.complete(Unit)
     }
 
     /** True while a throttle was seen less than [throttleQuietMs] ago. */
@@ -93,25 +114,54 @@ class DownloadBudget(
     }
 
     private suspend fun acquire(large: Boolean) {
-        while (true) {
-            val signal = CompletableDeferred<Unit>()
-            var quietLeftMs: Long? = null
-            synchronized(lock) {
-                if (admits(large)) {
-                    activeAll++
-                    if (large) activeLarge++
-                    return
-                }
-                waiters += signal
-                // While throttled the answer changes with time alone: wake up when the quiet window ends.
-                if (isThrottled) quietLeftMs = throttleQuietMs - (clock() - lastThrottleAtMs.get())
-            }
-            try {
+        val waiter = Waiter(large)
+        synchronized(lock) {
+            waiters.addLast(waiter)
+            grantInOrder()
+        }
+        var acquired = false
+        try {
+            while (!waiter.granted.isCompleted) {
+                var quietLeftMs: Long? = null
+                val noted =
+                    synchronized(lock) {
+                        // While throttled the answer changes with time alone: wake up when the quiet window ends.
+                        if (isThrottled) quietLeftMs = throttleQuietMs - (clock() - lastThrottleAtMs.get())
+                        throttleNoted
+                    }
                 val left = quietLeftMs
-                if (left != null) withTimeoutOrNull(left.coerceAtLeast(1)) { signal.await() } else signal.await()
-            } finally {
-                synchronized(lock) { waiters.remove(signal) }
+                if (left != null) {
+                    withTimeoutOrNull(left.coerceAtLeast(1)) { grantedOrNoted(waiter, noted) }
+                } else {
+                    grantedOrNoted(waiter, noted)
+                }
+                // A throttle noted, or its quiet window over: the width changed, so the queue is looked at again.
+                if (!waiter.granted.isCompleted) synchronized(lock) { grantInOrder() }
             }
+            acquired = true
+        } finally {
+            // Cancelled while it waited: the place goes; granted in the same instant, the slot goes back to the next that fits.
+            if (!acquired) {
+                synchronized(lock) {
+                    if (waiter.granted.isCompleted) {
+                        activeAll--
+                        if (large) activeLarge--
+                    } else {
+                        waiters.remove(waiter)
+                    }
+                    grantInOrder()
+                }
+            }
+        }
+    }
+
+    private suspend fun grantedOrNoted(
+        waiter: Waiter,
+        noted: CompletableDeferred<Unit>,
+    ) {
+        select {
+            waiter.granted.onAwait {}
+            noted.onAwait {}
         }
     }
 
@@ -119,15 +169,25 @@ class DownloadBudget(
         synchronized(lock) {
             activeAll--
             if (large) activeLarge--
+            grantInOrder()
         }
-        wakeWaiters()
     }
 
-    // Every waiter re-checks admission; one that still does not fit waits again.
-    private fun wakeWaiters() {
-        synchronized(lock) {
-            waiters.forEach { it.complete(Unit) }
-            waiters.clear()
+    // Caller holds [lock]. Hands free slots to the waiting downloads in arrival order: each one that fits is counted, leaves the
+    // queue and is woken. One that does not fit is passed over only when the large pool is what it waits for; once not even a
+    // small download fits, nothing behind it does.
+    private fun grantInOrder() {
+        val queue = waiters.iterator()
+        while (queue.hasNext()) {
+            val next = queue.next()
+            if (!admits(next.large)) {
+                if (admits(false)) continue
+                return
+            }
+            activeAll++
+            if (next.large) activeLarge++
+            queue.remove()
+            next.granted.complete(Unit)
         }
     }
 

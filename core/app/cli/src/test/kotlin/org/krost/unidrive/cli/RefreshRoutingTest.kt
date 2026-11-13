@@ -211,11 +211,13 @@ class RefreshRoutingTest {
     }
 
     @Test
-    fun refresh_without_reset_that_met_a_running_pass_is_still_success(): Unit = runBlocking {
-        // The running pass is refreshing the view already; nothing was asked that it does not do.
+    fun refresh_without_reset_that_met_a_running_pass_answers_when_that_pass_has_ended(): Unit = runBlocking {
+        // gkrost/unidrive-cli#442: `done` at once would come before the running pass has written the view.
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val engine = RecordingEngine(enumerateResult = EnumerateResult(ok = true, skipped = true))
-        val emitted = mutableListOf<String>()
+        val running = kotlinx.coroutines.CompletableDeferred<EnumerateResult>()
+        engine.runningPass = running
+        val emitted = java.util.concurrent.CopyOnWriteArrayList<String>()
         val handler =
             RefreshRpcHandler(
                 server,
@@ -225,6 +227,40 @@ class RefreshRoutingTest {
                 mountClientConnected = { true },
                 emit = { emitted.add(it) },
             )
+
+        handler.handle("conn-1", """{"verb":"refresh.run"}""")
+        kotlinx.coroutines.withTimeout(5_000) { while (!engine.enumerateCalled) kotlinx.coroutines.delay(10) }
+        kotlinx.coroutines.delay(200)
+        assertTrue(emitted.isEmpty(), "no done while the running pass runs: $emitted")
+
+        running.complete(EnumerateResult(ok = true, upserted = 3))
+        handler.awaitInFlight()
+
+        assertTrue(emitted.single().contains("\"ok\":true"), emitted.single())
+    }
+
+    @Test
+    fun refresh_without_reset_that_met_a_running_pass_reports_that_pass_failing(): Unit = runBlocking {
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val engine = RecordingEngine(enumerateResult = EnumerateResult(ok = true, skipped = true))
+        engine.runningPass = kotlinx.coroutines.CompletableDeferred(EnumerateResult(ok = false, error = "listing failed"))
+        val emitted = mutableListOf<String>()
+        val handler =
+            RefreshRpcHandler(server, engine, db, scope, mountClientConnected = { true }, emit = { emitted.add(it) })
+
+        handler.handle("conn-1", """{"verb":"refresh.run"}""")
+        handler.awaitInFlight()
+
+        assertTrue(emitted.single().contains("\"ok\":false") && emitted.single().contains("provider_error"), emitted.single())
+    }
+
+    @Test
+    fun refresh_without_reset_that_met_a_pass_already_ended_is_done(): Unit = runBlocking {
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val engine = RecordingEngine(enumerateResult = EnumerateResult(ok = true, skipped = true))
+        val emitted = mutableListOf<String>()
+        val handler =
+            RefreshRpcHandler(server, engine, db, scope, mountClientConnected = { true }, emit = { emitted.add(it) })
 
         handler.handle("conn-1", """{"verb":"refresh.run"}""")
         handler.awaitInFlight()
@@ -405,6 +441,8 @@ private class ThrowingEngine(
         syncRoot = Files.createTempDirectory("ud-throwing-root"),
     ) {
     override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult = throw failure
+
+    override suspend fun enumerateOrJoin(reset: Boolean): EnumerateResult = throw failure
 
     override suspend fun syncOnce(
         dryRun: Boolean,

@@ -827,6 +827,12 @@ subprojects {
     tasks.matching { it.name == "check" }.configureEach { dependsOn(":checkModuleEdges") }
 }
 
+// Size ratchet (gkrost/unidrive-cli#534): the big files and long functions may not grow. See the script.
+apply(from = "gradle/size-ratchet.gradle.kts")
+subprojects {
+    tasks.matching { it.name == "check" }.configureEach { dependsOn(":sizeRatchet") }
+}
+
 tasks.register("generateNotice") {
     dependsOn(":app:cli:shadowJar")
     doLast {

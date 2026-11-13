@@ -1,21 +1,17 @@
 package org.krost.unidrive.telemetry
 
-import org.krost.unidrive.MdcSnapshot
 import org.krost.unidrive.http.RequestAttempt
 import org.krost.unidrive.http.RequestMetricsSink
 import org.slf4j.LoggerFactory
 import java.sql.SQLException
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The request-attempt metrics of one profile: attempts handed in by the providers' HTTP clients
  * ([RequestMetricsSink]), written to the attempt tables of the profile's `telemetry.db` by one background
- * thread behind a bounded queue, rolled up per minute and per endpoint class, and read back by [query].
+ * thread ([BatchingWriter]) behind a bounded queue, rolled up per minute and per endpoint class, and read
+ * back by [query].
  *
  * - **A request never waits for the disk.** [record] offers the attempt to the queue and returns; a full queue
  *   drops it and counts it. A failed write drops that batch and counts it; the writer carries on.
@@ -31,69 +27,39 @@ import java.util.concurrent.atomic.AtomicLong
  */
 @Suppress("TooManyFunctions") // one writer thread: its control ops, write, roll-up and retention steps stay together
 class RequestMetricsRecorder internal constructor(
-    private val profile: String,
+    profile: String,
     private val config: RequestMetricsConfig,
     private val maxBytes: Long,
     private val clock: () -> Long,
     private val store: TelemetryStore,
-    // How long close() waits for the queue to take Stop, and then for the thread to end.
-    private val closeWaitMs: Long = JOIN_TIMEOUT_MS,
-) : RequestMetricsSink,
+    closeWaitMs: Long = BatchingWriter.DEFAULT_WAIT_MS,
+) : BatchingWriter<RequestAttempt>(
+    profile = profile,
+    threadName = "request-metrics-$profile",
+    queueCapacity = config.queueCapacity,
+    batchSize = config.batchSize,
+    closeWaitMs = closeWaitMs,
+),
+    RequestMetricsSink,
     AutoCloseable {
-    private sealed interface Op {
-        class Write(
-            val attempt: RequestAttempt,
-        ) : Op
-
-        class Barrier(
-            val done: CompletableFuture<Unit>,
-        ) : Op
-
-        class Prune(
-            val done: CompletableFuture<Unit>,
-        ) : Op
-
-        data object Stop : Op
-    }
-
-    private val queue = ArrayBlockingQueue<Op>(config.queueCapacity)
-    private val written = AtomicLong()
-    private val dropped = AtomicLong()
-    private val droppedUnrecorded = AtomicBoolean()
-    private val accepting = AtomicBoolean(true)
-
-    // Set by the writer thread when it ends on a Throwable the loop does not handle (#390); see [writerLoop].
-    @Volatile
-    private var writerFailure: String? = null
-
-    // gkrost/unidrive-cli#225: the writer's lines carry the MDC (profile, build) of the daemon that opened the metrics.
-    private val logContext = MdcSnapshot.capture()
-    private val thread = Thread(::writerLoop, "request-metrics-$profile").apply { isDaemon = true }
-
-    // Writer thread only.
+    // Writer thread only: the attempts of the current turn, and the minutes waiting for their roll-up.
+    private val pending = ArrayList<RequestAttempt>()
     private val dirtyMinutes = LinkedHashSet<Long>()
     private var lastRollupNanos = 0L
     private var lastPruneNanos = 0L
-    private var lastWarnNanos = 0L
 
     val stats: RequestMetricsStats
-        get() = RequestMetricsStats(written.get(), dropped.get(), dropped.get() > 0, queue.size, writerFailure)
-
-    internal fun start() = thread.start()
-
-    internal val writerAlive: Boolean get() = thread.isAlive
-
-    internal fun writerStatus(): String = writerThreadStatus(thread, writerFailure)
+        get() = RequestMetricsStats(written.get(), dropped.get(), dropped.get() > 0, queueDepth(), failureOrNull())
 
     /** Hot path: hands the attempt to the queue; a full queue drops it and counts it. Never blocks, never throws. */
     override fun record(attempt: RequestAttempt) {
-        if (!accepting.get()) return
-        if (writerFailure != null) {
+        if (!acceptingOps) return
+        if (writerDead()) {
             // Nobody drains the queue any more: the attempt is lost, and says so in the counters.
             dropped.incrementAndGet()
             return
         }
-        if (!queue.offer(Op.Write(attempt))) {
+        if (!queueOffer(Op.Write(attempt))) {
             dropped.incrementAndGet()
             droppedUnrecorded.set(true)
         }
@@ -104,25 +70,6 @@ class RequestMetricsRecorder internal constructor(
 
     /** Applies the retention now, on the writer thread, and waits for it. */
     fun pruneNow(): Boolean = control(DEFAULT_WAIT_MS) { Op.Prune(it) }
-
-    private fun control(
-        timeoutMs: Long,
-        op: (CompletableFuture<Unit>) -> Op,
-    ): Boolean {
-        if (!thread.isAlive) return false
-        val done = CompletableFuture<Unit>()
-        return try {
-            if (!queue.offer(op(done), timeoutMs, TimeUnit.MILLISECONDS)) return false
-            done.get(timeoutMs, TimeUnit.MILLISECONDS)
-            true
-        } catch (e: TimeoutException) {
-            log.warn("Request metrics for {} did not answer within {} ms: {}", profile, timeoutMs, e.javaClass.simpleName)
-            false
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            false
-        }
-    }
 
     /**
      * The roll-ups in [q], after a flush (a flush that times out is not an error: what is written is read). An
@@ -140,85 +87,59 @@ class RequestMetricsRecorder internal constructor(
     /** When attempts were first lost from this file (epoch milliseconds), or null when none is known to be. */
     fun incompleteSinceMs(): Long? = store.meta("metrics_incomplete_since")?.toLongOrNull()
 
-    /** Test seam: the process dies; nothing more is written or rolled up. */
-    internal fun abandon() {
-        accepting.set(false)
-        thread.interrupt()
-        thread.join(JOIN_TIMEOUT_MS)
-    }
-
     /** Writes what is queued, rolls up, stops the thread. Safe to call twice. */
     override fun close() {
-        if (!accepting.getAndSet(false)) return
-        if (thread.isAlive) {
-            // A Stop the full queue did not take in time would leave the writer polling for ever (#530); the interrupt
-            // ends its loop, so the writer does not outlive the close.
-            if (!queue.offer(Op.Stop, closeWaitMs, TimeUnit.MILLISECONDS)) {
-                log.warn("Request metrics for {}: the queue did not take the stop within {} ms; interrupting the writer", profile, closeWaitMs)
-                thread.interrupt()
-            }
-            thread.join(closeWaitMs)
-        }
+        closeWriter()
     }
 
-    private fun writerLoop() {
-        logContext.applyToThisThread()
-        val batch = ArrayList<Op>(config.batchSize)
-        try {
-            catchUp()
-            prune()
-            var running = true
-            while (running) {
-                val first = queue.poll(idleWaitMs(nextDueInNs()), TimeUnit.MILLISECONDS)
-                if (first != null) {
-                    batch.add(first)
-                    queue.drainTo(batch, config.batchSize - 1)
-                }
-                running = process(batch)
-                batch.clear()
-                if (running) {
-                    rollUpIfDue()
-                    pruneIfDue()
-                }
-            }
-            rollUp()
-        } catch (e: InterruptedException) {
-            log.debug("Request metrics writer for {} interrupted: {}", profile, e.message)
-        } catch (@Suppress("TooGenericExceptionCaught") e: Throwable) {
-            // As in HistoryWriter (#390): an Error ended the thread unseen. Say so where the stats and the log carry it.
-            val what = "${e.javaClass.name}: ${HistorySanitizer.message(e.message)}"
-            writerFailure = what
-            log.error("Request metrics writer for {} died, no more attempts are written: {}", profile, what)
-            log.debug("Request metrics writer for {} died", profile, e)
-        }
+    override fun beforeLoop() {
+        catchUp()
+        prune()
     }
 
-    private fun process(batch: List<Op>): Boolean {
-        val pending = ArrayList<RequestAttempt>()
-        var keepRunning = true
-        for (op in batch) {
-            when (op) {
-                is Op.Write -> pending += op.attempt
-                is Op.Barrier -> {
-                    write(pending)
-                    rollUp()
-                    op.done.complete(Unit)
-                }
-                is Op.Prune -> {
-                    write(pending)
-                    rollUp()
-                    prune()
-                    op.done.complete(Unit)
-                }
-                Op.Stop -> keepRunning = false
-            }
-        }
-        write(pending)
-        return keepRunning
+    override fun afterLoop() {
+        rollUp()
     }
+
+    override fun onWrite(item: RequestAttempt) {
+        pending += item
+    }
+
+    override fun onBarrier() {
+        writePending()
+        rollUp()
+    }
+
+    override fun onPrune() {
+        writePending()
+        rollUp()
+        prune()
+    }
+
+    override fun onTurnEnd() {
+        writePending()
+    }
+
+    override fun onIdle() {
+        rollUpIfDue()
+        pruneIfDue()
+    }
+
+    // What an idle writer waits for: the retention, and the roll-up while minutes are waiting for one.
+    override fun idleWaitNs(): Long {
+        val pruneDueNs = TimeUnit.MILLISECONDS.toNanos(config.pruneIntervalMs) - (System.nanoTime() - lastPruneNanos)
+        val rollupDueNs = TimeUnit.MILLISECONDS.toNanos(config.rollupIntervalMs) - (System.nanoTime() - lastRollupNanos)
+        return if (dirtyMinutes.isEmpty()) pruneDueNs else minOf(pruneDueNs, rollupDueNs)
+    }
+
+    override val logLabel = "Request metrics"
+
+    override val droppedNote = "attempt(s) dropped, requests are not affected"
+
+    override fun writerDiedLine(what: String): String = "Request metrics writer for $profile died, no more attempts are written: $what"
 
     @Suppress("TooGenericExceptionCaught") // metrics are never a correctness dependency: nothing here may kill the writer
-    private fun write(pending: MutableList<RequestAttempt>) {
+    private fun writePending() {
         if (pending.isEmpty()) return
         val rows = pending.toList()
         pending.clear()
@@ -231,26 +152,6 @@ class RequestMetricsRecorder internal constructor(
             writeFailed(rows.size, e)
         } catch (e: RuntimeException) {
             writeFailed(rows.size, e)
-        }
-    }
-
-    private fun writeFailed(
-        rows: Int,
-        e: Exception,
-    ) {
-        dropped.addAndGet(rows.toLong())
-        droppedUnrecorded.set(true)
-        val now = System.nanoTime()
-        if (lastWarnNanos == 0L || now - lastWarnNanos > WARN_EVERY_NANOS) {
-            lastWarnNanos = now
-            log.warn(
-                "Request metrics for {}: {} attempt(s) dropped, requests are not affected ({}: {}); {} dropped so far",
-                profile,
-                rows,
-                e.javaClass.simpleName,
-                HistorySanitizer.message(e.message),
-                dropped.get(),
-            )
         }
     }
 
@@ -282,11 +183,6 @@ class RequestMetricsRecorder internal constructor(
 
     private fun rollupDueInNs(): Long = TimeUnit.MILLISECONDS.toNanos(config.rollupIntervalMs) - (System.nanoTime() - lastRollupNanos)
 
-    private fun pruneDueInNs(): Long = TimeUnit.MILLISECONDS.toNanos(config.pruneIntervalMs) - (System.nanoTime() - lastPruneNanos)
-
-    // What an idle writer waits for: the retention, and the roll-up while minutes are waiting for one.
-    private fun nextDueInNs(): Long = if (dirtyMinutes.isEmpty()) pruneDueInNs() else minOf(pruneDueInNs(), rollupDueInNs())
-
     @Suppress("TooGenericExceptionCaught")
     private fun rollUp() {
         lastRollupNanos = System.nanoTime()
@@ -306,6 +202,8 @@ class RequestMetricsRecorder internal constructor(
         if (pruneDueInNs() <= 0) prune()
     }
 
+    private fun pruneDueInNs(): Long = TimeUnit.MILLISECONDS.toNanos(config.pruneIntervalMs) - (System.nanoTime() - lastPruneNanos)
+
     @Suppress("TooGenericExceptionCaught")
     private fun prune() {
         lastPruneNanos = System.nanoTime()
@@ -324,9 +222,7 @@ class RequestMetricsRecorder internal constructor(
 
     companion object {
         private val log = LoggerFactory.getLogger(RequestMetricsRecorder::class.java)
-        const val DEFAULT_WAIT_MS = 10_000L
+        const val DEFAULT_WAIT_MS = BatchingWriter.DEFAULT_WAIT_MS
         private const val QUERY_WAIT_MS = 2_000L
-        private const val JOIN_TIMEOUT_MS = 10_000L
-        private val WARN_EVERY_NANOS = TimeUnit.MINUTES.toNanos(1)
     }
 }

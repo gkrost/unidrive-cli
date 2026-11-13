@@ -102,25 +102,37 @@ internal class LiveFolderList(
                 log.info("live list: {} is gone in the cloud; answering from state", path)
                 return null
             }
-        if (listedAt.size >= EMPTY_MEMORY_CAP) listedAt.clear()
-        listedAt[path] = nowMs()
-        val changes = admitted(listed, remoteFolder.trimEnd('/'))
+        val listedAtMs = nowMs()
+        val (changes, withheld) = admitted(listed, remoteFolder.trimEnd('/'))
         if (changes.isEmpty()) {
+            // Coverage only for a folder that is empty in fact, not one whose entries the scan still owes (twins).
+            if (!withheld) noteListed(path, listedAtMs)
             noteEmpty(path)
             return null
         }
         // The scan's merge, in one transaction: against a concurrent chunk of the scan's own merge the transaction is
         // the lock, and the merge reads the row it changes inside it.
         db.batch { gather.updateRemoteEntries(changes, gather.canonicalToLocalTop(changes), changes, keepPendingUploads = true) }
+        // Only after the merge, and only when every admissible entry was written: a failed merge or withheld twins leave the
+        // reply not complete (gkrost/unidrive-cli#445).
+        if (!withheld) noteListed(path, listedAtMs)
         log.info("live list: {} item(s) of {} read from the cloud ahead of the first scan", changes.size, path.ifEmpty { "/" })
         return db.listDirectChildren(path)
     }
 
-    // The items of the listing the scan would admit, keyed by their remote path.
+    private fun noteListed(
+        path: String,
+        atMs: Long,
+    ) {
+        if (listedAt.size >= EMPTY_MEMORY_CAP) listedAt.clear()
+        listedAt[path] = atMs
+    }
+
+    // The items of the listing the scan would admit, keyed by their remote path, and whether some were withheld for the scan.
     private fun admitted(
         listed: List<CloudItem>,
         remoteFolder: String,
-    ): Map<String, CloudItem> {
+    ): Pair<Map<String, CloudItem>, Boolean> {
         val seen =
             listed
                 .asSequence()
@@ -130,7 +142,7 @@ internal class LiveFolderList(
                 .toList()
         // Two items of one name: the scan places both under their decorated names, so neither is written here.
         val twinned = seen.groupingBy { it.path }.eachCount().filterValues { it > 1 }.keys
-        return seen.filter { it.path !in twinned }.associateByTo(LinkedHashMap()) { it.path }
+        return seen.filter { it.path !in twinned }.associateByTo(LinkedHashMap<String, CloudItem>()) { it.path } to twinned.isNotEmpty()
     }
 
     // Whether the folder has a row that came from the cloud (not the pending upload of a file nobody sent yet).

@@ -4,8 +4,6 @@ import org.krost.unidrive.io.Os
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcEndpoint
-import org.krost.unidrive.sync.IpcLineClient
-import org.krost.unidrive.sync.IpcLineRead
 import org.krost.unidrive.sync.IpcServer
 import org.slf4j.LoggerFactory
 import java.io.IOException
@@ -20,8 +18,8 @@ import java.nio.file.Path
  * lock per profile stays, so a double spawn is refused by the lock, never doubled).
  *
  * The daemon must outlive the client that started it (mount exits, daemon stays), so the child is
- * detached: its output goes to a file under the profile's config folder, never to the client's
- * terminal, and nobody waits for it. The spawner polls for the socket file (the daemon binds it LAST,
+ * detached ([startDetached]): its output goes to a file under the profile's config folder, never to the client's
+ * terminal, it runs in a session of its own, and nobody waits for it. The spawner polls for the socket file (the daemon binds it LAST,
  * after authentication and every handler are registered — its appearance is the ready signal) and
  * gives up after [DEFAULT_WAIT_TIMEOUT_MS], leaving the client's own error path to speak.
  *
@@ -125,14 +123,10 @@ object DaemonAutospawn {
     ): Boolean {
         if (!Files.exists(socketPath)) return false
         return try {
-            IpcAuthClient.connect(IpcEndpoint(socketPath, configDir, profileName), IpcAuth.Scope.READ).use { channel ->
-                channel.configureBlocking(false)
-                val deadline = System.currentTimeMillis() + replyTimeoutMs
-                val lines = IpcLineClient(channel)
-                if (!lines.writeLine("""{"verb":"daemon.status"}""", deadline)) return false
-                val reply = (lines.readLine(deadline) as? IpcLineRead.Line)?.text?.asJsonObjectOrNull()
-                reply?.isOkReply() == true && reply.containsKey("protocol_version")
-            }
+            val endpoint = IpcEndpoint(socketPath, configDir, profileName)
+            val line = ipcRequest(endpoint, IpcAuth.Scope.READ, """{"verb":"daemon.status"}""", replyTimeoutMs) as? IpcReply.Line
+            val reply = line?.text?.asJsonObjectOrNull()
+            reply?.isOkReply() == true && reply.containsKey("protocol_version")
         } catch (_: IOException) {
             false
         }
@@ -276,11 +270,8 @@ object DaemonAutospawn {
         command: List<String>,
         logFile: Path,
     ): SpawnedChild {
-        Files.createDirectories(logFile.parent)
-        val pb = ProcessBuilder(command)
-        pb.redirectErrorStream(true)
-        pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile.toFile()))
-        val process = pb.start() // deliberately not waited for: the daemon outlives the client that started it
+        // Deliberately not waited for: the daemon outlives the client that started it.
+        val process = startDetached(command, logFile, isWindows)
         return { if (process.isAlive) null else process.exitValue() }
     }
 }
