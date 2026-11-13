@@ -1783,19 +1783,7 @@ class GraphApiService(
     ): String? {
         val item = getItemByPath(path)
         val url = "$baseUrl/me/drive/items/${item.id}/createLink"
-        val expiration =
-            java.time.Instant
-                .now()
-                .plusSeconds(expiryHours.toLong() * 3600)
-                .toString()
-        val bodyObj =
-            buildJsonObject {
-                put("type", type)
-                put("scope", scope)
-                put("expirationDateTime", expiration)
-                if (password != null) put("password", password)
-            }
-        val body = bodyObj.toString()
+        val body = sharingLinkBody(type, scope, expiryHours, password, java.time.Instant.now())
 
         val response = authenticatedRequest(url, HttpMethod("POST"), body)
         if (!response.status.isSuccess()) {
@@ -2039,3 +2027,21 @@ internal fun mayResume(
         "fail" -> stored.ifMatchETag == null || stored.ifMatchETag == ifMatchETag
         else -> stored.conflictBehavior == conflictBehavior && stored.ifMatchETag == ifMatchETag
     }
+
+/**
+ * The `createLink` body. [expiryHours] of 0 or less leaves `expirationDateTime` out: a link without expiry, which is
+ * what an account that may not set one (OneDrive personal without a premium plan) can still create.
+ */
+internal fun sharingLinkBody(
+    type: String,
+    scope: String,
+    expiryHours: Int,
+    password: String?,
+    now: java.time.Instant,
+): String =
+    buildJsonObject {
+        put("type", type)
+        put("scope", scope)
+        if (expiryHours > 0) put("expirationDateTime", now.plusSeconds(expiryHours.toLong() * 3600).toString())
+        if (password != null) put("password", password)
+    }.toString()

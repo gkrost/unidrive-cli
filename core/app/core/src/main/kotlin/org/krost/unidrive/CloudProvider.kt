@@ -453,7 +453,7 @@ interface CloudProvider {
      */
     suspend fun itemStateById(remoteId: String): ItemRemoteState = ItemRemoteState.Unknown
 
-    /** Generate a shareable link for a file/folder. */
+    /** Generate a shareable link for a file/folder, expiring after [expiryHours]; 0 or less asks for a link without expiry. */
     suspend fun share(
         path: String,
         expiryHours: Int = 24,
