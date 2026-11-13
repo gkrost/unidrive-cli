@@ -252,7 +252,7 @@ class HydrationImplNamespaceTest {
         assertEquals(MkdirResult.Existed, impl.mkdir("/dup"))
         val row = db.getEntry("/dup")
         assertTrue(row != null && row.isFolder, "the folder's row is adopted")
-        assertEquals("rid-/dup", row?.remoteId, "the row names the folder the drive has")
+        assertEquals("rid-/dup", row.remoteId, "the row names the folder the drive has")
     }
 
     // A folder the state.db already tracks with its id, created once more over the drive's 409: the row stands, the

@@ -424,6 +424,6 @@ class HydrationUploadHealthTest {
         assertTrue(first.asOfMs != null && first.asOfMs > 0, "the reading carries its stamp: $first")
         Thread.sleep(5)
         val later = env.hydration.uploadHealth()
-        assertTrue(later.asOfMs != null && later.asOfMs >= (first.asOfMs ?: Long.MAX_VALUE), "a later read never moves the stamp back")
+        assertTrue(later.asOfMs != null && later.asOfMs >= first.asOfMs, "a later read never moves the stamp back")
     }
 }

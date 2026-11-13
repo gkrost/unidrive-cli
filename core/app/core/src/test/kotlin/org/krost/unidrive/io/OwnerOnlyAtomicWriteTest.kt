@@ -94,7 +94,7 @@ class OwnerOnlyAtomicWriteTest {
 
         OwnerOnlyAtomicWrite.replace(target, {
             tempSeen = folder().filter { it.endsWith(".tmp") }
-            grantProblemOfTemp = tempSeen!!.singleOrNull()?.let { OwnerOnly.grantProblem(dir.resolve(it)) }
+            grantProblemOfTemp = tempSeen.singleOrNull()?.let { OwnerOnly.grantProblem(dir.resolve(it)) }
             "secret".toByteArray()
         })
 

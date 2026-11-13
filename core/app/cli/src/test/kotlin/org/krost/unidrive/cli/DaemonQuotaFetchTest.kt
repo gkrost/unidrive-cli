@@ -112,7 +112,7 @@ class DaemonQuotaFetchTest {
 
         assertEquals(listOf("checkCredentials", "quota"), provider.calls, "no authenticate() in the fetch: a status poll must not sign in")
         assertNotNull(snapshot)
-        assertEquals(false, snapshot!!.stale)
+        assertEquals(false, snapshot.stale)
         assertEquals(null, snapshot.error)
         assertEquals(3, snapshot.usedBytes)
         assertEquals(7, snapshot.remainingBytes)
@@ -127,7 +127,7 @@ class DaemonQuotaFetchTest {
 
         assertEquals(listOf("checkCredentials"), provider.calls, "the refusal comes before any transfer, and authenticate() is never tried")
         assertNotNull(snapshot)
-        assertTrue(snapshot!!.stale)
+        assertTrue(snapshot.stale)
         assertTrue("NotSignedInException" in snapshot.error.orEmpty(), snapshot.error)
     }
 

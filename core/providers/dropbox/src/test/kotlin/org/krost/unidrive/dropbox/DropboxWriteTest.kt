@@ -58,12 +58,12 @@ class DropboxWriteTest {
 
             val call = fake.callsTo("files/upload").single()
             assertTrue(call.rawArgHeader!!.contains("\\u00fc"), "header: ${call.rawArgHeader}")
-            assertTrue(call.rawArgHeader!!.all { it.code in 0x20..0x7E })
+            assertTrue(call.rawArgHeader.all { it.code in 0x20..0x7E })
             assertEquals("/Grüße.txt", call.args!!["path"]!!.jsonPrimitive.content)
             // gkrost/unidrive-cli#57: a create never replaces a file that appeared after the plan.
-            assertEquals("add", call.args!!["mode"]!!.jsonObject[".tag"]!!.jsonPrimitive.content)
-            assertEquals(false, call.args!!["autorename"]!!.jsonPrimitive.boolean)
-            assertEquals("2026-03-04T05:06:07Z", call.args!!["client_modified"]!!.jsonPrimitive.content)
+            assertEquals("add", call.args["mode"]!!.jsonObject[".tag"]!!.jsonPrimitive.content)
+            assertEquals(false, call.args["autorename"]!!.jsonPrimitive.boolean)
+            assertEquals("2026-03-04T05:06:07Z", call.args["client_modified"]!!.jsonPrimitive.content)
             assertContentEquals("hello".toByteArray(), call.body)
             assertEquals("id:9", item.id)
         }
@@ -424,7 +424,7 @@ class DropboxWriteTest {
 
             val moved = provider.moveById("id:1", "/Docs/a.txt", "/Docs/A.txt")
 
-            val moves = fake.callsTo("files/move_v2").map { it.args!!["from_path"]!!.jsonPrimitive.content to it.args!!["to_path"]!!.jsonPrimitive.content }
+            val moves = fake.callsTo("files/move_v2").map { it.args!!["from_path"]!!.jsonPrimitive.content to it.args["to_path"]!!.jsonPrimitive.content }
             assertEquals(2, moves.size)
             assertEquals("id:1", moves[0].first)
             assertTrue(moves[0].second.startsWith("/Docs/.unidrive-case-"))
@@ -447,7 +447,7 @@ class DropboxWriteTest {
 
             assertFailsWith<ProviderException> { provider.moveById("id:1", "/Docs/a.txt", "/Docs/A.txt") }
 
-            val moves = fake.callsTo("files/move_v2").map { it.args!!["from_path"]!!.jsonPrimitive.content to it.args!!["to_path"]!!.jsonPrimitive.content }
+            val moves = fake.callsTo("files/move_v2").map { it.args!!["from_path"]!!.jsonPrimitive.content to it.args["to_path"]!!.jsonPrimitive.content }
             assertEquals(3, moves.size)
             assertEquals(moves[0].second to "/Docs/a.txt", moves[2], "the parked item goes back to where it was")
         }
