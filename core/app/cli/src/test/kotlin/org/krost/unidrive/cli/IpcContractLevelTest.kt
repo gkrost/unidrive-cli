@@ -74,8 +74,12 @@ class IpcContractLevelTest {
                 }
             }.flatMap { capabilities -> capabilities.jsonArray.map { it.jsonPrimitive.content } }
         val capabilities = replied + ProfileMode.entries.flatMap { it.capabilities }
-        return (verbs + capabilities.map { "capability:$it" }).toSet()
+        // Every top-level member of the `daemon.status` reply: a reply field added without a capability fails this pin too.
+        val fields = statusCorpusFieldNames().map { "field:daemon.status.$it" }
+        return (verbs + capabilities.map { "capability:$it" } + fields).toSet()
     }
+
+    private fun statusCorpusFieldNames(): Set<String> = Json.parseToJsonElement(statusCorpusReply()).jsonObject.keys
 
     private fun statusCorpusReply(): String {
         val lines =
@@ -107,6 +111,17 @@ class IpcContractLevelTest {
                     "capability:notifications.status", "capability:open_write_create_handle_ids", "capability:pause",
                     "capability:refresh", "capability:status", "capability:uploads.running", "capability:sync", "capability:apply",
                     "capability:sweep", "capability:views", "capability:view_page", "capability:share.create",
+                    "field:daemon.status.ok", "field:daemon.status.protocol_version", "field:daemon.status.contract_level",
+                    "field:daemon.status.engine_version", "field:daemon.status.engine_build_time_ms",
+                    "field:daemon.status.mode", "field:daemon.status.capabilities", "field:daemon.status.uptime_ms",
+                    "field:daemon.status.clients_connected", "field:daemon.status.refresh_in_flight",
+                    "field:daemon.status.refresh_job_id", "field:daemon.status.sync_paths", "field:daemon.status.provider",
+                    "field:daemon.status.provider_name", "field:daemon.status.authenticated",
+                    "field:daemon.status.enumeration", "field:daemon.status.poll_interval_ms", "field:daemon.status.uploads",
+                    "field:daemon.status.cache", "field:daemon.status.provider_health",
+                    "field:daemon.status.credential_health", "field:daemon.status.auth", "field:daemon.status.notifications",
+                    "field:daemon.status.ignore", "field:daemon.status.upload_concurrency",
+                    "field:daemon.status.transfer_budget", "field:daemon.status.ipc",
                 ),
             )
     }
