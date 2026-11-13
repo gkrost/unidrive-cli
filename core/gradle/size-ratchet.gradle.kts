@@ -115,12 +115,15 @@ tasks.register("sizeRatchet") {
 
 tasks.register("sizeRatchetRecord") {
     group = "verification"
-    description = "Seeds config/size-ratchet/baseline.txt from the current sizes (first run only; with -PsizeRatchetBase a rewrite that raises a value fails the gate)."
+    description = "Seeds config/size-ratchet/baseline.txt from the current sizes (an entry already recorded keeps the smaller of its recorded and current size; a new entry at or over the thresholds is added, which `sizeRatchet -PsizeRatchetBase=<ref>` then flags)."
     doLast {
         val header = sizeRatchetBaseline.readLines().takeWhile { it.startsWith("#") }
         val now = sizeRatchetMeasure(projectDir).filter { (k, v) -> v >= if (k.startsWith("file:")) sizeRatchetFileMin else sizeRatchetFunMin }
-        sizeRatchetBaseline.writeText((header + now.map { "${it.key} ${it.value}" }).joinToString("\n") + "\n")
-        logger.lifecycle("sizeRatchetRecord: ${now.size} entries.")
+        // An entry already recorded never goes up: a key keeps the smaller of its recorded and current size.
+        val recorded = sizeRatchetParse(sizeRatchetBaseline.readText())
+        val out = now.mapValues { (k, v) -> recorded[k]?.let { minOf(it, v) } ?: v }
+        sizeRatchetBaseline.writeText((header + out.map { "${it.key} ${it.value}" }).joinToString("\n") + "\n")
+        logger.lifecycle("sizeRatchetRecord: ${out.size} entries.")
     }
 }
 

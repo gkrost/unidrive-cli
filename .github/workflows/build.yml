@@ -166,6 +166,17 @@ jobs:
         working-directory: core
         run: ./gradlew check --no-daemon
 
+      # gkrost/unidrive-cli#534: the size baseline only goes down. `check` runs the ratchet without a base; this run compares
+      # the pull request's baseline with the base branch's, so a raised or added entry fails here.
+      - name: Size ratchet against the base branch
+        if: github.event_name == 'pull_request'
+        working-directory: core
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          ./gradlew sizeRatchet -PsizeRatchetBase=FETCH_HEAD --no-daemon
+
       # gkrost/unidrive-cli#419: a stable test that fails here left only its console line; the stack went to the
       # report, which nothing uploaded. Uploaded on failure only.
       - name: Upload test reports on failure
