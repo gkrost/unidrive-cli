@@ -105,12 +105,12 @@ class IpcLineClientTest {
     fun `no reply by the deadline is timed out, with the bytes so far kept`() {
         val client = IpcLineClient(Trickle("par".toByteArray(), eof = false))
 
-        assertEquals(IpcLineRead.TimedOut, client.readLine(System.currentTimeMillis() + 50))
+        assertEquals(IpcLineRead.TimedOut, client.readLine(System.nanoTime() + 50_000_000L))
     }
 
     @Test
     fun `a line that has arrived is returned past the deadline`() {
-        assertEquals("ready", lines("ready\n", chunks = intArrayOf(64)).next(deadline = 0))
+        assertEquals("ready", lines("ready\n", chunks = intArrayOf(64)).next(deadline = System.nanoTime() - 1_000_000L))
     }
 
     @Test
@@ -118,7 +118,7 @@ class IpcLineClientTest {
         val client = lines("one\ntwo\n", chunks = intArrayOf(64))
 
         assertEquals("one", client.next())
-        assertEquals("two", client.next(deadline = 0))
+        assertEquals("two", client.next(deadline = System.nanoTime() - 1_000_000L))
     }
 
     @Test
@@ -140,10 +140,10 @@ class IpcLineClientTest {
 
                 override fun close() {}
             }
-        val start = System.currentTimeMillis()
+        val start = System.nanoTime()
 
-        assertEquals(IpcLineRead.TimedOut, IpcLineClient(slow).readLine(start + 100))
-        assertTrue(System.currentTimeMillis() - start < 1000, "the deadline bounds the wait")
+        assertEquals(IpcLineRead.TimedOut, IpcLineClient(slow).readLine(start + 100_000_000L))
+        assertTrue(System.nanoTime() - start < 1_000_000_000L, "the deadline bounds the wait")
     }
 
     @Test
@@ -188,7 +188,7 @@ class IpcLineClientTest {
     fun `writeLine gives up at the deadline when the peer takes nothing`() {
         val channel = Trickle(ByteArray(0), writeChunks = intArrayOf(0))
 
-        assertFalse(IpcLineClient(channel).writeLine("abc", System.currentTimeMillis() + 50))
+        assertFalse(IpcLineClient(channel).writeLine("abc", System.nanoTime() + 50_000_000L))
     }
 
     @Test

@@ -813,6 +813,8 @@ class IpcServer(
     // read side is kept open and drained until the peer's end of stream or [refusalLingerMs], whichever
     // comes first. That wait runs on a coroutine of its own: the accept loop never sleeps for it.
     // At most MAX_LINGERING_REFUSALS wait at once; past that a refusal drains what has arrived and closes.
+    // gkrost/unidrive-cli#456: the wait for writability is a selector wait, not a sleep-poll — [writeWhileWritable].
+
     private fun refuse(
         sc: SocketChannel,
         scope: CoroutineScope,
@@ -821,10 +823,7 @@ class IpcServer(
         try {
             sc.configureBlocking(false)
             val line = ByteBuffer.wrap(TOO_MANY_CLIENTS_LINE.toByteArray(Charsets.UTF_8))
-            val deadline = System.nanoTime() + REFUSAL_WRITE_TIMEOUT_NS
-            while (line.hasRemaining() && System.nanoTime() < deadline) {
-                if (sc.write(line) == 0) Thread.sleep(5)
-            }
+            writeWhileWritable(sc, line, System.nanoTime() + REFUSAL_WRITE_TIMEOUT_NS)
             sc.shutdownOutput()
         } catch (_: Exception) {
             runCatching { sc.close() }

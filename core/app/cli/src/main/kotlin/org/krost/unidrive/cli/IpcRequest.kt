@@ -6,6 +6,7 @@ import org.krost.unidrive.sync.IpcEndpoint
 import org.krost.unidrive.sync.IpcLineClient
 import org.krost.unidrive.sync.IpcLineRead
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 /** What [ipcRequest] came back with. */
 internal sealed interface IpcReply {
@@ -43,7 +44,7 @@ internal fun ipcRequest(
     IpcAuthClient.connect(endpoint, scope).use { channel ->
         // connect leaves the channel blocking; a blocking read cannot give up at a deadline.
         channel.configureBlocking(false)
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
         val lines = IpcLineClient(channel)
         val written =
             try {

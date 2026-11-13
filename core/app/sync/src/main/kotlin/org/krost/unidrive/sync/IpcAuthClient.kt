@@ -10,6 +10,7 @@ import java.nio.channels.SocketChannel
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 
 /** Where a profile's daemon listens and where its IPC token files are (the profile's config folder). */
 data class IpcEndpoint(
@@ -59,7 +60,7 @@ object IpcAuthClient {
         try {
             val token = requireToken(key, tokenFile)
             channel.configureBlocking(false)
-            val deadline = System.currentTimeMillis() + timeoutMs
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
             handshake(channel, token, scope, endpoint.profileName, client, IpcAuth.encode(clientNonce()), tokenFile, deadline)
             channel.configureBlocking(true)
             return channel

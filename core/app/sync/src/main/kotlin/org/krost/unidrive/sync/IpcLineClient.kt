@@ -3,6 +3,11 @@ package org.krost.unidrive.sync
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
+import java.nio.channels.CancelledKeyException
+import java.nio.channels.SelectableChannel
+import java.nio.channels.SelectionKey
+import java.nio.channels.Selector
+import java.util.concurrent.TimeUnit
 
 /** What one [IpcLineClient.readLine] came back with. */
 sealed interface IpcLineRead {
@@ -33,8 +38,10 @@ class IpcLineTooLongException(
  * brought past the first newline stays in the client for the next [readLine]; a caller that reads one reply per
  * request never loses the event that follows it.
  *
- * Works on a blocking or a non-blocking channel. A non-blocking read that returns 0 is polled until the deadline; a
- * blocking read is only interrupted by the peer, as a blocking read always is.
+ * Works on a blocking or a non-blocking channel. On a non-blocking channel a wait for readability or writability
+ * goes through a [Selector] (`select(remaining)`), not through a sleep-poll (gkrost/unidrive-cli#456: up to one
+ * wake per 5 ms per round trip before), and a deadline is a `System.nanoTime()` instant, so a wall-clock step
+ * cannot cut or stretch a request. A blocking channel's own reads and writes block as they always did.
  */
 class IpcLineClient(
     private val channel: ByteChannel,
@@ -50,22 +57,21 @@ class IpcLineClient(
     fun pendingBytes(): Int = length
 
     /**
-     * Writes [line] and its newline. False when the peer did not take all of it by [deadlineMs] (a line that is not
-     * written in full has no newline, so the daemon never dispatches it). A [line] that holds a line break would be
+     * Writes [line] and its newline. False when the peer did not take all of it by [deadlineNanos] (a line that is
+     * not written in full has no newline, so the daemon never dispatches it). A [line] that holds a line break would be
      * two requests: it is refused, so a caller that forgot to escape a value fails loudly instead of splitting.
      */
     fun writeLine(
         line: String,
-        deadlineMs: Long = NO_DEADLINE,
+        deadlineNanos: Long = NO_DEADLINE,
     ): Boolean {
         require('\n' !in line && '\r' !in line) { "an IPC request line holds no line break; escape it in the JSON string" }
         val out = ByteBuffer.wrap((line + "\n").toByteArray(Charsets.UTF_8))
         while (out.hasRemaining()) {
             channel.write(out)
-            if (out.hasRemaining()) {
-                if (System.currentTimeMillis() >= deadlineMs) return false
-                Thread.sleep(POLL_MS)
-            }
+            if (!out.hasRemaining()) break
+            if (deadlinePassed(deadlineNanos)) return false
+            awaitReady(SelectionKey.OP_WRITE, deadlineNanos)
         }
         return true
     }
@@ -75,23 +81,58 @@ class IpcLineClient(
      * that is already buffered is returned whatever the deadline; one that is still arriving in pieces is given up at
      * the deadline even when every piece comes in time (the deadline is checked between reads, after the first one).
      */
-    fun readLine(deadlineMs: Long = NO_DEADLINE): IpcLineRead {
+    fun readLine(deadlineNanos: Long = NO_DEADLINE): IpcLineRead {
         var read = false
         while (true) {
             takeLine()?.let { return IpcLineRead.Line(it) }
             if (length > maxLineBytes) throw IpcLineTooLongException(maxLineBytes)
-            if (read && System.currentTimeMillis() >= deadlineMs) return IpcLineRead.TimedOut
+            if (read && deadlinePassed(deadlineNanos)) return IpcLineRead.TimedOut
             if (length == buffer.size) buffer = buffer.copyOf(buffer.size * 2)
             val n = channel.read(ByteBuffer.wrap(buffer, length, buffer.size - length))
             read = true
             when {
                 n < 0 -> return IpcLineRead.Closed
                 n > 0 -> length += n
-                System.currentTimeMillis() >= deadlineMs -> return IpcLineRead.TimedOut
-                else -> Thread.sleep(POLL_MS)
+                deadlinePassed(deadlineNanos) -> return IpcLineRead.TimedOut
+                else -> awaitReady(SelectionKey.OP_READ, deadlineNanos)
             }
         }
     }
+
+    /**
+     * Waits until the channel is ready for the asked operation, or the deadline passes. One selector per wait,
+     * closed with its key when the wait ends: a registration that outlived the wait would refuse the caller's
+     * next `configureBlocking` (the auth client flips to blocking after the handshake). The selector is
+     * level-triggered, so bytes that arrived between the empty read and the registration are not lost.
+     */
+    private fun awaitReady(
+        interestOps: Int,
+        deadlineNanos: Long,
+    ) {
+        val selectable = channel as? SelectableChannel ?: return fallbackWait(deadlineNanos)
+        if (selectable.isBlocking) return // the next read or write blocks, as a blocking channel's always did
+        try {
+            Selector.open().use { selector ->
+                selectable.register(selector, interestOps)
+                val remainingMs =
+                    if (deadlineNanos == NO_DEADLINE) 0L // select blocks until ready, as a blocking channel would
+                    else TimeUnit.NANOSECONDS.toMillis((deadlineNanos - System.nanoTime()).coerceAtLeast(0L))
+                if (remainingMs <= 0L && deadlineNanos != NO_DEADLINE) return
+                selector.select(remainingMs)
+            }
+        } catch (_: CancelledKeyException) {
+            // The channel is gone; the next read answers Closed.
+        } catch (_: IOException) {
+            // The selector died with the channel; the next read answers Closed or TimedOut.
+        }
+    }
+
+    // A channel the selector cannot watch: the old 5 ms sleep, so a test fake behaves as it did.
+    private fun fallbackWait(deadlineNanos: Long) {
+        if (!deadlinePassed(deadlineNanos)) Thread.sleep(POLL_MS)
+    }
+
+    private fun deadlinePassed(deadlineNanos: Long): Boolean = deadlineNanos != NO_DEADLINE && System.nanoTime() >= deadlineNanos
 
     private fun takeLine(): String? {
         var newline = -1
