@@ -278,7 +278,7 @@ class DaemonStatusCommand : Runnable {
 /**
  * One `daemon.status` round trip over a read-scope connection: the reply line, or null when the daemon answers no line.
  * The reply carries the enumeration object and the account quota, so it can run to many KiB. A daemon that does not
- * answer within [timeoutMs] is an [IpcTimeoutException]. Throws [IpcAuthException] and [java.io.IOException].
+ * answer within [timeoutMs] is an [IpcTimeoutException]; a request that could not be written is an [java.io.IOException]. Throws [IpcAuthException] and [java.io.IOException].
  */
 internal fun requestDaemonStatus(
     endpoint: IpcEndpoint,
@@ -288,7 +288,9 @@ internal fun requestDaemonStatus(
     when (val reply = ipcRequest(endpoint, IpcAuth.Scope.READ, """{"verb":"daemon.status"}""", timeoutMs)) {
         is IpcReply.Line -> reply.text
         IpcReply.Closed -> null
-        IpcReply.TimedOut, IpcReply.NotWritten -> throw IpcTimeoutException(timeoutMs)
+        IpcReply.TimedOut -> throw IpcTimeoutException(timeoutMs)
+        // The request never left this process, so the daemon is not shown to be stuck: say the write failed.
+        IpcReply.NotWritten -> throw java.io.IOException("the daemon.status request could not be written to the daemon socket")
     }
 
 internal const val DAEMON_STATUS_TIMEOUT_MS = 10_000L
