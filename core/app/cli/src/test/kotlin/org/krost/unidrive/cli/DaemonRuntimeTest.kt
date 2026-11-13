@@ -634,6 +634,34 @@ class DaemonRuntimeTest {
         daemonJob.join()
     }
 
+    // gkrost/unidrive-cli#455: the provider the daemon served with is closed by the stop, not left to the JVM's exit.
+    @Test
+    fun `a stop closes the provider the daemon served with`() = runBlocking {
+        val provider = ClosingStubProvider()
+        val runtime = DaemonRuntime(
+            profileMode = ProfileMode.MOUNT,
+            profileName = "test_profile",
+            lockFile = lockFile,
+            dbPath = dbPath,
+            syncRoot = tempDir,
+            socketPath = socketPath,
+            providerFactory = { provider },
+        )
+        val daemonJob = launch(kotlinx.coroutines.Dispatchers.IO) { runtime.start() }
+        withTimeout(30_000) {
+            while (!Files.exists(socketPath)) {
+                check(!daemonJob.isCompleted) { "daemon stopped before binding its socket" }
+                delay(50)
+            }
+        }
+        assertEquals(0, provider.closes.get(), "a serving daemon keeps its provider open")
+
+        runtime.close()
+        daemonJob.join()
+
+        assertEquals(1, provider.closes.get(), "the stop closes the provider once")
+    }
+
     @Test
     fun `shutdownAndWait on a runtime that never started does not block`() {
         val runtime = DaemonRuntime(
@@ -1885,6 +1913,14 @@ class DaemonRuntimeTest {
             quotaCalls += 1
             quotaFailure?.let { throw it }
             return quotaResult
+        }
+    }
+
+    private class ClosingStubProvider : StubProvider() {
+        val closes = java.util.concurrent.atomic.AtomicInteger()
+
+        override fun close() {
+            closes.incrementAndGet()
         }
     }
 

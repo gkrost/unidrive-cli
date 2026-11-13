@@ -184,6 +184,70 @@ class OAuthCallbackServerTest {
         }
     }
 
+    @Test
+    fun `a valid code is returned when the browser no longer takes the success page, and the connection is closed`() {
+        val port = freePort()
+        val io =
+            CallbackIo(writePage = { client, page ->
+                if (page.startsWith("HTTP/1.1 200")) throw java.net.SocketException("Connection reset by peer")
+                client.getOutputStream().write(page.toByteArray())
+            })
+        kotlinx.coroutines.runBlocking {
+            val waiting =
+                async(Dispatchers.IO) {
+                    runCatching { awaitOAuthCallback(port, "expected-state", provider, 30.seconds, null, io) }
+                }
+            connect(port).use { real ->
+                real.send("GET /?code=abc123&state=expected-state HTTP/1.1\r\n\r\n")
+                // the listener closed its side: end of stream, not a read that waits for the socket timeout
+                assertEquals("", real.readAll())
+            }
+
+            assertEquals("abc123", waiting.await().getOrThrow())
+        }
+    }
+
+    @Test
+    fun `a connection that sends nothing does not hold up the real redirect`() {
+        val port = freePort()
+        // A silent connection would hold a one-at-a-time reader for the whole read timeout; the test waits far less.
+        val io = CallbackIo(readTimeoutMs = 120_000)
+        kotlinx.coroutines.runBlocking {
+            val waiting =
+                async(Dispatchers.IO) {
+                    runCatching { awaitOAuthCallback(port, "expected-state", provider, 60.seconds, null, io) }
+                }
+            connect(port).use { _ ->
+                // a browser's speculative preconnect: open, silent, still open while the redirect arrives
+                connect(port).use { real ->
+                    real.send("GET /?code=abc123&state=expected-state HTTP/1.1\r\n\r\n")
+                    assert(real.readAll().startsWith("HTTP/1.1 200"))
+                }
+                val code = kotlinx.coroutines.withTimeout(20.seconds) { waiting.await().getOrThrow() }
+                assertEquals("abc123", code)
+            }
+        }
+    }
+
+    @Test
+    fun `a broken percent escape in the redirect ends the wait with a failure page`() {
+        val port = freePort()
+        kotlinx.coroutines.runBlocking {
+            val waiting =
+                async(Dispatchers.IO) {
+                    runCatching { awaitOAuthCallback(port, "expected-state", provider, timeout = 30.seconds) }
+                }
+            val page =
+                connect(port).use { client ->
+                    client.send("GET /?state=expected-state&code=%zz HTTP/1.1\r\n\r\n")
+                    client.readAll()
+                }
+
+            assert(page.startsWith("HTTP/1.1 400")) { page }
+            assertFailsWith<AuthenticationException> { waiting.await().getOrThrow() }
+        }
+    }
+
     // cli#223 item 4: the query is parsed as a query, not searched with regexes over the whole request line.
     @Test
     fun `an error= inside another parameter's value is not a provider error`() {
