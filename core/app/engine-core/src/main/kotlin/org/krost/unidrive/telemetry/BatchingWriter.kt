@@ -84,10 +84,10 @@ public abstract class BatchingWriter<T>(
 
     protected fun failureOrNull(): String? = writerFailure
 
-    fun start() = thread.start()
+    internal fun start() = thread.start()
 
     /** The process dies: nothing more is written. */
-    fun abandon() {
+    internal fun abandon() {
         accepting.set(false)
         thread.interrupt()
         thread.join(JOIN_TIMEOUT_MS)
