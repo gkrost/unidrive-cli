@@ -673,7 +673,7 @@ class HydrationImpl(
                     ),
                 )
                 registerHandle(connectionId, handleId, path)
-                return OpenResult.Ok(cachePath, contentId = with(mount) { entry.copyContentId() }?.takeUnless { mount.isExcludedPath(path, false) })
+                return mount.readReply(path, mount.servedWarm(entry, cachePath))
             } catch (_: java.io.IOException) {
                 // The copy vanished between the check and the serve: the full path answers.
             }
@@ -684,7 +684,7 @@ class HydrationImpl(
         // then: a download that fails or is cancelled finishes its handle itself (see awaitDownload).
         var served: TransferHandle? = null
 
-        val (cachePath, contentId) = try {
+        val copy = try {
             // Always emit Hydrating + Hydrated, even when MountEngine returns a warm cache
             // without downloading: subscribers should see a consistent event stream
             // regardless of cache state; the cache layer is an implementation detail of
@@ -729,8 +729,8 @@ class HydrationImpl(
             // gkrost/unidrive-cli#171: the name of the bytes served, so a client knows what its copy holds without a listing: the one
             // the mount bound to the copy as it served it (what the download read, or the row a warm copy was served by), never a
             // row read afterwards, which a refresh may have moved past these bytes. None for a copy with an unsynced edit and for a
-            // kept-local (excluded) copy.
-            p to hydrated.contentId?.takeUnless { mount.isExcludedPath(path, false) }
+            // kept-local (excluded) copy. gkrost/unidrive-cli#707: the etag by the same rule (OpenReadNames.kt).
+            hydrated
         } catch (e: CancellationException) {
             // The request or the daemon was stopped: a cancellation, not a failed download (gkrost/unidrive-cli#80).
             served.endDownloadFailed(e)
@@ -758,7 +758,7 @@ class HydrationImpl(
 
         registerHandle(connectionId, handleId, path)
         touch(path)
-        return OpenResult.Ok(cachePath, contentId = contentId)
+        return mount.readReply(path, copy)
     }
 
     override suspend fun openForWrite(

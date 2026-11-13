@@ -85,6 +85,12 @@ internal const val LIST_COMPLETE_CAPABILITY = "hydration.list_complete"
 /** The `daemon.status` capability that says `hydration.rmdir` with `recursive` takes `discard_local` (gkrost/unidrive-cli#445). */
 internal const val RMDIR_DISCARD_LOCAL_CAPABILITY = "hydration.rmdir_discard_local"
 
+/**
+ * The `daemon.status` capability that says a `hydration.open_read` ok reply carries `etag` wherever the bytes served are the version
+ * the row records: the row's etag as `hydration.list` hands it out, which a client may send back as `base_etag` (gkrost/unidrive-cli#707).
+ */
+internal const val OPEN_READ_ETAG_CAPABILITY = "hydration.open_read_etag"
+
 /** The `daemon.status` capability that says `ignore.explain` answers a batch of `paths` (gkrost/unidrive-cli#445). */
 internal const val IGNORE_EXPLAIN_BATCH_CAPABILITY = "ignore.explain_batch"
 
@@ -386,6 +392,7 @@ internal fun ipcStatusJson(requestCounts: Map<String, Long>): JsonObject =
  * `hydration.cancel_read` (gkrost/unidrive-cli#23): hydration.cancel with a handle_id ends that open_read, and a download nobody waits for stops.
  * `hydration.list_complete`, `hydration.rmdir_discard_local`, `ignore.explain_batch` (gkrost/unidrive-cli#445): hydration.list
  * says whether a folder is listed whole, rmdir takes discard_local, ignore.explain takes paths.
+ * `hydration.open_read_etag` (gkrost/unidrive-cli#707): open_read names the etag of the version it served, where it is the row's.
  */
 internal fun daemonCapabilitiesJson(
     profileMode: ProfileMode,
@@ -396,7 +403,7 @@ internal fun daemonCapabilitiesJson(
 ): String =
     (
         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-            (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY) else emptyList()) +
+            (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY, OPEN_READ_ETAG_CAPABILITY) else emptyList()) +
             (if (uploadIgnore) listOf(IGNORE_EXPLAIN_BATCH_CAPABILITY) else emptyList()) +
             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
             (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList())

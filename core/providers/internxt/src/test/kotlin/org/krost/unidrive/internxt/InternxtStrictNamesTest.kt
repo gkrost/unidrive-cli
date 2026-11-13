@@ -115,8 +115,8 @@ class InternxtStrictNamesTest {
         val plain = "é".repeat(240)
         val now = Instant.parse("2026-10-19T10:20:30Z")
 
-        val archive = InternxtProvider.keepOverwrittenArchiveName(plain, now, 2, type = "txt", strict = true)
-        val conflict = InternxtProvider.conflictName(plain, "2026-10-19", 3, type = "txt", strict = true)
+        val archive = keepOverwrittenArchiveName(plain, now, 2, type = "txt", strict = true)
+        val conflict = conflictName(plain, "2026-10-19", 3, type = "txt", strict = true)
 
         assertNull(InternxtNameRules.issue("$archive.txt"), archive)
         assertNull(InternxtNameRules.issue("$conflict.txt"), conflict)
@@ -125,7 +125,7 @@ class InternxtStrictNamesTest {
         // With the mode off the names keep today's UTF-16 limit only.
         assertEquals(
             255,
-            (InternxtProvider.keepOverwrittenArchiveName(plain, now, 2, type = "txt") + ".txt").length,
+            (keepOverwrittenArchiveName(plain, now, 2, type = "txt") + ".txt").length,
         )
     }
 }

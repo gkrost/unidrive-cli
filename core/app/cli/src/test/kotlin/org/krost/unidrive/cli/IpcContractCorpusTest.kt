@@ -1467,7 +1467,8 @@ class IpcContractCorpusTest {
             path.startsWith("/paused") -> OpenResult.Failed(HydrationError.Paused)
             downloadFailureFor(path) != null -> OpenResult.Failed(downloadFailureFor(path)!!)
             // gkrost/unidrive-cli#171: the served bytes are the version the row records, which names them (as hydration.list does).
-            path == "/docs/report.txt" -> OpenResult.Ok(cachePathFor(path), contentId = "obj-report|42")
+            // gkrost/unidrive-cli#707: and the etag hydration.list gives the row, which open_write takes back as base_etag.
+            path == "/docs/report.txt" -> OpenResult.Ok(cachePathFor(path), contentId = "obj-report|42", etag = "etag-report")
             else -> OpenResult.Ok(cachePathFor(path))
         }
 
