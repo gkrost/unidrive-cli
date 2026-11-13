@@ -4,6 +4,8 @@ import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.cancel
 import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.RemoteIncompleteDownloadException
 import java.io.IOException
@@ -11,6 +13,8 @@ import java.nio.file.AccessDeniedException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
+import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -209,4 +213,28 @@ class StagedDownloadTest {
             assertEquals("old", Files.readString(destination))
             assertEquals(listOf("f.bin"), folder(), "an Error is not a reason to leave the partial staging file behind")
         }
+    @Test
+    fun `overlapping downloads into one destination do not share a staging name`() = runTest {
+        // windows#454 item 4: the staging name was one fixed CREATE/TRUNCATE sibling, so two overlapping downloads
+        // zero-filled each other and a crash leftover sat at the same name for the next download to truncate.
+        val destination = dir.resolve("shared.bin")
+        val bodies =
+            listOf(
+                ByteArray(40_000) { 'a'.code.toByte() },
+                ByteArray(40_000) { 'b'.code.toByte() },
+            )
+        coroutineScope {
+            val first = async { writeStagedDownload(ByteReadChannel(bodies[0]), destination, bodies[0].size.toLong(), "test download") }
+            val second = async { writeStagedDownload(ByteReadChannel(bodies[1]), destination, bodies[1].size.toLong(), "test download") }
+            first.await()
+            second.await()
+        }
+        assertEquals(bodies[0].size.toLong(), Files.size(destination))
+        assertEquals(
+            emptyList(),
+            Files.list(dir).use { s -> s.map { it.fileName.toString() }.filter { it.endsWith(".unidrive-tmp") }.toList() },
+            "no staging file stays behind",
+        )
+    }
+
 }

@@ -14,6 +14,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.AfterTest
+import kotlin.test.assertFailsWith
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -79,6 +80,16 @@ class CredentialStoreTest {
     @Test
     fun `load returns null when no file exists`() {
         assertNull(store().load())
+    }
+
+    @Test
+    fun `a load whose read fails propagates instead of reading as signed out`() {
+        // windows#454 item 3: a locked credential file is an I/O failure, not "not signed in" — the daemon used to
+        // go into a needless re-sign-in. Here the store name is a directory, so the read throws.
+        val locked = store() // the credential file's name is a directory: the read throws
+        Files.createDirectory(dir.resolve("creds.json"))
+
+        assertFailsWith<java.io.IOException> { locked.load() }
     }
 
     @Test
