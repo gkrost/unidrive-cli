@@ -628,6 +628,45 @@ class RelocateCommandTest {
     }
 
     @Test
+    fun `a declined confirmation aborts the delete pass and nothing is deleted from the source`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "docs/a.txt", "a")
+            write(src, "keep.txt", "k")
+
+            val r = runCli(config, "no\n", "relocate", "--from", "src", "--to", "dst", "--delete-source")
+
+            assertTrue(r.out.contains("Aborted"), "the run says it aborted; stdout: ${r.out}; stderr: ${r.err}")
+            assertTrue(!r.out.contains("Deleting source files"), "the delete pass never starts; stdout: ${r.out}")
+            assertEquals("a", java.nio.file.Files.readString(src.resolve("docs/a.txt")), "the source copy survives")
+            assertEquals("k", java.nio.file.Files.readString(src.resolve("keep.txt")), "the source copy survives")
+            assertEquals("a", java.nio.file.Files.readString(dst.resolve("docs/a.txt")), "the copy itself was made")
+        }
+    }
+
+    @Test
+    fun `a run over a partly migrated target completes it without duplicates`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "x/one.txt", "1")
+            write(src, "x/two.txt", "22")
+            write(src, "three.txt", "333")
+            // An interrupted earlier run left one file behind.
+            write(dst, "x/one.txt", "1")
+
+            val r = runCli(config, "", "relocate", "--from", "src", "--to", "dst")
+
+            assertEquals(0, r.exit, "stderr: ${r.err}; stdout: ${r.out}")
+            val arrived =
+                java.nio.file.Files.walk(dst).use { s ->
+                    s.filter { java.nio.file.Files.isRegularFile(it) }.map { dst.relativize(it).toString().replace('\\', '/') }.sorted().toList()
+                }
+            assertEquals(listOf("three.txt", "x/one.txt", "x/two.txt"), arrived, "the target holds each file once, nothing extra")
+            assertEquals("1", java.nio.file.Files.readString(dst.resolve("x/one.txt")))
+            assertEquals("22", java.nio.file.Files.readString(dst.resolve("x/two.txt")))
+            assertEquals("333", java.nio.file.Files.readString(dst.resolve("three.txt")))
+        }
+    }
+
+    @Test
     fun `63 - same-named files in different folders each arrive with their own bytes and the source is then deleted`() {
         withLocalProfiles { src, dst, config ->
             // Same leaf, same size, different bytes: a shared scratch name would let one overwrite the other.
