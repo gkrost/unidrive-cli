@@ -384,8 +384,8 @@ the provider's name for the bytes of the version the row records:
   which rows learned an id it sends a `view.invalidated` naming that folder, so a client lists it again and can take the
   id of a file whose bytes it holds unchanged. A pass that is stopped resumes after the last folder it finished.
 - **Where.** Every entry `hydration.list` writes (a view's entries included) and the entries of `view.page`, beside
-  `etag`. No other reply carries a file's `etag`: the replies to `rename`, `open_write` and `create`, and the `completed`
-  event, carry neither; a client reads both from the next `hydration.list`.
+  `etag`. No other reply carries a file's `etag` (but `open_read`, below): the replies to `rename`, `open_write` and
+  `create`, and the `completed` event, carry neither; a client reads both from the next `hydration.list`.
 - **`open_read` too.** The same engine answers `hydration.open_read` with the `content_id` of the bytes it served at
   `cache_path`: `{"ok":true,"cache_path":"...","content_id":"<fileId>|5"}`. That way a client knows what a placeholder it
   fills holds without waiting for a listing, and a rename right after the read compares as one. It names the bytes the
@@ -398,6 +398,18 @@ the provider's name for the bytes of the version the row records:
   version for a download leaves the entry's `etag` as the last listing gave it. The `content_id` is absent for a cache
   copy that holds an unsynced edit (section 3.3), for a kept-local copy of an excluded name, and wherever the provider
   names no bytes.
+- **The `etag` of the read (`hydration.open_read_etag`, gkrost/unidrive-cli#707; `contract_level` 3).** On an engine that
+  lists `hydration.open_read_etag` in the `daemon.status` `capabilities`, the `open_read` ok reply also carries `etag`:
+  `{"ok":true,"cache_path":"..."[,"content_id":"..."][,"etag":"..."]}`. It is present by the rule of `content_id`: only
+  where the bytes at `cache_path` are the version the row records (no unsynced edit, noted or found behind the row; not a
+  kept-local copy of an excluded name), and it is then the row's `etag` as `hydration.list` hands it out for that version:
+  the row the warm copy was served by, or the row the download wrote (which records the version it read, as above). A
+  client may send it back as `base_etag` to `open_write`: an edit of the copy is accepted while the cloud has not changed
+  and refused as a `conflict` once the engine has learned a newer version. Unlike `content_id` it does not depend on the
+  provider naming its bytes: every provider whose rows carry a write token sends it (OneDrive, S3, localfs and others). A
+  provider that names no version for a download leaves the row's token as the last listing gave it, and that is the one
+  sent. The key is absent, never `null` or empty, wherever there is none; a client reads it only from an engine that
+  lists the capability.
 - Nothing else in the entry changes: `etag` stays the base for `base_etag`, and `remote_modified_ms` stays the cloud
   item's modified time (after a read, those of the version the read brought down, as above).
 

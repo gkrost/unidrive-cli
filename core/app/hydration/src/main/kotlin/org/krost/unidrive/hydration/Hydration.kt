@@ -220,6 +220,9 @@ sealed class OpenResult {
         // gkrost/unidrive-cli#171: open_read only. The name of the bytes served at [cachePath] (SyncEntry.remoteContentId), where
         // they are provably the version the row records; null otherwise, and only serialized on the wire when set.
         val contentId: String? = null,
+        // gkrost/unidrive-cli#707: open_read only. The row's write token (what hydration.list hands out as `etag`) where the bytes
+        // at [cachePath] are the version the row records, by the rule of [contentId]; null otherwise, and only serialized when set.
+        val etag: String? = null,
     ) : OpenResult()
     data class Failed(val error: HydrationError) : OpenResult()
 }

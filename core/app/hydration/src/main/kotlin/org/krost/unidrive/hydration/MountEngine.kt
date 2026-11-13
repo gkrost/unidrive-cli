@@ -719,8 +719,9 @@ class MountEngine private constructor(
      * The cache file of a hydrated path and whether making it ready took a download ([fetched]). gkrost/unidrive-cli#171:
      * [contentId] names the bytes it holds ([SyncEntry.remoteContentId]): those the download read, or those of the row a warm
      * copy was served by. Null where that cannot be told: a copy with an unsynced edit, a provider that names no bytes.
+     * gkrost/unidrive-cli#707: [etag] is the write token of that version, by the same rule ([copyEtag], OpenReadNames.kt).
      */
-    data class HydratedCache(val path: Path, val fetched: Boolean, val contentId: String? = null)
+    data class HydratedCache(val path: Path, val fetched: Boolean, val contentId: String? = null, val etag: String? = null)
 
     /**
      * True when a read of [entry] needs no download: the row has no remote (the cache is the only copy), or it is
@@ -748,7 +749,7 @@ class MountEngine private constructor(
      * difference, so a read in front of the replay must not download over it. The size alone told nothing: the edit's size
      * differs from the row's remote size, which read as a cache copy to replace.
      */
-    private fun editedBehindTheRow(
+    internal fun editedBehindTheRow(
         entry: SyncEntry,
         cachePath: Path,
     ): Boolean {
@@ -789,7 +790,7 @@ class MountEngine private constructor(
         // remoteId == null is NOT the UD-901 pending-upload predicate — it means "no
         // remote to compare against", and isHydrated here carries the warm-trust
         // meaning, so the split check is intentional.
-        if (servesFromLocalCopy(entry, cachePath)) return HydratedCache(cachePath, fetched = false, contentId = entry.copyContentId())
+        if (servesFromLocalCopy(entry, cachePath)) return servedWarm(entry, cachePath)
         // The cloud object was found truncated or refused and the row still describes that same version: refuse again
         // without asking the provider (see [RemoteIncompleteMemory]).
         refuseIfRemembered(path, entry)
@@ -885,7 +886,7 @@ class MountEngine private constructor(
             val prehashed = stagedHashIfOwed(staged, entry, fetched)
             // The last look at the row, the move of the bytes into place and the row write are one step for a truncate
             // ([withCacheSwapLock]): a truncate before it is seen below, one after it empties the copy the download put there.
-            withCacheSwapLock(path) {
+            val written = withCacheSwapLock(path) {
                 val rowNow = requireRowUnchanged(path, entry)
                 // M1 of archive#1040: open_write_begin does not take this path's hydrate lock, so an edit may have begun while
                 // the bytes came down. Its truncated copy is the start of that edit, the only copy of it: the finished download
@@ -922,22 +923,21 @@ class MountEngine private constructor(
                 // The row just adopted the cache copy's stats, so the hash must describe the cache
                 // copy's bytes: keeping a hash recorded for the previous contents would pair stale
                 // bytes with a fresh mtime/size and let a later touch be absorbed as unchanged.
-                db.upsertEntry(
-                    withDownloadedHash(
-                        rebaselined,
-                        cachePath,
-                        rebaselined.localMtime!! to rebaselined.localSize!!,
-                        fetched.receipt,
-                        tally,
-                        prehashed,
-                    ),
-                )
+                withDownloadedHash(
+                    rebaselined,
+                    cachePath,
+                    rebaselined.localMtime!! to rebaselined.localSize!!,
+                    fetched.receipt,
+                    tally,
+                    prehashed,
+                ).also { db.upsertEntry(it) }
             }
             recordProviderContact()
             // archive#660: a downloaded rule file is readable now; its folder is no longer held back.
             ignoreRuleFileWritten(path)
             FileEvents.event(FileEvents.Phase.CACHE_STORE, path, bytes = downloadedSize, tally = tally)
-            return HydratedCache(cachePath, fetched = true, contentId = fetched.contentId)
+            // gkrost/unidrive-cli#707: the token of the row this download wrote, which records the version that came down.
+            return HydratedCache(cachePath, fetched = true, contentId = fetched.contentId, etag = written.copyEtag())
         } finally {
             runCatching { Files.deleteIfExists(staged) }
         }
@@ -1008,11 +1008,6 @@ class MountEngine private constructor(
         if (receipt.itemHash == null && receipt.itemVersion == null) return named
         return named.copy(remoteHash = receipt.itemHash, remoteVersion = receipt.itemVersion, remoteModified = receipt.itemModified ?: remoteModified)
     }
-
-    // gkrost/unidrive-cli#171: the name of the bytes a warm copy holds, from the row the serve was decided by: the download that filled
-    // the copy recorded the name of what it read, and a later change of the name drops the copy (the enumeration's content rule) or
-    // moves the bytes with it (a rename). None for a copy with an unsynced edit and for a row without a remote.
-    internal fun SyncEntry.copyContentId(): String? = remoteContentId.takeIf { isHydrated && editBase == null && remoteId != null && !isFolder }
 
     /**
      * archive#796: the row's download by its remote id, and when that fails as a gone item, once the file the

@@ -30,9 +30,12 @@ import java.util.concurrent.atomic.AtomicLong
  *               system cannot hold, and every verb for a path whose cache file would not lie inside
  *               the profile's hydration cache folder.
  *   open_read   request:  {"verb":"hydration.open_read","handle_id":"...","path":"/foo"}
- *   open_read   reply ok: {"ok":true,"cache_path":"/home/.../foo.txt"[,"content_id":"..."]}
+ *   open_read   reply ok: {"ok":true,"cache_path":"/home/.../foo.txt"[,"content_id":"..."][,"etag":"..."]}
  *                         content_id (gkrost/unidrive-cli#171): the name of the bytes served, as hydration.list hands it out, where
  *                         they are the version the row records (no unsynced edit, not a kept-local copy); absent otherwise.
+ *                         etag (gkrost/unidrive-cli#707): by the same rule, the row's etag as hydration.list hands it out for
+ *                         the version served, which a client may send back as open_write's base_etag; absent otherwise.
+ *                         daemon.status lists "hydration.open_read_etag" in capabilities on an engine that sends it.
  *   open_read   reply err:{"ok":false,"error":"<message>"}
  *                         an excluded cloud item answers with the `excluded` token without a download,
  *                         even if a warm cache copy exists.
@@ -891,12 +894,13 @@ class HydrationIpcHandler(
     // on the common (non-excluded) path is byte-identical to the pre-field
     // contract, and existing corpus lines stay valid.
     // `handle_id` likewise only for an id the daemon issued: a client that named its own gets the reply it always got.
-    // `content_id` (gkrost/unidrive-cli#171) only where open_read names the bytes it served.
+    // `content_id` (gkrost/unidrive-cli#171) and `etag` (gkrost/unidrive-cli#707) only where open_read names the bytes it served.
     private fun openOkReply(r: OpenResult.Ok, issuedHandleId: String? = null): String {
         val handle = issuedHandleId?.let { ""","handle_id":${jsonEsc(it)}""" } ?: ""
         val excluded = if (r.excluded) ""","excluded":true""" else ""
         val contentId = r.contentId?.let { ""","content_id":${jsonEsc(it)}""" } ?: ""
-        return """{"ok":true,"cache_path":${jsonEsc(r.cachePath.toString())}$handle$excluded$contentId}"""
+        val etag = r.etag?.let { ""","etag":${jsonEsc(it)}""" } ?: ""
+        return """{"ok":true,"cache_path":${jsonEsc(r.cachePath.toString())}$handle$excluded$contentId$etag}"""
     }
 
     // A client-named handle id with the prefix of the ids the daemon issues: refused, so no client can hold one.
