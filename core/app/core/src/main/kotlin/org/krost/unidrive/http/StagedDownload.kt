@@ -70,7 +70,15 @@ internal suspend fun writeStagedDownload(
     withContext(Dispatchers.IO) {
         Files.createDirectories(destination.parent)
         // archive#529: a name near the 255-byte component limit cannot take the suffix — stage short.
-        val staging = destination.parent.resolve(stagingSiblingName(destination.fileName.toString(), STAGING_SUFFIX))
+        // windows#454 item 4: the staging name carries a random part, as LocalMove's does. Two overlapping downloads
+        // into one destination (a cancelled predecessor still draining, hydration racing sync) used to share ONE
+        // CREATE/TRUNCATE name: the second zero-filled the first's range, and a crash leftover sat at the same fixed
+        // name for the next download to truncate. The random part keeps the house suffix at the end, so every sweeper
+        // that matches *.unidrive-tmp still finds the leftovers.
+        val staging =
+            destination.parent.resolve(
+                stagingSiblingName(destination.fileName.toString(), ".${java.util.UUID.randomUUID()}$STAGING_SUFFIX"),
+            )
         try {
             val written =
                 FileChannel.open(staging, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING).use { out ->
