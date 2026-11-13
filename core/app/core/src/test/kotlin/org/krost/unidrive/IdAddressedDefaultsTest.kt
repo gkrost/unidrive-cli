@@ -106,5 +106,6 @@ class IdAddressedDefaultsTest {
 
             assertEquals(emptyList(), p.calls)
             assertEquals(true, e.message?.contains("deleteById"), e.message)
+            assertEquals(true, e.message?.contains("/a.txt"), e.message)
         }
 }

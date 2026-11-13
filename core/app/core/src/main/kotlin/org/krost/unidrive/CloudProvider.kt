@@ -222,7 +222,7 @@ interface CloudProvider {
         remoteId: String,
         remotePath: String,
     ) {
-        refusePathFallbackWithTwins(this, "deleteById")
+        refusePathFallbackWithTwins(this, "deleteById", remotePath)
         delete(remotePath)
     }
 
@@ -244,7 +244,7 @@ interface CloudProvider {
         remoteId: String,
         remotePath: String,
     ) {
-        refusePathFallbackWithTwins(this, "deletePermanentlyById")
+        refusePathFallbackWithTwins(this, "deletePermanentlyById", remotePath)
         deletePermanently(remotePath)
     }
 
@@ -333,7 +333,7 @@ interface CloudProvider {
         fromPath: String,
         toPath: String,
     ): CloudItem {
-        refusePathFallbackWithTwins(this, "moveById")
+        refusePathFallbackWithTwins(this, "moveById", fromPath)
         return move(fromPath, toPath)
     }
 
@@ -679,10 +679,11 @@ interface TypedDeleteProvider {
 internal fun refusePathFallbackWithTwins(
     provider: CloudProvider,
     operation: String,
+    path: String,
 ) {
     if (provider.allowsDuplicateNames) {
         throw UnsupportedOperationException(
-            "${provider.id} allows same-named siblings and must override $operation: a path may name the other twin",
+            "${provider.id} allows same-named siblings and must override $operation: a path may name the other twin (path: $path)",
         )
     }
 }
