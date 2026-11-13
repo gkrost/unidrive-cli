@@ -12,9 +12,15 @@ class AesGcmStrategy : XtraEncryptionStrategy {
     override val ivLength: Int = 12
     override val wrappedKeyLength: Int = 256
 
+    // The header's fixed part: magic(4) ‖ version(1) ‖ algorithmId(1) ‖ wrappedKeyLen(2) ‖ ivLen(2), the lengths
+    // [XtraHeader.write] lays down before the variable fields; with the wrapped key, the IV and the GCM tag this
+    // is the constant difference between a stored file's size and its plaintext's.
+    override val overheadBytes: Int = HEADER_FIXED_BYTES + wrappedKeyLength + ivLength + TAG_BITS / 8
+
     private companion object {
         const val BUFFER_SIZE = 65536
         const val TAG_BITS = 128
+        const val HEADER_FIXED_BYTES = 10
     }
 
     override fun encrypt(

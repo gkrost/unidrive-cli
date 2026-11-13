@@ -91,4 +91,13 @@ class AesGcmStrategyTest {
             strategy.decrypt(ByteArrayInputStream(encrypted), ByteArrayOutputStream(), fileKey(), iv)
         }
     }
+
+    // The constant the wrapper subtracts from the provider's size to answer the plaintext's (XtraEncryptedProvider):
+    // the header [XtraHeader.write] lays down — magic(4) ‖ version(1) ‖ algorithmId(1) ‖ wrappedKeyLen(2) ‖
+    // wrappedKey(256) ‖ ivLen(2) ‖ iv(12) — plus the 16-byte GCM tag. If this ever drifts from the header layout,
+    // every listing size of an X-tra profile is wrong.
+    @Test
+    fun `the overhead is the header plus the tag`() {
+        assertEquals(10 + 256 + 12 + 16, AesGcmStrategy().overheadBytes)
+    }
 }

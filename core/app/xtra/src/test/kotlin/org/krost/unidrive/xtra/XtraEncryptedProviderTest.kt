@@ -6,6 +6,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
+import org.krost.unidrive.sync.FakeCloudProvider
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -14,6 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class XtraEncryptedProviderTest {
 
@@ -163,6 +165,59 @@ class XtraEncryptedProviderTest {
         val item = kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/fwd.txt", existingRemoteId = "uuid-7", ifMatchETag = "etag-9") }
         assertEquals("uuid-7", item.id)
         assertEquals("etag-9", inner.lastUploadIfMatch)
+    }
+
+    // The engines' size contracts hold what a listing said against the bytes a download writes (#80, the mirror's
+    // completeness check, the warm-cache size match): every item crossing the wrapper up answers the plaintext size.
+    @Test
+    fun `listings and metadata answer the plaintext size`() {
+        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val inner = FakeCloudProvider()
+        val xtra = XtraEncryptedProvider(inner, keys(tmpDir))
+
+        val localFile = tmpDir.resolve("sized.txt")
+        val original = "Hello, sized world!"
+        Files.writeString(localFile, original)
+
+        // The upload's answer is already plaintext-sized; what the cloud lists for the stored object is not:
+        // its own size is the ciphertext's, and its hash names those bytes.
+        val uploaded = kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/sized.txt") }
+        val listed = uploaded.copy(size = inner.files.getValue("/sized.txt").size.toLong())
+        assertTrue(listed.size > original.length, "the test means something only if the wrapper adds bytes: ${listed.size}")
+        inner.deltaItems = listOf(listed)
+        inner.childrenByParent["/"] = listOf(listed)
+
+        kotlinx.coroutines.runBlocking {
+            assertEquals(original.length.toLong(), xtra.getMetadata("/sized.txt").size)
+            assertEquals(original.length.toLong(), xtra.delta(null).items.single().size)
+            assertEquals(original.length.toLong(), xtra.listChildren("/").single().size)
+            assertEquals(original.length.toLong(), xtra.upload(localFile, "/sized.txt").size)
+        }
+    }
+
+    // The mirror restores the mtime itself only when the receipt says the provider did not apply it; the
+    // decryption lands the plaintext in a fresh file, so the wrapper applies the target and says so.
+    @Test
+    fun `the hash variants apply the target mtime and answer the decrypted stats`() {
+        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val inner = FakeCloudProvider()
+        val xtra = XtraEncryptedProvider(inner, keys(tmpDir))
+
+        val localFile = tmpDir.resolve("mtime.txt")
+        val original = "timed content"
+        Files.write(localFile, original.toByteArray())
+        kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/mtime.txt") }
+
+        val target = 1_700_000_000_000L
+        val dest = tmpDir.resolve("mtime-dl.txt")
+        val receipt = kotlinx.coroutines.runBlocking { xtra.downloadWithHash("/mtime.txt", dest, target) }
+
+        assertEquals(target, Files.getLastModifiedTime(dest).toMillis())
+        assertEquals(original.length.toLong(), receipt.bytesWritten)
+        assertEquals(receipt.bytesWritten, receipt.stagedSize)
+        assertEquals(target, receipt.stagedMtimeMillis)
+        assertEquals(true, receipt.mtimeAppliedBeforePlacement)
+        assertContentEquals(original.toByteArray(), Files.readAllBytes(dest))
     }
 }
 

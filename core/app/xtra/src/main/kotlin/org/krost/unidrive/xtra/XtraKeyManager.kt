@@ -15,6 +15,7 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.OAEPParameterSpec
 import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.PSource
 import javax.crypto.spec.SecretKeySpec
 
 /**
@@ -86,14 +87,14 @@ class XtraKeyManager(private val keyPath: Path) {
     fun wrapKey(fileKey: ByteArray): ByteArray {
         val pub = checkNotNull(publicKey) { "Key not loaded" }
         val cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding")
-        cipher.init(Cipher.ENCRYPT_MODE, pub, OAEPParameterSpec.DEFAULT)
+        cipher.init(Cipher.ENCRYPT_MODE, pub, oaepSpec())
         return cipher.doFinal(fileKey)
     }
 
     fun unwrapKey(wrapped: ByteArray): ByteArray {
         val priv = checkNotNull(privateKey) { "Key not loaded" }
         val cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding")
-        cipher.init(Cipher.DECRYPT_MODE, priv, OAEPParameterSpec.DEFAULT)
+        cipher.init(Cipher.DECRYPT_MODE, priv, oaepSpec())
         return cipher.doFinal(wrapped)
     }
 
@@ -169,3 +170,10 @@ class XtraKeyManager(private val keyPath: Path) {
         return bytes
     }
 }
+
+// The OAEP parameters the class KDoc names: an explicit spec, because OAEPParameterSpec.DEFAULT would silently
+// override the transformation's SHA-256 with SHA-1 (the spec given to init() wins over the JCA name), and the
+// transformation string alone leaves MGF1 on its SHA-1 default. File-level, so the class stays under detekt's
+// function count.
+private fun oaepSpec(): OAEPParameterSpec =
+    OAEPParameterSpec("SHA-256", "MGF1", java.security.spec.MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT)

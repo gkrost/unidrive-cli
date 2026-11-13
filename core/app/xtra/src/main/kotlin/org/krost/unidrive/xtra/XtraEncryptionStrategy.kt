@@ -19,6 +19,15 @@ interface XtraEncryptionStrategy {
     /** The wrapped per-file key length, as [XtraKeyManager.wrapKey] answers it. */
     val wrappedKeyLength: Int
 
+    /**
+     * The bytes the wrapper adds around a file's content: the header (magic, version, algorithm id, the two length
+     * prefixes, the wrapped key and the IV) plus the AEAD tag. Constant per algorithm, so the provider's size for a
+     * well-formed file names the plaintext size too: the engines' size contracts hold a listing's size against the
+     * bytes a download writes (the #80 confirmation, the mirror's completeness check, the warm-cache size match),
+     * and the wrapper keeps both on the plaintext side of this difference.
+     */
+    val overheadBytes: Int
+
     fun encrypt(
         input: InputStream,
         output: OutputStream,
