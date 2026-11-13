@@ -95,11 +95,16 @@ tasks.register("sizeRatchet") {
             val old = proc.inputStream.bufferedReader().readText()
             if (proc.waitFor() == 0) {
                 val oldMap = sizeRatchetParse(old)
+                // A deliberate, owner-approved one-time raise (2026-11-13, #534): the PR that ADDS a "# one-time-raise" line to a baseline that has
+                // none is let through; once it is on the base ref the line no longer exempts anything, so it cannot be reused.
+                val hasRaiseMarker = { text: String -> text.lineSequence().any { it.startsWith("# one-time-raise") } }
+                val raiseAllowed = hasRaiseMarker(sizeRatchetBaseline.readText()) && !hasRaiseMarker(old)
+                if (raiseAllowed) logger.lifecycle("sizeRatchet: one-time raise accepted (the baseline at $baseRef has no # one-time-raise line).")
                 for ((key, v) in oldMap) {
                     val cur = base[key]
-                    if (cur != null && cur > v) problems += "baseline raised for $key: $v at $baseRef, $cur here (the baseline only goes down)"
+                    if (!raiseAllowed && cur != null && cur > v) problems += "baseline raised for $key: $v at $baseRef, $cur here (the baseline only goes down)"
                 }
-                for (key in base.keys - oldMap.keys) problems += "baseline gained $key (the baseline only goes down)"
+                if (!raiseAllowed) for (key in base.keys - oldMap.keys) problems += "baseline gained $key (the baseline only goes down)"
             } else {
                 logger.warn("sizeRatchet: no baseline at $baseRef, comparison skipped")
             }
