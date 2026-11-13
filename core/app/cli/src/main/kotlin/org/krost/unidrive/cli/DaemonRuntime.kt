@@ -845,6 +845,7 @@ class DaemonRuntime(
                     JsonMembers()
                         .put("ok", "true")
                         .put("protocol_version", IPC_PROTOCOL_VERSION.toString())
+                        .put("contract_level", IPC_CONTRACT_LEVEL.toString())
                         .put("engine_version", engineVersionJson)
                         .put("engine_build_time_ms", engineBuildTimeJson)
                         .put("mode", modeJson)
@@ -1238,6 +1239,12 @@ class DaemonRuntime(
         // shape (IpcContractCorpusTest). Version 2 authenticates every
         // connection (IpcAuth, docs/dev/specs/ipc-authentication.md).
         const val IPC_PROTOCOL_VERSION: Int = IpcAuth.PROTOCOL_VERSION
+
+        // contract_level (gkrost/unidrive-cli#445): an integer raised by one with every additive IPC change (a new
+        // verb, capability or field), so a client orders engine builds by what they answer; protocol_version moves only
+        // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
+        // of each level and fails when the surface changes without a raise.
+        const val IPC_CONTRACT_LEVEL: Int = 1
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a
