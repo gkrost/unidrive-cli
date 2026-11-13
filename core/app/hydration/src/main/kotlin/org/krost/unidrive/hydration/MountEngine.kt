@@ -274,7 +274,7 @@ class MountEngine private constructor(
      */
     override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult = wiring.enumeration.enumerate(reset)
 
-    override suspend fun awaitRunningEnumeration(): EnumerateResult? = wiring.enumeration.runningPassResult?.await()
+    override suspend fun enumerateOrJoin(reset: Boolean): EnumerateResult = wiring.enumeration.enumerate(reset, RemoteEnumeration.JOIN_MAX_WAIT_MS)
 
     /**
      * What a client may be told about the enumeration right now. A running attempt is answered from

@@ -213,11 +213,12 @@ class EnumerationStatusTest {
             assertEquals(0, engine.enumerationStatus().attempt)
         }
 
-    // gkrost/unidrive-cli#442: a caller that met the running pass can wait for it and gets that pass's result.
+    // gkrost/unidrive-cli#442: a caller that met the running pass waits for it and gets that pass's result.
     @Test
-    fun `the running pass can be waited for, and nothing runs when none does`() =
+    fun `a caller that meets the running pass waits for it, and runs its own pass when none runs`() =
         runTest {
-            assertEquals(null, engine.awaitRunningEnumeration(), "no pass runs")
+            val alone = engine.enumerateOrJoin(reset = false)
+            assertTrue(alone.ok && !alone.skipped, "no pass runs: the caller runs one")
             val entered = CompletableDeferred<Unit>()
             val gate = CompletableDeferred<Unit>()
             provider.duringDelta = { _, _, _ ->
@@ -226,14 +227,36 @@ class EnumerationStatusTest {
             }
             val first = async { engine.enumerateRemoteIntoState(reset = false) }
             entered.await()
-            val waiter = async { engine.awaitRunningEnumeration() }
+            val waiter = async { engine.enumerateOrJoin(reset = false) }
             testScheduler.runCurrent()
             assertTrue(!waiter.isCompleted, "the wait lasts while the pass runs")
 
             gate.complete(Unit)
             val ran = first.await()
             assertEquals(ran, waiter.await(), "the waiter gets the running pass's own result")
-            assertEquals(null, engine.awaitRunningEnumeration(), "the pass has ended")
+        }
+
+    @Test
+    fun `a caller that meets a pass that then fails gets the failure, not a success`() =
+        runTest {
+            val entered = CompletableDeferred<Unit>()
+            val gate = CompletableDeferred<Unit>()
+            provider.failure = ProviderException("listing failed")
+            provider.duringDelta = { _, _, _ ->
+                entered.complete(Unit)
+                gate.await()
+            }
+            val first = async { engine.enumerateRemoteIntoState(reset = false) }
+            entered.await()
+            val waiter = async { engine.enumerateOrJoin(reset = false) }
+            testScheduler.runCurrent()
+
+            gate.complete(Unit)
+            first.await()
+            val joined = waiter.await()
+
+            assertFalse(joined.ok, "the pass failed: the waiter is told so")
+            assertFalse(joined.skipped)
         }
 
     // ---- how an enumeration ends ---------------------------------------------------------------------------------------

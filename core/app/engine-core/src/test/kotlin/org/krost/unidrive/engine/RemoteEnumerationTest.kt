@@ -1,5 +1,6 @@
 package org.krost.unidrive.engine
 
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.Capability
@@ -1391,6 +1392,41 @@ class RemoteEnumerationTest {
             assertEquals(0, enumeration.goneFolders.tombstone(asRead))
             assertNotNull(db.getEntry("/p"))
             assertNotNull(db.getEntry("/p/c.txt"))
+        }
+
+    // gkrost/unidrive-cli#442: the wait of a caller that met a running pass is bounded; the pass goes on and ends normally.
+    @Test
+    fun `a caller that met a running pass stops waiting after the bound and the pass still ends`() =
+        runBlocking(kotlinx.coroutines.Dispatchers.Default) {
+            provider.items = listOf(file("a", "/a.txt"))
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            provider.onDelta = {
+                entered.countDown()
+                release.await(10, TimeUnit.SECONDS)
+            }
+            val enumeration = enumeration()
+            val first = async { enumeration.enumerate(reset = false) }
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+
+            val joined = enumeration.enumerate(reset = false, joinWaitMs = 200)
+
+            assertFalse(joined.ok, "the wait ran out: not a success")
+            assertFalse(joined.skipped)
+            assertTrue(joined.error.orEmpty().contains("did not end"), joined.error)
+            release.countDown()
+            assertTrue(first.await().ok, "the pass itself is not cancelled by the waiter giving up")
+        }
+
+    @Test
+    fun `a flag held by no pass answers skipped to a caller that would join`() =
+        runTest {
+            val enumeration = enumeration()
+            enumeration.enumerateInFlight.set(true)
+
+            val result = enumeration.enumerate(reset = false, joinWaitMs = 1_000)
+
+            assertTrue(result.ok && result.skipped, "nothing to wait for: the same answer as enumerate")
         }
 
     @Test

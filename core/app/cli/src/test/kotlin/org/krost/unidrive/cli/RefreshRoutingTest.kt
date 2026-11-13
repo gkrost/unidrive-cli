@@ -442,6 +442,8 @@ private class ThrowingEngine(
     ) {
     override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult = throw failure
 
+    override suspend fun enumerateOrJoin(reset: Boolean): EnumerateResult = throw failure
+
     override suspend fun syncOnce(
         dryRun: Boolean,
         forceDelete: Boolean,

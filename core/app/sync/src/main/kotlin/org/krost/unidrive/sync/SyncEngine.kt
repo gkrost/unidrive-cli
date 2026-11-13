@@ -793,7 +793,7 @@ open class SyncEngine(
      */
     override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult = enumeration.enumerate(reset)
 
-    override suspend fun awaitRunningEnumeration(): EnumerateResult? = enumeration.runningPassResult?.await()
+    override suspend fun enumerateOrJoin(reset: Boolean): EnumerateResult = enumeration.enumerate(reset, RemoteEnumeration.JOIN_MAX_WAIT_MS)
 
     // Thread confinement (concurrency audit): one sync pass keeps its run state in PLAIN collections —
     // `changes`, `safeAccumulator` and `deferredSlices` in the streaming gather, `appliedCounts` in the
