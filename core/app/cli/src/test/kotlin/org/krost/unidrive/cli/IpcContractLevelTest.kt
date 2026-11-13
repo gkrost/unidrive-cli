@@ -123,6 +123,9 @@ class IpcContractLevelTest {
                     "field:daemon.status.ignore", "field:daemon.status.upload_concurrency",
                     "field:daemon.status.transfer_budget", "field:daemon.status.ipc",
                 ),
+                // 2 (gkrost/unidrive-cli#445): hydration.list says whether a folder is listed whole, rmdir takes discard_local,
+                // ignore.explain answers a batch of paths.
+                setOf("capability:hydration.list_complete", "capability:hydration.rmdir_discard_local", "capability:ignore.explain_batch"),
             )
     }
 }

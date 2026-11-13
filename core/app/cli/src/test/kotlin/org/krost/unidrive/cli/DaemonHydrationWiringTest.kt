@@ -77,11 +77,9 @@ class DaemonHydrationWiringTest {
             }
         }
         try {
-            assertEquals(
-                """{"ok":true,"entries":[]}""",
-                exchange("""{"verb":"hydration.list","prefix":"/"}"""),
-                "the first request is answered by the hydration layer",
-            )
+            // The folder's completeness follows the entries (gkrost/unidrive-cli#445).
+            val listed = exchange("""{"verb":"hydration.list","prefix":"/"}""")
+            assertTrue(listed.startsWith("""{"ok":true,"entries":[]"""), "the first request is answered by the hydration layer: $listed")
             val status = Json.parseToJsonElement(exchange("""{"verb":"daemon.status"}""")).jsonObject
             assertTrue("cache" in status, "a mount daemon's status carries the hydration cache: $status")
         } finally {

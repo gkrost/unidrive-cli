@@ -723,20 +723,7 @@ class DaemonRuntime(
                 // hosting contract before it sends a verb the profile refuses (additive, read-only). Fixed for the run, so
                 // rendered once here, not at every status request (gkrost/unidrive-cli#442).
                 val modeJson = ndjsonString(profileMode.wireName)
-                // `views` is a capability only where the profile shows a view: a daemon without one answers as it always did.
-                // `view_page` with it: such a daemon answers view.page for its views.
-                // `notifications.status` (archive#111): this reply carries the `notifications` object.
-                // `hydration.refuse_name` (gkrost/unidrive-cli#24): the daemon records a client's refusal of a twin.
-                // `hydration.list_live` (gkrost/unidrive-cli#27): hydration.list reads a folder from the cloud while the first scan has not brought it in.
-                // `hydration.list_content_id` (gkrost/unidrive-cli#171): a hydration.list file entry names its bytes (`content_id`) where the row does.
-                // `hydration.stat` (gkrost/unidrive-cli#415): the daemon answers one row without the folder listing.
-                // `hydration.cancel_read` (gkrost/unidrive-cli#23): hydration.cancel with a handle_id ends that open_read, and a download nobody waits for stops.
-                val capabilitiesJson = (
-                    profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-                        (if (hydration == null) emptyList() else listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY)) +
-                        (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
-                        (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList())
-                ).joinToString(",", "[", "]") { ndjsonString(it) }
+                val capabilitiesJson = daemonCapabilitiesJson(profileMode, hydration != null, engine.uploadIgnore != null, viewNamespaces, shareCapable)
 
                 // daemon.status verb (spec §4.3). protocol_version is the
                 // additive cross-repo handshake field (IPC_PROTOCOL_VERSION):
@@ -1244,7 +1231,7 @@ class DaemonRuntime(
         // verb, capability or field), so a client orders engine builds by what they answer; protocol_version moves only
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
         // of each level and fails when the surface changes without a raise.
-        const val IPC_CONTRACT_LEVEL: Int = 1
+        const val IPC_CONTRACT_LEVEL: Int = 2
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a
