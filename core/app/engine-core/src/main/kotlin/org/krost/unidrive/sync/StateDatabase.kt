@@ -781,6 +781,17 @@ class StateDatabase(
                 )
                 """,
             )
+            // gkrost/unidrive-cli#437: the client's handle id of each upload that has not ended, so the replay at the next start
+            // reports under it ([recordUploadHandle]). A table of its own, additive like rename_intents: no schema_version bump,
+            // an older file simply has no record and its replays report under the engine's own ids, as before.
+            stmt.executeUpdate(
+                """
+                CREATE TABLE IF NOT EXISTS upload_handles (
+                    path      TEXT PRIMARY KEY,
+                    handle_id TEXT NOT NULL
+                )
+                """,
+            )
             // Permanent-failure quarantine columns on `sync_entries`: an additive
             // column with no schema_version bump because the columns carry safe
             // defaults (0 / NULL) so any pre-quarantine row reads as
@@ -2366,6 +2377,78 @@ class StateDatabase(
                 }
         }
     }
+
+    /**
+     * gkrost/unidrive-cli#437: the upload of [pathRaw] runs for the client handle [handleId]. Kept until the handle's upload
+     * ends ([forgetUploadHandle]); a daemon that stops or dies before that leaves it, and the replay at the next start reports
+     * the upload's events under it. A newer submission for the path replaces the record.
+     */
+    fun recordUploadHandle(
+        pathRaw: String,
+        handleId: String,
+    ) {
+        locked("recordUploadHandle") {
+            beginWrite()
+            conn.prepareStatement("INSERT OR REPLACE INTO upload_handles (path, handle_id) VALUES (?, ?)").use { stmt ->
+                stmt.setString(1, PathNormalizer.nfc(pathRaw))
+                stmt.setString(2, handleId)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    /** gkrost/unidrive-cli#437: the client handle the unfinished upload of [pathRaw] ran for ([recordUploadHandle]), or null. */
+    fun uploadHandleOf(pathRaw: String): String? =
+        locked("uploadHandleOf") {
+            conn.prepareStatement("SELECT handle_id FROM upload_handles WHERE path=?").use { stmt ->
+                stmt.setString(1, PathNormalizer.nfc(pathRaw))
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
+        }
+
+    /** gkrost/unidrive-cli#437: every recorded client handle of an unfinished upload, by path. */
+    fun uploadHandles(): Map<String, String> =
+        locked("uploadHandles") {
+            conn.prepareStatement("SELECT path, handle_id FROM upload_handles").use { stmt ->
+                stmt.executeQuery().use { rs ->
+                    buildMap {
+                        while (rs.next()) put(rs.getString(1), rs.getString(2))
+                    }
+                }
+            }
+        }
+
+    /**
+     * gkrost/unidrive-cli#437: the upload of [handleId] for [pathRaw] has ended (landed, failed for good or cancelled by its
+     * client): its record goes. Scoped by path as well: two connections can hold the same handle id for different paths, and a
+     * record a newer submission wrote under another id stays.
+     */
+    fun forgetUploadHandle(
+        pathRaw: String,
+        handleId: String,
+    ) {
+        locked("forgetUploadHandle") {
+            beginWrite()
+            conn.prepareStatement("DELETE FROM upload_handles WHERE path=? AND handle_id=?").use { stmt ->
+                stmt.setString(1, PathNormalizer.nfc(pathRaw))
+                stmt.setString(2, handleId)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    /**
+     * gkrost/unidrive-cli#437: drops the records of paths that have no alive row any more (deleted or renamed away while no
+     * daemon ran): nothing is left to replay under them. Returns how many records went.
+     */
+    fun pruneUploadHandles(): Int =
+        locked("pruneUploadHandles") {
+            beginWrite()
+            conn
+                .prepareStatement(
+                    "DELETE FROM upload_handles WHERE NOT EXISTS (SELECT 1 FROM alive_entries e WHERE e.path = upload_handles.path)",
+                ).use { it.executeUpdate() }
+        }
 
     /** The name block recorded by [markNameBlocked] for this alive row, or null. */
     fun nameBlock(pathRaw: String): NameBlock? =
