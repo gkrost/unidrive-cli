@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -123,4 +124,33 @@ class IgnoreRpcHandlerTest {
         assertEquals(HELD_BACK_ITEMS_CAP, held.getValue("items").jsonArray.size)
         assertEquals("/d1/.unidrive.ignore", held.getValue("items").jsonArray[0].jsonObject.str("file"))
     }
+
+    // gkrost/unidrive-cli#445: the batch answers each path with the verdict the single form gives, in request order.
+    @Test
+    fun aBatchAnswersEachPathAsTheSingleFormDoes() {
+        val paths = listOf("/proj/app.log", "/Videos/a.mp4", "/notes/todo.txt", "/locked/x.txt")
+        val batch = explain(batchOf(paths))
+        assertEquals("true", batch.str("ok"))
+        val results = batch.getValue("results").jsonArray.map { it.jsonObject }
+        assertEquals(paths, results.map { it.str("path") })
+        for ((i, path) in paths.withIndex()) {
+            val single = explain("""{"path":"$path"}""")
+            assertEquals(JsonObject(single - "ok"), results[i], path)
+        }
+    }
+
+    @Test
+    fun aBatchOverTheCapIsRefusedAndABadPathIsAnsweredInItsPlace() {
+        val refused = explain(batchOf((0..IgnoreRpcHandler.MAX_BATCH).map { "/f$it" }))
+        assertEquals("too_many_paths", refused.str("error"))
+        assertEquals(IgnoreRpcHandler.MAX_BATCH, refused.getValue("max").jsonPrimitive.int)
+        val atCap = explain(batchOf((1..IgnoreRpcHandler.MAX_BATCH).map { "/f$it" }))
+        assertEquals(IgnoreRpcHandler.MAX_BATCH, atCap.getValue("results").jsonArray.size)
+        val mixed = explain("""{"paths":[{"path":"/a/../b"},{"is_dir":true},"/proj/app.log"]}""").getValue("results").jsonArray
+        assertEquals("invalid_path", mixed[0].jsonObject.str("error"))
+        assertEquals("missing_path", mixed[1].jsonObject.str("error"))
+        assertEquals("true", mixed[2].jsonObject.str("excluded"))
+    }
+
+    private fun batchOf(paths: List<String>): String = """{"paths":${JsonArray(paths.map { JsonPrimitive(it) })}}"""
 }

@@ -11,6 +11,8 @@ import org.krost.unidrive.engine.ViewNamespaces
 import org.krost.unidrive.engine.ViewStatus
 import org.krost.unidrive.hydration.HydrationImpl
 import org.krost.unidrive.hydration.PauseGate
+import org.krost.unidrive.io.ndjsonString
+import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.ignore.HeldBackDir
 
 /**
@@ -76,6 +78,15 @@ internal const val HANDLE_STATUS_CAPABILITY = "hydration.handle_status"
  * (gkrost/unidrive-cli#437).
  */
 internal const val SUBSCRIBE_REPLAY_CAPABILITY = "hydration.subscribe_replay"
+
+/** The `daemon.status` capability that says a `hydration.list` reply carries `complete` and `listed_at_ms` (gkrost/unidrive-cli#445). */
+internal const val LIST_COMPLETE_CAPABILITY = "hydration.list_complete"
+
+/** The `daemon.status` capability that says `hydration.rmdir` with `recursive` takes `discard_local` (gkrost/unidrive-cli#445). */
+internal const val RMDIR_DISCARD_LOCAL_CAPABILITY = "hydration.rmdir_discard_local"
+
+/** The `daemon.status` capability that says `ignore.explain` answers a batch of `paths` (gkrost/unidrive-cli#445). */
+internal const val IGNORE_EXPLAIN_BATCH_CAPABILITY = "ignore.explain_batch"
 
 /**
  * The `daemon.status` capability that says the daemon answers `share.create` (#615), present only while the provider
@@ -360,3 +371,33 @@ internal fun ipcStatusJson(requestCounts: Map<String, Long>): JsonObject =
     buildJsonObject {
         put("requests", buildJsonObject { requestCounts.forEach { (verb, n) -> put(verb, n) } })
     }
+
+/**
+ * The `capabilities` array of `daemon.status` (archive#603 U4): what this daemon serves, so a client can check the
+ * hosting contract before it sends a verb the profile refuses.
+ *
+ * `views` is a capability only where the profile shows a view: a daemon without one answers as it always did.
+ * `view_page` with it: such a daemon answers view.page for its views.
+ * `notifications.status` (archive#111): this reply carries the `notifications` object.
+ * `hydration.refuse_name` (gkrost/unidrive-cli#24): the daemon records a client's refusal of a twin.
+ * `hydration.list_live` (gkrost/unidrive-cli#27): hydration.list reads a folder from the cloud while the first scan has not brought it in.
+ * `hydration.list_content_id` (gkrost/unidrive-cli#171): a hydration.list file entry names its bytes (`content_id`) where the row does.
+ * `hydration.stat` (gkrost/unidrive-cli#415): the daemon answers one row without the folder listing.
+ * `hydration.cancel_read` (gkrost/unidrive-cli#23): hydration.cancel with a handle_id ends that open_read, and a download nobody waits for stops.
+ * `hydration.list_complete`, `hydration.rmdir_discard_local`, `ignore.explain_batch` (gkrost/unidrive-cli#445): hydration.list
+ * says whether a folder is listed whole, rmdir takes discard_local, ignore.explain takes paths.
+ */
+internal fun daemonCapabilitiesJson(
+    profileMode: ProfileMode,
+    hydration: Boolean,
+    uploadIgnore: Boolean,
+    viewNamespaces: ViewNamespaces,
+    shareCapable: Boolean,
+): String =
+    (
+        profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
+            (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY) else emptyList()) +
+            (if (uploadIgnore) listOf(IGNORE_EXPLAIN_BATCH_CAPABILITY) else emptyList()) +
+            (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
+            (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList())
+    ).joinToString(",", "[", "]") { ndjsonString(it) }

@@ -121,11 +121,12 @@ import java.util.concurrent.atomic.AtomicLong
  *                         {"ok":false,"error":"path_is_folder"}     EISDIR
  *                         {"ok":false,"error":"<msg>"}              EIO
  *
- *   rmdir       request:  {"verb":"hydration.rmdir","path":"/foo"[,"recursive":true]}
+ *   rmdir       request:  {"verb":"hydration.rmdir","path":"/foo"[,"recursive":true[,"discard_local":true]]}
  *               reply:    {"ok":true}
  *                         {"ok":false,"error":"path_is_file"}       ENOTDIR
  *                         {"ok":false,"error":"not_empty"}          ENOTEMPTY: alive rows below (plain), or a file
- *                                                                   below holds bytes only this computer has (recursive, archive#1035)
+ *                                                                   below holds bytes only this computer has (recursive, archive#1035;
+ *                                                                   not with discard_local, gkrost/unidrive-cli#445)
  *                         {"ok":false,"error":"busy"}               an upload below is in flight (archive#87)
  *                         {"ok":false,"error":"<msg>"}              EIO
  *
@@ -720,7 +721,7 @@ class HydrationIpcHandler(
                 val prefix = request.string("prefix")?.let { requireLogicalPath(it) }
                     ?: return reply(ok = false, error = "missing_prefix")
                 when (val r = hydration.list(prefix)) {
-                    is ListResult.Ok -> serialiseListEntries(r.entries)
+                    is ListResult.Ok -> serialiseListEntries(r.entries, r.complete, r.listedAtMs)
                     is ListResult.Failed -> reply(ok = false, error = r.error.message)
                 }
             }
@@ -767,7 +768,7 @@ class HydrationIpcHandler(
                 val recursive = request.bool("recursive") == true
                 val permanent = request.bool("permanent") == true
                 nameClash(rawPath(request, "path"))?.let { return it }
-                when (val r = hydration.rmdir(path, recursive, permanent)) {
+                when (val r = if (recursive && request.bool("discard_local") == true) hydration.rmdirDiscardingLocal(path, permanent) else hydration.rmdir(path, recursive, permanent)) {
                     is RmdirResult.Ok -> {
                         spellings.forget(rawPath(request, "path"))
                         reply(ok = true)
@@ -1030,46 +1031,6 @@ private fun serialiseViewPage(r: ViewPageResult.Ok): String {
         .append(",\"as_of_ms\":").append(r.asOfMs?.toString() ?: "null")
         .append('}')
     return sb.toString()
-}
-
-private fun serialiseListEntries(entries: List<ListResult.Entry>): String {
-    val sb = StringBuilder("""{"ok":true,"entries":[""")
-    entries.forEachIndexed { i, e ->
-        if (i > 0) sb.append(',')
-        appendListEntry(sb, e)
-    }
-    sb.append("]}")
-    return sb.toString()
-}
-
-// One entry exactly as hydration.list writes it, and hydration.stat under `entry`: the single serializer keeps
-// the two shapes identical, so a client parses both with its list-entry parser (gkrost/unidrive-cli#415). It
-// appends into the caller's builder — a listing of many rows builds one string, not one per row.
-private fun appendListEntry(
-    sb: StringBuilder,
-    e: ListResult.Entry,
-) {
-    sb.append("{\"path\":").append(jsonEsc(e.path))
-        .append(",\"size\":").append(e.size)
-        .append(",\"mtime_ms\":").append(e.mtimeEpochMillis)
-        .append(",\"hydrated\":").append(e.isHydrated)
-        .append(",\"folder\":").append(e.isFolder)
-        .append(",\"remote_modified_ms\":").append(e.remoteModifiedEpochMillis?.toString() ?: "null")
-        .append(",\"remote_id\":").append(e.remoteId?.let { jsonEsc(it) } ?: "null")
-        .append(",\"etag\":").append(e.etag?.let { jsonEsc(it) } ?: "null")
-    // gkrost/unidrive-cli#171: additive, beside the etag, and only where the row names its bytes (daemon.status
-    // capability `hydration.list_content_id`).
-    if (e.contentId != null) sb.append(",\"content_id\":").append(jsonEsc(e.contentId))
-    sb.append(",\"pending_upload\":").append(e.pendingUpload)
-        .append(",\"error\":").append(e.hasError)
-    if (e.excluded) sb.append(",\"excluded\":true")
-    if (e.readOnly) sb.append(",\"read_only\":true")
-    if (e.trashRoot) sb.append(",\"trash_root\":true")
-    if (e.backupsRoot) sb.append(",\"backups_root\":true")
-    if (e.blocked != null) sb.append(",\"blocked\":").append(jsonEsc(e.blocked))
-    if (e.view != null) sb.append(",\"view\":").append(jsonEsc(e.view))
-    if (e.viewTarget != null) sb.append(",\"view_target\":").append(jsonEsc(e.viewTarget))
-    sb.append('}')
 }
 
 fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {

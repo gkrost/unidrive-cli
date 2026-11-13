@@ -9,6 +9,7 @@ import org.krost.unidrive.engine.CursorState
 import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.engine.RemoteOperationGuard
+import org.krost.unidrive.sync.EnumerationStatus
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
@@ -64,6 +65,33 @@ internal class LiveFolderList(
     // When a folder was last found empty in the cloud (epoch ms).
     private val foundEmpty = ConcurrentHashMap<String, Long>()
 
+    // When this daemon last listed a folder from the cloud, empty or not (epoch ms; gkrost/unidrive-cli#445).
+    private val listedAt = ConcurrentHashMap<String, Long>()
+
+    /** When this daemon last listed [folder] (an NFC engine path, "" the root) from the cloud in full, or null. */
+    fun listedAtMs(folder: String): Long? = listedAt[folder]
+
+    /**
+     * gkrost/unidrive-cli#445: whether the rows state.db holds for [folder] (the engine path, "" the root) are the whole
+     * folder (`hydration.list` `complete`), given the enumeration [status] the caller asked for. A folder is covered when
+     *  - a full enumeration has completed since the last cursor reset (the delta cursor is set), its last gather did not end
+     *    incomplete and no recovery listing runs: the polls since keep state.db current. `listedAtMs` is when the last
+     *    enumeration succeeded (null when this process does not know), or
+     *  - this daemon listed the folder live from the provider ([rowsOrNull]): `listedAtMs` is that listing.
+     * Anything else is not covered (`complete` false, `listedAtMs` null): a folder that an earlier, interrupted scan
+     * filled in part answers from state.db but may lack items.
+     */
+    fun coverage(
+        folder: String,
+        status: EnumerationStatus,
+    ): ListingCoverage {
+        if (!CursorState(db).deltaCursor.isNullOrEmpty() && status.lastScanComplete != false && !status.recovery) {
+            return ListingCoverage(true, status.lastSuccessAtMs)
+        }
+        val path = PathNormalizer.nfc(folder)
+        return listedAtMs(path)?.let { ListingCoverage(true, it) } ?: ListingCoverage(false, null)
+    }
+
     /**
      * The rows of [folder] after a live listing, or null when the folder is answered from state.db as it always was.
      * [folder] is the engine path without the trailing slash ("" is the root).
@@ -96,23 +124,37 @@ internal class LiveFolderList(
                 log.info("live list: {} is gone in the cloud; answering from state", path)
                 return null
             }
-        val changes = admitted(listed, remoteFolder.trimEnd('/'))
+        val listedAtMs = nowMs()
+        val (changes, withheld) = admitted(listed, remoteFolder.trimEnd('/'))
         if (changes.isEmpty()) {
+            // Coverage only for a folder that is empty in fact, not one whose entries the scan still owes (twins).
+            if (!withheld) noteListed(path, listedAtMs)
             noteEmpty(path)
             return null
         }
         // The scan's merge, in one transaction: against a concurrent chunk of the scan's own merge the transaction is
         // the lock, and the merge reads the row it changes inside it.
         db.batch { gather.updateRemoteEntries(changes, gather.canonicalToLocalTop(changes), changes, keepPendingUploads = true) }
+        // Only after the merge, and only when every admissible entry was written: a failed merge or withheld twins leave the
+        // reply not complete (gkrost/unidrive-cli#445).
+        if (!withheld) noteListed(path, listedAtMs)
         log.info("live list: {} item(s) of {} read from the cloud ahead of the first scan", changes.size, path.ifEmpty { "/" })
         return db.listDirectChildren(path)
     }
 
-    // The items of the listing the scan would admit, keyed by their remote path.
+    private fun noteListed(
+        path: String,
+        atMs: Long,
+    ) {
+        if (listedAt.size >= EMPTY_MEMORY_CAP) listedAt.clear()
+        listedAt[path] = atMs
+    }
+
+    // The items of the listing the scan would admit, keyed by their remote path, and whether some were withheld for the scan.
     private fun admitted(
         listed: List<CloudItem>,
         remoteFolder: String,
-    ): Map<String, CloudItem> {
+    ): Pair<Map<String, CloudItem>, Boolean> {
         val seen =
             listed
                 .asSequence()
@@ -122,7 +164,7 @@ internal class LiveFolderList(
                 .toList()
         // Two items of one name: the scan places both under their decorated names, so neither is written here.
         val twinned = seen.groupingBy { it.path }.eachCount().filterValues { it > 1 }.keys
-        return seen.filter { it.path !in twinned }.associateByTo(LinkedHashMap()) { it.path }
+        return seen.filter { it.path !in twinned }.associateByTo(LinkedHashMap<String, CloudItem>()) { it.path } to twinned.isNotEmpty()
     }
 
     // Whether the folder has a row that came from the cloud (not the pending upload of a file nobody sent yet).
@@ -151,3 +193,9 @@ internal class LiveFolderList(
         private const val EMPTY_MEMORY_CAP: Int = 4_096
     }
 }
+
+/** Whether a folder listing is the whole folder, and as of when (gkrost/unidrive-cli#445; see [LiveFolderList.coverage]). */
+data class ListingCoverage(
+    val complete: Boolean,
+    val listedAtMs: Long?,
+)

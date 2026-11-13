@@ -328,13 +328,10 @@ class MountEngine private constructor(
             log = log,
         )
 
-    /**
-     * gkrost/unidrive-cli#27: the rows of [folder] (the engine path without the trailing slash, "" for the root) after
-     * a live listing, or null when the folder is answered from state.db. A live listing happens only while no enumeration
-     * has completed and state.db holds no cloud row of the folder; the rows are saved as the scan saves them. A failed
-     * listing throws. See [LiveFolderList].
-     */
     suspend fun listFolderLive(folder: String): List<SyncEntry>? = liveFolders.rowsOrNull(folder)
+
+    /** gkrost/unidrive-cli#445: whether [folder]'s rows are the whole folder (`hydration.list` `complete`); see [LiveFolderList.coverage]. */
+    fun listingCoverage(folder: String): ListingCoverage = liveFolders.coverage(folder, enumerationStatus())
 
     // gkrost/unidrive-cli#225: the backfill logs under a name of its own, not the engine's, so its lines can be told apart.
     private val contentIdLog: Logger = LoggerFactory.getLogger(ContentIdBackfill::class.java)
