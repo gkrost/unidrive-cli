@@ -834,7 +834,7 @@ class MountEngine private constructor(
                 }
             }
             // The last look at the row, the move of the bytes into place and the row write are one step for a truncate
-            // ([cacheSwapLock]): a truncate before it is seen below, one after it empties the copy the download put there.
+            // ([withCacheSwapLock]): a truncate before it is seen below, one after it empties the copy the download put there.
             withCacheSwapLock(path) {
                 val rowNow = requireRowUnchanged(path, entry)
                 // M1 of archive#1040: open_write_begin does not take this path's hydrate lock, so an edit may have begun while

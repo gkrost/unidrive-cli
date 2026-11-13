@@ -11,6 +11,10 @@ import kotlinx.coroutines.sync.withLock
  *
  * The count of users is changed under the map's monitor: a caller that arrives while the last one leaves either finds the
  * entry (and keeps it) or finds none and makes a new one, never an entry already removed.
+ *
+ * That one monitor is shared by every path, where a concurrent map would stripe the contention over its bins. It was weighed
+ * against striping and kept: each critical section is a map lookup and a counter change, the monitor is never held while a
+ * mutex is acquired, and the lock itself is taken far less often than the bytes behind it are read or written.
  */
 internal class PathLocks {
     @PublishedApi
