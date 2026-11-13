@@ -148,8 +148,15 @@ class LocalFsProvider(
 
     private fun toItem(local: Path): CloudItem {
         val norm = local.toAbsolutePath().normalize()
-        val isDir = Files.isDirectory(norm)
-        val attrs = Files.readAttributes(norm, BasicFileAttributes::class.java)
+        return toItem(norm, Files.isDirectory(norm), Files.readAttributes(norm, BasicFileAttributes::class.java))
+    }
+
+    /** The item for [norm] (absolute, normalized) from attributes already read: the walk's own, no further syscall. */
+    private fun toItem(
+        norm: Path,
+        isDir: Boolean,
+        attrs: BasicFileAttributes,
+    ): CloudItem {
         val remote = toRemote(norm)
         val parent = norm.parent
         val parentRemote = if (parent != null && parent.startsWith(rootNorm)) toRemote(parent) else null
@@ -172,12 +179,38 @@ class LocalFsProvider(
      * symlink-safe filter for enumeration (listChildren / delta), mirroring [toLocal]'s
      * guard for direct operations. False if the path can't be resolved.
      */
-    private fun withinRoot(local: Path): Boolean =
+    private fun withinRoot(local: Path): Boolean = runCatching { withinRoot(local, rootNorm.toRealPath()) }.getOrDefault(false)
+
+    private fun withinRoot(
+        local: Path,
+        realRoot: Path,
+    ): Boolean =
         runCatching {
-            val realRoot = rootNorm.toRealPath()
             val real = local.toAbsolutePath().normalize().toRealPath()
             real == realRoot || real.startsWith(realRoot)
         }.getOrDefault(false)
+
+    /**
+     * The walk's item for [path], or null when it is not to be listed. A plain file or directory reached by the walk
+     * lies in a directory already proved to be within the root, so it is within the root too: no real-path check. A
+     * plain file is built from the walk's [attrs] alone. A directory reads its attributes afresh: on Windows the walk
+     * takes them from the parent's listing, where NTFS updates a directory's modification time late. Only a link or a
+     * reparse point (a Windows junction reads as "other") pays the real-path check, as before.
+     */
+    private fun walkedItem(
+        path: Path,
+        attrs: BasicFileAttributes,
+        realRoot: Path,
+    ): CloudItem? {
+        val norm = path.toAbsolutePath().normalize()
+        val plain = !attrs.isSymbolicLink && !attrs.isOther
+        return when {
+            plain && attrs.isRegularFile -> toItem(norm, false, attrs)
+            plain -> toItem(norm)
+            !withinRoot(norm, realRoot) -> null
+            else -> toItem(norm)
+        }
+    }
 
     // ── reads ──────────────────────────────────────────────────────────────
 
@@ -403,6 +436,8 @@ class LocalFsProvider(
             // engine would read an empty, complete listing as "everything was deleted".
             if (!Files.exists(rootNorm)) skips.unreadable(rootNorm, java.nio.file.NoSuchFileException(rootNorm.toString()))
             if (Files.exists(rootNorm)) {
+                // Resolved once per walk, not once per entry: on Windows each toRealPath opens a handle.
+                val realRoot = rootNorm.toRealPath()
                 // walkFileTree instead of Files.walk: a stream throws out of forEach on the
                 // first unreadable directory and aborts the whole listing; the visitor skips
                 // the entry (visitFileFailed) and lets the rest through.
@@ -422,9 +457,9 @@ class LocalFsProvider(
                             }
                             // A symlink whose real path escapes the root is a policy skip (see
                             // withinRoot); an unreadable directory is an incomplete one.
-                            if (!withinRoot(dir)) return FileVisitResult.SKIP_SUBTREE
                             try {
-                                items.add(toItem(dir))
+                                val item = walkedItem(dir, attrs, realRoot) ?: return FileVisitResult.SKIP_SUBTREE
+                                items.add(item)
                             } catch (e: IOException) {
                                 skips.unreadable(norm, e)
                             }
@@ -435,13 +470,14 @@ class LocalFsProvider(
                             file: Path,
                             attrs: BasicFileAttributes,
                         ): FileVisitResult {
-                            if (withinRoot(file)) {
-                                try {
-                                    items.add(toItem(file))
+                            try {
+                                val item = walkedItem(file, attrs, realRoot)
+                                if (item != null) {
+                                    items.add(item)
                                     if (items.size % 500 == 0) onPageProgress?.invoke(items.size)
-                                } catch (e: IOException) {
-                                    skips.unreadable(file.toAbsolutePath().normalize(), e)
                                 }
+                            } catch (e: IOException) {
+                                skips.unreadable(file.toAbsolutePath().normalize(), e)
                             }
                             return FileVisitResult.CONTINUE
                         }
