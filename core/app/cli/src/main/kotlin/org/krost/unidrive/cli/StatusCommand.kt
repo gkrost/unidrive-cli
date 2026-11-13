@@ -15,6 +15,8 @@ import org.krost.unidrive.engine.ScopeState
 import org.krost.unidrive.ProviderRegistry
 import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.sync.ExcludePatterns
+import org.krost.unidrive.sync.IpcEndpoint
+import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.NoDefaultProfileException
 import org.krost.unidrive.sync.ProfileInfo
 import org.krost.unidrive.sync.RawSyncConfig
@@ -557,8 +559,38 @@ class StatusCommand : Runnable {
         configDir: Path,
     ): Long? {
         if (!shouldProbeRemoteForStatus(parent.checkCredentialHealth(profile, configDir))) return null
+        return statusQuotaUsed(
+            holder = profileLockHolder(configDir),
+            fromDaemon = { daemonQuotaUsed(profile, configDir) },
+            fromProvider = { providerQuotaUsed(profile, configDir) },
+        )
+    }
+
+    // gkrost/unidrive-cli#455: the quota the running daemon already holds (its daemon.status `quota.used_bytes`); null when it
+    // does not answer, keeps none, or its provider has no account quota.
+    private fun daemonQuotaUsed(
+        profile: ProfileInfo,
+        configDir: Path,
+    ): Long? =
+        try {
+            val socketPath = IpcServer.defaultSocketPath(profile.name)
+            requestDaemonStatus(IpcEndpoint(socketPath, configDir, profile.name))?.let(::quotaUsedOfStatusReply)
+        } catch (_: Exception) {
+            null
+        }
+
+    // A provider of this command's own: no process holds the profile, so its sign-in races nobody's. Closed once read.
+    private fun providerQuotaUsed(
+        profile: ProfileInfo,
+        configDir: Path,
+    ): Long? {
+        val provider =
+            try {
+                parent.createProviderFor(profile, configDir)
+            } catch (_: Exception) {
+                return null
+            }
         return try {
-            val provider = parent.createProviderFor(profile, configDir)
             if (Capability.QuotaExact !in provider.capabilities()) return null
             runBlocking {
                 provider.authenticateAndLog()
@@ -569,6 +601,8 @@ class StatusCommand : Runnable {
             // Auth-fail / network-fail / provider-not-configured — caller
             // falls back to enumerated sum which is at least non-null.
             null
+        } finally {
+            runCatching { provider.close() }
         }
     }
 
