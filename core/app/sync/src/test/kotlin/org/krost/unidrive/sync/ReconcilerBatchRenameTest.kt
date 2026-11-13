@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
 
 /**
  * A batch rename plans one move per file and nothing else: the pairs a move replaces leave the plan in one pass after
- * the matching (cli#439 item 14), and none of them, nor anything else, is lost or kept by that.
+ * the matching (#439 item 14), and none of them, nor anything else, is lost or kept by that.
  */
 class ReconcilerBatchRenameTest {
     private lateinit var db: StateDatabase
