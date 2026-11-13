@@ -2,50 +2,54 @@
 # measured by gradle/size-ratchet.gradle.kts. A value here may only go down: ./gradlew sizeRatchetLower lowers
 # it after a PR shrinks the code, and an entry disappears once it is under the threshold (file 1000, function 120).
 # Do not raise a value to make a PR pass; split the code instead.
-file:app/cli/src/main/kotlin/org/krost/unidrive/cli/DaemonRuntime.kt 1266
-file:app/cli/src/main/kotlin/org/krost/unidrive/cli/StatusCommand.kt 1377
-file:app/cli/src/main/kotlin/org/krost/unidrive/cli/SyncCommand.kt 1162
-file:app/engine-core/src/main/kotlin/org/krost/unidrive/engine/RemoteGather.kt 2214
-file:app/engine-core/src/main/kotlin/org/krost/unidrive/sync/StateDatabase.kt 3998
-file:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationImpl.kt 4197
-file:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationIpcHandler.kt 1139
-file:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/MountEngine.kt 2461
+# one-time-raise 2026-11-13: the entries below were raised to their current size once (owner decision, gkrost/unidrive-cli#534) because main
+# had grown past the baseline while the ratchet was being introduced (#690); sizeRatchet skips its "baseline only goes down" comparison for a PR that adds this
+# line to a baseline that lacks it, so this exemption cannot be reused: from here on the baseline only goes down again.
+file:app/cli/src/main/kotlin/org/krost/unidrive/cli/DaemonRuntime.kt 1264
+file:app/cli/src/main/kotlin/org/krost/unidrive/cli/StatusCommand.kt 1411
+file:app/cli/src/main/kotlin/org/krost/unidrive/cli/SyncCommand.kt 1149
+file:app/engine-core/src/main/kotlin/org/krost/unidrive/engine/RemoteGather.kt 2191
+file:app/engine-core/src/main/kotlin/org/krost/unidrive/sync/StateDatabase.kt 4080
+file:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationImpl.kt 4258
+file:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationIpcHandler.kt 1140
+file:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/MountEngine.kt 2552
 file:app/sync-tracking/src/main/kotlin/org/krost/unidrive/tracking/TrackingEngine.kt 1099
-file:app/sync/src/main/kotlin/org/krost/unidrive/sync/IpcServer.kt 1176
-file:app/sync/src/main/kotlin/org/krost/unidrive/sync/Reconciler.kt 2317
+file:app/sync/src/main/kotlin/org/krost/unidrive/sync/IpcServer.kt 1193
+file:app/sync/src/main/kotlin/org/krost/unidrive/sync/Reconciler.kt 2339
 file:app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncConfig.kt 1245
-file:app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncEngine.kt 5404
+file:app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncEngine.kt 5406
 file:providers/internxt/src/main/kotlin/org/krost/unidrive/internxt/InternxtApiService.kt 2349
-file:providers/internxt/src/main/kotlin/org/krost/unidrive/internxt/InternxtProvider.kt 6630
-file:providers/onedrive/src/main/kotlin/org/krost/unidrive/onedrive/GraphApiService.kt 2041
-file:providers/onedrive/src/main/kotlin/org/krost/unidrive/onedrive/OneDriveProvider.kt 1246
-fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/DaemonRuntime.kt::lifecycle#1 819
+file:providers/internxt/src/main/kotlin/org/krost/unidrive/internxt/InternxtProvider.kt 6635
+file:providers/onedrive/src/main/kotlin/org/krost/unidrive/onedrive/GraphApiService.kt 2035
+file:providers/onedrive/src/main/kotlin/org/krost/unidrive/onedrive/OneDriveProvider.kt 1270
+fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/DaemonRuntime.kt::lifecycle#1 811
 fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/GetCommand.kt::call#1 183
 fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/LegacyInventory.kt::classify#1 180
 fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/MigrateConvertCommand.kt::execute#1 327
 fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/ProfileCommand.kt::run#2 145
+fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/RefreshRpcHandler.kt::handle#1 121
 fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/RelocateCommand.kt::runRelocate#1 251
 fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/StatusCommand.kt::buildAccountRow#1 151
 fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/StatusCommand.kt::renderTable#1 159
-fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/SyncCommand.kt::runSync#1 670
+fun:app/cli/src/main/kotlin/org/krost/unidrive/cli/SyncCommand.kt::runSync#1 657
 fun:app/engine-core/src/main/kotlin/org/krost/unidrive/engine/RemoteEnumeration.kt::runEnumeration#1 207
-fun:app/engine-core/src/main/kotlin/org/krost/unidrive/engine/RemoteGather.kt::gather#1 393
+fun:app/engine-core/src/main/kotlin/org/krost/unidrive/engine/RemoteGather.kt::gather#1 370
 fun:app/engine-core/src/main/kotlin/org/krost/unidrive/engine/RemoteGather.kt::updateRemoteEntries#2 127
-fun:app/engine-core/src/main/kotlin/org/krost/unidrive/sync/StateDatabase.kt::createTables#1 283
-fun:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationImpl.kt::launchSerializedUpload#1 144
+fun:app/engine-core/src/main/kotlin/org/krost/unidrive/sync/StateDatabase.kt::createTables#1 294
+fun:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationImpl.kt::launchSerializedUpload#1 151
 fun:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationImpl.kt::moveEntry#1 124
 fun:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationImpl.kt::openForReadAt#1 130
-fun:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationImpl.kt::replayPendingUploads#1 120
+fun:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationImpl.kt::replayPendingUploads#1 128
 fun:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationImpl.kt::runUploadWithRetries#1 147
 fun:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationIpcHandler.kt::dispatch#1 285
-fun:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/MountEngine.kt::ensureHydratedLocked#1 172
+fun:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/MountEngine.kt::ensureHydratedLocked#1 183
 fun:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/MountEngine.kt::uploadFromCacheMeasured#1 159
 fun:app/sync-tracking/src/main/kotlin/org/krost/unidrive/tracking/TrackingReconciler.kt::reconcile#1 146
 fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/CloudRelocator.kt::walk#3 120
 fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/IpcServer.kt::start#1 159
 fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/LocalScanner.kt::scan#1 301
 fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/LocalScanner.kt::visitFile#1 162
-fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/Reconciler.kt::detectMoves#1 182
+fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/Reconciler.kt::detectMoves#1 188
 fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/Reconciler.kt::finalizeStreaming#1 122
 fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/Reconciler.kt::reconcile#1 317
 fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncEngine.kt::applyUpload#1 157
