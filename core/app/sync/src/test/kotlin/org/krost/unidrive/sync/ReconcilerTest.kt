@@ -129,13 +129,40 @@ class ReconcilerTest {
         )
     }
 
+    // #713: a folder's own modified time is no remote change a local delete could lose: its children reconcile on their
+    // own. Raising a delete-vs-modify conflict instead left the emptied folder behind in the cloud after a folder rename.
     @Test
-    fun `a locally deleted folder whose remote modified time moved is a conflict not a remote delete`() {
+    fun `a locally deleted folder whose only remote change is its modified time is deleted remotely`() {
         db.upsertEntry(folderEntry("/docs"))
         val remoteChanges = mapOf("/docs" to folderItem("/docs", "2026-03-28T12:05:00Z"))
         val actions = reconciler.reconcile(remoteChanges, mapOf("/docs" to ChangeState.DELETED))
+        assertEquals(listOf<SyncAction>(SyncAction.DeleteRemote("/docs")), actions)
+    }
+
+    // #713: the folder's mtime moved because someone added a file below it. That file is a real remote change: the
+    // folder keeps its delete-vs-modify conflict, nothing deletes it remotely, and the file comes down.
+    @Test
+    fun `a locally deleted folder whose mtime moved for a new remote file stays a conflict and fetches the file`() {
+        db.upsertEntry(folderEntry("/docs"))
+        val remoteChanges =
+            mapOf(
+                "/docs" to folderItem("/docs", "2026-03-28T12:05:00Z"),
+                "/docs/new.txt" to cloudItem("/docs/new.txt"),
+            )
+        val actions = reconciler.reconcile(remoteChanges, mapOf("/docs" to ChangeState.DELETED))
         assertTrue(actions.none { it is SyncAction.DeleteRemote }, "a concurrent remote change must not be reaped; got $actions")
-        assertTrue(actions.any { it is SyncAction.Conflict }, "the delete-vs-modify conflict must be raised; got $actions")
+        assertTrue(actions.any { it is SyncAction.DownloadContent && it.path == "/docs/new.txt" }, "the new file comes down; got $actions")
+        assertTrue(actions.any { it is SyncAction.Conflict && it.path == "/docs" }, "the folder keeps its conflict; got $actions")
+    }
+
+    // #713 keeps the conflict for anything but the same folder: a different item now holds the name.
+    @Test
+    fun `a locally deleted folder the remote replaced with another folder is still a conflict`() {
+        db.upsertEntry(folderEntry("/docs"))
+        val remoteChanges = mapOf("/docs" to folderItem("/docs", "2026-03-28T12:05:00Z").copy(id = "another-folder"))
+        val actions = reconciler.reconcile(remoteChanges, mapOf("/docs" to ChangeState.DELETED))
+        assertTrue(actions.none { it is SyncAction.DeleteRemote }, "got $actions")
+        assertTrue(actions.any { it is SyncAction.Conflict && it.path == "/docs" }, "got $actions")
     }
 
     // The provider does not report the folder itself as modified when only its children change. The folder delete

@@ -204,6 +204,108 @@ class FolderRenameOrderTest {
         assertEquals(listOf("move /a/b -> /b", "del-remote /a"), plan(actions))
     }
 
+    private fun touchedFolder(path: String) =
+        CloudItem(
+            id = "id-$path",
+            name = path.substringAfterLast('/'),
+            path = path,
+            size = 0,
+            isFolder = true,
+            modified = Instant.parse("2026-03-28T12:00:07Z"),
+            created = null,
+            hash = null,
+            mimeType = null,
+        )
+
+    // The full listing of the uploaded /fm tree: the folders' modified times moved after their rows, the file did not.
+    private fun fmListing() =
+        mapOf(
+            "/fm" to touchedFolder("/fm"),
+            "/fm/in" to touchedFolder("/fm/in"),
+            "/fm/in/y.txt" to
+                CloudItem(
+                    id = "id-/fm/in/y.txt",
+                    name = "y.txt",
+                    path = "/fm/in/y.txt",
+                    size = 100,
+                    isFolder = false,
+                    modified = Instant.parse("2026-03-28T12:00:00Z"),
+                    created = null,
+                    hash = "hash-/fm/in/y.txt",
+                    mimeType = null,
+                ),
+        )
+
+    private val fmRenamed =
+        mapOf(
+            "/fm" to ChangeState.DELETED,
+            "/fm/in" to ChangeState.DELETED,
+            "/fm/in/y.txt" to ChangeState.DELETED,
+            "/fm-renamed" to ChangeState.NEW,
+            "/fm-renamed/in" to ChangeState.NEW,
+            "/fm-renamed/in/y.txt" to ChangeState.NEW,
+        )
+
+    private fun seedFmTree() {
+        trackedFolder("/fm")
+        trackedFolder("/fm/in")
+        trackedFile("/fm/in/y.txt")
+        localFile("/fm-renamed/in/y.txt")
+    }
+
+    // #713: a full listing (localfs) of a tree this client uploaded. The uploads moved the remote folders' modified
+    // times after their rows were recorded, so the old folders read as remote-modified. That used to plan a
+    // delete-vs-modify conflict for each of them, and the emptied old folders stayed in the cloud.
+    @Test
+    fun `local folder rename deletes the old folders when only their remote modified time moved`() {
+        seedFmTree()
+
+        val actions = reconciler.reconcile(remoteChanges = fmListing(), localChanges = fmRenamed)
+
+        assertEquals(
+            listOf(
+                "mkdir-remote /fm-renamed",
+                "move /fm/in -> /fm-renamed/in",
+                "del-remote /fm",
+            ),
+            plan(actions),
+        )
+    }
+
+    // #713, the other side: someone added a file below the old folder in the cloud. That is a real remote change. The
+    // old folders keep their conflicts, nothing deletes them remotely, and /fm/in is not paired into a folder move that
+    // would carry the new file away from the download planned for it; only the tracked file moves.
+    @Test
+    fun `local folder rename keeps the old folders as conflicts when the cloud added a file below them`() {
+        seedFmTree()
+        val newFile =
+            CloudItem(
+                id = "id-/fm/in/new.txt",
+                name = "new.txt",
+                path = "/fm/in/new.txt",
+                size = 50,
+                isFolder = false,
+                modified = Instant.parse("2026-03-28T12:00:07Z"),
+                created = null,
+                hash = "hash-new",
+                mimeType = null,
+            )
+
+        val actions = reconciler.reconcile(remoteChanges = fmListing() + ("/fm/in/new.txt" to newFile), localChanges = fmRenamed)
+
+        assertEquals(
+            listOf(
+                "mkdir-remote /fm-renamed",
+                "mkdir-remote /fm-renamed/in",
+                "move /fm/in/y.txt -> /fm-renamed/in/y.txt",
+                "down /fm/in/new.txt",
+                "Conflict /fm",
+                "Conflict /fm/in",
+            ),
+            plan(actions),
+        )
+    }
+
     @Test
     fun `remote move out of a folder that is deleted too plans the local delete after the move`() {
         // the mirror case: another device moved d1/x.txt into d3 and trashed d1. The delta carries the

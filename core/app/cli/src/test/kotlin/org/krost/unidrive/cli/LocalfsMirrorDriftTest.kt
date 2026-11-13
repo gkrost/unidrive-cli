@@ -105,6 +105,42 @@ class LocalfsMirrorDriftTest {
         assertConverged(START.renamedFolder("photos", "pictures"))
     }
 
+    // #713: a folder this client uploaded itself. The uploads move the remote folders' modified times after their rows
+    // were recorded, so the next pass reads the old folders as remote-modified; the rename must still leave no old
+    // folder behind in the cloud and raise no conflict. No quiet sync in between: that would refresh the rows.
+    @Test
+    fun `a local rename of a folder this client uploaded leaves no old folder in the cloud`() {
+        put(local, "fm/in/y.txt", "uploaded from here")
+        sync()
+        assertState(START + mapOf("fm/in/y.txt" to "uploaded from here"), "after the upload")
+
+        Files.move(local.resolve("fm"), local.resolve("fm-renamed"))
+        sync()
+
+        assertEquals(0, reporter.conflicts, "a folder rename is no conflict; warnings: ${reporter.warnings}")
+        val renamed = START + mapOf("fm-renamed/in/y.txt" to "uploaded from here")
+        assertState(renamed, "after the rename")
+        // localfs ids are paths: a row carried along by a folder move keeps its old id until the next listing records
+        // the new one. That pass plans nothing; only then are the rows settled for the quiet check.
+        sync()
+        assertEquals(0, reporter.planned, "the pass after the rename plans nothing")
+        assertConverged(renamed)
+    }
+
+    // #713: the other side of the same rename. A file someone added in the cloud below the old folder is a real
+    // remote change: it is kept, and comes down into the old folder, which therefore stays on both sides.
+    @Test
+    fun `a local folder rename keeps the old folder when the cloud added a file below it`() {
+        put(local, "fm/in/y.txt", "uploaded from here")
+        sync()
+
+        Files.move(local.resolve("fm"), local.resolve("fm-renamed"))
+        put(remote, "fm/in/new.txt", "added in the cloud")
+        sync()
+
+        assertConverged(START + mapOf("fm-renamed/in/y.txt" to "uploaded from here", "fm/in/new.txt" to "added in the cloud"))
+    }
+
     @Test
     fun `a remote file rename and a remote move into another folder reach the local tree`() {
         Files.move(remote.resolve("notes/n2.txt"), remote.resolve("notes/n2-renamed.txt"))
@@ -277,11 +313,14 @@ class LocalfsMirrorDriftTest {
         @Volatile var planned = 0
 
         @Volatile var failed = 0
+
+        @Volatile var conflicts = 0
         val warnings = java.util.concurrent.CopyOnWriteArrayList<String>()
 
         fun reset() {
             planned = 0
             failed = 0
+            conflicts = 0
             warnings.clear()
         }
 
@@ -320,6 +359,7 @@ class LocalfsMirrorDriftTest {
             failed: Int,
         ) {
             this.failed = failed
+            this.conflicts = conflicts
         }
 
         override fun onWarning(message: String) {
