@@ -3,6 +3,7 @@ package org.krost.unidrive.cli
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import java.io.IOException
 import java.nio.file.Path
 
 /** Who holds a profile's lock, as far as `status` cares (gkrost/unidrive-cli#455). */
@@ -14,7 +15,14 @@ internal fun profileLockHolder(
     isAlive: (Long, Path) -> Boolean = { pid, pidFile -> isLockHolderAlive(pid, pidFile) },
 ): ProfileLockHolder {
     val pidFile = configDir.resolve(".lock.pid")
-    return when (val read = readLockPid(pidFile)) {
+    val read =
+        try {
+            readLockPid(pidFile)
+        } catch (_: IOException) {
+            // Present but unreadable (access denied, a sharing violation): something may hold the profile. Only absence is NONE.
+            return ProfileLockHolder.OTHER
+        }
+    return when (read) {
         is LockPidReadResult.Absent -> ProfileLockHolder.NONE
         // Unreadable: something may hold the profile, so nothing here signs in beside it.
         is LockPidReadResult.Malformed -> ProfileLockHolder.OTHER

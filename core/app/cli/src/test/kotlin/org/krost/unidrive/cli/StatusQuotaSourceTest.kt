@@ -59,6 +59,19 @@ class StatusQuotaSourceTest {
     }
 
     @Test
+    fun `a sidecar that cannot be read leaves the holder unknown, and nothing signs in beside it`() {
+        val dir = Files.createTempDirectory("ud455-status-unreadable")
+        // A directory at the sidecar path: reading it fails with an IOException (access denied on Windows), not "no such file".
+        Files.createDirectory(dir.resolve(".lock.pid"))
+
+        val holder = profileLockHolder(dir) { _, _ -> true }
+
+        assertEquals(ProfileLockHolder.OTHER, holder, "only an absent sidecar is no holder")
+        assertNull(used(holder), "no remote probe and no provider for an unknown holder")
+        assertEquals(emptyList(), asked)
+    }
+
+    @Test
     fun `the used bytes are read from the status reply's quota object`() {
         assertEquals(123L, quotaUsedOfStatusReply("""{"ok":true,"quota":{"used_bytes":123,"total_bytes":456}}"""))
         assertNull(quotaUsedOfStatusReply("""{"ok":true,"quota":{"used_bytes":null}}"""))

@@ -15,6 +15,8 @@ import org.krost.unidrive.engine.ScopeState
 import org.krost.unidrive.ProviderRegistry
 import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.sync.ExcludePatterns
+import org.krost.unidrive.sync.IpcEndpoint
+import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.NoDefaultProfileException
 import org.krost.unidrive.sync.ProfileInfo
 import org.krost.unidrive.sync.RawSyncConfig
@@ -571,8 +573,8 @@ class StatusCommand : Runnable {
         configDir: Path,
     ): Long? =
         try {
-            val socketPath = org.krost.unidrive.sync.IpcServer.defaultSocketPath(profile.name)
-            requestDaemonStatus(org.krost.unidrive.sync.IpcEndpoint(socketPath, configDir, profile.name))?.let(::quotaUsedOfStatusReply)
+            val socketPath = IpcServer.defaultSocketPath(profile.name)
+            requestDaemonStatus(IpcEndpoint(socketPath, configDir, profile.name))?.let(::quotaUsedOfStatusReply)
         } catch (_: Exception) {
             null
         }
