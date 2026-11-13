@@ -233,7 +233,7 @@ class StateDatabase(
             if (outermost) {
                 borrowedReader.remove()
                 val released = System.nanoTime()
-                pool?.giveBack(reader)
+                pool.giveBack(reader)
                 holds.record(method, acquired - requested, released - acquired, reader = true)
             }
         }

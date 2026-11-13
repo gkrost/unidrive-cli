@@ -855,7 +855,7 @@ class DaemonRuntime(
                         .put("requests", requestsJson)
                         .put("credential_health", credentialHealthJson.toString())
                         // state_recovery (gkrost/unidrive-cli#581): present only when this start found state.db corrupt and moved it aside.
-                        .put("state_recovery", stateRecovery?.let { stateRecoveryJson(it).toString() })
+                        .put("state_recovery", stateRecovery?.let { stateRecoveryJson(it) })
                         .put("auth", authJson)
                         // notifications (archive#111): the provider's remote-change push channel; `unsupported` where it has none.
                         .put("notifications", notificationsStatusJson(provider.remoteChangeChannelStatus()).toString())

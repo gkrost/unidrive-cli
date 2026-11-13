@@ -1274,7 +1274,7 @@ class RemoteGather(
             // mid-gather write (production never writes one); that row stays with the
             // archive#301 watermark guard, which compares the stamp against the cache file.
             val lastSynced = entry.lastSynced
-            if (lastSynced != null && !lastSynced.isAfter(sweptAt) && lastSynced.isAfter(gatherStartedAt)) {
+            if (!lastSynced.isAfter(sweptAt) && lastSynced.isAfter(gatherStartedAt)) {
                 log.debug(
                     "Full sync: DB entry {} (remoteId={}) not in delta but its row was written after the gather started; deferring the deletion verdict",
                     entry.path,
