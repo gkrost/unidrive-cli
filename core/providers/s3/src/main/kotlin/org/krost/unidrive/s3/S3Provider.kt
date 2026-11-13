@@ -59,6 +59,19 @@ class S3Provider(
     private val api = S3Api(config, engine, clock, uploadWatchdog = uploadWatchdog)
     private val uploads = MultipartStore(config.tokenPath.resolve("s3-uploads"))
 
+    // How many parts of one multipart upload are in flight at once. The daemon's --upload-concurrency sets it; the
+    // shared request budget still caps the requests of every transfer together.
+    @Volatile
+    private var partConcurrency: Int = DEFAULT_PART_CONCURRENCY
+
+    override fun multipartUploadConcurrency(): Int = partConcurrency
+
+    override fun overrideUploadConcurrency(concurrency: Int): Boolean {
+        require(concurrency in 1..S3Api.MAX_CONCURRENCY) { "upload concurrency $concurrency is out of range 1..${S3Api.MAX_CONCURRENCY}" }
+        partConcurrency = concurrency
+        return true
+    }
+
     override var isAuthenticated: Boolean = false
 
     override val canAuthenticate: Boolean
@@ -369,21 +382,34 @@ class S3Provider(
     ) {
         val partSize = partSizeFor(size)
         val (uploadId, held) = openUpload(localPath, key, size, mtimeMillis, partSize, meta)
-        val parts = mutableListOf<Pair<Int, String>>()
-        var offset = 0L
-        var number = 1
-        while (offset < size) {
-            val length = minOf(partSize, size - offset)
-            val md5 = md5Of(localPath, offset, length)
-            val md5Hex = HexFormat.of().formatHex(md5)
-            val etag = held[number]?.takeIf { it.size == length && it.etag == md5Hex }?.etag
-                ?: api.uploadPart(key, uploadId, number, localPath, offset, length, md5)
-            parts += number to etag
-            offset += length
-            number++
-            onProgress?.invoke(offset, size)
+        val partCount = ((size + partSize - 1) / partSize).toInt()
+        val etags = arrayOfNulls<String>(partCount)
+        // Up to [partConcurrency] parts at once, each read from disk for its MD5 and again as its body. A failed part
+        // cancels the others; the upload stays open and recorded, so the next attempt resumes with what S3 holds.
+        val permits = kotlinx.coroutines.sync.Semaphore(partConcurrency)
+        val progress = Any()
+        var sent = 0L
+        kotlinx.coroutines.coroutineScope {
+            for (index in 0 until partCount) {
+                launch {
+                    permits.withPermit {
+                        val number = index + 1
+                        val offset = index * partSize
+                        val length = minOf(partSize, size - offset)
+                        val md5 = md5Of(localPath, offset, length)
+                        val md5Hex = HexFormat.of().formatHex(md5)
+                        etags[index] = held[number]?.takeIf { it.size == length && it.etag == md5Hex }?.etag
+                            ?: api.uploadPart(key, uploadId, number, localPath, offset, length, md5)
+                        // One report at a time and always growing, whichever part lands first.
+                        synchronized(progress) {
+                            sent += length
+                            onProgress?.invoke(sent, size)
+                        }
+                    }
+                }
+            }
         }
-        complete(uploadId, parts)
+        complete(uploadId, etags.mapIndexed { index, etag -> index + 1 to checkNotNull(etag) })
         uploads.remove(key)
     }
 
@@ -753,6 +779,9 @@ class S3Provider(
 
     companion object {
         private const val FULL_LISTING = "full-listing"
+
+        // Parts of one upload in flight at once unless the daemon says otherwise; each streams from disk, none is buffered.
+        const val DEFAULT_PART_CONCURRENCY = 4
         private const val MAX_PRESIGN_SECONDS = 7L * 24 * 3600
         private const val COPY_PART_SIZE = 512L * 1024 * 1024
         private const val MOVE_COPY_CONCURRENCY = 8

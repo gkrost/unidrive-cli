@@ -139,7 +139,7 @@ class S3ProviderTest {
         }
 
     @Test
-    fun `a big upload goes in streamed parts with their MD5 and completes in order`() =
+    fun `a big upload goes in streamed parts with their MD5 and completes with the parts in order`() =
         runTest {
             val fake = FakeS3()
             val bytes = ByteArray((2.5 * mib).toInt()) { (it % 253).toByte() }
@@ -149,7 +149,10 @@ class S3ProviderTest {
 
             assertEquals(3, fake.count { it.query.containsKey("partNumber") })
             assertTrue(fake.objects.getValue("big.bin").bytes!!.contentEquals(bytes))
-            assertEquals(listOf(mib, 2 * mib, bytes.size.toLong(), bytes.size.toLong()), progress)
+            // The parts run several at once, so the steps between come in any order; the count only ever grows.
+            assertEquals(4, progress.size)
+            assertEquals(progress.sorted(), progress)
+            assertEquals(listOf(bytes.size.toLong(), bytes.size.toLong()), progress.takeLast(2))
             assertEquals("1770091506.123000000", fake.objects.getValue("big.bin").meta["mtime"])
             assertEquals(0, fake.openUploads)
             assertTrue(Files.list(dir.resolve("s3-uploads")).use { it.count() } == 0L)
@@ -282,6 +285,8 @@ class S3ProviderTest {
             val bytes = ByteArray((2.5 * mib).toInt()) { (it % 251).toByte() }
             val file = local("big.bin", bytes)
             val provider = provider(fake, threshold = mib, minPart = mib)
+            // One part at a time: the order of the part requests below is the point of this test.
+            provider.overrideUploadConcurrency(1)
             fake.failures += Triple({ r: FakeS3.Request -> r.query["partNumber"] == "3" }, 400, "RequestTimeout")
 
             assertFailsWith<S3Exception> { provider.upload(file, "/big.bin") }
