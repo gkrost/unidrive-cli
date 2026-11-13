@@ -16,7 +16,7 @@ plugins {
 // the runtime-JDK leg executes on the bundled runtime JDK, whose class files
 // need an ASM that can read them (an older JaCoCo agent spills
 // IllegalClassFormatException stacks into test stderr and breaks coverage).
-val jacocoToolVersion = "0.8.15"
+val jacocoToolVersion = "0.8.16"
 
 configure<JacocoPluginExtension> {
     toolVersion = jacocoToolVersion
