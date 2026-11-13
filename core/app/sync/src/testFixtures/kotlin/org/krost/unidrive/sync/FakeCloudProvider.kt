@@ -349,6 +349,11 @@ class FakeCloudProvider : CloudProvider {
     // answered for, the seeded listing's item. A path with none of these is not checked: the fake cannot tell.
     // A test that wants the old permissive fake sets this false.
     var enforceIfMatch: Boolean = true
+
+    // Opt-in: a hashless stand-in answers a fresh token per upload instead of the constant, so a stale writer racing a
+    // second hashless upload is told apart (with the constant, every hashless upload leaves the token the next one echoes).
+    var uniqueUploadTokens: Boolean = false
+    private val uploadTokenSeq = java.util.concurrent.atomic.AtomicInteger()
     private val answeredTokens = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     private fun tokenOf(item: CloudItem): String? = item.version ?: item.hash
@@ -371,7 +376,9 @@ class FakeCloudProvider : CloudProvider {
     // stand-in (the default) still answers the constant, which is not a content hash; the conditional write is
     // enforced against it like any token (see enforceIfMatch).
     private fun hashOf(bytes: ByteArray): String {
-        val algorithm = hashAlgorithmOverride ?: return "uploaded"
+        val algorithm =
+            hashAlgorithmOverride
+                ?: return if (uniqueUploadTokens) "uploaded-${uploadTokenSeq.incrementAndGet()}" else "uploaded"
         val tmp = Files.createTempFile("unidrive-fake-hash", ".bin")
         try {
             Files.write(tmp, bytes)

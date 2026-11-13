@@ -130,6 +130,17 @@ class FakeCloudProviderIfMatchTest {
         }
 
     @Test
+    fun `with unique upload tokens the second stale hashless upload is refused`() =
+        runTest {
+            val provider = FakeCloudProvider().apply { uniqueUploadTokens = true }
+            val first = provider.upload(file("one"), "/a.txt", null, null, null)
+            // A second writer holding the first answer's token uploads; the first writer then echoes the same, now stale, token.
+            provider.upload(file("two"), "/a.txt", "id-/a.txt", first.hash, null)
+
+            assertFailsWith<RemoteConflictException> { provider.upload(file("three"), "/a.txt", "id-/a.txt", first.hash, null) }
+        }
+
+    @Test
     fun `the permissive fake is one switch away`() =
         runTest {
             val provider =
