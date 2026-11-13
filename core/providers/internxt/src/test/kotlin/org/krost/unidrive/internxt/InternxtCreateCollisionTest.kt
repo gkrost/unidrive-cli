@@ -482,6 +482,225 @@ class InternxtCreateCollisionTest {
     // archive#1002: same size, different bucket entry — the bytes decide
     // -------------------------------------------------------------------------
 
+    // -------------------------------------------------------------------------
+    // TESTS 5+6 — the 'prior file none' endless-retry loop
+    // -------------------------------------------------------------------------
+
+    /**
+     * Invariant guarded: a 409 whose folder listing holds only a NON-live (trashed) file of
+     * that exact name must end in a defined outcome (keep both — conflict copy), not in a
+     * rethrown 409 that the upload retries forever.
+     */
+    @Test
+    fun `create collision with only a trashed file of that name lands a conflict copy not a retry`() =
+        runTest {
+            val tmp = java.nio.file.Files.createTempDirectory("ud-coll-trashed-")
+            val local =
+                java.nio.file.Files
+                    .createTempFile(tmp, "AGENTS-", ".md")
+                    .also { p -> java.nio.file.Files.write(p, ByteArray(200) { it.toByte() }) }
+            try {
+                val createFileCalls = AtomicInteger(0)
+                val replaceFileCalls = AtomicInteger(0)
+                val capturedCreatePlainNames =
+                    java.util.Collections.synchronizedList(mutableListOf<String>())
+
+                val engine =
+                    io.ktor.client.engine.mock.MockEngine { request ->
+                        val url = request.url.toString()
+                        when {
+                            url.contains("/v2/buckets/") && url.contains("/files/start") ->
+                                respond(
+                                    content = """{"uploads":[{"index":0,"uuid":"shard-uuid-1","url":"$shardUrl"}]}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            url == shardUrl -> respond("", HttpStatusCode.OK)
+                            url.contains("/v2/buckets/") && url.contains("/files/finish") ->
+                                respond(
+                                    content = """{"id":"$localFileId","index":"${"aa".repeat(32)}","bucket":"6928426c1a2316b856c9ab81","name":"enc-agents"}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            url.startsWith("https://gateway.internxt.com/drive/files") &&
+                                request.method == HttpMethod.Post -> {
+                                val bodyText =
+                                    when (val b = request.body) {
+                                        is io.ktor.http.content.ByteArrayContent ->
+                                            String(b.bytes(), Charsets.UTF_8)
+                                        is io.ktor.http.content.TextContent -> b.text
+                                        else -> "{}"
+                                    }
+                                val pn =
+                                    Json.parseToJsonElement(bodyText).jsonObject["plainName"]
+                                        ?.toString()?.trim('"') ?: ""
+                                capturedCreatePlainNames.add(pn)
+                                val n = createFileCalls.incrementAndGet()
+                                if (n == 1) {
+                                    respond(
+                                        content = """{"statusCode":409,"message":"File already exists","error":"Conflict"}""",
+                                        status = HttpStatusCode.Conflict,
+                                        headers = headersOf("Content-Type", "application/json"),
+                                    )
+                                } else {
+                                    respond(
+                                        content = """{"uuid":"conflict-copy-uuid","plainName":"$pn","type":"md","size":"200","bucket":"6928426c1a2316b856c9ab81","fileId":"$localFileId","status":"EXISTS"}""",
+                                        status = HttpStatusCode.OK,
+                                        headers = headersOf("Content-Type", "application/json"),
+                                    )
+                                }
+                            }
+                            url.startsWith("https://gateway.internxt.com/drive/files/") &&
+                                request.method == HttpMethod.Put -> {
+                                replaceFileCalls.incrementAndGet()
+                                respond(
+                                    content = """{"uuid":"replaced-uuid","plainName":"AGENTS","type":"md","size":"200","bucket":"6928426c1a2316b856c9ab81","fileId":"$localFileId","status":"EXISTS"}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            }
+                            url.contains("/drive/folders/content/") -> {
+                                // The exact full name is held by a TRASHED file only.
+                                respond(
+                                    content =
+                                        """{"children":[],"files":[{
+                                            "uuid":"trashed-file-uuid",
+                                            "fileId":"$remoteFileId",
+                                            "plainName":"AGENTS",
+                                            "type":"md",
+                                            "size":"31744",
+                                            "bucket":"6928426c1a2316b856c9ab81",
+                                            "folderUuid":"root-folder-uuid",
+                                            "status":"TRASHED"
+                                        }]}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            }
+                            else -> error("unexpected URL in collision-trashed test: $url (method=${request.method})")
+                        }
+                    }
+
+                val provider = newProviderRooted(tmp, engine)
+                try {
+                    val landed = provider.upload(local, "/AGENTS.md", existingRemoteId = null, onProgress = null)
+
+                    assertEquals(0, replaceFileCalls.get(), "the trashed holder must not be replaced")
+                    assertEquals(
+                        2,
+                        createFileCalls.get(),
+                        "the 409'd create plus one conflict-copy create; no endless retry",
+                    )
+                    assertEquals("conflict-copy-uuid", landed.id)
+                    assertTrue(
+                        capturedCreatePlainNames[1] != capturedCreatePlainNames[0],
+                        "the conflict copy must carry a different plainName; got: '${capturedCreatePlainNames[1]}'",
+                    )
+                } finally {
+                    provider.close()
+                }
+            } finally {
+                local.toFile().deleteRecursively()
+                tmp.toFile().deleteRecursively()
+            }
+        }
+
+    /**
+     * Invariant guarded: a 409 whose listing holds one LIVE file of the same base name whose
+     * type split or case form recomposes a different full name must run the content-identity
+     * ladder on that candidate — here it is provably identical (same fileId + size), so it is
+     * adopted and no conflict copy is made. Before, the exact matcher missed it and the 409
+     * was rethrown into an endless retry.
+     */
+    @Test
+    fun `create collision with a case-form name holder runs the identity ladder and adopts it`() =
+        runTest {
+            val tmp = java.nio.file.Files.createTempDirectory("ud-coll-case-")
+            val local =
+                java.nio.file.Files
+                    .createTempFile(tmp, "notes-", ".txt")
+                    .also { p -> java.nio.file.Files.write(p, ByteArray(64) { 0x41 }) }
+            try {
+                val createFileCalls = AtomicInteger(0)
+                val replaceFileCalls = AtomicInteger(0)
+
+                val engine =
+                    io.ktor.client.engine.mock.MockEngine { request ->
+                        val url = request.url.toString()
+                        when {
+                            url.contains("/v2/buckets/") && url.contains("/files/start") ->
+                                respond(
+                                    content = """{"uploads":[{"index":0,"uuid":"shard-u","url":"$shardUrl"}]}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            url == shardUrl -> respond("", HttpStatusCode.OK)
+                            url.contains("/v2/buckets/") && url.contains("/files/finish") ->
+                                respond(
+                                    content = """{"id":"$localFileId","index":"${"cc".repeat(32)}","bucket":"6928426c1a2316b856c9ab81","name":"enc-notes"}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            url.startsWith("https://gateway.internxt.com/drive/files") &&
+                                request.method == HttpMethod.Post -> {
+                                createFileCalls.incrementAndGet()
+                                respond(
+                                    content = """{"statusCode":409,"message":"File already exists","error":"Conflict"}""",
+                                    status = HttpStatusCode.Conflict,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            }
+                            url.startsWith("https://gateway.internxt.com/drive/files/") &&
+                                request.method == HttpMethod.Put -> {
+                                replaceFileCalls.incrementAndGet()
+                                respond(
+                                    content = """{"uuid":"existing-file-uuid","plainName":"NOTES","type":"TXT","size":"64","bucket":"6928426c1a2316b856c9ab81","fileId":"$localFileId","status":"EXISTS"}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            }
+                            url.contains("/drive/folders/content/") ->
+                                // Same base name, different case form: recomposes "NOTES.TXT",
+                                // which the exact full-name matcher does not see.
+                                respond(
+                                    content =
+                                        """{"children":[],"files":[{
+                                            "uuid":"existing-file-uuid",
+                                            "fileId":"$localFileId",
+                                            "plainName":"NOTES",
+                                            "type":"TXT",
+                                            "size":"64",
+                                            "bucket":"6928426c1a2316b856c9ab81",
+                                            "folderUuid":"root-folder-uuid",
+                                            "status":"EXISTS"
+                                        }]}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf("Content-Type", "application/json"),
+                                )
+                            else -> error("unexpected URL in collision-case test: $url (method=${request.method})")
+                        }
+                    }
+
+                val provider = newProviderRooted(tmp, engine)
+                try {
+                    val adopted = provider.upload(local, "/notes.txt", existingRemoteId = null, onProgress = null)
+
+                    assertEquals(0, replaceFileCalls.get(), "an identical candidate must not be replaced")
+                    assertEquals(
+                        1,
+                        createFileCalls.get(),
+                        "only the original 409 POST; the near-miss candidate was adopted, no conflict copy",
+                    )
+                    assertEquals("existing-file-uuid", adopted.id)
+                } finally {
+                    provider.close()
+                }
+            } finally {
+                local.toFile().deleteRecursively()
+                tmp.toFile().deleteRecursively()
+            }
+        }
+
     private class SameSizeCollision(
         val localBytes: ByteArray,
         val remoteBytes: ByteArray,

@@ -2136,16 +2136,65 @@ class InternxtProvider(
                     // that wrong row either adopted the sibling or conflict-copied a file
                     // that was already identical.
                     val folderContent = api.getFolderContents(parentUuid)
-                    val namedFiles = liveFilesForName(folderContent.files, segments.last())
-                    val remoteFile = namedFiles.singleOrNull()
+                    val wantedName = segments.last()
+                    val namedFiles = liveFilesForName(folderContent.files, wantedName)
+                    var remoteFile = namedFiles.singleOrNull()
                     val remoteFolder =
                         folderContent.children.find { folder ->
-                            sanitizeName(folder.plainName ?: folder.name ?: "") == segments.last()
+                            sanitizeName(folder.plainName ?: folder.name ?: "") == wantedName
                         }
-                    if (remoteFolder != null || namedFiles.isEmpty()) {
-                        // Path maps to a folder, or the listing doesn't see a live file —
-                        // keep the original behaviour (re-throw).
+                    if (remoteFolder != null) {
+                        // Path maps to a folder. Undefined for a file create; nothing here can
+                        // prove content identity with a folder, so the original refusal stands.
+                        log.warn(
+                            "UD-366: 409 on POST /files for {}: the parent listing ({} files) holds a folder of that name; rethrowing",
+                            remotePath, folderContent.files.size,
+                        )
                         throw e
+                    }
+                    if (remoteFile == null && namedFiles.isEmpty()) {
+                        // The exact live match failed, but a 409 still names the name as taken.
+                        // Two more shapes can hold it without the exact matcher seeing them
+                        // (the endless-retry loop of the 'prior file none' report); each gets a
+                        // defined outcome instead of a blind rethrow.
+                        val nearMisses =
+                            folderContent.files.filter { candidate ->
+                                candidate.isLive() &&
+                                    !fileMatchesFullName(candidate, wantedName) &&
+                                    sanitizeName(candidate.plainName ?: candidate.name ?: "")
+                                        .equals(plainName, ignoreCase = true)
+                            }
+                        val hiddenHolders =
+                            folderContent.files.filter { candidate ->
+                                !candidate.isLive() && fileMatchesFullName(candidate, wantedName)
+                            }
+                        when {
+                            // One live file of the same base name whose type split or case form
+                            // recomposes a different full name: run the same content-identity
+                            // ladder on it. A wrong guess can only end in a conflict copy —
+                            // the adopt paths still demand fileId/size/byte proof.
+                            nearMisses.size == 1 -> {
+                                log.warn(
+                                    "UD-366: 409 on POST /files for {}: no live file of that exact full name, but one live file of the same base name differs only in its type split or case form; running the content-identity check on it",
+                                    remotePath,
+                                )
+                                remoteFile = nearMisses.single()
+                            }
+                            // The exact full name is held by a non-live (trashed or removed) item
+                            // the live filter drops: keep both, the local file lands as a conflict
+                            // copy (remoteFile stays null, the keep-both branch below runs).
+                            hiddenHolders.isNotEmpty() -> log.warn(
+                                "UD-366: 409 on POST /files for {}: the name is held by {} non-live (trashed) item(s) the live filter drops; keeping both — the local file lands as a conflict copy",
+                                remotePath, hiddenHolders.size,
+                            )
+                            else -> {
+                                log.warn(
+                                    "UD-366: 409 on POST /files for {}: the parent listing ({} files) holds no live exact match, no single same-base near-miss and no non-live holder; rethrowing — the refusal does not come from a name this listing can see",
+                                    remotePath, folderContent.files.size,
+                                )
+                                throw e
+                            }
+                        }
                     }
                     // Content-identity: bucket-entry fileId is Internxt's content-address.
                     // Equal fileId AND equal size ⇒ provably same content → safe adopt.
