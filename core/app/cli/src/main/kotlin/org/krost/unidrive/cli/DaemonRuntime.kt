@@ -147,6 +147,9 @@ class DaemonRuntime(
     // archive#578: the --upload-concurrency flag's override of the profile's upload_concurrency
     // key; null leaves the key in force. Applied to the provider right after construction.
     private val uploadConcurrencyOverride: Int? = null,
+    // gkrost/unidrive-cli#715: the byte-rate cap of the mount's transfers in KiB/s (`daemon run --max-bandwidth-kib`, else the
+    // config's `max_bandwidth_kbps`), one bucket for the downloads and the uploads; null = none. daemon.status `bandwidth_limit_kib`.
+    private val maxBandwidthKib: Int? = null,
     // gkrost/unidrive-cli#72: how long a stop waits for the uploads that are transferring before it cancels them
     // (HydrationImpl.UPLOAD_DRAIN_MS); a seam for tests, which need no ten-second waits.
     private val uploadDrainMs: Long = HydrationImpl.UPLOAD_DRAIN_MS,
@@ -356,6 +359,7 @@ class DaemonRuntime(
                     // gkrost/unidrive-cli#392: the provider TYPE the engine looks its audited limits up by (transfer cap,
                     // download budget). Left blank before, every daemon ran at the fallback of 4 whatever the provider.
                     providerId = cloud.id,
+                    maxBandwidthKbps = maxBandwidthKib,
                     standingScope = syncPaths, excludePatterns = excludePatterns, trashNamespace = trash, viewNamespaces = viewNamespaces,
                     backupsNamespace = backups,
                     mountIgnore = ignoreSettings.takeIf { profileMode == ProfileMode.MOUNT },
@@ -888,6 +892,8 @@ class DaemonRuntime(
                         // gkrost/unidrive-cli#392: how many hydration downloads a client should run at once (the download
                         // budget's small-file width, the transfer cap for a while after a throttle). Additive, read-only.
                         .put("transfer_budget", mount.downloadBudget.recommended.toString())
+                        // gkrost/unidrive-cli#715: the byte-rate cap in KiB/s, explicit null when none. Additive; an engine without it omits it.
+                        .put("bandwidth_limit_kib", maxBandwidthKib?.toString() ?: "null")
                         // ipc (gkrost/unidrive-cli#460): the requests each verb's handler served since the daemon started, so a
                         // client's change of verbs can be checked on a live daemon. Additive, read-only, always present.
                         .put("ipc", ipcStatusJson(server.requestCounts()).toString())
@@ -1231,7 +1237,7 @@ class DaemonRuntime(
         // verb, capability or field), so a client orders engine builds by what they answer; protocol_version moves only
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
         // of each level and fails when the surface changes without a raise.
-        const val IPC_CONTRACT_LEVEL: Int = 3
+        const val IPC_CONTRACT_LEVEL: Int = 4
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a

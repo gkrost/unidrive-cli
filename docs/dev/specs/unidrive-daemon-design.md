@@ -547,6 +547,10 @@ The large-file width is its own value because a provider's `maxConcurrentTransfe
 
 A daemon that does not send the field is older than #392: a client keeps its own default. The uploads do not use this budget: they share the provider's `maxConcurrentTransfers` with the sync pass, as before.
 
+The reply also carries `bandwidth_limit_kib` (additive, gkrost/unidrive-cli#715; `contract_level` 4; the protocol version does not change): the byte-rate cap of the daemon's own transfers in KiB/s (1 KiB = 1024 bytes), or an explicit `null` when there is none. It is `daemon run --max-bandwidth-kib N` when given, else the config's `[general] max_bandwidth_kbps` (the same unit despite its name); `--max-bandwidth-kib 0`, or a configured value of 0 or below, means no cap. One budget covers both directions: the hydration downloads (`open_read` and every other read that fetches from the cloud) and the write-path uploads draw from the same token bucket (`BandwidthPacer`, the one `unidrive sync` uses), so the cap bounds their sum. A transfer reserves its size before it takes a permit of its concurrency budget, so a transfer that waits for the line holds no slot; a transfer that has started is not slowed, so the cap holds on average. A daemon that does not send the field is older than #715 and applies no cap to its mount transfers, whatever the config says.
+
+The wait for the line is part of a read's time. A client that bounds a read by a time budget computed from the file's size at an assumed line speed (gkrost/unidrive-cli#508 proposes 5 MB/s) should compute it from `bandwidth_limit_kib` when that is lower, or a large read under a low cap runs out of time.
+
 **The `ipc` object** (additive, gkrost/unidrive-cli#460; the protocol version does not change) counts the requests the daemon served, per verb, since it started. A client's choice of verbs can then be checked on a live daemon: a client that reads one row with `hydration.stat` instead of listing the folder with `hydration.list` shows it in these numbers, and a client build that still lists does not. It is always present, on mount and mirror profiles alike.
 
 ```json

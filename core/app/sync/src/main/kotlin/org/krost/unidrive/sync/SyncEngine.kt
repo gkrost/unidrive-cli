@@ -20,7 +20,6 @@ import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.TypedDeleteProvider
 import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.currentTransferMeter
-import org.krost.unidrive.TransferMeter
 import org.krost.unidrive.http.Priority
 import org.krost.unidrive.engine.AuditSink
 import org.krost.unidrive.engine.CursorState
@@ -213,15 +212,17 @@ open class SyncEngine(
     // concurrent transfers to one commit (see [StateGroupCommit]). Internal for the off-the-loop tests.
     internal val transferRows = StateGroupCommit(db)
 
-    // The shared token bucket behind [maxBandwidthKbps]. One instance per
-    // engine, so every transfer of every dispatch path draws from the same
-    // budget whether it launches in Pass 2 or mid-scan on the streaming gather.
-    // A property so a test can drive it with its own clock.
-    internal var bandwidth: BandwidthPacer? = maxBandwidthKbps?.let { BandwidthPacer(it.toLong() * 1024) }
+    // The shared token bucket behind [maxBandwidthKbps]: the guard's, one per engine, so every transfer of every dispatch
+    // path draws from the same budget, whether it launches in Pass 2, mid-scan on the streaming gather, or on the mount
+    // front-end over this engine (gkrost/unidrive-cli#715). A property so a test can drive it with its own clock.
+    internal var bandwidth: BandwidthPacer?
+        get() = guard.bandwidth
+        set(value) {
+            guard.bandwidth = value
+        }
 
-    // Runs [block] holding a reservation on the bandwidth budget: the wait for the line runs while no permit is held, and the
-    // bytes the transfer reports through its TransferMeter are what the budget is charged (the rest of the forecast goes back
-    // when the block ends, however it ends). Without a cap this is just the permit.
+    // Runs [block] holding a reservation on the bandwidth budget (RemoteOperationGuard.paced): the wait for the line runs
+    // while no permit is held. Without a cap this is just the permit.
     private suspend fun <T> paced(
         expectedBytes: Long,
         permits: kotlinx.coroutines.sync.Semaphore,
@@ -231,15 +232,7 @@ open class SyncEngine(
     private suspend fun <T> reservedBandwidth(
         expectedBytes: Long,
         block: suspend () -> T,
-    ): T {
-        val pacer = bandwidth ?: return block()
-        val reservation = pacer.reserve(expectedBytes)
-        try {
-            return withContext(TransferMeter(reservation::moved)) { block() }
-        } finally {
-            reservation.close()
-        }
-    }
+    ): T = guard.paced(expectedBytes, block)
 
     // archive#738: the clock that stamps keep-both conflict copies. Tests pin it; production uses the system clock.
     // A property rather than a constructor parameter, so the constructor's signature stays as it is.
@@ -423,6 +416,7 @@ open class SyncEngine(
             maxConcurrentLargeDownloads = providerMetadata?.maxConcurrentLargeDownloads ?: 4,
             matchesGlob = { path, pattern -> Reconciler.matchesGlob(path, pattern) },
             ignore = uploadIgnore,
+            bandwidth = maxBandwidthKbps?.let { BandwidthPacer(it.toLong() * 1024) },
             trash = trashNamespace,
             backups = backupsNamespace,
             views = viewNamespaces,

@@ -128,6 +128,8 @@ class IpcContractLevelTest {
                 setOf("capability:hydration.list_complete", "capability:hydration.rmdir_discard_local", "capability:ignore.explain_batch"),
                 // 3 (gkrost/unidrive-cli#707): hydration.open_read names the etag of the version it served.
                 setOf("capability:hydration.open_read_etag"),
+                // 4 (gkrost/unidrive-cli#715): daemon.status reports the byte-rate cap of the daemon's transfers.
+                setOf("field:daemon.status.bandwidth_limit_kib"),
             )
     }
 }
