@@ -210,6 +210,9 @@ class S3MinioContainerTest {
             assertEquals("hello minio", text(provider, item.path))
         }
 
+    // The parts go up in order here: the cut-off test pins resume, not parallelism, and with parts in flight part 3 could land first.
+    private fun S3Provider.serial() = apply { overrideUploadConcurrency(1) }
+
     @Test
     fun `a multipart upload cut off after two parts resumes with the one part MinIO lacks`() =
         live {
@@ -218,13 +221,13 @@ class S3MinioContainerTest {
             val partSize = 5 * MIB
 
             assertFailsWith<CutOff> {
-                provider(threshold = partSize, minPart = partSize).upload(file, "/big.bin") { done, _ -> if (done >= 2 * partSize) throw CutOff() }
+                provider(threshold = partSize, minPart = partSize).serial().upload(file, "/big.bin") { done, _ -> if (done >= 2 * partSize) throw CutOff() }
             }
             val pending = assertNotNull(MultipartStore(dir.resolve("s3-uploads")).find("big.bin"))
             api().use { assertEquals(listOf(1, 2), it.listParts("big.bin", pending.uploadId)?.map { p -> p.number }) }
 
             val attempts = Collections.synchronizedList(mutableListOf<RequestAttempt>())
-            val resumed = provider(threshold = partSize, minPart = partSize).apply { attachRequestMetrics { attempts += it } }
+            val resumed = provider(threshold = partSize, minPart = partSize).serial().apply { attachRequestMetrics { attempts += it } }
             val item = resumed.upload(file, "/big.bin")
 
             assertEquals(1, attempts.count { it.method == "PUT" }, "only part 3 is sent")
