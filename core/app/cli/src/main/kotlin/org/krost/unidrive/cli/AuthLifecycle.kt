@@ -128,7 +128,7 @@ class AuthCompleteCommand : Callable<Int> {
         }
 
     private fun readCode(): String {
-        val read = generateSequence { readLine() }.firstOrNull() ?: ""
+        val read = readlnOrNull() ?: ""
         return read.trim().takeIf { it.isNotEmpty() }
             ?: throw LifecycleError("missing_code", "--code-stdin was given but standard input held no code")
     }

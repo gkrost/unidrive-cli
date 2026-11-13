@@ -144,7 +144,7 @@ class DaemonStatusJsonEscapeTest {
             val bad = line.filter { it < ' ' || it == '\u0085' || it == ' ' || it == ' ' }
             assertTrue(bad.isEmpty(), "raw line enders ${bad.map { it.code }} in: $line")
             assertEquals(awkwardName, status!!.getValue("provider_name").jsonPrimitive.content)
-            val quotaError = status!!.getValue("quota").jsonObject.getValue("error").jsonPrimitive.content
+            val quotaError = status.getValue("quota").jsonObject.getValue("error").jsonPrimitive.content
             assertTrue(quotaError.endsWith(awkwardError), "the quota error reads back: $quotaError")
         } finally {
             runtime.close()

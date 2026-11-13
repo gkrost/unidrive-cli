@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class) // DebugProbes: the whole file is the debug-only coroutine dump
+
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.CompletableDeferred

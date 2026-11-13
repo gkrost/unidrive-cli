@@ -3982,7 +3982,7 @@ open class SyncEngine(
                 // same-named siblings and could trash the wrong one. The row's kind
                 // rides along when the provider takes a typed delete (gkrost/unidrive-cli#634):
                 // a folder then skips the file-meta probe a folder can only answer 404.
-                if (provider is TypedDeleteProvider) provider.deleteById(remoteId, remotePath, priorEntry?.isFolder ?: false)
+                if (provider is TypedDeleteProvider) provider.deleteById(remoteId, remotePath, priorEntry.isFolder)
                 else provider.deleteById(remoteId, remotePath)
             } else {
                 if (refuseCollidedPath(action)) return false

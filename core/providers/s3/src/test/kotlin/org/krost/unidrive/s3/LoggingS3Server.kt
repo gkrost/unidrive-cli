@@ -458,7 +458,9 @@ class LoggingS3Server(
         while (true) {
             val size = (readLine(input) ?: throw EOFException("EOF before a chunk size")).substringBefore(';').trim().toInt(RADIX_HEX)
             if (size == 0) {
-                while (readLine(input)?.isNotEmpty() == true) Unit // trailers, up to the blank line
+                while (readLine(input)?.isNotEmpty() == true) {
+                    // trailers, up to the blank line
+                }
                 return out.toByteArray()
             }
             val chunk = input.readNBytes(size)

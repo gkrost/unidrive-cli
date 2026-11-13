@@ -144,7 +144,9 @@ class UnidriveHttpClientTest {
         client.prepareGet(url).execute { r ->
             val ch = r.bodyAsChannel()
             val buf = ByteArray(8192)
-            while (ch.readAvailable(buf) >= 0) Unit
+            while (ch.readAvailable(buf) >= 0) {
+                // drain the body: the read itself is what the test waits on
+            }
         }
     }
 
@@ -622,7 +624,9 @@ class UnidriveHttpClientTest {
         client.prepareGet(url) { timeouts() }.execute { r ->
             val ch = r.bodyAsChannel()
             val buf = ByteArray(8192)
-            while (ch.readAvailable(buf) >= 0) Unit
+            while (ch.readAvailable(buf) >= 0) {
+                // drain the body: the read itself is what the test waits on
+            }
         }
     }
 

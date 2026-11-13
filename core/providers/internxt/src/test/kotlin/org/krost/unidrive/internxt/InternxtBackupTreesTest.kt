@@ -107,8 +107,8 @@ class InternxtBackupTreesTest {
         val lines = outsideLines { page = internxtProviderOn(drive.engine).delta(null, null, FakeStaging().context()) }
 
         assertEquals(setOf("/Docs", "/Docs/readme.txt"), paths(page!!), "placement is unchanged: nothing outside the drive is listed")
-        assertEquals(setOf("b0", "b1", "B1", "b2", "p1"), page!!.unreachableIds)
-        assertTrue(page!!.complete)
+        assertEquals(setOf("b0", "b1", "B1", "b2", "p1"), page.unreachableIds)
+        assertTrue(page.complete)
         val line = lines.single()
         assertTrue("5 item(s) sit below 3 folder(s) outside the drive" in line, line)
         assertTrue("4 of them in 2 backup device(s)" in line, line)
@@ -139,7 +139,7 @@ class InternxtBackupTreesTest {
         val lines = outsideLines { page = internxtProviderOn(drive.engine).delta(null, null, FakeStaging().context()) }
 
         assertTrue(page!!.complete, "the 400 on the device list is no failure")
-        assertEquals(setOf("b0", "b1", "B1", "b2", "p1"), page!!.unreachableIds, "every tree of its own stays out")
+        assertEquals(setOf("b0", "b1", "B1", "b2", "p1"), page.unreachableIds, "every tree of its own stays out")
         assertTrue("0 of them in 0 backup device(s)" in lines.single(), lines.single())
     }
 
@@ -188,7 +188,7 @@ class InternxtBackupTreesTest {
                 )) {
                     val e = refused.exceptionOrNull()
                     assertTrue(e is ProviderException || e is PermanentUploadFailureException, "refused: $e")
-                    assertTrue("backup device" in e!!.message.orEmpty(), e.message)
+                    assertTrue("backup device" in e.message.orEmpty(), e.message)
                 }
                 assertEquals(listOf("B1"), drive.metaRequests.toList(), "only the moved folder's own meta: nothing above an item whose parent is a device is climbed")
 
@@ -263,7 +263,7 @@ class InternxtBackupTreesTest {
         val lines = outsideLines { page = internxtProviderOn(drive.engine).delta(null, null, FakeStaging().context().copy(backups = true)) }
 
         assertEquals(setOf("/Docs", "/Docs/readme.txt") + backupPaths, paths(page!!))
-        val byPath = page!!.items.associateBy { it.path }
+        val byPath = page.items.associateBy { it.path }
         for (path in backupPaths) assertTrue(byPath.getValue(path).backup, "$path is a backup item")
         assertFalse(byPath.getValue("/Docs/readme.txt").backup)
         for ((path, id) in mapOf("/Laptop" to "DEV1", "/Tower" to "DEV2")) {
@@ -273,9 +273,9 @@ class InternxtBackupTreesTest {
             assertEquals(null, device.parentId, "a device folder has no parent")
         }
         assertEquals("B1", byPath.getValue("/Laptop/Documents/report.txt").parentId)
-        assertEquals(1, page!!.items.count { it.id == "DEV1" }, "each device folder once")
-        assertEquals(setOf("p1"), page!!.unreachableIds, "a tree of its own that is no device stays out")
-        assertTrue(page!!.complete)
+        assertEquals(1, page.items.count { it.id == "DEV1" }, "each device folder once")
+        assertEquals(setOf("p1"), page.unreachableIds, "a tree of its own that is no device stays out")
+        assertTrue(page.complete)
         assertTrue("4 of them in 2 backup device(s); 6 are listed" in lines.single(), lines.single())
     }
 

@@ -604,7 +604,7 @@ internal object LegacyConversion {
                 val manifest = dir.resolve("manifest.json")
                 Files.writeString(
                     manifest,
-                    Json { prettyPrint = true }.encodeToString(
+                    prettyJson.encodeToString(
                         Journal.serializer(),
                         journal,
                     ),
@@ -784,3 +784,6 @@ internal object LegacyConversion {
             }
     }
 }
+
+// One instance for the pretty-printed output of this file: a Json format is expensive to build per use.
+private val prettyJson = Json { prettyPrint = true }

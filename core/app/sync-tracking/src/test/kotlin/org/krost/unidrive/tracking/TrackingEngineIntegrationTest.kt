@@ -1297,7 +1297,7 @@ class TrackingEngineIntegrationTest {
                 collision != null,
                 "identical no-hash files must still collide (the safe default); collisions=${report.collisions}",
             )
-            val reason = collision!!.reason
+            val reason = collision.reason
             assertFalse(
                 reason.contains("different content"),
                 "the content is not different — the reason must not claim it was: $reason",
@@ -1341,7 +1341,7 @@ class TrackingEngineIntegrationTest {
                 collision != null,
                 "sizing apart must still collide (the safe default); collisions=${'$'}{report.collisions}",
             )
-            val reason = collision!!.reason
+            val reason = collision.reason
             assertTrue(
                 reason.contains("sizes differ (5 and 20)"),
                 "the reason must name the observed difference with its numbers: $reason",

@@ -77,7 +77,7 @@ class DaemonRoundTripTest {
             assertFalse(Files.exists(socketPath), "the socket is removed")
             assertFalse(Files.exists(profileDir.resolve(".lock.pid")), "the lock-pid file is removed")
             FileChannel.open(profileDir.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { channel ->
-                assertNotNull(channel.tryLock(), "the profile lock is released")?.release()
+                assertNotNull(channel.tryLock(), "the profile lock is released").release()
             }
         } finally {
             daemon?.let { process ->

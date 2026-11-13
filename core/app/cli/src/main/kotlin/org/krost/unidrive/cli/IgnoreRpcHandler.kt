@@ -97,7 +97,7 @@ class IgnoreRpcHandler(
                 put("excluded", v.ignored || pattern != null)
                 put("ignored", v.ignored)
                 put("layer", v.layer?.name?.lowercase())
-                put("file", if (ruleFile) "/" + rule!!.source else null)
+                put("file", if (ruleFile) "/" + rule.source else null)
                 put("line", rule?.line?.takeIf { v.layer != IgnoreLayer.UNREADABLE })
                 put("pattern", rule?.text?.takeIf { v.layer != IgnoreLayer.UNREADABLE })
                 put("decided_at", if (rule != null) "/" + v.decidedAt else null)

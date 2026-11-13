@@ -452,16 +452,16 @@ internal class CountingByteReadChannel(
             return done
         }
 
-    override suspend fun awaitContent(atLeast: Int): Boolean {
+    override suspend fun awaitContent(min: Int): Boolean {
         while (true) {
             val moved = delegate.readBuffer.transferTo(staged)
             if (moved > 0) pulled.addAndGet(moved)
-            if (staged.size >= atLeast) return true
+            if (staged.size >= min) return true
             if (delegate.isClosedForRead) {
                 onProgress()
-                return staged.size >= atLeast
+                return staged.size >= min
             }
-            delegate.awaitContent((atLeast - staged.size).toInt())
+            delegate.awaitContent((min - staged.size).toInt())
         }
     }
 

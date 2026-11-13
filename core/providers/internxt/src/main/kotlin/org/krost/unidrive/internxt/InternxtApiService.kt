@@ -2078,7 +2078,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                     } else {
                         InternxtApiException("Connection error for GET $url: ${e.message}", 0, cause = e)
                     }
-                if (outageRetry && lastException!!.statusCode == 0) {
+                if (outageRetry && lastException.statusCode == 0) {
                     val remainingMs = connectOutageBudgetMs - outageWaitedMs
                     // The budget is spent: give up now. Falling through would run the rest of the ladder as
                     // immediate attempts, since the ladder's delay is skipped on this branch.

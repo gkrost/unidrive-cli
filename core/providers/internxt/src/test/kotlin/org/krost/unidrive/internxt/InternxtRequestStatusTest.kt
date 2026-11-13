@@ -100,7 +100,7 @@ class InternxtRequestStatusTest {
                 httpClient = io.ktor.client.HttpClient(MockEngine { respond("{}", HttpStatusCode.OK) }),
             )
         try {
-            assertTrue(provider is org.krost.unidrive.RequestStatusReporting, "the daemon feature-detects the surface on the provider")
+            assertTrue(org.krost.unidrive.RequestStatusReporting::class.java.isInstance(provider), "the daemon feature-detects the surface on the provider")
             assertEquals(provider.api.requestStatus(), provider.requestStatus(), "the provider answers with its service's reading")
         } finally {
             provider.close()

@@ -53,7 +53,7 @@ class DropboxLiveIntegrationTest {
         runBlocking {
             // delta(null) is a full listing; the cursor answers incrementally.
             val full = provider.delta(null)
-            assertTrue(full.items.isNotEmpty() || full.cursor != null, "a full listing with a cursor")
+            assertTrue(full.items.isNotEmpty() || full.cursor.isNotEmpty(), "a full listing with a cursor")
             val incremental = provider.delta(full.cursor)
             assertTrue(incremental.items.isEmpty(), "nothing changed since the full listing: ${incremental.items.size}")
         }

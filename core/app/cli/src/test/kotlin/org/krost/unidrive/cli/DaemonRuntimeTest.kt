@@ -1692,7 +1692,7 @@ class DaemonRuntimeTest {
                 val q = assertNotNull(quota)
                 assertTrue(q.getValue("stale").jsonPrimitive.boolean, "the failed refresh flags the snapshot stale")
                 assertTrue(
-                    (q.getValue("error")!!.jsonPrimitive.content).contains("quota endpoint down"),
+                    (q.getValue("error").jsonPrimitive.content).contains("quota endpoint down"),
                     "the error is named on the snapshot",
                 )
                 assertEquals(5L, q.getValue("used_bytes").jsonPrimitive.long, "the last known values are kept")

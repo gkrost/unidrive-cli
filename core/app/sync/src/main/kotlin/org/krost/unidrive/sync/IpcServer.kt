@@ -671,7 +671,7 @@ class IpcServer(
         // Only a request that reaches its handler (the gate let it through) makes the connection idle-exempt.
         if (gate == null && handler != null && verb in idleExemptVerbs) clients.firstOrNull { it.channel === client }?.idleExempt = true
         // Counted before the handler runs, so a daemon.status reply counts itself.
-        if (gate == null && handler != null && verb != null) servedByVerb.computeIfAbsent(verb) { java.util.concurrent.atomic.LongAdder() }.increment()
+        if (gate == null && handler != null) servedByVerb.computeIfAbsent(verb) { java.util.concurrent.atomic.LongAdder() }.increment()
         var handlerThrew = false
         val reply = when {
             gate != null -> gate.json

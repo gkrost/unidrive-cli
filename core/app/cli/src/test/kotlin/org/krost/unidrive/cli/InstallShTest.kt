@@ -174,7 +174,7 @@ class InstallShTest {
             val out = install()
             val note = out.lineSequence().firstOrNull { it.startsWith("NOTE: still running the previous jar") }
             assertTrue(note != null, "the NOTE is printed: $out")
-            val named = note!!.substringAfter("(pid ").substringBefore(")").split(' ').map { it.trim() }
+            val named = note.substringAfter("(pid ").substringBefore(")").split(' ').map { it.trim() }
             assertEquals(listOf(hand.pid().toString()), named, "only the hand-started JVM is named: $note (out: $out)")
         } finally {
             Runtime.getRuntime().exec(arrayOf("sh", "-c", "kill -TERM -- -${hand.pid()} 2>/dev/null")).waitFor()
