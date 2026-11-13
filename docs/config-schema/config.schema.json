@@ -159,6 +159,7 @@
           "webhook": { "type": "boolean" },
           "webhook_port": { "type": "integer" },
           "webhook_url": { "type": "string" },
+          "xtra_encryption": { "type": "boolean", "description": "Client-side encryption of this profile's file content (the X-tra layer): files are encrypted before they reach the provider and decrypted on the way back; names, sizes and the tree stay as they are. One key per installation, beside config.toml (unidrive xtra init)." },
           "fast_bootstrap": { "type": "boolean" },
           "keep_overwritten": { "type": "boolean" },
           "allow_unverified_shard_hash": { "type": "boolean", "description": "Internxt: read a download whose recorded shard hash this client cannot check, without the integrity check. Default false: such a download is refused." },

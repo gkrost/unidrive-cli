@@ -14,6 +14,10 @@ import org.krost.unidrive.sync.RawSyncConfig
 import org.krost.unidrive.sync.NoDefaultProfileException
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
+import org.krost.unidrive.xtra.AesGcmStrategy
+import org.krost.unidrive.xtra.XtraEncryptedProvider
+import org.krost.unidrive.xtra.XtraPlaintextListings
+import org.krost.unidrive.xtra.XtraKeyManager
 import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.childProcessBuilder
 import org.slf4j.MDC
@@ -56,6 +60,7 @@ import java.nio.file.Paths
         LogCommand::class,
         ProfileCommand::class,
         VaultCommand::class,
+        XtraCommand::class,
         ConflictsCommand::class,
         PendingCommand::class,
         ScopeCommand::class,
@@ -389,12 +394,63 @@ open class Main : Runnable {
             printVerboseProviderInfo(factory, properties, tokenPath)
         }
 
-        return try {
-            factory.create(properties, tokenPath)
-        } catch (e: org.krost.unidrive.ConfigurationException) {
-            System.err.println(configurationErrorLine(profileName, type, e.message))
+        val provider =
+            try {
+                factory.create(properties, tokenPath)
+            } catch (e: org.krost.unidrive.ConfigurationException) {
+                System.err.println(configurationErrorLine(profileName, type, e.message))
+                System.exit(1)
+                throw e
+            }
+        return wrapWithXtra(rp, provider, tokenPath)
+    }
+
+    /**
+     * The X-tra layer (client-side encryption, config key `xtra_encryption`): every provider this CLI builds is
+     * wrapped when the profile opts in, so every command that moves content — sync, daemon, get, verify, relocate —
+     * sees plaintext while the provider stores ciphertext. The key loads lazily on the first content operation
+     * ([XtraEncryptedProvider]); commands that only list, authenticate or report never need the passphrase. The
+     * key file lives beside config.toml (the token path's parent): one key per installation.
+     */
+    private fun wrapWithXtra(
+        rp: RawProvider?,
+        provider: CloudProvider,
+        tokenPath: Path,
+    ): CloudProvider {
+        if (rp?.xtra_encryption != true) return provider
+        val keyPath = tokenPath.parent.resolve("xtra.key")
+        if (!Files.exists(keyPath)) {
+            System.err.println("Error: a profile sets xtra_encryption but $keyPath does not exist.")
+            System.err.println("Create it first: unidrive xtra init")
             System.exit(1)
-            throw e
+            throw IllegalStateException("unreachable")
+        }
+        val strategy = AesGcmStrategy()
+        // The listings decorator sits below the cipher, so both halves see the same provider: the listings answer
+        // the plaintext size the engines' size contracts hold downloads against, and the cipher seals the content
+        // and answers the hash questions with "cannot tell" (the AEAD tag is the integrity check).
+        return XtraEncryptedProvider(
+            XtraPlaintextListings(provider, strategy),
+            lazy { XtraKeyManager(keyPath).also { it.load(xtraPassphrase()) } },
+            strategy,
+        )
+    }
+
+    /** The X-tra passphrase, resolved like the vault's: env, a systemd credential, or a console prompt. */
+    internal fun xtraPassphrase(): CharArray {
+        System.getenv("UNIDRIVE_XTRA_PASS")?.let { return it.toCharArray() }
+        System.getenv("CREDENTIALS_DIRECTORY")?.let { dir ->
+            val credential = Path.of(dir).resolve("unidrive-xtra-pass")
+            if (Files.isRegularFile(credential)) return Files.readString(credential).trimEnd('\r', '\n').toCharArray()
+        }
+        val console = System.console() ?: run {
+            System.err.println("Error: xtra_encryption is on but no passphrase is available.")
+            System.err.println("Configure UNIDRIVE_XTRA_PASS or a systemd credential named unidrive-xtra-pass.")
+            error("no X-tra passphrase available")
+        }
+        return console.readPassword("X-tra passphrase: ") ?: run {
+            System.err.println("Error: could not read passphrase.")
+            error("no X-tra passphrase available")
         }
     }
 
