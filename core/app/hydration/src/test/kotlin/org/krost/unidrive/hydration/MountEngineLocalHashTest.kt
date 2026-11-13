@@ -2,6 +2,7 @@ package org.krost.unidrive.hydration
 
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.*
+import org.krost.unidrive.engine.FileEventTally
 import org.krost.unidrive.sync.FakeCloudProvider
 import org.krost.unidrive.sync.ProgressReporter
 import org.krost.unidrive.sync.StateDatabase
@@ -192,4 +193,66 @@ class MountEngineLocalHashTest {
             assertNotNull(row.remoteId, "the write-back was uploaded")
             assertNull(row.localHash)
         }
+
+    // gkrost/unidrive-cli#438: withDownloadedHash takes the hash read from the staged file before the swap lock only while the
+    // placed copy has the stats the staged file had; the cases below pin that guard and the streamed-wins rule directly.
+    private fun placedCopy(content: ByteArray): Triple<Path, SyncEntry, Pair<Long, Long>> {
+        val placed = Files.createTempDirectory("ud-438-placed").resolve("doc.bin")
+        Files.write(placed, content)
+        val stats = Files.getLastModifiedTime(placed).toMillis() to Files.size(placed)
+        val row =
+            SyncEntry(
+                path = "/doc.bin",
+                remoteId = "id-doc",
+                remoteHash = null,
+                remoteSize = content.size.toLong(),
+                remoteModified = null,
+                localMtime = stats.first,
+                localSize = stats.second,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = Instant.now(),
+            )
+        return Triple(placed, row, stats)
+    }
+
+    @Test
+    fun `a staged hash whose stats match the placed copy is the hash the row records`() {
+        val mount = MountEngine.over(engine())
+        val (placed, row, stats) = placedCopy("placed bytes".toByteArray())
+        val stagedSha = "ab".repeat(32) // not the bytes' real hash, so recording it proves the prehash was used
+        val prehashed = MountEngine.StagedHash(stagedSha, stats.first, stats.second, 7L)
+
+        val recorded = mount.withDownloadedHash(row, placed, stats, DownloadReceipt(bytesWritten = stats.second), FileEventTally(), prehashed)
+
+        assertEquals(stagedSha, recorded.localHash)
+    }
+
+    @Test
+    fun `a staged hash whose stats differ from the placed copy is dropped and the placed bytes are hashed`() {
+        val mount = MountEngine.over(engine())
+        val (placed, row, stats) = placedCopy("placed bytes".toByteArray())
+        val stagedSha = "cd".repeat(32)
+        val prehashed = MountEngine.StagedHash(stagedSha, stats.first + 1_000L, stats.second, 7L)
+
+        val recorded = mount.withDownloadedHash(row, placed, stats, DownloadReceipt(bytesWritten = stats.second), FileEventTally(), prehashed)
+
+        assertNotEquals(stagedSha, recorded.localHash, "a hash of other bytes must not be recorded for the placed copy")
+        assertEquals(sha256(placed), recorded.localHash)
+    }
+
+    @Test
+    fun `a hash streamed by the provider wins over a staged hash`() {
+        val mount = MountEngine.over(engine())
+        val (placed, row, stats) = placedCopy("placed bytes".toByteArray())
+        val streamedSha = "ef".repeat(32)
+        val receipt =
+            DownloadReceipt(bytesWritten = stats.second, plaintextSha256 = streamedSha, stagedSize = stats.second, stagedMtimeMillis = stats.first)
+        val prehashed = MountEngine.StagedHash("12".repeat(32), stats.first, stats.second, 7L)
+
+        val recorded = mount.withDownloadedHash(row, placed, stats, receipt, FileEventTally(), prehashed)
+
+        assertEquals(streamedSha, recorded.localHash)
+    }
 }
