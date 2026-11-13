@@ -1,6 +1,5 @@
 package org.krost.unidrive.dropbox
 
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.TokenRevocation
@@ -59,7 +58,7 @@ class DropboxRevokeTest {
 
     @Test
     fun `an expired access token is refreshed once and the revoke is retried with the new one`() =
-        runBlocking<Unit> {
+        runTest {
             val provider = FakeDropbox.provider(fake, dir)
             fake.on("auth/token/revoke") { Answer(401, """{"error_summary":"expired_access_token/.."}""") }
             fake.on("auth/token/revoke") { Answer(body = "null") }

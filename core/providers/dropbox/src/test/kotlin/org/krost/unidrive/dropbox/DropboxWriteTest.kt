@@ -1,7 +1,6 @@
 package org.krost.unidrive.dropbox
 
 import io.ktor.client.plugins.HttpTimeoutCapability
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonObject
@@ -467,7 +466,7 @@ class DropboxWriteTest {
 
     @Test
     fun `a 401 refreshes the token once, keeps the refresh token and retries`() =
-        runBlocking<Unit> {
+        runTest {
             fake.on("files/get_metadata") { Answer(401, """{"error_summary":"expired_access_token/.."}""") }
             fake.on("files/get_metadata") { Answer(body = file("/a.txt", "id:1")) }
             fake.json("oauth2/token", """{"access_token":"${"n".repeat(40)}","token_type":"bearer","expires_in":14400}""")
@@ -484,7 +483,7 @@ class DropboxWriteTest {
 
     @Test
     fun `a 401 on a download refreshes the token once and retries with the new one`() =
-        runBlocking<Unit> {
+        runTest {
             fake.json("files/get_metadata", file("/a.txt", "id:1"))
             fake.on("files/download") { Answer(401, """{"error_summary":"expired_access_token/.."}""") }
             fake.on("files/download") {

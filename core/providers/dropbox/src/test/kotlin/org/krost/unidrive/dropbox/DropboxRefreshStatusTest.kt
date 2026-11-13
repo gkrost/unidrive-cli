@@ -1,6 +1,6 @@
 package org.krost.unidrive.dropbox
 
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.TransientNetworkException
 import org.krost.unidrive.dropbox.FakeDropbox.Answer
@@ -27,7 +27,7 @@ class DropboxRefreshStatusTest {
     fun `a throttle or server error from the token endpoint is retryable, not a lost sign-in`() {
         for (status in listOf(408, 429, 500, 502, 503, 504)) {
             val provider = providerWhoseRefreshAnswers(Answer(status, """{"error":"temporarily_unavailable"}"""))
-            runBlocking {
+            runTest {
                 assertFailsWith<TransientNetworkException>("HTTP $status") { provider.getMetadata("/a.txt") }
             }
         }
@@ -46,7 +46,7 @@ class DropboxRefreshStatusTest {
             val fake = FakeDropbox()
             fake.on("oauth2/token") { throw failure() }
             val provider = FakeDropbox.provider(fake, Files.createTempDirectory("dropbox-refresh-network"), expiresAt = System.currentTimeMillis() + 1_000)
-            runBlocking {
+            runTest {
                 assertFailsWith<TransientNetworkException>(name) { provider.getMetadata("/a.txt") }
             }
         }
@@ -58,7 +58,7 @@ class DropboxRefreshStatusTest {
             providerWhoseRefreshAnswers(
                 Answer(400, """{"error":"invalid_grant","error_description":"refresh token is invalid or revoked"}"""),
             )
-        runBlocking {
+        runTest {
             assertFailsWith<AuthenticationException> { provider.getMetadata("/a.txt") }
         }
     }
