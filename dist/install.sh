@@ -200,20 +200,79 @@ echo "  ${INSTALL_BIN}/unidrive"
 # Log directory
 mkdir -p "${LOG_DIR}"
 
-# Co-daemon (unidrive-mount Rust binary) — placeholder
-# Phase 2 of the sparse-hydration roadmap ships a separate Rust co-daemon
-# that mounts the cache as a FUSE filesystem. No release tarball exists
-# yet; once one lands on github.com/gkrost/unidrive-mount-linux this
-# section will download + SHA256-verify it into ${INSTALL_LIB}.
+# Co-daemon (unidrive-mount Rust binary): downloaded from the release of
+# gkrost/unidrive-mount-linux and SHA256-verified before it is installed, the
+# same verify-then-install order the JAR above follows. MOUNT_RELEASE pins the
+# release this script installs by default — bump the default deliberately when
+# a new mount release should become what a plain install ships (the URL is
+# derived from it). UNIDRIVE_MOUNT_RELEASE (tag) and UNIDRIVE_MOUNT_RELEASE_URL
+# (full URL) override the default for tests and pinning. UNIDRIVE_MOUNT_REPO
+# (set by scripts/dev/redeploy-local.sh) skips the download entirely: that
+# deploy builds the co-daemon from the local repo and installs it itself, so
+# this script leaves the binary untouched. While the pinned release does not
+# exist yet, the download is skipped with a note and the install continues
+# without the mount.
+MOUNT_RELEASE="${UNIDRIVE_MOUNT_RELEASE:-v0.1.0}"
 MOUNT_BIN="${INSTALL_LIB}/unidrive-mount"
-if [[ ! -x "${MOUNT_BIN}" ]]; then
-    echo ""
-    echo "Co-daemon download skipped: the unidrive-mount binary has not yet been released."
-    echo "Once the first release tarball lands on github.com/gkrost/unidrive-mount-linux,"
-    echo "install.sh will download and verify it. Until then, build manually:"
+MOUNT_TARBALL="unidrive-mount-${MOUNT_RELEASE#v}-x86_64.tar.gz"
+MOUNT_RELEASE_URL="${UNIDRIVE_MOUNT_RELEASE_URL:-https://github.com/gkrost/unidrive-mount-linux/releases/download/${MOUNT_RELEASE}/${MOUNT_TARBALL}}"
+mount_tmp=""
+
+# The EXIT trap only fires with a live staging directory; the if-form keeps a
+# non-empty ${mount_tmp} check from overriding the script's own exit status.
+trap 'if [[ -n "${mount_tmp:-}" ]]; then rm -rf "${mount_tmp}"; fi' EXIT
+
+mount_manual_hint() {
     echo "  cd <repo>/unidrive-mount-linux && cargo build --release \\"
     echo "    && cp target/release/unidrive-mount ${INSTALL_LIB}/"
+}
+
+if [[ -n "${UNIDRIVE_MOUNT_REPO:-}" ]]; then
+    echo "Co-daemon: UNIDRIVE_MOUNT_REPO is set; the local build is deployed by"
+    echo "scripts/dev/redeploy-local.sh, ${MOUNT_BIN} is left untouched."
+elif ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
     echo ""
+    echo "Co-daemon download skipped: neither curl nor wget is available. Build manually:"
+    mount_manual_hint
+    echo ""
+else
+    mount_tmp="$(mktemp -d)"
+    mount_downloaded=1
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --retry 3 -o "${mount_tmp}/${MOUNT_TARBALL}" "${MOUNT_RELEASE_URL}" \
+            && curl -fsSL --retry 3 -o "${mount_tmp}/${MOUNT_TARBALL}.sha256" "${MOUNT_RELEASE_URL}.sha256" \
+            || mount_downloaded=0
+    else
+        wget -q --tries=3 -O "${mount_tmp}/${MOUNT_TARBALL}" "${MOUNT_RELEASE_URL}" \
+            && wget -q --tries=3 -O "${mount_tmp}/${MOUNT_TARBALL}.sha256" "${MOUNT_RELEASE_URL}.sha256" \
+            || mount_downloaded=0
+    fi
+    if [[ "${mount_downloaded}" == "1" ]]; then
+        if (cd "${mount_tmp}" && sha256sum -c "${MOUNT_TARBALL}.sha256"); then
+            tar -xzf "${mount_tmp}/${MOUNT_TARBALL}" -C "${mount_tmp}"
+            mount_dist_bin="${mount_tmp}/unidrive-mount-${MOUNT_RELEASE#v}/unidrive-mount"
+            if [[ ! -f "${mount_dist_bin}" ]]; then
+                echo "ERROR: ${MOUNT_TARBALL} does not contain unidrive-mount-${MOUNT_RELEASE#v}/unidrive-mount" >&2
+                exit 1
+            fi
+            # Fresh inode like the jar copy above: a mount process still holding
+            # the old binary keeps reading it intact.
+            rm -f "${MOUNT_BIN}"
+            cp "${mount_dist_bin}" "${MOUNT_BIN}"
+            chmod +x "${MOUNT_BIN}"
+            echo "  ${MOUNT_BIN} (${MOUNT_RELEASE})"
+        else
+            echo "ERROR: SHA256 verification failed for ${MOUNT_TARBALL}; refusing to install the co-daemon" >&2
+            exit 1
+        fi
+    else
+        echo ""
+        echo "Co-daemon download skipped: no release tarball at ${MOUNT_RELEASE_URL} yet."
+        echo "Once the first release tarball lands on github.com/gkrost/unidrive-mount-linux,"
+        echo "this install downloads and verifies it. Until then, build manually:"
+        mount_manual_hint
+        echo ""
+    fi
 fi
 
 # Systemd user unit
