@@ -224,4 +224,22 @@ class FileInTheWayGuardTest {
         assertEquals(3, copies.size, "the older copies and the new one all exist: $copies")
         assertTrue(copies.any { Files.readAllBytes(it).contentEquals(bytes) })
     }
+
+    @Test
+    fun `a file with a 250 character name in the way is kept aside under a name that fits`() {
+        // cli#724: the copy name was the original plus about 25 units, over the 255 one component may hold.
+        val leaf = "n".repeat(246) + ".txt"
+        val x = syncRoot.resolve(leaf)
+        Files.write(x, bytes)
+
+        PlaceholderManager(syncRoot).createPlaceholder("/$leaf/child", size = 10, modified = synced)
+
+        val copies = Files.list(syncRoot).use { s -> s.filter { it.fileName.toString().contains(".conflict-local-") }.toList() }
+        assertEquals(1, copies.size, "the file was kept aside: $copies")
+        val copyName = copies.single().fileName.toString()
+        assertTrue(copyName.length <= 255, "${copyName.length} units")
+        assertTrue(copyName.endsWith(".txt"), copyName)
+        assertContentEquals(bytes, Files.readAllBytes(copies.single()))
+        assertTrue(Files.isDirectory(x), "the placeholder's folder took the name")
+    }
 }

@@ -1,6 +1,7 @@
 package org.krost.unidrive.sync
 
 import kotlinx.serialization.Serializable
+import org.krost.unidrive.io.NameLimit
 import org.krost.unidrive.io.engineRelative
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
@@ -55,10 +56,10 @@ open class ConflictLog(
         val backupName =
             if (loserFile != null && Files.exists(loserFile)) {
                 Files.createDirectories(backupDir)
-                var name = "$ts-$originalFilename"
+                var name = backupName("$ts-", originalFilename)
                 var seq = 1
                 while (Files.exists(backupDir.resolve(name))) {
-                    name = "$ts-${seq++}-$originalFilename"
+                    name = backupName("$ts-${seq++}-", originalFilename)
                 }
                 Files.copy(loserFile, backupDir.resolve(name))
                 name
@@ -80,6 +81,20 @@ open class ConflictLog(
         val line = json.encodeToString(Entry.serializer(), entry) + "\n"
         Files.writeString(logFile, line, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
         return entry
+    }
+
+    /**
+     * cli#724: [prefix] plus [original], with the stem of [original] cut so the whole name fits one path component
+     * (the prefix is 17 units or more); the extension stays.
+     */
+    private fun backupName(
+        prefix: String,
+        original: String,
+    ): String {
+        val dot = original.lastIndexOf('.')
+        val stem = if (dot > 0) original.substring(0, dot) else original
+        val ext = if (dot > 0) original.substring(dot) else ""
+        return prefix + NameLimit.fitStem(stem, prefix.length + ext.length) + ext
     }
 
     /**
