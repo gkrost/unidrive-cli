@@ -1018,8 +1018,8 @@ class Reconciler(
             localState == ChangeState.DELETED && remoteState == ChangeState.DELETED ->
                 SyncAction.RemoveEntry(path)
 
-            // Both new
-            localState == ChangeState.NEW && remoteState == ChangeState.NEW -> {
+            // Both new — a pending upload whose path the remote later answered with takes the same branch (PendingUploadNewcomer.kt)
+            isBothNewPlan(localState, remoteState, entry, remoteItem) -> {
                 val localPath = resolveLocal(path)
                 when {
                     // Both created a folder — merge, no conflict
@@ -1031,7 +1031,7 @@ class Reconciler(
                         SyncAction.CreatePlaceholder(path, remoteItem, shouldHydrate = shouldPin(path, remoteItem, pinRules))
                     // Real conflict — sizes differ or other mismatch
                     else ->
-                        SyncAction.Conflict(path, localState, remoteState, remoteItem, policyForPath(path))
+                        SyncAction.Conflict(path, bothNewLocalState(localState, entry), remoteState, remoteItem, policyForPath(path))
                 }
             }
 
@@ -2218,12 +2218,12 @@ private fun adoptableAsSameFile(
     return same != false || SparseProbe.isStub(localFile, remoteItem.size)
 }
 
-// archive#532: the both-modified pair holds the same bytes; "cannot tell" (#97) is not "same" there.
+// archive#532: the both-modified pair holds the same bytes; "cannot tell" (#97) is not "same" there — an unreadable file (a lock, the scanner's #1056 sibling) is cannot-tell too, and its conflict is kept.
 private fun provenSame(
     localFile: Path,
     remoteItem: CloudItem,
     sameContent: ((Path, CloudItem) -> Boolean?)?,
-): Boolean = Files.isRegularFile(localFile) && sameContent?.invoke(localFile, remoteItem) == true
+): Boolean = Files.isRegularFile(localFile) && try { sameContent?.invoke(localFile, remoteItem) == true } catch (_: java.io.IOException) { false }
 
 // gkrost/unidrive-cli#97: a both-new conflict of two files, a candidate for a remote rename onto the local file.
 private fun isBothNewFileConflict(
