@@ -270,4 +270,25 @@ class ConflictLogTest {
         assertEquals(emptyList(), log.recent())
         assertEquals(emptyList(), log.findBackups("any"))
     }
+
+    @Test
+    fun `a loser with a 250 character name is backed up under a name that fits`() {
+        // cli#724: the backup name is a 17 unit prefix plus the file name, over 255 for a 240+ unit name.
+        val dir = tempDir()
+        val log = createLog(dir)
+        val leaf = "m".repeat(246) + ".txt"
+        val loser = dir.resolve("loser.bin")
+        Files.writeString(loser, "the losing bytes")
+
+        val first = log.record("Docs/$leaf", "MODIFIED", "MODIFIED", "LAST_WRITER_WINS", loser)
+        val second = log.record("Docs/$leaf", "MODIFIED", "MODIFIED", "LAST_WRITER_WINS", loser)
+
+        val names = listOf(first, second).map { assertNotNull(it.backupFile) }
+        for (name in names) {
+            assertTrue(name.length <= 255, "${name.length} units")
+            assertTrue(name.endsWith(".txt"), name)
+            assertEquals("the losing bytes", Files.readString(dir.resolve("backups").resolve(name)))
+        }
+        assertEquals(2, names.toSet().size, "two backups in the same second keep their own names")
+    }
 }

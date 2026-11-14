@@ -1,5 +1,6 @@
 package org.krost.unidrive.sync
 
+import org.krost.unidrive.io.NameLimit
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -30,6 +31,8 @@ object ConflictCopyNames {
         val ext = if (dot > 0) leaf.substring(dot + 1) else ""
         val counter = if (n > 1) " ($n)" else ""
         val suffix = ".conflict-local-$stamp$counter"
-        return if (ext.isNotEmpty()) "$stem$suffix.$ext" else "$stem$suffix"
+        val tail = if (ext.isNotEmpty()) "$suffix.$ext" else suffix
+        // cli#724: the stem is cut (as keep-both's own copy name does) so the whole name fits one path component.
+        return NameLimit.fitStem(stem, tail.length) + tail
     }
 }
