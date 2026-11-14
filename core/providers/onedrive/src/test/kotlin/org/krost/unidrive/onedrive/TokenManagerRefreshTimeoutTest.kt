@@ -13,6 +13,7 @@ import org.krost.unidrive.TransientNetworkException
 import org.krost.unidrive.auth.RefreshableTokenLatch
 import org.krost.unidrive.onedrive.model.Token
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -22,10 +23,11 @@ import kotlin.time.Duration.Companion.milliseconds
 /**
  * #748 finding 1: a token refresh that runs past the latch's 60 s deadline (a token endpoint that accepted and
  * then stalls always loses to the latch: the socket timeout equals it) is a transport failure, not a verdict on
- * the credential — and not a user cancellation either. The latch converts its deadline into a
- * [java.net.SocketTimeoutException], which [TokenManager.isTransientNetworkFailure] classifies as retryable, so
- * the stalled refresh must surface [TransientNetworkException] instead of latching the session as
- * "authentication expired". A real cancellation during the refresh stays one and records no refresh failure.
+ * the credential — and not a user cancellation either. The latch reports its deadline as
+ * [org.krost.unidrive.RefreshTimedOutException], which [TokenManager] records like any other refresh failure and
+ * rethrows — a [TransientNetworkException], so the stalled refresh surfaces retryable instead of latching the
+ * session as "authentication expired". A real cancellation during the refresh stays one and records no refresh
+ * failure.
  */
 class TokenManagerRefreshTimeoutTest {
     private fun nearExpiryTokenWithRefresh(): Token =
@@ -59,10 +61,8 @@ class TokenManagerRefreshTimeoutTest {
             e.message?.contains("token refresh timed out") == true,
             "the message names the stall, not an expiry: ${e.message}",
         )
-        assertTrue(
-            manager.lastRefreshFailure?.errorClass != "AuthenticationException",
-            "a stalled endpoint must not be recorded as an AuthenticationException latch",
-        )
+        assertEquals("RefreshTimedOutException", manager.lastRefreshFailure?.errorClass, "the stall is recorded like any other refresh failure")
+        assertTrue(e is org.krost.unidrive.RefreshTimedOutException, "the stall surfaces under its own name: ${e.javaClass.name}")
     }
 
     @Test

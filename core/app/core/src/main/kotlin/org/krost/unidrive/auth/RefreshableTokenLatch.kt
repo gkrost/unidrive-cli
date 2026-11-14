@@ -6,7 +6,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import org.krost.unidrive.TransientNetworkException
+import org.krost.unidrive.RefreshTimedOutException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -122,8 +122,9 @@ class RefreshableTokenLatch(
             // cancels the body with, a caller's `catch (CancellationException) { throw e }` (and the coroutine
             // machinery) reads a stalled endpoint as "this caller was cancelled" — OneDrive then declared the
             // session "authentication expired" and Dropbox aborted callers silently. It surfaces as the transient
-            // failure a retryable refresh failure is: says nothing about the credential, retries later.
-            answer ?: throw TransientNetworkException("token refresh timed out after $timeout")
+            // failure a retryable refresh failure is, under its own name so a provider can record the stall:
+            // says nothing about the credential, retries later.
+            answer ?: throw RefreshTimedOutException("token refresh timed out after $timeout")
         }
 
     companion object {

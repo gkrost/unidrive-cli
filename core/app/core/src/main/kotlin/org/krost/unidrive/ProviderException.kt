@@ -78,6 +78,16 @@ open class TransientNetworkException(
 ) : ProviderException(message, cause, requestId)
 
 /**
+ * Signals that a token refresh ran past the deadline its [org.krost.unidrive.auth.RefreshableTokenLatch]
+ * bounds it with (a token endpoint that accepted and then stalled) — a transport failure, not a verdict
+ * on the credential. Still a [TransientNetworkException]: everything that treats a stalled endpoint as
+ * retryable keeps doing so, and a provider that records the stall can catch this subtype by its exact name.
+ */
+class RefreshTimedOutException(
+    message: String,
+) : TransientNetworkException(message)
+
+/**
  * Signals a permanent download failure that retrying would not resolve —
  * the remote object is gone (404 from a stable identifier) and no future
  * attempt against the same identifier will succeed. The engine catches
