@@ -858,12 +858,12 @@ class TrackingEngine(
         }
         // Resume from the cursor the last completed pass ended on (opaque to
         // the engine; the provider interprets it). Null on the first pass or
-        // after a pass that never completed. A non-null cursor means this is
-        // an INCREMENTAL delta: the provider returns only changed + explicitly-
-        // deleted items, so a tracked path absent from the page is UNCHANGED-
-        // PRESENT, not gone (see absentRemoteObservation).
+        // after a pass that never completed. A non-null cursor is an INCREMENTAL
+        // delta only for a provider whose delta carries just changed + deleted
+        // items (see absentRemoteObservation); a FULL-LISTING provider
+        // ([CloudProvider.deltaIsFullListing]) re-lists everything, so absence is a deletion.
         val resumeCursor: String? = trackingSet.loadDeltaCursor()
-        val incremental = resumeCursor != null
+        val incremental = resumeCursor != null && !provider.deltaIsFullListing
         return try {
             walkDelta(resumeCursor, incremental)
         } catch (e: DeltaCursorExpiredException) {
