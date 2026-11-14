@@ -279,14 +279,15 @@ class TrashRemoteJsonTest {
     }
 
     @Test
-    fun `purge --remote --all --yes --json answers partial with the remaining items when the provider only queued it`() {
+    fun `purge --remote --all --yes --json answers queued with the count when the provider only queued it`() {
         val provider = TrashProvider(sample, TrashEmptyOutcome.Queued)
         assertEquals(0, run(provider, "purge", "--remote", "--all", "--yes", "--json"))
         val reply = reply()
+        assertEquals(setOf("ok", "result", "count"), reply.keys, "no remaining, no queued flag")
         assertEquals("true", reply.str("ok"))
-        assertEquals("partial", reply.str("result"))
-        assertEquals("4", reply.str("remaining"))
-        assertEquals("true", reply.str("queued"))
+        assertEquals("queued", reply.str("result"))
+        assertEquals("4", reply.str("count"))
+        assertEquals(1, provider.emptied)
     }
 
     @Test

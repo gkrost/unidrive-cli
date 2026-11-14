@@ -383,9 +383,9 @@ internal sealed class RemotePurgeResult {
     abstract fun json(): JsonObject
 
     /**
-     * `--all`: [count] items were in the trash at listing time. A provider that only enqueued the deletion
-     * ([TrashEmptyOutcome.Queued]) stopped before deleting anything inline, so the JSON reply is `partial` with the
-     * listed items still `remaining` and `queued` true; the quota follows when the provider finishes.
+     * `--all`: [count] items were in the trash at listing time. The JSON reply is `emptied` when the provider reports
+     * the trash emptied, and `queued` when it only enqueued the deletion ([TrashEmptyOutcome.Queued]); the quota follows
+     * when the provider finishes. No provider reports a part-way stop today, so there is no `partial` result.
      */
     class Emptied(
         val count: Int,
@@ -408,9 +408,8 @@ internal sealed class RemotePurgeResult {
                         put("count", count)
                     }
                     TrashEmptyOutcome.Queued -> {
-                        put("result", "partial")
-                        put("remaining", count)
-                        put("queued", true)
+                        put("result", "queued")
+                        put("count", count)
                     }
                 }
             }
