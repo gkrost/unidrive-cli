@@ -153,6 +153,24 @@ class InstallShTest {
         }
     }
 
+    // gkrost/unidrive-cli#705: the startup caches beside the jar are keyed to the jar that built them. After a
+    // jar replacement a stale unidrive.jsa is rejected on every start ("shared class paths mismatch") and
+    // AutoCreateSharedArchive never regenerates a rejected archive, so the install deletes the caches in the
+    // same step that copies the jar; the next start recreates whichever cache the launcher picks.
+    @Test
+    fun a_jar_replacing_install_deletes_the_stale_startup_caches() {
+        install()
+        val lib = home.resolve(".local/lib/unidrive")
+        val jsa = lib.resolve("unidrive.jsa")
+        val aot = lib.resolve("unidrive.aot")
+        Files.createFile(jsa)
+        Files.createFile(aot)
+        install()
+        assertTrue(!Files.exists(jsa), "the stale CDS archive is deleted with the jar it was built from")
+        assertTrue(!Files.exists(aot), "the stale AOT cache is deleted with the jar it was built from")
+        assertTrue(Files.exists(lib.resolve("unidrive-1.jar")), "the jar itself is still installed")
+    }
+
     @Test
     fun active_unidrive_units_are_stopped_before_the_copy_and_started_again_after() {
         install()

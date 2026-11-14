@@ -19,9 +19,13 @@
 # Also machine-gated, added by the launcher templates and DaemonAutospawn (gkrost/unidrive-cli#572): the
 # per-install startup cache beside the jar — -XX:AOTCache=<jar dir>/unidrive.aot -Xlog:aot=off when that
 # file exists (and no -javaagent is armed), else -XX:+AutoCreateSharedArchive
-# -XX:SharedArchiveFile=<jar dir>/unidrive.jsa -Xlog:cds=off when the jar's folder is writable. JDK 27
-# refuses the two caches in one JVM, so exactly one applies; the conditions are in DaemonAutospawn and
-# the launcher templates, never as plain lines here.
+# -XX:SharedArchiveFile=<jar dir>/unidrive.jsa -Xlog:cds*=off when the jar's folder is writable. The cds
+# selector needs the wildcard: without it only the exact tag set cds is matched, and the mismatch warning
+# after a jar change carries cds,dynamic and escaped as "Unable to use shared archive" (verified on JDK
+# 27). JDK 27 refuses the two caches in one JVM, so exactly one applies; the conditions are in
+# DaemonAutospawn and the launcher templates, never as plain lines here. A deploy that replaces the jar
+# deletes the stale unidrive.jsa/unidrive.aot beside it in the same step (dist/install.sh does): the JVM
+# never regenerates an archive the changed jar rejected.
 # Start with a small heap. Without it JDK <= 25 commit 1/64 of RAM up front (about 500 MB on a 32 GB
 # machine), touch 80-140 MB of it during start and give it back only at a later GC: a one-shot sync then
 # peaks at ~385 MB RSS instead of ~200 MB, and a daemon can sit at ~470 MB until that GC. Measured on

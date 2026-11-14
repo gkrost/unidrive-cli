@@ -222,7 +222,7 @@ class LauncherShTemplateTest {
         val r = run(j25, "status", jar = jarDir.resolve("unidrive.jar").toString())
         assertTrue("-XX:+AutoCreateSharedArchive" in r.args, r.args.toString())
         assertTrue("-XX:SharedArchiveFile=$jarDir/unidrive.jsa" in r.args, r.args.toString())
-        assertTrue("-Xlog:cds=off" in r.args, "the first run's CDS messages stay off stdout: ${r.args}")
+        assertTrue("-Xlog:cds*=off" in r.args, "the first run's CDS messages stay off stdout: ${r.args}")
         assertTrue(r.args.indexOf("-XX:+AutoCreateSharedArchive") < r.args.indexOf("-jar"), r.args.toString())
     }
 
