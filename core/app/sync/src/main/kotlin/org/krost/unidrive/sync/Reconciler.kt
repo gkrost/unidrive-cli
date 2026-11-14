@@ -329,7 +329,7 @@ class Reconciler(
             if (remoteState == ChangeState.UNCHANGED && localState == ChangeState.MODIFIED && activePlanRefusal(db, syncRoot, path)) continue
 
             val action = resolveAction(path, localState, remoteState, remoteItem, entry, pinRules, alias, downloadOnly)
-            if (action != null) actions.add(action)
+            if (action != null) actions.addAll(withDeleteOfOtherKind(action, localState, remoteState, entry) { Files.isDirectory(resolveLocal(path)) })
             processed++
             heartbeat.tick(processed)
         }
@@ -569,7 +569,7 @@ class Reconciler(
             if (remoteState == ChangeState.UNCHANGED && localState == ChangeState.MODIFIED && activePlanRefusal(db, syncRoot, path)) continue
             val action = resolveAction(path, localState, remoteState, remoteItem, entry, pinRules, alias, downloadOnly)
             if (action != null) {
-                actions.add(action)
+                actions.addAll(withDeleteOfOtherKind(action, localState, remoteState, entry) { Files.isDirectory(resolveLocal(path)) })
             } else if (remoteItem != null && deleteOfInFlightDownload(path, localState, remoteState, entry, remoteItem, landedRemoteId)) {
                 // "No row, nothing on disk" is read as an applied delete, but this id's download is dispatched
                 // and writes its row and file when it ends: the delete has to remove what lands.
