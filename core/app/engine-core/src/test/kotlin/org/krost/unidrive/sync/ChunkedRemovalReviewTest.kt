@@ -156,9 +156,13 @@ class ChunkedRemovalReviewTest {
         override fun open(path: Path?): Connection {
             val c = JdbcStateDatabaseConnector.open(path)
             return object : Connection by c {
-                override fun commit() {
-                    c.commit()
-                    commits++
+                // The durable commit is the auto-commit flip: setAutoCommit(true) runs "commit;"
+                // alone, while Connection.commit() is never called (it would BEGIN IMMEDIATE again
+                // after the commit and take the write lock once more). Count the false -> true flips.
+                override fun setAutoCommit(autoCommit: Boolean) {
+                    val was = c.autoCommit
+                    c.setAutoCommit(autoCommit)
+                    if (autoCommit && !was) commits++
                 }
 
                 override fun prepareStatement(sql: String): PreparedStatement {
