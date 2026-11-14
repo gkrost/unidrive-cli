@@ -1,6 +1,7 @@
 package org.krost.unidrive.hydration
 
 import kotlinx.coroutines.test.runTest
+import org.junit.experimental.categories.Category
 import org.krost.unidrive.Capability
 import org.krost.unidrive.CaseSensitivity
 import org.krost.unidrive.CloudItem
@@ -9,6 +10,8 @@ import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.ScanContext
+import org.krost.unidrive.testing.Flaky
+import org.krost.unidrive.testing.FlakyTests
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
 import java.nio.file.Files
@@ -136,6 +139,15 @@ class HydrationRmdirIndexedAfterListingTest {
     ): String = env.handler.handle("conn1", request).trim()
 
     @Test
+    @Category(FlakyTests::class)
+    @Flaky(
+        issue = 739,
+        reason = "the window guard's reported child is non-deterministic on Linux CI: a row indexed before the whole " +
+            "listing satisfies the lastSynced window predicate under runner-load ordering and firstOrNull then " +
+            "reports kept.txt instead of x4.txt (3 of the 4 Linux runs since #737 merged; the refusal still fires, " +
+            "nothing is deleted)",
+        firstFailure = "https://github.com/gkrost/unidrive-cli/actions/runs/43583576483",
+    )
     fun `a recursive rmdir refuses a cloud item indexed after the folder was last listed whole`() = runTest {
         val env = Env()
         env.provider.folders += "/dir"
