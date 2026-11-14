@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -101,5 +102,47 @@ class StateDatabaseBatchWriteLockTest {
         assertTrue(foreignDone.get(), "the foreign write must land after the batch commits")
         assertNotNull(db1.getEntry("/foreign.txt"))
         assertNotNull(db1.getEntry("/own.txt"))
+    }
+
+    // sqlite-jdbc flips its auto-commit flag before it runs BEGIN, and the connector opens with
+    // transaction_mode=IMMEDIATE: a BEGIN that waits past the busy timeout throws SQLITE_BUSY with
+    // getAutoCommit() == false and no transaction open. Every later batch {} on that connection then
+    // took the "already inside a transaction" shortcut and ran its block statement by statement — a
+    // block that threw was not rolled back, and its writes landed. openTransaction puts the flag back,
+    // so the failed batch leaves a connection that is usable and atomic again.
+    @Test
+    fun `a batch that times out behind another batch's write lock leaves the connection usable and atomic`() {
+        val blocker = StateDatabase(dbFile, busyTimeoutMs = 100).also { it.initialize() }
+        val waiter = StateDatabase(dbFile, busyTimeoutMs = 100).also { it.initialize() }
+        try {
+            blocker.beginBatch()
+            blocker.upsertEntry(entry("/held.txt"))
+
+            // The waiter's BEGIN IMMEDIATE waits out its short busy timeout behind the blocker's
+            // batch and fails: the failure must escape the batch (it did before the fix too), and
+            // the connection must not be left reporting a transaction that is not there.
+            assertFailsWith<java.sql.SQLException> {
+                waiter.batch { waiter.upsertEntry(entry("/timed-out.txt")) }
+            }
+
+            blocker.commitBatch()
+
+            // Atomicity probe: a block that writes and then throws must leave no row. On the
+            // poisoned connection the block ran without its transaction, and the row landed.
+            assertFailsWith<IllegalStateException> {
+                waiter.batch {
+                    waiter.upsertEntry(entry("/atomic.txt"))
+                    error("the block fails after writing")
+                }
+            }
+            assertTrue(waiter.getEntry("/atomic.txt") == null, "a failed batch must not leave its write behind")
+
+            // The connection still works: a plain batch commits.
+            waiter.batch { waiter.upsertEntry(entry("/after.txt")) }
+            assertNotNull(waiter.getEntry("/after.txt"), "a batch after the timed-out one must commit")
+        } finally {
+            runCatching { blocker.close() }
+            runCatching { waiter.close() }
+        }
     }
 }

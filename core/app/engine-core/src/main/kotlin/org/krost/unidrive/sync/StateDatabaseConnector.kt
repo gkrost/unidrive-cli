@@ -47,3 +47,36 @@ object JdbcStateDatabaseConnector : StateDatabaseConnector {
 
     override fun restrictToOwner(file: Path): OwnerOnly.Outcome = OwnerOnly.restrictFile(file)
 }
+
+// sqlite-jdbc flips its auto-commit flag before it runs BEGIN, and the connector above opens with
+// transaction_mode=IMMEDIATE: a BEGIN IMMEDIATE that waits past the busy timeout throws SQLITE_BUSY
+// with getAutoCommit() already false and no transaction open. Every later [StateDatabase.batch] on
+// that connection would then take the "already inside a transaction" shortcut and run its block
+// statement by statement, rollbacks undoing nothing. Put the flag back (its COMMIT fails: nothing is
+// open) and rethrow.
+internal fun Connection.openTransaction() {
+    try {
+        autoCommit = false
+    } catch (e: java.sql.SQLException) {
+        runCatching { autoCommit = true } // the flag is set before the failing COMMIT, so this restores it
+        throw e
+    }
+}
+
+// Connection.commit() runs "commit;" and then BEGIN IMMEDIATE again (the connector's transaction
+// mode), so between the commit and the auto-commit flip the connection takes the write lock once
+// more: a foreign writer in first fails with SQLITE_BUSY a commit whose data is already durable.
+// setAutoCommit(true) runs "commit;" alone.
+internal fun Connection.commitTransaction() {
+    autoCommit = true
+}
+
+// Statement ROLLBACK ends the transaction without the re-begin Connection.rollback() runs after it;
+// the auto-commit flip afterwards fails its COMMIT when nothing is open, and only restores the flag.
+internal fun Connection.rollbackTransaction() {
+    try {
+        createStatement().use { it.execute("ROLLBACK") }
+    } finally {
+        runCatching { autoCommit = true }
+    }
+}
