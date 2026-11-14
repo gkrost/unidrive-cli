@@ -1510,7 +1510,7 @@ class HydrationImpl(
             progress(done, total)
         }
         if (uploadStallTimeoutMs <= 0) {
-            return mount.withTransferPermit {
+            return mount.withTransferPermit(cachePath) {
                 drainableTransfer {
                     onPermitAcquired()
                     transfer.begin()
@@ -1545,7 +1545,7 @@ class HydrationImpl(
                 }
             }
             try {
-                mount.withTransferPermit {
+                mount.withTransferPermit(cachePath) {
                     drainableTransfer {
                         onPermitAcquired()
                         watcher.start()

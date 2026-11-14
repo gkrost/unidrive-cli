@@ -900,6 +900,43 @@ class DaemonRuntimeTest {
         }
     }
 
+    // gkrost/unidrive-cli#715: daemon.status reports the byte-rate cap of the daemon's transfers: a number of KiB/s when one
+    // applies, an explicit null when none does. An engine without the feature does not send the field at all.
+    private fun statusWithBandwidth(maxBandwidthKib: Int?): JsonObject = runBlocking {
+        val runtime = DaemonRuntime(
+            profileMode = ProfileMode.MOUNT,
+            profileName = "test_profile",
+            lockFile = lockFile,
+            dbPath = dbPath,
+            syncRoot = tempDir,
+            socketPath = socketPath,
+            providerFactory = { StubProvider() },
+            maxBandwidthKib = maxBandwidthKib,
+        )
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath)
+        try {
+            Json.parseToJsonElement(sendOneRequest("""{"verb":"daemon.status"}""")).jsonObject
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    @Test
+    fun `daemon_status reports the bandwidth limit as a number when one applies`() {
+        val reply = statusWithBandwidth(maxBandwidthKib = 512)
+        val field = reply["bandwidth_limit_kib"] ?: error("daemon.status must carry bandwidth_limit_kib: $reply")
+        assertEquals(512, field.jsonPrimitive.int, "bandwidth_limit_kib; got: $reply")
+    }
+
+    @Test
+    fun `daemon_status reports an explicit null when no bandwidth limit applies`() {
+        val reply = statusWithBandwidth(maxBandwidthKib = null)
+        assertTrue("bandwidth_limit_kib" in reply, "the field is present (an absent one means an older engine): $reply")
+        assertEquals(kotlinx.serialization.json.JsonNull, reply["bandwidth_limit_kib"], "no cap is an explicit null; got: $reply")
+    }
+
     @Test
     fun `daemon_status narrows the transfer budget after the provider throttled`() = runBlocking {
         val provider = ProviderOfType("internxt")

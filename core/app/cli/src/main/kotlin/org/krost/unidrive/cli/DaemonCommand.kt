@@ -41,6 +41,16 @@ class DaemonCommand : Runnable {
 
 // ── daemon run ───────────────────────────────────────────────────────────────
 
+/**
+ * gkrost/unidrive-cli#715: the byte-rate cap a daemon runs with, in KiB/s: the `--max-bandwidth-kib` flag when given, else
+ * the config's `[general] max_bandwidth_kbps` (the same unit, KiB/s). Null = no cap: no value, or a value of 0 or below
+ * (`--max-bandwidth-kib 0` lifts a cap the config sets, for this account only).
+ */
+internal fun effectiveBandwidthKib(
+    flag: Int?,
+    general: Int?,
+): Int? = (flag ?: general)?.takeIf { it > 0 }
+
 @Command(name = "run", description = ["Run the daemon in the foreground until SIGTERM"], mixinStandardHelpOptions = true)
 class DaemonRunCommand : Runnable {
     @ParentCommand
@@ -77,6 +87,19 @@ class DaemonRunCommand : Runnable {
         ],
     )
     var uploadConcurrency: Int? = null
+
+    // gkrost/unidrive-cli#715: the byte-rate cap of this account's mount transfers, overriding the config's
+    // [general] max_bandwidth_kbps for this daemon only, the way --upload-concurrency overrides upload_concurrency.
+    @Option(
+        names = ["--max-bandwidth-kib"],
+        paramLabel = "<KiB/s>",
+        description = [
+            "Cap the combined rate of this daemon's transfers (hydration downloads and uploads, one shared budget) " +
+                "at <KiB/s> kibibytes per second; 0 = no cap. Wins over [general] max_bandwidth_kbps. " +
+                "Default: max_bandwidth_kbps, else no cap.",
+        ],
+    )
+    var maxBandwidthKib: Int? = null
 
     @picocli.CommandLine.Spec
     lateinit var spec: picocli.CommandLine.Model.CommandSpec
@@ -122,6 +145,7 @@ class DaemonRunCommand : Runnable {
             }
         }
 
+        maxBandwidthKib?.takeIf { it < 0 }?.let { throw picocli.CommandLine.ParameterException(spec.commandLine(), "--max-bandwidth-kib must be 0 or more (got $it)") }
         val runtime = DaemonRuntime(
             profileName = profile.name,
             lockFile = lockFile,
@@ -156,6 +180,7 @@ class DaemonRunCommand : Runnable {
             // archive#578: the --upload-concurrency flag's override of the profile's upload_concurrency key;
             // null leaves the key in force. Applied to the provider right after construction.
             uploadConcurrencyOverride = uploadConcurrency,
+            maxBandwidthKib = effectiveBandwidthKib(maxBandwidthKib, config.maxBandwidthKbps),
         )
         // archive#813: the profile the sign-in verbs sign in (its non-secret config, as `auth begin/complete/login` resolve it).
         // A config that cannot be read for it leaves them answering sign_in_unavailable; the daemon runs either way.

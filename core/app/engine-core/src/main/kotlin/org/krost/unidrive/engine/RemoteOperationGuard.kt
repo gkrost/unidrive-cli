@@ -4,6 +4,8 @@ import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import org.krost.unidrive.currentTransferMeter
+import org.krost.unidrive.sync.BandwidthPacer
 import org.krost.unidrive.sync.SyncScope
 
 /**
@@ -16,6 +18,8 @@ import org.krost.unidrive.sync.SyncScope
  *   `exclude_patterns` (the old glob, unchanged) and, where the host passes them, the ignore rules ([ignore]).
  * - **Transfer budget**: one per-provider transfer cap shared by the sync pass and
  *   the hydration upload path (UD-263). The hydration downloads have their own, size-aware one ([downloadBudget]).
+ * - **Byte-rate cap**: one token bucket ([bandwidth]) every paced transfer of the engine draws from, whichever
+ *   front-end starts it: the mirror pass's transfers and the mount's hydration downloads and uploads ([paced]).
  * - **Trash namespace**: the virtual folder that shows what the provider keeps in its trash, which is read-only
  *   ([isReadOnlyPath], see [TrashNamespace]).
  * - **Backups namespace**: the virtual folder that shows the account's backup devices, read-only too ([isReadOnlyPath],
@@ -56,7 +60,29 @@ class RemoteOperationGuard(
     // gkrost/unidrive-cli#392: how many large hydration downloads run at once (ProviderMetadata.maxConcurrentLargeDownloads).
     // Not [maxConcurrentTransfers]: that is the uploads' cap, and a provider can need it for the uploads alone.
     val maxConcurrentLargeDownloads: Int = maxConcurrentTransfers,
+    // gkrost/unidrive-cli#715: the byte-rate cap (config `max_bandwidth_kbps`, `daemon run --max-bandwidth-kib`), or null.
+    bandwidth: BandwidthPacer? = null,
 ) {
+    /**
+     * The engine's one byte-rate bucket, shared by both directions and both front-ends; null = uncapped. A property so a
+     * test can swap in a pacer on its own clock.
+     */
+    @Volatile
+    var bandwidth: BandwidthPacer? = bandwidth
+
+    /**
+     * Runs [block] holding a reservation of [expectedBytes] on [bandwidth] (see [BandwidthPacer.paced]); without a cap,
+     * just runs it. Called before a permit of [transferBudget] or [downloadBudget] is taken: the wait for the line holds
+     * no concurrency slot.
+     */
+    suspend fun <T> paced(
+        expectedBytes: Long,
+        block: suspend () -> T,
+    ): T {
+        val pacer = bandwidth ?: return block()
+        return pacer.paced(expectedBytes, block)
+    }
+
     /** The namespaces whose items are rows placed under a root of their own: the trash, then the backups (which yield to it). */
     val placedNamespaces: List<PlacedNamespace> get() = listOf(trash, backups)
 
@@ -131,6 +157,29 @@ class RemoteOperationGuard(
             largePermits = maxConcurrentLargeDownloads,
             throttledPermits = maxConcurrentTransfers,
         )
+
+    /**
+     * gkrost/unidrive-cli#715: a hydration download of [sizeBytes] (the size the row knows): a reservation on [bandwidth]
+     * ([paced]), then a permit of [downloadBudget]. When it ends, however it ends, the transfer is charged [bytesStaged]
+     * (what its staging file holds then), so a provider that reports nothing while it reads, and a download that fails
+     * part-way, are charged what actually came down; the rest of the forecast goes back to the line.
+     *
+     * The wait for the line is part of the read's time. A client that bounds a read by a time budget from the file's
+     * size at an assumed line speed (gkrost/unidrive-cli#508 proposes 5 MB/s) runs out of time under a lower cap: a
+     * budget for a capped daemon has to be computed from `daemon.status` `bandwidth_limit_kib` instead.
+     */
+    suspend fun <T> pacedDownload(
+        sizeBytes: Long,
+        bytesStaged: () -> Long,
+        block: suspend () -> T,
+    ): T =
+        paced(sizeBytes) {
+            try {
+                downloadBudget.withPermit(sizeBytes, block)
+            } finally {
+                currentTransferMeter()?.movedTotal(bytesStaged())
+            }
+        }
 
     /**
      * Run [block] holding one permit of the per-provider transfer budget. The

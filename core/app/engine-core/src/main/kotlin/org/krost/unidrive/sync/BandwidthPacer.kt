@@ -3,11 +3,14 @@ package org.krost.unidrive.sync
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.krost.unidrive.TransferMeter
 
 /**
- * The engine-level byte-rate cap behind config `max_bandwidth_kbps`: one shared token bucket every transfer of the
- * pass draws from, so the configured cap bounds the AGGREGATE across concurrent transfers, not each transfer on its
+ * The engine-level byte-rate cap behind config `max_bandwidth_kbps` (and `daemon run --max-bandwidth-kib`,
+ * gkrost/unidrive-cli#715): one shared token bucket every transfer of the pass (or of the daemon: its hydration downloads
+ * and its uploads, see `RemoteOperationGuard.bandwidth`) draws from, so the configured cap bounds the AGGREGATE across concurrent transfers, not each transfer on its
  * own (which multiplied the cap by the transfer concurrency).
  *
  * A transfer [reserve]s the bytes it expects to move and waits until the bucket is not in debt; the reservation puts
@@ -97,6 +100,23 @@ class BandwidthPacer(
                     }
                 withTimeoutOrNull(maxOf(1L, waitNanos / NANOS_PER_MILLI)) { refunded.receive() }
             }
+        }
+    }
+
+    /**
+     * Runs [block] holding a reservation of [expectedBytes]: the wait for the line comes first, the bytes the transfer
+     * reports through its [TransferMeter] are what the bucket is charged, and the rest of the forecast goes back when the
+     * block ends, however it ends. Call it before taking a permit of a concurrency budget, so the wait idles no slot.
+     */
+    suspend fun <T> paced(
+        expectedBytes: Long,
+        block: suspend () -> T,
+    ): T {
+        val reservation = reserve(expectedBytes)
+        try {
+            return withContext(TransferMeter(reservation::moved)) { block() }
+        } finally {
+            reservation.close()
         }
     }
 

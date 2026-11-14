@@ -21,6 +21,7 @@ import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.RemoteContentRefusedDownloadException
 import org.krost.unidrive.RemoteIncompleteDownloadException
+import org.krost.unidrive.currentTransferMeter
 import org.krost.unidrive.engine.AuditSink
 import org.krost.unidrive.engine.CachePaths
 import org.krost.unidrive.engine.EnumerationEntryPoint
@@ -250,8 +251,9 @@ class MountEngine private constructor(
         if (guard.isIgnoreRuleFile(path)) guard.ignoreRuleFileWritten(path)
     }
 
-    /** See [RemoteOperationGuard.withTransferPermit]. */
-    suspend fun <T> withTransferPermit(block: suspend () -> T): T = guard.withTransferPermit(block)
+    /** See [RemoteOperationGuard.withTransferPermit]; an upload names its cache copy, whose size is reserved on the byte-rate cap first (#715). */
+    suspend fun <T> withTransferPermit(upload: Path? = null, block: suspend () -> T): T =
+        guard.paced(upload?.let { runCatching { Files.size(it) }.getOrDefault(0L) } ?: 0L) { guard.withTransferPermit(block) }
 
     /**
      * The hydration-cache file of a logical [path] (the host's layout). Always inside the profile's cache folder:
@@ -827,9 +829,9 @@ class MountEngine private constructor(
             // archive#778: a download starts only while the daemon is not paused; one running when a pause begins is
             // judged on the bytes the staging file holds so far.
             // gkrost/unidrive-cli#392: and only with a permit of the download budget, by the size the row knows: many small
-            // files at once, large ones at the provider's transfer cap, all of them narrow again after a throttle.
+            // files at once, large ones at the provider's transfer cap, all of them narrow again after a throttle. #715: after the byte-rate cap.
             val fetched =
-                guard.downloadBudget.withPermit(entry.remoteSize) {
+                guard.pacedDownload(entry.remoteSize, bytesStaged = { stagedBytes(staged) }) {
                     rememberingRemoteIncomplete(path, entry) {
                         pause.track(path) { transfer ->
                             transfer.begin()
@@ -1384,7 +1386,10 @@ class MountEngine private constructor(
         val tally = FileEventTally()
         FileEvents.event(FileEvents.Phase.PICKUP, path, tally = tally, extra = listOf("source" to "mount"))
         try {
-            return uploadFromCacheMeasured(path, cachePath, ifMatchETag, onProgress, tally)
+            // gkrost/unidrive-cli#715: a paced upload (withTransferPermit) is charged the bytes it reports, or its size once sent.
+            val meter = currentTransferMeter()
+            val metered: ((Long, Long) -> Unit)? = meter?.let { m -> { done, total -> m.movedTotal(done); onProgress?.invoke(done, total) } } ?: onProgress
+            return uploadFromCacheMeasured(path, cachePath, ifMatchETag, metered, tally).also { if (it.sent) meter?.movedTotal(it.size ?: 0L) }
         } finally {
             FileEvents.summary("mount-upload", tally)
         }
