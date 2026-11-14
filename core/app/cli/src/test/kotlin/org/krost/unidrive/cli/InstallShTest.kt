@@ -126,8 +126,11 @@ class InstallShTest {
         error("dist/install.sh not found above ${System.getProperty("user.dir")}")
     }
 
-    private fun install(env: Map<String, String> = emptyMap()): String {
-        val (code, out) = runInstall(env)
+    private fun install(
+        env: Map<String, String> = emptyMap(),
+        path: Path? = null,
+    ): String {
+        val (code, out) = runInstall(env, path)
         assertEquals(0, code, out)
         return out
     }
@@ -136,12 +139,16 @@ class InstallShTest {
      * Runs install.sh against the throwaway HOME with the given extra environment. The mount overrides
      * (UNIDRIVE_MOUNT_REPO / UNIDRIVE_MOUNT_RELEASE / UNIDRIVE_MOUNT_RELEASE_URL) are removed from the
      * inherited environment unless the caller sets them, so a developer's exported values cannot turn the
-     * download tests into the skip branch.
+     * download tests into the skip branch. An optional [path] directory is put first on PATH, ahead of
+     * the throwaway bin.
      */
-    private fun runInstall(env: Map<String, String>): Pair<Int, String> {
+    private fun runInstall(
+        env: Map<String, String>,
+        path: Path? = null,
+    ): Pair<Int, String> {
         val pb = ProcessBuilder("bash", installScript().toString(), jar.toString()).redirectErrorStream(true)
         pb.environment()["HOME"] = home.toString()
-        pb.environment()["PATH"] = "${dir.resolve("bin")}:/usr/bin:/bin"
+        pb.environment()["PATH"] = "${listOfNotNull(path?.toString(), dir.resolve("bin").toString()).joinToString(":")}:/usr/bin:/bin"
         for (override in listOf("UNIDRIVE_MOUNT_REPO", "UNIDRIVE_MOUNT_RELEASE", "UNIDRIVE_MOUNT_RELEASE_URL")) {
             if (env.containsKey(override)) pb.environment()[override] = env.getValue(override)
             else pb.environment().remove(override)
@@ -218,6 +225,25 @@ class InstallShTest {
         val out = install(mapOf("UNIDRIVE_MOUNT_RELEASE_URL" to dir.resolve("no-such-tarball.tar.gz").toUri().toString()))
         assertTrue(out.contains("Co-daemon download skipped"), "the honest skip note is printed: $out")
         assertTrue(!Files.exists(installedMount), "no binary is installed from a missing release: $out")
+    }
+
+    // The release ships x86_64 and aarch64; a host neither covers must not install an x86_64 binary it
+    // cannot run — the checksum would verify cleanly and the failure would show only at mount time. A
+    // fake uname first on PATH stands in for such a host.
+    @Test
+    fun a_host_the_pinned_release_has_no_build_for_skips_the_download() {
+        val fakeBin = Files.createDirectories(dir.resolve("fake-uname-bin"))
+        val uname = fakeBin.resolve("uname")
+        Files.writeString(uname, "#!/bin/sh\necho riscv64\n")
+        uname.toFile().setExecutable(true)
+        val out =
+            install(
+                mapOf("UNIDRIVE_MOUNT_RELEASE_URL" to dir.resolve("no-such-tarball.tar.gz").toUri().toString()),
+                path = fakeBin,
+            )
+        assertTrue(out.contains("no build for riscv64"), "the skip note names the host architecture: $out")
+        assertTrue(out.contains("Co-daemon download skipped"), "the skip is honest: $out")
+        assertTrue(!Files.exists(installedMount), "no binary is installed for an unsupported host: $out")
     }
 
     // #6: the local-build override the deploy script uses keeps install.sh out of the way — no download is

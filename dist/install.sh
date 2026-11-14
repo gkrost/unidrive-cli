@@ -80,30 +80,41 @@ else
     echo "NOTE: no checksum file at ${sha_file}; skipping sha256 verification"
 fi
 
-asc_file="${CLI_JAR}.asc"
-if [[ -f "${asc_file}" ]]; then
-    if [[ -z "${RELEASE_KEY_FINGERPRINT}" ]]; then
-        echo "NOTE: signature file present at ${asc_file} but no release key fingerprint is configured"
-        echo "      (set UNIDRIVE_RELEASE_KEY_FINGERPRINT); skipping signature verification"
-    elif ! command -v gpg >/dev/null 2>&1; then
-        echo "ERROR: ${asc_file} is present but gpg is not installed; cannot verify the signature" >&2
-        exit 1
-    else
-        echo "Verifying signature: ${asc_file}"
-        verify_out="$(gpg --verify "${asc_file}" "${CLI_JAR}" 2>&1)" || {
-            printf '%s\n' "${verify_out}" >&2
-            echo "ERROR: signature verification failed for ${CLI_JAR}" >&2
-            exit 1
-        }
-        # gpg prints the primary key fingerprint in spaced hex groups; strip
-        # the spaces before comparing with the configured fingerprint.
-        if ! tr -d ' \n' <<<"${verify_out}" | grep -qF -- "${RELEASE_KEY_FINGERPRINT}"; then
-            printf '%s\n' "${verify_out}" >&2
-            echo "ERROR: signature was made by a key other than ${RELEASE_KEY_FINGERPRINT}" >&2
-            exit 1
-        fi
+# gpg --verify of <asc> against <file>, with the rules the JAR block had: a
+# missing (or empty) .asc stays allowed — a checksum-only release installs —
+# a present .asc without a configured fingerprint or without gpg warns, and a
+# bad or foreign signature fails the install (exit 1) before anything is
+# replaced. The co-daemon download runs the same check on its tarball.
+verify_release_signature() { # <file> <asc>
+    local file="$1" asc="$2"
+    if [[ ! -s "${asc}" ]]; then
+        return 0
     fi
-fi
+    if [[ -z "${RELEASE_KEY_FINGERPRINT}" ]]; then
+        echo "NOTE: signature file present at ${asc} but no release key fingerprint is configured"
+        echo "      (set UNIDRIVE_RELEASE_KEY_FINGERPRINT); skipping signature verification"
+        return 0
+    fi
+    if ! command -v gpg >/dev/null 2>&1; then
+        echo "ERROR: ${asc} is present but gpg is not installed; cannot verify the signature" >&2
+        exit 1
+    fi
+    echo "Verifying signature: ${asc}"
+    verify_out="$(gpg --verify "${asc}" "${file}" 2>&1)" || {
+        printf '%s\n' "${verify_out}" >&2
+        echo "ERROR: signature verification failed for ${file}" >&2
+        exit 1
+    }
+    # gpg prints the primary key fingerprint in spaced hex groups; strip
+    # the spaces before comparing with the configured fingerprint.
+    if ! tr -d ' \n' <<<"${verify_out}" | grep -qF -- "${RELEASE_KEY_FINGERPRINT}"; then
+        printf '%s\n' "${verify_out}" >&2
+        echo "ERROR: signature was made by a key other than ${RELEASE_KEY_FINGERPRINT}" >&2
+        exit 1
+    fi
+}
+
+verify_release_signature "${CLI_JAR}" "${CLI_JAR}.asc"
 
 # Java is checked by the launcher on every run; warn here too so a missing runtime shows at install time.
 java_ok=0
@@ -214,7 +225,16 @@ mkdir -p "${LOG_DIR}"
 # without the mount.
 MOUNT_RELEASE="${UNIDRIVE_MOUNT_RELEASE:-v0.1.0}"
 MOUNT_BIN="${INSTALL_LIB}/unidrive-mount"
-MOUNT_TARBALL="unidrive-mount-${MOUNT_RELEASE#v}-x86_64.tar.gz"
+# The mount release ships x86_64 and aarch64; installing the x86_64 binary on
+# an ARM host would verify cleanly and still not run, so the host architecture
+# picks the tarball and a host the release does not build for skips the
+# download with a note.
+case "$(uname -m)" in
+    x86_64 | amd64) MOUNT_ARCH=x86_64 ;;
+    aarch64 | arm64) MOUNT_ARCH=aarch64 ;;
+    *) MOUNT_ARCH="" ;;
+esac
+MOUNT_TARBALL="unidrive-mount-${MOUNT_RELEASE#v}-${MOUNT_ARCH}.tar.gz"
 MOUNT_RELEASE_URL="${UNIDRIVE_MOUNT_RELEASE_URL:-https://github.com/gkrost/unidrive-mount-linux/releases/download/${MOUNT_RELEASE}/${MOUNT_TARBALL}}"
 mount_tmp=""
 
@@ -235,20 +255,35 @@ elif ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; the
     echo "Co-daemon download skipped: neither curl nor wget is available. Build manually:"
     mount_manual_hint
     echo ""
+elif [[ -z "${MOUNT_ARCH}" ]]; then
+    echo ""
+    echo "Co-daemon download skipped: the pinned release has no build for $(uname -m). Build manually:"
+    mount_manual_hint
+    echo ""
 else
     mount_tmp="$(mktemp -d)"
     mount_downloaded=1
+    mount_err=""
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 3 -o "${mount_tmp}/${MOUNT_TARBALL}" "${MOUNT_RELEASE_URL}" \
-            && curl -fsSL --retry 3 -o "${mount_tmp}/${MOUNT_TARBALL}.sha256" "${MOUNT_RELEASE_URL}.sha256" \
+        mount_err="$(curl -fsSL --retry 3 -o "${mount_tmp}/${MOUNT_TARBALL}" "${MOUNT_RELEASE_URL}" 2>&1)" \
+            && mount_err="$(curl -fsSL --retry 3 -o "${mount_tmp}/${MOUNT_TARBALL}.sha256" "${MOUNT_RELEASE_URL}.sha256" 2>&1)" \
             || mount_downloaded=0
     else
-        wget -q --tries=3 -O "${mount_tmp}/${MOUNT_TARBALL}" "${MOUNT_RELEASE_URL}" \
-            && wget -q --tries=3 -O "${mount_tmp}/${MOUNT_TARBALL}.sha256" "${MOUNT_RELEASE_URL}.sha256" \
+        mount_err="$(wget -q --tries=3 -O "${mount_tmp}/${MOUNT_TARBALL}" "${MOUNT_RELEASE_URL}" 2>&1)" \
+            && mount_err="$(wget -q --tries=3 -O "${mount_tmp}/${MOUNT_TARBALL}.sha256" "${MOUNT_RELEASE_URL}.sha256" 2>&1)" \
             || mount_downloaded=0
     fi
     if [[ "${mount_downloaded}" == "1" ]]; then
         if (cd "${mount_tmp}" && sha256sum -c "${MOUNT_TARBALL}.sha256"); then
+            # The checksum is fetched from the same release as the tarball, so it catches a corrupted
+            # download, not a replaced release asset. The mount release attaches .asc files once its
+            # signing secrets are set; verify when present, under the same rules as the JAR.
+            if command -v curl >/dev/null 2>&1; then
+                curl -fsSL --retry 3 -o "${mount_tmp}/${MOUNT_TARBALL}.asc" "${MOUNT_RELEASE_URL}.asc" 2>/dev/null || true
+            else
+                wget -q --tries=3 -O "${mount_tmp}/${MOUNT_TARBALL}.asc" "${MOUNT_RELEASE_URL}.asc" 2>/dev/null || true
+            fi
+            verify_release_signature "${mount_tmp}/${MOUNT_TARBALL}" "${mount_tmp}/${MOUNT_TARBALL}.asc"
             tar -xzf "${mount_tmp}/${MOUNT_TARBALL}" -C "${mount_tmp}"
             mount_dist_bin="${mount_tmp}/unidrive-mount-${MOUNT_RELEASE#v}/unidrive-mount"
             if [[ ! -f "${mount_dist_bin}" ]]; then
@@ -267,9 +302,9 @@ else
         fi
     else
         echo ""
-        echo "Co-daemon download skipped: no release tarball at ${MOUNT_RELEASE_URL} yet."
-        echo "Once the first release tarball lands on github.com/gkrost/unidrive-mount-linux,"
-        echo "this install downloads and verifies it. Until then, build manually:"
+        echo "Co-daemon download skipped: ${MOUNT_RELEASE_URL} could not be fetched (${mount_err:-no error reported})."
+        echo "Expected while no release tarball exists on github.com/gkrost/unidrive-mount-linux; otherwise the"
+        echo "error above says what failed. Until then, build manually:"
         mount_manual_hint
         echo ""
     fi
