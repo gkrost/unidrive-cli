@@ -453,6 +453,63 @@ class RelocateCommandTest {
     }
 
     @Test
+    fun `a file that lands in a walked source folder after the listing survives the delete pass`() {
+        val source = FakeCloudProvider()
+        val target = FakeCloudProvider()
+        source.seedFolder("/docs/sub")
+        source.seedFile("/docs/sub/a.txt", "a")
+        source.seedFile("/docs/top.txt", "top")
+        source.metadataOverride["/docs"] = folderItem("/docs", id = "root-docs")
+
+        val (manifest, outcome) = migrateWithManifest(source, target)
+        // The multi-hour-relocate shape (#749): the file lands in a folder the walk already
+        // listed, so the manifest never records it.
+        source.seedFile("/docs/sub/late.txt", "late")
+
+        val ex = assertFailsWith<IllegalStateException> { deletePass(source, manifest, "/docs", outcome) }
+
+        assertTrue(
+            source.deletedPaths.contains("/docs/sub/a.txt") && source.deletedPaths.contains("/docs/top.txt"),
+            "the migrated files are still deleted; got: ${source.deletedPaths}",
+        )
+        assertTrue(
+            "/docs/sub/late.txt" !in source.deletedPaths,
+            "the late file must survive; deleted: ${source.deletedPaths}",
+        )
+        assertTrue(
+            "/docs" !in source.deletedPaths && "/docs/sub" !in source.deletedPaths,
+            "no folder holding an unaccounted item may be deleted; deleted: ${source.deletedPaths}",
+        )
+        assertTrue(
+            "late.txt" in (ex.message ?: ""),
+            "the report names the item that was not migrated; got: ${ex.message}",
+        )
+    }
+
+    @Test
+    fun `a file that lands in the source root after the listing keeps the root folder standing`() {
+        val source = FakeCloudProvider()
+        val target = FakeCloudProvider()
+        source.seedFile("/docs/a.txt", "a")
+        source.metadataOverride["/docs"] = folderItem("/docs", id = "root-docs")
+
+        val (manifest, outcome) = migrateWithManifest(source, target)
+        source.seedFile("/docs/late.txt", "late")
+
+        assertFailsWith<IllegalStateException> { deletePass(source, manifest, "/docs", outcome) }
+
+        assertEquals(
+            listOf("/docs/a.txt"),
+            source.deletedPaths,
+            "the migrated file goes, the boundary root is never deleted while it holds an unaccounted item",
+        )
+        assertTrue(
+            "/docs/late.txt" !in source.deletedPaths,
+            "the late file must survive in the cloud",
+        )
+    }
+
+    @Test
     fun `a failed file delete is reported per path and the rest still deletes`() {
         val source = FakeCloudProvider()
         val target = FakeCloudProvider()
