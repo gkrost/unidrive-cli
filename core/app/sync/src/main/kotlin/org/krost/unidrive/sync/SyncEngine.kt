@@ -2532,237 +2532,237 @@ open class SyncEngine(
         // already happened before this gather (no mirror rules): pages are sent as they are flushed.
         val deferredSlices = mutableListOf<PageSlice>()
 
-        coroutineScope {
-            // Reference to this outer scope. The executor launches dispatch
-            // jobs into it (rather than into a child scope) so an auth-
-            // failure cancel here propagates to consumer + producer too,
-            // mirroring Pass 2's `this@coroutineScope.cancel()` shape.
-            val gatherScope = this
+        try {
+            coroutineScope {
+                // Reference to this outer scope. The executor launches dispatch
+                // jobs into it (rather than into a child scope) so an auth-
+                // failure cancel here propagates to consumer + producer too,
+                // mirroring Pass 2's `this@coroutineScope.cancel()` shape.
+                val gatherScope = this
 
-            // Consumer: reconcile slices as they arrive. Forward safe-now
-            // transfer actions to the executor; the rest land in
-            // safeAccumulator for the engine's final Pass 1 / Pass 2 sweep.
-            val consumerJob =
-                launch {
-                    for (pageSlice in pageChannel) {
-                        if (pageSlice.slice.isEmpty()) continue
-                        val pageLocal = resolvedLocal.get()
-                        val pageActions =
-                            reconciler.resolveSlice(
-                                pageSlice.slice,
-                                pageLocal,
-                                scope,
-                                pageSlice.stableRemoteTopLevelNames,
-                                downloadOnly = syncDirection == SyncDirection.DOWNLOAD,
-                                landedRemoteId = buffer::landedIdAt,
-                            )
-                        val safeNow = buffer.classify(pageActions)
-                        safeNow.filterTo(safeAccumulator) { accumulatedOnce.add(it) }
-                        for (action in safeNow) {
-                            if (action is SyncAction.DownloadContent || action is SyncAction.Upload) {
-                                // archive#200(b): a NEW-local upload must NOT dispatch mid-gather —
-                                // enumeration completeness isn't known until scan-end. It stays in
-                                // safeAccumulator, so finalizeStreaming's gate either keeps it
-                                // (complete → uploaded in Pass 2) or defers it (incomplete),
-                                // never duplicating an un-enumerated remote file. Downloads and
-                                // MODIFIED/replace uploads still stream concurrently.
-                                if (action is SyncAction.Upload && pageLocal[action.path] == ChangeState.NEW) continue
-                                // Claim before forwarding so a transfer re-emitted on a later
-                                // page is sent to the executor exactly once. add() returns
-                                // false when already claimed; concurrent set so two page-slices
-                                // can't both win the claim.
-                                //
-                                // An Upload's local content is fixed for the gather
-                                // (localChanges is computed once), so a MODIFIED upload that
-                                // recurs across pages is a true duplicate — claim by path.
-                                // A DownloadContent, however, carries this page's remote
-                                // metadata: if the remote was edited again on a later page the
-                                // later DownloadContent is a genuinely-newer transfer, so key
-                                // it on (path, hash, modified) — only an identical re-emission
-                                // is dropped, never a fresher remote version.
-                                val claimKey =
-                                    when (action) {
-                                        is SyncAction.DownloadContent ->
-                                            "${action.path}|${action.remoteItem.hash}|${action.remoteItem.modified}"
-                                        else -> action.path
-                                    }
-                                if (!sentToExecutor.add(claimKey)) continue
-                                executorChannel.send(action)
-                            }
-                        }
-                        if (pageSlice.ids.isNotEmpty()) {
-                            db.markStagedReconciled(scanId, pageSlice.ids)
-                        }
-                    }
-                    // Producer is done and we drained the page channel; the
-                    // executor can stop accepting new work and finish its
-                    // in-flight items.
-                    executorChannel.close()
-                }
-
-            // Executor: dispatch safe-now transfers concurrently with the
-            // gather. Mirrors the Pass 2 dispatch shape (foreground priority,
-            // shared semaphore, restore-to-placeholder on download failure)
-            // so a streamed transfer is indistinguishable from a Pass 2
-            // dispatch in terms of side effects. Launches into `gatherScope`
-            // (not into a child scope) so an auth failure cancels consumer
-            // + producer too, matching Pass 2's behaviour.
-            // perProviderConcurrency workers take the queued transfers, instead of a coroutine per transfer
-            // parked on the transfer budget. The queue is unbounded on purpose: a full queue would hold back
-            // executorChannel and with it the enumeration, which a slow transfer must not stall. It holds
-            // the small items, not coroutines.
-            val workers = BoundedLauncher(gatherScope, perProviderConcurrency, kotlinx.coroutines.channels.Channel.UNLIMITED)
-            val executorJob =
-                launch {
-                    // Serialize transfers that target the SAME path, in channel (page)
-                    // order. A path can surface a second transfer on a later page — a
-                    // remote edited again mid-enumeration yields a newer DownloadContent
-                    // with different metadata, which the content-aware claim deliberately
-                    // lets through. If both ran concurrently to the same destination + DB
-                    // row, a slower earlier-page transfer could finish last and overwrite
-                    // the fresher bytes/metadata. Chaining each path's job onto the prior
-                    // one (join, which waits without rethrowing) makes the later page win.
-                    // Distinct paths get a null prior, so they still run concurrently. The
-                    // loop is single-threaded, so this map needs no synchronisation.
-                    val lastJobPerPath = HashMap<String, kotlinx.coroutines.Job>()
-                    for (action in executorChannel) {
-                        val prior = lastJobPerPath[action.path]
-                        when (action) {
-                            is SyncAction.DownloadContent, is SyncAction.Upload ->
-                                lastJobPerPath[action.path] =
-                                    workers.launch {
-                                        prior?.join()
-                                        dispatchStreamingTransfer(
-                                            action = action,
-                                            succeeded = if (action is SyncAction.Upload) uploaded else downloaded,
-                                            transferFailures = transferFailures,
-                                            authFailure = authFailure,
-                                            executedPaths = executedPaths,
-                                            gatherScope = gatherScope,
-                                            transferSemaphore = transferSemaphore,
-                                        )
-                                    }
-                            else -> {
-                                // Defensive: classify() only surfaces
-                                // Download/Upload to us. Ignore the rest so
-                                // a future SyncAction variant doesn't crash.
-                            }
-                        }
-                    }
-                }
-            // However the executor ends, no more items come: the workers finish what is queued and end.
-            executorJob.invokeOnCompletion { workers.close() }
-
-            // Producer: page-fetch loop with 1-page rename-coalescing lookahead.
-            launch {
-                var heldItems: MutableMap<String, HeldItem>? = null
-
-                suspend fun flushHeld() {
-                    val held = heldItems ?: return
-                    heldItems = null
-                    if (held.isEmpty()) return
-                    val slice = LinkedHashMap<String, CloudItem>()
-                    val ids = mutableListOf<String>()
-                    for ((_, item) in held) {
-                        ids.add(item.originalId)
-                        // gkrost/unidrive-cli#582: a cloud name with a lone surrogate is refused here, at the page's
-                        // admission, before the slice reconciles and dispatches: no action is planned for it, no row
-                        // is written, and the warning is the once-per-name one the final filter shares. The id stays
-                        // in the page's ids above (checkpoint accounting) and in the absence sweep's unreachable set, as an
-                        // item the provider listed but this pass does not take: a row tracked under the same id (the cloud
-                        // renamed it to this name) is not a remote deletion, and the folders above it stay (as for any
-                        // unreachable item). The cloud copy is left alone.
-                        val surrogateIssue = loneSurrogatePathIssue(item.resolved.path)
-                        if (surrogateIssue != null) {
-                            unreachable.add(item.originalId)
-                            if (loneSurrogateWarned.add(item.resolved.path)) log.warn("Skipping cloud item {}: {}", item.resolved.path, surrogateIssue)
-                            continue
-                        }
-                        // archive#401: single admit into the gather map. The page slice carries
-                        // the key's winner only when THIS page's item is it — a twin that
-                        // lost to an earlier page's winner was already reconciled on that
-                        // page, and the collision is recorded by the admit itself.
-                        val winner = admit(changes, keyToPath, collisions, item.resolved)
-                        if (winner.id == item.resolved.id) {
-                            slice[winner.path] = winner
-                        }
-                    }
-                    reporter.onScanProgress("remote", changes.size)
-                    // Pass the pre-fetched complete top-level set (page-order-independent).
-                    val page = PageSlice(slice, ids, stableRemoteTopLevelNames)
-                    if (deferUntilListing) deferredSlices.add(page) else pageChannel.send(page)
-                }
-
-                suspend fun ingestPage(page: DeltaPage) {
-                    persistPendingCursor(page.cursor)
-
-                    // Resolve and stage the new page's items keyed by remote id.
-                    // resolveItemPath may collapse to null for unreachable deletes;
-                    // those entries are dropped from the lookahead (the next sync
-                    // will surface them once their context is in the local DB).
-                    val newItems = LinkedHashMap<String, HeldItem>()
-                    for (item in page.items) {
-                        val resolved = resolveItemPath(item) ?: continue
-                        newItems[resolved.id] = HeldItem(resolved, resolved.id)
-                    }
-
-                    // Merge step: any id in newItems that also lives in the held
-                    // page gets its held entry's path overridden with the new
-                    // page's path (later page wins).
-                    val held = heldItems
-                    if (held != null) {
-                        for ((id, item) in newItems) {
-                            val priorHeld = held[id] ?: continue
-                            held[id] =
-                                HeldItem(
-                                    resolved =
-                                        priorHeld.resolved.copy(
-                                            path = item.resolved.path,
-                                            name = item.resolved.name,
-                                        ),
-                                    originalId = priorHeld.originalId,
+                // Consumer: reconcile slices as they arrive. Forward safe-now
+                // transfer actions to the executor; the rest land in
+                // safeAccumulator for the engine's final Pass 1 / Pass 2 sweep.
+                val consumerJob =
+                    launch {
+                        for (pageSlice in pageChannel) {
+                            if (pageSlice.slice.isEmpty()) continue
+                            val pageLocal = resolvedLocal.get()
+                            val pageActions =
+                                reconciler.resolveSlice(
+                                    pageSlice.slice,
+                                    pageLocal,
+                                    scope,
+                                    pageSlice.stableRemoteTopLevelNames,
+                                    downloadOnly = syncDirection == SyncDirection.DOWNLOAD,
+                                    landedRemoteId = buffer::landedIdAt,
                                 )
+                            val safeNow = buffer.classify(pageActions)
+                            safeNow.filterTo(safeAccumulator) { accumulatedOnce.add(it) }
+                            for (action in safeNow) {
+                                if (action is SyncAction.DownloadContent || action is SyncAction.Upload) {
+                                    // archive#200(b): a NEW-local upload must NOT dispatch mid-gather —
+                                    // enumeration completeness isn't known until scan-end. It stays in
+                                    // safeAccumulator, so finalizeStreaming's gate either keeps it
+                                    // (complete → uploaded in Pass 2) or defers it (incomplete),
+                                    // never duplicating an un-enumerated remote file. Downloads and
+                                    // MODIFIED/replace uploads still stream concurrently.
+                                    if (action is SyncAction.Upload && pageLocal[action.path] == ChangeState.NEW) continue
+                                    // Claim before forwarding so a transfer re-emitted on a later
+                                    // page is sent to the executor exactly once. add() returns
+                                    // false when already claimed; concurrent set so two page-slices
+                                    // can't both win the claim.
+                                    //
+                                    // An Upload's local content is fixed for the gather
+                                    // (localChanges is computed once), so a MODIFIED upload that
+                                    // recurs across pages is a true duplicate — claim by path.
+                                    // A DownloadContent, however, carries this page's remote
+                                    // metadata: if the remote was edited again on a later page the
+                                    // later DownloadContent is a genuinely-newer transfer, so key
+                                    // it on (path, hash, modified) — only an identical re-emission
+                                    // is dropped, never a fresher remote version.
+                                    val claimKey =
+                                        when (action) {
+                                            is SyncAction.DownloadContent ->
+                                                "${action.path}|${action.remoteItem.hash}|${action.remoteItem.modified}"
+                                            else -> action.path
+                                        }
+                                    if (!sentToExecutor.add(claimKey)) continue
+                                    executorChannel.send(action)
+                                }
+                            }
+                            if (pageSlice.ids.isNotEmpty()) {
+                                db.markStagedReconciled(scanId, pageSlice.ids)
+                            }
+                        }
+                        // Producer is done and we drained the page channel; the
+                        // executor can stop accepting new work and finish its
+                        // in-flight items.
+                        executorChannel.close()
+                    }
+
+                // Executor: dispatch safe-now transfers concurrently with the
+                // gather. Mirrors the Pass 2 dispatch shape (foreground priority,
+                // shared semaphore, restore-to-placeholder on download failure)
+                // so a streamed transfer is indistinguishable from a Pass 2
+                // dispatch in terms of side effects. Launches into `gatherScope`
+                // (not into a child scope) so an auth failure cancels consumer
+                // + producer too, matching Pass 2's behaviour.
+                // perProviderConcurrency workers take the queued transfers, instead of a coroutine per transfer
+                // parked on the transfer budget. The queue is unbounded on purpose: a full queue would hold back
+                // executorChannel and with it the enumeration, which a slow transfer must not stall. It holds
+                // the small items, not coroutines.
+                val workers = BoundedLauncher(gatherScope, perProviderConcurrency, kotlinx.coroutines.channels.Channel.UNLIMITED)
+                val executorJob =
+                    launch {
+                        // Serialize transfers that target the SAME path, in channel (page)
+                        // order. A path can surface a second transfer on a later page — a
+                        // remote edited again mid-enumeration yields a newer DownloadContent
+                        // with different metadata, which the content-aware claim deliberately
+                        // lets through. If both ran concurrently to the same destination + DB
+                        // row, a slower earlier-page transfer could finish last and overwrite
+                        // the fresher bytes/metadata. Chaining each path's job onto the prior
+                        // one (join, which waits without rethrowing) makes the later page win.
+                        // Distinct paths get a null prior, so they still run concurrently. The
+                        // loop is single-threaded, so this map needs no synchronisation.
+                        val lastJobPerPath = HashMap<String, kotlinx.coroutines.Job>()
+                        for (action in executorChannel) {
+                            val prior = lastJobPerPath[action.path]
+                            when (action) {
+                                is SyncAction.DownloadContent, is SyncAction.Upload ->
+                                    lastJobPerPath[action.path] =
+                                        workers.launch {
+                                            prior?.join()
+                                            dispatchStreamingTransfer(
+                                                action = action,
+                                                succeeded = if (action is SyncAction.Upload) uploaded else downloaded,
+                                                transferFailures = transferFailures,
+                                                authFailure = authFailure,
+                                                executedPaths = executedPaths,
+                                                gatherScope = gatherScope,
+                                                transferSemaphore = transferSemaphore,
+                                            )
+                                        }
+                                else -> {
+                                    // Defensive: classify() only surfaces
+                                    // Download/Upload to us. Ignore the rest so
+                                    // a future SyncAction variant doesn't crash.
+                                }
+                            }
                         }
                     }
+                // However the executor ends, no more items come: the workers finish what is queued and end.
+                executorJob.invokeOnCompletion { workers.close() }
 
-                    // Release the held page for reconciliation (now with any
-                    // merged paths applied) and replace it with the new page.
-                    flushHeld()
-                    heldItems = newItems
-                }
+                // Producer: page-fetch loop with 1-page rename-coalescing lookahead.
+                launch {
+                    var heldItems: MutableMap<String, HeldItem>? = null
 
-                try {
-                    var page = nextPage(cursor)
-                    ingestPage(page)
-                    while (page.hasMore) {
-                        page = nextPage(page.cursor)
+                    suspend fun flushHeld() {
+                        val held = heldItems ?: return
+                        heldItems = null
+                        if (held.isEmpty()) return
+                        val slice = LinkedHashMap<String, CloudItem>()
+                        val ids = mutableListOf<String>()
+                        for ((_, item) in held) {
+                            ids.add(item.originalId)
+                            // gkrost/unidrive-cli#582: a cloud name with a lone surrogate is refused here, at the page's
+                            // admission, before the slice reconciles and dispatches: no action is planned for it, no row
+                            // is written, and the warning is the once-per-name one the final filter shares. The id stays
+                            // in the page's ids above (checkpoint accounting) and in the absence sweep's unreachable set, as an
+                            // item the provider listed but this pass does not take: a row tracked under the same id (the cloud
+                            // renamed it to this name) is not a remote deletion, and the folders above it stay (as for any
+                            // unreachable item). The cloud copy is left alone.
+                            val surrogateIssue = loneSurrogatePathIssue(item.resolved.path)
+                            if (surrogateIssue != null) {
+                                unreachable.add(item.originalId)
+                                if (loneSurrogateWarned.add(item.resolved.path)) log.warn("Skipping cloud item {}: {}", item.resolved.path, surrogateIssue)
+                                continue
+                            }
+                            // archive#401: single admit into the gather map. The page slice carries
+                            // the key's winner only when THIS page's item is it — a twin that
+                            // lost to an earlier page's winner was already reconciled on that
+                            // page, and the collision is recorded by the admit itself.
+                            val winner = admit(changes, keyToPath, collisions, item.resolved)
+                            if (winner.id == item.resolved.id) {
+                                slice[winner.path] = winner
+                            }
+                        }
+                        reporter.onScanProgress("remote", changes.size)
+                        // Pass the pre-fetched complete top-level set (page-order-independent).
+                        val page = PageSlice(slice, ids, stableRemoteTopLevelNames)
+                        if (deferUntilListing) deferredSlices.add(page) else pageChannel.send(page)
+                    }
+
+                    suspend fun ingestPage(page: DeltaPage) {
+                        persistPendingCursor(page.cursor)
+
+                        // Resolve and stage the new page's items, keyed by remote id or, when the
+                        // item carries none, by path: a Dropbox tombstone has an empty id, and
+                        // keying it as "" would let the tombstones of one page overwrite each
+                        // other until only the last survives. A null resolve leaves the lookahead.
+                        val newItems = LinkedHashMap<String, HeldItem>()
+                        for (item in page.items) {
+                            val resolved = resolveItemPath(item) ?: continue
+                            newItems[resolved.id.ifEmpty { resolved.path }] = HeldItem(resolved, resolved.id)
+                        }
+
+                        // Merge step: an id in newItems that also lives in the held page gets
+                        // its held entry's path overridden with the new page's path (later page
+                        // wins). A path-keyed entry (empty id) never merges: renames carry an id.
+                        val held = heldItems
+                        if (held != null) {
+                            for ((id, item) in newItems) {
+                                val priorHeld = held[id]?.takeIf { item.originalId.isNotEmpty() } ?: continue
+                                held[id] =
+                                    HeldItem(
+                                        resolved =
+                                            priorHeld.resolved.copy(
+                                                path = item.resolved.path,
+                                                name = item.resolved.name,
+                                            ),
+                                        originalId = priorHeld.originalId,
+                                    )
+                            }
+                        }
+
+                        // Release the held page for reconciliation (now with any
+                        // merged paths applied) and replace it with the new page.
+                        flushHeld()
+                        heldItems = newItems
+                    }
+
+                    try {
+                        var page = nextPage(cursor)
                         ingestPage(page)
+                        while (page.hasMore) {
+                            page = nextPage(page.cursor)
+                            ingestPage(page)
+                        }
+                        // Final flush of whatever's still held after the last page.
+                        flushHeld()
+                        if (deferUntilListing) {
+                            publishPassListing(changes, scope)
+                            resolvedLocal.set(scanLocal!!.invoke())
+                            for (page in deferredSlices) pageChannel.send(page)
+                        }
+                    } finally {
+                        pageChannel.close()
                     }
-                    // Final flush of whatever's still held after the last page.
-                    flushHeld()
-                    if (deferUntilListing) {
-                        publishPassListing(changes, scope)
-                        resolvedLocal.set(scanLocal!!.invoke())
-                        for (page in deferredSlices) pageChannel.send(page)
-                    }
-                } finally {
-                    pageChannel.close()
                 }
-            }
 
-            consumerJob.join()
-            // executorJob.join() is implicit at coroutineScope exit, but be
-            // explicit: scope-exit will wait for it anyway. The consumer
-            // closed executorChannel above so the executor's `for` loop
-            // exits cleanly once it drains in-flight items.
-            executorJob.join()
+                consumerJob.join()
+                // executorJob.join() is implicit at coroutineScope exit, but be
+                // explicit: scope-exit will wait for it anyway. The consumer
+                // closed executorChannel above so the executor's `for` loop
+                // exits cleanly once it drains in-flight items.
+                executorJob.join()
+            }
+        } catch (e: CancellationException) {
+            // An AuthenticationException in the executor cancelled the scope: surface
+            // the latched failure, not the cancellation — the shape Pass 2 has below.
+            if (authFailure.get() == null) throw e
         }
-        // AuthenticationException latched by the executor — surface to the
-        // caller exactly like Pass 2 does so token refresh / re-auth flows
-        // trigger instead of a silent "0 downloaded, many failed" result.
-        // Pass 2 does the same rethrow after its own scope, but doing it
-        // here too means a streaming-only auth failure (no Pass 2 actions
-        // left to dispatch) still propagates.
         authFailure.get()?.let { throw it }
 
         if (allComplete) {

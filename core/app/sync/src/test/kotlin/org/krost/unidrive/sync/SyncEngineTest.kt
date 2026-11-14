@@ -3661,6 +3661,64 @@ class SyncEngineTest {
         }
 
     @Test
+    fun `dropbox tombstones without an id all delete their files in the streaming gather`() =
+        runTest {
+            // #742 finding 1: Dropbox deleted entries carry no remote id (DropboxItems
+            // resolves them through an in-process path→id map that is empty after a
+            // restart or in a one-shot run). The streaming gather keyed the held page
+            // items by remote id, so every tombstone of a page landed on key "" and
+            // only the last survived; the cursor was then promoted and the dropped
+            // deletions never came back.
+            val paths = listOf("/d1.txt", "/d2.txt", "/d3.txt", "/d4.txt", "/d5.txt")
+            for (path in paths) provider.files[path] = ByteArray(3)
+            provider.deltaItems = paths.map { cloudItem(it, size = 3) }
+            engine.syncOnce()
+            for (path in paths) assertNotNull(db.getEntry(path))
+
+            provider.deltaCursor = "cursor-del"
+            provider.deltaItems = paths.map { cloudItem(it, deleted = true).copy(id = "") }
+            val streaming =
+                SyncEngine(
+                    provider = provider,
+                    db = db,
+                    syncRoot = syncRoot,
+                    conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                    reporter = ProgressReporter.Silent,
+                    streamingReconciliation = true,
+                )
+            streaming.syncOnce()
+
+            for (path in paths) {
+                assertFalse(Files.exists(syncRoot.resolve(path.removePrefix("/"))), "$path must be deleted by its empty-id tombstone")
+            }
+        }
+
+    @Test
+    fun `an auth failure in a streamed transfer surfaces as the authentication failure, not a cancellation`() =
+        runTest {
+            // #742 finding 2: the streaming executor latches the AuthenticationException
+            // and cancels the gather scope; that CancellationException used to escape
+            // syncOnce as if the user had stopped the pass, and the auth failure was
+            // swallowed — the CLI printed a cancellation and watch mode retried forever.
+            // Pass 2 rethrows the latched failure; the streaming scope must do the same.
+            provider.files["/a.txt"] = ByteArray(10)
+            provider.deltaItems = listOf(cloudItem("/a.txt", size = 10))
+            provider.deltaCursor = "cursor-auth"
+            provider.authFailOnDownload = true
+            val streaming =
+                SyncEngine(
+                    provider = provider,
+                    db = db,
+                    syncRoot = syncRoot,
+                    conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                    reporter = ProgressReporter.Silent,
+                    streamingReconciliation = true,
+                )
+
+            assertFailsWith<AuthenticationException> { streaming.syncOnce() }
+        }
+
+    @Test
     fun `new local file and folder are planned once across a multi page gather`() =
         runTest {
             // gkrost/unidrive-cli#449: resolveSlice reads the FULL localChanges map on every delta page, so a NEW-local
