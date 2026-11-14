@@ -8,6 +8,7 @@ import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.sync.FakeCloudProvider
+import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -205,6 +206,82 @@ class XtraEncryptedProviderTest {
         assertEquals(200_000L, receipt.bytesWritten)
         assertEquals(1_700_000_000_000L, Files.getLastModifiedTime(dest).toMillis())
         assertEquals(listOf("g.bin"), Files.list(destDir).use { l -> l.map { it.fileName.toString() }.toList() })
+    }
+
+    // windows/cli#722 review: the staging file is owner-only from the first byte on, and the replacement takes the
+    // permissions of the file it replaces instead of the staging file's — the previous file's modes must survive the
+    // download. POSIX modes only; Windows has no mode bits to assert (there the staging file is owner-restricted and
+    // the moved file keeps that).
+    private fun posix(): Boolean = FileSystems.getDefault().supportedFileAttributeViews().contains("posix")
+
+    private fun downloadOver(
+        dest: Path,
+        previousPerms: String?,
+    ) {
+        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
+        val original = ByteArray(50_000) { (it * 3).toByte() }
+        val localFile = tmpDir.resolve("src.bin")
+        Files.write(localFile, original)
+        kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/h.bin") }
+
+        Files.write(dest, "the previous content".toByteArray())
+        if (previousPerms != null) {
+            Files.setPosixFilePermissions(dest, java.nio.file.attribute.PosixFilePermissions.fromString(previousPerms))
+        }
+        kotlinx.coroutines.runBlocking { xtra.download("/h.bin", dest) }
+        assertContentEquals(original, Files.readAllBytes(dest))
+        assertEquals(listOf(dest.fileName.toString()), Files.list(dest.parent).use { l -> l.map { it.fileName.toString() }.toList() })
+    }
+
+    @Test
+    fun `the replacement keeps the previous file's permissions instead of the staging file's`() {
+        if (!posix()) return
+        val dest = Files.createTempDirectory("xtra-provider-test").resolve("h.bin")
+
+        downloadOver(dest, "rw-------")
+
+        assertEquals(
+            java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+            Files.getPosixFilePermissions(dest),
+            "a download must not widen the file it replaces",
+        )
+    }
+
+    @Test
+    fun `the replacement keeps a wider destination's modes`() {
+        if (!posix()) return
+        val dest = Files.createTempDirectory("xtra-provider-test").resolve("h.bin")
+
+        downloadOver(dest, "rw-rw-r--")
+
+        assertEquals(
+            java.nio.file.attribute.PosixFilePermissions.fromString("rw-rw-r--"),
+            Files.getPosixFilePermissions(dest),
+            "the staged file's owner-only modes are not final when the previous file was wider",
+        )
+    }
+
+    @Test
+    fun `a download to a destination that does not exist yet lands owner-only`() {
+        if (!posix()) return
+        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
+        val original = ByteArray(50_000) { (it * 11).toByte() }
+        val localFile = tmpDir.resolve("src.bin")
+        Files.write(localFile, original)
+        kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/i.bin") }
+
+        val dest = tmpDir.resolve("fresh").resolve("i.bin")
+        kotlinx.coroutines.runBlocking { xtra.download("/i.bin", dest) }
+        assertContentEquals(original, Files.readAllBytes(dest))
+        assertEquals(
+            java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+            Files.getPosixFilePermissions(dest),
+            "the plaintext of the encrypted layer has no previous file to take its permissions from: owner-only",
+        )
     }
 
     @Test

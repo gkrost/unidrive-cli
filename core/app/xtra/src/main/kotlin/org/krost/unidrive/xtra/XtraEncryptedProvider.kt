@@ -8,15 +8,19 @@ import org.krost.unidrive.ContentProof
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteContentRefusedDownloadException
+import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.io.stagingSiblingName
 import org.krost.unidrive.io.withLocalIoRetry
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.FileTime
+import java.nio.file.attribute.PosixFileAttributeView
+import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.HexFormat
@@ -223,6 +227,11 @@ private suspend fun decrypt(
 // sibling staging file (the same directory, so the final move is one atomic step on one volume), reaches the disk, and
 // replaces the destination only when the whole stream authenticated. Whatever fails, the staging file goes and the
 // destination stays as it was.
+//
+// The staging file is owner-only from the first byte on (a decrypted file is the plaintext the layer exists to keep
+// from the cloud; a fresh file with the umask's defaults can be readable by others for as long as the decrypt runs).
+// When the destination already exists, its permissions are put on the staging file before the move, so the replacement
+// keeps the permissions the previous file had instead of the staging file's.
 @Suppress("TooGenericExceptionCaught") // whatever fails (an Error too), the staging file goes and the failure is rethrown
 private suspend fun decryptStaged(
     strategy: XtraEncryptionStrategy,
@@ -236,10 +245,12 @@ private suspend fun decryptStaged(
     Files.createDirectories(absolute.parent)
     val staging = absolute.resolveSibling(stagingSiblingName(absolute.fileName.toString(), ".${UUID.randomUUID()}.unidrive-tmp"))
     try {
+        createOwnerOnlyStagingFile(staging)
         FileOutputStream(staging.toFile()).use { out ->
             strategy.decrypt(input, out, fileKey, iv)
             out.fd.sync()
         }
+        takePreviousPermissions(absolute, staging)
         withLocalIoRetry { Files.move(staging, absolute, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
     } catch (e: AEADBadTagException) {
         // The seal does not authenticate: truncated, spliced or tampered ciphertext. Another attempt reads the same
@@ -250,6 +261,35 @@ private suspend fun decryptStaged(
     } catch (e: Throwable) {
         dropStaging(staging, e)
         throw e
+    }
+}
+
+// The empty staging file, owner-only before anything is written: POSIX file systems create it with rw------- in one
+// step (no window with wider modes), everywhere else it is created plain and restricted after (Windows: the inherited
+// ACL becomes an owner-only one, as OwnerOnlyAtomicWrite does for the engine's own files). A restriction that a file
+// system without modes or ACLs cannot make is not worth failing a download over — the file then keeps the old,
+// un-restricted behavior.
+private fun createOwnerOnlyStagingFile(staging: Path) {
+    if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+        Files.createFile(staging, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+    } else {
+        Files.createFile(staging)
+        runCatching { OwnerOnly.restrictFile(staging) }
+    }
+}
+
+// Best effort: the replacement takes the permissions of the file it replaces. When they cannot be read (no POSIX view,
+// an unreadable destination), the staging file stays owner-only — narrower, never wider than before. Failure to
+// preserve must not fail a decrypt whose bytes are already on disk.
+private fun takePreviousPermissions(
+    destination: Path,
+    staging: Path,
+) {
+    if (Files.getFileAttributeView(staging, PosixFileAttributeView::class.java) == null) return
+    runCatching {
+        if (Files.exists(destination)) {
+            Files.setPosixFilePermissions(staging, Files.getPosixFilePermissions(destination))
+        }
     }
 }
 
