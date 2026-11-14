@@ -103,6 +103,11 @@ fi
 rm -f "${target}"
 cp "${jar}" "${target}"
 log "unidrive: deployed ${target} ($(stat -c%s "${target}") bytes)"
+# The startup caches beside the jar are keyed to the jar that built them. After a jar replacement a stale
+# unidrive.jsa is rejected on every start and never regenerated (AutoCreateSharedArchive does not rebuild a
+# rejected archive), so every deploy that swaps the jar deletes them here, as dist/install.sh does; the next
+# start recreates whichever cache the launcher picks.
+rm -f "${LIB_DIR}/unidrive.jsa" "${LIB_DIR}/unidrive.aot"
 # DaemonAutospawn reads the launchers' static JVM flags from jvm-flags.txt beside the jar; without it a
 # spawned daemon starts with only the heap cap.
 cp "${REPO_ROOT}/dist/launcher/jvm-flags.txt" "${LIB_DIR}/jvm-flags.txt"
