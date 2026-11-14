@@ -137,9 +137,9 @@ class TrackingEngine(
                 if (action is ReconcileAction.NoOp) {
                     // Cleanup branch: tracked row with no observations on either side (spec "both
                     // gone" case); skip in dry-run. The complete check is the delete suppression's
-                    // own rule: an incomplete listing's absence is "not seen", not "gone" — the row
-                    // stays for the next complete pass, whose delete propagates or cleans up.
-                    if (t != null && !l.exists && !r.exists && remoteEnum.complete) {
+                    // own rule: an incomplete listing's absence is "not seen", not "gone".
+                    val bothGone = t != null && !l.exists && !r.exists
+                    if (bothGone && remoteEnum.complete) {
                         if (!dryRun) trackingSet.remove(path)
                         cleanedUp += path
                     }
