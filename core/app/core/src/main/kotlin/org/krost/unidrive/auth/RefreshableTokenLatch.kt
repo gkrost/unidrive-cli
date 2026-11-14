@@ -5,7 +5,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import org.krost.unidrive.TransientNetworkException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -115,7 +116,14 @@ class RefreshableTokenLatch(
             isAlreadyFresh()?.let { return@withLock it }
             // The deadline is wall-clock time: on Dispatchers.Default the timer is the real one, so a test dispatcher's
             // virtual clock (runTest jumps to the next deadline whenever its thread idles on real I/O) cannot fire it.
-            withContext(Dispatchers.Default) { withTimeout(timeout) { body() } }
+            val answer = withContext(Dispatchers.Default) { withTimeoutOrNull(timeout) { body() } }
+            // The latch's own deadline is not a user cancellation: the refresh is bounded, and a token endpoint that
+            // accepted and then stalled is a transport failure. Left as the CancellationException the deadline
+            // cancels the body with, a caller's `catch (CancellationException) { throw e }` (and the coroutine
+            // machinery) reads a stalled endpoint as "this caller was cancelled" — OneDrive then declared the
+            // session "authentication expired" and Dropbox aborted callers silently. It surfaces as the transient
+            // failure a retryable refresh failure is: says nothing about the credential, retries later.
+            answer ?: throw TransientNetworkException("token refresh timed out after $timeout")
         }
 
     companion object {

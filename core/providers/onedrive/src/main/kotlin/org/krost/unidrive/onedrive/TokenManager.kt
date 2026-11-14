@@ -13,6 +13,8 @@ import kotlin.time.Duration.Companion.minutes
 class TokenManager(
     private val config: OneDriveConfig,
     private val oauthService: OAuthService,
+    // A short timeout makes a stalled token endpoint reachable in a test; a test seam.
+    private val refreshLatch: RefreshableTokenLatch = RefreshableTokenLatch(),
     // Who a console sign-in signed in (the drive owner id), read before its token is saved; a test seam.
     private val identityOf: suspend (Token) -> String? = { graphUserId(config, it) },
 ) {
@@ -21,11 +23,6 @@ class TokenManager(
     // Tests seed it to skip a sign-in.
     @Volatile
     internal var token: Token? = null
-
-    // UD-338: shared mutex + NonCancellable wrap lifted to :app:core/auth.
-    // Provider-specific force-refresh (UD-310) and RefreshFailure recording
-    // (UD-111) stay below in `getValidToken`.
-    private val refreshLatch = RefreshableTokenLatch()
 
     // Only the log and tests read it today: the daemon's credential_health is an offline check of the token files
     // (ProviderFactory.checkCredentialHealth) and holds no TokenManager, so a save failure is not on a health surface.
@@ -214,37 +211,13 @@ class TokenManager(
                             }
                         if (stored) return@withRefresh refreshed
                         signedOut = true
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        // A real cancellation (daemon shutdown, the caller was cancelled) is not a verdict on the
+                        // credential: it stays one, and it must not be recorded as a refresh failure or surface as
+                        // "authentication expired".
+                        throw e
                     } catch (e: Exception) {
-                        val failure =
-                            RefreshFailure(
-                                timestamp = java.time.Instant.now(),
-                                errorClass = e.javaClass.simpleName,
-                                message = e.message,
-                            )
-                        lastRefreshFailure = failure
-                        // A transient network blip (DNS unresolved, connection
-                        // reset, read/connect timeout) during refresh is NOT proof
-                        // the token expired — a later live call can still succeed.
-                        // Surface it as retryable so the session is not latched as
-                        // "expired → re-authenticate."
-                        if (isTransientNetworkFailure(e)) {
-                            log.warn(
-                                "OAuth refresh hit a transient network failure: {}: {}. Treating as retryable, not expired.",
-                                failure.errorClass,
-                                failure.message,
-                                e,
-                            )
-                            throw TransientNetworkException(
-                                "Transient network failure during token refresh: ${e.message}",
-                                cause = e,
-                            )
-                        }
-                        log.warn(
-                            "OAuth refresh failed: {}: {}. User will be prompted to re-authenticate.",
-                            failure.errorClass,
-                            failure.message,
-                            e,
-                        )
+                        recordRefreshFailure(e)
                     }
                 }
                 if (signedOut) throw AuthenticationException("Not authenticated")
@@ -288,6 +261,39 @@ class TokenManager(
 
     private companion object {
         const val SAVE_RETRY_INTERVAL_MS = 30_000L
+    }
+
+    // A failed refresh: record it (UD-111) and surface what it is. A transient network blip (DNS unresolved,
+    // connection reset, read/connect timeout) during refresh is NOT proof the token expired — a later live call can
+    // still succeed. Surface it as retryable so the session is not latched as "expired → re-authenticate."
+    // Anything else says nothing retryable, and the caller gets the re-authentication prompt.
+    private fun recordRefreshFailure(e: Exception): Nothing {
+        val failure =
+            RefreshFailure(
+                timestamp = java.time.Instant.now(),
+                errorClass = e.javaClass.simpleName,
+                message = e.message,
+            )
+        lastRefreshFailure = failure
+        if (isTransientNetworkFailure(e)) {
+            log.warn(
+                "OAuth refresh hit a transient network failure: {}: {}. Treating as retryable, not expired.",
+                failure.errorClass,
+                failure.message,
+                e,
+            )
+            throw TransientNetworkException(
+                "Transient network failure during token refresh: ${e.message}",
+                cause = e,
+            )
+        }
+        log.warn(
+            "OAuth refresh failed: {}: {}. User will be prompted to re-authenticate.",
+            failure.errorClass,
+            failure.message,
+            e,
+        )
+        throw AuthenticationException("Authentication expired. Please re-authenticate.")
     }
 
     // Classify a refresh-time throwable as a transient network failure (retryable)
