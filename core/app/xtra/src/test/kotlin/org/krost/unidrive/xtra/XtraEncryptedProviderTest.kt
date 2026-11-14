@@ -144,6 +144,69 @@ class XtraEncryptedProviderTest {
         assertContentEquals(original, Files.readAllBytes(dest))
     }
 
+    // windows/cli#722: the decryption used to open the real destination, so a ciphertext that failed its tag in a later
+    // segment left the earlier segments' plaintext behind, in place of the file the user had.
+    private fun stageAndDecryptFails(
+        corrupt: (ByteArray) -> ByteArray,
+    ) {
+        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
+        val original = ByteArray(200_000) { (it * 31 + 7).toByte() }
+        val localFile = tmpDir.resolve("src.bin")
+        Files.write(localFile, original)
+        kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/f.bin") }
+        storage["/f.bin"] = corrupt(storage.getValue("/f.bin"))
+
+        val destDir = Files.createDirectory(tmpDir.resolve("dest"))
+        val dest = destDir.resolve("f.bin")
+        val previous = "the previous content".toByteArray()
+        Files.write(dest, previous)
+
+        val failure = assertFailsWith<org.krost.unidrive.RemoteContentRefusedDownloadException> {
+            kotlinx.coroutines.runBlocking { xtra.download("/f.bin", dest) }
+        }
+        assertEquals("authentication failed", failure.reason)
+        assertContentEquals(previous, Files.readAllBytes(dest), "the failed download must leave the previous file")
+        assertEquals(listOf("f.bin"), Files.list(destDir).use { l -> l.map { it.fileName.toString() }.toList() }, "no staging file is left")
+
+        // The WithHash variants stage the same way.
+        assertFailsWith<org.krost.unidrive.RemoteContentRefusedDownloadException> {
+            kotlinx.coroutines.runBlocking { xtra.downloadWithHash("/f.bin", dest) }
+        }
+        assertContentEquals(previous, Files.readAllBytes(dest))
+        assertEquals(listOf("f.bin"), Files.list(destDir).use { l -> l.map { it.fileName.toString() }.toList() })
+    }
+
+    @Test
+    fun `a truncated ciphertext leaves the previous destination untouched and no staging file`() =
+        stageAndDecryptFails { it.copyOf(it.size - 20_000) }
+
+    @Test
+    fun `a tag failure in the first segment leaves the previous destination untouched`() =
+        stageAndDecryptFails { stored -> stored.copyOf().also { it[300] = (it[300].toInt() xor 0x55).toByte() } }
+
+    @Test
+    fun `a good download replaces the destination and leaves no staging file`() {
+        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
+        val original = ByteArray(200_000) { (it * 17).toByte() }
+        val localFile = tmpDir.resolve("src.bin")
+        Files.write(localFile, original)
+        kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/g.bin") }
+
+        val destDir = Files.createDirectory(tmpDir.resolve("dest"))
+        val dest = destDir.resolve("g.bin")
+        Files.write(dest, "old".toByteArray())
+        assertEquals(200_000L, kotlinx.coroutines.runBlocking { xtra.download("/g.bin", dest) })
+        assertContentEquals(original, Files.readAllBytes(dest))
+        val receipt = kotlinx.coroutines.runBlocking { xtra.downloadWithHash("/g.bin", dest, 1_700_000_000_000L) }
+        assertEquals(200_000L, receipt.bytesWritten)
+        assertEquals(1_700_000_000_000L, Files.getLastModifiedTime(dest).toMillis())
+        assertEquals(listOf("g.bin"), Files.list(destDir).use { l -> l.map { it.fileName.toString() }.toList() })
+    }
+
     @Test
     fun `the key loads lazily, a listing never touches it`() {
         val tmpDir = Files.createTempDirectory("xtra-provider-test")

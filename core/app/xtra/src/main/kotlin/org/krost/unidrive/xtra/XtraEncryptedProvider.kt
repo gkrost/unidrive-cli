@@ -7,14 +7,21 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.ContentProof
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.ProviderException
+import org.krost.unidrive.RemoteContentRefusedDownloadException
+import org.krost.unidrive.io.stagingSiblingName
+import org.krost.unidrive.io.withLocalIoRetry
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.FileTime
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.HexFormat
+import java.util.UUID
+import javax.crypto.AEADBadTagException
 
 /**
  * The content half of the X-tra layer (client-side encryption of a profile's file content, config key
@@ -167,7 +174,7 @@ class XtraEncryptedProvider(
 // The helpers of [XtraEncryptedProvider], file-level so the class stays under detekt's function count. They take
 // the class's private strategy and lazy keys as parameters.
 
-private fun decryptToDestination(
+private suspend fun decryptToDestination(
     strategy: XtraEncryptionStrategy,
     keys: Lazy<XtraKeyManager>,
     encryptedFile: Path,
@@ -192,7 +199,7 @@ private fun decryptToDestination(
     )
 }
 
-private fun decrypt(
+private suspend fun decrypt(
     strategy: XtraEncryptionStrategy,
     keys: Lazy<XtraKeyManager>,
     encryptedFile: Path,
@@ -205,14 +212,53 @@ private fun decrypt(
                 throw ProviderException("File is not XTRA-encrypted: $encryptedFile")
             is XtraHeader.ReadResult.Corrupted ->
                 throw ProviderException("XTRA header corrupted: ${result.reason}")
-            is XtraHeader.ReadResult.Valid -> {
-                val fileKey = km.unwrapKey(result.wrappedKey)
-                FileOutputStream(destination.toFile()).use { out ->
-                    strategy.decrypt(input, out, fileKey, result.iv)
-                }
-            }
+            is XtraHeader.ReadResult.Valid ->
+                decryptStaged(strategy, input, km.unwrapKey(result.wrappedKey), result.iv, destination, encryptedFile)
         }
     }
+}
+
+// The decryption never writes the destination itself: a segment is written once its tag passes, so a stream that fails
+// in a later segment would leave the earlier plaintext in place of the file the user had (#722). It goes into a
+// sibling staging file (the same directory, so the final move is one atomic step on one volume), reaches the disk, and
+// replaces the destination only when the whole stream authenticated. Whatever fails, the staging file goes and the
+// destination stays as it was.
+@Suppress("TooGenericExceptionCaught") // whatever fails (an Error too), the staging file goes and the failure is rethrown
+private suspend fun decryptStaged(
+    strategy: XtraEncryptionStrategy,
+    input: InputStream,
+    fileKey: ByteArray,
+    iv: ByteArray,
+    destination: Path,
+    encryptedFile: Path,
+) {
+    val absolute = destination.toAbsolutePath()
+    Files.createDirectories(absolute.parent)
+    val staging = absolute.resolveSibling(stagingSiblingName(absolute.fileName.toString(), ".${UUID.randomUUID()}.unidrive-tmp"))
+    try {
+        FileOutputStream(staging.toFile()).use { out ->
+            strategy.decrypt(input, out, fileKey, iv)
+            out.fd.sync()
+        }
+        withLocalIoRetry { Files.move(staging, absolute, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
+    } catch (e: AEADBadTagException) {
+        // The seal does not authenticate: truncated, spliced or tampered ciphertext. Another attempt reads the same
+        // bytes, so it is a permanent refusal (quarantined by the engines, `content_refused` in hydration), neither a
+        // retryable failure nor a local edit.
+        dropStaging(staging, e)
+        throw RemoteContentRefusedDownloadException("X-tra content failed its integrity check: $encryptedFile", "authentication failed", e)
+    } catch (e: Throwable) {
+        dropStaging(staging, e)
+        throw e
+    }
+}
+
+// A cleanup that fails must not replace the failure that matters.
+private fun dropStaging(
+    staging: Path,
+    failure: Throwable,
+) {
+    runCatching { Files.deleteIfExists(staging) }.exceptionOrNull()?.let(failure::addSuppressed)
 }
 
 private fun sha256Of(file: Path): String {
