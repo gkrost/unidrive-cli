@@ -28,7 +28,18 @@ interface StateDatabaseConnector {
 
 /** The xerial sqlite-jdbc connector: the desktop default. */
 object JdbcStateDatabaseConnector : StateDatabaseConnector {
-    override fun open(path: Path?): Connection = DriverManager.getConnection(if (path == null) "jdbc:sqlite::memory:" else "jdbc:sqlite:$path")
+    // transaction_mode=IMMEDIATE: every transaction a writable connection starts (a [StateDatabase]
+    // manual batch in particular) begins as BEGIN IMMEDIATE and takes the write lock up front,
+    // under the busy timeout. A batch that opens DEFERRED instead reads its snapshot lazily, and a
+    // write from another process that commits into the gap makes the batch's first write fail with
+    // SQLITE_BUSY_SNAPSHOT, which no busy timeout retries. IMMEDIATE turns that failure into an
+    // ordinary wait: the foreign writer queues behind the batch, and a busy timeout it exceeds
+    // fails with a plain, retryable SQLITE_BUSY. The cost is that a long batch holds the write
+    // lock from its start rather than from its first write.
+    private const val TRANSACTION_MODE = "?transaction_mode=IMMEDIATE"
+
+    override fun open(path: Path?): Connection =
+        DriverManager.getConnection(if (path == null) "jdbc:sqlite::memory:" else "jdbc:sqlite:$path" + TRANSACTION_MODE)
 
     // Path.toUri() percent-encodes; see StateDatabase.snapshotOf for why a raw file: URI is not safe here.
     override fun openReadOnly(path: Path): Connection =

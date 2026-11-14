@@ -90,4 +90,37 @@ class QuotaCommandJsonTest {
         assertTrue(err.toString().contains("No running daemon"), "the error names the situation: $err")
         assertTrue(err.toString().contains("to seed the cache"), "the error names the seeding command: $err")
     }
+
+    // Cross-platform read-only file: the POSIX view on Linux, the DOS attribute on Windows.
+    private fun markReadOnly(file: Path) {
+        try {
+            Files.setPosixFilePermissions(file, java.nio.file.attribute.PosixFilePermissions.fromString("r--r--r--"))
+        } catch (_: UnsupportedOperationException) {
+            Files.setAttribute(file, "dos:readonly", true)
+        }
+    }
+
+    private fun markWritable(file: Path) {
+        try {
+            Files.setPosixFilePermissions(file, java.nio.file.attribute.PosixFilePermissions.fromString("rw-rw-rw-"))
+        } catch (_: UnsupportedOperationException) {
+            Files.setAttribute(file, "dos:readonly", false)
+        }
+    }
+
+    @Test
+    fun `quota --json reads the cache from a read-only state database file`() {
+        seedCache(used = 7, total = 90, fetchedAt = Instant.now().minusSeconds(60))
+        val dbFile = profileDir.resolve("state.db")
+        markReadOnly(dbFile)
+        try {
+            val exitCode = runJson()
+
+            assertEquals(0, exitCode, "the cached read must work on a file the user made read-only")
+            val quota = Json.parseToJsonElement(out.toString()).jsonObject
+            assertEquals(7L, quota.getValue("used_bytes").jsonPrimitive.long)
+        } finally {
+            markWritable(dbFile)
+        }
+    }
 }

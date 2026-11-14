@@ -117,17 +117,21 @@ class StateDatabaseBatchErrorTest {
         db.upsertEntry(entry("/a"))
         assertEquals(1, db.getEntryCount())
 
+        // Another connection commits BEFORE the batch opens: the writer connection starts its
+        // transactions as BEGIN IMMEDIATE, so a foreign commit inside an open batch is impossible
+        // (it used to invalidate a DEFERRED batch's snapshot with SQLITE_BUSY_SNAPSHOT).
+        DriverManager.getConnection("jdbc:sqlite:$dbFile").use { c ->
+            c.createStatement().use {
+                it.executeUpdate(
+                    "INSERT INTO sync_entries (remote_id, path, remote_size, is_folder, last_synced, status) " +
+                        "VALUES ('id-/foreign', '/foreign', 1, 0, '1970-01-01T00:00:00Z', 'EXISTS')",
+                )
+            }
+        }
+        assertEquals(2, db.getEntryCount(), "the count notices the foreign commit (data_version moved) and counts again")
+
         assertFailsWith<IllegalStateException> {
             db.batch {
-                // Another connection commits, and the count inside the batch notices (data_version moved) and counts again.
-                DriverManager.getConnection("jdbc:sqlite:$dbFile").use { c ->
-                    c.createStatement().use {
-                        it.executeUpdate(
-                            "INSERT INTO sync_entries (remote_id, path, remote_size, is_folder, last_synced, status) " +
-                                "VALUES ('id-/foreign', '/foreign', 1, 0, '1970-01-01T00:00:00Z', 'EXISTS')",
-                        )
-                    }
-                }
                 assertEquals(2, db.getEntryCount())
                 db.upsertEntry(entry("/b"))
                 error("test")

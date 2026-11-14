@@ -114,7 +114,9 @@ class LsCommand : Callable<Int> {
         // The daemon's own guard (exclude patterns and, for a mount profile, the ignore rules), so the live
         // listing marks what the daemon's listing marks.
         val dbFile = parent.providerConfigDir().resolve("state.db")
-        val db = if (Files.exists(dbFile)) StateDatabase(dbFile).also { it.initialize() } else null
+        // Read-only: ls only marks exclusions against the rows; an open that writes would cost every
+        // listing a commit and fail on a file the user made read-only.
+        val db = if (Files.exists(dbFile)) StateDatabase(dbFile, readOnly = true).also { it.initialize() } else null
         try {
             val guard =
                 cliExclusionGuard(config, profile.name, profile.mode) { path ->

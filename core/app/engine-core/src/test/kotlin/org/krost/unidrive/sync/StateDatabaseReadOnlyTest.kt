@@ -60,8 +60,10 @@ class StateDatabaseReadOnlyTest {
     }
 
     @Test
-    fun `a normal open rewrites the file, which is what a report must not do`() {
-        // Pins the premise of the read-only open: a normal initialize() stamps the schema row.
+    fun `a normal open of an up-to-date file leaves it byte-identical`() {
+        // The premise of the read-only open, updated: the schema stamp used to make every normal
+        // open write, so a report command needed mode=ro to keep its hands off state.db. Only a
+        // fresh or out-of-date file is stamped now, so an up-to-date file must not change a byte.
         val path = seededDb()
         val before = sha256(path)
 
@@ -70,7 +72,7 @@ class StateDatabaseReadOnlyTest {
             it.close()
         }
 
-        assertFalse(before == sha256(path), "if a normal open no longer writes, the read-only open has no reason to exist")
+        assertEquals(before, sha256(path), "a normal open must not rewrite an up-to-date file")
     }
 
     @Test

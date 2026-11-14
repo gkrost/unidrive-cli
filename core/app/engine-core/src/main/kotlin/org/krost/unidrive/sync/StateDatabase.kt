@@ -599,30 +599,30 @@ class StateDatabase(
     @Synchronized
     private fun bootstrapSchema() {
         val syncStateExists = tableExists("sync_state")
-        if (syncStateExists) {
-            val recordedVersion = readSchemaVersion()
-            if (recordedVersion == null) {
-                // Case 2: pre-redesign DB. Drop sync_entries; the new schema
-                // below recreates it. Drop any old indexes the previous shape
-                // owned so SQLite's auto-recreation on CREATE TABLE doesn't
-                // collide with stale objects.
-                conn.createStatement().use { stmt ->
-                    stmt.executeUpdate("DROP TABLE IF EXISTS sync_entries")
-                }
-            } else {
-                // archive#323: an older jar must never stamp the version downward — the
-                // next upgrade would believe nothing changed and skip migrations.
-                // Refuse before any write (mirrors the read-only and snapshot
-                // guards); equal or lower versions behave as before.
-                check(recordedVersion <= SCHEMA_VERSION) {
-                    "state.db was written by a newer unidrive (schema $recordedVersion, this build supports $SCHEMA_VERSION); " +
-                        "upgrade unidrive or use a different state db."
-                }
+        val recordedVersion = if (syncStateExists) readSchemaVersion() else null
+        if (syncStateExists && recordedVersion == null) {
+            // Case 2: pre-redesign DB. Drop sync_entries; the new schema
+            // below recreates it. Drop any old indexes the previous shape
+            // owned so SQLite's auto-recreation on CREATE TABLE doesn't
+            // collide with stale objects.
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate("DROP TABLE IF EXISTS sync_entries")
+            }
+        }
+        recordedVersion?.let {
+            // archive#323: an older jar must never stamp the version downward — the
+            // next upgrade would believe nothing changed and skip migrations. Refuse
+            // before any write (mirrors the read-only and snapshot guards).
+            check(it <= SCHEMA_VERSION) {
+                "state.db was written by a newer unidrive (schema $it, this build supports $SCHEMA_VERSION); " +
+                    "upgrade unidrive or use a different state db."
             }
         }
         createTables()
         dropMainFileStaging()
-        stampSchemaVersion()
+        // The stamp is a write in autocommit: the most common open — an up-to-date
+        // file — must not write (see dropMainFileStaging). Only an unstamped or older file is stamped.
+        if (recordedVersion != SCHEMA_VERSION) stampSchemaVersion()
     }
 
     // The staged scan used to live in this file (a `scan_staging` table, the checkpoint in the `scan_state` keys of
