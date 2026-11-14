@@ -387,8 +387,8 @@ class RelocateCommand : Runnable {
         // Reaching this line means every source folder re-listed clean before its delete
         // (gkrost/unidrive-cli#749); a folder that still held anything would have thrown above.
         println(
-            "Only the files the migration transferred were deleted; every source folder was " +
-                "re-listed before its delete, so anything the migration never transferred was left in place.",
+            "Only the files the migration transferred were deleted; each source folder was deleted only after a fresh " +
+                "listing of it held nothing else (an item created in the moment between that listing and the delete is not covered).",
         )
     }
 
@@ -523,14 +523,17 @@ class RelocateCommand : Runnable {
         return false
     }
 
-    // Deletes the folder [id] at [path] only when a fresh listing of it shows no item this pass has
-    // not already confirmed deleted by id ([confirmedGone]). Every provider deletes a folder with its
-    // whole subtree — OneDrive's graphApi.deleteItem, Internxt's api.trashItems, Dropbox's
-    // files/delete_v2, S3's deleteTree, localfs's recursive delete — so deleting a manifest folder on
-    // the strength of the migration walk alone would trash a file that landed after the walk listed
-    // the folder, or one whose own delete failed (gkrost/unidrive-cli#749). The listing goes by the
-    // manifest path: the provider interface has no listing by id, so a path that no longer resolves
-    // to the walked folder is a reported failure, never a delete. A folder that does not re-list
+    // Deletes the folder [id] at [path] only when the path still names that folder and a fresh listing
+    // of it shows no item this pass has not already confirmed deleted by id ([confirmedGone]). Every
+    // provider deletes a folder with its whole subtree — OneDrive's graphApi.deleteItem, Internxt's
+    // api.trashItems, Dropbox's files/delete_v2, S3's deleteTree, localfs's recursive delete — so
+    // deleting a manifest folder on the strength of the migration walk alone would trash a file that
+    // landed after the walk listed the folder, or one whose own delete failed (gkrost/unidrive-cli#749).
+    // The listing goes by the manifest path: the provider interface has no listing by id. The metadata
+    // check is what makes a path that no longer resolves to the walked folder a reported failure, never
+    // a delete: a walked folder moved away leaves its old path to a new folder (ids survive moves),
+    // whose listing would stand in for the moved one, and the delete by id would trash the moved folder
+    // with everything now in it, including files the migration never saw. A folder that does not re-list
     // clean is a reported condition, not a crash; the pass carries on and the report names it.
     // Returns true when the folder was deleted; its id joins [confirmedGone] then.
     private suspend fun deleteFolderWhenReListedClean(
@@ -540,6 +543,16 @@ class RelocateCommand : Runnable {
         confirmedGone: MutableSet<String>,
         failures: MutableList<String>,
     ): Boolean {
+        val current =
+            runCatching { provider.getMetadata(path) }.getOrElse { failure ->
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                failures.add("folder $path: could not be resolved before the delete (${failure.message}); not deleted")
+                return false
+            }
+        if (!current.isFolder || current.id != id) {
+            failures.add("folder $path: now names another item than the one the migration walked; not deleted")
+            return false
+        }
         val listed =
             runCatching { provider.listChildren(path) }.getOrElse { failure ->
                 if (failure is kotlinx.coroutines.CancellationException) throw failure
