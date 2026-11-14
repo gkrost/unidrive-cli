@@ -468,7 +468,7 @@ class Reconciler(
         keepFoldersHoldingChangedRemoteChildren(actions, entryByPath)
         keepFoldersHoldingUntrackedRemoteContent(actions, remoteChangesLocal, entryByPath)
         dropScopedAncestorRemoteDeletes(actions, syncPaths)
-        deferIncompleteRemoteCreates(actions, localChanges, enumerationComplete)
+        deferIncompleteRemoteCreatesIn(actions, localChanges, enumerationComplete)
         keepFoldersHoldingUnsyncedLocalContent(actions, localChanges, allDbEntries, alias)
         retargetBelowTwinFolders(actions, allDbEntries)
 
@@ -713,7 +713,7 @@ class Reconciler(
         keepFoldersHoldingChangedRemoteChildren(actions, entryByPath)
         keepFoldersHoldingUntrackedRemoteContent(actions, fullRemoteLocal, entryByPath)
         dropScopedAncestorRemoteDeletes(actions, syncPaths)
-        deferIncompleteRemoteCreates(actions, fullLocal, enumerationComplete)
+        deferIncompleteRemoteCreatesIn(actions, fullLocal, enumerationComplete)
         keepFoldersHoldingUnsyncedLocalContent(actions, fullLocal, allDbEntries, alias)
         retargetBelowTwinFolders(actions, allDbEntries)
 
@@ -892,33 +892,10 @@ class Reconciler(
     // archive#200(b): when the remote enumeration was INCOMPLETE, a local-present/
     // remote-absent path may be a subtree we simply failed to enumerate, not a
     // genuinely-new local file — so emitting Upload/CreateRemoteFolder risks
-    // duplicating a file that exists remotely but went unseen. Drop those new-local
-    // creates; they retry on the next COMPLETE enumeration, which either confirms
-    // remote-absence (→ upload) or sees the file (→ adopt). MODIFIED uploads
-    // (replace an existing remote) and recovery-synthesised actions are not keyed
-    // ChangeState.NEW in localChanges, so they are left intact. Mirror of the
+    // duplicating a file that exists remotely but went unseen. The deferral lives in
+    // IncompleteEnumeration.kt (deferIncompleteRemoteCreatesIn); it takes a kind
+    // change's same-path delete with its create (#723). Mirror of the
     // delete-side "reap only on a complete enumeration".
-    private fun deferIncompleteRemoteCreates(
-        actions: MutableList<SyncAction>,
-        localChanges: Map<String, ChangeState>,
-        enumerationComplete: Boolean,
-    ) {
-        if (enumerationComplete) return
-        val before = actions.size
-        actions.removeAll { a ->
-            ((a is SyncAction.Upload || a is SyncAction.CreateRemoteFolder) &&
-                localChanges[a.path] == ChangeState.NEW) ||
-                (a is SyncAction.DeleteRemote && localChanges[a.path] == ChangeState.DELETED)
-        }
-        val deferred = before - actions.size
-        if (deferred > 0) {
-            log.warn(
-                "Enumeration incomplete: deferred {} local create/delete action(s) " +
-                    "until a complete enumeration — avoids duplicating or deleting un-enumerated remote items",
-                deferred,
-            )
-        }
-    }
 
     // archive#115: alias-context for transparent locale-alias adoption.
     //

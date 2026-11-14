@@ -208,6 +208,32 @@ class KindChangeTest {
             assertEquals(2, provider.deletedPaths.size)
         }
 
+    // An incomplete enumeration defers the create the kind change resolves to — so it must defer the kind-change
+    // delete with it, or the remote item would be deleted now and its replacement left to a later pass.
+    @Test
+    fun `an incomplete enumeration defers a file-to-folder change with its delete`() {
+        db.upsertEntry(row("/x", isFolder = false))
+        makeFolderWithChild()
+
+        val actions =
+            Reconciler(db, syncRoot, ConflictPolicy.KEEP_BOTH)
+                .reconcile(emptyMap(), LocalScanner(syncRoot, db).scan(), enumerationComplete = false)
+
+        assertTrue(actions.isEmpty(), "delete, folder create and child upload all wait for the complete enumeration: $actions")
+    }
+
+    @Test
+    fun `an incomplete enumeration defers a folder-to-file change with its delete`() {
+        trackFolderWithChild()
+        makeFile()
+
+        val actions =
+            Reconciler(db, syncRoot, ConflictPolicy.KEEP_BOTH)
+                .reconcile(emptyMap(), LocalScanner(syncRoot, db).scan(), enumerationComplete = false)
+
+        assertTrue(actions.isEmpty(), "child delete, folder delete and file upload all wait: $actions")
+    }
+
     @Test
     fun `a file replaced by a folder syncs end to end`() = fileToFolderEndToEnd(streaming = false)
 
