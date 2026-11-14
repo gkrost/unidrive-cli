@@ -328,7 +328,7 @@ class LauncherTemplateTest {
             val args = launcherArgs("status", jar = jarDir.resolve("unidrive.jar").toString())
             assertTrue("-XX:+AutoCreateSharedArchive" in args, args.toString())
             assertTrue(args.any { it.startsWith("-XX:SharedArchiveFile=") && it.endsWith("unidrive.jsa") }, args.toString())
-            assertTrue("-Xlog:cds=off" in args, "the first run's CDS messages stay off stdout: $args")
+            assertTrue("-Xlog:cds*=off" in args, "the first run's CDS messages stay off stdout: $args")
             assertTrue(args.indexOf("-XX:+AutoCreateSharedArchive") < args.indexOf("-jar"), args.toString())
             assertFalse(Files.exists(jarDir.resolve(".unidrive-cds-probe")), "the write probe leaves nothing behind")
         } finally {

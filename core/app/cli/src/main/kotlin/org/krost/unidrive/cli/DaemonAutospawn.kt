@@ -325,7 +325,11 @@ internal fun heapDumpFileName(profileName: String): String =
  *  errors; else the dynamic CDS archive, and only when the jar's folder is writable, because an
  *  unwritable archive path makes the JVM exit 127 after an otherwise successful run (verified on JDK
  *  27). The -Xlog switches keep the first run's and a jar change's cache messages off stdout, which the
- *  client parses; a failed dump or map degrades to a run without a cache, never to a failed command.
+ *  client parses; the cds one carries the wildcard because a selector without it matches the exact tag
+ *  set cds only, so the mismatch warning after a jar change (tag set cds,dynamic) escaped as "Unable to
+ *  use shared archive" (verified on JDK 27). The deploy that replaces the jar deletes the stale caches
+ *  beside it (dist/install.sh does): the JVM never regenerates an archive the changed jar rejected. A
+ *  failed dump or map degrades to a run without a cache, never to a failed command.
  *  JDK 27 refuses the two caches in one JVM ("Option AOTCache cannot be used at the same time with ...
  *  SharedArchiveFile"), so exactly one of the two applies. Beside [DaemonAutospawn] for the same reason
  *  as [heapDumpFileName]: one function more in the object trips detekt's TooManyFunctions limit. */
@@ -342,7 +346,7 @@ internal fun startupCacheFlags(
         return listOf(
             "-XX:+AutoCreateSharedArchive",
             "-XX:SharedArchiveFile=${dir.resolve("unidrive.jsa")}",
-            "-Xlog:cds=off",
+            "-Xlog:cds*=off",
         )
     }
     return emptyList()

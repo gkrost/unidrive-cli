@@ -158,6 +158,13 @@ find "${INSTALL_LIB}" -maxdepth 1 -type f -name 'unidrive*.jar' \
 rm -f "${INSTALL_LIB}/${CLI_BASENAME}"
 cp "${CLI_JAR}" "${INSTALL_LIB}/${CLI_BASENAME}"
 echo "  ${INSTALL_LIB}/${CLI_BASENAME}"
+# The startup caches beside the jar are keyed to the jar that built them. After a jar replacement a stale
+# unidrive.jsa is rejected on every start ("shared class paths mismatch") and AutoCreateSharedArchive never
+# regenerates a rejected archive (verified on JDK 27), so a stale one degrades every launch until removed by
+# hand; a stale unidrive.aot is equally dead. The deploy that replaces the jar deletes them in the same step,
+# and any other deploy that copies the jar must do the same; the next start recreates whichever cache the
+# launcher then picks.
+rm -f "${INSTALL_LIB}/unidrive.jsa" "${INSTALL_LIB}/unidrive.aot"
 
 # jvm-flags.txt beside the jar: DaemonAutospawn reads the same single source the wrapper above was
 # rendered from when it spawns the daemon itself.

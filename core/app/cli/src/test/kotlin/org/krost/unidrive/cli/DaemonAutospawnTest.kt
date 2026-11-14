@@ -302,7 +302,7 @@ class DaemonAutospawnTest {
             )
         assertTrue(command.contains("-XX:+AutoCreateSharedArchive"), "the dump-and-map archive: $command")
         assertTrue(command.contains("-XX:SharedArchiveFile=${jarDir.resolve("unidrive.jsa")}"), "a per-install stable path: $command")
-        assertTrue(command.contains("-Xlog:cds=off"), "the first run's CDS messages stay off stdout: $command")
+        assertTrue(command.contains("-Xlog:cds*=off"), "the first run's CDS messages stay off stdout: $command")
     }
 
     @Test
