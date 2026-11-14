@@ -100,4 +100,48 @@ class TrackingEngineFullListingTest {
             tracking.close()
         }
     }
+
+    // An incomplete listing's absence is "not seen", not "gone": a pass whose page gave up mid-walk
+    // (a failed page on S3, an unreadable directory on localfs) must not run the both-gone cleanup on
+    // a row whose remote copy it merely did not see. Removing the row resurrects that copy on the next
+    // complete pass, undoing the user's local delete. The row stays, and the next complete pass
+    // propagates the delete it was waiting for.
+    @Test
+    fun `an incomplete resumed pass keeps the row of a locally deleted file the listing did not see`() {
+        provider.files["/a.txt"] = "v1".toByteArray()
+        val permissive = BatchGuard(maxDeleteRatio = 1.0, maxDeleteAbsolute = Int.MAX_VALUE)
+        val tracking = open()
+        try {
+            engine(tracking, permissive).syncOnce() // pass 1: download and adopt
+            assertNotNull(tracking.lookup("/a.txt"), "pass 1 must track the remote file")
+
+            // The user deletes the file locally; the remote copy stays standing.
+            Files.delete(syncRoot.resolve("a.txt"))
+
+            // Pass 2 is resumed (a cursor exists) and its page fails mid-walk: it lists nothing
+            // and answers complete = false — a localfs/S3 walk that gave up before the subtree.
+            provider.deltaComplete = false
+            provider.incrementalAware = true
+            engine(tracking, permissive).syncOnce()
+            assertNotNull(
+                tracking.lookup("/a.txt"),
+                "an incomplete listing's absence proves nothing: the row must survive the pass",
+            )
+            assertTrue(
+                provider.deletedPaths.none { it == "/a.txt" },
+                "the remote copy is not deleted off an unseen listing: ${provider.deletedPaths}",
+            )
+
+            // Pass 3 sees the whole inventory again: the local delete propagates now.
+            provider.deltaComplete = true
+            provider.incrementalAware = false
+            engine(tracking, permissive).syncOnce()
+            assertTrue(
+                provider.deletedPaths.any { it == "/a.txt" },
+                "the next complete pass propagates the local delete: ${provider.deletedPaths}",
+            )
+        } finally {
+            tracking.close()
+        }
+    }
 }
