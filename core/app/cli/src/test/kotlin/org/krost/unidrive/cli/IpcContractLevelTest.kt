@@ -130,6 +130,8 @@ class IpcContractLevelTest {
                 setOf("capability:hydration.open_read_etag"),
                 // 4 (gkrost/unidrive-cli#715): daemon.status reports the byte-rate cap of the daemon's transfers.
                 setOf("field:daemon.status.bandwidth_limit_kib"),
+                // 5 (gkrost/unidrive-cli#717): a rmdir refused with not_empty names its reason and one child.
+                setOf("capability:hydration.rmdir_not_empty_reason"),
             )
     }
 }

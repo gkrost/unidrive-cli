@@ -127,9 +127,14 @@ import java.util.concurrent.atomic.AtomicLong
  *   rmdir       request:  {"verb":"hydration.rmdir","path":"/foo"[,"recursive":true[,"discard_local":true]]}
  *               reply:    {"ok":true}
  *                         {"ok":false,"error":"path_is_file"}       ENOTDIR
- *                         {"ok":false,"error":"not_empty"}          ENOTEMPTY: alive rows below (plain), or a file
+ *                         {"ok":false,"error":"not_empty"[,"reason":"..."][,"child":"..."]}
+ *                                                                   ENOTEMPTY: alive rows below (plain), or a file
  *                                                                   below holds bytes only this computer has (recursive, archive#1035;
- *                                                                   not with discard_local, gkrost/unidrive-cli#445)
+ *                                                                   not with discard_local, gkrost/unidrive-cli#445).
+ *                                                                   reason and child (gkrost/unidrive-cli#717): why the folder was
+ *                                                                   refused and one child the engine names, where the refusal knows
+ *                                                                   them; daemon.status lists "hydration.rmdir_not_empty_reason" in
+ *                                                                   capabilities on an engine that sends them.
  *                         {"ok":false,"error":"busy"}               an upload below is in flight (archive#87)
  *                         {"ok":false,"error":"<msg>"}              EIO
  *
@@ -777,7 +782,7 @@ class HydrationIpcHandler(
                         reply(ok = true)
                     }
                     RmdirResult.PathIsFile -> reply(ok = false, error = "path_is_file")
-                    RmdirResult.NotEmpty -> reply(ok = false, error = "not_empty")
+                    is RmdirResult.NotEmpty -> notEmptyReply(r)
                     RmdirResult.Busy -> reply(ok = false, error = "busy")
                     is RmdirResult.Failed -> reply(ok = false, error = r.error.message)
                 }
@@ -889,6 +894,15 @@ class HydrationIpcHandler(
 
     private fun reply(ok: Boolean, error: String? = null): String =
         if (ok) """{"ok":true}""" else """{"ok":false,"error":${errorEsc(error ?: "unknown")}}"""
+
+    // gkrost/unidrive-cli#717: `reason` and `child` ride on the not_empty refusal where the refusal knows them, so a
+    // client can tell a child it never saw (never retry the delete) from a provider that still lists just-trashed
+    // children (retry is right), and can name the child. daemon.status promises them with "hydration.rmdir_not_empty_reason".
+    private fun notEmptyReply(r: RmdirResult.NotEmpty): String {
+        val reason = r.reason?.let { ""","reason":${jsonEsc(it)}""" } ?: ""
+        val child = r.child?.let { ""","child":${jsonEsc(it)}""" } ?: ""
+        return """{"ok":false,"error":"not_empty"$reason$child}"""
+    }
 
     // `excluded` is only serialized when true — an additive wire field: a reply
     // on the common (non-excluded) path is byte-identical to the pre-field

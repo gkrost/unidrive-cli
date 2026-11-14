@@ -2044,7 +2044,12 @@ class MountEngine private constructor(
     // into. A new id at the same name, a tombstone of another kind or an older one, and a restored id still refuse.
     private suspend fun checkFolderDeleteSnapshot(folder: SyncEntry) {
         val prefix = folder.path.trimEnd('/') + "/"
-        val observed = db.getEntriesByPrefix(prefix).filter { it.remoteId != null }.associateBy { it.remoteId }
+        val below = db.getEntriesByPrefix(prefix).filter { it.remoteId != null }
+        val observed = below.associateBy { it.remoteId }
+        // gkrost/unidrive-cli#717: a row a delta indexed after a client was last told the folder whole is a child that
+        // client's comparison of the folder's cloud contents with the engine's listing cannot have seen; it refuses
+        // before any listing, like one the listing itself names.
+        refuseIndexedAfterWholeListing(below, liveFolders.lastWholeListingMs(PathNormalizer.nfc(folder.path)))
         // Read once, and only when a listed child has no row: the common delete never pays for the query.
         val ownDeletes by lazy {
             db.recovery.recentlyDeletedRemoteIds(Instant.now().minus(RemoteGather.LAGGING_LISTING_WINDOW))
@@ -2084,30 +2089,6 @@ class MountEngine private constructor(
         } catch (e: Exception) {
             if (path == root && isAlreadyGone(e)) null else throw e
         }
-
-    private fun unobservedChild(
-        child: CloudItem,
-        row: SyncEntry?,
-    ) = UnobservedChildException(
-        if (row == null) UnobservedChildException.UNOBSERVED else UnobservedChildException.CHANGED,
-        child.path,
-    )
-
-    // True when a live child is not the row the mount observed: no row, a file turned folder (or the reverse), or a file whose
-    // size, time or recorded identity moved. Folder metadata alone never counts.
-    private fun differsFromObserved(
-        child: CloudItem,
-        row: SyncEntry?,
-    ): Boolean {
-        if (row == null || row.isFolder != child.isFolder) return true
-        if (child.isFolder) return false
-        val identityMoved =
-            (row.remoteHash != null && child.hash != row.remoteHash) ||
-                (row.remoteVersion != null && child.version != row.remoteVersion) ||
-                (row.remoteContentId != null && child.contentId != row.remoteContentId)
-        val timeMoved = row.remoteModified != null && child.modified != row.remoteModified
-        return child.size != row.remoteSize || timeMoved || identityMoved
-    }
 
     /**
      * WB-3 (archive#87): the delete of a never-uploaded file discards the provider's staged upload copy —
