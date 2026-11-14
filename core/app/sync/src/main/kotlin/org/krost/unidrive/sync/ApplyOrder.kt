@@ -2,10 +2,12 @@ package org.krost.unidrive.sync
 
 import org.krost.unidrive.sync.model.SyncAction
 
-internal fun sortReconcileActions(actions: List<SyncAction>): List<SyncAction> =
-    actions.sortedWith(
+internal fun sortReconcileActions(actions: List<SyncAction>): List<SyncAction> {
+    // gkrost/unidrive-cli#723: a file replaced by a folder is a delete and a create at one path; the delete runs first.
+    val foldersCreated = actions.filterIsInstance<SyncAction.CreateRemoteFolder>().mapTo(HashSet()) { it.path }
+    return actions.sortedWith(
         compareBy(
-            { actionPriority(it) },
+            { if (it is SyncAction.DeleteRemote && it.path in foldersCreated) -1 else actionPriority(it) },
             // archive#421: moves and deletes share a priority, and the depth key below is negative for a
             // delete and positive for everything else, so every delete used to sort ahead of every
             // move. A folder delete trashes the folder with whatever is still inside it, so a folder
@@ -25,6 +27,7 @@ internal fun sortReconcileActions(actions: List<SyncAction>): List<SyncAction> =
             { it.path },
         ),
     )
+}
 
 private fun actionPriority(action: SyncAction): Int =
     when (action) {

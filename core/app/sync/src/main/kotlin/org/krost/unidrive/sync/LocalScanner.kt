@@ -162,6 +162,23 @@ class LocalScanner(
         excludePatterns.any { pattern -> Reconciler.matchesGlob(relativePath, pattern) } ||
             ignored?.invoke(relativePath, isDir) == true
 
+    private fun pendingUploadRow(
+        relativePath: String,
+        fileAttrs: BasicFileAttributes,
+    ) = SyncEntry(
+        path = relativePath,
+        remoteId = null,
+        remoteHash = null,
+        remoteSize = 0,
+        remoteModified = null,
+        localMtime = fileAttrs.lastModifiedTime().toMillis(),
+        localSize = fileAttrs.size(),
+        isFolder = false,
+        isPinned = false,
+        isHydrated = true,
+        lastSynced = Instant.EPOCH,
+    )
+
     /**
      * Walks the sync root and reports what differs from state.db.
      *
@@ -268,7 +285,12 @@ class LocalScanner(
                     visited++
 
                     val entry = knownEntry(relativePath)
-                    if (entry == null) {
+                    if (entry != null && entry.isFolder) {
+                        // gkrost/unidrive-cli#723: a file where the tracked row is a folder. The row is left as it is:
+                        // the plan deletes the folder through its remote id and then uploads this file as a new item,
+                        // which a pending-upload row written over it would make impossible.
+                        changes[relativePath] = ChangeState.NEW
+                    } else if (entry == null) {
                         changes[relativePath] = ChangeState.NEW
                         // UD-901: write a pending-upload row immediately so the file's
                         // localSize is visible to `status` before the upload completes.
@@ -285,21 +307,7 @@ class LocalScanner(
                         // was never retried. Stubs with a row are still probed where the row
                         // is acted on (looksLikePlaceholder, PlaceholderManager.isSparse),
                         // and a same-size remote file is still compared by applyCreatePlaceholder.
-                        db.upsertEntry(
-                            SyncEntry(
-                                path = relativePath,
-                                remoteId = null,
-                                remoteHash = null,
-                                remoteSize = 0,
-                                remoteModified = null,
-                                localMtime = fileAttrs.lastModifiedTime().toMillis(),
-                                localSize = fileAttrs.size(),
-                                isFolder = false,
-                                isPinned = false,
-                                isHydrated = true,
-                                lastSynced = Instant.EPOCH,
-                            ),
-                        )
+                        db.upsertEntry(pendingUploadRow(relativePath, fileAttrs))
                     } else if (entry.isHydrated) {
                         val currentMtime = fileAttrs.lastModifiedTime().toMillis()
                         val currentSize = fileAttrs.size()
@@ -400,7 +408,9 @@ class LocalScanner(
                     refuseNfcTwins(dir)
                     seenPaths.add(relativePath)
 
-                    if (knownEntry(relativePath) == null) {
+                    // gkrost/unidrive-cli#723: a folder where the tracked row is a file is a new item too; the file's row
+                    // stays for the plan's delete.
+                    if (knownEntry(relativePath)?.isFolder != true) {
                         changes[relativePath] = ChangeState.NEW
                     }
                     return FileVisitResult.CONTINUE
