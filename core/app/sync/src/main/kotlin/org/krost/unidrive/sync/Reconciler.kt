@@ -26,12 +26,9 @@ data class LocalFileInfo(
 // A hash is only comparable when both sides have one. A row written before the provider reported a hash (Internxt rows have
 // remote_hash = null; archive#464 gave its listing a version token) must not look remotely modified just because the listing now
 // carries one: that would re-download every existing file on the first sync after the upgrade. mtime still decides then.
-// A folder can carry a newer modified time with no content change: its mtime moves whenever a child
-// is added or removed (the uploads of a first sync touch the remote folder after its row was
-// recorded). The no-op metadata update that would follow is suppressed in resolveAction, not here:
-// the same MODIFIED classification must still raise a delete-vs-modify conflict instead of letting
-// a local folder delete propagate as a recursive DeleteRemote (archive#694). A file turning into a folder,
-// or the reverse, is a change either way.
+// A folder can carry a newer modified time with no content change: its mtime moves whenever a child is added or removed (the uploads
+// of a first sync touch the remote folder after its row was recorded). resolveAction plans nothing for it; against a local delete it is
+// a conflict, settled as a delete when nothing live is below it (#713, settleTouchedFolderConflicts). A file turning into a folder, or the reverse, is a change either way.
 // Compare a version when an item has no content hash; the first such delivery after a hash-only row is uncertain.
 private fun remoteMetadataChanged(remoteItem: CloudItem, entry: SyncEntry): Boolean =
     remoteItem.isFolder != entry.isFolder ||
@@ -193,8 +190,7 @@ class Reconciler(
         // remote-absence — mirror of the delete-side "reap only on complete".
         enumerationComplete: Boolean = true,
     ): List<SyncAction> {
-        // UD-240g: bookend the reconcile pass with log breadcrumbs. Before this,
-        // the phase between `Delta: N items, hasMore=false` (gatherRemoteChanges)
+        // UD-240g: bookend the reconcile pass with log breadcrumbs. Before this, the phase between `Delta: N items, hasMore=false` (gatherRemoteChanges)
         // and `reporter.onActionCount` (post-reconcile) emitted ZERO log lines —
         // a 67k-local + 19k-remote first-sync looked like a hang for many seconds
         // while ~86k single-row SELECTs ran. The duration line at exit gives
@@ -465,6 +461,7 @@ class Reconciler(
 
         unappliedRemoteChanges.replan(actions, remoteChanges, syncPaths, alias.remoteToLocal, ::renamedContentChanged) { aliasTarget(alias, it) }
         dropDownloadsOntoLocalCaseTwins(actions, localChanges)
+        settleTouchedFolderConflicts(actions, remoteChangesLocal, entryByPath)
         detectMoves(actions, entryByPath, alias)
         detectRemoteRenames(actions, remoteChanges, entryByRemoteId, localChanges, alias)
         lastUnhydratedFolderDeletes = dropUnhydratedFolderDeletes(actions, entryByPath)
@@ -707,9 +704,9 @@ class Reconciler(
         }
 
         unappliedRemoteChanges.replan(actions, fullRemote, syncPaths, alias.remoteToLocal, ::renamedContentChanged) { aliasTarget(alias, it) }
-        // Cross-page move detection runs here on the combined action set —
-        // per-page detection would miss renames that span page boundaries.
+        // Cross-page move detection runs here on the combined action set — per-page detection would miss renames that span page boundaries.
         dropDownloadsOntoLocalCaseTwins(actions, fullLocal)
+        settleTouchedFolderConflicts(actions, fullRemoteLocal, entryByPath)
         detectMoves(actions, entryByPath, alias)
         detectRemoteRenames(actions, fullRemote, entryByRemoteId, fullLocal, alias)
         lastUnhydratedFolderDeletes = dropUnhydratedFolderDeletes(actions, entryByPath)
@@ -1076,7 +1073,7 @@ class Reconciler(
                 }
             }
 
-            // Delete vs modify conflicts
+            // Delete vs modify conflicts (a folder whose only change is its own metadata: settleTouchedFolderConflicts)
             localState == ChangeState.DELETED && remoteState == ChangeState.MODIFIED ->
                 SyncAction.Conflict(path, localState, remoteState, remoteItem, policyForPath(path))
             localState == ChangeState.MODIFIED && remoteState == ChangeState.DELETED ->
@@ -1096,11 +1093,9 @@ class Reconciler(
                 }
             localState == ChangeState.UNCHANGED && remoteState == ChangeState.MODIFIED && remoteItem != null ->
                 if (remoteItem.isFolder) {
-                    // archive#694: a folder's modified time moves with its children (the first sync's uploads
-                    // touch the remote folder after its row was recorded). There is nothing to apply
-                    // and no content to fetch, so this is a no-op rather than a metadata-only update;
-                    // updateRemoteEntries records the new metadata. A tracked FILE that the remote
-                    // replaced with a folder is a real change and keeps its update.
+                    // archive#694: a folder's modified time moves with its children: nothing to apply or fetch, so no
+                    // action; updateRemoteEntries records the new metadata. A tracked FILE the remote replaced with a
+                    // folder is a real change and keeps its update.
                     if (entry?.isFolder == true) null else SyncAction.UpdatePlaceholder(path, remoteItem, wasHydrated = false)
                 } else if (remoteContentUnchanged(remoteItem, entry)) {
                     // #264: metadata-only remote change on a file — record the new metadata and
@@ -1378,6 +1373,9 @@ class Reconciler(
             held.joinToString(",") { it.path },
         )
     }
+
+    private fun settleTouchedFolderConflicts(actions: MutableList<SyncAction>, remote: Map<String, CloudItem>, entryByPath: Map<String, SyncEntry>) =
+        settleTouchedFolderConflictsIn(actions, remote, entryByPath) { p, item -> excludePatterns.any { matchesGlob(p, it) } || isIgnored(p, directoryFacet(p, item, entryByPath[p])) }
 
     // The second remote-side guard: a folder delete must not run when the listing this plan reconciled on shows
     // live content below it that no action deletes — a path the scan skips (excluded or ignored), or one without
@@ -2151,7 +2149,7 @@ internal fun folderDeletesHoldingUnplannedRemoteItems(
         .filter { delete -> unplannedRemoteItemBelow(delete.path, remoteChangesLocal, entryByPath, skippedByScan) }
 
 // True when a live item under [folderPath] in [remoteChangesLocal] gets no delete of its own.
-private fun unplannedRemoteItemBelow(
+internal fun unplannedRemoteItemBelow(
     folderPath: String,
     remoteChangesLocal: Map<String, CloudItem>,
     entryByPath: Map<String, SyncEntry>,
