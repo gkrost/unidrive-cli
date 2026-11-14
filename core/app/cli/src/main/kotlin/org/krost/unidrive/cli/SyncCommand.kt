@@ -208,6 +208,16 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
     )
     var fastBootstrap: Boolean = false
 
+    @Option(
+        names = ["--trace-requests"],
+        description = [
+            "Print a per-run summary of the provider's HTTP requests (attempts by method, endpoint",
+            "kind and outcome, retries, throttles, bytes) after a one-shot sync. Content-free: no",
+            "URL, path or name is printed.",
+        ],
+    )
+    var traceRequests: Boolean = false
+
     @Spec
     lateinit var spec: CommandSpec
 
@@ -340,6 +350,11 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         restrictProfileForSync(dryRun, parent.providerConfigDir())
         val rawProvider = parent.createProvider()
         shutdown.closing(SyncShutdown.Step.PROVIDER) { rawProvider.close() }
+        // #578: the opt-in per-run request summary, attached through the same late-bound seam the daemon attaches
+        // its recorder to; the tap reads the sink per request, so everything the run sends from here on is counted.
+        val requestTrace = if (traceRequests) RequestTraceSummary() else null
+        requestTrace?.let { rawProvider.attachRequestMetrics(it) }
+        if (watch && requestTrace != null) System.err.println("--trace-requests prints its summary after a one-shot sync; --watch prints none.")
         val config = parent.loadSyncConfig()
         // A sync_path in config.toml is the profile's standing scope; --sync-path
         // replaces it for this invocation. --full-tree would run unscoped against a
@@ -495,22 +510,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         val watcher = if (watch) LocalWatcher(config.syncRoot) else null
         watcher?.let { w -> shutdown.closing(SyncShutdown.Step.WATCHER) { w.stop() } }
 
-        val dataDir =
-            run {
-                if (Os.isWindows()) {
-                    val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
-                    java.nio.file.Paths
-                        .get(localAppData, "unidrive", profile.name)
-                } else {
-                    java.nio.file.Paths.get(
-                        System.getenv("HOME") ?: System.getProperty("user.home"),
-                        ".local",
-                        "share",
-                        "unidrive",
-                        profile.name,
-                    )
-                }
-            }
+        val dataDir = syncDataDir(profile.name)
         val conflictLog =
             ConflictLog(
                 logFile = parent.providerConfigDir().resolve("conflicts.jsonl"),
@@ -864,6 +864,8 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                                 failure.printStackTrace(System.err)
                             }
                         }
+                        // #578: the run's request summary, after the pass and before the exit code decides the run is over.
+                        requestTrace?.let { println(it.render()) }
                         System.out.flush()
                         System.err.flush()
                         // Closes the IPC server, the provider, the subscription store and state.db, then releases the
@@ -960,6 +962,21 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         val root = context.getLogger(ch.qos.logback.classic.Logger.ROOT_LOGGER_NAME)
         root.addAppender(appender)
     }
+
+    // The data dir beside the profile's data (conflict backups): LOCALAPPDATA on Windows, ~/.local/share elsewhere.
+    private fun syncDataDir(profileName: String): Path =
+        if (Os.isWindows()) {
+            val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
+            java.nio.file.Paths.get(localAppData, "unidrive", profileName)
+        } else {
+            java.nio.file.Paths.get(
+                System.getenv("HOME") ?: System.getProperty("user.home"),
+                ".local",
+                "share",
+                "unidrive",
+                profileName,
+            )
+        }
 
     private fun applyConfigPinRules(
         db: StateDatabase,
@@ -1097,53 +1114,4 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
             configured: List<String>,
         ): List<String> = cli.ifEmpty { configured }
     }
-}
-
-/** The started appender of `log_file` in config.toml, a redirect of the log beside the default unidrive.log of logback.xml. */
-internal fun redirectFileAppender(
-    context: ch.qos.logback.classic.LoggerContext,
-    logFile: java.nio.file.Path,
-): ch.qos.logback.core.rolling.RollingFileAppender<ch.qos.logback.classic.spi.ILoggingEvent> {
-    val appender =
-        ch.qos.logback.core.rolling
-            .RollingFileAppender<ch.qos.logback.classic.spi.ILoggingEvent>()
-    appender.context = context
-    appender.name = "FILE"
-    appender.file = logFile.toString()
-    val policy =
-        ch.qos.logback.core.rolling
-            .FixedWindowRollingPolicy()
-    policy.context = context
-    policy.setParent(appender)
-    policy.fileNamePattern = "$logFile.%i"
-    policy.minIndex = 1
-    policy.maxIndex = 3
-    policy.start()
-    appender.rollingPolicy = policy
-    val triggering =
-        ch.qos.logback.core.rolling
-            .SizeBasedTriggeringPolicy<ch.qos.logback.classic.spi.ILoggingEvent>()
-    triggering.context = context
-    triggering.setMaxFileSize(
-        ch.qos.logback.core.util.FileSize
-            .valueOf("10MB"),
-    )
-    triggering.start()
-    appender.triggeringPolicy = triggering
-    val encoder =
-        ch.qos.logback.classic.encoder
-            .PatternLayoutEncoder()
-    encoder.context = context
-    // UD-251: match logback.xml pattern so redirected logs carry the same
-    // build + profile MDC context as the default unidrive.log does.
-    encoder.pattern =
-        "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{build:-???????}] [%X{profile:-*}] " +
-        "[%thread] %logger{36} - %msg%n"
-    // #147: UTF-8 like logback.xml's appenders. Without a charset the encoder takes the JVM default, the ANSI code
-    // page on Windows under file.encoding=COMPAT, and every character outside it reaches the file as '?'.
-    encoder.charset = Charsets.UTF_8
-    encoder.start()
-    appender.encoder = encoder
-    appender.start()
-    return appender
 }
