@@ -1719,7 +1719,10 @@ class IpcContractCorpusTest {
         override suspend fun rmdir(path: String, recursive: Boolean, permanent: Boolean): RmdirResult = when {
             readOnly(path) -> RmdirResult.Failed(HydrationError.ReadOnly)
             path == "/docs/report.txt" -> RmdirResult.PathIsFile
-            path == "/docs/nonempty" -> RmdirResult.NotEmpty
+            // gkrost/unidrive-cli#717: the plain refusal (no reason known) answers as it always did; the unobserved
+            // child names its reason and the child in the reply.
+            path == "/docs/nonempty" -> RmdirResult.NotEmpty()
+            path == "/docs/unobserved" -> RmdirResult.NotEmpty("remote_unobserved", "/docs/unobserved/x4.txt")
             path == "/docs/uploading" -> RmdirResult.Busy
             else -> RmdirResult.Ok
         }

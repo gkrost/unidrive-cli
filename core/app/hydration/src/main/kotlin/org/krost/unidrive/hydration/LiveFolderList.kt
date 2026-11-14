@@ -80,17 +80,43 @@ internal class LiveFolderList(
      *  - this daemon listed the folder live from the provider ([rowsOrNull]): `listedAtMs` is that listing.
      * Anything else is not covered (`complete` false, `listedAtMs` null): a folder that an earlier, interrupted scan
      * filled in part answers from state.db but may lack items.
+     *
+     * Asking is the act of answering a client's list, so a folder answered whole is noted as whole now
+     * (gkrost/unidrive-cli#717): [lastWholeListingMs] is when a client could last read the folder whole, and the rmdir
+     * window guard refuses rows a delta indexed after it.
      */
     fun coverage(
         folder: String,
         status: EnumerationStatus,
     ): ListingCoverage {
         if (!CursorState(db).deltaCursor.isNullOrEmpty() && status.lastScanComplete != false && !status.recovery) {
-            return ListingCoverage(true, status.lastSuccessAtMs)
+            return noted(PathNormalizer.nfc(folder), ListingCoverage(true, status.lastSuccessAtMs))
         }
         val path = PathNormalizer.nfc(folder)
-        return listedAtMs(path)?.let { ListingCoverage(true, it) } ?: ListingCoverage(false, null)
+        return listedAtMs(path)?.let { noted(path, ListingCoverage(true, it)) } ?: ListingCoverage(false, null)
     }
+
+    // gkrost/unidrive-cli#717: when this daemon last answered hydration.list with `complete` for a folder (epoch ms).
+    private val listedToClient = ConcurrentHashMap<String, Long>()
+
+    private fun noted(
+        folder: String,
+        coverage: ListingCoverage,
+    ): ListingCoverage {
+        if (listedToClient.size >= EMPTY_MEMORY_CAP) listedToClient.clear()
+        listedToClient[folder] = nowMs()
+        return coverage
+    }
+
+    /**
+     * gkrost/unidrive-cli#717: when this daemon last had [folder] (the engine path, "" the root) whole and a client
+     * could read it so — the later of the folder's live listing ([listedAtMs]) and the last `complete` answer of
+     * [coverage] — or null when neither happened. The folder delete's window guard refuses rows a delta indexed
+     * after it: a child the client's comparison of the folder's cloud contents with the engine's listing cannot
+     * have seen.
+     */
+    fun lastWholeListingMs(folder: String): Long? =
+        maxOf(listedAt[folder] ?: 0L, listedToClient[folder] ?: 0L).takeIf { it > 0L }
 
     /**
      * The rows of [folder] after a live listing, or null when the folder is answered from state.db as it always was.

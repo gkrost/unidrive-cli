@@ -419,7 +419,14 @@ sealed class RmdirResult {
     data object Ok : RmdirResult()
     data class Failed(val error: HydrationError) : RmdirResult()
     data object PathIsFile : RmdirResult()
-    data object NotEmpty : RmdirResult()
+
+    // gkrost/unidrive-cli#717: the not_empty refusal; [reason] and one [child] ride along where the refusal knows
+    // them (the IPC reply adds them as `reason` and `child`, promised by the `hydration.rmdir_not_empty_reason`
+    // capability of daemon.status). A refusal without them answers as it always did.
+    data class NotEmpty(
+        val reason: String? = null,
+        val child: String? = null,
+    ) : RmdirResult()
 
     /**
      * WB-3 (archive#87): an upload is queued or in flight for a file below the folder. The delete would

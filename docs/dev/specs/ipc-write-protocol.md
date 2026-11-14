@@ -218,7 +218,7 @@ errors: old_path_not_found / new_parent_not_found / new_path_exists /
 ```
 hydration.unlink {path[,permanent]}   -> {"ok":true} | {"ok":false,"error":"path_is_folder"} | ...
 hydration.rmdir   {path[,recursive[,discard_local]][,permanent]} -> {"ok":true} | {"ok":false,"error":"path_is_file"} |
-                                          {"ok":false,"error":"not_empty"} | ...
+                                          {"ok":false,"error":"not_empty"[,"reason":"..."[,"child":"..."]]} | ...
 ```
 
 - A never-uploaded file's row is hard-deleted (there is no cloud object to
@@ -245,6 +245,14 @@ hydration.rmdir   {path[,recursive[,discard_local]][,permanent]} -> {"ok":true} 
   flag is not read. It deletes the user's only copy of those bytes, so a client sends it only for a delete the user
   made, never to get past a refusal. An engine without the capability ignores the flag and answers `not_empty` as
   before.
+- A `not_empty` refusal may name its `reason` and one `child` (gkrost/unidrive-cli#717; `contract_level` 5;
+  `daemon.status` lists `hydration.rmdir_not_empty_reason`): why the folder was refused (`remote_unobserved` — a
+  child the mount never observed, or one a delta indexed after the folder was last listed whole to a client, so the
+  client's comparison before the delete cannot have seen it; `alive_descendants`; `unsynced_bytes`;
+  `provider_not_empty`; the delete-time snapshot guard may also name `remote_changed` or
+  `remote_listing_repeats`) and one path the engine names, where the refusal knows them. A client that reads
+  `remote_unobserved` re-lists and reconciles instead of retrying the delete; one that reads a provider lag
+  (`provider_not_empty`) may retry. An engine without the capability answers `not_empty` alone, as before.
 
 ### 3.8 Mkdir / rmdir
 

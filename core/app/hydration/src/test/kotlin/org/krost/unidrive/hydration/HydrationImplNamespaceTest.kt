@@ -498,7 +498,7 @@ class HydrationImplNamespaceTest {
             ),
         )
         provider2.throwOnDelete = RuntimeException("Folder not empty")
-        assertEquals(RmdirResult.NotEmpty, impl2.rmdir("/nonempty-dir"), "not-empty must not be swallowed as gone")
+        assertEquals(RmdirResult.NotEmpty("provider_not_empty"), impl2.rmdir("/nonempty-dir"), "not-empty must not be swallowed as gone")
     }
 
     @Test
@@ -521,7 +521,7 @@ class HydrationImplNamespaceTest {
             ),
         )
         provider1.throwOnDelete = RuntimeException("OneDrive responded 409 Conflict: Folder not empty")
-        assertEquals(RmdirResult.NotEmpty, impl1.rmdir("/foo"))
+        assertEquals(RmdirResult.NotEmpty("provider_not_empty"), impl1.rmdir("/foo"))
 
         // Internxt wording
         val (impl2, provider2, stateDb2) = freshEnv()
@@ -541,7 +541,7 @@ class HydrationImplNamespaceTest {
             ),
         )
         provider2.throwOnDelete = RuntimeException("Internxt API: cannot delete non-empty folder")
-        assertEquals(RmdirResult.NotEmpty, impl2.rmdir("/foo"))
+        assertEquals(RmdirResult.NotEmpty("provider_not_empty"), impl2.rmdir("/foo"))
     }
 
     @Test
@@ -556,7 +556,7 @@ class HydrationImplNamespaceTest {
         Files.writeString(cached, "cached bytes")
 
         for (recursive in listOf(false, true)) {
-            assertEquals(RmdirResult.NotEmpty, env.impl.rmdir("/dir", recursive = recursive))
+            assertEquals(RmdirResult.NotEmpty("remote_unobserved", "/dir/new.txt"), env.impl.rmdir("/dir", recursive = recursive))
         }
         assertEquals(null, env.provider.lastDeletedPath)
         assertTrue(env.db.getEntry("/dir") != null)
@@ -588,7 +588,7 @@ class HydrationImplNamespaceTest {
         env.provider.throwOnDelete =
             org.krost.unidrive.FolderNotEmptyException("Verzeichnis nicht leer")
 
-        assertEquals(RmdirResult.NotEmpty, env.impl.rmdir("/typed-dir"))
+        assertEquals(RmdirResult.NotEmpty("provider_not_empty"), env.impl.rmdir("/typed-dir"))
     }
 
     @Test
@@ -747,7 +747,7 @@ class HydrationImplNamespaceTest {
         env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
         env.db.upsertEntry(row("/dir/a.txt", "rid-a", isHydrated = false))
         val (strict, strictLines) = capturingLog { env.impl.rmdir("/dir") }
-        assertEquals(RmdirResult.NotEmpty, strict)
+        assertEquals(RmdirResult.NotEmpty("alive_descendants"), strict)
         assertTrue(
             strictLines.any { it == "rmdir of /dir refused: not_empty reason=alive_descendants recursive=false" },
             "lines: $strictLines",
@@ -757,7 +757,7 @@ class HydrationImplNamespaceTest {
         other.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
         other.provider.children = listOf(listed(row("/dir/new.txt", "rid-new")))
         val (snapshot, snapshotLines) = capturingLog { other.impl.rmdir("/dir") }
-        assertEquals(RmdirResult.NotEmpty, snapshot)
+        assertEquals(RmdirResult.NotEmpty("remote_unobserved", "/dir/new.txt"), snapshot)
         assertTrue(
             snapshotLines.any {
                 it == "rmdir of /dir refused: not_empty reason=remote_unobserved recursive=false child=/dir/new.txt"
@@ -775,7 +775,7 @@ class HydrationImplNamespaceTest {
 
         val result = env.impl.rmdir("/dir")
 
-        assertEquals(RmdirResult.NotEmpty, result)
+        assertEquals(RmdirResult.NotEmpty("alive_descendants"), result)
         assertEquals(null, env.provider.lastDeletedPath, "nothing may be deleted in the cloud")
         assertTrue(env.db.getEntry("/dir/new.txt") != null, "the child row stays")
         assertTrue(Files.exists(only), "the cache file is the only copy of the never-uploaded bytes and must stay")
@@ -787,7 +787,7 @@ class HydrationImplNamespaceTest {
         env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
         env.db.upsertEntry(row("/dir/a.txt", "rid-a"))
 
-        assertEquals(RmdirResult.NotEmpty, env.impl.rmdir("/dir"))
+        assertEquals(RmdirResult.NotEmpty("alive_descendants"), env.impl.rmdir("/dir"))
         assertEquals(null, env.provider.lastDeletedPath)
     }
 
@@ -820,7 +820,7 @@ class HydrationImplNamespaceTest {
 
             val result = env.impl.rmdir("/dir", recursive = true)
 
-            assertEquals(RmdirResult.NotEmpty, result, name)
+            assertEquals(RmdirResult.NotEmpty("unsynced_bytes", child.path), result, name)
             assertEquals(null, env.provider.lastDeletedPath, "$name: nothing may be deleted in the cloud")
             assertTrue(env.db.getEntry(child.path) != null, "$name: the row stays")
             assertTrue(Files.exists(only), "$name: the only copy of the bytes stays")
@@ -834,7 +834,7 @@ class HydrationImplNamespaceTest {
         env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
         val cached = env.syncedFile("/dir/sub/file.txt", "rid-file")
 
-        assertEquals(RmdirResult.NotEmpty, env.impl.rmdir("/dir"))
+        assertEquals(RmdirResult.NotEmpty("alive_descendants"), env.impl.rmdir("/dir"))
         assertEquals(null, env.provider.lastDeletedPath, "nothing may be deleted in the cloud")
         assertTrue(env.db.getEntry("/dir/sub/file.txt") != null, "the row stays")
         assertTrue(Files.exists(cached), "the cache copy stays")
@@ -877,7 +877,7 @@ class HydrationImplNamespaceTest {
 
             val result = env.impl.rmdir("/dir", recursive = true)
 
-            assertEquals(RmdirResult.NotEmpty, result, change.first)
+            assertEquals(RmdirResult.NotEmpty("unsynced_bytes", "/dir/sub/edited.txt"), result, change.first)
             assertEquals(null, env.provider.lastDeletedPath, "${change.first}: nothing may be deleted in the cloud")
             assertTrue(env.db.getEntry("/dir/sub/edited.txt") != null, "${change.first}: the row stays")
             assertTrue(Files.exists(cached), "${change.first}: the edit in the cache stays")
@@ -894,7 +894,7 @@ class HydrationImplNamespaceTest {
         env.db.upsertEntry(row("/dir/old.txt", "rid-old").copy(lastSynced = Instant.now().minusSeconds(60)))
         val cached = env.cacheBytes("/dir/old.txt")
 
-        assertEquals(RmdirResult.NotEmpty, env.impl.rmdir("/dir", recursive = true))
+        assertEquals(RmdirResult.NotEmpty("unsynced_bytes", "/dir/old.txt"), env.impl.rmdir("/dir", recursive = true))
         assertEquals(null, env.provider.lastDeletedPath)
         assertTrue(Files.exists(cached))
     }
@@ -906,7 +906,7 @@ class HydrationImplNamespaceTest {
         env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
         env.db.upsertEntry(row("/dir/old.txt", "rid-old").copy(lastSynced = Instant.now().minusSeconds(60)))
         val cached = env.cacheBytes("/dir/old.txt")
-        assertEquals(RmdirResult.NotEmpty, env.impl.rmdir("/dir", recursive = true), "precondition: the guard refuses")
+        assertEquals(RmdirResult.NotEmpty("unsynced_bytes", "/dir/old.txt"), env.impl.rmdir("/dir", recursive = true), "precondition: the guard refuses")
 
         assertEquals(RmdirResult.Ok, env.impl.rmdirDiscardingLocal("/dir"))
         assertEquals("/dir", env.provider.lastDeletedPath)
