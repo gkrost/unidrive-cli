@@ -109,12 +109,14 @@ tasks.named<JavaExec>("run") {
     standardInput = System.`in`
 }
 
-// The build instant stamped into BuildInfo, to the second, UTC. Order: explicit, SOURCE_DATE_EPOCH, commit time, clock.
-// A value that does not parse is skipped, never stamped.
+// The build instant stamped into BuildInfo, to the second, UTC. Order: explicit, SOURCE_DATE_EPOCH, commit time,
+// clockFallback, clock. A dirty build passes the fixed marker below as clockFallback; the clock is only the last
+// resort of a clean tree whose git call failed. A value that does not parse is skipped, never stamped.
 fun resolveBuildInstant(
     explicit: String?,
     sourceDateEpoch: String?,
     commitEpoch: String?,
+    clockFallback: String?,
 ): String {
     explicit?.trim()?.takeIf { it.isNotEmpty() }?.let { e ->
         try {
@@ -125,8 +127,17 @@ fun resolveBuildInstant(
     for (epoch in listOf(sourceDateEpoch, commitEpoch)) {
         epoch?.trim()?.toLongOrNull()?.let { return Instant.ofEpochSecond(it).toString() }
     }
+    clockFallback?.let { return it }
     return Instant.now().truncatedTo(ChronoUnit.SECONDS).toString()
 }
+
+// The fixed BUILD_INSTANT of a dirty tree (a dirty tree is the normal state while developing: any uncommitted
+// change or untracked file). A dirty build's real build time changes on every invocation, which rewrites
+// BuildInfo.kt and keeps :app:cli's compile, jar, shadowJar and test classpath never up to date and its build-cache
+// entries unmatched. The fixed marker keeps the file byte-identical between builds of an unchanged tree; the tree's
+// dirtiness stays visible in DIRTY and in the `.dirty` version metadata. The marker must parse as ISO-8601 because
+// BuildInfoReport and BuildInfoTest parse BUILD_INSTANT.
+val dirtyBuildInstant = "1970-01-01T00:00:00Z"
 
 val generateBuildInfo =
     tasks.register("generateBuildInfo") {
@@ -179,7 +190,7 @@ val generateBuildInfo =
                 .map { it.trim().isNotEmpty() }
         // BUILD_INSTANT (a clean-tree build of one commit is byte-reproducible, see the shadowJar below): first that is
         // there of -PbuildInstant=<ISO-8601 UTC>, the SOURCE_DATE_EPOCH environment variable, the commit time of HEAD (a clean
-        // tree only: a dirty build is not that commit, so it says when it was built), else the clock. Seconds, UTC.
+        // tree only: a dirty build is not that commit), else the fixed dirty marker, else the clock. Seconds, UTC.
         val explicitBuildInstant = providers.gradleProperty("buildInstant")
         val sourceDateEpoch = providers.environmentVariable("SOURCE_DATE_EPOCH")
         val gitCommitEpoch =
@@ -218,6 +229,7 @@ val generateBuildInfo =
                     explicit = explicitBuildInstant.orNull,
                     sourceDateEpoch = sourceDateEpoch.orNull,
                     commitEpoch = if (dirty) null else try { gitCommitEpoch.get() } catch (_: Exception) { null },
+                    clockFallback = if (dirty) dirtyBuildInstant else null,
                 )
             val taggedRelease =
                 try {

@@ -28,6 +28,12 @@ on:
 permissions:
   contents: read
 
+# The workers cap rides with the workflows that run Gradle on CI's four-core
+# runners (it left core/gradle.properties in gkrost/unidrive-cli#726; see
+# build.yml's GRADLE_OPTS for the measurement behind it).
+env:
+  GRADLE_OPTS: -Dorg.gradle.workers.max=2
+
 concurrency:
   group: nightly-live-${{ github.ref }}
   cancel-in-progress: true

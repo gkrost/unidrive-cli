@@ -32,6 +32,11 @@ JDK 25+ and Linux with `systemd --user` for the packaged daemon. Internxt uses t
 cd core && ./gradlew :app:cli:shadowJar    # build fat JAR → core/app/cli/build/libs/unidrive-*.jar
 ```
 
+Local build time: `core/gradle.properties` turns the Kotlin build-statistics service off and the build cache on, so a fresh worktree at the same or a nearby commit takes most compile tasks FROM-CACHE (test tasks are never cached), and an unchanged tree's compile tasks stay up to date — also because a dirty tree stamps a fixed build instant instead of the clock. Workers are not capped locally; CI pins `-Dorg.gradle.workers.max=2` in its workflow environments for the four-core hosted runners. Two per-machine notes for command-line builds:
+
+- Every other Kotlin build on the machine pays the same statistics cost: put `kotlin.internal.collectFUSMetrics=false` into `~/.gradle/gradle.properties` and delete `~/.gradle/kotlin-profile` if builds hang at the end (Gradle does not clean that folder; only an IDE that uploads the statistics does).
+- `./gradlew <task> -PnoCoverage` skips the JaCoCo agent and the coverage reports for a local run. CI never passes the property.
+
 ## Packaged distribution (no user-installed JDK)
 
 A platform package ships a `jlink` runtime image next to the fat JAR. The image

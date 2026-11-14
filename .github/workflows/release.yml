@@ -13,6 +13,13 @@ on:
 permissions:
   contents: read
 
+# The release runs the same `check` as build.yml's gate, on the same four-core
+# runner image, so it carries the workers cap too. The cap left
+# core/gradle.properties in gkrost/unidrive-cli#726 so developer machines keep
+# Gradle's default; the workflows that run the gate keep it here.
+env:
+  GRADLE_OPTS: -Dorg.gradle.workers.max=2
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false  # never cancel an in-flight release
