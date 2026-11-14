@@ -1027,7 +1027,14 @@ class Reconciler(
                         SyncAction.CreatePlaceholder(path, remoteItem, shouldHydrate = false)
                     // File exists locally with matching size — adopt (pin rules may still hydrate), unless the
                     // content check proves the bytes differ (#97).
-                    remoteItem != null && !remoteItem.isFolder && adoptableAsSameFile(localPath, remoteItem, sameContent) ->
+                    remoteItem != null && !remoteItem.isFolder &&
+                        if (entry?.isPendingUpload == true) {
+                            // a pending upload's bytes were never synced: only a proven match adopts, "cannot tell"
+                            // (no hash algorithm, an S3 multipart ETag, an unreadable file) keeps both
+                            provenSame(localPath, remoteItem, sameContent) || SparseProbe.isStub(localPath, remoteItem.size)
+                        } else {
+                            adoptableAsSameFile(localPath, remoteItem, sameContent)
+                        } ->
                         SyncAction.CreatePlaceholder(path, remoteItem, shouldHydrate = shouldPin(path, remoteItem, pinRules))
                     // Real conflict — sizes differ or other mismatch
                     else ->

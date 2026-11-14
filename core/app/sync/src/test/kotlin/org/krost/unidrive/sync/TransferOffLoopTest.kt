@@ -247,7 +247,11 @@ class TransferOffLoopTest {
         afterKill.initialize()
         try {
             assertTrue(afterKill.getEntry("/sent.bin")?.remoteId == null, "precondition: the row at the kill is still a pending upload")
-            provider.deltaItems = listOf(remoteFile("/sent.bin", content(3).size))
+            // The pending row's bytes were never synced, so the both-new adoption needs a PROVEN
+            // match now (#743 review fix): the comparison must be able to tell — the fake answers
+            // no hash by default — and the item carries the uploaded bytes' real SHA-256.
+            provider.hashAlgorithmOverride = HashAlgorithm.Sha256Hex
+            provider.deltaItems = listOf(remoteFile("/sent.bin", content(3).size, hash = sha256(content(3))))
             runBlocking { engine(afterKill).syncOnce() }
             assertEquals(emptyList(), conflictCopies(), "no conflict copy")
             assertTrue(content(3).contentEquals(provider.files["/sent.bin"]), "the cloud holds the file")

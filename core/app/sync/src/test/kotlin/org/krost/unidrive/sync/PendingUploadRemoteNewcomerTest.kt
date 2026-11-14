@@ -258,8 +258,11 @@ class PendingUploadRemoteNewcomerTest {
         assertTrue(actions.any { it is SyncAction.Conflict }, "an unreadable file answers not-proven-same: $actions")
     }
 
+    // A pending upload's bytes were never synced, so "cannot tell" is not evidence of a match: the
+    // #97 adoption rule (cannot tell adopts) holds only for the real both-new pair, where the local
+    // bytes stayed on disk across a re-widened scope.
     @Test
-    fun `an unreadable local file during the both-new adoption adopts rather than failing the pass`() {
+    fun `an unreadable pending file during the both-new comparison keeps both rather than failing the pass`() {
         Files.writeString(syncRoot.resolve("a.txt"), "local!")
         db.upsertEntry(pendingPlanRow("/a.txt"))
 
@@ -269,8 +272,41 @@ class PendingUploadRemoteNewcomerTest {
                 localChanges = emptyMap(),
             )
 
-        assertTrue(actions.none { it is SyncAction.DownloadContent }, "cannot tell adopts: $actions")
-        assertTrue(actions.any { it is SyncAction.CreatePlaceholder }, "cannot tell adopts: $actions")
+        assertTrue(actions.none { it is SyncAction.DownloadContent }, "the local bytes are not overwritten: $actions")
+        assertTrue(actions.any { it is SyncAction.Conflict }, "an unreadable pending file is not proven same: keep both: $actions")
+    }
+
+    @Test
+    fun `a proven-match pending file during the both-new comparison still adopts`() {
+        Files.writeString(syncRoot.resolve("a.txt"), "same!")
+        db.upsertEntry(pendingPlanRow("/a.txt"))
+
+        val actions =
+            planReconciler { _, _ -> true }.reconcile(
+                remoteChanges = mapOf("/a.txt" to cloudFile("/a.txt", "same!".toByteArray())),
+                localChanges = emptyMap(),
+            )
+
+        assertTrue(actions.none { it is SyncAction.DownloadContent }, "a proven match adopts: $actions")
+        assertTrue(actions.any { it is SyncAction.CreatePlaceholder }, "a proven match adopts: $actions")
+    }
+
+    // No-hash provider (the CloudProvider default: Internxt, localfs): the content comparison cannot
+    // tell, and the pending pair must keep both. The engine-level test pins the end-to-end outcome:
+    // one conflict copy holding the local bytes, the newcomer at the path, the row not promoted.
+    @Test
+    fun `a pending upload against an equal-size newcomer on a no-hash provider is kept both`() = runTest {
+        provider.hashAlgorithmOverride = null
+        val local = syncRoot.resolve("a.txt")
+        Files.writeString(local, "local!")
+        seedPendingRow("/a.txt", size = "local!".length.toLong())
+        provider.deltaItems = listOf(cloudFile("/a.txt", "cloud!".toByteArray()))
+
+        engine().syncOnce()
+
+        assertEquals("cloud!", Files.readString(local), "the cloud's bytes take the path")
+        assertEquals("local!", Files.readString(copies().single()), "the local bytes survive as a conflict copy")
+        assertTrue(copies().size == 1, "exactly one conflict copy: ${copies()}")
     }
 
     @Test
