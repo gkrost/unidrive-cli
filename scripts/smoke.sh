@@ -19,10 +19,12 @@ echo "[smoke] root=$ROOT"
 echo "[smoke] log_dir=$LOG_DIR"
 
 echo "[smoke] step 1/3: ./gradlew check"
-( cd core && ./gradlew check --no-daemon ) > "$LOG_DIR/check.log" 2>&1
+# No --no-daemon: a local run keeps the warm daemon instead of paying JVM start-up and configuration again
+# per step; CI's single-use --no-daemon stays as it is.
+( cd core && ./gradlew check ) > "$LOG_DIR/check.log" 2>&1
 
 echo "[smoke] step 2/3: build CLI shadow JAR"
-( cd core && ./gradlew :app:cli:shadowJar --no-daemon ) > "$LOG_DIR/build.log" 2>&1
+( cd core && ./gradlew :app:cli:shadowJar ) > "$LOG_DIR/build.log" 2>&1
 
 CLI_JAR="$(find core/app/cli/build/libs -name '*-all.jar' -o -name 'unidrive-*.jar' | head -1)"
 test -n "$CLI_JAR" || { echo "CLI jar missing under core/app/cli/build/libs/"; exit 1; }

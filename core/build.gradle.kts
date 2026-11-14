@@ -167,9 +167,16 @@ abstract class DetektTask : DefaultTask() {
 }
 
 subprojects {
-    apply(plugin = "jacoco")
-    configure<JacocoPluginExtension> {
-        toolVersion = jacocoToolVersion
+    // -PnoCoverage skips JaCoCo for a local run: the agent instruments every test JVM, and every test run
+    // finalizes the module's XML+HTML reports, which a focused local test run never reads. CI never passes the
+    // property, so the gate's coverage is unchanged. The reference below stays valid without the plugin: the
+    // JacocoReport and JacocoTaskExtension containers are empty, so the finalizer and the flakyTest disable
+    // degrade to no-ops.
+    if (!providers.gradleProperty("noCoverage").isPresent) {
+        apply(plugin = "jacoco")
+        configure<JacocoPluginExtension> {
+            toolVersion = jacocoToolVersion
+        }
     }
     // detekt: off the gate. `check` does not run it; `./gradlew detekt` (or
     // `<project>:detekt`) still does, on demand, and fails on any finding not in
@@ -562,7 +569,10 @@ subprojects {
         // can undo what is set here.
         tasks.withType<Test>().configureEach {
             if (name == flakyTestTask) {
-                extensions.configure<JacocoTaskExtension> { isEnabled = false }
+                // Without JaCoCo (-PnoCoverage) there is no extension to disable: no agent on the JVM anyway.
+                if (plugins.hasPlugin("jacoco")) {
+                    extensions.configure<JacocoTaskExtension> { isEnabled = false }
+                }
             } else {
                 useJUnit { excludeCategories(flakyCategory) }
             }

@@ -24,15 +24,22 @@ concurrency:
 # gkrost/unidrive-cli#596: the local build cache is on in CI (org.gradle.caching). setup-gradle saves ~/.gradle/caches,
 # build-cache-1 included, from jobs on main and restores it read-only on pull requests, so a pull request compiles only
 # the modules it changes and the ones that depend on them. Test tasks are never cached (core/build.gradle.kts): every
-# job still runs its whole test set. Developer machines keep the cache off unless they turn it on themselves.
+# job still runs its whole test set. core/gradle.properties turns the cache on for developer machines too.
+#
+# gkrost/unidrive-cli#726: the workers cap left core/gradle.properties, so developer machines keep Gradle's default
+# of one worker per core (a clean testClasses measured 10 m 43 s with 2 workers against 5 m 27 s with 6 on a 12-core
+# machine). CI keeps the cap its four-core runners were tuned with: timing-sensitive tests must not be starved by
+# several test JVMs running beside compilers and other test tasks. GRADLE_OPTS carries it into the build JVM, the
+# single-use one of --no-daemon included, and every job of this workflow inherits it — check, check-runtime-jdk,
+# windows-security and the advisory jobs included.
 env:
-  GRADLE_OPTS: -Dorg.gradle.internal.repository.max.tentatives=5 -Dorg.gradle.internal.repository.initial.backoff=5000 -Dorg.gradle.caching=true
+  GRADLE_OPTS: -Dorg.gradle.internal.repository.max.tentatives=5 -Dorg.gradle.internal.repository.initial.backoff=5000 -Dorg.gradle.caching=true -Dorg.gradle.workers.max=2
 
 # Every Ubuntu job pins ubuntu-24.04: the ubuntu-latest label began migrating to
 # Ubuntu 26 on 2026-10-19, and an uncontrolled image flip is exactly what this
 # build does not want — the ignore-oracle's drift leg (git 2.43.0) is "the git
 # of Ubuntu 24.04", and the gate's timing-sensitive tests are tuned for this
-# image's four cores (org.gradle.workers.max in core/gradle.properties). Moving
+# image's four cores (the org.gradle.workers.max cap in GRADLE_OPTS above). Moving
 # to Ubuntu 26 is a deliberate platform bump, not something a label does
 # overnight: pair it with re-deriving the oracle's drift leg and re-measuring
 # the workers cap.
