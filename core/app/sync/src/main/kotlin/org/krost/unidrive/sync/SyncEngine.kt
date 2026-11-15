@@ -3090,7 +3090,10 @@ open class SyncEngine(
         // time. An edit that lands between the scan and this placement (pass 2 queued, a long streaming gather)
         // has another mtime or size, and the provider places the download over it with nothing logged. The edit
         // is moved aside as a conflict-local copy first, the way applyKeepBoth keeps a losing local edit.
-        val keptLocalEdit = keepLocalEditAsideIfEditedSinceScan(action.path, localPath)
+        val keptLocalEdit =
+            keepLocalEditAsideIfEditedSinceScan(action.path, localPath)
+                ?: action.path.takeIf { isLocalFileWithoutBaseline(db.getEntry(it), localPath, action.remoteItem) }
+                    ?.let { keepAppearedFileAside(it, localPath, "was found at the download's destination with no baseline") }
         // gkrost/unidrive-cli#451: the check above covers scan→now; the transfer it clears can run minutes.
         // Its stats travel with the download and are re-checked at the placement, so a save landing
         // mid-transfer is kept as a conflict-local copy too, the way the tracking engine's download
@@ -3254,6 +3257,7 @@ open class SyncEngine(
     private suspend fun keepAppearedFileAside(
         path: String,
         localPath: Path,
+        circumstance: String = "appeared during the download that was cleared for its empty destination",
     ): String? {
         if (!Files.isRegularFile(localPath)) return null
         val conflictPath =
@@ -3263,7 +3267,7 @@ open class SyncEngine(
         withEchoSuppression(conflictPath) {
             Files.move(localPath, placeholder.resolveLocal(conflictPath))
         }
-        reporter.onWarning("Conflict: $path appeared during the download that was cleared for its empty destination; the file is kept as $conflictPath")
+        reporter.onWarning("Conflict: $path $circumstance; the file is kept as $conflictPath")
         conflictLog?.record(
             path = path,
             localState = ChangeState.MODIFIED.name,
