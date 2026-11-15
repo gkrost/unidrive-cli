@@ -26,6 +26,8 @@ import kotlin.time.Duration.Companion.minutes
 class DropboxAuth(
     private val config: DropboxConfig,
     private val httpClient: HttpClient,
+    // A short timeout makes a stalled token endpoint reachable in a test; a test seam.
+    private val refreshLatch: RefreshableTokenLatch = RefreshableTokenLatch(),
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(DropboxAuth::class.java)
     private val json = org.krost.unidrive.UnidriveJson
@@ -37,7 +39,6 @@ class DropboxAuth(
             validate = { it.hasPlausibleShape() },
             protector = config.credentialProtector,
         )
-    private val refreshLatch = RefreshableTokenLatch()
 
     @Volatile
     private var token: DropboxToken? = null
@@ -200,6 +201,9 @@ class DropboxAuth(
         try {
             block()
         } catch (e: AuthenticationException) {
+            throw e
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // A real cancellation stays one: it is not a verdict on the grant and must not be reclassified.
             throw e
         } catch (e: Exception) {
             throw classified(e)

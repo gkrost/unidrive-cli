@@ -14,6 +14,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -21,17 +22,26 @@ import kotlin.time.Duration.Companion.milliseconds
  * accepted and then stalled held every request of the provider — and the daemon shutdown — until the client request
  * timeout (up to 600 s). The body is bounded by [RefreshableTokenLatch.REFRESH_TIMEOUT] now, and only the persist
  * ([RefreshableTokenLatch.commitIfCurrent]) survives a cancellation.
+ *
+ * #748 finding 1: the latch's own deadline is not a user cancellation. The deadline cancels the body with a
+ * TimeoutCancellationException (a CancellationException), which callers' `catch (CancellationException)` blocks —
+ * and the coroutine machinery itself — read as "this caller was cancelled". The latch surfaces its deadline as a
+ * [org.krost.unidrive.TransientNetworkException] instead: a stalled token endpoint says nothing about the
+ * credential and may be retried.
  */
 class RefreshableTokenLatchTest {
     @Test
-    fun `a refresh whose endpoint stalls is cut off at the timeout and frees the mutex`() =
+    fun `a refresh whose endpoint stalls is cut off at the timeout, surfaces retryable, and frees the mutex`() =
         runBlocking<Unit> {
             // The deadline is real time, so this runs on the real clock with a short timeout.
             val latch = RefreshableTokenLatch(timeout = 300.milliseconds)
             val entered = CompletableDeferred<Unit>()
+            val firstOutcome = CompletableDeferred<Throwable?>()
 
+            // The outcome is captured inside the child: a real (non-cancellation) refresh failure must not cancel
+            // the surrounding scope, which is exactly what the old TimeoutCancellationException leaked as.
             launch {
-                latch.withRefresh(isAlreadyFresh = { null }, body = { entered.complete(Unit); awaitCancellation() })
+                firstOutcome.complete(runCatching { latch.withRefresh(isAlreadyFresh = { null }, body = { entered.complete(Unit); awaitCancellation() }) }.exceptionOrNull())
             }
             entered.await()
 
@@ -39,6 +49,16 @@ class RefreshableTokenLatchTest {
             val second = async { latch.withRefresh(isAlreadyFresh = { null }, body = { "second" }) }
             delay(100)
             assertFalse(second.isCompleted, "still queued before the refresh timeout")
+
+            // The deadline fires: the first caller gets the retryable failure, not a cancellation and not the raw
+            // TimeoutCancellationException that would be read as "cancelled by the user".
+            val failure = firstOutcome.await()
+            assertTrue(
+                failure is org.krost.unidrive.TransientNetworkException,
+                "the latch deadline must surface as a retryable failure; got ${failure?.javaClass?.name}",
+            )
+            assertFalse(failure is kotlinx.coroutines.CancellationException, "not a cancellation")
+            assertTrue(failure?.message?.contains("timed out") == true, "message names the timeout: ${failure?.message}")
 
             assertEquals("second", withTimeout(10_000) { second.await() })
         }
