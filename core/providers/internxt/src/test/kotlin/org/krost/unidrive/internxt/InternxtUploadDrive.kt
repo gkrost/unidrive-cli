@@ -62,6 +62,8 @@ internal data class UploadDriveFolder(
     val plainName: String,
     val parentUuid: String,
     val updatedAt: String = "2026-10-01T10:00:00.000Z",
+    /** The server's status word for the folder; a trashed folder still holds its name against a create. */
+    val status: String = "EXISTS",
 )
 
 /**
@@ -130,7 +132,7 @@ internal class UploadDrive(
         }
 
     private fun folderJson(f: UploadDriveFolder) =
-        "{\"uuid\":\"${f.uuid}\",\"plainName\":${JsonPrimitive(f.plainName)},\"parentUuid\":\"${f.parentUuid}\",\"status\":\"EXISTS\"," +
+        "{\"uuid\":\"${f.uuid}\",\"plainName\":${JsonPrimitive(f.plainName)},\"parentUuid\":\"${f.parentUuid}\",\"status\":\"${f.status}\"," +
             "\"modificationTime\":\"2026-10-01T10:00:00.000Z\",\"updatedAt\":\"${f.updatedAt}\"}"
 
     val engine =
