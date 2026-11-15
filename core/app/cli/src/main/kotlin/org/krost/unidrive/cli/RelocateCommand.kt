@@ -206,7 +206,7 @@ class RelocateCommand : Runnable {
             deleteSource,
         )
 
-        if (sourceSize == 0L) {
+        if (sourceCount == 0) {
             println("Nothing to migrate")
             return
         }
@@ -347,11 +347,41 @@ class RelocateCommand : Runnable {
             runCatching { Runtime.getRuntime().removeShutdownHook(shutdownHook) }
         }
 
+        finishRun(fromProviderObj, manifest, MigrationOutcome(completedEvent, errorEvents), sourcePath)
+    }
+
+    /** Runs the delete-source pass when asked, then fails the command if the run left anything undone. */
+    private fun finishRun(
+        provider: CloudProvider,
+        manifest: MigrationManifest,
+        outcome: MigrationOutcome,
+        sourcePath: String,
+    ) {
         if (deleteSource) {
             runBlocking(MDCContext()) {
-                deleteSourceAfterMigration(fromProviderObj, manifest, completedEvent, errorEvents, sourcePath)
+                deleteSourceAfterMigration(provider, manifest, outcome.completed, outcome.errors, sourcePath)
             }
         }
+        val problems = outcomeProblems(outcome)
+        if (problems.isNotEmpty()) error(problems.joinToString("; "))
+    }
+
+    internal fun outcomeProblems(outcome: MigrationOutcome): List<String> {
+        val completed = outcome.completed ?: return listOf("the migration never completed")
+        val problems = mutableListOf<String>()
+        val errorCount = maxOf(completed.errorCount, outcome.errors.size)
+        if (errorCount > 0) {
+            problems.add("migration finished with $errorCount error(s)")
+        }
+        if (completed.doneFiles < completed.totalFiles) {
+            problems.add("processed ${completed.doneFiles} of ${completed.totalFiles} files, so part of the tree was never migrated")
+        } else if (completed.doneFiles > completed.totalFiles) {
+            problems.add(
+                "processed ${completed.doneFiles} files but pre-flight counted ${completed.totalFiles}; " +
+                    "the source changed during the run, re-run to confirm",
+            )
+        }
+        return problems
     }
 
     /**
@@ -401,23 +431,10 @@ class RelocateCommand : Runnable {
         manifest: MigrationManifest,
         outcome: MigrationOutcome,
     ): List<String> {
-        val problems = mutableListOf<String>()
-        val completed = outcome.completed
-        if (completed == null) {
-            problems.add("the migration never completed")
-            return problems
-        }
-        if (completed.errorCount > 0) {
-            problems.add("${completed.errorCount} file(s) failed to migrate")
-        }
+        val problems = outcomeProblems(outcome).toMutableList()
+        val completed = outcome.completed ?: return problems
         for (error in outcome.errors) {
             problems.add(error.message)
-        }
-        if (completed.doneFiles != completed.totalFiles) {
-            problems.add(
-                "the walk reached ${completed.doneFiles} of ${completed.totalFiles} files, " +
-                    "so part of the tree was never migrated",
-            )
         }
         val proven =
             manifest.entries.values.count { entry ->

@@ -2,6 +2,7 @@ package org.krost.unidrive.cli
 
 import kotlinx.coroutines.flow.toList
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.HashAlgorithm
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.sync.CloudRelocator
 import org.krost.unidrive.sync.FakeCloudProvider
@@ -812,6 +813,140 @@ class RelocateCommandTest {
             assertEquals("ok", java.nio.file.Files.readString(src.resolve("ok.txt")), "no source file is deleted")
             assertEquals("blocked", java.nio.file.Files.readString(src.resolve("blocked.txt")), "no source file is deleted")
         }
+    }
+
+    @Test
+    fun `a relocate where an upload failed exits non-zero and reports the failure`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "ok.txt", "ok")
+            write(src, "blocked.txt", "blocked")
+            // A non-empty directory where the target file must go makes that one upload fail.
+            write(dst, "blocked.txt/inner/x", "x")
+
+            val r = runCli(config, "", "relocate", "--from", "src", "--to", "dst", "--force")
+
+            assertTrue(r.exit != 0, "a script must see the failed upload; exit=${r.exit}; stdout: ${r.out}; stderr: ${r.err}")
+            assertEquals("ok", java.nio.file.Files.readString(dst.resolve("ok.txt")), "the file that could be transferred still arrives")
+            assertTrue(r.err.contains("migration finished with 1 error(s)"), "stderr carries the failure summary; stderr: ${r.err}")
+        }
+    }
+
+    @Test
+    fun `a source tree holding only empty files is relocated, not skipped as nothing to migrate`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "docs/.gitkeep", "")
+            write(src, "marker", "")
+
+            val r = runCli(config, "", "relocate", "--from", "src", "--to", "dst")
+
+            assertEquals(0, r.exit, "stderr: ${r.err}; stdout: ${r.out}")
+            assertTrue(java.nio.file.Files.exists(dst.resolve("docs/.gitkeep")), "the empty file arrives; stdout: ${r.out}")
+            assertTrue(java.nio.file.Files.exists(dst.resolve("marker")), "the empty file arrives; stdout: ${r.out}")
+        }
+    }
+
+    @Test
+    fun `a run where every file fails exits non-zero`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "a.txt", "a")
+            write(src, "b.txt", "b")
+            write(dst, "a.txt/inner/x", "x")
+            write(dst, "b.txt/inner/x", "x")
+
+            val r = runCli(config, "", "relocate", "--from", "src", "--to", "dst", "--force")
+
+            assertTrue(r.exit != 0, "exit=${r.exit}; stdout: ${r.out}; stderr: ${r.err}")
+            assertTrue(r.err.contains("migration finished with 2 error(s)"), "stderr: ${r.err}")
+        }
+    }
+
+    @Test
+    fun `a hash conflict is an error event that fails the run even without --delete-source`() {
+        val source = FakeCloudProvider()
+        val target = FakeCloudProvider()
+        source.hashAlgorithmOverride = HashAlgorithm.Sha256Hex
+        target.hashAlgorithmOverride = HashAlgorithm.Sha256Hex
+        source.childrenByParent["/docs"] = listOf(fileItem("/docs/f.txt", size = 10, hash = "source-hash"))
+        target.childrenByParent["/docs"] = listOf(fileItem("/docs/f.txt", size = 10, hash = "target-hash"))
+
+        val events =
+            kotlinx.coroutines.runBlocking {
+                CloudRelocator(source, target).migrate("/docs", "/docs").toList()
+            }
+        val completed = events.filterIsInstance<MigrateEvent.Completed>().single()
+        val outcome = MigrationOutcome(completed, events.filterIsInstance<MigrateEvent.Error>())
+
+        assertEquals(1, outcome.errors.size, events.toString())
+        assertTrue(
+            RelocateCommand().outcomeProblems(outcome).any { it.contains("1 error(s)") },
+            "the conflict itself is reported as an error",
+        )
+    }
+
+    @Test
+    fun `an empty-only tree with --delete-source is migrated and the source deleted`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "marker", "")
+
+            val r = runCli(config, "yes\n", "relocate", "--from", "src", "--to", "dst", "--delete-source")
+
+            assertEquals(0, r.exit, "stdout: ${r.out}; stderr: ${r.err}")
+            assertTrue(java.nio.file.Files.exists(dst.resolve("marker")), "the empty file arrives; stdout: ${r.out}")
+            assertTrue(!java.nio.file.Files.exists(src.resolve("marker")), "the migrated source file is deleted; stdout: ${r.out}")
+        }
+    }
+
+    @Test
+    fun `a declined delete confirmation after a clean migration still exits 0`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "a.txt", "a")
+
+            val r = runCli(config, "no\n", "relocate", "--from", "src", "--to", "dst", "--delete-source")
+
+            assertEquals(0, r.exit, "stdout: ${r.out}; stderr: ${r.err}")
+            assertEquals("a", java.nio.file.Files.readString(src.resolve("a.txt")))
+            assertEquals("a", java.nio.file.Files.readString(dst.resolve("a.txt")))
+        }
+    }
+
+    @Test
+    fun `a tree of only folders reports nothing to migrate and exits 0`() {
+        withLocalProfiles { src, _, config ->
+            java.nio.file.Files.createDirectories(src.resolve("empty/dir"))
+
+            val r = runCli(config, "", "relocate", "--from", "src", "--to", "dst")
+
+            assertEquals(0, r.exit, "stdout: ${r.out}; stderr: ${r.err}")
+            assertTrue(r.out.contains("Nothing to migrate"), "stdout: ${r.out}")
+        }
+    }
+
+    private fun completedEvent(
+        done: Int,
+        total: Int,
+        errors: Int,
+    ) = MigrateEvent.Completed(doneFiles = done, doneSize = 0L, totalFiles = total, totalSize = 0L, errorCount = errors, durationMs = 0L)
+
+    @Test
+    fun `a run that processed fewer files than the pre-flight counted says part of the tree was never migrated`() {
+        val problems = RelocateCommand().outcomeProblems(MigrationOutcome(completedEvent(done = 0, total = 3, errors = 0), emptyList()))
+        assertEquals(1, problems.size, problems.toString())
+        assertTrue(problems.single().contains("processed 0 of 3 files, so part of the tree was never migrated"), problems.toString())
+    }
+
+    @Test
+    fun `a run that processed more files than the pre-flight counted says the source changed`() {
+        val problems = RelocateCommand().outcomeProblems(MigrationOutcome(completedEvent(done = 4, total = 3, errors = 0), emptyList()))
+        assertEquals(1, problems.size, problems.toString())
+        assertTrue(problems.single().contains("processed 4 files but pre-flight counted 3"), problems.toString())
+        assertTrue(!problems.single().contains("never migrated"), problems.toString())
+    }
+
+    @Test
+    fun `a complete error-free run has no problems and a missing Completed event is one`() {
+        val cmd = RelocateCommand()
+        assertTrue(cmd.outcomeProblems(MigrationOutcome(completedEvent(done = 3, total = 3, errors = 0), emptyList())).isEmpty())
+        assertEquals(listOf("the migration never completed"), cmd.outcomeProblems(MigrationOutcome(null, emptyList())))
     }
 
     @Test
