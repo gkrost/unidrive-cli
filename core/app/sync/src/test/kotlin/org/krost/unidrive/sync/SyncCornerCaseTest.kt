@@ -10,6 +10,7 @@ import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.security.MessageDigest
 import java.time.Instant
 import kotlin.test.*
 
@@ -88,6 +89,9 @@ class SyncCornerCaseTest {
         deleted = deleted,
     )
 
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
     // ========== Interrupted / crashed sync ==========
 
     @Test
@@ -125,7 +129,11 @@ class SyncCornerCaseTest {
             val file = syncRoot.resolve("real.txt")
             Files.writeString(file, "a".repeat(100))
 
-            provider.deltaItems = listOf(cloudItem("/real.txt", size = 100))
+            // The scan gives the file a pending row (its bytes were never synced), so the both-new
+            // adoption needs a PROVEN match now (#743 review fix): the comparison must be able to
+            // tell — the fake answers no hash by default — and the item carries the bytes' real SHA-256.
+            provider.hashAlgorithmOverride = HashAlgorithm.Sha256Hex
+            provider.deltaItems = listOf(cloudItem("/real.txt", size = 100, hash = sha256("a".repeat(100).toByteArray())))
             engine().syncOnce()
 
             val entry = db.getEntry("/real.txt")
