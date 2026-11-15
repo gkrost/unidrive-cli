@@ -347,13 +347,22 @@ class RelocateCommand : Runnable {
             runCatching { Runtime.getRuntime().removeShutdownHook(shutdownHook) }
         }
 
+        finishRun(fromProviderObj, manifest, MigrationOutcome(completedEvent, errorEvents), sourcePath)
+    }
+
+    /** Runs the delete-source pass when asked, then fails the command if the run left anything undone. */
+    private fun finishRun(
+        provider: CloudProvider,
+        manifest: MigrationManifest,
+        outcome: MigrationOutcome,
+        sourcePath: String,
+    ) {
         if (deleteSource) {
             runBlocking(MDCContext()) {
-                deleteSourceAfterMigration(fromProviderObj, manifest, completedEvent, errorEvents, sourcePath)
+                deleteSourceAfterMigration(provider, manifest, outcome.completed, outcome.errors, sourcePath)
             }
         }
-
-        val problems = outcomeProblems(MigrationOutcome(completedEvent, errorEvents))
+        val problems = outcomeProblems(outcome)
         if (problems.isNotEmpty()) error(problems.joinToString("; "))
     }
 
