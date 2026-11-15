@@ -903,6 +903,9 @@ class TrackingEngine(
         incremental: Boolean,
     ): RemoteEnumResult {
         val out = mutableMapOf<String, RemoteObservation>()
+        val livePathById = mutableMapOf<String, String>()
+        val trackedPaths = lazy { trackingSet.paths() }
+        val absence = DeltaAbsence(trackingSet, provider.id)
         var nextCursor: String? = cursor
         var complete = true
         try {
@@ -912,28 +915,19 @@ class TrackingEngine(
                     complete = false
                 }
                 for (item in page.items) {
+                    // For a tombstone, the tracked paths holding its id.
+                    val idPaths =
+                        if (item.deleted && item.id.isNotEmpty()) {
+                            trackingSet.pathsByRemoteId(provider.id, item.id)
+                        } else {
+                            emptyList()
+                        }
+                    if (incremental && absence.coversSubtree(item, idPaths)) {
+                        absence.markSubtreeAbsent(item.path, out, trackedPaths)
+                    }
                     if (item.isFolder) continue
                     if (item.deleted) {
-                        // A tombstone describes the remote object's identity.
-                        // Its path is frequently absent or a synthetic parent
-                        // path, so first resolve the id to the tracking row.
-                        val targetPath = trackedPathForRemoteId(item.id) ?: item.path.takeIf { candidate ->
-                            isUsableFilePath(candidate) && trackingSet.lookup(candidate)?.let {
-                                it.providerId == provider.id && (it.remoteFileId == null || it.remoteFileId == item.id)
-                            } != false
-                        }
-                        if (targetPath == null) {
-                            log.warn("Ignoring pathless remote tombstone with untracked id {}", item.id)
-                            continue
-                        }
-                        val priorAtPath = out[targetPath]
-                        if (priorAtPath?.exists == true && priorAtPath.remoteFileId != item.id) {
-                            // A stale tombstone must not mask a newer object
-                            // occupying the same path.
-                            log.warn("Ignoring stale tombstone id={} for live path {}", item.id, targetPath)
-                            continue
-                        }
-                        out[targetPath] = RemoteObservation(false, item.id, null, null, null, null)
+                        absence.markTombstoned(item, idPaths, out)
                         continue
                     }
                     // archive#401 detector: two live remote items sharing one path cannot both
@@ -955,6 +949,7 @@ class TrackingEngine(
                         continue
                     }
                     out[item.path] = RemoteObservation(true, item.id, item.hash, item.size, item.hash, item.modified)
+                    if (incremental && item.id.isNotEmpty()) absence.markMovedAbsent(item, out, livePathById)
                 }
                 nextCursor = page.cursor
             } while (page.hasMore)
@@ -968,12 +963,6 @@ class TrackingEngine(
         // next pass re-enumerates safely (preserves the delete-suppression backup path's safety contract).
         return RemoteEnumResult(out, complete, incremental, nextCursor)
     }
-
-    private fun trackedPathForRemoteId(remoteId: String): String? =
-        trackingSet.pathsByRemoteId(provider.id, remoteId).distinct().singleOrNull()
-
-    private fun isUsableFilePath(path: String): Boolean =
-        path.isNotBlank() && path != "/" && !path.endsWith('/') && !path.split('/').any { it == ".." }
 
     /** A missing snapshot is not evidence that an extant file is unchanged. */
     private fun matchesTrackedLocalSnapshot(record: TrackingRecord?, current: LocalObservation): Boolean {
