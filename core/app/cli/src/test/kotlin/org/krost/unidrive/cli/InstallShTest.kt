@@ -126,18 +126,140 @@ class InstallShTest {
         error("dist/install.sh not found above ${System.getProperty("user.dir")}")
     }
 
-    private fun install(): String {
-        val pb = ProcessBuilder("bash", installScript().toString(), jar.toString()).redirectErrorStream(true)
-        pb.environment()["HOME"] = home.toString()
-        pb.environment()["PATH"] = "${dir.resolve("bin")}:/usr/bin:/bin"
-        val p = pb.start()
-        val out = p.inputStream.readAllBytes().decodeToString()
-        assertTrue(p.waitFor(60, TimeUnit.SECONDS), "install.sh timed out")
-        assertEquals(0, p.exitValue(), out)
+    private fun install(
+        env: Map<String, String> = emptyMap(),
+        path: Path? = null,
+    ): String {
+        val (code, out) = runInstall(env, path)
+        assertEquals(0, code, out)
         return out
     }
 
+    /**
+     * Runs install.sh against the throwaway HOME with the given extra environment. The mount overrides
+     * (UNIDRIVE_MOUNT_REPO / UNIDRIVE_MOUNT_RELEASE / UNIDRIVE_MOUNT_RELEASE_URL) are removed from the
+     * inherited environment unless the caller sets them, so a developer's exported values cannot turn the
+     * download tests into the skip branch. An optional [path] directory is put first on PATH, ahead of
+     * the throwaway bin.
+     */
+    private fun runInstall(
+        env: Map<String, String>,
+        path: Path? = null,
+    ): Pair<Int, String> {
+        val pb = ProcessBuilder("bash", installScript().toString(), jar.toString()).redirectErrorStream(true)
+        pb.environment()["HOME"] = home.toString()
+        pb.environment()["PATH"] = "${listOfNotNull(path?.toString(), dir.resolve("bin").toString()).joinToString(":")}:/usr/bin:/bin"
+        for (override in listOf("UNIDRIVE_MOUNT_REPO", "UNIDRIVE_MOUNT_RELEASE", "UNIDRIVE_MOUNT_RELEASE_URL")) {
+            if (env.containsKey(override)) pb.environment()[override] = env.getValue(override)
+            else pb.environment().remove(override)
+        }
+        val p = pb.start()
+        val out = p.inputStream.readAllBytes().decodeToString()
+        assertTrue(p.waitFor(60, TimeUnit.SECONDS), "install.sh timed out")
+        return p.exitValue() to out
+    }
+
     private fun inode(p: Path): Any = Files.getAttribute(p, "unix:ino")
+
+    private val mountVer = "0.1.0"
+
+    /**
+     * Stages a release tarball in the shape the release workflow of gkrost/unidrive-mount-linux packages (a
+     * directory named after the version holding the binary, LICENSE and NOTICE) plus its .sha256 beside it,
+     * and returns the tarball path for a file:// MOUNT_RELEASE_URL. With [correctChecksum] the checksum file
+     * names a hash the tarball does not have.
+     */
+    private fun mountTarball(correctChecksum: Boolean = true): Path {
+        val release = Files.createDirectories(dir.resolve("mount-release"))
+        val pkg = Files.createDirectories(release.resolve("unidrive-mount-$mountVer"))
+        val bin = pkg.resolve("unidrive-mount")
+        Files.writeString(bin, "#!/bin/sh\necho 'unidrive-mount $mountVer ipc-protocol 2'\n")
+        Files.writeString(pkg.resolve("LICENSE"), "license text")
+        Files.writeString(pkg.resolve("NOTICE"), "notice text")
+        bin.toFile().setExecutable(true)
+        val name = "unidrive-mount-$mountVer-x86_64.tar.gz"
+        val tarball = release.resolve(name)
+        val tar = ProcessBuilder("tar", "-czf", tarball.toString(), "-C", release.toString(), "unidrive-mount-$mountVer")
+            .redirectErrorStream(true).start()
+        assertTrue(tar.waitFor(60, TimeUnit.SECONDS) && tar.exitValue() == 0, tar.inputStream.readAllBytes().decodeToString())
+        val sha = release.resolve("$name.sha256")
+        if (correctChecksum) {
+            val sum = ProcessBuilder("sh", "-c", "cd '$release' && sha256sum '$name' > '$sha'")
+                .redirectErrorStream(true).start()
+            assertTrue(sum.waitFor(60, TimeUnit.SECONDS) && sum.exitValue() == 0, sum.inputStream.readAllBytes().decodeToString())
+        } else {
+            Files.writeString(sha, "${"0".repeat(64)}  $name\n")
+        }
+        return tarball
+    }
+
+    private val installedMount: Path get() = home.resolve(".local/lib/unidrive/unidrive-mount")
+
+    // #6: the co-daemon tarball is downloaded and SHA256-verified before it lands in INSTALL_LIB, where
+    // MountCommand looks for it (~/.local/lib/unidrive/unidrive-mount).
+    @Test
+    fun the_mount_co_daemon_is_downloaded_sha256_verified_and_installed() {
+        val tarball = mountTarball()
+        val out = install(mapOf("UNIDRIVE_MOUNT_RELEASE_URL" to tarball.toUri().toString()))
+        assertTrue(Files.exists(installedMount), "the co-daemon binary is installed: $out")
+        assertTrue(Files.isExecutable(installedMount), "the co-daemon binary is executable")
+        assertEquals("#!/bin/sh\necho 'unidrive-mount $mountVer ipc-protocol 2'\n", Files.readString(installedMount))
+        assertTrue(out.contains("unidrive-mount-$mountVer-x86_64.tar.gz: OK"), "the checksum check ran: $out")
+    }
+
+    // #6: fail closed — a tarball whose bytes do not match its .sha256 refuses the install, and no binary
+    // is left behind.
+    @Test
+    fun a_wrong_mount_checksum_refuses_the_install_and_installs_no_binary() {
+        val tarball = mountTarball(correctChecksum = false)
+        val (code, out) = runInstall(mapOf("UNIDRIVE_MOUNT_RELEASE_URL" to tarball.toUri().toString()))
+        assertTrue(code != 0, "the install refuses a wrong checksum: $out")
+        assertTrue(out.contains("SHA256 verification failed"), "the refusal names the failed verification: $out")
+        assertTrue(!Files.exists(installedMount), "nothing is installed after a failed verification: $out")
+    }
+
+    // #6: the wiring is gated — while the pinned release does not exist yet (the URL 404s), the install
+    // prints the honest skip note and continues without the mount.
+    @Test
+    fun the_mount_download_is_skipped_while_no_release_tarball_exists() {
+        val out = install(mapOf("UNIDRIVE_MOUNT_RELEASE_URL" to dir.resolve("no-such-tarball.tar.gz").toUri().toString()))
+        assertTrue(out.contains("Co-daemon download skipped"), "the honest skip note is printed: $out")
+        assertTrue(!Files.exists(installedMount), "no binary is installed from a missing release: $out")
+    }
+
+    // The release ships x86_64 and aarch64; a host neither covers must not install an x86_64 binary it
+    // cannot run — the checksum would verify cleanly and the failure would show only at mount time. A
+    // fake uname first on PATH stands in for such a host.
+    @Test
+    fun a_host_the_pinned_release_has_no_build_for_skips_the_download() {
+        val fakeBin = Files.createDirectories(dir.resolve("fake-uname-bin"))
+        val uname = fakeBin.resolve("uname")
+        Files.writeString(uname, "#!/bin/sh\necho riscv64\n")
+        uname.toFile().setExecutable(true)
+        val out =
+            install(
+                mapOf("UNIDRIVE_MOUNT_RELEASE_URL" to dir.resolve("no-such-tarball.tar.gz").toUri().toString()),
+                path = fakeBin,
+            )
+        assertTrue(out.contains("no build for riscv64"), "the skip note names the host architecture: $out")
+        assertTrue(out.contains("Co-daemon download skipped"), "the skip is honest: $out")
+        assertTrue(!Files.exists(installedMount), "no binary is installed for an unsupported host: $out")
+    }
+
+    // #6: the local-build override the deploy script uses keeps install.sh out of the way — no download is
+    // attempted even when the URL points nowhere, and the note says the deploy owns the binary.
+    @Test
+    fun a_set_unidrive_mount_repo_skips_the_download_and_leaves_the_binary_untouched() {
+        val out = install(
+            mapOf(
+                "UNIDRIVE_MOUNT_REPO" to dir.resolve("mount-repo").toString(),
+                "UNIDRIVE_MOUNT_RELEASE_URL" to dir.resolve("no-such-tarball.tar.gz").toUri().toString(),
+            ),
+        )
+        assertTrue(out.contains("left untouched"), "the local-build note is printed: $out")
+        assertTrue(!out.contains("Co-daemon download skipped"), "no download is attempted: $out")
+        assertTrue(!Files.exists(installedMount), "nothing is downloaded or installed: $out")
+    }
 
     @Test
     fun reinstall_replaces_the_jar_with_a_fresh_inode_and_leaves_a_held_old_file_intact() {
