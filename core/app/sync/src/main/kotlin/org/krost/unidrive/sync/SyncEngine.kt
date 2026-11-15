@@ -3234,14 +3234,16 @@ open class SyncEngine(
         return keepAppearedFileAside(path, localPath, "was edited after the scan planned its $plannedFor", remoteState)
     }
 
-    // A file at a download's destination that no row baseline vouches for (#742): kept aside unless it is provably
-    // the remote's own content or an engine stub (isLocalFileWithoutBaseline). The hash runs off the event loop.
+    // #742: a file at a download's destination no row baseline vouches for is kept aside (isLocalFileWithoutBaseline).
     private suspend fun keepUnbaselinedFileAside(
         path: String,
         localPath: Path,
         remote: CloudItem,
     ): String? =
-        if (isLocalFileWithoutBaseline(db.getEntry(path), localPath, remote) { offLoop { HashVerifier.matches(localPath, remote.hash, provider.hashAlgorithm()) } }) {
+        if (isLocalFileWithoutBaseline(db.getEntry(path), localPath, remote) {
+                offLoop { HashVerifier.matches(localPath, remote.hash, provider.hashAlgorithm()) }
+            }
+        ) {
             keepAppearedFileAside(path, localPath, "already existed locally when its download started")
         } else {
             null
@@ -4962,7 +4964,7 @@ open class SyncEngine(
             val entry = db.getEntry(remotePath)
             val next =
                 entry?.copy(isHydrated = false, remoteSize = item.size, remoteModified = item.modified)
-                    // A new row records no local stats: whatever is at the path was not written by this engine, and
+                // A new row records no local stats: whatever is at the path was not written by this engine, and
                 // stats taken from it would read as a baseline the retry then trusts to overwrite it (#742).
                 ?: entryFromCloudItem(item, remotePath, isHydrated = false).copy(localMtime = null, localSize = null)
             db.upsertEntry(next)

@@ -227,6 +227,70 @@ class DownloadOverUnbaselinedFileEdgeCasesTest {
         }
 
     @Test
+    fun `a provider without a hash algorithm keeps a same-size file`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val local = syncRoot.resolve("notes.md")
+            Files.write(local, remoteBytes)
+            db.upsertEntry(unhydratedRow())
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, remoteBytes)
+        }
+
+    @Test
+    fun `a hydrated row with null stats is judged like an unhydrated one`() =
+        runTest {
+            val local = syncRoot.resolve("notes.md")
+            Files.write(local, sameLengthOtherBytes)
+            db.upsertEntry(unhydratedRow(hydrated = true))
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, sameLengthOtherBytes)
+        }
+
+    @Test
+    fun `a hash that cannot be computed keeps the file`() =
+        runTest {
+            val local = syncRoot.resolve("notes.md")
+            Files.write(local, remoteBytes)
+
+            val needsCopy =
+                isLocalFileWithoutBaseline(null, local, remoteItem()) { throw java.io.IOException("unreadable") }
+
+            assertTrue(needsCopy, "an unprovable file is kept aside")
+            assertContentEquals(remoteBytes, Files.readAllBytes(local))
+        }
+
+    @Test
+    fun `a failed download leaves a user file untouched and its new row without local stats`() =
+        runTest {
+            val local = syncRoot.resolve("notes.md")
+            val mine = "typed by the user".toByteArray()
+            Files.write(local, mine)
+
+            restoreToPlaceholder("/notes.md", remoteItem())
+
+            assertContentEquals(mine, Files.readAllBytes(local))
+            val row = checkNotNull(db.getEntry("/notes.md"))
+            assertEquals(null, row.localMtime)
+            assertEquals(null, row.localSize)
+        }
+
+    private fun restoreToPlaceholder(
+        path: String,
+        item: CloudItem,
+    ) {
+        // What the transfer runner does for a failed download (private there).
+        SyncEngine::class.java
+            .getDeclaredMethod("restoreToPlaceholder", String::class.java, CloudItem::class.java)
+            .apply { isAccessible = true }
+            .invoke(engine, path, item)
+    }
+
+    @Test
     fun `a failed aside-move does not turn the user's file into the baseline of the retry`() =
         runTest {
             // An open java.io handle forbids the rename on Windows only; elsewhere the move cannot be made to fail.
@@ -239,11 +303,7 @@ class DownloadOverUnbaselinedFileEdgeCasesTest {
             RandomAccessFile(local.toFile(), "r").use {
                 runCatching { engine.applyDownload(SyncAction.DownloadContent("/notes.md", item)) }
                     .also { assertTrue(it.isFailure, "the move of a locked file fails the download") }
-                // What the transfer runner does for a failed download.
-                SyncEngine::class.java
-                    .getDeclaredMethod("restoreToPlaceholder", String::class.java, CloudItem::class.java)
-                    .apply { isAccessible = true }
-                    .invoke(engine, "/notes.md", item)
+                restoreToPlaceholder("/notes.md", item)
             }
 
             engine.applyDownload(SyncAction.DownloadContent("/notes.md", item))
