@@ -3091,9 +3091,7 @@ open class SyncEngine(
         // has another mtime or size, and the provider places the download over it with nothing logged. The edit
         // is moved aside as a conflict-local copy first, the way applyKeepBoth keeps a losing local edit.
         val keptLocalEdit =
-            keepLocalEditAsideIfEditedSinceScan(action.path, localPath)
-                ?: action.path.takeIf { isLocalFileWithoutBaseline(db.getEntry(it), localPath, action.remoteItem) }
-                    ?.let { keepAppearedFileAside(it, localPath, "was found at the download's destination with no baseline") }
+            keepLocalEditAsideIfEditedSinceScan(action.path, localPath) ?: keepUnbaselinedFileAside(action.path, localPath, action.remoteItem)
         // gkrost/unidrive-cli#451: the check above covers scan→now; the transfer it clears can run minutes.
         // Its stats travel with the download and are re-checked at the placement, so a save landing
         // mid-transfer is kept as a conflict-local copy too, the way the tracking engine's download
@@ -3233,31 +3231,31 @@ open class SyncEngine(
         if (!Files.isRegularFile(localPath)) return null
         val row = db.getEntry(path) ?: return null
         if (!editedSinceScan(localPath, row, baselineMtime, baselineSize)) return null
-        val conflictPath =
-            keepBothCopyPath(path, conflictStamp()) { candidate ->
-                Files.exists(placeholder.resolveLocal(candidate), java.nio.file.LinkOption.NOFOLLOW_LINKS) || db.getEntry(candidate) != null
-            }
-        withEchoSuppression(conflictPath) {
-            Files.move(localPath, placeholder.resolveLocal(conflictPath))
-        }
-        reporter.onWarning("Conflict: $path was edited after the scan planned its $plannedFor; the edit is kept as $conflictPath")
-        conflictLog?.record(
-            path = path,
-            localState = ChangeState.MODIFIED.name,
-            remoteState = remoteState.name,
-            policy = "KEEP_BOTH",
-            loserFile = null,
-        )
-        return conflictPath
+        return keepAppearedFileAside(path, localPath, "was edited after the scan planned its $plannedFor", remoteState)
     }
 
-    // Moves a regular file that APPEARED at a destination the pre-transfer check proved empty aside as a
-    // conflict-local copy (#513 review): it has no row baseline to compare against, so it is kept whole
-    // before the download's placement replaces it. Returns the copy's path, or null when nothing appeared.
+    // A file at a download's destination that no row baseline vouches for (#742): kept aside unless it is provably
+    // the remote's own content or an engine stub (isLocalFileWithoutBaseline). The hash runs off the event loop.
+    private suspend fun keepUnbaselinedFileAside(
+        path: String,
+        localPath: Path,
+        remote: CloudItem,
+    ): String? =
+        if (isLocalFileWithoutBaseline(db.getEntry(path), localPath, remote) { offLoop { HashVerifier.matches(localPath, remote.hash, provider.hashAlgorithm()) } }) {
+            keepAppearedFileAside(path, localPath, "already existed locally when its download started")
+        } else {
+            null
+        }
+
+    // Moves a regular file that is at a download's destination without a row baseline aside as a conflict-local
+    // copy (#513 review: one that APPEARED during the transfer after the destination was proven empty; #742: one
+    // there when the download started), before the placement replaces it. [circumstance] completes the warning
+    // "Conflict: <path> ...". Returns the copy's path, or null when nothing is there.
     private suspend fun keepAppearedFileAside(
         path: String,
         localPath: Path,
         circumstance: String = "appeared during the download that was cleared for its empty destination",
+        remoteState: ChangeState = ChangeState.MODIFIED,
     ): String? {
         if (!Files.isRegularFile(localPath)) return null
         val conflictPath =
@@ -3271,7 +3269,7 @@ open class SyncEngine(
         conflictLog?.record(
             path = path,
             localState = ChangeState.MODIFIED.name,
-            remoteState = ChangeState.MODIFIED.name,
+            remoteState = remoteState.name,
             policy = "KEEP_BOTH",
             loserFile = null,
         )
@@ -4964,7 +4962,9 @@ open class SyncEngine(
             val entry = db.getEntry(remotePath)
             val next =
                 entry?.copy(isHydrated = false, remoteSize = item.size, remoteModified = item.modified)
-                    ?: entryFromCloudItem(item, remotePath, isHydrated = false)
+                    // A new row records no local stats: whatever is at the path was not written by this engine, and
+                // stats taken from it would read as a baseline the retry then trusts to overwrite it (#742).
+                ?: entryFromCloudItem(item, remotePath, isHydrated = false).copy(localMtime = null, localSize = null)
             db.upsertEntry(next)
         } catch (e: Exception) {
             log.warn(
