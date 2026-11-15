@@ -105,6 +105,14 @@ class FakeTrackingProvider : CloudProvider {
     var incrementalAware: Boolean = false
 
     /**
+     * Test hook: a provider whose delta is a full listing of everything regardless of cursor
+     * (localfs, S3). The engine must then treat every resumed pass as a FULL enumeration —
+     * a path absent from the listing is genuinely gone, not unchanged-present — or remote
+     * deletions never propagate (see [CloudProvider.deltaIsFullListing]).
+     */
+    override var deltaIsFullListing: Boolean = false
+
+    /**
      * When set, an incremental delta lists [incrementalChanges] and [incrementalDeletes] only if it is resumed from
      * exactly this cursor, like a real provider: a cursor that moved past a change no longer reports it.
      */

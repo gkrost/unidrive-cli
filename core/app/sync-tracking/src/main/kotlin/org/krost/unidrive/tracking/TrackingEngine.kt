@@ -135,11 +135,11 @@ class TrackingEngine(
 
                 val action = reconciler.reconcile(path, l, r, t)
                 if (action is ReconcileAction.NoOp) {
-                    // Cleanup branch: tracked row with no observations on
-                    // either side. The reconciler emits NoOp here and
-                    // expects the engine to remove the row (spec
-                    // "both gone" case). Skip in dry-run.
-                    if (t != null && !l.exists && !r.exists) {
+                    // Cleanup branch: tracked row with no observations on either side (spec "both
+                    // gone" case); skip in dry-run. The complete check is the delete suppression's
+                    // own rule: an incomplete listing's absence is "not seen", not "gone".
+                    val bothGone = t != null && !l.exists && !r.exists
+                    if (bothGone && remoteEnum.complete) {
                         if (!dryRun) trackingSet.remove(path)
                         cleanedUp += path
                     }
@@ -858,12 +858,12 @@ class TrackingEngine(
         }
         // Resume from the cursor the last completed pass ended on (opaque to
         // the engine; the provider interprets it). Null on the first pass or
-        // after a pass that never completed. A non-null cursor means this is
-        // an INCREMENTAL delta: the provider returns only changed + explicitly-
-        // deleted items, so a tracked path absent from the page is UNCHANGED-
-        // PRESENT, not gone (see absentRemoteObservation).
+        // after a pass that never completed. A non-null cursor is an INCREMENTAL
+        // delta only for a provider whose delta carries just changed + deleted
+        // items (see absentRemoteObservation); a FULL-LISTING provider
+        // ([CloudProvider.deltaIsFullListing]) re-lists everything, so absence is a deletion.
         val resumeCursor: String? = trackingSet.loadDeltaCursor()
-        val incremental = resumeCursor != null
+        val incremental = resumeCursor != null && !provider.deltaIsFullListing
         return try {
             walkDelta(resumeCursor, incremental)
         } catch (e: DeltaCursorExpiredException) {

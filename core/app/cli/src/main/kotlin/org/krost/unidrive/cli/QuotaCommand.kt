@@ -104,7 +104,8 @@ class QuotaCommand : Runnable {
     private fun readCachedQuota(stateDb: java.nio.file.Path): Pair<QuotaInfo, Instant>? {
         if (!Files.exists(stateDb)) return null
         return runCatching {
-            val db = StateDatabase(stateDb)
+            // Read-only: the cached read never writes (the cache is written by cacheQuota, writable, above).
+            val db = StateDatabase(stateDb, readOnly = true)
             try {
                 db.initialize()
                 val cached = QuotaState(db)

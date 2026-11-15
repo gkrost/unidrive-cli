@@ -60,6 +60,8 @@ class StateDatabase(
     private val readOnly: Boolean = false,
     // Where the connections come from: the xerial JDBC driver on desktop, the app's own SQLite on Android.
     private val connector: StateDatabaseConnector = JdbcStateDatabaseConnector,
+    // Test seam: the busy timeout a connection waits for the write lock (the BEGIN IMMEDIATE regression test).
+    private val busyTimeoutMs: Int = SqliteConnections.BUSY_TIMEOUT_MS,
 ) {
     /** True when this database can be discarded without losing real state (in-memory shadow or snapshot copy). */
     val isDisposable: Boolean get() = inMemory || disposableFile != null
@@ -325,6 +327,7 @@ class StateDatabase(
             wal = !isDisposable,
             cacheKib = SqliteConnections.PAGE_CACHE_KIB,
             journalSizeLimitBytes = SqliteConnections.JOURNAL_SIZE_LIMIT_BYTES,
+            busyTimeoutMs = busyTimeoutMs,
         )
 
     /**
@@ -599,30 +602,30 @@ class StateDatabase(
     @Synchronized
     private fun bootstrapSchema() {
         val syncStateExists = tableExists("sync_state")
-        if (syncStateExists) {
-            val recordedVersion = readSchemaVersion()
-            if (recordedVersion == null) {
-                // Case 2: pre-redesign DB. Drop sync_entries; the new schema
-                // below recreates it. Drop any old indexes the previous shape
-                // owned so SQLite's auto-recreation on CREATE TABLE doesn't
-                // collide with stale objects.
-                conn.createStatement().use { stmt ->
-                    stmt.executeUpdate("DROP TABLE IF EXISTS sync_entries")
-                }
-            } else {
-                // archive#323: an older jar must never stamp the version downward — the
-                // next upgrade would believe nothing changed and skip migrations.
-                // Refuse before any write (mirrors the read-only and snapshot
-                // guards); equal or lower versions behave as before.
-                check(recordedVersion <= SCHEMA_VERSION) {
-                    "state.db was written by a newer unidrive (schema $recordedVersion, this build supports $SCHEMA_VERSION); " +
-                        "upgrade unidrive or use a different state db."
-                }
+        val recordedVersion = if (syncStateExists) readSchemaVersion() else null
+        if (syncStateExists && recordedVersion == null) {
+            // Case 2: pre-redesign DB. Drop sync_entries; the new schema
+            // below recreates it. Drop any old indexes the previous shape
+            // owned so SQLite's auto-recreation on CREATE TABLE doesn't
+            // collide with stale objects.
+            conn.createStatement().use { stmt ->
+                stmt.executeUpdate("DROP TABLE IF EXISTS sync_entries")
+            }
+        }
+        recordedVersion?.let {
+            // archive#323: an older jar must never stamp the version downward — the
+            // next upgrade would believe nothing changed and skip migrations. Refuse
+            // before any write (mirrors the read-only and snapshot guards).
+            check(it <= SCHEMA_VERSION) {
+                "state.db was written by a newer unidrive (schema $it, this build supports $SCHEMA_VERSION); " +
+                    "upgrade unidrive or use a different state db."
             }
         }
         createTables()
         dropMainFileStaging()
-        stampSchemaVersion()
+        // The stamp is a write in autocommit: the most common open — an up-to-date
+        // file — must not write (see dropMainFileStaging). Only an unstamped or older file is stamped.
+        if (recordedVersion != SCHEMA_VERSION) stampSchemaVersion()
     }
 
     // The staged scan used to live in this file (a `scan_staging` table, the checkpoint in the `scan_state` keys of
@@ -633,7 +636,7 @@ class StateDatabase(
         val hadTable = tableExists("scan_staging")
         // Most opens find neither: then nothing is written (a commit per open would cost every CLI command a disk flush).
         if (!hadTable && !mainFileHoldsCheckpointKeys()) return
-        conn.autoCommit = false
+        conn.openTransaction()
         try {
             conn.createStatement().use { stmt ->
                 if (hadTable) stmt.executeUpdate("DROP TABLE scan_staging")
@@ -642,12 +645,11 @@ class StateDatabase(
                 SCAN_CHECKPOINT_KEYS.forEachIndexed { i, key -> stmt.setString(i + 1, key) }
                 stmt.executeUpdate()
             }
-            conn.commit()
+            conn.commitTransaction()
         } catch (e: Exception) {
-            runCatching { conn.rollback() }
+            // The transaction helpers restore the auto-commit flag on every path; no finally here.
+            runCatching { conn.rollbackTransaction() }
             throw e
-        } finally {
-            conn.autoCommit = true
         }
         if (hadTable) log.info("Dropped the scan staging of {}: it lives in {} now; a scan in progress starts again", dbPath, SCAN_STAGING_FILE_NAME)
     }
@@ -1011,13 +1013,13 @@ class StateDatabase(
         locked("batch") {
             beginWrite()
             if (!conn.autoCommit) return block() // already inside a transaction
-            conn.autoCommit = false
+            conn.openTransaction()
             val countBefore = aliveCount
             val versionBefore = aliveCountVersion
             var committed = false
             try {
                 val result = block()
-                conn.commit()
+                conn.commitTransaction()
                 committed = true
                 return result
             } catch (e: Throwable) {
@@ -1025,7 +1027,7 @@ class StateDatabase(
                 // transaction then, so an Error (out of memory, stack overflow) escaping the block would commit what
                 // the block had written so far.
                 try {
-                    conn.rollback()
+                    conn.rollbackTransaction()
                 } catch (rollbackFailure: java.sql.SQLException) {
                     e.addSuppressed(rollbackFailure)
                 }
@@ -1058,7 +1060,7 @@ class StateDatabase(
             }
             beginWrite() // the owner calling again resumes a transaction a foreign write had closed
             if (conn.autoCommit) {
-                conn.autoCommit = false
+                conn.openTransaction()
                 batchOwner = Thread.currentThread()
                 aliveCountAtTransactionStart = aliveCount
                 aliveCountVersionAtTransactionStart = aliveCountVersion
@@ -1076,10 +1078,9 @@ class StateDatabase(
     fun commitBatch() {
         locked("commitBatch") {
             if (!batchSuspended) {
-                conn.commit()
+                conn.commitTransaction()
                 manualBatchCommits++
             }
-            conn.autoCommit = true
             endBatch()
         }
     }
@@ -1088,11 +1089,10 @@ class StateDatabase(
     fun rollbackBatch() {
         locked("rollbackBatch") {
             if (!batchSuspended) {
-                conn.rollback()
+                conn.rollbackTransaction()
                 // With the transaction suspended there is nothing to roll back: a foreign write committed it.
                 restoreAliveCount(aliveCountAtTransactionStart, aliveCountVersionAtTransactionStart)
             }
-            conn.autoCommit = true
             endBatch()
         }
     }
@@ -1111,7 +1111,7 @@ class StateDatabase(
         val owner = batchOwner ?: return
         if (owner === Thread.currentThread()) {
             if (batchSuspended) {
-                conn.autoCommit = false
+                conn.openTransaction()
                 batchSuspended = false
                 aliveCountAtTransactionStart = aliveCount
                 aliveCountVersionAtTransactionStart = aliveCountVersion
