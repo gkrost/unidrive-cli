@@ -384,9 +384,11 @@ class RelocateCommand : Runnable {
         println("Deleting source files...")
         val deletedFiles = deleteMigratedSource(provider, manifest, sourcePath, outcome)
         println("Deleted $deletedFiles files")
+        // Reaching this line means every source folder re-listed clean before its delete
+        // (gkrost/unidrive-cli#749); a folder that still held anything would have thrown above.
         println(
-            "Only the files the migration transferred were deleted; " +
-                "anything created on the source during the migration was left in place.",
+            "Only the files the migration transferred were deleted; each source folder was deleted only after a fresh " +
+                "listing of it held nothing else (an item created in the moment between that listing and the delete is not covered).",
         )
     }
 
@@ -447,6 +449,11 @@ class RelocateCommand : Runnable {
      * own metadata, and compared with a path boundary. A gate refusal or any failed delete throws;
      * nothing is deleted unless the gate passes, and a failed file leaves the rest of the pass running
      * so the report names every casualty.
+     *
+     * Every provider deletes a folder with everything still under it, so a manifest folder is only
+     * deleted after a fresh listing of it shows nothing this pass has not already confirmed deleted
+     * by id (gkrost/unidrive-cli#749): a file that landed after the walk listed the folder, or one
+     * whose own delete failed, would otherwise go to the trash with its folder.
      */
     internal suspend fun deleteMigratedSource(
         provider: CloudProvider,
@@ -464,21 +471,26 @@ class RelocateCommand : Runnable {
         val boundaryRoot = resolved.path.trimEnd('/').ifEmpty { "/" }
 
         val failures = mutableListOf<String>()
+        val confirmedGone = mutableSetOf<String>()
         var deletedFiles = 0
         for (entry in manifest.entries.values) {
             if (!inSubtree(entry.sourcePath, boundaryRoot)) continue
-            if (deleteByIdReporting(provider, entry.sourceId, entry.sourcePath, "file", failures)) deletedFiles++
+            if (deleteByIdReporting(provider, entry.sourceId, entry.sourcePath, "file", failures)) {
+                deletedFiles++
+                confirmedGone.add(entry.sourceId)
+            }
         }
         val folders =
             manifest.folders.entries
                 .filter { inSubtree(it.key, boundaryRoot) }
                 .sortedByDescending { it.key.count { c -> c == '/' } }
         for ((path, id) in folders) {
-            deleteFolderWithRetry(provider, id, path, failures)
+            deleteFolderWhenReListedClean(provider, id, path, confirmedGone, failures)
         }
-        // The drive root itself is not deletable; anything else the migration was rooted at goes last.
+        // The drive root itself is not deletable; anything else the migration was rooted at goes last,
+        // under the same fresh-listing rule.
         if (boundaryRoot != "/") {
-            deleteByIdReporting(provider, resolved.id, boundaryRoot, "folder", failures)
+            deleteFolderWhenReListedClean(provider, resolved.id, boundaryRoot, confirmedGone, failures)
         }
         if (failures.isNotEmpty()) {
             error(
@@ -511,18 +523,54 @@ class RelocateCommand : Runnable {
         return false
     }
 
-    // A folder that still holds an undeleted child is expected to fail once; retry, then report.
-    private suspend fun deleteFolderWithRetry(
+    // Deletes the folder [id] at [path] only when the path still names that folder and a fresh listing
+    // of it shows no item this pass has not already confirmed deleted by id ([confirmedGone]). Every
+    // provider deletes a folder with its whole subtree — OneDrive's graphApi.deleteItem, Internxt's
+    // api.trashItems, Dropbox's files/delete_v2, S3's deleteTree, localfs's recursive delete — so
+    // deleting a manifest folder on the strength of the migration walk alone would trash a file that
+    // landed after the walk listed the folder, or one whose own delete failed (gkrost/unidrive-cli#749).
+    // The listing goes by the manifest path: the provider interface has no listing by id. The metadata
+    // check is what makes a path that no longer resolves to the walked folder a reported failure, never
+    // a delete: a walked folder moved away leaves its old path to a new folder (ids survive moves),
+    // whose listing would stand in for the moved one, and the delete by id would trash the moved folder
+    // with everything now in it, including files the migration never saw. A folder that does not re-list
+    // clean is a reported condition, not a crash; the pass carries on and the report names it.
+    // Returns true when the folder was deleted; its id joins [confirmedGone] then.
+    private suspend fun deleteFolderWhenReListedClean(
         provider: CloudProvider,
         id: String,
         path: String,
+        confirmedGone: MutableSet<String>,
         failures: MutableList<String>,
-    ) {
-        val firstFailure = runCatching { provider.deleteById(id, path) }.exceptionOrNull() ?: return
-        if (firstFailure is kotlinx.coroutines.CancellationException) throw firstFailure
-        val secondFailure = runCatching { provider.deleteById(id, path) }.exceptionOrNull() ?: return
-        if (secondFailure is kotlinx.coroutines.CancellationException) throw secondFailure
-        failures.add("folder $path: ${secondFailure.message}")
+    ): Boolean {
+        val current =
+            runCatching { provider.getMetadata(path) }.getOrElse { failure ->
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                failures.add("folder $path: could not be resolved before the delete (${failure.message}); not deleted")
+                return false
+            }
+        if (!current.isFolder || current.id != id) {
+            failures.add("folder $path: now names another item than the one the migration walked; not deleted")
+            return false
+        }
+        val listed =
+            runCatching { provider.listChildren(path) }.getOrElse { failure ->
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                failures.add("folder $path: could not be re-listed before the delete (${failure.message}); not deleted")
+                return false
+            }
+        val unaccounted = listed.filter { it.id !in confirmedGone }
+        if (unaccounted.isNotEmpty()) {
+            val names = unaccounted.take(3).joinToString(", ") { it.path }
+            failures.add(
+                "folder $path: ${unaccounted.size} item(s) the migration did not delete are still in it " +
+                    "($names); folder not deleted",
+            )
+            return false
+        }
+        val deleted = deleteByIdReporting(provider, id, path, "folder", failures)
+        if (deleted) confirmedGone.add(id)
+        return deleted
     }
 
     // A negative count (a quota that is over) was printed as plain bytes here, and still is; the sign-keeping format is StatusAudit's.

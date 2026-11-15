@@ -402,6 +402,10 @@ class RelocateCommandTest {
         source.seedFile("/docs/sub/b.txt", "b")
         source.seedFile("/docs/sub/deeper/c.txt", "c")
         source.metadataOverride["/docs"] = folderItem("/docs", id = "root-docs")
+        // The delete pass resolves each folder before its delete; the fake answers getMetadata
+        // from this map (or the delta), so the walked folders state their walked ids here.
+        source.metadataOverride["/docs/sub"] = folderItem("/docs/sub")
+        source.metadataOverride["/docs/sub/deeper"] = folderItem("/docs/sub/deeper")
 
         val (manifest, outcome) = migrateWithManifest(source, target)
         deletePass(source, manifest, "/docs", outcome)
@@ -441,6 +445,9 @@ class RelocateCommandTest {
         source.childrenByParent["/docs"] = listOf(fileItem("/Docs/a.txt", size = 1))
         source.files["/docs/a.txt"] = "a".toByteArray()
         source.metadataOverride["/docs"] = folderItem("/Docs", id = "root-docs")
+        // The delete pass re-resolves the folder by the provider's own spelling before its delete;
+        // the fake answers getMetadata from this map, so the reported spelling states itself too.
+        source.metadataOverride["/Docs"] = folderItem("/Docs", id = "root-docs")
 
         val (manifest, outcome) = migrateWithManifest(source, target, sourcePath = "/docs")
         deletePass(source, manifest, "/docs", outcome)
@@ -449,6 +456,97 @@ class RelocateCommandTest {
             setOf("/Docs/a.txt", "/Docs"),
             source.deletedPaths.toSet(),
             "boundary and deletes follow the provider's own spelling of the subtree",
+        )
+    }
+
+    @Test
+    fun `a file that lands in a walked source folder after the listing survives the delete pass`() {
+        val source = FakeCloudProvider()
+        val target = FakeCloudProvider()
+        source.seedFolder("/docs/sub")
+        source.seedFile("/docs/sub/a.txt", "a")
+        source.seedFile("/docs/top.txt", "top")
+        source.metadataOverride["/docs"] = folderItem("/docs", id = "root-docs")
+        // The delete pass now resolves each folder before its delete; the fake answers getMetadata
+        // from this map (or the delta), so the walked folder states its walked id here.
+        source.metadataOverride["/docs/sub"] = folderItem("/docs/sub")
+
+        val (manifest, outcome) = migrateWithManifest(source, target)
+        // The multi-hour-relocate shape (#749): the file lands in a folder the walk already
+        // listed, so the manifest never records it.
+        source.seedFile("/docs/sub/late.txt", "late")
+
+        val ex = assertFailsWith<IllegalStateException> { deletePass(source, manifest, "/docs", outcome) }
+
+        assertTrue(
+            source.deletedPaths.contains("/docs/sub/a.txt") && source.deletedPaths.contains("/docs/top.txt"),
+            "the migrated files are still deleted; got: ${source.deletedPaths}",
+        )
+        assertTrue(
+            "/docs/sub/late.txt" !in source.deletedPaths,
+            "the late file must survive; deleted: ${source.deletedPaths}",
+        )
+        assertTrue(
+            "/docs" !in source.deletedPaths && "/docs/sub" !in source.deletedPaths,
+            "no folder holding an unaccounted item may be deleted; deleted: ${source.deletedPaths}",
+        )
+        assertTrue(
+            "late.txt" in (ex.message ?: ""),
+            "the report names the item that was not migrated; got: ${ex.message}",
+        )
+    }
+
+    @Test
+    fun `a walked folder moved away keeps standing when a new folder took its old path`() {
+        val source = FakeCloudProvider()
+        val target = FakeCloudProvider()
+        source.seedFolder("/docs/sub")
+        source.seedFile("/docs/sub/a.txt", "a")
+        source.metadataOverride["/docs"] = folderItem("/docs", id = "root-docs")
+
+        val (manifest, outcome) = migrateWithManifest(source, target)
+        // The multi-hour-relocate shape (#749 review finding): the walked folder is moved away (its id
+        // survives at the new location) and a new, empty folder is created at the old path. The listing
+        // by path would then stand in for the moved folder, and the delete by id would trash the moved
+        // folder with everything now in it, including files the migration never saw.
+        source.metadataOverride["/docs/sub"] = folderItem("/docs/sub", id = "src-/docs/sub-moved-away")
+
+        val ex = assertFailsWith<IllegalStateException> { deletePass(source, manifest, "/docs", outcome) }
+
+        assertTrue(
+            source.deletedPaths.contains("/docs/sub/a.txt"),
+            "the migrated file is still deleted; got: ${source.deletedPaths}",
+        )
+        assertTrue(
+            "/docs/sub" !in source.deletedPaths && "/docs" !in source.deletedPaths,
+            "no folder may be deleted when the path no longer names the walked one; deleted: ${source.deletedPaths}",
+        )
+        assertTrue(
+            "another item" in (ex.message ?: ""),
+            "the report names the rename; got: ${ex.message}",
+        )
+    }
+
+    @Test
+    fun `a file that lands in the source root after the listing keeps the root folder standing`() {
+        val source = FakeCloudProvider()
+        val target = FakeCloudProvider()
+        source.seedFile("/docs/a.txt", "a")
+        source.metadataOverride["/docs"] = folderItem("/docs", id = "root-docs")
+
+        val (manifest, outcome) = migrateWithManifest(source, target)
+        source.seedFile("/docs/late.txt", "late")
+
+        assertFailsWith<IllegalStateException> { deletePass(source, manifest, "/docs", outcome) }
+
+        assertEquals(
+            listOf("/docs/a.txt"),
+            source.deletedPaths,
+            "the migrated file goes, the boundary root is never deleted while it holds an unaccounted item",
+        )
+        assertTrue(
+            "/docs/late.txt" !in source.deletedPaths,
+            "the late file must survive in the cloud",
         )
     }
 
