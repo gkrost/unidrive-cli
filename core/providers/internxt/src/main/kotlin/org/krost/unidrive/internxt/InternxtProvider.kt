@@ -2772,9 +2772,9 @@ class InternxtProvider(
                     api
                         .getFolderContents(parentUuid)
                         .children
-                        // UD-317: sanitise child name before matching.
-                        .find { sanitizeName(it.plainName ?: it.name ?: "") == name }
-                        ?: throw e // 409 but folder not found: re-throw original error
+                        // UD-317: sanitise child name before matching; a trashed twin is never adopted.
+                        .find { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == name }
+                        ?: throw e // 409 but no live folder of that name: re-throw original error
                 existing
             }
         // UD-357: cache the new folder's UUID so the next resolveFolder call
