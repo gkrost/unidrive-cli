@@ -1,10 +1,7 @@
 package org.krost.unidrive.tracking
 
 import java.nio.file.Files
-import java.nio.file.Path
 import java.time.Instant
-import kotlin.test.AfterTest
-import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -16,7 +13,7 @@ import kotlin.test.assertTrue
  * Data-loss safety around the hashless remote-delete rule: a row is remote-gone when its remote side was
  * established (an etag or a remote id), so a hashless row follows exactly the rules an etag row already has.
  */
-class TrackingHashlessRemoteDeleteSafetyTest {
+class TrackingHashlessRemoteDeleteSafetyTest : HashlessEngineTestBase() {
     private val rec = TrackingReconciler()
 
     private fun local(
@@ -65,6 +62,21 @@ class TrackingHashlessRemoteDeleteSafetyTest {
         assertEquals(ReconcileAction.NoOp("/p"), rec.reconcile("/p", local(false), goneRemote, row(etag = null)))
     }
 
+    @Test
+    fun `an etag row without a remote id is still remote-gone`() {
+        // Pins the etag clause of the established-remote rule: dropping it would leave this row stuck.
+        val action = rec.reconcile("/p", local(true), goneRemote, row(etag = "e", remoteFileId = null))
+        assertEquals(ReconcileAction.PropagateRemoteDelete("/p"), action)
+    }
+
+    @Test
+    fun `a claim-style pending upload with a remote id and no local snapshot is remote-gone like an etag row`() {
+        val claim = { etag: String? -> row(etag = etag, state = TrackState.PendingUpload, localHash = null) }
+        val hashless = rec.reconcile("/p", local(false), goneRemote, claim(null))
+        assertEquals(rec.reconcile("/p", local(false), goneRemote, claim("e")), hashless)
+        assertEquals(ReconcileAction.PropagateRemoteDelete("/p"), hashless)
+    }
+
     // ---- 2. PendingUpload rows ----
 
     @Test
@@ -83,36 +95,13 @@ class TrackingHashlessRemoteDeleteSafetyTest {
 
     @Test
     fun `a synced row with neither etag nor remote id is never remote-gone`() {
+        // The only test that pins the "neither" clause: a PendingUpload row with a null id and the local file present
+        // is answered by the PendingUpload short-circuit before remoteGone is read, so it cannot tell the rules apart.
         val action = rec.reconcile("/p", local(true), goneRemote, row(etag = null, remoteFileId = null))
         assertFalse(action is ReconcileAction.PropagateRemoteDelete, "$action")
     }
 
     // ---- engine ----
-
-    private lateinit var workDir: Path
-    private lateinit var syncRoot: Path
-    private lateinit var dbPath: Path
-    private lateinit var provider: HashlessFakeProvider
-
-    @BeforeTest
-    fun setUp() {
-        workDir = Files.createTempDirectory("tracking-hashless-safety")
-        syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
-        dbPath = workDir.resolve("tracking.db")
-        provider = HashlessFakeProvider()
-    }
-
-    @AfterTest
-    fun tearDown() {
-        workDir.toFile().deleteRecursively()
-    }
-
-    private fun open() = SqliteTrackingSet(dbPath).also { it.initialize() }
-
-    private fun engine(
-        tracking: TrackingSet,
-        guard: BatchGuard = BatchGuard(maxDeleteRatio = 1.0, maxDeleteAbsolute = Int.MAX_VALUE),
-    ) = TrackingEngine(provider, tracking, syncRoot, batchGuard = guard)
 
     @Test
     fun `a locally edited hashless file whose remote was deleted is kept and not re-uploaded`() {
@@ -174,8 +163,10 @@ class TrackingHashlessRemoteDeleteSafetyTest {
         for (n in 1..4) provider.files["/f$n.txt"] = "v$n".toByteArray()
         val tracking = open()
         try {
+            provider.cursorValue = "c1"
             engine(tracking).syncOnce()
-            val cursorBefore = tracking.loadDeltaCursor()
+            assertEquals("c1", tracking.loadDeltaCursor(), "precondition: a clean pass saves the cursor")
+            provider.cursorValue = "c2"
             provider.files.remove("/f1.txt")
             provider.files.remove("/f2.txt")
             provider.files.remove("/f3.txt")
@@ -186,7 +177,7 @@ class TrackingHashlessRemoteDeleteSafetyTest {
             assertTrue(report.plan.count { it is ReconcileAction.PropagateRemoteDelete } == 3, "the plan sees the deletes")
             assertTrue(report.effectivePlan.none { it is ReconcileAction.PropagateRemoteDelete })
             for (n in 1..4) assertTrue(Files.exists(syncRoot.resolve("f$n.txt")), "f$n must survive")
-            assertEquals(cursorBefore, tracking.loadDeltaCursor())
+            assertEquals("c1", tracking.loadDeltaCursor(), "the cursor stays held while the guard defers the deletes")
         } finally {
             tracking.close()
         }
@@ -199,7 +190,9 @@ class TrackingHashlessRemoteDeleteSafetyTest {
         provider.files["/b.txt"] = "v2".toByteArray()
         val tracking = open()
         try {
+            provider.cursorValue = "c1"
             engine(tracking).syncOnce()
+            provider.cursorValue = "c2"
             provider.files.remove("/a.txt")
             provider.deltaComplete = false
 
@@ -207,6 +200,7 @@ class TrackingHashlessRemoteDeleteSafetyTest {
 
             assertTrue(report.effectivePlan.none { it is ReconcileAction.PropagateRemoteDelete })
             assertTrue(Files.exists(syncRoot.resolve("a.txt")))
+            assertEquals("c1", tracking.loadDeltaCursor(), "an incomplete pass never advances the cursor")
         } finally {
             tracking.close()
         }
@@ -227,6 +221,43 @@ class TrackingHashlessRemoteDeleteSafetyTest {
 
             assertTrue(report.plan.none { it is ReconcileAction.PropagateRemoteDelete })
             assertTrue(Files.exists(syncRoot.resolve("a.txt")))
+        } finally {
+            tracking.close()
+        }
+    }
+
+    @Test
+    fun `a clean pass that deletes a hashless file advances the cursor`() {
+        provider.deltaIsFullListing = true
+        provider.files["/a.txt"] = "v1".toByteArray()
+        provider.files["/b.txt"] = "v2".toByteArray()
+        val tracking = open()
+        try {
+            provider.cursorValue = "c1"
+            engine(tracking).syncOnce()
+            provider.cursorValue = "c2"
+            provider.files.remove("/a.txt")
+
+            engine(tracking).syncOnce()
+
+            assertFalse(Files.exists(syncRoot.resolve("a.txt")))
+            assertEquals("c2", tracking.loadDeltaCursor(), "the cursor advances once the plan applied")
+        } finally {
+            tracking.close()
+        }
+    }
+
+    @Test
+    fun `a claim-style pending upload row whose local and remote are both gone settles without failing`() {
+        provider.deltaIsFullListing = true
+        val tracking = open()
+        try {
+            tracking.upsert(row(etag = null, state = TrackState.PendingUpload, localHash = null).copy(providerId = provider.id))
+
+            val report = engine(tracking).syncOnce()
+
+            assertTrue(report.applied.none { it.outcome == ApplyOutcome.FAILED }, "${report.applied}")
+            assertNull(tracking.lookup("/p"), "nothing is left to sync for the path, so the row settles")
         } finally {
             tracking.close()
         }

@@ -975,8 +975,12 @@ class TrackingEngine(
     /** Keep a durable conflict backup while leaving the user's current file in place. */
     private fun preserveConflict(path: String, local: Path, reason: String) {
         if (!Files.isRegularFile(local)) return
-        conflictLog?.record(path, "local-changed", "remote-action-pending", reason, local)
-            ?: log.debug("No conflict journal supplied; the conflict at {} is not backed up or journalled", path)
+        val journal = conflictLog
+        if (journal == null) {
+            log.debug("No conflict journal supplied; the conflict at {} is not backed up or journalled", path)
+        } else if (!journal.isAlreadyBackedUp(path, "local-changed", reason, local)) {
+            journal.record(path, "local-changed", "remote-action-pending", reason, local)
+        }
     }
 
     private suspend fun observeRemote(path: String): RemoteObservation =

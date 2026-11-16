@@ -232,6 +232,10 @@ A delete never carries away an edit that the deleting side did not see:
   whose write token is not the content hash: it gets no guard. If the provider refuses the guard
   (`RemoteConflictException`, the remote changed after the scan), the delete is skipped, the row stays tracked and
   the path is left as a collision.
+- **A remote delete of a hashless row.** A row from a provider that reports no etag (Internxt, LocalFs) is remote-gone
+  once its remote id is known, so its remote deletion propagates like any other: guarded by the `BatchGuard`, moved to
+  the trash, and only after the apply-time check that the local file still matches the last synced bytes (an edited
+  file is kept and left as a collision).
 - **An edit during an upload.** An upload records the local state it saw before the bytes were sent, so a file saved
   again while its upload is in flight reads as a local change on the next pass, not as synced.
 

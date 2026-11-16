@@ -105,14 +105,12 @@ class TrackingReconciler(
 
         // The four primitive predicates. Per spec.
         //
-        // Subtlety: "Gone" must mean "we used to have it AND now we don't".
-        // A Pending* row's snapshot may carry null for the side it never
-        // finished establishing (PendingDownload → localHash == null;
-        // PendingUpload → remoteEtag == null). Reading null-side-absent as
-        // "Gone" is precisely the bug class .safe/ hit on the legacy
-        // engine. We gate Gone on `snapshot side was non-null` so a
-        // crashed-mid-pending row recovers to its original intent (down/
-        // upload), not to a delete.
+        // Subtlety: "Gone" must mean "we used to have it AND now we don't". A Pending* row may carry
+        // null for the side it never finished establishing (PendingDownload: localHash == null; a
+        // PendingUpload that never completed: no remote id). Reading null-side-absent as "Gone" is
+        // the bug class .safe/ hit on the legacy engine, so localGone gates on a non-null local
+        // hash and remoteGone on remoteSideEstablished: a crashed-mid-pending row recovers to its
+        // original intent (down/upload), not to a delete.
         //
         // Hashless-provider change-token: when both etags/hashes are null
         // (Internxt never returns a content hash or a discriminating etag)
@@ -203,9 +201,10 @@ class TrackingReconciler(
 
     /**
      * "We used to have it" for the remote side: the row carries an etag OR a remote id. A provider that reports no
-     * hash or etag (Internxt) leaves `remoteEtag` null on every synced row, so the id is what proves the remote
-     * side was established. A row with neither (a PendingUpload whose upload did not finish) is not remote-gone;
-     * it re-derives its upload instead.
+     * hash or etag (Internxt, LocalFs, the xtra encrypted wrapper) leaves `remoteEtag` null on every synced row,
+     * so the id is what proves the remote side was established. A row with neither (any row with a null id and a
+     * null etag, such as a PendingUpload whose upload did not finish) is not remote-gone; it re-derives its
+     * upload instead.
      */
     private fun remoteSideEstablished(track: TrackingRecord): Boolean = track.remoteEtag != null || track.remoteFileId != null
 

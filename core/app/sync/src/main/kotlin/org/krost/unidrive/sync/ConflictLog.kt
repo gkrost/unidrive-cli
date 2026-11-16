@@ -84,6 +84,24 @@ open class ConflictLog(
     }
 
     /**
+     * True when this exact conflict is already journalled with a backup of the same bytes: an entry for [path] with the
+     * same [localState] and [policy] whose backup file is byte-identical to [file]. A conflict the engine meets again on
+     * every pass (its cursor is held while the conflict is unresolved) is recorded once, not once per pass; a file
+     * edited since then differs from the backup and is recorded anew.
+     */
+    fun isAlreadyBackedUp(
+        path: String,
+        localState: String,
+        policy: String,
+        file: Path,
+    ): Boolean =
+        findBackups(path).any { entry ->
+            val backup = entry.backupFile?.let { backupDir.resolve(it) }
+            entry.localState == localState && entry.policy == policy && backup != null &&
+                Files.isRegularFile(backup) && Files.mismatch(backup, file) == -1L
+        }
+
+    /**
      * cli#724: [prefix] plus [original], with the stem of [original] cut so the whole name fits one path component
      * (the prefix is 17 units or more); the extension stays.
      */
