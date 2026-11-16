@@ -35,6 +35,8 @@ class LocalScanner(
     // Test seam: the walk. A test makes a folder fail to open, which a temp folder on Windows cannot be made to do;
     // production never sets it.
     private val walkFileTree: (Path, FileVisitor<Path>) -> Unit = { start, visitor -> Files.walkFileTree(start, visitor) },
+    // Test seam (gkrost/unidrive-cli#744): how the scan's writes are grouped into transactions.
+    private val newWriteBatch: (StateDatabase) -> ScanWriteBatch = { ScanWriteBatch(it) },
 ) {
     private val log = LoggerFactory.getLogger(LocalScanner::class.java)
     private val scopeAncestors: Set<String> = SyncScope.ancestors(scope)
@@ -216,15 +218,12 @@ class LocalScanner(
         var visited = 0
         val heartbeat = onProgress?.let { cb -> ScanHeartbeat(cb) }
 
-        // UD-240h: wrap the walk in a single SQLite transaction. The walk's
-        // visitFile pre-writes a UD-901 pending-upload row for every NEW file
-        // it sees — on a 67k-file first sync that's 67k single-row INSERTs,
-        // each its own transaction (LocalScanner runs in the engine's Gather
-        // phase, before SyncEngine.kt:361's beginBatch). Wrapping here drops
-        // those 67k commits to one. Failures roll back the whole walk's
-        // UD-901 pre-writes — safer than partial rows for the next sync's
-        // recovery loops to interpret.
-        db.beginBatch()
+        // UD-240h / gkrost/unidrive-cli#744: the walk's writes (a UD-901 pending-upload row per NEW file) share short
+        // transactions, not one commit each (67k single-row INSERTs on a first sync) and not one for the whole walk (which
+        // kept the write lock from other processes for minutes). See ScanWriteBatch. A walk that throws rolls back only the
+        // open transaction; rows of earlier commits stay, and the recovery loops (Reconciler UD-901, the daemon's replay of
+        // pendingUploadPaths) upload a pending row whose file the next scan finds unchanged.
+        val writes = newWriteBatch(db)
         var batchCommitted = false
         try {
 
@@ -236,6 +235,7 @@ class LocalScanner(
                     file: Path,
                     attrs: BasicFileAttributes,
                 ): FileVisitResult {
+                    writes.releaseIfExpired()
                     if (file in blockedPaths) return FileVisitResult.CONTINUE
                     // archive#171: canonicalize to NFC so an NFD on-disk name matches the
                     // NFC remote/state.db key in the reconciler.
@@ -307,7 +307,7 @@ class LocalScanner(
                         // was never retried. Stubs with a row are still probed where the row
                         // is acted on (looksLikePlaceholder, PlaceholderManager.isSparse),
                         // and a same-size remote file is still compared by applyCreatePlaceholder.
-                        db.upsertEntry(pendingUploadRow(relativePath, fileAttrs))
+                        writes.upsert(pendingUploadRow(relativePath, fileAttrs))
                     } else if (entry.isHydrated) {
                         val currentMtime = fileAttrs.lastModifiedTime().toMillis()
                         val currentSize = fileAttrs.size()
@@ -332,6 +332,7 @@ class LocalScanner(
                                 // archive#1056: a file held open by another process (a sharing violation on Windows)
                                 // can't be hashed: treat it as changed, as the archive#396 branch below does, rather
                                 // than abort the walk and, with it, every scan that meets the file.
+                                writes.release() // hashing is slow: not with the write lock held
                                 val localHash =
                                     try {
                                         HashVerifier.computeHash(file, hashAlgorithm)
@@ -342,13 +343,14 @@ class LocalScanner(
                                 if (localHash == entry.remoteHash) {
                                     // Content unchanged — refresh tracked mtime so this file
                                     // isn't re-hashed on every subsequent scan.
-                                    db.upsertEntry(entry.copy(localMtime = currentMtime))
+                                    writes.upsert(entry.copy(localMtime = currentMtime))
                                 } else {
                                     changes[relativePath] = ChangeState.MODIFIED
                                 }
                             } else if (isLocalHashTouchOnly) {
                                 // An unreadable file (locked by another process) can't be verified:
                                 // treat it as changed, as before, rather than abort the walk.
+                                writes.release()
                                 val unchanged =
                                     try {
                                         HashVerifier.computeSha256Hex(file) == entry.localHash
@@ -363,7 +365,7 @@ class LocalScanner(
                                         entry.localMtime,
                                         currentMtime,
                                     )
-                                    db.upsertEntry(entry.copy(localMtime = currentMtime))
+                                    writes.upsert(entry.copy(localMtime = currentMtime))
                                 } else {
                                     changes[relativePath] = ChangeState.MODIFIED
                                 }
@@ -466,16 +468,15 @@ class LocalScanner(
             }
         }
 
-        db.commitBatch()
+        writes.release()
         batchCommitted = true
         return changes
         } finally {
-            // UD-240h: roll back any UD-901 pre-writes if the walk threw past
-            // commitBatch. Without this, autoCommit stays false and the
-            // engine's later beginBatch silently piggybacks on our open tx.
+            // UD-240h: roll back the open transaction if the walk threw past the last release. Without this,
+            // autoCommit stays false and the engine's later beginBatch silently piggybacks on our open tx.
             if (!batchCommitted) {
                 try {
-                    db.rollbackBatch()
+                    writes.rollback()
                 } catch (e: Exception) {
                     log.warn("UD-240h: rollbackBatch failed in scan() finally", e)
                 }
