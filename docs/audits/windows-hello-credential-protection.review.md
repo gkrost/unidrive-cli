@@ -2,6 +2,19 @@
 
 Reviewed 2026-11-16 against `unidrive-cli` working tree (audit file untracked) and `unidrive-windows` @ `eae85fe8`.
 
+> **Status (later on 2026-11-16).** This review was written against the audit's first version. Since then, the spikes and the gaps review on gkrost/unidrive-windows#1402 have settled several points, and the audit now has its §8 spike results:
+> - **M2 is resolved.** Signatures are PKCS#1 v1.5 (deterministic by spec), not PSS, so sign-as-KDF is sound.
+> - **S1 is partly resolved.** `RequestDeriveSharedSecretAsync` is not viable on real hardware (`NTE_NOT_SUPPORTED`). Whether the 22621 projection exposes the overloads the design needs is still open.
+> - **S6 (witness test) is resolved.** The witness and determinism checks are now required parts of Option A.
+>
+> The remaining points are tracked elsewhere:
+> - **M1** (which process prompts) is owner question Q9 on #1402, still open.
+> - **M3** (plaintext `config.toml` secrets) is gkrost/unidrive-cli#786; the X-tra passphrase is in scope per Q8.
+> - **M4** (environment exposure) is folded into §2 and §6 of #1402.
+> - The `UNIDRIVE_XTRA_PASS` side finding in S4 is gkrost/unidrive-cli#785.
+>
+> The body of #1402 is the current consolidated version.
+
 ## Rating: 7 / 10
 
 | Dimension | Score | Note |
