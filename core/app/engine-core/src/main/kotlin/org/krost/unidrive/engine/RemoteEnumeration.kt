@@ -334,7 +334,7 @@ class RemoteEnumeration(
         // Only a full listing is measured against a previous one; a delta of a few items must not
         // inherit the total of the whole drive.
         val cursorEmpty = gather.cursorState.deltaCursor.isNullOrEmpty()
-        // The recovery latch as the pass starts: while it is set, this pass lists the whole drive because the last scan was incomplete.
+        // The recovery latch as the pass starts: while it is set, this pass lists the whole drive because the last scan was incomplete or held back a bulk deletion that needs a second full listing.
         val recoveryPass = db.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)?.equals("true", ignoreCase = true) == true
         tracker.baseline(
             first = cursorEmpty,
@@ -542,14 +542,16 @@ class RemoteEnumeration(
     // Scope: the enumeration has no scope of its own per run. A standing scope is the tracked scope, and a complete
     // listing of it is the complete inventory of everything the profile tracks, which is what the sweep judged.
     //
-    // A deferred reap keeps the latch (reapsDeferred) and sets it when it is not set: the bulk-disappearance guard held
-    // back deletions it could not corroborate, so this pass is no trusted inventory yet, and the corroboration is a SECOND
-    // complete FULL listing: an incremental pass would not report those paths missing again, and the candidates would be
-    // forgotten. That holds as much for a deferring pass that was itself a full listing (a first scan, a reset) as for a
-    // delta. The latch cannot stay up for ever: the corroborating listing reaps and settles it, and a listing that keeps
-    // ending incomplete is bounded by RemoteGather.boundIncompleteRecovery. A reap
-    // deferred for a hydration-cache edit (holdsUnsyncedEdit) does not keep it: that waits for a local upload, not for the
-    // remote's inventory, and holding the latch for it would relist the drive for as long as the upload is stuck.
+    // A deferred reap keeps the latch (reapsDeferred) and, unless the provider lists everything on every poll, sets it. The
+    // bulk-disappearance guard held back deletions it could not corroborate, so this pass is no trusted inventory yet,
+    // and the corroboration is a SECOND complete FULL listing. An incremental pass would not report those paths missing
+    // again and the candidates would be forgotten, whether the deferring pass was a delta or itself a full listing (a
+    // first scan, a reset). A provider whose every poll is a full listing (deltaIsFullListing: S3, local folder) needs no
+    // latch: the next ordinary poll corroborates, and the latch would only back the poller off. The latch cannot stay up
+    // for ever: the corroborating listing reaps and settles it, and a listing that keeps ending incomplete is bounded by
+    // RemoteGather.boundIncompleteRecovery. A reap deferred for a hydration-cache edit (holdsUnsyncedEdit) does not keep
+    // it: that waits for a local upload, not for the remote's inventory, and holding the latch for it would relist the
+    // drive for as long as the upload is stuck.
     private fun settleRecoveryLatch(
         remoteChanges: Map<String, CloudItem>,
         preGatherTrackedRows: Int,
@@ -571,7 +573,7 @@ class RemoteEnumeration(
         // incremental when the latch is unset. Either way no later delta repeats the paths, and the held rows would stay
         // alive until some full listing found them missing. Ask for that listing: the next pass lists the drive again,
         // finds the same paths missing, and reaps what both passes saw.
-        if (reapsDeferred && db.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)?.equals("true", ignoreCase = true) != true) {
+        if (reapsDeferred && !gather.deltaIsFullListing && db.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)?.equals("true", ignoreCase = true) != true) {
             db.setSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY, "true")
             log.info("enumerate: the deletions the bulk guard held back need a second full listing; the next pass lists the whole drive to corroborate them")
         }

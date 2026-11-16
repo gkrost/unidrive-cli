@@ -1,11 +1,9 @@
 package org.krost.unidrive.engine
 
 import kotlinx.coroutines.test.runTest
-import org.krost.unidrive.Capability
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
-import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.StateDatabase
@@ -115,8 +113,7 @@ class RemoteEnumerationDeferredReapTest {
 
             val later = enumeration.enumerate(reset = false)
             assertEquals(0, later.reaped, "reaped exactly once")
-            assertNotNull(provider.cursors.last(), "after the recovery the pass continues from the delta cursor")
-            assertEquals(listOf<String?>(null, null, null), provider.cursors.take(3))
+            assertEquals(listOf<String?>(null, null, null, "c3"), provider.cursors, "after the recovery the pass continues from the delta cursor")
         }
 
     @Test
@@ -159,43 +156,80 @@ class RemoteEnumerationDeferredReapTest {
 
             // The bound is real: the pass after it does not list from zero again.
             enumeration.enumerate(reset = false)
-            assertNotNull(provider.cursors.last())
+            assertEquals(listOf<String?>(null, null, null, null, "c4"), provider.cursors, "the accepted set ends the relisting")
         }
 
     @Test
-    fun `a deferral that finds more vanished paths holds those and reaps the corroborated ones once`() =
+    fun `a second wave above the threshold is held and corroborated by its own second listing`() =
         runTest {
             val enumeration = enumeration()
             heldByAFullListing(enumeration)
 
-            // 10 more vanish: the 60 held ones are corroborated, the 10 new ones wait for their own second listing.
-            provider.items = files(1..130)
+            // 55 more vanish (above the threshold of 50 again): the 60 held ones are corroborated and reaped, the 55 new
+            // ones are held in their turn although the listing is complete.
+            provider.items = files(1..85)
             val second = enumeration.enumerate(reset = false)
             assertEquals(60, second.reaped)
-            assertNotNull(db.getEntry("/f135.txt"))
+            assertNotNull(db.getEntry("/f100.txt"), "uncorroborated: held, not reaped")
             assertEquals("true", latch(), "the new deferral keeps the latch")
 
             val third = enumeration.enumerate(reset = false)
-            assertEquals(10, third.reaped)
-            assertNull(db.getEntry("/f135.txt"))
+            assertEquals(55, third.reaped)
+            assertNull(db.getEntry("/f100.txt"))
             assertEquals("false", latch())
         }
 
-    private class Listing : CloudProvider {
+    @Test
+    fun `after a restart the held deletions need two listings again and are reaped by the second`() =
+        runTest {
+            heldByAFullListing(enumeration())
+
+            // A new instance has no in-memory candidates; the latch is persisted and asks for a full listing.
+            val restarted = enumeration()
+            val first = restarted.enumerate(reset = false)
+            assertEquals(0, first.reaped, "no corroboration survives a restart")
+            assertEquals("true", latch())
+
+            val second = restarted.enumerate(reset = false)
+            assertEquals(60, second.reaped)
+            assertNull(db.getEntry("/f150.txt"))
+            assertEquals("false", latch())
+        }
+
+    @Test
+    fun `a provider that lists everything on every poll needs no latch and corroborates on the next poll`() =
+        runTest {
+            provider.fullListing = true
+            val enumeration = enumeration()
+            provider.items = files(1..200)
+            enumeration.enumerate(reset = false)
+
+            provider.items = files(1..140)
+            val held = enumeration.enumerate(reset = false)
+            assertEquals(0, held.reaped)
+            assertNotNull(db.getEntry("/f150.txt"), "held back, not reaped")
+            assertEquals("false", latch(), "the next ordinary poll is a full listing: no latch")
+            assertEquals(false, held.recoveryPending, "so the poller keeps its interval")
+
+            val corroborated = enumeration.enumerate(reset = false)
+            assertEquals(60, corroborated.reaped)
+            assertNull(db.getEntry("/f150.txt"))
+            assertEquals(false, corroborated.recoveryPending)
+        }
+
+    // Everything but the listing itself comes from the shared fake: only delta() and the full-listing flag are scripted.
+    private class Listing(
+        base: CloudProvider = FakeViewProvider(),
+    ) : CloudProvider by base {
         var items: List<CloudItem> = emptyList()
         var complete = true
-        // False: a delta handed a cursor is incremental (OneDrive-like); a null cursor lists everything.
+
+        // False: a delta handed a cursor is incremental (OneDrive-like); true: every poll lists everything (S3, local folder).
         var fullListing = false
         val cursors = mutableListOf<String?>()
         private var listings = 0
 
         override val id = "test"
-        override val displayName = "test"
-        override var isAuthenticated = true
-
-        override fun capabilities(): Set<Capability> = emptySet()
-
-        override suspend fun authenticate() {}
 
         override suspend fun delta(
             cursor: String?,
@@ -208,36 +242,5 @@ class RemoteEnumerationDeferredReapTest {
         }
 
         override val deltaIsFullListing: Boolean get() = fullListing
-
-        override suspend fun listChildren(path: String): List<CloudItem> = error("not used")
-
-        override suspend fun getMetadata(path: String): CloudItem = error("not used")
-
-        override suspend fun download(
-            remotePath: String,
-            destination: Path,
-        ): Long = error("not used")
-
-        override suspend fun upload(
-            localPath: Path,
-            remotePath: String,
-            existingRemoteId: String?,
-            ifMatchETag: String?,
-            onProgress: ((Long, Long) -> Unit)?,
-        ): CloudItem = error("not used")
-
-        override suspend fun delete(
-            remotePath: String,
-            ifMatchETag: String?,
-        ) = error("not used")
-
-        override suspend fun createFolder(path: String): CloudItem = error("not used")
-
-        override suspend fun move(
-            fromPath: String,
-            toPath: String,
-        ): CloudItem = error("not used")
-
-        override suspend fun quota(): QuotaInfo = error("not used")
     }
 }
