@@ -3753,6 +3753,67 @@ class SyncEngineTest {
         }
 
     @Test
+    fun `a file deleted locally and edited remotely on a later page is not deleted from the cloud in either mode`() {
+        // #743 finding 4: the local deletion of /p.txt is re-planned on every page that does not carry it, as a DeleteRemote
+        // read against "remote unchanged". The remote edit on page 3 then plans a Conflict, and the delete (applied first)
+        // removes the edited cloud copy. The buffered gather sees the whole delta at once and plans only the Conflict.
+        for (streaming in listOf(false, true)) {
+            runTest {
+                val root = Files.createTempDirectory("unidrive-del-vs-edit-root")
+                val localDb = StateDatabase(Files.createTempDirectory("unidrive-del-vs-edit-db").resolve("state.db"))
+                localDb.initialize()
+                val fake = FakeCloudProvider()
+                try {
+                    val baseline = Instant.parse("2026-01-01T00:00:00Z")
+                    localDb.upsertEntry(
+                        org.krost.unidrive.sync.model.SyncEntry(
+                            path = "/p.txt",
+                            remoteId = "id-/p.txt",
+                            remoteHash = "hash-old",
+                            remoteSize = 10,
+                            remoteModified = baseline,
+                            localMtime = baseline.toEpochMilli(),
+                            localSize = 10,
+                            isFolder = false,
+                            isPinned = false,
+                            isHydrated = true,
+                            lastSynced = baseline,
+                        ),
+                    )
+                    localDb.setSyncState("delta_cursor", "baseline-cursor")
+                    // The local file is gone (deleted by the user); the remote edit is the third page's only item.
+                    fake.files["/p.txt"] = ByteArray(40) { 0x45 }
+                    (1..2).forEach { n -> fake.files["/other-page$n.txt"] = ByteArray(5) }
+                    fake.deltaPages =
+                        listOf(
+                            listOf(cloudItem("/other-page1.txt", size = 5)) to "page1-cursor",
+                            listOf(cloudItem("/other-page2.txt", size = 5)) to "page2-cursor",
+                            listOf(cloudItem("/p.txt", size = 40, hash = "hash-edited-remotely")) to "page3-cursor",
+                        )
+
+                    SyncEngine(
+                        provider = fake,
+                        db = localDb,
+                        syncRoot = root,
+                        conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                        reporter = ProgressReporter.Silent,
+                        streamingReconciliation = streaming,
+                    ).syncOnce()
+
+                    assertTrue(fake.deltaCalls >= 3, "streaming=$streaming: expected a multi-page gather (deltaCalls=${fake.deltaCalls})")
+                    assertTrue(
+                        fake.deletedPaths.none { it == "/p.txt" },
+                        "streaming=$streaming: the remote edit of /p.txt must not be deleted from the cloud; deleted: ${fake.deletedPaths}",
+                    )
+                    assertTrue(fake.files.containsKey("/p.txt"), "streaming=$streaming: the edited cloud copy is still there")
+                } finally {
+                    localDb.close()
+                }
+            }
+        }
+    }
+
+    @Test
     fun `newer remote download on a later page is not dropped by the executor dedup`() =
         runTest {
             // Orthogonal to the upload-dedup invariant: the executor dedup must

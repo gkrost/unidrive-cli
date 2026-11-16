@@ -248,6 +248,43 @@ class ReconcilerSliceCostTest {
         assertEquals(1, reconciler.resolveSlice(page, emptyMap()).size, "and sees its removal")
     }
 
+    // 743 finding 3 / 742 finding 4: a local change no page mentions is decided once, not once per delta page. The work a
+    // page costs follows the page, so K pages and M local-only changes read at most K * pageSize + M paths, not K * (pageSize + M).
+    @Test
+    fun `local-only changes are looked up once across the pages, not once per page`() {
+        val pages = 20
+        val pageSize = 10
+        val localOnly = 500
+        for (i in 0 until pages * pageSize) db.upsertEntry(row("/d/f$i.bin"))
+        val localChanges = (0 until localOnly).associate { "/fresh/new$it.bin" to ChangeState.NEW }
+        val pageRemote =
+            (0 until pages).map { p ->
+                (0 until pageSize).associate {
+                    val path = "/d/f${p * pageSize + it}.bin"
+                    path to item(path, hash = "changed")
+                }
+            }
+
+        val requested = ArrayList<String>()
+        val reconciler =
+            Reconciler(db, syncRoot, ConflictPolicy.KEEP_BOTH).also {
+                it.entryLookup = { paths ->
+                    requested += paths
+                    Reconciler.entriesByPathsChunked(db, paths)
+                }
+            }
+        for (page in pageRemote) reconciler.resolveSlice(page, localChanges)
+        // The plan for the local-only paths comes from scan-end, as for any path no page carries.
+        reconciler.finalizeStreaming(emptyList(), pageRemote.fold(emptyMap()) { acc, p -> acc + p }, localChanges)
+
+        val localOnlyLookups = requested.count { it.startsWith("/fresh/") }
+        println("local-only path lookups over $pages pages: $localOnlyLookups (pages x local = ${pages * localOnly})")
+        assertTrue(
+            localOnlyLookups <= localOnly,
+            "each of the $localOnly local-only paths is read at most once over $pages pages, read $localOnlyLookups times",
+        )
+    }
+
     @Test
     fun `a local NFD spelling does not hide the remote NFC row`() {
         val nfc = "/\u00e9.txt"
