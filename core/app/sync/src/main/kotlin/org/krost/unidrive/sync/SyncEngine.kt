@@ -45,7 +45,6 @@ import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
-import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
@@ -5203,8 +5202,7 @@ open class SyncEngine(
         if (dryRun) return // a preview records nothing; the callers report a warning instead
         val logPath = skippedOpsLogPath ?: return
         val line = formatSkippedOpJson(label, path, reason, Instant.now())
-        Files.createDirectories(logPath.parent)
-        Files.writeString(logPath, line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+        appendJournalLine(logPath, line, "skipped-ops journal")
     }
 
     // UD-297: literally-empty syncRoot detector. Narrow on purpose — any
@@ -5233,8 +5231,7 @@ open class SyncEngine(
     ) {
         val path = failureLogPath ?: return
         val line = formatFailureJson(actionLabel(action), action, error, Instant.now())
-        Files.createDirectories(path.parent)
-        Files.writeString(path, line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+        appendJournalLine(path, line, "failure journal")
     }
 
     companion object {
