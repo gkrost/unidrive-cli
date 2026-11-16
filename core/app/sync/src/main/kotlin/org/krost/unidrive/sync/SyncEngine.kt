@@ -1270,8 +1270,7 @@ open class SyncEngine(
         // gather), falling back to the pre-gather expectation. allRemoteChanges is
         // the unscoped gather result; remoteChanges may be syncPath-filtered.
         // skipRemoteGather (apply mode) has no fresh listing to judge.
-        val actualFullEnumeration =
-            cursorState.lastGatherFull.strict ?: fullEnumerationExpected
+        val actualFullEnumeration = cursorState.lastGatherFull.strict ?: fullEnumerationExpected
         val remoteShrinkWarning =
             if (actualFullEnumeration && runScope.isEmpty() && !skipRemoteGather) {
                 val observedAlive = allRemoteChanges.values.count { !it.deleted }
@@ -1314,8 +1313,7 @@ open class SyncEngine(
 
         // Streaming captured these above so the per-page reconcile could see them; non-streaming runs the
         // scan here, after the listing is published, on the historical order.
-        val localChanges: Map<String, ChangeState> =
-            localChangesForStreaming ?: scanLocalNow()
+        val localChanges: Map<String, ChangeState> = localChangesForStreaming ?: scanLocalNow()
 
         // UD-240g: pass reporter so the phase emits a
         // heartbeat instead of going silent for many seconds on big first-syncs;
@@ -1345,6 +1343,8 @@ open class SyncEngine(
                     downloadOnly = syncDirection == SyncDirection.DOWNLOAD,
                     enumerationComplete = enumerationComplete)
             }
+        val ignoredStale = reconciler.ignoredTombstones.drain()
+        if (!dryRun && !skipRemoteGather && !provider.deltaIsFullListing) StaleTombstoneSweep(db, log).schedule(ignoredStale, cursorState.lastGatherFull.strict == false && cursorState.pendingComplete.strict != false)
         // gkrost/unidrive-cli#582: a cloud item whose name holds a lone UTF-16 surrogate cannot be a local name, and no store
         // keeps it as it is. It is skipped with one warning, the way the scan skips such a name locally: nothing is
         // downloaded or created for it and no failed action is counted. The cloud copy is left alone.

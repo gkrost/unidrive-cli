@@ -127,11 +127,10 @@ class Reconciler(
     // set is rebuilt by every scan. The default blocks nothing. A property, as [isIgnored].
     internal var isBlocked: (path: String) -> Boolean = { _ -> false }
 
-    // archive#309: the profile's case policy (NameKey.foldsCase): true when the provider or the local file system folds case,
-    // so two paths that differ only in case are one name and a second one is refused. False only for a case-sensitive
-    // provider on a case-sensitive file system, where they are two files. The default keeps the guards on. A property, as
-    // [isIgnored], so the constructor's signature stays as it is.
+    // archive#309: the profile's case policy (NameKey.foldsCase): true when the provider or the local file system folds case
+    // (two paths differing only in case are one name); false only for a case-sensitive pair. A property, as [isIgnored].
     internal var foldCase: Boolean = true
+    internal val ignoredTombstones = IgnoredTombstones() // #743: the tombstones ignored for their id, drained by the engine
 
     // A directory-only rule (`photos/`, `!keep/`) must see a directory. A tombstone's `isFolder` is a non-null
     // Boolean and is often false when the provider has no folder facet (a deleted tag, a minimal tombstone), so it
@@ -311,7 +310,7 @@ class Reconciler(
 
             val remoteState =
                 when {
-                    remoteItem == null || isTombstoneOfOtherItem(remoteItem, entry) -> ChangeState.UNCHANGED
+                    remoteItem == null || ignoredTombstones.ignores(path, remoteItem, entry) -> ChangeState.UNCHANGED
                     remoteItem.deleted -> ChangeState.DELETED
                     entry == null -> ChangeState.NEW
                     // UD-209b: a UD-901 pending-upload row (remoteId=null, no remote
@@ -576,7 +575,7 @@ class Reconciler(
 
             val remoteState =
                 when {
-                    remoteItem == null || isTombstoneOfOtherItem(remoteItem, entry) -> ChangeState.UNCHANGED
+                    remoteItem == null || ignoredTombstones.ignores(path, remoteItem, entry) -> ChangeState.UNCHANGED
                     remoteItem.deleted -> ChangeState.DELETED
                     entry == null -> ChangeState.NEW
                     entry.remoteId == null && entry.remoteHash == null -> ChangeState.NEW

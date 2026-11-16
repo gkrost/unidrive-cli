@@ -1321,8 +1321,8 @@ class RemoteGather(
      * folder that the delta does not mention itself gets a tombstone of its own, so that the reap judges it like any
      * other (the guard for an unsent edit, the cache eviction, the bulk-disappearance guard). A row whose item the
      * delta delivers alive elsewhere (moved out of the folder) is left to the merge. A full listing needs none: the
-     * absence sweep tombstones every row it does not see. The mount's enumeration only: the mirror plans a local delete
-     * of the folder and its rows go with it.
+     * absence sweep tombstones every row it does not see. A tombstone matches the tracked folder by id; one without an id
+     * (Dropbox) is a delete of the path. The mount's enumeration only: the mirror plans a local delete of the folder.
      */
     fun expandDeletedFolders(changes: MutableMap<String, CloudItem>) {
         if (cursorState.lastGatherFull.strict == true) return
@@ -1339,7 +1339,7 @@ class RemoteGather(
         if (folders.isEmpty()) return
         val deliveredAlive = changes.values.filterNot { it.deleted }.mapTo(HashSet()) { it.id }
         for ((key, tombstone) in folders) {
-            val folder = (db.getEntry(key) ?: db.getEntryByRemotePath(key))?.takeIf { it.isFolder && it.remoteId == tombstone.id } ?: continue
+            val folder = (db.getEntry(key) ?: db.getEntryByRemotePath(key))?.takeIf { it.isFolder && (tombstone.id.isEmpty() || it.remoteId == tombstone.id) } ?: continue
             for (row in db.getEntriesByPrefix(folder.path.trimEnd('/') + "/")) {
                 val id = row.remoteId ?: continue
                 val rowKey = DuplicateNames.keyOf(row.path, row.remotePath) ?: (row.remotePath ?: row.path)

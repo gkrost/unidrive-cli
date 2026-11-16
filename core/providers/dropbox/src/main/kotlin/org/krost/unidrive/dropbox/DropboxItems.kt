@@ -11,12 +11,13 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Turns Dropbox metadata into [CloudItem]s. Dropbox paths are case-insensitive: `path_lower` is the key, and
  * `path_display` is only guaranteed to carry the right case in its last component. So the display path of an item is
- * built from its parent's (when this process has seen the parent) plus its own `name`, and a deleted entry, which has
- * no id, gets the id last seen at its path.
+ * built from its parent's (when this process has seen the parent) plus its own `name`. A deleted entry has no id and
+ * is reported with an empty one on purpose: a deletion means "nothing is at this path now", so the engine pairs it by
+ * path. An id remembered from this process's earlier pages would be missing after a restart and could name an item
+ * that has since been replaced at the path.
  */
 internal class DropboxItems {
     private val displayByLower = ConcurrentHashMap<String, String>()
-    private val idByLower = ConcurrentHashMap<String, String>()
 
     fun toCloudItem(meta: JsonObject): CloudItem {
         val tag = meta.str(".tag") ?: "file"
@@ -24,13 +25,11 @@ internal class DropboxItems {
         val lower = meta.str("path_lower") ?: ""
         val path = displayPath(lower, name, meta.str("path_display"))
         if (tag == "deleted") {
-            val id = idByLower.remove(lower) ?: ""
             displayByLower.remove(lower)
-            return CloudItem(id, name, path, 0, isFolder = false, modified = null, created = null, hash = null, mimeType = null, deleted = true)
+            return CloudItem("", name, path, 0, isFolder = false, modified = null, created = null, hash = null, mimeType = null, deleted = true)
         }
         val id = meta.str("id") ?: ""
         if (lower.isNotEmpty()) {
-            if (id.isNotEmpty()) idByLower[lower] = id
             if (tag == "folder") displayByLower[lower] = path
         }
         return if (tag == "folder") {
