@@ -9,6 +9,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -345,8 +346,8 @@ class LocalScannerRollingCommitTest {
         db.upsertEntry(
             row("/b-touched.bin").copy(localMtime = 1L, localSize = Files.size(big), isHydrated = true, localHash = "not-the-hash"),
         )
-        var landedBeforeHashFileReturned = false
-        var returned = false
+        val landedBeforeHashFileReturned = AtomicBoolean(false)
+        val returned = AtomicBoolean(false)
         var thread: Thread? = null
         val scanner =
             LocalScanner(
@@ -360,11 +361,11 @@ class LocalScannerRollingCommitTest {
                                 thread =
                                     Thread {
                                         other.upsertEntry(row("/other.bin"))
-                                        landedBeforeHashFileReturned = !returned
+                                        landedBeforeHashFileReturned.set(!returned.get())
                                     }.also { it.start() }
                             }
                         },
-                        after = { i -> if (i == 1) returned = true },
+                        after = { i -> if (i == 1) returned.set(true) },
                     ),
                 newWriteBatch = { ScanWriteBatch(it, intervalMs = 1_000_000, yieldMs = 0) },
             )
@@ -372,7 +373,7 @@ class LocalScannerRollingCommitTest {
         scanner.scan()
         thread!!.join(10_000)
 
-        assertTrue(landedBeforeHashFileReturned, "the write lock is free while the file is hashed")
+        assertTrue(landedBeforeHashFileReturned.get(), "the write lock is free while the file is hashed")
     }
 
     // The batch a write opened earlier ages out while the walk visits files that write nothing: the next visit commits it.
@@ -388,8 +389,8 @@ class LocalScannerRollingCommitTest {
                 isHydrated = true,
             ),
         )
-        var landed = false
-        var returned = false
+        val landed = AtomicBoolean(false)
+        val returned = AtomicBoolean(false)
         var thread: Thread? = null
         val scanner =
             LocalScanner(
@@ -404,14 +405,14 @@ class LocalScannerRollingCommitTest {
                                 thread =
                                     Thread {
                                         other.upsertEntry(row("/other.bin"))
-                                        landed = !returned
+                                        landed.set(!returned.get())
                                     }.also { it.start() }
                             }
                         },
                         after = { i ->
                             if (i == 1) {
                                 Thread.sleep(300) // time for the other writer, if the chunk was committed
-                                returned = true
+                                returned.set(true)
                             }
                         },
                     ),
@@ -421,6 +422,138 @@ class LocalScannerRollingCommitTest {
         scanner.scan()
         thread!!.join(10_000)
 
-        assertTrue(landed, "the aged chunk was committed at the visit, not held until the end of the scan")
+        assertTrue(landed.get(), "the aged chunk was committed at the visit, not held until the end of the scan")
     }
+
+    @Test
+    fun `a refresh keeps the upload refusal and the name block another connection set after the snapshot`() {
+        newFiles(1)
+        val file = syncRoot.resolve("f001.txt")
+        val mine =
+            row("/f001.txt").copy(
+                localMtime = 1L,
+                localSize = Files.size(file),
+                isHydrated = true,
+                localHash = HashVerifier.computeSha256Hex(file),
+            )
+        db.upsertEntry(mine)
+        val scanner =
+            LocalScanner(
+                syncRoot,
+                db,
+                walkFileTree =
+                    orderedWalk(
+                        listOf(file),
+                        before = {
+                            other.markUploadRefused("/f001.txt", "1|${Files.size(file)}|9999999999999|refused", keepCloudBaseline = true)
+                            other.markNameBlocked("/f001.txt", "clash", "sibling")
+                        },
+                    ),
+            )
+
+        scanner.scan()
+
+        val now = assertNotNull(db.getEntry("/f001.txt"))
+        assertEquals(Files.getLastModifiedTime(file).toMillis(), now.localMtime, "the refresh itself was written")
+        assertNotNull(db.uploadRefusal("/f001.txt"), "the refusal survives the refresh")
+        assertNotNull(db.nameBlock("/f001.txt"), "the name block survives the refresh")
+    }
+
+    @Test
+    fun `a refresh of a matching row keeps the columns the scan does not decide on`() {
+        newFiles(1)
+        val file = syncRoot.resolve("f001.txt")
+        val mine =
+            row("/f001.txt").copy(
+                localMtime = 1L,
+                localSize = Files.size(file),
+                isHydrated = true,
+                localHash = HashVerifier.computeSha256Hex(file),
+            )
+        db.upsertEntry(mine)
+        val later = Instant.parse("2026-05-05T05:05:05Z")
+        val theirs = mine.copy(remoteVersion = "v2", editBase = "e2", cacheBacked = true, remoteModified = later)
+        val scanner =
+            LocalScanner(syncRoot, db, walkFileTree = orderedWalk(listOf(file), before = { other.upsertEntry(theirs) }))
+
+        scanner.scan()
+
+        val now = assertNotNull(db.getEntry("/f001.txt"))
+        assertEquals(Files.getLastModifiedTime(file).toMillis(), now.localMtime)
+        assertEquals("v2", now.remoteVersion)
+        assertEquals("e2", now.editBase)
+        assertEquals(true, now.cacheBacked)
+        assertEquals(later, now.remoteModified)
+    }
+
+    @Test
+    fun `a write is skipped when any one of the columns the scan decides on changed`() {
+        val base =
+            row("/p").copy(
+                localMtime = 5L,
+                localSize = 6L,
+                isHydrated = true,
+                localHash = "h",
+                remoteSize = 10,
+            )
+        val changes: List<Pair<String, (SyncEntry) -> SyncEntry>> =
+            listOf(
+                "remoteId" to { e -> e.copy(remoteId = "other-id") },
+                "remoteHash" to { e -> e.copy(remoteHash = "h2") },
+                "localHash" to { e -> e.copy(localHash = "h2") },
+                "localMtime" to { e -> e.copy(localMtime = 7L) },
+                "localSize" to { e -> e.copy(localSize = 8L) },
+                "isHydrated" to { e -> e.copy(isHydrated = false) },
+                "isFolder" to { e -> e.copy(isFolder = true) },
+                "remoteSize" to { e -> e.copy(remoteSize = 11) },
+            )
+        for ((index, change) in changes.withIndex()) {
+            val (field, mutate) = change
+            val path = "/p$index"
+            val mine = base.copy(path = path)
+            db.upsertEntry(mine)
+            val theirs = mutate(mine)
+            other.upsertEntry(theirs)
+            val batch = ScanWriteBatch(db, yieldMs = 0)
+            var built = false
+
+            val written = batch.upsertIfCurrent(path, mine) { built = true; it!!.copy(localMtime = 99L) }
+            batch.release()
+
+            assertFalse(written, "a changed $field skips the write")
+            assertFalse(built, "nothing is built from the stale row ($field)")
+            assertEquals(theirs.localMtime, db.getEntry(path)?.localMtime, "the other writer's row is intact ($field)")
+        }
+        val mine = base.copy(path = "/control")
+        db.upsertEntry(mine)
+        val batch = ScanWriteBatch(db, yieldMs = 0)
+        assertTrue(batch.upsertIfCurrent("/control", mine) { it!!.copy(localMtime = 99L) }, "an unchanged row is written")
+        batch.release()
+        assertEquals(99L, db.getEntry("/control")?.localMtime)
+    }
+
+    // A write by another thread of this process commits the open transaction. The re-read after it must reopen the transaction
+    // first, so the write lock is held from the re-read on: a writer in another process cannot commit between them.
+    @Test
+    fun `the transaction is reopened before the row is re-read after an in-process write closed it`() {
+        val probe = StateDatabase(dbFileOf(db), busyTimeoutMs = 100).also { it.initialize() }
+        try {
+            val batch = ScanWriteBatch(db, yieldMs = 0)
+            batch.put(pendingRow("/a1"))
+            Thread { db.upsertEntry(row("/foreign")) }.also { it.start() }.join()
+
+            val written = batch.upsertIfCurrent("/x", row("/x")) { it!! } // a snapshot that does not match: the re-read only
+
+            assertFalse(written)
+            assertFailsWith<java.sql.SQLException>("the lock is held again after the re-read") { probe.upsertEntry(row("/probe")) }
+            batch.release()
+            probe.upsertEntry(row("/probe"))
+            assertNotNull(db.getEntry("/a1"))
+            assertNotNull(db.getEntry("/foreign"))
+        } finally {
+            probe.close()
+        }
+    }
+
+    private fun dbFileOf(d: StateDatabase): Path = d.file
 }

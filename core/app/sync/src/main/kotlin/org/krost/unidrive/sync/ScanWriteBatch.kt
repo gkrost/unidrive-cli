@@ -20,6 +20,11 @@ import org.krost.unidrive.sync.model.SyncEntry
  * for a try to land in it, with a margin for timer granularity (about 16 ms on Windows) and several waiters; the guarantee is
  * still probabilistic, because SQLite offers no way to see that a writer is waiting.
  *
+ * Fairness is a matter of chance, not a guarantee: a file that is hashed frees the lock for the hash only (no pause is added per
+ * touched file, which would cost 200 ms each on a tree of many touched files), so a scan of many small touched files retakes the
+ * lock between hashes with no more than that gap; a waiter's try that falls into a gap wins, and one that does not waits for the
+ * next gap or the next chunk pause.
+ *
  * The scan reads its rows before it writes, and the lock no longer keeps others out meanwhile: [upsertIfCurrent] reads the row
  * again inside the transaction and writes only if it is still the row the scan decided on.
  *
@@ -53,16 +58,24 @@ class ScanWriteBatch(
         snapshot: SyncEntry?,
         build: (SyncEntry?) -> SyncEntry,
     ): Boolean {
-        if (!callerOwnsBatch && !open) {
-            settlePause()
+        if (!callerOwnsBatch) {
+            val opening = !open
+            if (opening) settlePause()
+            // Every time, not only the first: a write by another thread of this process commits the open transaction (see
+            // StateDatabase.beginBatch), and the re-read below must run inside a transaction, with the lock held, not in
+            // autocommit before the write reopens it. A call on an open transaction does nothing.
             db.beginBatch()
-            open = true
-            openedAt = nowMs()
-            writes = 0
+            if (opening) {
+                open = true
+                openedAt = nowMs()
+                writes = 0
+            }
         }
         val current = db.getEntry(path)
         if (!sameRow(current, snapshot)) return false
-        db.upsertEntry(build(current))
+        // A refresh of a row keeps the marks another process set on it (an upload refusal, a name block); an upsert clears them.
+        // A new row has none to keep: a new name is what settles a mark.
+        db.upsertEntry(build(current), keepMarks = snapshot != null)
         writes++
         if (open && (writes >= maxWrites || expired())) commitAndPause()
         return true
