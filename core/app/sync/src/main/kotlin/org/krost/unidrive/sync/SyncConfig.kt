@@ -353,9 +353,11 @@ data class RawGeneral(
     val version_retention_days: Int? = null,
     // Streaming reconciliation: process delta pages as they arrive instead
     // of accumulating the entire remote inventory before reconciling.
-    // Per-page resolveSlice fires safe-now actions (downloads, uploads,
-    // placeholder creates) immediately and defers deletion-bearing actions
-    // to scan-end so the detectMissingAfterFullSync guard still gates them.
+    // Per-page resolveSlice fires safe-now actions for the paths a page carries
+    // (downloads, placeholder creates, uploads paired with a remote item) immediately
+    // and defers deletion-bearing actions to scan-end so the
+    // detectMissingAfterFullSync guard still gates them. Local changes no page
+    // carries (uploads, local deletes) are planned once at scan-end.
     //
     // Three-valued: true forces on, false forces off, null leaves it to
     // the migration default — on for new installs, off for upgrades, with

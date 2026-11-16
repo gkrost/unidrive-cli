@@ -131,11 +131,11 @@ open class SyncEngine(
     private val skippedOpsLogPath: Path? = null,
     // Streaming reconciliation: when true, the engine runs the local scan
     // first, then drives provider.delta() page-by-page, reconciling each
-    // page against the full local map via Reconciler.resolveSlice. Safe-now
-    // actions (DownloadContent, Upload, Create*, explicit Move) accumulate
-    // into the action list as each page lands; deletion-bearing actions
-    // (DeleteLocal, DeleteRemote, RemoveEntry, Conflict×DELETED) buffer
-    // until scan-end so detectMissingAfterFullSync still gates them. The
+    // page's own paths via Reconciler.resolveSlice (local changes no page
+    // carries are planned once at scan-end). Safe-now actions (DownloadContent,
+    // Create*, explicit Move) accumulate into the action list as each page
+    // lands; deletion-bearing actions (DeleteLocal, DeleteRemote, RemoveEntry,
+    // Conflict×DELETED) buffer until scan-end so detectMissingAfterFullSync still gates them. The
     // executor pipeline (Pass 1 / Pass 2) remains the existing single-list
     // shape — the channel + executor coroutine wiring lands separately.
     // Default false; flipped by the CLI flag + TOML key.
@@ -489,6 +489,9 @@ open class SyncEngine(
         set(value) {
             remoteGather.fastBootstrapActive = value
         }
+
+    // The remote top-level folder names of the last streamed gather: finalizeStreaming alias-maps with the set the pages used.
+    private var streamedTopLevelNames: Set<String>? = null
 
     // archive#116: per-run cache of the remote root's direct children indexed by name,
     // populated lazily on the first top-level CreateRemoteFolder while
@@ -1319,11 +1322,9 @@ open class SyncEngine(
         // UD-901a: pass syncPath so the recovery loops respect scope and don't
         // resurrect orphans outside the user's requested subtree).
         //
-        // Streaming reconciliation already ran resolveSlice per page and
-        // accumulated through StreamingReconcileBuffer; finalize against
-        // the union of streamed safe-now + deferred-drained actions here
-        // so the recovery loops, case-collision detection, move detection,
-        // and final sort run exactly once against the full action set.
+        // Streaming reconciliation already ran resolveSlice per page; finalize against the streamed safe-now +
+        // deferred actions and the local changes no page carried, so the recovery loops, case-collision
+        // detection, move detection, and final sort run exactly once against the full action set.
         // Completeness gate: an incomplete full inventory cannot distinguish a
         // genuinely new local path from an un-enumerated remote object, and cannot
         // establish that a locally deleted path is absent remotely. Defer both
@@ -1337,7 +1338,8 @@ open class SyncEngine(
             if (streamingActions != null) {
                 reconciler.finalizeStreaming(streamingActions, remoteChanges, localChanges, runScope,
                     downloadOnly = syncDirection == SyncDirection.DOWNLOAD,
-                    enumerationComplete = enumerationComplete)
+                    enumerationComplete = enumerationComplete,
+                    stableRemoteTopLevelNames = streamedTopLevelNames)
             } else {
                 reconciler.reconcile(remoteChanges, localChanges, reporter, runScope,
                     downloadOnly = syncDirection == SyncDirection.DOWNLOAD,
@@ -2302,19 +2304,15 @@ open class SyncEngine(
         remoteGather.loadTwins()
         val buffer = StreamingReconcileBuffer()
         val safeAccumulator = mutableListOf<SyncAction>()
-        // gkrost/unidrive-cli#449: the same full localChanges map re-plans every local change on every page, and a NEW
-        // upload or a CreateRemoteFolder never reaches the executor claim below, so each page added another copy for
-        // scan-end to apply. Accumulate a planned action once; an action that differs (a fresher remote version) is kept.
+        // gkrost/unidrive-cli#449: a page can plan the same action as an earlier one (a path carried again), and a NEW
+        // upload or a CreateRemoteFolder never reaches the executor claim below. Accumulate a planned action once; an
+        // action that differs (a fresher remote version) is kept. Local changes no page carries are not planned by
+        // pages at all (#743): finalizeStreaming plans them once, so they start in Pass 2, not during the gather.
         val accumulatedOnce = HashSet<SyncAction>()
-        // resolveSlice processes the full localChanges map on every delta page,
-        // so a MODIFIED-local file absent from a given page's remote delta
-        // re-emits its Upload (and likewise a DownloadContent can recur across
-        // pages). Without a precheck the executor would launch one dispatch per
-        // recurrence — K concurrent applyUpload/applyDownload of the same path
-        // across K pages. executedPaths only fills in post-completion, so it
-        // can't dedup the in-flight sends. Claim the path here, before the send,
-        // so two pages can never both forward the same transfer. Lives for the
-        // gather only; Pass 2 dedups separately via executedPaths.
+        // A DownloadContent or an Upload can recur across pages (a path carried again). Without a precheck the
+        // executor would launch one dispatch per recurrence. executedPaths only fills in post-completion, so it
+        // can't dedup the in-flight sends. Claim the path here, before the send, so two pages can never both
+        // forward the same transfer. Lives for the gather only; Pass 2 dedups separately via executedPaths.
         val sentToExecutor =
             java.util.concurrent.ConcurrentHashMap
                 .newKeySet<String>()
@@ -2477,6 +2475,7 @@ open class SyncEngine(
                 )
                 emptySet()
             }
+        streamedTopLevelNames = stableRemoteTopLevelNames
 
         // Per-page reconciliation with 1-page rename-coalescing lookahead
         // (spec §3) on a bounded backpressure channel (spec §4).
@@ -2774,7 +2773,9 @@ open class SyncEngine(
         // every re-keyed item is planned here at its own key, with the resolution the pages get.
         val keyedBefore = HashMap(changes)
         remoteGather.placeTwins(changes, collisions, isFullSync)
-        val rekeyed = changes.filter { (key, item) -> !item.deleted && keyedBefore[key]?.id != item.id }
+        // A re-keyed tombstone too: no page carried its new key and scan-end counts that key as carried, so this is the
+        // only place a local change at it meets the item.
+        val rekeyed = changes.filter { (key, item) -> keyedBefore[key]?.id != item.id }
         if (rekeyed.isNotEmpty()) {
             safeAccumulator.removeAll { action ->
                 val planned =
