@@ -133,7 +133,7 @@ class TrackingReconciler(
         val localChanged = local.exists &&
             (localHashDiffers || (!localHashComparable && local.size != track.localSize))
         val localGone = !local.exists && track.localHash != null
-        val remoteGone = !remote.exists && track.remoteEtag != null
+        val remoteGone = !remote.exists && remoteSideEstablished(track)
 
         // Pending* recovery: a Pending* row implies "the previous pass
         // started but did not finish". We re-derive the action from live
@@ -200,6 +200,14 @@ class TrackingReconciler(
             else -> ReconcileAction.NoOp(path)
         }
     }
+
+    /**
+     * "We used to have it" for the remote side: the row carries an etag OR a remote id. A provider that reports no
+     * hash or etag (Internxt) leaves `remoteEtag` null on every synced row, so the id is what proves the remote
+     * side was established. A row with neither (a PendingUpload whose upload did not finish) is not remote-gone;
+     * it re-derives its upload instead.
+     */
+    private fun remoteSideEstablished(track: TrackingRecord): Boolean = track.remoteEtag != null || track.remoteFileId != null
 
     /**
      * Adoption helper: should the engine adopt [path] at first-scan time?
