@@ -286,6 +286,13 @@ tasks.shadowJar {
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
     archiveClassifier.set("")
+    // Restricted-method consent for every entry point that launches the jar with `java -jar` (JDK 22+;
+    // gkrost/unidrive-cli#443 finding 4): the engine's FFM downcalls and sqlite-jdbc's JNI library load
+    // warn without it, and the flag in jvm-flags.txt does not reach a bare `java -jar`, an agent or an
+    // IDE run. ALL-UNNAMED is the only allowed value and the only supported form for class-path code
+    // through JDK 27 (the spec's shelf-life note says the same); on JDK 21 the attribute is ignored.
+    // The Test/JavaExec tasks keep passing the flag: they do not launch via `-jar`.
+    manifest { attributes("Enable-Native-Access" to "ALL-UNNAMED") }
     mergeServiceFiles()
     // Shadow prints one warning per resource a transformer handles (about 70 per build): with the default
     // duplicates strategy (EXCLUDE) a second copy could be dropped before the transformer merges it. For
