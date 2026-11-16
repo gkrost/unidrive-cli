@@ -500,9 +500,10 @@ class Reconciler(
      *
      * Local changes scope: pass the FULL local map (LocalScanner runs to
      * completion before streaming starts per spec §1 decision 1). The
-     * slice's allPaths is `pageRemote.keys ∪ localChanges.keys` so a
-     * remote-arrived path can pair with a local-changed path inside the
-     * same page boundary.
+     * slice resolves only `pageRemote.keys`, each against its local state.
+     * A local change no page carries is resolved once at scan-end by
+     * [finalizeStreaming] ([resolveLocalOnly]): a page that does not mention
+     * a path says nothing about its remote state.
      */
     fun resolveSlice(
         pageRemote: Map<String, CloudItem>,
@@ -522,26 +523,38 @@ class Reconciler(
         // disk" as an applied delete: the download lands afterwards and would stay.
         landedRemoteId: (String) -> String? = { null },
     ): List<SyncAction> {
-        val pinRules = db.getPinRules()
-
         // archive#115: alias context, using the stable full-scan top-level set when
         // provided by the streaming gather. Action paths stay real-local; the
         // canonical remote path is carried out-of-band via remoteTarget.
         val alias = buildAliasContext(pageRemote, stableRemoteTopLevelNames)
-
         // Reverse-map this page's remote-delta keys (canonical) into the
         // real-local namespace so they pair with the alias-named local row.
         val pageRemoteLocal =
             if (alias.isEmpty) pageRemote
             else pageRemote.entries.associate { (k, v) -> alias.remoteToLocal(k) to v }
 
+        return resolvePaths(pageRemoteLocal, pageRemoteLocal.keys, localChanges, syncPaths, alias, downloadOnly, landedRemoteId)
+    }
+
+    // The paths the local scan changed that no delta page carried, resolved once against "remote unchanged" (as the
+    // buffered [reconcile] does) after every page is in, so a path a later page carries is never planned as local-only.
+    private fun resolveLocalOnly(fullRemote: Map<String, CloudItem>, fullLocal: Map<String, ChangeState>, syncPaths: List<String>, downloadOnly: Boolean): List<SyncAction> {
+        val alias = buildAliasContext(fullRemote)
+        val carried = fullRemote.keys.mapTo(HashSet()) { alias.remoteToLocal(it) }
+        val localOnly = fullLocal.filterKeys { it !in carried }
+        if (localOnly.isEmpty()) return emptyList()
+        return resolvePaths(emptyMap(), localOnly.keys, localOnly, syncPaths, alias, downloadOnly) { null }
+    }
+
+    private fun resolvePaths(
+        pageRemoteLocal: Map<String, CloudItem>, paths: Set<String>, localChanges: Map<String, ChangeState>,
+        syncPaths: List<String>, alias: AliasContext, downloadOnly: Boolean, landedRemoteId: (String) -> String?,
+    ): List<SyncAction> {
+        val pinRules = db.getPinRules()
         val actions = mutableListOf<SyncAction>()
         // The row is read before the ignore filter: a directory-only rule needs the folder facet, and a
         // tombstone on this page must not decide that before the row (or a local directory) is consulted.
-        val candidates =
-            (pageRemoteLocal.keys + localChanges.keys)
-                .filter { path -> excludePatterns.none { pattern -> matchesGlob(path, pattern) } }
-                .filter { SyncScope.contains(it, syncPaths) }
+        val candidates = paths.filter { path -> excludePatterns.none { matchesGlob(path, it) } && SyncScope.contains(path, syncPaths) }
         // archive#316: the loop below looks up exactly the paths this slice asks about, so read only those rows. The batch
         // lookup can return an NFC row under an NFD caller key when both spellings occur in this slice; key by the
         // stored spelling, as the old whole-table map did, and keep only paths this slice asks about.
@@ -616,7 +629,7 @@ class Reconciler(
         val caseCollisionKeys = entriesByCaseKey.filterValues { entries -> entries.size > 1 }.keys
         val entryByRemoteId = allDbEntries.mapNotNull { e -> e.remoteId?.let { it to e } }.toMap()
 
-        val actions = streamedActions.toMutableList()
+        val actions = (streamedActions + resolveLocalOnly(fullRemote, fullLocal, syncPaths, downloadOnly)).distinct().toMutableList()
         val coveredPaths = actions.mapTo(mutableSetOf()) { it.path }
 
         // archive#115: alias context. Action paths stay real-local; the canonical

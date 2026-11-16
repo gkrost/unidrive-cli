@@ -142,8 +142,8 @@ class ReconcilerSliceCostTest {
         assertEquals(legacyPages, before.lookups)
         assertEquals(tableRows.toLong() * legacyPages, before.rows, "the old path reads the whole table on each slice")
         assertEquals(pages, after.lookups, "one lookup per slice")
-        // Each slice reads its 200 page rows plus the 40 local-modified rows; the NEW paths have no row.
-        assertEquals((pages * (pageSize + 40)).toLong(), after.rows)
+        // Each slice reads its 200 page rows only: the local changes no page carries are read once, at scan-end (#743).
+        assertEquals((pages * pageSize).toLong(), after.rows)
         assertTrue(after.rows < tableRows * 0.2, "all ${pages} pages read less than one table's worth: ${after.rows}")
         assertEquals(legacyActions, currentActions.take(legacyPages), "the first pages plan the same actions")
     }
