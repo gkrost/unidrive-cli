@@ -3241,7 +3241,7 @@ open class SyncEngine(
         remote: CloudItem,
     ): String? =
         if (isLocalFileWithoutBaseline(db.getEntry(path), localPath, remote) {
-                offLoop { HashVerifier.matches(localPath, remote.hash, provider.hashAlgorithm()) }
+                offLoop { HashVerifier.compare(localPath, remote.hash, provider.hashAlgorithm()) }
             }
         ) {
             keepAppearedFileAside(path, localPath, "already existed locally when its download started")

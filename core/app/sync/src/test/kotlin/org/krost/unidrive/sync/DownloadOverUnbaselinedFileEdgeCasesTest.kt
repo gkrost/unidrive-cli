@@ -251,6 +251,89 @@ class DownloadOverUnbaselinedFileEdgeCasesTest {
             assertKeptAsConflictCopy(local, sameLengthOtherBytes)
         }
 
+    // ---- the documented trade-off: no comparable hash, a pending-download row, the stamp of a placed download ----
+
+    private fun withStamp(
+        bytes: ByteArray,
+        mtime: Instant = remoteModified,
+    ): Path {
+        val local = syncRoot.resolve("notes.md")
+        Files.write(local, bytes)
+        Files.setLastModifiedTime(local, FileTime.from(mtime))
+        return local
+    }
+
+    @Test
+    fun `without a hash the stamp of a placed download on a pending row is replaced without a copy`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val local = withStamp(sameLengthOtherBytes)
+            db.upsertEntry(unhydratedRow())
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertReplacedWithoutCopy(local)
+        }
+
+    @Test
+    fun `without a hash the right size at another mtime is kept`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val local = withStamp(sameLengthOtherBytes, Instant.parse("2026-03-29T09:00:00Z"))
+            db.upsertEntry(unhydratedRow())
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, sameLengthOtherBytes)
+        }
+
+    @Test
+    fun `without a hash the right mtime at another size is kept`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val longer = sameLengthOtherBytes + "more".toByteArray()
+            val local = withStamp(longer)
+            db.upsertEntry(unhydratedRow())
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, longer)
+        }
+
+    @Test
+    fun `without a hash the stamp does not apply to a hydrated row with null stats`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val local = withStamp(sameLengthOtherBytes)
+            db.upsertEntry(unhydratedRow(hydrated = true))
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, sameLengthOtherBytes)
+        }
+
+    @Test
+    fun `without a hash the stamp does not apply when there is no row`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val local = withStamp(sameLengthOtherBytes)
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, sameLengthOtherBytes)
+        }
+
+    @Test
+    fun `a differing hash keeps the file although size and mtime match`() =
+        runTest {
+            val local = withStamp(sameLengthOtherBytes)
+            db.upsertEntry(unhydratedRow())
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, sameLengthOtherBytes)
+        }
+
     @Test
     fun `a hash that cannot be computed keeps the file`() =
         runTest {

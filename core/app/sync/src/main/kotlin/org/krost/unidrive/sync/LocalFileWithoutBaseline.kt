@@ -14,21 +14,25 @@ import java.nio.file.Path
 //  - the stub the engine itself creates for an unhydrated row: a sparse zero file of exactly the row's remoteSize
 //    (SparseProbe). Stubs only exist with a row, so an all-zero file with no row, or of another size, is the
 //    user's (a preallocated file) and is kept;
-//  - a file whose content is proven equal to the remote's by [provenSame] (the provider's hash): replacing it
-//    changes no bytes. Size and mtime alone prove nothing (cp -p, unzip, touch -r), and with no comparable hash,
-//    or a hash that cannot be computed, the file is kept.
+//  - a file of the remote's size whose content the provider's hash ([compareContent]) proves equal: replacing it
+//    changes no bytes. When a hash is comparable it alone decides: a different hash keeps the file whatever its
+//    size and mtime, and a hash that cannot be computed proves nothing, so the file is kept;
+//  - DELIBERATE TRADE-OFF, only when no hash is comparable (provider without one, S3 multipart ETag): a file at
+//    the path of an engine-created pending-download row (unhydrated, null localMtime and localSize) whose size is
+//    the row's and the remote's remoteSize and whose mtime is the row's remoteModified, to the millisecond. The
+//    engine stamps a placed download with exactly that, so a download placed before a kill and before its row was
+//    written (TransferOffLoopTest) must not turn into a conflict copy and an upload. The hole: a user file made
+//    with cp -p, unzip or touch -r at such a path carries the same size and mtime with other bytes, and is replaced
+//    with no copy. It is restricted to pending-download rows; with no row, a hydrated row or recorded stats the
+//    rule does not apply.
 // A download never writes the destination in place (it stages beside it and moves), so a partial hydration cannot be
 // found here under the real name; only a stub or a finished copy can.
-//
-// Known limit: a download that is cancelled or fails after the file was placed but before its row was committed
-// leaves the engine's own complete copy at a path whose row has no baseline. On a provider with no comparable hash
-// (Internxt, S3 multipart ETags) the retry cannot prove it is the engine's and keeps one spurious conflict copy,
-// which then uploads. The direction is safe (no data lost), the window narrow; it is not widened here.
 internal suspend fun isLocalFileWithoutBaseline(
     row: SyncEntry?,
     localPath: Path,
     remote: CloudItem,
-    provenSame: suspend () -> Boolean,
+    // true: the bytes equal the remote's; false: they differ; null: nothing comparable (no hash).
+    compareContent: suspend () -> Boolean?,
 ): Boolean {
     if (row?.localMtime != null && row.localSize != null) return false
     if (!Files.isRegularFile(localPath)) return false
@@ -43,11 +47,31 @@ internal suspend fun isLocalFileWithoutBaseline(
     if (size == 0L || stub) return false
     // A hash that cannot be computed proves nothing: the file is kept.
     val same =
-        size == remote.size &&
+        if (size != remote.size) {
+            false
+        } else {
             try {
-                provenSame()
+                compareContent() ?: return !stampedByThisEngine(row, localPath, size, remote)
             } catch (_: java.io.IOException) {
                 false
             }
+        }
     return !same
+}
+
+// The documented trade-off above: an engine-created pending-download row and a file with the stamp of its placement.
+private fun stampedByThisEngine(
+    row: SyncEntry?,
+    localPath: Path,
+    size: Long,
+    remote: CloudItem,
+): Boolean {
+    val stamp = row?.remoteModified ?: return false
+    return !row.isHydrated && row.localMtime == null && row.localSize == null &&
+        size == row.remoteSize && size == remote.size &&
+        try {
+            Files.getLastModifiedTime(localPath).toMillis() == stamp.toEpochMilli()
+        } catch (_: java.io.IOException) {
+            false
+        }
 }
