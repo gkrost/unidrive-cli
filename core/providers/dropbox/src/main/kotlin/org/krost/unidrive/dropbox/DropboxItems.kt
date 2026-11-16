@@ -13,23 +13,38 @@ import java.util.concurrent.ConcurrentHashMap
  * `path_display` is only guaranteed to carry the right case in its last component. So the display path of an item is
  * built from its parent's (when this process has seen the parent) plus its own `name`. A deleted entry has no id and
  * is reported with an empty one on purpose: a deletion means "nothing is at this path now", so the engine pairs it by
- * path. An id remembered from this process's earlier pages would be missing after a restart and could name an item
- * that has since been replaced at the path.
+ * path. An id remembered from an earlier poll, or from a probe, would be missing after a restart and could name an item
+ * that has since been replaced at the path. The one exception is the walk: a delta walk (a list_folder call and the
+ * continues that chain its pages) that creates an item and then deletes the same path reports one item that came and
+ * went, so that tombstone carries the id of the entry seen earlier in the same walk and the engine reads the two as
+ * one item (the last one wins) instead of a gone file next to a live one.
  */
 internal class DropboxItems {
     private val displayByLower = ConcurrentHashMap<String, String>()
 
-    fun toCloudItem(meta: JsonObject): CloudItem {
+    // path_lower -> id of the live entry a delta walk delivered; cleared when a walk begins. Only delta pages feed it.
+    private val walkIds = ConcurrentHashMap<String, String>()
+
+    /** A new delta walk begins: the ids of the last one say nothing about its deletions. */
+    fun beginWalk() = walkIds.clear()
+
+    /** [inWalk]: a delta page's entry, whose id and deletion go through the walk's map; a probe or a write never does. */
+    fun toCloudItem(
+        meta: JsonObject,
+        inWalk: Boolean = false,
+    ): CloudItem {
         val tag = meta.str(".tag") ?: "file"
         val name = meta.str("name") ?: ""
         val lower = meta.str("path_lower") ?: ""
         val path = displayPath(lower, name, meta.str("path_display"))
         if (tag == "deleted") {
             displayByLower.remove(lower)
-            return CloudItem("", name, path, 0, isFolder = false, modified = null, created = null, hash = null, mimeType = null, deleted = true)
+            val seen = if (inWalk) walkIds.remove(lower) else null
+            return CloudItem(seen ?: "", name, path, 0, isFolder = false, modified = null, created = null, hash = null, mimeType = null, deleted = true)
         }
         val id = meta.str("id") ?: ""
         if (lower.isNotEmpty()) {
+            if (inWalk && id.isNotEmpty()) walkIds[lower] = id
             if (tag == "folder") displayByLower[lower] = path
         }
         return if (tag == "folder") {

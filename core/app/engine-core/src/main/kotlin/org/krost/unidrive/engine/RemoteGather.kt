@@ -1322,7 +1322,7 @@ class RemoteGather(
      * other (the guard for an unsent edit, the cache eviction, the bulk-disappearance guard). A row whose item the
      * delta delivers alive elsewhere (moved out of the folder) is left to the merge. A full listing needs none: the
      * absence sweep tombstones every row it does not see. A tombstone matches the tracked folder by id; one without an id
-     * (Dropbox) is a delete of the path. The mount's enumeration only: the mirror plans a local delete of the folder.
+     * is a delete of the path (an id-less folder tombstone with isFolder=true; Dropbox's carries no kind, so its rows wait for a full listing).
      */
     fun expandDeletedFolders(changes: MutableMap<String, CloudItem>) {
         if (cursorState.lastGatherFull.strict == true) return

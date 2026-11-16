@@ -127,8 +127,9 @@ class Reconciler(
     // set is rebuilt by every scan. The default blocks nothing. A property, as [isIgnored].
     internal var isBlocked: (path: String) -> Boolean = { _ -> false }
 
-    // archive#309: the profile's case policy (NameKey.foldsCase): true when the provider or the local file system folds case
-    // (two paths differing only in case are one name); false only for a case-sensitive pair. A property, as [isIgnored].
+    // archive#309: the profile's case policy (NameKey.foldsCase): true when the provider or the local file system folds case,
+    // so two paths that differ only in case are one name and a second one is refused; false only for a case-sensitive
+    // provider on a case-sensitive file system. The default keeps the guards on. A property, as [isIgnored].
     internal var foldCase: Boolean = true
     internal val ignoredTombstones = IgnoredTombstones() // #743: the tombstones ignored for their id, drained by the engine
 

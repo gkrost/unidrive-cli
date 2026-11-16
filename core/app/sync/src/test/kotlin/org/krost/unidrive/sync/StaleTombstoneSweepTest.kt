@@ -1,12 +1,7 @@
 package org.krost.unidrive.sync
 
 import kotlinx.coroutines.test.runTest
-import org.krost.unidrive.Capability
 import org.krost.unidrive.CloudItem
-import org.krost.unidrive.CloudProvider
-import org.krost.unidrive.DeltaPage
-import org.krost.unidrive.QuotaInfo
-import org.krost.unidrive.ScanContext
 import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.sync.model.ChangeState
 import org.krost.unidrive.sync.model.ConflictPolicy
@@ -19,19 +14,24 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
  * gkrost/unidrive-cli#743: a tombstone the reconcile ignores for its id is recorded (the same set in both modes) and
- * asks for one full listing through the recovery latch, within bounds: never for a provider whose delta is a full listing,
- * never for a twin's tombstone (it meets its own row), never twice for the same tombstone.
+ * asks for one full listing through the recovery latch, within bounds: only a complete, incremental, real pass asks
+ * (never a full-listing pass, which covers the providers whose delta is a full listing, never an incomplete pass or a
+ * dry-run), never for a twin's tombstone (it meets its own row), never twice for the same tombstone, and the latch is
+ * written before the record that the tombstone asked.
  */
 class StaleTombstoneSweepTest {
     private lateinit var db: StateDatabase
     private lateinit var syncRoot: Path
     private val t0 = Instant.parse("2026-03-28T12:00:00Z")
     private val path = "/a.txt"
+    private val log = LoggerFactory.getLogger(StaleTombstoneSweepTest::class.java)
 
     @BeforeTest
     fun setUp() {
@@ -62,11 +62,14 @@ class StaleTombstoneSweepTest {
 
     private fun tombstone(id: String) = CloudItem(id, "a.txt", path, 100, false, t0, null, "h", null, deleted = true)
 
-    private fun latch() = db.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)
+    private fun latch(of: StateDatabase = db) = of.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)
 
     // ---- recording: both modes see the same set ----
 
-    private fun recorded(streaming: Boolean, item: CloudItem): Map<String, String> {
+    private fun recorded(
+        streaming: Boolean,
+        item: CloudItem,
+    ): Map<String, Set<String>> {
         val reconciler = Reconciler(db, syncRoot, ConflictPolicy.KEEP_BOTH)
         val page = mapOf(path to item)
         val local = mapOf(path to ChangeState.UNCHANGED)
@@ -85,7 +88,7 @@ class StaleTombstoneSweepTest {
         db.upsertEntry(row("id-new"))
         val buffered = recorded(streaming = false, tombstone("id-old"))
         val streamed = recorded(streaming = true, tombstone("id-old"))
-        assertEquals(mapOf(path to "id-old"), buffered)
+        assertEquals(mapOf(path to setOf("id-old")), buffered)
         assertEquals(buffered, streamed)
     }
 
@@ -101,15 +104,24 @@ class StaleTombstoneSweepTest {
         assertEquals(emptyMap(), recorded(streaming = true, tombstone("id-x")), "an empty row id pairs by path (streaming)")
     }
 
+    @Test
+    fun `two ignored tombstones at one path are both kept`() {
+        val ignored = IgnoredTombstones()
+        assertTrue(ignored.ignores(path, tombstone("id-stale"), row("id-row")))
+        assertTrue(ignored.ignores(path, tombstone("id-twin"), row("id-row")))
+        assertEquals(mapOf(path to setOf("id-stale", "id-twin")), ignored.drain())
+        assertEquals(emptyMap(), ignored.drain(), "drained once")
+    }
+
     // ---- the scheduling decision ----
 
-    private fun sweep() = StaleTombstoneSweep(db, LoggerFactory.getLogger(StaleTombstoneSweepTest::class.java))
+    private fun sweep(write: ((String, String) -> Unit)? = null) = if (write == null) StaleTombstoneSweep(db, log) else StaleTombstoneSweep(db, log, write)
 
     @Test
     fun `an ignored tombstone of an untracked item sets the latch on an incremental pass only`() {
-        assertFalse(sweep().schedule(mapOf(path to "id-n"), incrementalPass = false), "a full or incomplete pass asks nothing")
+        assertFalse(sweep().schedule(mapOf(path to setOf("id-n")), incrementalPass = false), "a full or incomplete pass asks nothing")
         assertFalse(latch() == "true")
-        assertTrue(sweep().schedule(mapOf(path to "id-n"), incrementalPass = true))
+        assertTrue(sweep().schedule(mapOf(path to setOf("id-n")), incrementalPass = true))
         assertEquals("true", latch())
     }
 
@@ -117,8 +129,15 @@ class StaleTombstoneSweepTest {
     fun `a tombstone of an item a row tracks (a twin re-keyed at scan end) asks nothing`() {
         db.upsertEntry(row("id-winner"))
         db.upsertEntry(row("id-twin").copy(path = "/a (2).txt"))
-        assertFalse(sweep().schedule(mapOf(path to "id-twin"), incrementalPass = true))
+        assertFalse(sweep().schedule(mapOf(path to setOf("id-twin")), incrementalPass = true))
         assertFalse(latch() == "true")
+    }
+
+    @Test
+    fun `a stale tombstone is not lost behind a twin's at the same path`() {
+        db.upsertEntry(row("id-winner"))
+        db.upsertEntry(row("id-twin").copy(path = "/a (2).txt"))
+        assertTrue(sweep().schedule(mapOf(path to setOf("id-twin", "id-ghost")), incrementalPass = true), "the ghost asks although the twin's id is tracked")
     }
 
     @Test
@@ -126,173 +145,165 @@ class StaleTombstoneSweepTest {
         var asked = 0
         repeat(5) {
             db.setSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY, "false") // a trusted listing ended the recovery
-            if (sweep().schedule(mapOf(path to "id-n"), incrementalPass = true)) asked++
+            if (sweep().schedule(mapOf(path to setOf("id-n")), incrementalPass = true)) asked++
         }
         assertEquals(1, asked)
         db.setSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY, "false")
-        assertTrue(sweep().schedule(mapOf(path to "id-m"), incrementalPass = true), "a tombstone of another item asks anew")
+        assertTrue(sweep().schedule(mapOf(path to setOf("id-m")), incrementalPass = true), "a tombstone of another item asks anew")
+    }
+
+    @Test
+    fun `a failure between the two writes leaves the latch set and the tombstone free to ask again`() {
+        val writes = mutableListOf<String>()
+        var calls = 0
+        val crashing: (String, String) -> Unit = { key, value ->
+            if (++calls == 2) error("crash before the second write")
+            writes += key
+            db.setSyncState(key, value)
+        }
+        assertFailsWith<IllegalStateException> { sweep(crashing).schedule(mapOf(path to setOf("id-n")), incrementalPass = true) }
+        assertEquals(listOf(RemoteGather.INCOMPLETE_ENUMERATION_KEY), writes, "the latch is the first write")
+        assertEquals("true", latch())
+        assertNull(db.getSyncState(StaleTombstoneSweep.KEY), "the tombstone is not marked as asked")
+        // the recovery that the latch started ended, and the same tombstone shows up again: it asks again
+        db.setSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY, "false")
+        assertTrue(sweep().schedule(mapOf(path to setOf("id-n")), incrementalPass = true))
+        assertEquals("true", latch())
     }
 
     // ---- through the engine ----
 
-    private class Outcome(val fileExists: Boolean, val fullListings: Int, val latchAfterIgnore: String?, val latchAtEnd: String?)
+    private inner class World(
+        val streaming: Boolean,
+        fullListing: Boolean = false,
+    ) {
+        val root: Path = Files.createTempDirectory("ud-sweep-root")
+        val dbPath: Path = Files.createTempDirectory("ud-sweep-edb").resolve("state.db")
+        val engineDb = StateDatabase(dbPath).also { it.initialize() }
+        val provider = ListingFeedProvider(fullListing)
+        private val cache = Files.createTempDirectory("ud-sweep-cache")
 
-    private fun engineRun(
-        streaming: Boolean,
-        fullListingProvider: Boolean,
-        redeliver: Boolean,
-        passes: Int,
-    ): Outcome {
-        val root = Files.createTempDirectory("ud-sweep-root")
-        val engineDb = StateDatabase(Files.createTempDirectory("ud-sweep-edb").resolve("state.db"))
-        engineDb.initialize()
-        try {
-            val provider = FeedProvider(fullListingProvider)
-            val engine =
-                SyncEngine(
-                    provider = provider,
-                    db = engineDb,
-                    syncRoot = root,
-                    reporter = DuplicateTwinNamesTest.CountingReporter(),
-                    cacheRoot = Files.createTempDirectory("ud-sweep-cache"),
-                    cacheKey = "stale-tombstone-sweep-test",
-                    streamingReconciliation = streaming,
-                )
+        fun engine(on: StateDatabase = engineDb) =
+            SyncEngine(
+                provider = provider,
+                db = on,
+                syncRoot = root,
+                reporter = DuplicateTwinNamesTest.CountingReporter(),
+                cacheRoot = cache,
+                cacheKey = "stale-tombstone-sweep-test",
+                streamingReconciliation = streaming,
+            )
+
+        private val real = engine()
+
+        fun pass(
+            dryRun: Boolean = false,
+            skipRemoteGather: Boolean = false,
+        ) = runTest { real.syncOnce(dryRun = dryRun, skipRemoteGather = skipRemoteGather) }
+
+        /** O is tracked and on disk; then the feed carries the tombstone of N only and nothing is live. */
+        fun trackOThenDeliverTombstoneOfN() {
             provider.live = listOf(item("id-O"))
-            runTest { engine.syncOnce() }
+            pass()
             provider.live = emptyList()
             provider.feed = listOf(item("id-N").copy(deleted = true))
-            runTest { engine.syncOnce() }
-            val afterIgnore = engineDb.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)
-            if (!redeliver) provider.feed = emptyList()
-            repeat(passes) { runTest { engine.syncOnce() } }
-            return Outcome(
-                Files.exists(root.resolve("a.txt")),
-                provider.fullListings,
-                afterIgnore,
-                engineDb.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY),
-            )
+        }
+
+        fun latch() = latch(engineDb)
+
+        fun asked() = engineDb.getSyncState(StaleTombstoneSweep.KEY)
+
+        fun close() = engineDb.close()
+    }
+
+    private fun item(id: String) = CloudItem(id, "a.txt", path, 7, false, Instant.parse("2026-01-02T00:00:00Z"), Instant.parse("2026-01-01T00:00:00Z"), null, null)
+
+    private fun world(
+        streaming: Boolean,
+        fullListing: Boolean = false,
+        body: World.() -> Unit,
+    ) {
+        val w = World(streaming, fullListing)
+        try {
+            w.body()
         } finally {
-            engineDb.close()
+            w.close()
         }
     }
 
-    @Test
-    fun `buffered - the ghost is swept once and a redelivered tombstone costs no second listing`() {
-        val outcome = engineRun(streaming = false, fullListingProvider = false, redeliver = true, passes = 4)
-        assertEquals("true", outcome.latchAfterIgnore)
-        assertEquals(false, outcome.fileExists)
-        assertEquals(2, outcome.fullListings, "the first sync and the one sweep, nothing more")
-        assertFalse(outcome.latchAtEnd == "true")
-    }
-
-    @Test
-    fun `streaming - the ghost is swept once and a redelivered tombstone costs no second listing`() {
-        val outcome = engineRun(streaming = true, fullListingProvider = false, redeliver = true, passes = 4)
-        assertEquals("true", outcome.latchAfterIgnore)
-        assertEquals(false, outcome.fileExists)
-        assertEquals(2, outcome.fullListings, "the first sync and the one sweep, nothing more")
-        assertFalse(outcome.latchAtEnd == "true")
-    }
-
-    @Test
-    fun `a provider whose delta is a full listing never gets the latch - buffered`() {
-        val outcome = engineRun(streaming = false, fullListingProvider = true, redeliver = false, passes = 1)
-        assertFalse(outcome.latchAfterIgnore == "true", "latch=${outcome.latchAfterIgnore}")
-    }
-
-    @Test
-    fun `a provider whose delta is a full listing never gets the latch - streaming`() {
-        val outcome = engineRun(streaming = true, fullListingProvider = true, redeliver = false, passes = 1)
-        assertFalse(outcome.latchAfterIgnore == "true", "latch=${outcome.latchAfterIgnore}")
-    }
-
-    private fun item(id: String) =
-        CloudItem(
-            id = id,
-            name = "a.txt",
-            path = path,
-            size = 7,
-            isFolder = false,
-            modified = Instant.parse("2026-01-02T00:00:00Z"),
-            created = Instant.parse("2026-01-01T00:00:00Z"),
-            hash = null,
-            mimeType = null,
-        )
-
-    /** A null cursor lists [live]; another cursor returns [feed]. A full-listing provider returns [live] plus [feed] every time. */
-    private class FeedProvider(private val fullListing: Boolean) : CloudProvider {
-        override val id = "feed-fake"
-        override val displayName = "Feed Fake"
-        override var isAuthenticated = true
-        override val deltaIsFullListing: Boolean get() = fullListing
-
-        override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
-
-        var live: List<CloudItem> = emptyList()
-        var feed: List<CloudItem> = emptyList()
-        var fullListings = 0
-
-        override suspend fun authenticate() {}
-
-        override suspend fun listChildren(path: String) = live
-
-        override suspend fun getMetadata(path: String): CloudItem = live.lastOrNull { it.path == path } ?: throw org.krost.unidrive.ProviderException("Item not found: $path", httpStatus = 404)
-
-        override suspend fun downloadById(
-            remoteId: String,
-            remotePath: String,
-            destination: Path,
-        ): Long = download(remotePath, destination)
-
-        override suspend fun download(
-            remotePath: String,
-            destination: Path,
-        ): Long {
-            Files.createDirectories(destination.parent)
-            Files.write(destination, ByteArray(7))
-            return 7
+    private fun ghostIsSweptOnce(streaming: Boolean) =
+        world(streaming) {
+            trackOThenDeliverTombstoneOfN()
+            pass()
+            assertEquals("true", latch(), "the ignored tombstone asked for the sweep (streaming=$streaming)")
+            repeat(4) { pass() } // the feed delivers the same tombstone every pass
+            assertFalse(Files.exists(root.resolve("a.txt")), "the file of the vanished item is gone (streaming=$streaming)")
+            assertEquals(2, provider.fullListings, "the first sync and the one sweep, nothing more (streaming=$streaming)")
+            assertFalse(latch() == "true", "a trusted listing ended the recovery (streaming=$streaming)")
         }
 
-        override suspend fun deleteById(
-            remoteId: String,
-            remotePath: String,
-        ) {}
+    @Test
+    fun `buffered - the ghost is swept once and a redelivered tombstone costs no second listing`() = ghostIsSweptOnce(streaming = false)
 
-        override suspend fun delete(
-            remotePath: String,
-            ifMatchETag: String?,
-        ) {}
+    @Test
+    fun `streaming - the ghost is swept once and a redelivered tombstone costs no second listing`() = ghostIsSweptOnce(streaming = true)
 
-        override suspend fun upload(
-            localPath: Path,
-            remotePath: String,
-            existingRemoteId: String?,
-            ifMatchETag: String?,
-            onProgress: ((Long, Long) -> Unit)?,
-        ): CloudItem = error("not expected in this test")
+    private fun fullListingProviderGetsNoLatch(streaming: Boolean) =
+        world(streaming, fullListing = true) {
+            trackOThenDeliverTombstoneOfN()
+            pass()
+            assertFalse(latch() == "true", "a provider whose delta is a full listing lists the drive every poll: no latch (streaming=$streaming)")
+            assertNull(asked(), "and nothing is recorded as asked (streaming=$streaming)")
+        }
 
-        override suspend fun createFolder(path: String): CloudItem = error("not expected in this test")
+    @Test
+    fun `a provider whose delta is a full listing never gets the latch - buffered`() = fullListingProviderGetsNoLatch(streaming = false)
 
-        override suspend fun move(
-            fromPath: String,
-            toPath: String,
-        ): CloudItem = error("not expected in this test")
+    @Test
+    fun `a provider whose delta is a full listing never gets the latch - streaming`() = fullListingProviderGetsNoLatch(streaming = true)
 
-        override suspend fun delta(
-            cursor: String?,
-            onPageProgress: ((itemsSoFar: Int) -> Unit)?,
-            scanContext: ScanContext?,
-        ): DeltaPage {
-            if (fullListing) return DeltaPage(items = live + feed, cursor = "c-full", hasMore = false, complete = true)
-            return if (cursor == null) {
-                fullListings++
-                DeltaPage(items = live, cursor = "c-full", hasMore = false, complete = true)
-            } else {
-                DeltaPage(items = feed, cursor = "c-inc", hasMore = false, complete = true)
+    private fun dryRunChangesNothing(streaming: Boolean) =
+        world(streaming) {
+            trackOThenDeliverTombstoneOfN()
+            val snapshot = StateDatabase.snapshotOf(dbPath)
+            try {
+                runTest { engine(snapshot).syncOnce(dryRun = true) }
+                assertFalse(latch(snapshot) == "true", "a dry-run sets no latch (streaming=$streaming)")
+                assertNull(snapshot.getSyncState(StaleTombstoneSweep.KEY), "and records no tombstone as asked (streaming=$streaming)")
+            } finally {
+                snapshot.close()
             }
+            assertFalse(latch() == "true", "the real state is untouched (streaming=$streaming)")
+            assertNull(asked(), "the real state is untouched (streaming=$streaming)")
         }
 
-        override suspend fun quota(): QuotaInfo = QuotaInfo(total = 0, used = 0, remaining = 0)
-    }
+    @Test
+    fun `a dry-run asks for no sweep - buffered`() = dryRunChangesNothing(streaming = false)
+
+    @Test
+    fun `a dry-run asks for no sweep - streaming`() = dryRunChangesNothing(streaming = true)
+
+    private fun incompletePassAsksNothing(streaming: Boolean) =
+        world(streaming) {
+            trackOThenDeliverTombstoneOfN()
+            provider.complete = false
+            pass()
+            assertEquals("true", latch(), "the incomplete pass set the latch itself (streaming=$streaming)")
+            assertNull(asked(), "but the ignored tombstone did not ask: nothing is recorded (streaming=$streaming)")
+        }
+
+    @Test
+    fun `an incomplete pass records no ask - buffered`() = incompletePassAsksNothing(streaming = false)
+
+    @Test
+    fun `an incomplete pass records no ask - streaming`() = incompletePassAsksNothing(streaming = true)
+
+    @Test
+    fun `apply mode, which gathers nothing, asks nothing`() =
+        world(streaming = false) {
+            trackOThenDeliverTombstoneOfN()
+            pass(skipRemoteGather = true)
+            assertFalse(latch() == "true")
+            assertNull(asked())
+        }
 }

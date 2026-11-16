@@ -18,9 +18,12 @@ import kotlin.test.assertTrue
  * tracked folder by id, so that the tombstone of another item that once held the path does not reap the rows of the
  * folder now there. A provider whose deleted entry names no item (Dropbox: the API gives the path alone, and the engine
  * pairs an id-less tombstone with the row by path, gkrost/unidrive-cli#743) sends an EMPTY id: its folder tombstone is a
- * delete of the path and must expand like the tombstone of the folder's own id. Until it does, a Dropbox provider cannot
- * stop inventing tombstone ids, and a restarted daemon (which has none to invent) leaves the rows below a deleted
- * folder alive.
+ * delete of the path and must expand like the tombstone of the folder's own id.
+ *
+ * Scope: these tests build the tombstone by hand with isFolder=true. The expansion only looks at folder tombstones, and a
+ * real Dropbox deleted entry carries no kind (isFolder=false), so it does not reach this rule: the rows below a deleted
+ * Dropbox folder still wait for a full listing, as before. The rule matters for a provider that sends id-less folder
+ * tombstones with isFolder=true.
  */
 class RemoteGatherFolderTombstoneIdTest {
     private lateinit var tmp: Path

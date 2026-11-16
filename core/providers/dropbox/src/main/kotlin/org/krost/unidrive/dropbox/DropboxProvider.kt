@@ -583,7 +583,10 @@ class DropboxProvider(
         scanContext: ScanContext?,
     ): DeltaPage {
         ready()
-        if (cursor == null || !walkHasMore) pageProgress = 0
+        if (cursor == null || !walkHasMore) {
+            pageProgress = 0
+            items.beginWalk()
+        }
         val fullListing = cursor == null || cursor in fullListingCursors
         val page =
             try {
@@ -598,7 +601,7 @@ class DropboxProvider(
                 }
                 throw e
             }
-        val entries = page["entries"]?.jsonArray?.map { items.toCloudItem(it.jsonObject) }.orEmpty()
+        val entries = page["entries"]?.jsonArray?.map { items.toCloudItem(it.jsonObject, inWalk = true) }.orEmpty()
         val visible = if (fullListing) entries.filterNot { it.deleted } else entries
         val next = page.cursor()
         val hasMore = page["has_more"]?.jsonPrimitive?.booleanOrNull == true

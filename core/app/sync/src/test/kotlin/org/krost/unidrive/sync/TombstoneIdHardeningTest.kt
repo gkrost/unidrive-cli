@@ -1,12 +1,7 @@
 package org.krost.unidrive.sync
 
 import kotlinx.coroutines.test.runTest
-import org.krost.unidrive.Capability
 import org.krost.unidrive.CloudItem
-import org.krost.unidrive.CloudProvider
-import org.krost.unidrive.DeltaPage
-import org.krost.unidrive.QuotaInfo
-import org.krost.unidrive.ScanContext
 import org.krost.unidrive.sync.model.ChangeState
 import org.krost.unidrive.sync.model.ConflictPolicy
 import org.krost.unidrive.sync.model.SyncAction
@@ -18,7 +13,6 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -161,7 +155,7 @@ class TombstoneIdHardeningTest {
         val engineDb = StateDatabase(Files.createTempDirectory("ud-tomb-hardening-edb").resolve("state.db"))
         engineDb.initialize()
         try {
-            val provider = ListingFakeProvider()
+            val provider = ListingFeedProvider()
             val engine =
                 SyncEngine(
                     provider = provider,
@@ -179,9 +173,9 @@ class TombstoneIdHardeningTest {
 
             // the provider replaced O and deleted the replacement; the feed delivers only the tombstone of the replacement
             provider.live = liveAfter
-            provider.changes = listOf(item(tombstoneId, size = 9).copy(deleted = true))
+            provider.feed = listOf(item(tombstoneId, size = 9).copy(deleted = true))
             runTest { engine.syncOnce() }
-            provider.changes = emptyList()
+            provider.feed = emptyList()
             repeat(extraPasses) { runTest { engine.syncOnce() } }
 
             return Outcome(
@@ -203,7 +197,7 @@ class TombstoneIdHardeningTest {
         path = path,
         size = size,
         isFolder = false,
-        modified = Instant.parse("2026-01-02T00:00:00Z"),
+        modified = Instant.parse("2026-01-02T00:00:00Z").plusSeconds(size),
         created = Instant.parse("2026-01-01T00:00:00Z"),
         hash = null,
         mimeType = null,
@@ -226,9 +220,9 @@ class TombstoneIdHardeningTest {
     private fun liveReplacementSurvives(streaming: Boolean) {
         // the tombstone is that of a third item; a replacement N is live at the path
         val outcome = scenario(streaming, tombstoneId = "id-X", liveAfter = listOf(item("id-N", size = 9)), extraPasses = 2)
-        assertTrue(outcome.fileSize != null, "a file is still at the path: the live replacement is never deleted (streaming=$streaming): $outcome")
+        assertEquals(9L, outcome.fileSize, "the live replacement's content is at the path, never deleted (streaming=$streaming): $outcome")
         assertTrue(outcome.deletedInCloud.isEmpty(), "nothing is deleted in the cloud (streaming=$streaming): $outcome")
-        assertFalse(outcome.rowId == null, "the path stays tracked (streaming=$streaming): $outcome")
+        assertEquals("id-N", outcome.rowId, "the path tracks the live replacement (streaming=$streaming): $outcome")
     }
 
     @Test
@@ -250,86 +244,4 @@ class TombstoneIdHardeningTest {
 
     @Test
     fun `guard streaming - the row's own live item survives an ignored tombstone and the following passes`() = ownItemLiveSurvives(streaming = true)
-
-    /** A provider with a change feed and a full listing: a null cursor lists [live], any other cursor returns [changes]. */
-    private class ListingFakeProvider : CloudProvider {
-        override val id = "listing-fake"
-        override val displayName = "Listing Fake"
-        override var isAuthenticated = true
-
-        override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
-
-        var live: List<CloudItem> = emptyList()
-        var changes: List<CloudItem> = emptyList()
-        val deleted = mutableListOf<String>()
-
-        override suspend fun authenticate() {}
-
-        override suspend fun listChildren(path: String) = live.filter { it.path.substringBeforeLast('/', "").ifEmpty { "/" } == path.trimEnd('/').ifEmpty { "/" } }
-
-        override suspend fun getMetadata(path: String): CloudItem = live.lastOrNull { it.path == path } ?: throw org.krost.unidrive.ProviderException("Item not found: $path", httpStatus = 404)
-
-        override suspend fun downloadById(
-            remoteId: String,
-            remotePath: String,
-            destination: Path,
-        ): Long {
-            val item = live.firstOrNull { it.id == remoteId } ?: throw org.krost.unidrive.ProviderException("Item not found: $remoteId", httpStatus = 404)
-            Files.createDirectories(destination.parent)
-            Files.write(destination, ByteArray(item.size.toInt()))
-            return item.size
-        }
-
-        override suspend fun download(
-            remotePath: String,
-            destination: Path,
-        ): Long {
-            val item = getMetadata(remotePath)
-            Files.createDirectories(destination.parent)
-            Files.write(destination, ByteArray(item.size.toInt()))
-            return item.size
-        }
-
-        override suspend fun deleteById(
-            remoteId: String,
-            remotePath: String,
-        ) {
-            deleted += remoteId
-        }
-
-        override suspend fun delete(
-            remotePath: String,
-            ifMatchETag: String?,
-        ) {
-            deleted += remotePath
-        }
-
-        override suspend fun upload(
-            localPath: Path,
-            remotePath: String,
-            existingRemoteId: String?,
-            ifMatchETag: String?,
-            onProgress: ((Long, Long) -> Unit)?,
-        ): CloudItem = error("not expected in this test")
-
-        override suspend fun createFolder(path: String): CloudItem = error("not expected in this test")
-
-        override suspend fun move(
-            fromPath: String,
-            toPath: String,
-        ): CloudItem = error("not expected in this test")
-
-        override suspend fun delta(
-            cursor: String?,
-            onPageProgress: ((itemsSoFar: Int) -> Unit)?,
-            scanContext: ScanContext?,
-        ): DeltaPage =
-            if (cursor == null) {
-                DeltaPage(items = live, cursor = "c-full", hasMore = false, complete = true)
-            } else {
-                DeltaPage(items = changes, cursor = "c-inc", hasMore = false, complete = true)
-            }
-
-        override suspend fun quota(): QuotaInfo = QuotaInfo(total = 0, used = 0, remaining = 0)
-    }
 }
