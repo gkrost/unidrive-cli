@@ -1802,12 +1802,12 @@ class HydrationImpl(
      * holds its file; that is only judged while the cache folder itself exists, so a cache that moved or was wiped never
      * reads as "every file is gone" ([PendingUploads.localCopyCheck]).
      */
-    fun pendingUploadSplit(): PendingUploads.Split =
-        PendingUploads.split(
-            stateDb.pendingUploadRows(),
-            { skipsReplay(it) || refusedForTwin(it) },
-            PendingUploads.localCopyCheck(mount.hydrationCacheDir(), mount.localRoot()),
-        )
+    private val localCopyVerdicts = PendingUploads.LocalCopyVerdicts() // kept across snapshots: the queue is long and mostly unchanged
+
+    fun pendingUploadSplit(): PendingUploads.Split {
+        val hasCopy = PendingUploads.localCopyCheck(mount.hydrationCacheDir(), mount.localRoot(), localCopyVerdicts)
+        return PendingUploads.split(stateDb.pendingUploadRows(), { skipsReplay(it) || refusedForTwin(it) }, hasCopy)
+    }
 
     // #86: a `local:` row whose file is gone from the cache can never upload (nothing is left to send), so it is
     // dropped — never a row with a real remote id ([StateDatabase.deleteLocalPendingRow] re-checks that). A path with an

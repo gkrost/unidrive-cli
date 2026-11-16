@@ -4,6 +4,7 @@ import org.krost.unidrive.engine.CachePaths
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * What the rows awaiting upload ([StateDatabase.pendingUploadRows]) amount to. One definition for every reader: the
@@ -30,6 +31,38 @@ object PendingUploads {
     }
 
     /**
+     * The "the file is there" answers of [localCopyCheck], kept between passes so a snapshot of thousands of queued
+     * rows touches the filesystem for what changed, not for every row: a present answer holds for [ttlMs]. Only a
+     * present answer is kept, so a file that appears is seen at once; one that vanishes is noticed within [ttlMs]
+     * (the answer only sorts a row between waiting and gone, it never opens a file).
+     */
+    class LocalCopyVerdicts(
+        private val ttlMs: Long = DEFAULT_VERDICT_TTL_MS,
+        private val clock: () -> Long = System::currentTimeMillis,
+    ) {
+        private val presentUntil = ConcurrentHashMap<String, Long>()
+
+        internal fun isPresent(path: String): Boolean {
+            val until = presentUntil[path] ?: return false
+            return clock() < until
+        }
+
+        internal fun remember(path: String) {
+            presentUntil[path] = clock() + ttlMs
+        }
+
+        /** Forgets the expired answers. Called once per pass. */
+        internal fun sweep() {
+            val now = clock()
+            presentUntil.values.removeIf { it <= now }
+        }
+
+        val size: Int get() = presentUntil.size
+    }
+
+    const val DEFAULT_VERDICT_TTL_MS: Long = 30_000
+
+    /**
      * Whether the file of a row still exists: in the hydration cache ([cacheDir]), or in the profile's local root
      * ([localRoot], where a profile converted from a mirror keeps the bytes of rows its scanner wrote). Null when it
      * cannot be told: the cache folder is absent (moved, wiped, another cache root), and that says nothing about the files.
@@ -38,13 +71,22 @@ object PendingUploads {
     fun localCopyCheck(
         cacheDir: Path,
         localRoot: Path?,
+        verdicts: LocalCopyVerdicts? = null,
     ): ((path: String) -> Boolean)? {
         if (!Files.isDirectory(cacheDir)) return null
         val pass = CachePaths.Pass(cacheDir)
         val root = localRoot?.toAbsolutePath()?.normalize()
+        verdicts?.sweep()
         return { path ->
             try {
-                Files.exists(pass.resolveInside(path)) || (root != null && inRoot(root, path))
+                when {
+                    verdicts != null && verdicts.isPresent(path) -> true
+                    pass.exists(path) || (root != null && inRoot(root, path)) -> {
+                        verdicts?.remember(path)
+                        true
+                    }
+                    else -> false
+                }
             } catch (_: SecurityException) {
                 true
             } catch (_: InvalidPathException) {
