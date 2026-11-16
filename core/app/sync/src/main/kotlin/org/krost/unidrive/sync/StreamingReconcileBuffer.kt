@@ -115,13 +115,14 @@ internal class StreamingReconcileBuffer {
     // A tombstone already buffered for this id is older than this live delivery
     // (delete, then the same item restored). The last delivery wins, so that
     // delete must not drain and remove the content just landed. A later tombstone
-    // of this id is classified after this and stays.
+    // of this id is classified after this and stays. A buffered delete with no id (null or empty, as Dropbox sends) is
+    // older than this delivery too: the item at the path now is the live one.
     private fun recordLanded(action: SyncAction) {
         val landed = landedRemoteId(action) ?: return
         remoteContentIds[action.path] = landed
         val atPath = deferred[action.path] ?: return
         val pending = atPath[deleteLocalClass] as? SyncAction.DeleteLocal
-        if (pending != null && pending.remoteId == landed) atPath.remove(deleteLocalClass)
+        if (pending != null && (pending.remoteId.isNullOrEmpty() || pending.remoteId == landed)) atPath.remove(deleteLocalClass)
     }
 
     // A DeleteLocal is a recreate only when its tombstone id differs from the id that
@@ -130,7 +131,7 @@ internal class StreamingReconcileBuffer {
     private fun droppedAsRecreate(action: SyncAction): Boolean {
         val landedId = remoteContentIds[action.path] ?: return false
         val delete = action as? SyncAction.DeleteLocal ?: return true
-        val tombstoneId = delete.remoteId ?: return false
+        val tombstoneId = delete.remoteId?.takeIf { it.isNotEmpty() } ?: return false
         return tombstoneId != landedId
     }
 

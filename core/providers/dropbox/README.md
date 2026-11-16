@@ -58,7 +58,7 @@ The engine's write token for a file is the content hash it last saw (`remote_has
 
 Dropbox compares paths without case:
 - **Keys and display:** `path_lower` is the key. An item's display path is its parent's display path plus its own `name`, because `path_display` is only right in its last component.
-- **Deleted entries** carry no id. They get the id last seen at their path in this process, or an empty one.
+- **Deleted entries** always carry an empty id: a Dropbox delete means the path is empty, and the engine pairs it with the row by path, so a restarted daemon and a long-running one read it alike. The one exception is a single delta walk (a `list_folder` call and the continues that chain its pages): a path created and then deleted in that walk gets the id of the entry seen earlier in it, so the engine reads one item that came and went. A probe or a write never feeds that map.
 - **Names Dropbox never syncs** are refused before any request with `PermanentUploadFailureException`: Office lock and temp files (`~$*`, `.~*`, `~*.tmp`), `desktop.ini`, `thumbs.db` and `.DS_Store`.
 
 ## Not yet

@@ -1339,7 +1339,7 @@ class RemoteGather(
         if (folders.isEmpty()) return
         val deliveredAlive = changes.values.filterNot { it.deleted }.mapTo(HashSet()) { it.id }
         for ((key, tombstone) in folders) {
-            val folder = (db.getEntry(key) ?: db.getEntryByRemotePath(key))?.takeIf { it.isFolder && it.remoteId == tombstone.id } ?: continue
+            val folder = (db.getEntry(key) ?: db.getEntryByRemotePath(key))?.takeIf { it.isFolder && (tombstone.id.isEmpty() || it.remoteId == tombstone.id) } ?: continue // no id: a delete of the path (an id-less folder tombstone with isFolder=true; Dropbox's carries no kind, so its rows wait for a full listing)
             for (row in db.getEntriesByPrefix(folder.path.trimEnd('/') + "/")) {
                 val id = row.remoteId ?: continue
                 val rowKey = DuplicateNames.keyOf(row.path, row.remotePath) ?: (row.remotePath ?: row.path)

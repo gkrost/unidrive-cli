@@ -128,10 +128,10 @@ class Reconciler(
     internal var isBlocked: (path: String) -> Boolean = { _ -> false }
 
     // archive#309: the profile's case policy (NameKey.foldsCase): true when the provider or the local file system folds case,
-    // so two paths that differ only in case are one name and a second one is refused. False only for a case-sensitive
-    // provider on a case-sensitive file system, where they are two files. The default keeps the guards on. A property, as
-    // [isIgnored], so the constructor's signature stays as it is.
+    // so two paths that differ only in case are one name and a second one is refused; false only for a case-sensitive
+    // provider on a case-sensitive file system. The default keeps the guards on. A property, as [isIgnored].
     internal var foldCase: Boolean = true
+    internal val ignoredTombstones = IgnoredTombstones() // #743: the tombstones ignored for their id, drained by the engine
 
     // A directory-only rule (`photos/`, `!keep/`) must see a directory. A tombstone's `isFolder` is a non-null
     // Boolean and is often false when the provider has no folder facet (a deleted tag, a minimal tombstone), so it
@@ -311,7 +311,7 @@ class Reconciler(
 
             val remoteState =
                 when {
-                    remoteItem == null || isTombstoneOfOtherItem(remoteItem, entry) -> ChangeState.UNCHANGED
+                    remoteItem == null || ignoredTombstones.ignores(path, remoteItem, entry) -> ChangeState.UNCHANGED
                     remoteItem.deleted -> ChangeState.DELETED
                     entry == null -> ChangeState.NEW
                     // UD-209b: a UD-901 pending-upload row (remoteId=null, no remote
@@ -576,7 +576,7 @@ class Reconciler(
 
             val remoteState =
                 when {
-                    remoteItem == null || isTombstoneOfOtherItem(remoteItem, entry) -> ChangeState.UNCHANGED
+                    remoteItem == null || ignoredTombstones.ignores(path, remoteItem, entry) -> ChangeState.UNCHANGED
                     remoteItem.deleted -> ChangeState.DELETED
                     entry == null -> ChangeState.NEW
                     entry.remoteId == null && entry.remoteHash == null -> ChangeState.NEW
@@ -2332,7 +2332,7 @@ private fun deleteOfInFlightDownload(
     landedRemoteId: (String) -> String?,
 ): Boolean =
     remoteState == ChangeState.DELETED && localState == ChangeState.UNCHANGED && entry == null &&
-        landedRemoteId(path) == tombstone.id
+        landedRemoteId(path)?.let { tombstone.id.isEmpty() || it == tombstone.id } == true
 
 // A set that tells its members apart by identity: the actions of a plan are data classes, and two equal ones are
 // still two entries of the plan.

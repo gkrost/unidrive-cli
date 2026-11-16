@@ -89,7 +89,7 @@ class DropboxDeltaTest {
         }
 
     @Test
-    fun `an incremental page reports a deletion with the id last seen at its path`() =
+    fun `an incremental page reports a deletion with no id so it pairs by path`() =
         runTest {
             fake.json("files/list_folder", """{"entries":[${file("/a.txt", "id:7")}],"cursor":"c1","has_more":false}""")
             fake.json("files/list_folder/continue", """{"entries":[${deleted("/A.txt")}],"cursor":"c2","has_more":false}""")
@@ -98,7 +98,7 @@ class DropboxDeltaTest {
             val change = provider.delta("c1").items.single()
 
             assertTrue(change.deleted)
-            assertEquals("id:7", change.id)
+            assertEquals("", change.id)
             assertEquals("/A.txt", change.path)
         }
 
