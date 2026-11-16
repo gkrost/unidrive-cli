@@ -148,7 +148,7 @@ class DaemonAutospawnTest {
                 props = { name -> if (name == "java.specification.version") javaFeature.toString() else null },
                 windows = false,
             )
-        val flag = "-XX:FlightRecorderOptions=redact-key=+*vault*"
+        val flag = "-XX:FlightRecorderOptions=redact-key=+*pass*"
         for (feature in listOf(25, 26)) assertTrue(flag !in command(feature), "Java $feature rejects the option")
         for (feature in listOf(27, 28)) {
             val args = command(feature)

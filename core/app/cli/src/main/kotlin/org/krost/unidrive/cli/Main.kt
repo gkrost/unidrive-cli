@@ -19,6 +19,7 @@ import org.krost.unidrive.xtra.XtraEncryptedProvider
 import org.krost.unidrive.xtra.XtraPlaintextListings
 import org.krost.unidrive.xtra.XtraKeyManager
 import org.krost.unidrive.io.Os
+import org.krost.unidrive.io.XTRA_PASSPHRASE_ENV
 import org.krost.unidrive.io.childProcessBuilder
 import org.slf4j.MDC
 import picocli.CommandLine
@@ -438,7 +439,7 @@ open class Main : Runnable {
 
     /** The X-tra passphrase, resolved like the vault's: env, a systemd credential, or a console prompt. */
     internal fun xtraPassphrase(): CharArray {
-        System.getenv("UNIDRIVE_XTRA_PASS")?.let { return it.toCharArray() }
+        System.getenv(XTRA_PASSPHRASE_ENV)?.let { return it.toCharArray() }
         System.getenv("CREDENTIALS_DIRECTORY")?.let { dir ->
             val credential = Path.of(dir).resolve("unidrive-xtra-pass")
             if (Files.isRegularFile(credential)) return Files.readString(credential).trimEnd('\r', '\n').toCharArray()
