@@ -10,6 +10,7 @@ import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.ScanContext
+import org.krost.unidrive.sync.EnumerateResult
 import org.krost.unidrive.sync.EnumerationStatus
 import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.StateDatabase
@@ -1960,6 +1961,99 @@ class RemoteEnumerationTest {
             enumeration.enumerate(reset = false) // still latched: a recovery pass, and a complete one
             enumeration.enumerate(reset = false) // the latch is gone: incremental
             assertEquals(listOf(true, true, false), during)
+        }
+
+    // ---- a tombstone removes the row that tracks ITS item (745 finding 10) ----
+
+    // The drive tracks "new" at /f.txt; a delta then delivers a tombstone
+    // of [tombstoneId] at that path: "old" is the id the path held before the file was replaced, "" names no id.
+    private suspend fun trackedThenTombstone(
+        tombstoneId: String,
+    ): Pair<Path, EnumerateResult> {
+        provider.fullListing = false
+        provider.items = listOf(file("new", "/f.txt"), file("k", "/keep.txt"))
+        val enumeration = enumeration()
+        enumeration.enumerate(reset = false)
+        val cache = cacheFile("/f.txt")
+        provider.items = listOf(file(tombstoneId, "/f.txt").copy(deleted = true))
+        return cache to enumeration.enumerate(reset = false)
+    }
+
+    @Test
+    fun `a tombstone of another item id leaves the row that tracks the live item at its path`() =
+        runTest {
+            val (cache, result) = trackedThenTombstone("old")
+
+            assertEquals("new", db.getEntry("/f.txt")?.remoteId, "the live replacement is still tracked")
+            assertEquals(0, result.reaped, "no row belongs to the tombstone of old")
+            assertTrue(Files.exists(cache), "the clean cache copy of the live item is not evicted")
+        }
+
+    @Test
+    fun `a tombstone of the id a row tracks still reaps it`() =
+        runTest {
+            val (cache, result) = trackedThenTombstone("new")
+
+            assertNull(db.getEntry("/f.txt"))
+            assertEquals(1, result.reaped)
+            assertFalse(Files.exists(cache))
+        }
+
+    @Test
+    fun `a tombstone without an id is paired with the row at its path`() =
+        runTest {
+            val (_, result) = trackedThenTombstone("")
+
+            assertNull(db.getEntry("/f.txt"))
+            assertEquals(1, result.reaped)
+        }
+
+    @Test
+    fun `a tombstone of another item id leaves a live folder and the rows below it`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(folder("newF", "/d"), file("c", "/d/c.txt"), file("k", "/keep.txt"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+
+            provider.items = listOf(folder("oldF", "/d").copy(deleted = true))
+            val result = enumeration.enumerate(reset = false)
+
+            assertNotNull(db.getEntry("/d"), "the folder that took the path is alive")
+            assertNotNull(db.getEntry("/d/c.txt"))
+            assertEquals(0, result.reaped)
+        }
+
+    @Test
+    fun `a tombstone of the id a folder row tracks takes the folder and the rows below it`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(folder("newF", "/d"), file("c", "/d/c.txt"), file("k", "/keep.txt"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+
+            provider.items = listOf(folder("newF", "/d").copy(deleted = true))
+            val result = enumeration.enumerate(reset = false)
+
+            assertNull(db.getEntry("/d"))
+            assertNull(db.getEntry("/d/c.txt"))
+            assertEquals(2, result.reaped)
+        }
+
+    @Test
+    fun `an incomplete pass reaps no tombstone, whatever its id`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(file("new", "/f.txt"), file("k", "/keep.txt"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+
+            provider.complete = false
+            provider.items = listOf(file("new", "/f.txt").copy(deleted = true))
+            val result = enumeration.enumerate(reset = false)
+
+            assertNotNull(db.getEntry("/f.txt"))
+            assertEquals(0, result.reaped)
         }
 
     // One page per listing; every cursor names the listing that produced it.

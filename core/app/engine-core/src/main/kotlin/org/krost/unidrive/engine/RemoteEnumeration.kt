@@ -431,18 +431,18 @@ class RemoteEnumeration(
             // deleted=true CloudItems for DB rows absent from the live set; incremental
             // gathers carry provider tombstones the same way. updateRemoteEntries skips
             // them, so we flip state.db here directly — never via provider.delete.
-            val missingNow = remoteChanges.filterValues { it.deleted }.keys
+            val missingNow = reapableTombstones(db, remoteChanges, log)
             val bulk = missingNow.size > bulkThreshold
             val corroborated = if (bulk) missingNow.intersect(deferredMissing) else missingNow
-            // archive#1033: the key of a tombstone is the item's REMOTE path and its row can live under another local path.
-            // A tombstone no row belongs to reaps nothing and is not counted.
+            // archive#1033: the key is the REMOTE path (its row may live elsewhere). 745 f10: a tombstone of another item than
+            // the row it meets says nothing about that row: it is not missing now (no count) and not corroboration (not carried).
             // windows#454 item 9: the per-row lookups and the file-stat guards run BEFORE any write transaction, and
             // the flips go through markDeletedChunked — a large reap no longer holds the monitor and every writer
             // behind it for one unbounded transaction (the merge was chunked for the same reason, archive#147).
             val rows = mutableListOf<Pair<String, SyncEntry>>()
             val snapshots = mutableMapOf<String, Triple<String, Path, Long?>>()
             for (path in corroborated) {
-                val row = rowOfTombstone(db, path) ?: continue
+                val row = pairedRow(db, path, remoteChanges.getValue(path)).row ?: continue
                 val snapshot = cacheEvictionSnapshot(row.path, reapGuards, log)
                 // archive#301: refuse to reap a path whose hydration cache may hold the
                 // only copy of user bytes. A queued or in-flight upload means an
