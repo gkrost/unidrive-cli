@@ -56,7 +56,9 @@ enum class TrackState {
  *
  * For a `PendingDownload` or `PendingUpload` row created BEFORE the first
  * round-trip completes, `remoteFileId` may be null — we still want to
- * resume / not double-act on it after a crash.
+ * resume / not double-act on it after a crash. A non-null `remoteFileId` means the remote side was established by a
+ * completed transfer or observation, which is what lets a hashless provider's row (no etag) read as remote-gone;
+ * the one edge is `claim()`, which copies the id from `observeRemote` even for a tombstoned item.
  *
  * Snapshot fields capture the last successful sync. `localHash` / `localSize`
  * are what the bytes looked like the last time we observed them; `remoteEtag` /

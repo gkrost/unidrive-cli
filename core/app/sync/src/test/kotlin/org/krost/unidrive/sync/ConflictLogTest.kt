@@ -20,6 +20,23 @@ class ConflictLogTest {
         )
 
     @Test
+    fun `isAlreadyBackedUp is true only for the same path state policy and bytes`() {
+        val dir = tempDir()
+        val log = createLog(dir)
+        val loser = dir.resolve("loser.txt")
+        Files.writeString(loser, "content")
+        assertEquals(false, log.isAlreadyBackedUp("a.txt", "local-changed", "why", loser), "nothing journalled yet")
+
+        log.record("a.txt", "local-changed", "remote-action-pending", "why", loser)
+
+        assertTrue(log.isAlreadyBackedUp("a.txt", "local-changed", "why", loser))
+        assertEquals(false, log.isAlreadyBackedUp("b.txt", "local-changed", "why", loser), "another path")
+        assertEquals(false, log.isAlreadyBackedUp("a.txt", "local-changed", "other", loser), "another policy")
+        Files.writeString(loser, "edited content")
+        assertEquals(false, log.isAlreadyBackedUp("a.txt", "local-changed", "why", loser), "other bytes")
+    }
+
+    @Test
     fun `record with loserFile creates backup and appends JSONL entry`() {
         val dir = tempDir()
         val log = createLog(dir)

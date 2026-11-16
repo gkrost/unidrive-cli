@@ -538,6 +538,52 @@ class HashlessFakeProvider : CloudProvider {
     override val displayName = "Hashless Fake"
     override var isAuthenticated: Boolean = true
 
+    /** Test hook: the delta is a full listing every call (see [FakeTrackingProvider.deltaIsFullListing]). */
+    override var deltaIsFullListing: Boolean = false
+
+    /** Test hook: false marks the listing partial (the page gave up mid-walk). */
+    var deltaComplete: Boolean = true
+
+    /** Test hook: the cursor every [delta] page hands back; set it to a new value between passes to see it advance. */
+    var cursorValue: String = "hashless-cursor"
+
+    /**
+     * Test hook (default off): once a cursor is presented, [delta] lists [incrementalItems] only, like an incremental
+     * provider (Internxt): live items, tombstones, moves and folder tombstones the test builds with [liveItem] and
+     * [tombstone]. A tracked path the page does not mention is unchanged-present.
+     */
+    var incrementalAware: Boolean = false
+    var incrementalItems: List<org.krost.unidrive.CloudItem> = emptyList()
+
+    /** Test hook: the remote id [itemFor] reports for a path, instead of the path-derived default. */
+    val idOverrides: MutableMap<String, String> = mutableMapOf()
+
+    /** A live file item as this provider lists it, optionally under an explicit [id]. */
+    fun liveItem(
+        path: String,
+        bytes: ByteArray,
+        id: String? = null,
+    ): org.krost.unidrive.CloudItem = itemFor(path, bytes).let { if (id != null) it.copy(id = id) else it }
+
+    /** A tombstone for [id]; a real one often names no path, or a folder path when [isFolder]. */
+    fun tombstone(
+        id: String,
+        path: String = "",
+        isFolder: Boolean = false,
+    ): org.krost.unidrive.CloudItem =
+        org.krost.unidrive.CloudItem(
+            id = id,
+            name = path.substringAfterLast('/'),
+            path = path,
+            size = 0,
+            isFolder = isFolder,
+            modified = null,
+            created = null,
+            hash = null,
+            mimeType = null,
+            deleted = true,
+        )
+
     override fun capabilities(): Set<org.krost.unidrive.Capability> =
         setOf(org.krost.unidrive.Capability.Delta, org.krost.unidrive.Capability.VerifyItem)
 
@@ -604,8 +650,8 @@ class HashlessFakeProvider : CloudProvider {
         scanContext: org.krost.unidrive.ScanContext?,
     ): org.krost.unidrive.DeltaPage {
         val items =
-            files.entries.map { (path, bytes) -> itemFor(path, bytes) }
-        return org.krost.unidrive.DeltaPage(items = items, cursor = "hashless-cursor", hasMore = false)
+            if (incrementalAware && cursor != null) incrementalItems else files.entries.map { (path, bytes) -> itemFor(path, bytes) }
+        return org.krost.unidrive.DeltaPage(items = items, cursor = cursorValue, hasMore = false, complete = deltaComplete)
     }
 
     override suspend fun quota(): org.krost.unidrive.QuotaInfo =
@@ -619,7 +665,7 @@ class HashlessFakeProvider : CloudProvider {
         bytes: ByteArray,
     ): org.krost.unidrive.CloudItem =
         org.krost.unidrive.CloudItem(
-            id = "id-${path.hashCode()}",
+            id = idOverrides[path] ?: "id-${path.hashCode()}",
             name = path.substringAfterLast('/'),
             path = path,
             size = bytes.size.toLong(),
