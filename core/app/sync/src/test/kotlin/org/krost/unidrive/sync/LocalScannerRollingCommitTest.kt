@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -183,7 +184,7 @@ class LocalScannerRollingCommitTest {
     @Test
     fun `the write lock is free between a commit and the next write`() {
         val batch = ScanWriteBatch(db, maxWrites = 3, yieldMs = 0)
-        for (i in 1..3) batch.upsert(row("/a$i").copy(remoteId = null))
+        for (i in 1..3) batch.put(row("/a$i").copy(remoteId = null))
         assertFalse(db.ownsOpenBatch())
 
         val t0 = System.nanoTime()
@@ -196,13 +197,13 @@ class LocalScannerRollingCommitTest {
     @Test
     fun `release before a hash frees the lock and the next write reopens`() {
         val batch = ScanWriteBatch(db, maxWrites = 1_000, yieldMs = 0)
-        batch.upsert(row("/a1").copy(remoteId = null))
+        batch.put(row("/a1").copy(remoteId = null))
         assertTrue(db.ownsOpenBatch())
 
         batch.release()
         assertFalse(db.ownsOpenBatch())
         other.upsertEntry(row("/other.bin"))
-        batch.upsert(row("/a2").copy(remoteId = null))
+        batch.put(row("/a2").copy(remoteId = null))
         batch.release()
 
         assertEquals(setOf("/a1", "/a2", "/other.bin"), db.getAllEntries().map { it.path }.toSet())
@@ -212,7 +213,7 @@ class LocalScannerRollingCommitTest {
     fun `a transaction older than the interval is committed between writes`() {
         var now = 0L
         val batch = ScanWriteBatch(db, intervalMs = 300, maxWrites = 1_000, yieldMs = 0, nowMs = { now })
-        batch.upsert(row("/a1").copy(remoteId = null))
+        batch.put(row("/a1").copy(remoteId = null))
         now = 299
         batch.releaseIfExpired()
         assertTrue(db.ownsOpenBatch())
@@ -229,7 +230,7 @@ class LocalScannerRollingCommitTest {
         db.beginBatch()
         try {
             val batch = ScanWriteBatch(db, maxWrites = 1, yieldMs = 0)
-            batch.upsert(row("/a1").copy(remoteId = null))
+            batch.put(row("/a1").copy(remoteId = null))
             batch.release()
             batch.rollback()
 
@@ -238,5 +239,188 @@ class LocalScannerRollingCommitTest {
         } finally {
             db.rollbackBatch()
         }
+    }
+
+    private fun ScanWriteBatch.put(entry: SyncEntry) = upsertIfCurrent(entry.path, null) { entry }
+
+    private fun attrsOf(p: Path) = Files.readAttributes(p, BasicFileAttributes::class.java)
+
+    // A walk over exactly [files], in that order, calling [before] and [after] around each visit.
+    private fun orderedWalk(
+        files: List<Path>,
+        before: (Int) -> Unit = {},
+        after: (Int) -> Unit = {},
+    ): (Path, FileVisitor<Path>) -> Unit =
+        { start, visitor ->
+            visitor.preVisitDirectory(start, attrsOf(start))
+            files.forEachIndexed { i, f ->
+                before(i)
+                visitor.visitFile(f, attrsOf(f))
+                after(i)
+            }
+        }
+
+    private fun pendingRow(path: String) = row(path).copy(remoteId = null, remoteHash = null, isHydrated = true)
+
+    @Test
+    fun `a pause of the yield length follows every commit that has a next chunk and none follows the last`() {
+        val slept = mutableListOf<Long>()
+        val batch = ScanWriteBatch(db, intervalMs = 1_000_000, maxWrites = 2, yieldMs = 200, nowMs = { 0L }, sleeper = { slept.add(it) })
+
+        for (i in 1..6) batch.put(pendingRow("/a$i")) // chunks of 2: the third commits on the sixth write, with no write after it
+        batch.release()
+
+        assertEquals(listOf(200L, 200L), slept, "after the first and second chunk, before the next one opens; not after the third")
+        assertEquals(3L, db.manualBatchCommits)
+        assertEquals(6, db.getAllEntries().size)
+    }
+
+    @Test
+    fun `time the walk spent since the commit counts toward the pause`() {
+        var now = 0L
+        val slept = mutableListOf<Long>()
+        val batch = ScanWriteBatch(db, intervalMs = 1_000_000, maxWrites = 1, yieldMs = 200, nowMs = { now }, sleeper = { slept.add(it) })
+        batch.put(pendingRow("/a1")) // commits at 0
+        now = 150
+        batch.put(pendingRow("/a2")) // 50 ms of the pause are left
+        now = 1_000
+        batch.put(pendingRow("/a3")) // nothing is left
+
+        assertEquals(listOf(50L), slept)
+    }
+
+    @Test
+    fun `a row another connection committed after the snapshot is not evicted by the pending upload row`() {
+        newFiles(1)
+        val path = "/f001.txt"
+        val theirs = row(path)
+        val scanner =
+            LocalScanner(
+                syncRoot,
+                db,
+                walkFileTree = orderedWalk(listOf(syncRoot.resolve("f001.txt")), before = { other.upsertEntry(theirs) }),
+            )
+
+        val changes = scanner.scan()
+
+        assertEquals("id-$path", db.getEntry(path)?.remoteId, "the other writer's alive row survives")
+        assertNull(changes[path], "the stale NEW is not reported; the next scan sees the row")
+        assertEquals(1, db.getEntryCount())
+    }
+
+    @Test
+    fun `a stale mtime refresh does not overwrite the row another connection changed meanwhile`() {
+        newFiles(1)
+        val file = syncRoot.resolve("f001.txt")
+        val mine =
+            row("/f001.txt").copy(
+                localMtime = 1L,
+                localSize = Files.size(file),
+                isHydrated = true,
+                localHash = HashVerifier.computeSha256Hex(file),
+            )
+        db.upsertEntry(mine)
+        val theirs = mine.copy(remoteHash = "newer-remote-hash")
+        val scanner =
+            LocalScanner(
+                syncRoot,
+                db,
+                walkFileTree = orderedWalk(listOf(file), before = { other.upsertEntry(theirs) }),
+            )
+
+        scanner.scan()
+
+        val now = assertNotNull(db.getEntry("/f001.txt"))
+        assertEquals("newer-remote-hash", now.remoteHash, "the other writer's field is not overwritten from the stale copy")
+        assertEquals(1L, now.localMtime, "the refresh was left to the next scan")
+    }
+
+    // A file whose hash takes a while (the #396 branch: same size, newer mtime, a recorded local hash). The batch a write opened
+    // earlier must be committed before the hash, or another writer waits it out.
+    @Test
+    fun `another writer commits while a touched file is being hashed`() {
+        val first = syncRoot.resolve("a-new.txt").also { Files.writeString(it, "x") }
+        val big = syncRoot.resolve("b-touched.bin")
+        java.io.RandomAccessFile(big.toFile(), "rw").use { it.setLength(192L * 1024 * 1024) }
+        db.upsertEntry(
+            row("/b-touched.bin").copy(localMtime = 1L, localSize = Files.size(big), isHydrated = true, localHash = "not-the-hash"),
+        )
+        var landedBeforeHashFileReturned = false
+        var returned = false
+        var thread: Thread? = null
+        val scanner =
+            LocalScanner(
+                syncRoot,
+                db,
+                walkFileTree =
+                    orderedWalk(
+                        listOf(first, big),
+                        before = { i ->
+                            if (i == 1) {
+                                thread =
+                                    Thread {
+                                        other.upsertEntry(row("/other.bin"))
+                                        landedBeforeHashFileReturned = !returned
+                                    }.also { it.start() }
+                            }
+                        },
+                        after = { i -> if (i == 1) returned = true },
+                    ),
+                newWriteBatch = { ScanWriteBatch(it, intervalMs = 1_000_000, yieldMs = 0) },
+            )
+
+        scanner.scan()
+        thread!!.join(10_000)
+
+        assertTrue(landedBeforeHashFileReturned, "the write lock is free while the file is hashed")
+    }
+
+    // The batch a write opened earlier ages out while the walk visits files that write nothing: the next visit commits it.
+    @Test
+    fun `an aged transaction is committed at the next visit even when that visit writes nothing`() {
+        val first = syncRoot.resolve("a-new.txt").also { Files.writeString(it, "x") }
+        val known = syncRoot.resolve("b-known.txt").also { Files.writeString(it, "x") }
+        val attrs = attrsOf(known)
+        db.upsertEntry(
+            row("/b-known.txt").copy(
+                localMtime = attrs.lastModifiedTime().toMillis(),
+                localSize = attrs.size(),
+                isHydrated = true,
+            ),
+        )
+        var landed = false
+        var returned = false
+        var thread: Thread? = null
+        val scanner =
+            LocalScanner(
+                syncRoot,
+                db,
+                walkFileTree =
+                    orderedWalk(
+                        listOf(first, known),
+                        before = { i ->
+                            if (i == 1) {
+                                Thread.sleep(120) // the first chunk is now older than the 50 ms interval
+                                thread =
+                                    Thread {
+                                        other.upsertEntry(row("/other.bin"))
+                                        landed = !returned
+                                    }.also { it.start() }
+                            }
+                        },
+                        after = { i ->
+                            if (i == 1) {
+                                Thread.sleep(300) // time for the other writer, if the chunk was committed
+                                returned = true
+                            }
+                        },
+                    ),
+                newWriteBatch = { ScanWriteBatch(it, intervalMs = 50, yieldMs = 0) },
+            )
+
+        scanner.scan()
+        thread!!.join(10_000)
+
+        assertTrue(landed, "the aged chunk was committed at the visit, not held until the end of the scan")
     }
 }

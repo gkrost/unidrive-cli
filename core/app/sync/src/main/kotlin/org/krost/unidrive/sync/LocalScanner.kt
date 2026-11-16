@@ -307,7 +307,12 @@ class LocalScanner(
                         // was never retried. Stubs with a row are still probed where the row
                         // is acted on (looksLikePlaceholder, PlaceholderManager.isSparse),
                         // and a same-size remote file is still compared by applyCreatePlaceholder.
-                        writes.upsert(pendingUploadRow(relativePath, fileAttrs))
+                        // The row was read before the walk (or before a hash): another process may have written the path
+                        // since. The write is decided on the row as it is inside the chunk (ScanWriteBatch.upsertIfCurrent);
+                        // when it changed, the path is left to the next scan rather than reported against a stale view.
+                        if (!writes.upsertIfCurrent(relativePath, null) { pendingUploadRow(relativePath, fileAttrs) }) {
+                            changes.remove(relativePath)
+                        }
                     } else if (entry.isHydrated) {
                         val currentMtime = fileAttrs.lastModifiedTime().toMillis()
                         val currentSize = fileAttrs.size()
@@ -343,7 +348,7 @@ class LocalScanner(
                                 if (localHash == entry.remoteHash) {
                                     // Content unchanged — refresh tracked mtime so this file
                                     // isn't re-hashed on every subsequent scan.
-                                    writes.upsert(entry.copy(localMtime = currentMtime))
+                                    writes.upsertIfCurrent(relativePath, entry) { it!!.copy(localMtime = currentMtime) }
                                 } else {
                                     changes[relativePath] = ChangeState.MODIFIED
                                 }
@@ -365,7 +370,7 @@ class LocalScanner(
                                         entry.localMtime,
                                         currentMtime,
                                     )
-                                    writes.upsert(entry.copy(localMtime = currentMtime))
+                                    writes.upsertIfCurrent(relativePath, entry) { it!!.copy(localMtime = currentMtime) }
                                 } else {
                                     changes[relativePath] = ChangeState.MODIFIED
                                 }
