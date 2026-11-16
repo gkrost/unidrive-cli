@@ -94,11 +94,12 @@ class DropboxWalkTombstoneTest {
         runTest {
             val fake = FakeDropbox()
             val provider = provider(fake)
+            fake.json("files/list_folder/continue", page(file("/other.txt", "id:1"), cursor = "c2", more = true))
+            fake.json("files/list_folder/continue", page(deleted("/a.txt"), cursor = "c3"))
             fake.json("files/get_metadata", file("/a.txt", "id:B"))
-            provider.getMetadata("/a.txt")
-            fake.json("files/list_folder/continue", page(deleted("/a.txt"), cursor = "c2"))
-
-            assertEquals("", provider.delta("c1").items.single().id)
+            provider.delta("c1")
+            provider.getMetadata("/a.txt") // in the middle of the walk
+            assertEquals("", provider.delta("c2").items.single().id, "the probe's id is no evidence of what the walk's delete removed")
         }
 
     @Test
