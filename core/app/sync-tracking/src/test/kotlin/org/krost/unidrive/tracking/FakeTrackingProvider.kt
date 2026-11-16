@@ -538,6 +538,12 @@ class HashlessFakeProvider : CloudProvider {
     override val displayName = "Hashless Fake"
     override var isAuthenticated: Boolean = true
 
+    /** Test hook: the delta is a full listing every call (see [FakeTrackingProvider.deltaIsFullListing]). */
+    override var deltaIsFullListing: Boolean = false
+
+    /** Test hook: false marks the listing partial (the page gave up mid-walk). */
+    var deltaComplete: Boolean = true
+
     override fun capabilities(): Set<org.krost.unidrive.Capability> =
         setOf(org.krost.unidrive.Capability.Delta, org.krost.unidrive.Capability.VerifyItem)
 
@@ -605,7 +611,7 @@ class HashlessFakeProvider : CloudProvider {
     ): org.krost.unidrive.DeltaPage {
         val items =
             files.entries.map { (path, bytes) -> itemFor(path, bytes) }
-        return org.krost.unidrive.DeltaPage(items = items, cursor = "hashless-cursor", hasMore = false)
+        return org.krost.unidrive.DeltaPage(items = items, cursor = "hashless-cursor", hasMore = false, complete = deltaComplete)
     }
 
     override suspend fun quota(): org.krost.unidrive.QuotaInfo =
