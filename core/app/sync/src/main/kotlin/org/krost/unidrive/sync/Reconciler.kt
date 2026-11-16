@@ -311,7 +311,7 @@ class Reconciler(
 
             val remoteState =
                 when {
-                    remoteItem == null -> ChangeState.UNCHANGED
+                    remoteItem == null || isTombstoneOfOtherItem(remoteItem, entry) -> ChangeState.UNCHANGED
                     remoteItem.deleted -> ChangeState.DELETED
                     entry == null -> ChangeState.NEW
                     // UD-209b: a UD-901 pending-upload row (remoteId=null, no remote

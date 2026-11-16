@@ -22,7 +22,9 @@ internal fun withDeleteOfOtherKind(
 // A tombstone paired with the row at its path by path alone says nothing about that row when the ids differ: the row
 // tracks another item (the winner of a name a twin shares, kept under its own id), and the tombstone is the twin's. The
 // gather re-keys a twin's tombstone to the twin's decorated key at scan-end, where it meets its own row. An id-less
-// tombstone (some providers send none) is paired by path, as ever.
+// tombstone (some providers send none) is paired by path, as ever. Applies in both modes (the streaming resolvePaths and
+// the buffered reconcile): the tombstone of the old id of an item the provider replaced under a new id is no delete of
+// the replacement either. Tombstones the engine synthesizes from a row carry that row's id and still pair with it.
 internal fun isTombstoneOfOtherItem(
     item: CloudItem,
     entry: SyncEntry?,

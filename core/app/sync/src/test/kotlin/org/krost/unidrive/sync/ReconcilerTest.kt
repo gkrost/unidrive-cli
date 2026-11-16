@@ -884,7 +884,7 @@ class ReconcilerTest {
         db.upsertEntry(
             SyncEntry(
                 path = "/photos",
-                remoteId = "id-photos",
+                remoteId = "id-/photos",
                 remoteHash = null,
                 remoteSize = 0,
                 remoteModified = Instant.parse("2026-03-28T12:00:00Z"),

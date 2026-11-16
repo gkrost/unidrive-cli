@@ -3037,7 +3037,7 @@ class SyncEngineTest {
                 Files.writeString(f, "x".repeat(100))
                 Files.setLastModifiedTime(f, java.nio.file.attribute.FileTime.from(seededMtime))
             }
-            provider.deltaItems = (0 until 60).map { cloudItem("/seeded-$it.txt", size = 100, deleted = true) }
+            provider.deltaItems = (0 until 60).map { cloudItem("/seeded-$it.txt", size = 100, deleted = true).copy(id = "id-$it") }
             provider.deltaCursor = "cursor-advanced"
 
             engineWithGuards(maxDeleteAbsolute = 50, maxDeletePercentage = 0)
