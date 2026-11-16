@@ -50,3 +50,11 @@
 # dump file, so an OOM restart loop writes the first dump only, and it holds decrypted tokens; pruning
 # stays manual.
 -XX:+HeapDumpOnOutOfMemoryError
+# Compact object headers (JEP 519; default since JDK 27 via JEP 534): a no-op on the bundled JDK 27
+# runtime image (PrintFlagsFinal already reports UseCompactObjectHeaders = true) and the opt-in for
+# the Linux system-JDK path, whose Java 25 floor the launchers check before these flags are passed:
+# 25 and 26 accept the flag, 24 and below reject it with "Unrecognized VM option" (verified on
+# Microsoft 25.0.5, Zulu 26.0.2, Zulu 27.0.1 and Zulu 21). The daemon's in-memory trees, caches and
+# state rows are the object-heavy profile JEP 519's numbers describe (10-20 % less heap); the
+# daemon's own number is unmeasured (gkrost/unidrive-cli#444, finding 7).
+-XX:+UseCompactObjectHeaders
