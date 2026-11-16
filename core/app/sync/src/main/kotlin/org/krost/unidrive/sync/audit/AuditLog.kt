@@ -66,6 +66,9 @@ class AuditLog(
     private val json = Json { encodeDefaults = false }
     private val writeLock = Any()
 
+    // The day files whose current write-error episode was already reported (#780); a successful write removes its file again.
+    private val writeErrorWarned = java.util.concurrent.ConcurrentHashMap.newKeySet<Path>()
+
     init {
         Files.createDirectories(profileConfigDir)
     }
@@ -78,23 +81,37 @@ class AuditLog(
 
     /**
      * Append [entry] to today's audit file. Failures (disk full, permission denied) are
-     * logged at WARN and swallowed — the audit log must not block the sync engine. The
-     * trade-off is documented in SECURITY.md UD-113 §"Audit log durability".
+     * swallowed — the audit log must not block the sync engine — and reported at WARN once
+     * per failure episode of the day file (#780: one WARN per emit on an unwritable log floods
+     * the log with a warning per event, full disk included): a file whose write failed is not
+     * named again until a write succeeds there, and the episode after a recovery is reported
+     * afresh. The day file in the key, so a UTC rollover starts a new episode with its new file.
+     * The trade-off is documented in SECURITY.md UD-113 §"Audit log durability".
      */
     fun emit(entry: AuditEntry) {
+        val auditFile = pathForToday()
         try {
             synchronized(writeLock) {
                 // The result carries exception text, which can quote a pre-authenticated URL (archive#1060).
                 val line = json.encodeToString(entry.copy(result = UrlRedaction.redact(entry.result))) + "\n"
                 Files.write(
-                    pathForToday(),
+                    auditFile,
                     line.toByteArray(Charsets.UTF_8),
                     StandardOpenOption.CREATE,
                     StandardOpenOption.APPEND,
                 )
             }
+            writeErrorWarned.remove(auditFile) // a write that succeeded re-arms the episode warning
+        } catch (e: java.util.concurrent.CancellationException) {
+            throw e // a cancelled pass stops; a diary write must not keep it alive (the #778 helper's rule)
         } catch (e: Exception) {
-            log.warn("UD-113: failed to write audit entry for {}: {}", entry.path, e.message)
+            if (writeErrorWarned.add(auditFile)) {
+                log.warn(
+                    "UD-113: the audit log {} cannot be written ({}); further write errors on it are not reported until it recovers",
+                    auditFile,
+                    e.toString(),
+                )
+            }
         }
     }
 
