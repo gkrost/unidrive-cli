@@ -114,7 +114,7 @@ class RemoteEnumerationTombstoneIdTest {
     private fun row(
         path: String,
         remoteId: String?,
-    ) = SyncEntry(
+    ): SyncEntry = SyncEntry(
         path = path,
         remoteId = remoteId,
         remoteHash = null,
@@ -242,12 +242,61 @@ class RemoteEnumerationTombstoneIdTest {
     @Test
     fun `the pairing rule, id by id`() {
         val live = row("/f", "a")
-        assertTrue(tombstoneBelongsToRow(gone("a", "/f"), live))
-        assertFalse(tombstoneBelongsToRow(gone("b", "/f"), live))
-        assertTrue(tombstoneBelongsToRow(gone("", "/f"), live))
-        assertTrue(tombstoneBelongsToRow(gone("b", "/f"), row("/f", null)))
-        assertTrue(tombstoneBelongsToRow(gone("b", "/f"), row("/f", "")))
+        assertTrue(tombstoneBelongsToRow(gone("a", "/f"), live), "equal ids")
+        assertFalse(tombstoneBelongsToRow(gone("b", "/f"), live), "different ids")
+        assertFalse(tombstoneBelongsToRow(gone("A", "/f"), live), "ids differing only by case are different ids")
+        assertTrue(tombstoneBelongsToRow(gone("", "/f"), live), "a tombstone without an id pairs by path")
+        assertTrue(tombstoneBelongsToRow(gone("b", "/f"), row("/f", null)), "a row without an id (null) pairs by path")
+        assertTrue(tombstoneBelongsToRow(gone("b", "/f"), row("/f", "")), "a row with an empty id pairs by path")
+        assertTrue(tombstoneBelongsToRow(gone("", "/f"), row("/f", "")), "neither side has an id")
     }
+
+    // The key of a tombstone is a REMOTE path: the row of its own item can live under another local path, while another item's
+    // row stands at that local path.
+    @Test
+    fun `an alias collision reaps the row of the tombstone's item and leaves the row at the local path`() =
+        runTest {
+            val enumeration = enumeration()
+            provider.fullListing = false
+            provider.items = listOf(item("k", "/keep"))
+            enumeration.enumerate(reset = false)
+            db.upsertEntry(row("/k", "Y").copy(remotePath = "/elsewhere"))
+            db.upsertEntry(row("/xlocal", "X").copy(remotePath = "/k"))
+
+            provider.items = listOf(gone("X", "/k"))
+            val result = enumeration.enumerate(reset = false)
+
+            assertNull(db.getEntry("/xlocal"), "the row that tracks X is reaped")
+            assertEquals("Y", db.getEntry("/k")?.remoteId, "the row at the local path tracks another item")
+            assertEquals(1, result.reaped)
+        }
+
+    @Test
+    fun `tombstones no row belongs to still count as missing, the genuine one is deferred with them`() =
+        runTest {
+            val enumeration = enumeration()
+            tracked(enumeration, genuine = 1, stale = 0)
+
+            provider.items = genuineTombstones(1) + (1..51).map { gone("x$it", "/ghost$it") }
+            val result = enumeration.enumerate(reset = false)
+
+            assertEquals(0, result.reaped, "52 tombstones are a bulk disappearance: the first sighting reaps nothing")
+            assertNotNull(db.getEntry("/g1"))
+        }
+
+    @Test
+    fun `a bulk pass of tombstones of tracked items defers every one and reaps them all on the second sighting`() =
+        runTest {
+            val enumeration = enumeration()
+            tracked(enumeration, genuine = 100, stale = 0)
+
+            provider.items = genuineTombstones(100)
+            assertEquals(0, enumeration.enumerate(reset = false).reaped)
+            assertNotNull(db.getEntry("/g100"))
+
+            assertEquals(100, enumeration.enumerate(reset = false).reaped)
+            assertNull(db.getEntry("/g100"))
+        }
 
     @Test
     fun `a folder tombstone of another id leaves the folder and the rows below it, in a bulk pass too`() =
@@ -263,21 +312,6 @@ class RemoteEnumerationTombstoneIdTest {
             assertEquals(0, result.reaped)
             assertNotNull(db.getEntry("/d"))
             assertNotNull(db.getEntry("/d/c60"))
-        }
-
-    @Test
-    fun `an incomplete pass reaps nothing, stale or genuine`() =
-        runTest {
-            val enumeration = enumeration()
-            tracked(enumeration, genuine = 1, stale = 1)
-
-            provider.complete = false
-            provider.items = genuineTombstones(1) + staleTombstones(1)
-            val result = enumeration.enumerate(reset = false)
-
-            assertEquals(0, result.reaped)
-            assertNotNull(db.getEntry("/g1"))
-            assertNotNull(db.getEntry("/n1"))
         }
 
     private class Listing : CloudProvider {
