@@ -114,4 +114,32 @@ class DropboxWalkTombstoneTest {
 
             assertEquals("", provider.delta("c2").items.single().id)
         }
+
+    @Test
+    fun `a full-listing walk feeds the map with nothing`() =
+        runTest {
+            val fake = FakeDropbox()
+            val provider = provider(fake)
+            fake.json("files/list_folder", page(file("/a.txt", "id:1"), file("/b.txt", "id:2"), cursor = "k1", more = true))
+            fake.json("files/list_folder/continue", page(file("/c.txt", "id:3"), cursor = "k2"))
+
+            provider.delta(null)
+            assertEquals(0, provider.walkEntries, "a full listing's tombstones are dropped anyway: no entry per file of the drive (page 1)")
+            provider.delta("k1")
+            assertEquals(0, provider.walkEntries, "(last page)")
+        }
+
+    @Test
+    fun `the map holds the change feed while an incremental walk runs and nothing after its last page`() =
+        runTest {
+            val fake = FakeDropbox()
+            val provider = provider(fake)
+            fake.json("files/list_folder/continue", page(file("/a.txt", "id:1"), cursor = "c2", more = true))
+            fake.json("files/list_folder/continue", page(file("/b.txt", "id:2"), cursor = "c3"))
+
+            provider.delta("c1")
+            assertEquals(1, provider.walkEntries, "the walk is in progress: its entries pair a later delete")
+            provider.delta("c2")
+            assertEquals(0, provider.walkEntries, "the walk ended: an idle daemon keeps nothing")
+        }
 }

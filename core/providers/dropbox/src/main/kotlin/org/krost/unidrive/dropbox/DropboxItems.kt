@@ -28,6 +28,12 @@ internal class DropboxItems {
     /** A new delta walk begins: the ids of the last one say nothing about its deletions. */
     fun beginWalk() = walkIds.clear()
 
+    /** The walk ended: nothing it saw can be the id of a later poll's deletion, and an idle daemon keeps no map. */
+    fun endWalk() = walkIds.clear()
+
+    /** Entries the walk map holds (tests). */
+    val walkSize: Int get() = walkIds.size
+
     /** [inWalk]: a delta page's entry, whose id and deletion go through the walk's map; a probe or a write never does. */
     fun toCloudItem(
         meta: JsonObject,

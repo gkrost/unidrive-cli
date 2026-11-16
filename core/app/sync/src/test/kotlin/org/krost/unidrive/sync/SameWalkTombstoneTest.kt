@@ -87,6 +87,60 @@ class SameWalkTombstoneTest {
     @Test
     fun `streaming - an item created and deleted on two pages leaves nothing`() = createThenDeleteLeavesNothing(true, listOf(listOf(item("id-N", 9)), listOf(item("id-N", 9, deleted = true))))
 
+    // An id-less delete AFTER a live item of the same walk that the provider did not pair (Dropbox's walk map pairs them,
+    // so this feed does not come from it). The gather's winner rule (archive#401/#1089) is a function of the two items
+    // and never of their order: a live item beats a tombstone of another id, and an empty id is another id. Both modes keep
+    // the live item; the planner-level pieces that would delete what landed (Reconciler.deleteOfInFlightDownload, the
+    // streaming buffer keeping an id-less delete) are pinned by InFlightIdlessDeleteTest and StreamingBufferEmptyIdTest,
+    // and are defensive: the final map never offers them a tombstone next to its live item.
+    private fun idlessDeleteAfterCreateKeepsTheLiveItem(
+        streaming: Boolean,
+        pages: List<List<CloudItem>>,
+    ) {
+        val outcome = walk(streaming, before = null, pages = pages, liveAfter = listOf(item("id-N", 9)))
+        assertEquals(9L, outcome.fileSize, "the live item stays whatever the order (streaming=$streaming): $outcome")
+        assertEquals("id-N", outcome.rowId, "(streaming=$streaming): $outcome")
+    }
+
+    private val createThenIdlessDelete = listOf(item("id-N", 9), item("", 0, deleted = true))
+
+    @Test
+    fun `buffered - an id-less delete after the create in one page leaves the same as streaming`() = idlessDeleteAfterCreateKeepsTheLiveItem(false, listOf(createThenIdlessDelete))
+
+    @Test
+    fun `streaming - an id-less delete after the create in one page leaves the same as buffered`() = idlessDeleteAfterCreateKeepsTheLiveItem(true, listOf(createThenIdlessDelete))
+
+    @Test
+    fun `buffered - an id-less delete after the create on two pages leaves the same as streaming`() = idlessDeleteAfterCreateKeepsTheLiveItem(false, createThenIdlessDelete.map { listOf(it) })
+
+    @Test
+    fun `streaming - an id-less delete after the create on two pages leaves the same as buffered`() = idlessDeleteAfterCreateKeepsTheLiveItem(true, createThenIdlessDelete.map { listOf(it) })
+
+    // created A, deleted A, recreated B in one walk: B is what the cloud has
+    private fun recreatedUnderAnotherIdWins(
+        streaming: Boolean,
+        pages: List<List<CloudItem>>,
+    ) {
+        val outcome = walk(streaming, before = null, pages = pages, liveAfter = listOf(item("id-B", 11)))
+        assertEquals(11L, outcome.fileSize, "B's content is at the path (streaming=$streaming): $outcome")
+        assertEquals("id-B", outcome.rowId, "the path tracks B (streaming=$streaming): $outcome")
+        assertTrue(outcome.deletedInCloud.isEmpty(), "the cloud is not touched (streaming=$streaming): $outcome")
+    }
+
+    private val createDeleteRecreate = listOf(item("id-A", 9), item("id-A", 9, deleted = true), item("id-B", 11))
+
+    @Test
+    fun `buffered - created A, deleted A, recreated B in one page leaves B`() = recreatedUnderAnotherIdWins(false, listOf(createDeleteRecreate))
+
+    @Test
+    fun `streaming - created A, deleted A, recreated B in one page leaves B`() = recreatedUnderAnotherIdWins(true, listOf(createDeleteRecreate))
+
+    @Test
+    fun `buffered - created A, deleted A, recreated B on three pages leaves B`() = recreatedUnderAnotherIdWins(false, createDeleteRecreate.map { listOf(it) })
+
+    @Test
+    fun `streaming - created A, deleted A, recreated B on three pages leaves B`() = recreatedUnderAnotherIdWins(true, createDeleteRecreate.map { listOf(it) })
+
     private fun deleteThenCreateKeepsTheLiveItem(
         streaming: Boolean,
         pages: List<List<CloudItem>>,

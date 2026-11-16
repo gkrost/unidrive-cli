@@ -2332,7 +2332,7 @@ private fun deleteOfInFlightDownload(
     landedRemoteId: (String) -> String?,
 ): Boolean =
     remoteState == ChangeState.DELETED && localState == ChangeState.UNCHANGED && entry == null &&
-        landedRemoteId(path) == tombstone.id
+        landedRemoteId(path)?.let { tombstone.id.isEmpty() || it == tombstone.id } == true
 
 // A set that tells its members apart by identity: the actions of a plan are data classes, and two equal ones are
 // still two entries of the plan.
