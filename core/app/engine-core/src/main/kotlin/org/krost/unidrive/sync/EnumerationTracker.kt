@@ -93,7 +93,8 @@ class EnumerationTracker(
 
     /**
      * What the running attempt starts from: whether it is the first one, and the previous complete run if any.
-     * [recovery]: the attempt lists the drive again because the previous scan ended incomplete.
+     * [recovery]: the attempt lists the drive again because the previous scan ended incomplete or held back a bulk deletion
+     * that needs a second full listing.
      */
     fun baseline(
         first: Boolean,

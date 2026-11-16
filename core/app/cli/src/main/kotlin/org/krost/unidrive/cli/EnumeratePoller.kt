@@ -28,8 +28,8 @@ import kotlin.random.Random
  *   capped at [maxBackoffMs], or at the interval when that is longer) — a flat first step repeated forever re-ran a doomed cycle every
  *   ~7 min for hours on the live account (archive#517 R3) — and it reports through [onNextAttempt] when it
  *   will try again (the jittered sleep it really takes) until the next run starts.
- * - A pass that succeeds but leaves the recovery latch set (`EnumerateResult.recoveryPending`: the scan was incomplete, so
- *   the next pass lists the whole drive again) backs off the same way, so a drive that cannot be listed completely is not
+ * - A pass that succeeds but leaves the recovery latch set (`EnumerateResult.recoveryPending`: the scan was incomplete, or a bulk
+ *   deletion it held back needs a second full listing, so the next pass lists the whole drive again) backs off the same way, so a drive that cannot be listed completely is not
  *   listed again one interval after each attempt (archive#926). Unlike a failure it is no `failed` state: no `next_attempt_at_ms`.
  * - [providerReachable] ends a back-off early: when a transfer through the daemon succeeded, the
  *   provider answers again, and the next poll runs one plain interval after the failed one instead
@@ -181,13 +181,14 @@ class EnumeratePoller(
     ): Long =
         when {
             result == null -> intervalMs // busy: another enumerate or a refresh held the profile, skip
-            // archive#926: the pass worked but ended incomplete, and the next one lists the whole drive again
+            // archive#926: the pass worked but left the recovery latch set (it ended incomplete, or it held back a bulk deletion that
+            // needs a second full listing), and the next one lists the whole drive again
             // (EnumerateResult.recoveryPending). A listing takes minutes on a large drive: it must not start
             // again one plain interval after the last one ended, so it backs off like a failure. A pass that
             // ends the recovery (complete, or the same dropped set twice) returns to the plain interval.
             result.ok && result.recoveryPending -> {
                 val backed = (nextMs * backoffMultiplier).coerceAtMost(backoffCapMs)
-                log.warn("auto-poll: the last scan was incomplete and the next one lists the whole drive again; backing off to ${backed}ms")
+                log.warn("auto-poll: the next scan lists the whole drive again (the last scan was incomplete, or a bulk deletion it held back needs a second full listing); backing off to ${backed}ms")
                 backed
             }
             result.ok -> intervalMs

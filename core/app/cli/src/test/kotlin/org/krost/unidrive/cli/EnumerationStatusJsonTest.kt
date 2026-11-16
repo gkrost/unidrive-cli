@@ -146,7 +146,7 @@ class EnumerationStatusJsonTest {
         assertFalse("unreachable_items" in none.keys, "none means absent: $none")
     }
 
-    // archive#926: a running attempt that lists again because the last scan was incomplete says so; the items the last full
+    // archive#926: a running attempt that lists again because the last scan was incomplete or needs a second full listing says so; the items the last full
     // listing did not return stay as a count after it. Both are absent (never false or 0) otherwise.
     @Test
     fun `recovery is true only while it runs and dropped_items is absent when there are none`() {

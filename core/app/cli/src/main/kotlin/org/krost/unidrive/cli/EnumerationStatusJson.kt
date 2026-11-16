@@ -42,7 +42,7 @@ internal fun EnumerationStatus.toJson(): JsonObject =
         skippedPaths?.takeIf { it.isNotEmpty() }?.let { paths ->
             put("skipped_paths", buildJsonArray { paths.forEach { add(it) } })
         }
-        // Present (true) only while a running attempt lists the drive again because the last scan was incomplete.
+        // Present (true) only while a running attempt lists the drive again because the last scan was incomplete or a bulk deletion it held back needs a second full listing.
         if (recovery) put("recovery", true)
         lastError?.let { put("last_error", it) }
         // archive#878: a machine-readable cause (http_408, timeout, auth_rejected); absent when unknown.
