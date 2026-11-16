@@ -485,24 +485,23 @@ class Reconciler(
      * Streaming reconciliation entry point — per-page slice.
      *
      * Runs only the main resolution loop (the `for (path in allPaths)` body
-     * from [reconcile]) on the page's remote items plus the matching local
-     * subset. Returns raw page actions without recovery-loop synthesis,
+     * from [reconcile]) on the page's remote items, each paired with its
+     * local state. Returns raw page actions without recovery-loop synthesis,
      * case-collision detection, move detection, or final sort — those run
      * once at scan-end via [finalizeStreaming] against the union of all
      * page actions plus the deferred-bucket flush.
      *
-     * Why not call [reconcile] per page: the recovery loops iterate
-     * `db.getAllEntries()` and synthesize Download/Upload actions for
-     * every pending row. Running them per page would emit duplicate
-     * actions for every entry on every page boundary. Move detection
-     * also looks across the full action set; per-page detection misses
-     * cross-page moves and double-counts intra-page ones.
+     * Why not call [reconcile] per page: the recovery loops would emit
+     * duplicate actions for every pending row on every page, and move
+     * detection looks across the full action set (per-page detection
+     * misses cross-page moves and double-counts intra-page ones).
      *
      * Local changes scope: pass the FULL local map (LocalScanner runs to
      * completion before streaming starts per spec §1 decision 1). The
-     * slice's allPaths is `pageRemote.keys ∪ localChanges.keys` so a
-     * remote-arrived path can pair with a local-changed path inside the
-     * same page boundary.
+     * slice resolves only `pageRemote.keys`, each against its local state.
+     * A local change no page carries is resolved once at scan-end by
+     * [finalizeStreaming] ([resolveLocalOnly]): a page that does not mention
+     * a path says nothing about its remote state.
      */
     fun resolveSlice(
         pageRemote: Map<String, CloudItem>,
@@ -522,26 +521,46 @@ class Reconciler(
         // disk" as an applied delete: the download lands afterwards and would stay.
         landedRemoteId: (String) -> String? = { null },
     ): List<SyncAction> {
-        val pinRules = db.getPinRules()
-
         // archive#115: alias context, using the stable full-scan top-level set when
         // provided by the streaming gather. Action paths stay real-local; the
         // canonical remote path is carried out-of-band via remoteTarget.
         val alias = buildAliasContext(pageRemote, stableRemoteTopLevelNames)
-
         // Reverse-map this page's remote-delta keys (canonical) into the
         // real-local namespace so they pair with the alias-named local row.
         val pageRemoteLocal =
             if (alias.isEmpty) pageRemote
             else pageRemote.entries.associate { (k, v) -> alias.remoteToLocal(k) to v }
 
+        return resolvePaths(pageRemoteLocal, pageRemoteLocal.keys, localChanges, syncPaths, alias, downloadOnly, landedRemoteId)
+    }
+
+    // Local changes no page carried, resolved once as "remote unchanged" (like [reconcile]) after all pages are in.
+    private fun resolveLocalOnly(
+        alias: AliasContext,
+        carried: Set<String>,
+        fullLocal: Map<String, ChangeState>,
+        syncPaths: List<String>,
+        downloadOnly: Boolean,
+    ): List<SyncAction> {
+        val localOnly = fullLocal.filterKeys { it !in carried }
+        if (localOnly.isEmpty()) return emptyList()
+        return resolvePaths(emptyMap(), localOnly.keys, localOnly, syncPaths, alias, downloadOnly) { null }
+    }
+
+    private fun resolvePaths(
+        pageRemoteLocal: Map<String, CloudItem>,
+        paths: Set<String>,
+        localChanges: Map<String, ChangeState>,
+        syncPaths: List<String>,
+        alias: AliasContext,
+        downloadOnly: Boolean,
+        landedRemoteId: (String) -> String?,
+    ): List<SyncAction> {
+        val pinRules = db.getPinRules()
         val actions = mutableListOf<SyncAction>()
         // The row is read before the ignore filter: a directory-only rule needs the folder facet, and a
         // tombstone on this page must not decide that before the row (or a local directory) is consulted.
-        val candidates =
-            (pageRemoteLocal.keys + localChanges.keys)
-                .filter { path -> excludePatterns.none { pattern -> matchesGlob(path, pattern) } }
-                .filter { SyncScope.contains(it, syncPaths) }
+        val candidates = paths.filter { path -> excludePatterns.none { matchesGlob(path, it) } && SyncScope.contains(path, syncPaths) }
         // archive#316: the loop below looks up exactly the paths this slice asks about, so read only those rows. The batch
         // lookup can return an NFC row under an NFD caller key when both spellings occur in this slice; key by the
         // stored spelling, as the old whole-table map did, and keep only paths this slice asks about.
@@ -557,7 +576,7 @@ class Reconciler(
 
             val remoteState =
                 when {
-                    remoteItem == null -> ChangeState.UNCHANGED
+                    remoteItem == null || isTombstoneOfOtherItem(remoteItem, entry) -> ChangeState.UNCHANGED
                     remoteItem.deleted -> ChangeState.DELETED
                     entry == null -> ChangeState.NEW
                     entry.remoteId == null && entry.remoteHash == null -> ChangeState.NEW
@@ -602,13 +621,13 @@ class Reconciler(
         fullRemote: Map<String, CloudItem>,
         fullLocal: Map<String, ChangeState>,
         syncPaths: List<String> = emptyList(),
-        // archive#160: mirror of the same flag on reconcile(). The streamed actions
-        // from resolveSlice already used this flag; finalizeStreaming receives
-        // it only for completeness (the recovery loops don't call resolveAction).
-        @Suppress("UNUSED_PARAMETER") downloadOnly: Boolean = false,
+        // archive#160: mirror of the same flag on reconcile(); the local-only paths resolved here use it.
+        downloadOnly: Boolean = false,
         // archive#200(b): mirror of the same flag on reconcile() — defer new-local creates
         // when the (cross-page) enumeration that produced fullRemote was incomplete.
         enumerationComplete: Boolean = true,
+        // archive#115: the stable top-level names the pages used; the local-only paths are alias-mapped with the same set.
+        stableRemoteTopLevelNames: Set<String>? = null,
     ): List<SyncAction> {
         val allDbEntries = db.getAllEntries()
         val entryByPath = allDbEntries.associateBy { it.path }
@@ -616,17 +635,16 @@ class Reconciler(
         val caseCollisionKeys = entriesByCaseKey.filterValues { entries -> entries.size > 1 }.keys
         val entryByRemoteId = allDbEntries.mapNotNull { e -> e.remoteId?.let { it to e } }.toMap()
 
-        val actions = streamedActions.toMutableList()
-        val coveredPaths = actions.mapTo(mutableSetOf()) { it.path }
-
-        // archive#115: alias context. Action paths stay real-local; the canonical
+        // archive#115: alias context, the stable set the pages used. Action paths stay real-local; the canonical
         // remote path is carried out-of-band via remoteTarget.
-        val alias = buildAliasContext(fullRemote)
-
-        // Case-collision detection on new local files — see [reconcile] for rationale.
+        val alias = buildAliasContext(fullRemote, stableRemoteTopLevelNames)
         // fullLocal is real-local-keyed; the remote keys are reverse-mapped like reconcile does.
         val fullRemoteLocal =
             if (alias.isEmpty) fullRemote else fullRemote.entries.associate { (k, v) -> alias.remoteToLocal(k) to v }
+        val actions = (streamedActions + resolveLocalOnly(alias, fullRemoteLocal.keys, fullLocal, syncPaths, downloadOnly)).toMutableList()
+        val coveredPaths = actions.mapTo(mutableSetOf()) { it.path }
+
+        // Case-collision detection on new local files — see [reconcile] for rationale.
         val renamedInCase = pairCaseOnlyRenames(actions, fullRemoteLocal, fullLocal, entriesByCaseKey, alias)
         refuseCaseTwins(actions, fullRemoteLocal, fullLocal, entryByPath, entriesByCaseKey, renamedInCase)
         // The move covers the new name: its pending-upload row is no orphan for the recovery below to refuse.

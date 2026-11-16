@@ -1,5 +1,6 @@
 package org.krost.unidrive.sync
 
+import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.model.ChangeState
 import org.krost.unidrive.sync.model.SyncAction
 import org.krost.unidrive.sync.model.SyncEntry
@@ -17,3 +18,12 @@ internal fun withDeleteOfOtherKind(
     val tracked = entry?.takeIf { localState == ChangeState.NEW && remoteState == ChangeState.UNCHANGED && it.remoteId != null }
     return if (tracked != null && tracked.isFolder != isDirectoryOnDisk()) listOf(SyncAction.DeleteRemote(action.path), action) else listOf(action)
 }
+
+// A tombstone paired with the row at its path by path alone says nothing about that row when the ids differ: the row
+// tracks another item (the winner of a name a twin shares, kept under its own id), and the tombstone is the twin's. The
+// gather re-keys a twin's tombstone to the twin's decorated key at scan-end, where it meets its own row. An id-less
+// tombstone (some providers send none) is paired by path, as ever.
+internal fun isTombstoneOfOtherItem(
+    item: CloudItem,
+    entry: SyncEntry?,
+): Boolean = item.deleted && item.id.isNotEmpty() && entry?.remoteId?.let { it != item.id } == true

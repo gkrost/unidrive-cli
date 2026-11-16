@@ -520,16 +520,19 @@ class XdgLocaleAliasingTest {
             "Must NOT emit CreateRemoteFolder for the adopted alias /Bilder; got mkdirs=${mkdirs.map { it.path }}",
         )
 
-        // (b) The upload keeps the real-local path and carries the canonical remoteTarget.
-        val uploads = allActions.filterIsInstance<SyncAction.Upload>()
-        val photoUpload = uploads.find { it.path == "/Bilder/photo.jpg" }
-        assertNotNull(
-            photoUpload,
-            "Upload.path must stay real-local /Bilder/photo.jpg; got uploads=${uploads.map { it.path }}",
-        )
-        assertEquals(
-            "/Pictures/photo.jpg", photoUpload.remoteTarget,
-            "Upload.remoteTarget must be the canonical /Pictures/photo.jpg across all 4 slices",
+        // (b) /Bilder/photo.jpg keeps its real-local path and is reconciled with the remote /Pictures/photo.jpg that page 1
+        // carries (the alias reverse-mapped it), as the buffered reconcile does. It is not planned as a local-only upload
+        // by a page that does not carry it: the plan for the path equals the buffered plan, and no upload without the
+        // canonical remoteTarget is planned.
+        val fullRemote = page1Remote + page2Remote + page3Remote + page4Remote
+        val buffered = reconciler.reconcile(fullRemote, localChanges)
+        val finalized = reconciler.finalizeStreaming(allActions, fullRemote, localChanges, stableRemoteTopLevelNames = stableTopLevelNames)
+        val atPhoto = { actions: List<SyncAction> -> actions.filter { it.path == "/Bilder/photo.jpg" } }
+        assertTrue(atPhoto(buffered).isNotEmpty(), "the oracle plans the aliased file: $buffered")
+        assertEquals(atPhoto(buffered), atPhoto(finalized), "the streamed plan for /Bilder/photo.jpg equals the buffered plan, action by action")
+        assertTrue(
+            finalized.filterIsInstance<SyncAction.Upload>().none { it.remoteTarget != "/Pictures/photo.jpg" },
+            "an upload of the aliased file carries the canonical remoteTarget: $finalized",
         )
     }
 

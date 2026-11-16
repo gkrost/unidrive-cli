@@ -26,11 +26,11 @@ import org.krost.unidrive.sync.model.SyncAction
  *   `detectMissingAfterFullSync` flow: do not destroy local data
  *   on the basis of a single page's view of the remote inventory.
  *
- * Deferred storage is keyed by `(path, action-class)` so a later page
- * supersedes an earlier verdict for the same path (e.g., a `DeleteLocal`
- * issued at page N is overwritten by a `MoveLocal` issued at page N+1
- * when the rename-detection lookahead resolves the same id at a new
- * path). Last-write-wins on the keyed slot.
+ * Deferred storage is keyed by path so a later page supersedes an earlier
+ * verdict for the same path as a whole (e.g., a `DeleteRemote` planned at
+ * page N is replaced by the `Conflict` planned at page N+1 for the same
+ * path, and is never applied beside it). Last verdict wins; the actions
+ * one [classify] call emits for a path stay together.
  *
  * The class is single-thread-from-engine — `gatherRemoteChanges` calls
  * [classify] sequentially as pages arrive, then calls [drainDeferred]
@@ -40,7 +40,7 @@ import org.krost.unidrive.sync.model.SyncAction
  */
 internal class StreamingReconcileBuffer {
     private val deleteLocalClass = SyncAction.DeleteLocal::class.java.simpleName
-    private val deferred = mutableMapOf<Key, SyncAction>()
+    private val deferred = LinkedHashMap<String, MutableMap<String, SyncAction>>()
     private val safePaths = mutableSetOf<String>()
 
     // Path -> remote id of the safe-now action that last landed remote content there
@@ -68,9 +68,15 @@ internal class StreamingReconcileBuffer {
      */
     fun classify(actions: List<SyncAction>): List<SyncAction> {
         val safeNow = mutableListOf<SyncAction>()
+        val replacedPaths = HashSet<String>()
         for (action in actions) {
             if (isDeferred(action)) {
-                deferred[Key(action.path, action::class.java.simpleName)] = action
+                // The verdict of an earlier classify for this path is superseded as a whole: a DeleteRemote an earlier
+                // page planned must not outlive the Conflict a later page plans for the same path. Actions of one
+                // verdict (this call) stay together. (One class per path per call: the reconciler plans one action
+                // of a kind for a path in a slice, so a same-class repeat within a call cannot happen.)
+                if (replacedPaths.add(action.path)) deferred.remove(action.path)
+                deferred.getOrPut(action.path) { LinkedHashMap() }[action::class.java.simpleName] = action
             } else {
                 safeNow.add(action)
                 safePaths.add(action.path)
@@ -95,7 +101,7 @@ internal class StreamingReconcileBuffer {
         // arrived. A delete with no remote id is not a different id, so it stays too.
         // Scoped to the landed remote id (NOT all safePaths): a local Upload for a
         // MODIFIED path must not suppress a genuine remote delete.
-        val out = deferred.values.filterNot { droppedAsRecreate(it) }
+        val out = deferred.values.flatMap { it.values }.filterNot { droppedAsRecreate(it) }
         deferred.clear()
         return out
     }
@@ -104,7 +110,7 @@ internal class StreamingReconcileBuffer {
     fun landedIdAt(path: String): String? = remoteContentIds[path]
 
     /** Union of paths that fired safe-now plus paths buffered as deferred. */
-    fun touchedPaths(): Set<String> = safePaths + deferred.keys.map { it.path }
+    fun touchedPaths(): Set<String> = safePaths + deferred.filterValues { it.isNotEmpty() }.keys
 
     // A tombstone already buffered for this id is older than this live delivery
     // (delete, then the same item restored). The last delivery wins, so that
@@ -113,10 +119,9 @@ internal class StreamingReconcileBuffer {
     private fun recordLanded(action: SyncAction) {
         val landed = landedRemoteId(action) ?: return
         remoteContentIds[action.path] = landed
-        val pending = deferred[Key(action.path, deleteLocalClass)] as? SyncAction.DeleteLocal
-        if (pending != null && pending.remoteId == landed) {
-            deferred.remove(Key(action.path, deleteLocalClass))
-        }
+        val atPath = deferred[action.path] ?: return
+        val pending = atPath[deleteLocalClass] as? SyncAction.DeleteLocal
+        if (pending != null && pending.remoteId == landed) atPath.remove(deleteLocalClass)
     }
 
     // A DeleteLocal is a recreate only when its tombstone id differs from the id that
@@ -128,11 +133,6 @@ internal class StreamingReconcileBuffer {
         val tombstoneId = delete.remoteId ?: return false
         return tombstoneId != landedId
     }
-
-    private data class Key(
-        val path: String,
-        val actionClass: String,
-    )
 
     companion object {
         /**
