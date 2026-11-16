@@ -1053,6 +1053,58 @@ class RemoteEnumerationTest {
         }
 
     @Test
+    fun `a bulk deletion a full listing held back with the latch unset is corroborated by the next pass and reaped once`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = (1..200).map { file("id$it", "/f$it.txt") }
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            assertEquals("false", latch(), "the first complete full listing is trusted: the latch is not set")
+
+            // A reset lists the whole drive again; 60 of 200 are gone, above max(50, 20% = 40), so the reaps wait.
+            provider.items = (1..140).map { file("id$it", "/f$it.txt") }
+            val held = enumeration.enumerate(reset = true)
+
+            assertEquals(0, held.reaped)
+            assertNotNull(db.getEntry("/f150.txt"), "held back, not reaped")
+
+            // The next pass must list the drive again to corroborate: an incremental pass would not report the paths.
+            val corroborated = enumeration.enumerate(reset = false)
+
+            assertEquals(listOf<String?>(null, null, null), provider.cursors, "the pass after the held one lists from zero")
+            assertEquals(60, corroborated.reaped)
+            assertNull(db.getEntry("/f150.txt"), "the file the cloud no longer has is removed from the state")
+            assertEquals("false", latch(), "corroborated and reaped: the listing is trusted")
+
+            val later = enumeration.enumerate(reset = false)
+            assertEquals(0, later.reaped, "a deletion is reaped exactly once")
+        }
+
+    @Test
+    fun `a bulk deletion a full listing held back is never reaped by an incomplete pass`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = (1..200).map { file("id$it", "/f$it.txt") }
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+
+            provider.items = (1..140).map { file("id$it", "/f$it.txt") }
+            enumeration.enumerate(reset = true)
+
+            // The corroborating listing ends incomplete: nothing may be reaped on it.
+            provider.complete = false
+            val incomplete = enumeration.enumerate(reset = false)
+            assertEquals(0, incomplete.reaped)
+            assertNotNull(db.getEntry("/f150.txt"), "an incomplete pass reaps nothing")
+
+            // The incomplete pass forgot the corroboration: the next complete listing defers again instead of reaping.
+            provider.complete = true
+            val complete = enumeration.enumerate(reset = false)
+            assertEquals(0, complete.reaped)
+            assertNotNull(db.getEntry("/f150.txt"), "no corroboration survived the incomplete pass")
+        }
+
+    @Test
     fun `the recovery latch is settled by one rule, and every condition of it is needed`() {
         val gather = gather()
 
