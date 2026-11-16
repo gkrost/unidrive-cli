@@ -2331,8 +2331,7 @@ open class SyncEngine(
                         val resolved = resolveItemPath(item) ?: continue
                         changes[resolved.path] = resolved
                     }
-                    cursorState.setDeltaCursor(page.cursor)
-                    cursorState.stampFullScan()
+                    cursorState.adoptBootstrapCursor(page.cursor)
                     // See the non-streaming `gatherRemoteChanges` fast-bootstrap path
                     // for rationale. Stale `scan_in_progress_*` offsets index into a
                     // different result set than the new cursor=now delta returns.
