@@ -686,8 +686,7 @@ class RemoteGather(
                         // usual "pending → delta after zero failures" dance is skipped —
                         // otherwise syncOnce's `if (actions.isEmpty()) return` short-circuits
                         // the promotion and the next run re-bootstraps forever.
-                        cursorState.setDeltaCursor(page.cursor)
-                        cursorState.stampFullScan()
+                        cursorState.adoptBootstrapCursor(page.cursor)
                         // Invalidate any in-progress scan checkpoint. The offsets persisted
                         // in `scan_in_progress_marker` correspond to the previous gather's
                         // cursor (cursor=null full enum, or an earlier delta cursor); they

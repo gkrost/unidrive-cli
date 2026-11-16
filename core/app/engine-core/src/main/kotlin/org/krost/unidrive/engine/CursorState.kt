@@ -80,6 +80,20 @@ class CursorState(
     fun stampFullScan() = db.setSyncState(LAST_FULL_SCAN, Instant.now().toString())
 
     /**
+     * A fast bootstrap adopts the remote's latest [cursor] straight away: the delta cursor moves to it, and the pending
+     * state is made to agree with it (same pending cursor, complete, nothing skipped) so the caller's later [promote]
+     * cannot put an older pending cursor, left by a gather that died or by a `refresh`, over it (#745). Stamps
+     * `last_full_scan` like the bootstrap always did; a later [promote] stamps it again, which only moves it forward.
+     */
+    fun adoptBootstrapCursor(cursor: String) {
+        setDeltaCursor(cursor)
+        setPendingCursor(cursor)
+        setPendingComplete(true)
+        setSkippedPaths("")
+        stampFullScan()
+    }
+
+    /**
      * Moves the pending cursor to the delta cursor, unconditionally (archive#523), and stamps `last_full_scan` when the
      * gather was complete. Absent completeness counts as complete here, and only the exact text `"true"` does otherwise:
      * `"TRUE"` or any other text does not stamp. No pending cursor: nothing changes.
