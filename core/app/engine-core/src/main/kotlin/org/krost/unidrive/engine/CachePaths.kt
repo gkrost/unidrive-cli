@@ -77,6 +77,10 @@ object CachePaths {
         private val present = HashMap<Path, Path>()
         private val absent = HashSet<Path>()
 
+        // Real-path resolutions this pass has made (a filesystem walk each): what its tests count.
+        internal var realPathCalls = 0
+            private set
+
         /**
          * The cache file of [logicalPath] below the folder, normalised; the rules and the [SecurityException] of
          * [CachePaths.resolveInside], answered through this pass.
@@ -156,6 +160,33 @@ object CachePaths {
             return if (attributes.isRegularFile) attributes.size() else Files.size(resolveInside(logicalPath))
         }
 
+        /**
+         * Whether the cache holds a file for [logicalPath]: `Files.exists(resolveInside(path))`, with the containment
+         * and the [SecurityException] of [resolveInside], at the price of one attribute read per file. The folder
+         * above is resolved and checked once per pass ([sizeOf] does the same), and the entry itself is read as the
+         * entry it is, links not followed, with no exception for the absent case (`readAttributesIfExists` answers
+         * null). The odd cases (a name with a `:`, a folder above that is absent or unresolvable, an entry that is a
+         * link or neither file nor folder) take the full walk, whose answers they keep.
+         */
+        fun exists(logicalPath: String): Boolean {
+            val absolute = absoluteInside(logicalPath)
+            val name = absolute.fileName
+            val parent = absolute.parent
+            if (name == null || parent == null || ':' in name.toString()) return Files.exists(resolveInside(logicalPath))
+            val realFolder = folderReal() ?: return Files.exists(resolveInside(logicalPath))
+            if (probe(parent) != Probe.EXISTS) return Files.exists(resolveInside(logicalPath))
+            val realParent = present.getValue(parent)
+            if (realParent != realFolder && !realParent.startsWith(realFolder)) throw refused(logicalPath)
+            val entry = realParent.resolve(name)
+            val attributes =
+                entry.fileSystem.provider().readAttributesIfExists(
+                    entry,
+                    java.nio.file.attribute.BasicFileAttributes::class.java,
+                    LinkOption.NOFOLLOW_LINKS,
+                ) ?: return false
+            return if (attributes.isRegularFile || attributes.isDirectory) true else Files.exists(resolveInside(logicalPath))
+        }
+
         // The first check of [resolveInside], before any filesystem access: the spelling leads into the folder.
         private fun absoluteInside(logicalPath: String): Path {
             val absolute =
@@ -192,6 +223,7 @@ object CachePaths {
             }
             val real =
                 try {
+                    realPathCalls++
                     path.toRealPath()
                 } catch (_: IOException) {
                     return Probe.UNRESOLVED
@@ -208,6 +240,7 @@ object CachePaths {
                 var real: Path? = null
                 var missing = false
                 try {
+                    realPathCalls++
                     real = root.toRealPath()
                 } catch (_: NoSuchFileException) {
                     missing = true
