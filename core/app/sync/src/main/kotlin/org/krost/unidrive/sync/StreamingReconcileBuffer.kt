@@ -73,7 +73,8 @@ internal class StreamingReconcileBuffer {
             if (isDeferred(action)) {
                 // The verdict of an earlier classify for this path is superseded as a whole: a DeleteRemote an earlier
                 // page planned must not outlive the Conflict a later page plans for the same path. Actions of one
-                // verdict (this call) stay together.
+                // verdict (this call) stay together. (One class per path per call: the reconciler plans one action
+                // of a kind for a path in a slice, so a same-class repeat within a call cannot happen.)
                 if (replacedPaths.add(action.path)) deferred.remove(action.path)
                 deferred.getOrPut(action.path) { LinkedHashMap() }[action::class.java.simpleName] = action
             } else {

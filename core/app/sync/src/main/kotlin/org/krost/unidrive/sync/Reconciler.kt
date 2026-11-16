@@ -576,7 +576,7 @@ class Reconciler(
 
             val remoteState =
                 when {
-                    remoteItem == null -> ChangeState.UNCHANGED
+                    remoteItem == null || isTombstoneOfOtherItem(remoteItem, entry) -> ChangeState.UNCHANGED
                     remoteItem.deleted -> ChangeState.DELETED
                     entry == null -> ChangeState.NEW
                     entry.remoteId == null && entry.remoteHash == null -> ChangeState.NEW

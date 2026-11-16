@@ -491,7 +491,7 @@ open class SyncEngine(
         }
 
     // The remote top-level folder names of the last streamed gather: finalizeStreaming alias-maps with the set the pages used.
-    private var streamedTopLevelNames: Set<String>? = null
+    internal var streamedTopLevelNames: Set<String>? = null
 
     // archive#116: per-run cache of the remote root's direct children indexed by name,
     // populated lazily on the first top-level CreateRemoteFolder while
@@ -2279,6 +2279,7 @@ open class SyncEngine(
         executedPaths: MutableSet<String>,
         transferSemaphore: kotlinx.coroutines.sync.Semaphore,
     ): Triple<Map<String, CloudItem>, List<SyncAction>, Map<String, ChangeState>> = withContext(Priority.Background) {
+        streamedTopLevelNames = null // an early return (fast bootstrap) must not hand finalizeStreaming the last pass's set
         val resolvedLocal = java.util.concurrent.atomic.AtomicReference(localChanges ?: emptyMap())
         val deferUntilListing = localChanges == null
         val retryIncompleteEnumeration =
@@ -2309,10 +2310,9 @@ open class SyncEngine(
         // action that differs (a fresher remote version) is kept. Local changes no page carries are not planned by
         // pages at all (#743): finalizeStreaming plans them once, so they start in Pass 2, not during the gather.
         val accumulatedOnce = HashSet<SyncAction>()
-        // A DownloadContent or an Upload can recur across pages (a path carried again). Without a precheck the
-        // executor would launch one dispatch per recurrence. executedPaths only fills in post-completion, so it
-        // can't dedup the in-flight sends. Claim the path here, before the send, so two pages can never both
-        // forward the same transfer. Lives for the gather only; Pass 2 dedups separately via executedPaths.
+        // A DownloadContent or an Upload can recur across pages (a path carried again) and executedPaths only fills in
+        // post-completion, so claim the path here, before the send: two pages can never both forward the same
+        // transfer. Lives for the gather only; Pass 2 dedups separately via executedPaths.
         val sentToExecutor =
             java.util.concurrent.ConcurrentHashMap
                 .newKeySet<String>()
@@ -2773,8 +2773,7 @@ open class SyncEngine(
         // every re-keyed item is planned here at its own key, with the resolution the pages get.
         val keyedBefore = HashMap(changes)
         remoteGather.placeTwins(changes, collisions, isFullSync)
-        // A re-keyed tombstone too: no page carried its new key and scan-end counts that key as carried, so this is the
-        // only place a local change at it meets the item.
+        // A re-keyed tombstone too: scan-end counts its new key as carried, so only this meets a local change there.
         val rekeyed = changes.filter { (key, item) -> keyedBefore[key]?.id != item.id }
         if (rekeyed.isNotEmpty()) {
             safeAccumulator.removeAll { action ->
