@@ -51,7 +51,7 @@ internal suspend fun isLocalFileWithoutBaseline(
             false
         } else {
             try {
-                compareContent() ?: return !stampedByThisEngine(row, localPath, size, remote)
+                compareContent() ?: return !stampedByThisEngine(row, localPath, size)
             } catch (_: java.io.IOException) {
                 false
             }
@@ -64,11 +64,10 @@ private fun stampedByThisEngine(
     row: SyncEntry?,
     localPath: Path,
     size: Long,
-    remote: CloudItem,
 ): Boolean {
     val stamp = row?.remoteModified ?: return false
     return !row.isHydrated && row.localMtime == null && row.localSize == null &&
-        size == row.remoteSize && size == remote.size &&
+        size == row.remoteSize &&
         try {
             Files.getLastModifiedTime(localPath).toMillis() == stamp.toEpochMilli()
         } catch (_: java.io.IOException) {

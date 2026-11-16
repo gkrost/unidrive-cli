@@ -288,6 +288,78 @@ class DownloadOverUnbaselinedFileEdgeCasesTest {
         }
 
     @Test
+    fun `without a hash an mtime off by one millisecond is kept`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val local = withStamp(sameLengthOtherBytes, remoteModified.plusMillis(1))
+            db.upsertEntry(unhydratedRow())
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, sameLengthOtherBytes)
+        }
+
+    @Test
+    fun `without a hash an mtime off by one second is kept`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val local = withStamp(sameLengthOtherBytes, remoteModified.plusSeconds(1))
+            db.upsertEntry(unhydratedRow())
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, sameLengthOtherBytes)
+        }
+
+    @Test
+    fun `without a hash a row remote size that differs from the file is kept`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val local = withStamp(sameLengthOtherBytes)
+            db.upsertEntry(unhydratedRow().copy(remoteSize = remoteBytes.size + 1L))
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, sameLengthOtherBytes)
+        }
+
+    @Test
+    fun `without a hash a row with only a local mtime is kept`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val local = withStamp(sameLengthOtherBytes)
+            db.upsertEntry(unhydratedRow(localMtime = 1L))
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, sameLengthOtherBytes)
+        }
+
+    @Test
+    fun `without a hash a row with only a local size is kept`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val local = withStamp(sameLengthOtherBytes)
+            db.upsertEntry(unhydratedRow(localSize = 1L))
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, sameLengthOtherBytes)
+        }
+
+    @Test
+    fun `without a hash a row with no remote mtime is kept`() =
+        runTest {
+            provider.hashAlgorithmOverride = null
+            val local = withStamp(sameLengthOtherBytes)
+            db.upsertEntry(unhydratedRow().copy(remoteModified = null))
+
+            engine.applyDownload(SyncAction.DownloadContent("/notes.md", remoteItem()))
+
+            assertKeptAsConflictCopy(local, sameLengthOtherBytes)
+        }
+
+    @Test
     fun `without a hash the right mtime at another size is kept`() =
         runTest {
             provider.hashAlgorithmOverride = null
