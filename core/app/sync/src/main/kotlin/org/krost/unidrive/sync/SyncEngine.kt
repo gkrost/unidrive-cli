@@ -5365,13 +5365,13 @@ open class SyncEngine(
                 .resolve("unidrive/hydration")
                 // archive#135: the same canonical disk name the IPC socket uses, so the two never
                 // disagree about what identifies a profile on disk for long profile names.
-                .resolve(IpcServer.canonicalDiskName(cacheKey.ifBlank { "default" }, IpcServer.defaultSocketDirectory()))
+                .resolve(IpcServer.canonicalDiskName(cacheKey.ifBlank { "default" }, IpcServer.diskNameDirectory()))
 
         /** archive#660: where a mount keeps the rule files it downloaded only to read them (beside the hydration cache, not in it). */
         fun ignoreRuleFilesRoot(cacheRoot: Path, cacheKey: String): Path =
             cacheRoot
                 .resolve("unidrive/ignore-rules")
-                .resolve(IpcServer.canonicalDiskName(cacheKey.ifBlank { "default" }, IpcServer.defaultSocketDirectory()))
+                .resolve(IpcServer.canonicalDiskName(cacheKey.ifBlank { "default" }, IpcServer.diskNameDirectory()))
 
         /** Move a pre-canonical profile cache into the new directory before the daemon scans it. */
         fun migrateLegacyHydrationCacheRoot(cacheRoot: Path, cacheKey: String) {
