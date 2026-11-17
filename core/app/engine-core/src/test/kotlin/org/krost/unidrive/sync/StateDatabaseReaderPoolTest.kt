@@ -16,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Readers of the state database do not wait for its writer: a merge chunk or a staged clear holds the monitor for
@@ -29,7 +30,7 @@ class StateDatabaseReaderPoolTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-reader-pool")
+        dir = TestScratch.directory("unidrive-reader-pool")
         db = StateDatabase(dir.resolve("state.db"))
         db.initialize()
     }

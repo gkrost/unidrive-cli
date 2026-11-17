@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The write token of an item is the Graph eTag, kept apart from the content hash: a listed item carries it in
@@ -22,7 +23,7 @@ import kotlin.test.assertTrue
  * kept-both copy marked as such.
  */
 class OneDriveWriteTokenTest {
-    private val tmp = Files.createTempDirectory("ud-onedrive-write-token")
+    private val tmp = TestScratch.directory("ud-onedrive-write-token")
 
     @BeforeTest
     fun setUp() {

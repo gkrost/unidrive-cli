@@ -18,6 +18,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#560 U1: what `refresh.run` does with state.db today, by route. RefreshRoutingTest pins which engine entry point
@@ -31,8 +32,8 @@ class RefreshRoutingCurrentBehaviourTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("ud-560-route-db").resolve("state.db")).also { it.initialize() }
-        server = IpcServer(Files.createTempDirectory("ud-560-route-sock").resolve("d.sock"))
+        db = StateDatabase(TestScratch.directory("ud-560-route-db").resolve("state.db")).also { it.initialize() }
+        server = IpcServer(TestScratch.directory("ud-560-route-sock").resolve("d.sock"))
         // A synced row and a pending upload written through the mount (never uploaded).
         db.upsertEntry(row("/synced.txt", remoteId = "id-1"))
         db.upsertEntry(row("/pending.txt", remoteId = null))

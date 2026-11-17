@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.AppenderBase
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import java.nio.file.Files
@@ -34,7 +35,7 @@ class TelemetryWritersLogContextTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("telemetry-log-context-test")
+        dir = TestScratch.directory("telemetry-log-context-test")
         appender.start()
         loggers.forEach {
             it.level = Level.DEBUG

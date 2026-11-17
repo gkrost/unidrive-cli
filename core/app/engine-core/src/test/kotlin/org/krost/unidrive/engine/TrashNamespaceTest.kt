@@ -7,6 +7,7 @@ import ch.qos.logback.core.read.ListAppender
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.time.Instant
@@ -69,7 +70,7 @@ class TrashNamespaceTest {
     )
 
     private fun withDb(block: (StateDatabase) -> Unit) {
-        val dir = Files.createTempDirectory("trash-namespace-db")
+        val dir = TestScratch.directory("trash-namespace-db")
         val db = StateDatabase(dir.resolve("state.db"))
         db.initialize()
         try {
@@ -398,7 +399,7 @@ class TrashNamespaceTest {
 
     @Test
     fun `the root is read back from state db and gone when its row is`() {
-        val dir = Files.createTempDirectory("trash-namespace-db")
+        val dir = TestScratch.directory("trash-namespace-db")
         val db = StateDatabase(dir.resolve("state.db"))
         db.initialize()
         try {

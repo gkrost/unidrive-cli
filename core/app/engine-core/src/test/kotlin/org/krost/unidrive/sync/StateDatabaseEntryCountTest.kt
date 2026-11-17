@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The enumeration asks for the number of alive rows twice per pass, and each ask was a `COUNT(*)` of the whole table
@@ -34,7 +35,7 @@ class StateDatabaseEntryCountTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-entry-count")
+        dir = TestScratch.directory("unidrive-entry-count")
         dbFile = dir.resolve("state.db")
         db = open()
     }

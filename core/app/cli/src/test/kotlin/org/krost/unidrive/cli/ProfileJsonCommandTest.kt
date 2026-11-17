@@ -12,6 +12,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import org.krost.unidrive.engine.NameKey
 import org.krost.unidrive.sync.SyncConfig
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -41,7 +42,7 @@ class ProfileJsonCommandTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("profile-json")
+        dir = TestScratch.directory("profile-json")
         System.setOut(PrintStream(out, true, Charsets.UTF_8))
         System.setErr(PrintStream(err, true, Charsets.UTF_8))
     }

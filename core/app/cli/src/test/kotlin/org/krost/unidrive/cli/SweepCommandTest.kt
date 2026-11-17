@@ -2,6 +2,7 @@ package org.krost.unidrive.cli
 
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.RandomAccessFile
 import java.lang.reflect.Method
@@ -20,7 +21,7 @@ import kotlin.test.*
 class SweepCommandTest {
     @Test
     fun `mirror sweep can mark a stub for the next sync`() {
-        val config = Files.createTempDirectory("sweep-mirror")
+        val config = TestScratch.directory("sweep-mirror")
         try {
             val root = Files.createDirectories(config.resolve("root"))
             Files.write(root.resolve("stub.bin"), ByteArray(1000))
@@ -67,8 +68,8 @@ class SweepCommandTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-sweep-test")
-        val dbPath = Files.createTempDirectory("unidrive-sweep-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-sweep-test")
+        val dbPath = TestScratch.directory("unidrive-sweep-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
     }

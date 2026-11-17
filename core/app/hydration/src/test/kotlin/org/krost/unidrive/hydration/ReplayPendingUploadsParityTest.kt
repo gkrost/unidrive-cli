@@ -13,6 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#560 U1: which pending rows the start-up replay picks. `StateDatabase.pendingUploadPaths()` returns every alive,
@@ -25,9 +26,9 @@ class ReplayPendingUploadsParityTest {
     @Test
     fun `a permanent refusal releases the slot and survives a database reopen until content changes`() =
         runTest {
-            val syncRoot = Files.createTempDirectory("refusal-root")
-            val cacheRoot = Files.createTempDirectory("refusal-cache")
-            val dbPath = Files.createTempDirectory("refusal-db").resolve("state.db")
+            val syncRoot = TestScratch.directory("refusal-root")
+            val cacheRoot = TestScratch.directory("refusal-cache")
+            val dbPath = TestScratch.directory("refusal-db").resolve("state.db")
             val provider = MinimalFakeProvider()
             provider.uploadRefusedRemaining.set(1)
             var db = StateDatabase(dbPath)
@@ -72,9 +73,9 @@ class ReplayPendingUploadsParityTest {
     @Test
     fun `replay uploads the mount-written row with a cache copy and skips the LocalScanner row without one`() =
         runTest {
-            val syncRoot = Files.createTempDirectory("ud-560-replay-root")
-            val cacheRoot = Files.createTempDirectory("ud-560-replay-cache")
-            val db = StateDatabase(Files.createTempDirectory("ud-560-replay-db").resolve("state.db"))
+            val syncRoot = TestScratch.directory("ud-560-replay-root")
+            val cacheRoot = TestScratch.directory("ud-560-replay-cache")
+            val db = StateDatabase(TestScratch.directory("ud-560-replay-db").resolve("state.db"))
             db.initialize()
             try {
                 val provider = MinimalFakeProvider()

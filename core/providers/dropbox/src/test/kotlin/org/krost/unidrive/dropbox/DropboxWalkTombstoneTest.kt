@@ -7,6 +7,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A deleted entry names no item, so it carries an empty id and pairs with the row by path (DropboxTombstoneIdTest). The
@@ -16,7 +17,7 @@ import kotlin.test.assertTrue
  * lives for one walk: a later poll, a probe and a restart never feed it.
  */
 class DropboxWalkTombstoneTest {
-    private val dir = Files.createTempDirectory("dropbox-walk-tombstone")
+    private val dir = TestScratch.directory("dropbox-walk-tombstone")
 
     private fun provider(fake: FakeDropbox) = FakeDropbox.provider(fake, dir)
 

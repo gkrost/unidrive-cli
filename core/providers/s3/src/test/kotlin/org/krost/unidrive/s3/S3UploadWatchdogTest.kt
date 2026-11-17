@@ -11,13 +11,14 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * An S3 PUT or part PUT that the endpoint never answers is cut by the write-progress watchdog after the response wait,
  * not after the whole request budget (tens of minutes at the floor throughput).
  */
 class S3UploadWatchdogTest {
-    private val dir = Files.createTempDirectory("s3-watchdog")
+    private val dir = TestScratch.directory("s3-watchdog")
 
     private fun api(): S3Api {
         val engine =

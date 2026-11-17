@@ -19,6 +19,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The hold-time diagnostic of the database monitor: a recording of a large scan named who waited for the monitor
@@ -32,7 +33,7 @@ class StateDatabaseHoldTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-hold-test")
+        dir = TestScratch.directory("unidrive-hold-test")
         db = StateDatabase(dir.resolve("state.db"))
         db.initialize()
         db.holds.reset() // the schema work of initialize() is not what these tests are about

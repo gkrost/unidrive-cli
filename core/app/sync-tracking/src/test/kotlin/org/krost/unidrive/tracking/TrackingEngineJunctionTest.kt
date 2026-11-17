@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A subtree the local walk does not enter (behind a junction) is unobserved, not deleted: the files tracked below it keep
@@ -26,7 +27,7 @@ class TrackingEngineJunctionTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-junction")
+        workDir = TestScratch.directory("tracking-junction")
         syncRoot = Files.createDirectories(workDir.resolve("sync-root"))
         outside = workDir.resolve("outside")
         provider = FakeTrackingProvider()

@@ -20,6 +20,7 @@ import org.krost.unidrive.internxt.TfaRequiredException
 import org.krost.unidrive.internxt.model.InternxtCredentials
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.sync.ProcessLock
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -106,7 +107,7 @@ class AuthLifecycleTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("auth-lifecycle")
+        dir = TestScratch.directory("auth-lifecycle")
         LifecycleHooks.terminalPassword = { null } // never the developer's own console
         // Never the real socket folder: a test that wants a daemon starts a fake one (FakeDaemon).
         LogoutHooks.socketPath = { dir.resolve("no-daemon").resolve("$it.sock") }
@@ -821,7 +822,7 @@ class AuthLifecycleTest {
         handlers: Map<String, (String) -> String>,
     ) : AutoCloseable {
         private val profileDir: Path = Files.createDirectories(dir.resolve(profile))
-        private val socketDir: Path = Files.createTempDirectory("auth-daemon")
+        private val socketDir: Path = TestScratch.directory("auth-daemon")
         private val lock = ProcessLock(profileDir.resolve(".lock")).also { assertTrue(it.tryLock(ProcessLock.Mode.DAEMON)) }
         private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
         private val server: org.krost.unidrive.sync.IpcServer

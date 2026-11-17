@@ -34,6 +34,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** The history read verbs without a socket: parsing, paging, the byte cap, the tail and its `lost` marker, and the unavailable replies. */
 class HistoryRpcHandlerTest {
@@ -46,7 +47,7 @@ class HistoryRpcHandlerTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("history-rpc-test")
+        dir = TestScratch.directory("history-rpc-test")
         db = dir.resolve("telemetry.db")
     }
 

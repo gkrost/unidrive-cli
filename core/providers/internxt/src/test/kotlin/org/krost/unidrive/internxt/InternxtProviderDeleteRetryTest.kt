@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.runTest
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The routine delete (InternxtProvider.delete) is getMetadata plus api.trashItems with no reconcile behind it, so a
@@ -56,7 +57,7 @@ class InternxtProviderDeleteRetryTest {
 
     private suspend fun deleteWith(vararg trashAnswers: HttpStatusCode): Int {
         val trashRequests = AtomicInteger(0)
-        val tmp = java.nio.file.Files.createTempDirectory("ud-delete-retry-")
+        val tmp = TestScratch.directory("ud-delete-retry-")
         try {
             val payloadB64 =
                 java.util.Base64

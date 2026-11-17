@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A [StateDatabase.batch] that ends in a throw leaves no row behind, whatever it throws. JDBC commits the open
@@ -23,7 +24,7 @@ class StateDatabaseBatchErrorTest {
 
     @BeforeTest
     fun setUp() {
-        dbFile = Files.createTempDirectory("unidrive-batch-error").resolve("state.db")
+        dbFile = TestScratch.directory("unidrive-batch-error").resolve("state.db")
         db = StateDatabase(dbFile)
         db.initialize()
     }

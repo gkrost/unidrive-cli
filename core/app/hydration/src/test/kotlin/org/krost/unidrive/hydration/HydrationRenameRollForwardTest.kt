@@ -23,6 +23,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1040 M4 (the owner's decision of 2026-10-28, roll forward): a rename whose cloud move succeeded stands, even when the
@@ -149,11 +150,11 @@ class HydrationRenameRollForwardTest {
     private class Rig(
         private val scope: TestScope,
         val drive: MovingDrive = MovingDrive(),
-        private val dbFile: Path = Files.createTempDirectory("unidrive-m4-db").resolve("state.db"),
-        private val cacheRoot: Path = Files.createTempDirectory("unidrive-m4-cache"),
+        private val dbFile: Path = TestScratch.directory("unidrive-m4-db").resolve("state.db"),
+        private val cacheRoot: Path = TestScratch.directory("unidrive-m4-cache"),
     ) {
         val db = StateDatabase(dbPath = dbFile).also { it.initialize() }
-        val engine = SyncEngine(provider = drive, db = db, syncRoot = Files.createTempDirectory("unidrive-m4-sync"), cacheRoot = cacheRoot)
+        val engine = SyncEngine(provider = drive, db = db, syncRoot = TestScratch.directory("unidrive-m4-sync"), cacheRoot = cacheRoot)
         val impl = HydrationImpl(engine, db, recoveryUploadScope = scope, uploadStallTimeoutMs = 0L)
 
         fun cache(path: String): Path = engine.resolveCachePath(path)

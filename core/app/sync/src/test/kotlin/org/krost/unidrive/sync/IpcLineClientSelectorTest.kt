@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#456: on a non-blocking channel the client waits for readiness in a selector instead of
@@ -26,7 +27,7 @@ class IpcLineClientSelectorTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("ud-line-sel-")
+        dir = TestScratch.directory("ud-line-sel-")
         server = ServerSocketChannel.open(StandardProtocolFamily.UNIX).bind(UnixDomainSocketAddress.of(dir.resolve("s.sock")))
     }
 

@@ -19,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#318: ensureHydrated serialises the warm-cache check + download per path, and
@@ -37,9 +38,9 @@ class EnsureHydratedConcurrencyTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-318-root")
-        cacheRoot = Files.createTempDirectory("ud-318-cache")
-        db = StateDatabase(Files.createTempDirectory("ud-318-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-318-root")
+        cacheRoot = TestScratch.directory("ud-318-cache")
+        db = StateDatabase(TestScratch.directory("ud-318-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine =

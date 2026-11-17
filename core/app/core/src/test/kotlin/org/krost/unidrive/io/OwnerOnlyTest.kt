@@ -19,13 +19,14 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class OwnerOnlyTest {
     private lateinit var parent: Path
 
     @BeforeTest
     fun setUp() {
-        parent = Files.createTempDirectory("unidrive-owner-only-")
+        parent = TestScratch.directory("unidrive-owner-only-")
     }
 
     @AfterTest

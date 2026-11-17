@@ -8,6 +8,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /** ScanTimings stores the per-phase scan seconds and counts under the stored names (gkrost/unidrive-cli#269). */
 class ScanTimingsTest {
@@ -17,7 +18,7 @@ class ScanTimingsTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-scan-timings")
+        tmp = TestScratch.directory("unidrive-scan-timings")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
         timings = ScanTimings(db)

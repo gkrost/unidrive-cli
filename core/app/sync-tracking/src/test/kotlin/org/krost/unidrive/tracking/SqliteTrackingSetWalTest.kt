@@ -4,12 +4,13 @@ import java.nio.file.Files
 import java.sql.DriverManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /** #222: tracking.db runs in WAL like state.db, so a CLI command reading it does not fail the daemon's write. */
 class SqliteTrackingSetWalTest {
     @Test
     fun `the file runs in WAL and the mode stays with the file`() {
-        val dir = Files.createTempDirectory("tracking-wal")
+        val dir = TestScratch.directory("tracking-wal")
         try {
             val dbPath = dir.resolve("tracking.db")
             val tracking = SqliteTrackingSet(dbPath).also { it.initialize() }

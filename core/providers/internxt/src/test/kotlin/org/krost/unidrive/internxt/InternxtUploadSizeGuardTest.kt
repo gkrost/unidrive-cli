@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Candidate P2 of the audit: the size a file is created with must be the size of the bytes that were sent. The upload reads
@@ -19,9 +20,9 @@ class InternxtUploadSizeGuardTest {
     @Test
     fun `a source that grows between sizing and encrypting is not created with the old size`() =
         runTest {
-            val tmp = Files.createTempDirectory("ud-size-guard-")
+            val tmp = TestScratch.directory("ud-size-guard-")
             try {
-                val local = Files.createTempFile(tmp, "src-", ".bin").also { Files.write(it, ByteArray(16) { b -> b.toByte() }) }
+                val local = TestScratch.file(tmp, "src-", ".bin").also { Files.write(it, ByteArray(16) { b -> b.toByte() }) }
                 val drive = UploadDrive()
                 val provider = rootedInternxtProvider(tmp, drive.engine)
                 try {

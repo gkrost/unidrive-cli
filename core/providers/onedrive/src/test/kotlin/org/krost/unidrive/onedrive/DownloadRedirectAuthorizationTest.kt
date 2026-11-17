@@ -13,6 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The bearer token must not leave Graph. A download of an item without a pre-authenticated URL asks
@@ -57,7 +58,7 @@ class DownloadRedirectAuthorizationTest {
                     httpClient = graphHttpClient(RequestMetricsTap(), OneDriveConfig.DEFAULT_USER_AGENT, engine),
                     tokenProvider = { _, _ -> "secret-token" },
                 )
-            val dir = Files.createTempDirectory("redirect-auth")
+            val dir = TestScratch.directory("redirect-auth")
             try {
                 val dest = dir.resolve("a.txt")
                 service.downloadFile("ITEM-1", dest)

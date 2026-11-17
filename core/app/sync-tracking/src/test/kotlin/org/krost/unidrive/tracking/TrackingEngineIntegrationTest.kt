@@ -16,6 +16,7 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.HashAlgorithm
 import org.krost.unidrive.QuickXorHash
 import org.krost.unidrive.sync.ConflictLog
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * End-to-end integration test for the tracking-set engine.
@@ -46,7 +47,7 @@ class TrackingEngineIntegrationTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-it")
+        workDir = TestScratch.directory("tracking-it")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider = FakeTrackingProvider()

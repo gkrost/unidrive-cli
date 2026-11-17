@@ -4,6 +4,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.sync.model.ConflictPolicy
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -28,8 +29,8 @@ class ExcludePatternSyntaxTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-exclude-syntax-root")
-        stateDir = Files.createTempDirectory("ud-exclude-syntax-state")
+        syncRoot = TestScratch.directory("ud-exclude-syntax-root")
+        stateDir = TestScratch.directory("ud-exclude-syntax-state")
         db = StateDatabase(stateDir.resolve("state.db")).also { it.initialize() }
         provider = FakeCloudProvider()
         ExcludePatterns.forgetWarnings()

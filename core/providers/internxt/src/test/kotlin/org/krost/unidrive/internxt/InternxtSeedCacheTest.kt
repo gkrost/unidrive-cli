@@ -23,6 +23,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#730: the BIP39 seed used to be re-derived (PBKDF2-HMAC-SHA512, 2048 iterations) on every
@@ -50,7 +51,7 @@ class InternxtSeedCacheTest {
             .digest(shardBytes)
             .joinToString("") { "%02x".format(it) }
 
-    private val tmp: Path = Files.createTempDirectory("ud-seed-cache-")
+    private val tmp: Path = TestScratch.directory("ud-seed-cache-")
     private val counting = CountingCrypto()
     private val reference = InternxtCrypto()
 

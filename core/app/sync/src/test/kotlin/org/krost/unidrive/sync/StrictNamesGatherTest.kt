@@ -14,6 +14,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The gather side of `internxt_strict_names` (gkrost/unidrive-cli#29): a cloud item whose name the provider's own
@@ -31,8 +32,8 @@ class StrictNamesGatherTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-strict-gather")
-        db = StateDatabase(Files.createTempDirectory("unidrive-strict-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-strict-gather")
+        db = StateDatabase(TestScratch.directory("unidrive-strict-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider().also { it.strictNameMode = true }
         engine =

@@ -20,6 +20,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#717 over the IPC wire, on the mount engine: a client compares the folder's cloud contents with
@@ -114,7 +115,7 @@ class HydrationRmdirIndexedAfterListingTest {
 
     private class Env {
         val provider = DeltaProvider()
-        val db = StateDatabase(dbPath = Files.createTempDirectory("unidrive-rmdir-window-db").resolve("state.db"), inMemory = true)
+        val db = StateDatabase(dbPath = TestScratch.directory("unidrive-rmdir-window-db").resolve("state.db"), inMemory = true)
         val engine: SyncEngine
         val mount: MountEngine
         val handler: HydrationIpcHandler
@@ -125,8 +126,8 @@ class HydrationRmdirIndexedAfterListingTest {
                 SyncEngine(
                     provider = provider,
                     db = db,
-                    syncRoot = Files.createTempDirectory("unidrive-rmdir-window-sync"),
-                    cacheRoot = Files.createTempDirectory("unidrive-rmdir-window-cache"),
+                    syncRoot = TestScratch.directory("unidrive-rmdir-window-sync"),
+                    cacheRoot = TestScratch.directory("unidrive-rmdir-window-cache"),
                 )
             mount = MountEngine.over(engine)
             handler = HydrationIpcHandler(HydrationImpl(syncEngine = engine, stateDb = db))

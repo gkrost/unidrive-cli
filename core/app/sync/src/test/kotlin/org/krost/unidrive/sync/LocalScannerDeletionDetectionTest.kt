@@ -12,6 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // archive#552: the daemon's rescan only uploads, so its scan must not look for deletions: that checks every cloud-only
 // row against the exclude patterns and the file system. The walk still finds new and changed files.
@@ -21,8 +22,8 @@ class LocalScannerDeletionDetectionTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-scan-nodel")
-        db = StateDatabase(Files.createTempDirectory("unidrive-scan-nodel-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-scan-nodel")
+        db = StateDatabase(TestScratch.directory("unidrive-scan-nodel-db").resolve("state.db"))
         db.initialize()
     }
 

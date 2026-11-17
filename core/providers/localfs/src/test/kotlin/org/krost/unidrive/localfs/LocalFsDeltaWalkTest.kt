@@ -9,13 +9,14 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** The delta walk builds plain entries from the walk's own attributes; links and junctions still pay the real-path check. */
 class LocalFsDeltaWalkTest {
     @Test
     fun the_walk_reports_each_entry_as_a_direct_lookup_does() =
         runTest {
-            val root = Files.createTempDirectory("localfs-walk")
+            val root = TestScratch.directory("localfs-walk")
             Files.createDirectories(root.resolve("a/b"))
             Files.write(root.resolve("a/b/one.bin"), ByteArray(1234))
             Files.writeString(root.resolve("two.txt"), "two")
@@ -32,8 +33,8 @@ class LocalFsDeltaWalkTest {
     @Test
     fun a_junction_out_of_the_root_is_neither_listed_nor_walked() =
         runTest {
-            val root = Files.createTempDirectory("localfs-walk-junction")
-            val outside = Files.createTempDirectory("localfs-walk-outside")
+            val root = TestScratch.directory("localfs-walk-junction")
+            val outside = TestScratch.directory("localfs-walk-outside")
             Files.writeString(outside.resolve("secret.txt"), "secret")
             Files.writeString(root.resolve("inside.txt"), "inside")
             org.junit.Assume.assumeTrue("junctions are a Windows feature", isWindows())

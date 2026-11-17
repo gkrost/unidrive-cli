@@ -8,6 +8,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 // pendingUploadPaths() is the SQL form of SyncEntry.isPendingUpload: the two must name the same file rows
 // (archive#552 moved its callers from filtering every row of state.db to this query).
@@ -16,7 +17,7 @@ class PendingUploadPathsTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("unidrive-pending").resolve("state.db"))
+        db = StateDatabase(TestScratch.directory("unidrive-pending").resolve("state.db"))
         db.initialize()
     }
 
@@ -67,7 +68,7 @@ class PendingUploadPathsTest {
     // hydration cache copy (HydrationImpl.replayable, pinned by ReplayPendingUploadsParityTest).
     @Test
     fun `a LocalScanner row for a new sync-root file is a pending upload path`() {
-        val syncRoot = Files.createTempDirectory("unidrive-pending-root")
+        val syncRoot = TestScratch.directory("unidrive-pending-root")
         Files.writeString(syncRoot.resolve("dropped.txt"), "from a backup")
 
         LocalScanner(syncRoot, db).scan()

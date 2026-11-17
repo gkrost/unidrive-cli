@@ -22,6 +22,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#416: the IPC request scanner must decode the full JSON string-escape set. The .NET client
@@ -486,14 +487,14 @@ class HydrationIpcHandlerJsonEscapeTest {
         val handler: HydrationIpcHandler
 
         init {
-            val cacheRoot = Files.createTempDirectory("unidrive-jsonesc-cache")
-            val dbPath = Files.createTempDirectory("unidrive-jsonesc-db").resolve("state.db")
+            val cacheRoot = TestScratch.directory("unidrive-jsonesc-cache")
+            val dbPath = TestScratch.directory("unidrive-jsonesc-db").resolve("state.db")
             db = StateDatabase(dbPath = dbPath, inMemory = true)
             db.initialize()
             engine = SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("unidrive-jsonesc-sync"),
+                syncRoot = TestScratch.directory("unidrive-jsonesc-sync"),
                 cacheRoot = cacheRoot,
             )
             handler = HydrationIpcHandler(HydrationImpl(syncEngine = engine, stateDb = db))

@@ -22,6 +22,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The Graph client's request-attempt metrics: the endpoint classes it reports, that no identifier or name can be in
@@ -155,7 +156,7 @@ class GraphRequestMetricsTest {
      */
     @Test
     fun `naming and queueing an attempt costs a request well under one percent`() {
-        val dir = Files.createTempDirectory("graph-metrics-cost")
+        val dir = TestScratch.directory("graph-metrics-cost")
         val history = TransferHistory.open("p1", dir.resolve("telemetry.db"))
         try {
             val iterations = 200_000
@@ -184,7 +185,7 @@ class GraphRequestMetricsTest {
     /** The same through a real client pipeline, for the record: on a loaded machine its noise is larger than the effect. */
     @Test
     fun `a request through the client with the recorder attached, against one without`() {
-        val dir = Files.createTempDirectory("graph-metrics-overhead")
+        val dir = TestScratch.directory("graph-metrics-overhead")
         val history = TransferHistory.open("p1", dir.resolve("telemetry.db"))
         try {
             val recorder = history.requestMetrics()

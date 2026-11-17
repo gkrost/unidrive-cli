@@ -9,6 +9,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import org.krost.unidrive.ProviderException
+import org.krost.unidrive.testing.TestScratch
 
 // getMetadata name matching: an exact full-name (base + type) match anywhere in
 // the parent listing must always win over an extension-stripped baseName match.
@@ -92,7 +93,7 @@ class InternxtGetMetadataExactMatchTest {
         path: String,
         vararg filesJson: String,
     ): org.krost.unidrive.CloudItem {
-        val tmp = java.nio.file.Files.createTempDirectory("ud-exact-")
+        val tmp = TestScratch.directory("ud-exact-")
         try {
             val provider = newProviderRooted(tmp, engineWithSiblings(*filesJson))
             try {
@@ -177,7 +178,7 @@ class InternxtGetMetadataExactMatchTest {
         vararg filesJson: String,
         call: suspend (InternxtProvider) -> Unit,
     ) {
-        val tmp = java.nio.file.Files.createTempDirectory("ud-exact-")
+        val tmp = TestScratch.directory("ud-exact-")
         try {
             val provider = newProviderRooted(tmp, engineWithSiblings(*filesJson))
             try {

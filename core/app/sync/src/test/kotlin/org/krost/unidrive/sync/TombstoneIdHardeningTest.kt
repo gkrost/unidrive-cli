@@ -14,6 +14,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Hardening of the tombstone-id rule (gkrost/unidrive-cli#743, isTombstoneOfOtherItem): the edges around "the tombstone
@@ -30,8 +31,8 @@ class TombstoneIdHardeningTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-tomb-hardening")
-        db = StateDatabase(Files.createTempDirectory("unidrive-tomb-hardening-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-tomb-hardening")
+        db = StateDatabase(TestScratch.directory("unidrive-tomb-hardening-db").resolve("state.db"))
         db.initialize()
     }
 
@@ -151,8 +152,8 @@ class TombstoneIdHardeningTest {
         liveAfter: List<CloudItem>,
         extraPasses: Int,
     ): Outcome {
-        val root = Files.createTempDirectory("ud-tomb-hardening-root")
-        val engineDb = StateDatabase(Files.createTempDirectory("ud-tomb-hardening-edb").resolve("state.db"))
+        val root = TestScratch.directory("ud-tomb-hardening-root")
+        val engineDb = StateDatabase(TestScratch.directory("ud-tomb-hardening-edb").resolve("state.db"))
         engineDb.initialize()
         try {
             val provider = ListingFeedProvider()
@@ -162,7 +163,7 @@ class TombstoneIdHardeningTest {
                     db = engineDb,
                     syncRoot = root,
                     reporter = DuplicateTwinNamesTest.CountingReporter(),
-                    cacheRoot = Files.createTempDirectory("ud-tomb-hardening-cache"),
+                    cacheRoot = TestScratch.directory("ud-tomb-hardening-cache"),
                     cacheKey = "tombstone-hardening-test",
                     streamingReconciliation = streaming,
                 )

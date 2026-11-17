@@ -32,6 +32,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The `auth.logout` verb: the running daemon signs the account out — revoking the token, deleting the
@@ -39,7 +40,7 @@ import kotlin.test.assertTrue
  * credentials they cannot finish.
  */
 class AuthLogoutRpcHandlerTest {
-    private val dir = Files.createTempDirectory("auth-logout-handler-")
+    private val dir = TestScratch.directory("auth-logout-handler-")
     private val db = StateDatabase(dir.resolve("state.db")).also { it.initialize() }
     // One entry per forgetCredentials() call: whether the credential file was still there at that moment.
     private val forgetCredentialsCalls = mutableListOf<Boolean>()

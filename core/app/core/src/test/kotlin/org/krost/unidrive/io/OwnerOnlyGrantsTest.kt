@@ -12,6 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * [grantProblem] is the read-only check behind the IPC token files: it reports anyone besides the
@@ -22,7 +23,7 @@ class OwnerOnlyGrantsTest {
 
     @BeforeTest
     fun setUp() {
-        parent = Files.createTempDirectory("unidrive-owner-grants-")
+        parent = TestScratch.directory("unidrive-owner-grants-")
     }
 
     @AfterTest

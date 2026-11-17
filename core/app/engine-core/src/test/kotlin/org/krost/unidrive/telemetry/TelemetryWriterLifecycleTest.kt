@@ -16,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The end of the two telemetry writer threads (#530, #390): a close whose Stop the full queue did not take must not leave
@@ -27,7 +28,7 @@ class TelemetryWriterLifecycleTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("telemetry-lifecycle-test")
+        dir = TestScratch.directory("telemetry-lifecycle-test")
         store = TelemetryStore.open(dir.resolve("telemetry.db"))
     }
 

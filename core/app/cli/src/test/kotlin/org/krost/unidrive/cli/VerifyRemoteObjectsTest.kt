@@ -14,6 +14,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -42,10 +43,10 @@ class VerifyRemoteObjectsTest {
 
     @BeforeTest
     fun setUp() {
-        configDir = Files.createTempDirectory("ud-verify-ro-cfg")
-        reportDir = Files.createTempDirectory("ud-verify-ro-report")
-        val syncRoot = Files.createTempDirectory("ud-verify-ro-local")
-        val remoteRoot = Files.createTempDirectory("ud-verify-ro-remote")
+        configDir = TestScratch.directory("ud-verify-ro-cfg")
+        reportDir = TestScratch.directory("ud-verify-ro-report")
+        val syncRoot = TestScratch.directory("ud-verify-ro-local")
+        val remoteRoot = TestScratch.directory("ud-verify-ro-remote")
         Files.writeString(
             configDir.resolve("config.toml"),
             """

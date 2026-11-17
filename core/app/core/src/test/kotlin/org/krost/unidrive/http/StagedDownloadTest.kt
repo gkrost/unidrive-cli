@@ -21,6 +21,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** #222 item 4: the one download-to-staging-then-atomic-move that Dropbox and S3 share, with Internxt's typed refusal of a body of another length. */
 class StagedDownloadTest {
@@ -29,7 +30,7 @@ class StagedDownloadTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("staged-download")
+        dir = TestScratch.directory("staged-download")
         destination = dir.resolve("f.bin")
     }
 

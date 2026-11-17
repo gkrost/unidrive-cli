@@ -5,11 +5,12 @@ import org.krost.unidrive.ProviderRegistry
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 class CloudProviderContractTest {
     @Test
     fun `onedrive declares QuickXor hash algorithm`() {
-        val tmp = Files.createTempDirectory("onedrive-contract")
+        val tmp = TestScratch.directory("onedrive-contract")
         try {
             val provider =
                 ProviderRegistry.get("onedrive")!!.create(

@@ -8,6 +8,7 @@ import kotlinx.serialization.json.Json
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.TransientNetworkException
 import org.krost.unidrive.internxt.model.InternxtCredentials
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -51,7 +52,7 @@ class InternxtAuthRefreshFallbackTest {
         answers: List<() -> String>,
         block: suspend (ScriptedAuthService) -> Unit,
     ) = runBlocking {
-        val tmp: Path = Files.createTempDirectory("internxt-auth-fallback-")
+        val tmp: Path = TestScratch.directory("internxt-auth-fallback-")
         try {
             val creds = InternxtCredentials(jwt = storedJwt, mnemonic = "test-mnemonic", rootFolderId = "test-root", email = "test@example.invalid")
             Files.writeString(tmp.resolve("credentials.json"), Json.encodeToString(InternxtCredentials.serializer(), creds))

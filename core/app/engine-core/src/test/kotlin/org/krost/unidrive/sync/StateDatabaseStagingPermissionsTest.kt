@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // The staging file holds the drive's listing (names, sizes, ids), so it, its WAL and the WAL's index are the current
 // user's only, like state.db: restricted on desktop once the first use has created them.
@@ -21,7 +22,7 @@ class StateDatabaseStagingPermissionsTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-staging-acl")
+        dir = TestScratch.directory("unidrive-staging-acl")
         dbFile = dir.resolve("state.db")
     }
 

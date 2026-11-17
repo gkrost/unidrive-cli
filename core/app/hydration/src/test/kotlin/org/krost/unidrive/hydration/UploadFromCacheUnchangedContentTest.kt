@@ -13,6 +13,7 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#583: a file written through the mount whose bytes equal the version the row records (an Explorer copy over
@@ -32,9 +33,9 @@ class UploadFromCacheUnchangedContentTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-583-root")
-        cacheRoot = Files.createTempDirectory("ud-583-cache")
-        db = StateDatabase(Files.createTempDirectory("ud-583-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-583-root")
+        cacheRoot = TestScratch.directory("ud-583-cache")
+        db = StateDatabase(TestScratch.directory("ud-583-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

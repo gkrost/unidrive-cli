@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#442: a job's in-flight slot is freed after its terminal event is emitted, never before. Between the
@@ -22,8 +23,8 @@ class RefreshSlotOrderTest {
     @Test
     fun `the refresh slot is still taken while refresh_done is emitted and free after`(): Unit = runBlocking {
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
-        val db = StateDatabase(Files.createTempDirectory("ud-slot-db").resolve("state.db")).also { it.initialize() }
-        val server = IpcServer(Files.createTempDirectory("ud-slot-sock").resolve("d.sock"))
+        val db = StateDatabase(TestScratch.directory("ud-slot-db").resolve("state.db")).also { it.initialize() }
+        val server = IpcServer(TestScratch.directory("ud-slot-sock").resolve("d.sock"))
         try {
             val engine = RecordingEngine(enumerateResult = EnumerateResult(ok = true))
             lateinit var handler: RefreshRpcHandler

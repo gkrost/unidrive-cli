@@ -18,6 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * state.db runs in WAL with `synchronous=FULL`: a long read in another connection (a CLI command) no longer fails the
@@ -29,7 +30,7 @@ class StateDatabaseWalTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-wal")
+        dir = TestScratch.directory("unidrive-wal")
         dbFile = dir.resolve("state.db")
     }
 

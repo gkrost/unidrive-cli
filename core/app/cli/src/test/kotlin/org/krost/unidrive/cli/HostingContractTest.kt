@@ -27,6 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#603 (U4, the hosting contract): a profile's `mode = "mirror" | "mount"` decides what serves it.
@@ -92,7 +93,7 @@ type = "$type"
     @Test
     fun `a mirror daemon answers wrong_mode to the mount verbs and reports mirror in daemon status`() =
         runBlocking {
-            val tempDir = Files.createTempDirectory("hosting-contract-mirror")
+            val tempDir = TestScratch.directory("hosting-contract-mirror")
             val socketPath = tempDir.resolve("daemon.sock")
             val runtime =
                 DaemonRuntime(
@@ -145,7 +146,7 @@ type = "$type"
     @Test
     fun `a mount daemon reports mount and its capabilities in daemon status`() =
         runBlocking {
-            val tempDir = Files.createTempDirectory("hosting-contract-mount")
+            val tempDir = TestScratch.directory("hosting-contract-mount")
             val socketPath = tempDir.resolve("daemon.sock")
             val runtime =
                 DaemonRuntime(

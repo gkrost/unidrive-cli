@@ -10,6 +10,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The rule the enumeration's reap and `refresh.run`'s reset share: a row whose hydration cache may
@@ -21,7 +22,7 @@ class ReapGuardsTest {
 
     @BeforeTest
     fun setUp() {
-        cacheRoot = Files.createTempDirectory("unidrive-reap-guards")
+        cacheRoot = TestScratch.directory("unidrive-reap-guards")
     }
 
     @AfterTest

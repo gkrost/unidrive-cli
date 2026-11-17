@@ -10,6 +10,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1256 A: the engine's look at the remote item caught every exception and answered "the remote is not there". A
@@ -24,7 +25,7 @@ class TrackingEngineRemoteProbeTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("ts-probe")
+        workDir = TestScratch.directory("ts-probe")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         tracking = SqliteTrackingSet(workDir.resolve("tracking.db")).also { it.initialize() }
         provider = FakeTrackingProvider()

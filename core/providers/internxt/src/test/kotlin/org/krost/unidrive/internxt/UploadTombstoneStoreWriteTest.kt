@@ -12,6 +12,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The sidecar write goes through [OwnerOnlyAtomicWrite] (gkrost/unidrive-cli#456), whose own suite owns the
@@ -21,7 +22,7 @@ import kotlin.test.assertTrue
  * failure leaves neither sidecar nor temp behind.
  */
 class UploadTombstoneStoreWriteTest {
-    private val dir: Path = Files.createTempDirectory("ud-tomb-write-")
+    private val dir: Path = TestScratch.directory("ud-tomb-write-")
 
     @AfterTest
     fun cleanUp() {

@@ -13,13 +13,14 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class GraphUserAgentTest {
     private lateinit var dir: Path
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("ud-user-agent")
+        dir = TestScratch.directory("ud-user-agent")
     }
 
     @AfterTest
@@ -53,7 +54,7 @@ class GraphUserAgentTest {
                     }
                 }
             val svc = service(engine)
-            val local = Files.createTempFile(dir, "up", ".bin").also { Files.write(it, ByteArray(16)) }
+            val local = TestScratch.file(dir, "up", ".bin").also { Files.write(it, ByteArray(16)) }
 
             svc.getDelta()
             svc.downloadFile("i1", dir.resolve("out.bin"))

@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -29,7 +30,7 @@ class PurgeRetentionTest {
         general: String,
         body: (syncRoot: Path, run: (Array<String>) -> Run) -> Unit,
     ) {
-        val configDir = Files.createTempDirectory("purge-retention")
+        val configDir = TestScratch.directory("purge-retention")
         try {
             val syncRoot = Files.createDirectories(configDir.resolve("local"))
             val remoteRoot = Files.createDirectories(configDir.resolve("remote"))

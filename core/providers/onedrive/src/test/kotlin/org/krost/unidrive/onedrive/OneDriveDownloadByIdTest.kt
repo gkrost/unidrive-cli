@@ -15,6 +15,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#392 (fix C): a download by an id the engine already holds asks Graph for that id alone. Before, every
@@ -26,7 +27,7 @@ import kotlin.test.assertFailsWith
 class OneDriveDownloadByIdTest {
     private val json = headersOf(HttpHeaders.ContentType, "application/json")
     private val bytes = headersOf(HttpHeaders.ContentType, "application/octet-stream")
-    private val dir = Files.createTempDirectory("od-392c-")
+    private val dir = TestScratch.directory("od-392c-")
 
     @AfterTest
     fun cleanup() {

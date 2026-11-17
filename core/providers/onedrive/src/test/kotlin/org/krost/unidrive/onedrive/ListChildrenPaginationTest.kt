@@ -15,6 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-314: verifies that `GraphApiService.listChildren` follows `@odata.nextLink` to the end,
@@ -235,7 +236,7 @@ class ListChildrenPaginationTest {
     @Test
     fun `createUploadSession body includes fileSystemInfo when supplied`() =
         runTest {
-            val tempFile = java.nio.file.Files.createTempFile("unidrive-fsi-large-", ".bin")
+            val tempFile = TestScratch.file("unidrive-fsi-large-", ".bin")
             java.nio.file.Files.write(tempFile, "chunky".toByteArray())
             val driveItemBody = """{"id":"item-3","name":"chunky.bin","size":6}"""
             val sessionBody = """{"uploadUrl":"https://upload.example.com/session/abc","expirationDateTime":"2030-01-01T00:00:00Z"}"""
@@ -278,7 +279,7 @@ class ListChildrenPaginationTest {
     @Test
     fun `createUploadSession body omits fileSystemInfo when null`() =
         runTest {
-            val tempFile = java.nio.file.Files.createTempFile("unidrive-fsi-null-", ".bin")
+            val tempFile = TestScratch.file("unidrive-fsi-null-", ".bin")
             java.nio.file.Files.write(tempFile, "x".toByteArray())
             val driveItemBody = """{"id":"item-4","name":"x.bin","size":1}"""
             val sessionBody = """{"uploadUrl":"https://upload.example.com/session/x","expirationDateTime":"2030-01-01T00:00:00Z"}"""
@@ -362,7 +363,7 @@ class ListChildrenPaginationTest {
     @Test
     fun `createUploadSession threads If-Match header when an eTag is supplied`() =
         runTest {
-            val tempFile = java.nio.file.Files.createTempFile("unidrive-ifmatch-etag-", ".bin")
+            val tempFile = TestScratch.file("unidrive-ifmatch-etag-", ".bin")
             java.nio.file.Files.write(tempFile, "chunky".toByteArray())
             val driveItemBody = """{"id":"item-us","name":"up.bin","size":6}"""
             val sessionBody = """{"uploadUrl":"https://upload.example.com/session/ifmatch","expirationDateTime":"2030-01-01T00:00:00Z"}"""
@@ -398,7 +399,7 @@ class ListChildrenPaginationTest {
     @Test
     fun `createUploadSession omits If-Match when no eTag is supplied`() =
         runTest {
-            val tempFile = java.nio.file.Files.createTempFile("unidrive-ifmatch-null-", ".bin")
+            val tempFile = TestScratch.file("unidrive-ifmatch-null-", ".bin")
             java.nio.file.Files.write(tempFile, "chunky".toByteArray())
             val driveItemBody = """{"id":"item-us2","name":"up2.bin","size":6}"""
             val sessionBody = """{"uploadUrl":"https://upload.example.com/session/noifmatch","expirationDateTime":"2030-01-01T00:00:00Z"}"""
@@ -434,7 +435,7 @@ class ListChildrenPaginationTest {
     @Test
     fun `createUploadSession surfaces 412 Precondition Failed as a GraphApiException`() =
         runTest {
-            val tempFile = java.nio.file.Files.createTempFile("unidrive-ifmatch-412-", ".bin")
+            val tempFile = TestScratch.file("unidrive-ifmatch-412-", ".bin")
             java.nio.file.Files.write(tempFile, "chunky".toByteArray())
             val engine =
                 MockEngine { request ->
@@ -487,7 +488,7 @@ class ListChildrenPaginationTest {
     @Test
     fun `getDelta warns once when the on-disk delta_last_seen is older than the safe window`() =
         runTest {
-            val tokenDir = java.nio.file.Files.createTempDirectory("unidrive-delta-safety-old-")
+            val tokenDir = TestScratch.directory("unidrive-delta-safety-old-")
             // Seed delta_last_seen with a timestamp 60 days old — well past the 30-day floor.
             val sixtyDaysAgo = java.time.Instant.now().minus(java.time.Duration.ofDays(60))
             java.nio.file.Files.writeString(tokenDir.resolve("delta_last_seen"), sixtyDaysAgo.toString())
@@ -531,7 +532,7 @@ class ListChildrenPaginationTest {
     @Test
     fun `getDelta does not warn when delta_last_seen is recent`() =
         runTest {
-            val tokenDir = java.nio.file.Files.createTempDirectory("unidrive-delta-safety-fresh-")
+            val tokenDir = TestScratch.directory("unidrive-delta-safety-fresh-")
             java.nio.file.Files.writeString(
                 tokenDir.resolve("delta_last_seen"),
                 java.time.Instant.now().minus(java.time.Duration.ofDays(3)).toString(),
@@ -569,8 +570,8 @@ class ListChildrenPaginationTest {
     @Test
     fun `resolveUploadSession refreshes stored expiresAt from probe response`() =
         runTest {
-            val storeDir = java.nio.file.Files.createTempDirectory("unidrive-store-refresh-")
-            val tempFile = java.nio.file.Files.createTempFile("unidrive-refresh-", ".bin")
+            val storeDir = TestScratch.directory("unidrive-store-refresh-")
+            val tempFile = TestScratch.file("unidrive-refresh-", ".bin")
             java.nio.file.Files.write(tempFile, "y".toByteArray())
             val staleExpiresAt = java.time.Instant.now().plusSeconds(60) // close to expiry
             val freshExpiresAt = java.time.Instant.parse("2030-06-15T12:00:00Z") // server bumped
@@ -624,8 +625,8 @@ class ListChildrenPaginationTest {
     @Test
     fun `uploadLargeFile retries once with a fresh session on chunk-level 410`() =
         runTest {
-            val storeDir = java.nio.file.Files.createTempDirectory("unidrive-store-retry-")
-            val tempFile = java.nio.file.Files.createTempFile("unidrive-retry-", ".bin")
+            val storeDir = TestScratch.directory("unidrive-store-retry-")
+            val tempFile = TestScratch.file("unidrive-retry-", ".bin")
             java.nio.file.Files.write(tempFile, "z".toByteArray())
             val driveItemBody = """{"id":"item-6","name":"retry.bin","size":1}"""
             val sessionBodyA = """{"uploadUrl":"https://upload.example.com/session/A","expirationDateTime":"2030-01-01T00:00:00Z"}"""
@@ -675,8 +676,8 @@ class ListChildrenPaginationTest {
     // the chunk back-off, then the attempt fails transiently and the session stays stored for the next one.
     fun `resolveUploadSession keeps the stored session on a probe network failure and fails the attempt`() =
         runTest {
-            val storeDir = java.nio.file.Files.createTempDirectory("unidrive-store-probe-")
-            val tempFile = java.nio.file.Files.createTempFile("unidrive-probe-", ".bin")
+            val storeDir = TestScratch.directory("unidrive-store-probe-")
+            val tempFile = TestScratch.file("unidrive-probe-", ".bin")
             java.nio.file.Files.write(tempFile, "p".toByteArray())
             val deadUrl = "https://upload.example.com/session/dead"
             UploadSessionStore(storeDir).put(
@@ -775,8 +776,8 @@ class ListChildrenPaginationTest {
     @Test
     fun `stored session bound to a different If-Match guard is discarded and a fresh createUploadSession is issued`() =
         runTest {
-            val storeDir = java.nio.file.Files.createTempDirectory("unidrive-ifmatch-resume-discard-")
-            val tempFile = java.nio.file.Files.createTempFile("unidrive-ifmatch-resume-", ".bin")
+            val storeDir = TestScratch.directory("unidrive-ifmatch-resume-discard-")
+            val tempFile = TestScratch.file("unidrive-ifmatch-resume-", ".bin")
             java.nio.file.Files.write(tempFile, ByteArray(5 * 1024 * 1024) { 1 })
             val staleSessionUrl = "https://upload.example.com/session/stale-etag"
             val freshSessionUrl = "https://upload.example.com/session/fresh-etag"
@@ -853,8 +854,8 @@ class ListChildrenPaginationTest {
     @Test
     fun `stored session is reused when If-Match guard matches the stored session`() =
         runTest {
-            val storeDir = java.nio.file.Files.createTempDirectory("unidrive-ifmatch-resume-reuse-")
-            val tempFile = java.nio.file.Files.createTempFile("unidrive-ifmatch-reuse-", ".bin")
+            val storeDir = TestScratch.directory("unidrive-ifmatch-resume-reuse-")
+            val tempFile = TestScratch.file("unidrive-ifmatch-reuse-", ".bin")
             java.nio.file.Files.write(tempFile, ByteArray(5 * 1024 * 1024) { 2 })
             val sessionUrl = "https://upload.example.com/session/same-etag"
             val eTag = """"same-etag,3""""

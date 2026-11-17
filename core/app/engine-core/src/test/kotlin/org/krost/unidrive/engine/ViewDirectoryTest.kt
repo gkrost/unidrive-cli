@@ -21,6 +21,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A view is a join of the provider's references with the rows state.db holds: what has no row to show is skipped and
@@ -35,7 +36,7 @@ class ViewDirectoryTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-view-directory")
+        tmp = TestScratch.directory("unidrive-view-directory")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

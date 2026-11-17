@@ -11,6 +11,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
+import org.krost.unidrive.testing.TestScratch
 
 class ProcessLockTest {
     private lateinit var tmpDir: Path
@@ -18,7 +19,7 @@ class ProcessLockTest {
 
     @BeforeTest
     fun setUp() {
-        tmpDir = Files.createTempDirectory("unidrive-processlock-test-")
+        tmpDir = TestScratch.directory("unidrive-processlock-test-")
         lockFile = tmpDir.resolve(".lock")
     }
 
@@ -167,7 +168,7 @@ class ProcessLockTest {
 
     @Test
     fun lock_pid_file_carries_mode_after_tryLock() {
-        val daemonLockFile = Files.createTempFile("mode-mutex-daemon", ".lock")
+        val daemonLockFile = TestScratch.file("mode-mutex-daemon", ".lock")
         val daemonLock = ProcessLock(daemonLockFile)
         try {
             assertTrue(daemonLock.tryLock(ProcessLock.Mode.DAEMON))
@@ -184,7 +185,7 @@ class ProcessLockTest {
             Files.deleteIfExists(daemonLockFile)
         }
 
-        val syncLockFile = Files.createTempFile("mode-mutex-sync", ".lock")
+        val syncLockFile = TestScratch.file("mode-mutex-sync", ".lock")
         val syncLock = ProcessLock(syncLockFile)
         try {
             assertTrue(syncLock.tryLock(ProcessLock.Mode.SYNC))
@@ -201,7 +202,7 @@ class ProcessLockTest {
     // contention message must not name that dead PID (its kill hint could hit an unrelated process reusing it).
     @Test
     fun read_live_holder_info_ignores_a_dead_pid_left_by_a_crash() {
-        val lockFile = Files.createTempFile("live-holder", ".lock")
+        val lockFile = TestScratch.file("live-holder", ".lock")
         val reader = ProcessLock(lockFile)
         try {
             val exited = ProcessBuilder(if (System.getProperty("os.name").lowercase().contains("win")) listOf("cmd", "/c", "exit") else listOf("true")).start()
@@ -221,7 +222,7 @@ class ProcessLockTest {
 
     @Test
     fun read_holder_info_returns_pid_and_mode_for_locked_file() {
-        val lockFile = Files.createTempFile("holder-info", ".lock")
+        val lockFile = TestScratch.file("holder-info", ".lock")
         val held = ProcessLock(lockFile)
         try {
             assertTrue(held.tryLock(ProcessLock.Mode.DAEMON))
@@ -235,7 +236,7 @@ class ProcessLockTest {
             Files.deleteIfExists(lockFile)
         }
 
-        val lockFile2 = Files.createTempFile("holder-info-sync", ".lock")
+        val lockFile2 = TestScratch.file("holder-info-sync", ".lock")
         val held2 = ProcessLock(lockFile2)
         try {
             assertTrue(held2.tryLock(ProcessLock.Mode.SYNC))
@@ -250,7 +251,7 @@ class ProcessLockTest {
 
     @Test
     fun legacy_pid_only_lock_pid_file_reads_as_sync_mode() {
-        val lockFile = Files.createTempFile("legacy-pid", ".lock")
+        val lockFile = TestScratch.file("legacy-pid", ".lock")
         val pidFile = lockFile.resolveSibling("${lockFile.fileName}.pid")
         Files.writeString(pidFile, "12345\n")
         try {
@@ -272,7 +273,7 @@ class ProcessLockTest {
 
     @Test
     fun unknown_mode_token_yields_holder_info_with_null_mode_and_raw_token() {
-        val lockFile = Files.createTempFile("unknown-mode", ".lock")
+        val lockFile = TestScratch.file("unknown-mode", ".lock")
         val pidFile = lockFile.resolveSibling("${lockFile.fileName}.pid")
         Files.writeString(pidFile, "67890 mirror\n")
         try {

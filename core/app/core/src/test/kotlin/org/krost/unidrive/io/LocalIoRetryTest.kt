@@ -17,6 +17,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#802: a file another process holds open retried a whole poll cycle before. The helper retries a
@@ -27,7 +28,7 @@ class LocalIoRetryTest {
     private class LockFailure(file: Path, reason: String?) : FileSystemException(file.toString(), null, reason)
 
     // The lock gate only retries a file that is still there, so the fixtures write one first.
-    private fun existingFile(): Path = Files.createTempFile("local-io-retry", ".bin")
+    private fun existingFile(): Path = TestScratch.file("local-io-retry", ".bin")
 
     @Test
     fun `a sharing violation is retried and a later attempt succeeds`() =
@@ -160,7 +161,7 @@ class LocalIoRetryTest {
     fun `an exclusively held file is read once the other process lets go`() =
         runBlocking {
             assumeWindows()
-            val file = Files.createTempFile("local-io-retry", ".bin")
+            val file = TestScratch.file("local-io-retry", ".bin")
             file.writeText("bytes")
             val channel =
                 FileChannel.open(

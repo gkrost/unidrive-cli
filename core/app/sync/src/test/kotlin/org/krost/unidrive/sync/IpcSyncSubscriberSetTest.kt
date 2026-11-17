@@ -17,6 +17,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Protects the invariants from
@@ -33,7 +34,7 @@ class IpcSyncSubscriberSetTest {
 
     @BeforeTest
     fun setUp() {
-        socketDir = Files.createTempDirectory("unidrive-ipc-sub-test")
+        socketDir = TestScratch.directory("unidrive-ipc-sub-test")
         socketPath = socketDir.resolve("test.sock")
     }
 

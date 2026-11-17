@@ -14,6 +14,7 @@ import org.krost.unidrive.ScanContext
 import org.krost.unidrive.sync.ProcessLock
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -50,8 +51,8 @@ class DedupeApplyTest {
 
     @BeforeTest
     fun setUp() {
-        configDir = Files.createTempDirectory("ud-dedupe-apply-cfg")
-        scratch = Files.createTempDirectory("ud-dedupe-apply-roots")
+        configDir = TestScratch.directory("ud-dedupe-apply-cfg")
+        scratch = TestScratch.directory("ud-dedupe-apply-roots")
         val roots = listOf("ix", "lf", "lf-remote", "mx").associateWith { Files.createDirectories(scratch.resolve(it)) }
         Files.writeString(
             configDir.resolve("config.toml"),

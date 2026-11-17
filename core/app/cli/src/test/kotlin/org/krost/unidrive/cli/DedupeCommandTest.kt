@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -42,9 +43,9 @@ class DedupeCommandTest {
 
     @BeforeTest
     fun setUp() {
-        configDir = Files.createTempDirectory("ud-dedupe-cfg")
-        remoteRoot = Files.createTempDirectory("ud-dedupe-remote")
-        syncRoot = Files.createTempDirectory("ud-dedupe-local")
+        configDir = TestScratch.directory("ud-dedupe-cfg")
+        remoteRoot = TestScratch.directory("ud-dedupe-remote")
+        syncRoot = TestScratch.directory("ud-dedupe-local")
         Files.writeString(
             configDir.resolve("config.toml"),
             """

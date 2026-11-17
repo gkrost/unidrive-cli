@@ -4,6 +4,7 @@ import org.krost.unidrive.*
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
+import org.krost.unidrive.testing.TestScratch
 
 // gkrost/unidrive-cli#419: the engine calls a provider from several threads at once (the relocator downloads up to
 // four files in parallel on Dispatchers.IO), so every call history and the file store a transfer writes are
@@ -379,7 +380,7 @@ class FakeCloudProvider : CloudProvider {
         val algorithm =
             hashAlgorithmOverride
                 ?: return if (uniqueUploadTokens) "uploaded-${uploadTokenSeq.incrementAndGet()}" else "uploaded"
-        val tmp = Files.createTempFile("unidrive-fake-hash", ".bin")
+        val tmp = TestScratch.file("unidrive-fake-hash", ".bin")
         try {
             Files.write(tmp, bytes)
             return HashVerifier.computeHash(tmp, algorithm)

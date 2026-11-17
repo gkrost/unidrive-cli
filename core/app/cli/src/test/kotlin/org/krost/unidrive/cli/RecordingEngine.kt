@@ -11,6 +11,7 @@ import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.SyncReason
 import java.nio.file.Files
 import java.nio.file.Path
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Test double for the RPC-handler routing/encoding tests. Subclasses the
@@ -25,11 +26,11 @@ class RecordingEngine(
     private val enumerateFailure: Throwable? = null,
     // The hydration cache stays inside the temp directory: resolveCachePath is public and the
     // refresh reset asks it about every row it might keep.
-    cacheRoot: Path = Files.createTempDirectory("ud-recording-cache"),
+    cacheRoot: Path = TestScratch.directory("ud-recording-cache"),
 ) : SyncEngine(
         provider = NoopProvider,
         db = freshDb(),
-        syncRoot = Files.createTempDirectory("ud-recording-root"),
+        syncRoot = TestScratch.directory("ud-recording-root"),
         cacheRoot = cacheRoot,
     ) {
     @Volatile var enumerateCalled = false
@@ -81,7 +82,7 @@ class RecordingEngine(
 
     companion object {
         private fun freshDb(): StateDatabase {
-            val dir = Files.createTempDirectory("ud-recording-db")
+            val dir = TestScratch.directory("ud-recording-db")
             return StateDatabase(dir.resolve("state.db")).also { it.initialize() }
         }
     }

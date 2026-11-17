@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A remote folder deletion removes the local folder with its subtree. Files created or edited below it since the last
@@ -25,8 +26,8 @@ class RemoteFolderDeleteKeepsUnsyncedLocalContentTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-folder-del-root")
-        db = StateDatabase(Files.createTempDirectory("ud-folder-del-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-folder-del-root")
+        db = StateDatabase(TestScratch.directory("ud-folder-del-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

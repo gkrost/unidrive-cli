@@ -6,12 +6,12 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
-import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class AuditLogTest {
     private lateinit var dir: Path
@@ -25,7 +25,7 @@ class AuditLogTest {
 
     @Test
     fun `UD-113 emits one JSONL entry per emit call to date-stamped file`() {
-        dir = createTempDirectory("audit-")
+        dir = TestScratch.directory("audit-")
         val fixedDay = Instant.parse("2026-05-03T19:00:00Z")
         val log = AuditLog(dir, profileName = "inxt_test", clock = { fixedDay })
 
@@ -54,7 +54,7 @@ class AuditLogTest {
 
     @Test
     fun `#1060 a failure result quoting a pre-authenticated URL is written without its query`() {
-        dir = createTempDirectory("audit-")
+        dir = TestScratch.directory("audit-")
         val log = AuditLog(dir, profileName = "p", clock = { Instant.parse("2026-05-03T19:00:00Z") })
 
         log.emit(
@@ -70,7 +70,7 @@ class AuditLogTest {
 
     @Test
     fun `UD-113 rotates filename across UTC day boundary`() {
-        dir = createTempDirectory("audit-")
+        dir = TestScratch.directory("audit-")
         var now = Instant.parse("2026-05-03T23:59:59Z")
         val log = AuditLog(dir, profileName = "p1", clock = { now })
 
@@ -87,7 +87,7 @@ class AuditLogTest {
 
     @Test
     fun `UD-113 emit swallows IO errors (does not throw past the call site)`() {
-        dir = createTempDirectory("audit-")
+        dir = TestScratch.directory("audit-")
         // Make the dir read-only by deleting it after init — emit should fail silently.
         val log = AuditLog(dir, profileName = "p1")
         dir.toFile().deleteRecursively()
@@ -101,7 +101,7 @@ class AuditLogTest {
     // is reported afresh.
     @Test
     fun `an unwritable audit log warns once per episode, not once per entry`() {
-        dir = createTempDirectory("audit-")
+        dir = TestScratch.directory("audit-")
         val logger = org.slf4j.LoggerFactory.getLogger(AuditLog::class.java) as ch.qos.logback.classic.Logger
         val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().also { it.start() }
         logger.addAppender(appender)

@@ -2,6 +2,7 @@ package org.krost.unidrive.sync
 
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.telemetry.TelemetryStore
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.lang.reflect.Proxy
 import java.nio.file.Files
@@ -21,7 +22,7 @@ class SqliteConnectionsTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-sqlite-connections")
+        dir = TestScratch.directory("unidrive-sqlite-connections")
     }
 
     @AfterTest

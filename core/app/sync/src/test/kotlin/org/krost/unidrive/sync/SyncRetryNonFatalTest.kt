@@ -8,6 +8,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-248 regression: three consecutive per-action failures in the
@@ -28,8 +29,8 @@ class SyncRetryNonFatalTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-retry-nofatal-test")
-        val dbPath = Files.createTempDirectory("unidrive-retry-nofatal-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-retry-nofatal-test")
+        val dbPath = TestScratch.directory("unidrive-retry-nofatal-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()

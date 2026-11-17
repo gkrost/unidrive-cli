@@ -31,6 +31,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#652: a mount daemon records its transfers in `telemetry.db` beside `state.db`, and the file is flushed and closed
@@ -42,7 +43,7 @@ class DaemonTransferHistoryTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("daemon-transfer-history")
+        tempDir = TestScratch.directory("daemon-transfer-history")
         socketPath = tempDir.resolve("daemon.sock")
     }
 

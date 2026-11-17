@@ -9,10 +9,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** `checkCredentials()` (archive#1240): the keys are proved by one listing of a single key; there is no account name. */
 class S3CheckCredentialsTest {
-    private val dir = Files.createTempDirectory("s3-check")
+    private val dir = TestScratch.directory("s3-check")
 
     private fun provider(fake: FakeS3) = S3Provider(S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", dir), fake.engine)
 

@@ -6,6 +6,7 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -24,7 +25,7 @@ import kotlin.test.assertTrue
  * the version they record from one listing of their folder, once per profile, and nothing else of them changes.
  */
 class ContentIdBackfillTest {
-    private val base: Path = Files.createTempDirectory("ud-content-id-backfill")
+    private val base: Path = TestScratch.directory("ud-content-id-backfill")
     private val dbFile: Path = base.resolve("state.db")
     private var opened: StateDatabase? = null
 

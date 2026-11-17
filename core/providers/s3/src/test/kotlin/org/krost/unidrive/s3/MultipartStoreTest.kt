@@ -4,9 +4,10 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 class MultipartStoreTest {
-    private val dir = Files.createTempDirectory("s3-uploads")
+    private val dir = TestScratch.directory("s3-uploads")
     private val store = MultipartStore(dir)
 
     private fun pending(key: String) = MultipartStore.Pending(key, "id-$key", "/local/$key", 100, 1, 16, "proof")

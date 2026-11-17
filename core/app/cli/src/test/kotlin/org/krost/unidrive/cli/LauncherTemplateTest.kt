@@ -8,6 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.junit.Assume.assumeTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The PowerShell launcher template builds the JVM argument list in PowerShell, where `,` binds tighter than `+`:
@@ -39,7 +40,7 @@ class LauncherTemplateTest {
         jar: String = "unidrive.jar",
         debugAgent: String = "",
     ): List<String> {
-        val dir = Files.createTempDirectory("launcher-tmpl")
+        val dir = TestScratch.directory("launcher-tmpl")
         try {
             val flags = templateFile().parent.resolve("jvm-flags.txt").toFile().readLines()
                 .map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
@@ -76,7 +77,7 @@ class LauncherTemplateTest {
      * bound instead of blocking forever on a pipe nobody closes.
      */
     private fun runLauncherStub(stdinLines: List<String>?): Pair<Path, Process> {
-        val dir = Files.createTempDirectory("launcher-tmpl")
+        val dir = TestScratch.directory("launcher-tmpl")
         val argEcho = "\$javaArgs | ForEach-Object { 'ARG:' + \$_ }"
         val rendered = templateFile().toFile().readText().replace("\r\n", "\n")
             .replace("@STATIC_FLAGS_PS@", "\$javaArgs += @()")
@@ -144,7 +145,7 @@ class LauncherTemplateTest {
         beforeRun: (scriptDir: Path) -> Unit = {},
         jar: (scriptDir: Path) -> String = { "unidrive.jar" },
     ): Pair<Int, String> {
-        val dir = Files.createTempDirectory("launcher-tmpl")
+        val dir = TestScratch.directory("launcher-tmpl")
         try {
             val flags = templateFile().parent.resolve("jvm-flags.txt").toFile().readLines()
                 .map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
@@ -323,7 +324,7 @@ class LauncherTemplateTest {
     @Test
     fun `the powershell launcher arms the dynamic CDS archive beside a writable jar folder`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val jarDir = Files.createTempDirectory("launcher-tmpl-deploy")
+        val jarDir = TestScratch.directory("launcher-tmpl-deploy")
         try {
             val args = launcherArgs("status", jar = jarDir.resolve("unidrive.jar").toString())
             assertTrue("-XX:+AutoCreateSharedArchive" in args, args.toString())
@@ -339,7 +340,7 @@ class LauncherTemplateTest {
     @Test
     fun `the powershell launcher prefers the AOT cache beside the jar`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val jarDir = Files.createTempDirectory("launcher-tmpl-aot")
+        val jarDir = TestScratch.directory("launcher-tmpl-aot")
         try {
             Files.createFile(jarDir.resolve("unidrive.aot"))
             val args = launcherArgs("status", jar = jarDir.resolve("unidrive.jar").toString())
@@ -357,7 +358,7 @@ class LauncherTemplateTest {
     @Test
     fun `the armed coroutine agent keeps the launcher off the AOT cache`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val jarDir = Files.createTempDirectory("launcher-tmpl-agent")
+        val jarDir = TestScratch.directory("launcher-tmpl-agent")
         try {
             Files.createFile(jarDir.resolve("unidrive.aot"))
             val agent = jarDir.resolve("coroutine-debug-agent.jar").toString()
@@ -377,7 +378,7 @@ class LauncherTemplateTest {
     @Test
     fun `a java older than 25 is refused with an actionable message`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        val jdks = TestScratch.directory("launcher-fake-jdks")
         try {
             val stale = fakeJdk(jdks, "jdk17", "17.0.9")
             val (exit, output) = runResolution(mapOf("UNIDRIVE_JAVA" to stale.toString()), "status")
@@ -397,7 +398,7 @@ class LauncherTemplateTest {
     fun `the powershell launcher passes the JFR passphrase redact key to Java 27 only, before the jar`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
         val flag = "-XX:FlightRecorderOptions=redact-key=+*pass*"
-        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        val jdks = TestScratch.directory("launcher-fake-jdks")
         try {
             for ((name, version) in listOf("jdk25" to "25.0.4", "jdk26" to "26.0.2", "jdk27" to "27.0.1")) {
                 val java = fakeJdk(jdks, name, version, echoArgs = true)
@@ -420,7 +421,7 @@ class LauncherTemplateTest {
     @Test
     fun `UNIDRIVE_JAVA beats the PATH java`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        val jdks = TestScratch.directory("launcher-fake-jdks")
         try {
             val chosen = fakeJdk(jdks, "jdk25-chosen", "25.0.4")
             val (exit, output) = runResolution(mapOf("UNIDRIVE_JAVA" to chosen.toString()), "status")
@@ -437,7 +438,7 @@ class LauncherTemplateTest {
     @Test
     fun `UNIDRIVE_JAVA beats the bundled runtime image and the bundled image beats the PATH java`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        val jdks = TestScratch.directory("launcher-fake-jdks")
         try {
             val chosen = fakeJdk(jdks, "jdk25-chosen", "25.0.4")
             val onPath = fakeJdk(jdks, "jdk25-path", "25.0.4")
@@ -461,7 +462,7 @@ class LauncherTemplateTest {
     @Test
     fun `the bundled runtime image is found next to the fat jar when the jar is not beside the launcher`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        val jdks = TestScratch.directory("launcher-fake-jdks")
         try {
             val onPath = fakeJdk(jdks, "jdk25-path", "25.0.4")
             val jarDir = Files.createDirectories(jdks.resolve("deploy"))
@@ -481,7 +482,7 @@ class LauncherTemplateTest {
     @Test
     fun `an UNIDRIVE_JAVA that points at a missing file is an error and no other java runs`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        val jdks = TestScratch.directory("launcher-fake-jdks")
         try {
             val onPath = fakeJdk(jdks, "jdk25-path", "25.0.4")
             val missing = jdks.resolve("nowhere/bin/java.cmd").toString()
@@ -501,7 +502,7 @@ class LauncherTemplateTest {
     @Test
     fun `a java 1 dot 8 release is Java 8, not Java 1, and is refused`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        val jdks = TestScratch.directory("launcher-fake-jdks")
         try {
             val old = fakeJdk(jdks, "jdk8", "1.8.0_402")
             val (exit, output) = runResolution(mapOf("UNIDRIVE_JAVA" to old.toString()), "status")
@@ -516,7 +517,7 @@ class LauncherTemplateTest {
     @Test
     fun `a PATH java without a release file is asked for its version, and a stale one is refused`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        val jdks = TestScratch.directory("launcher-fake-jdks")
         try {
             val shim = fakeJdk(jdks, "shim", null, versionBanner = "java version \"1.8.0_301\"")
             val (exit, output) = runResolution(mapOf("PATH" to pathWith(shim.parent)), "status")
@@ -530,7 +531,7 @@ class LauncherTemplateTest {
     @Test
     fun `a java whose version cannot be read runs with a note that the floor was not checked`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val jdks = Files.createTempDirectory("launcher-fake-jdks")
+        val jdks = TestScratch.directory("launcher-fake-jdks")
         try {
             val unreadable = fakeJdk(jdks, "mystery", null)
             val (exit, output) = runResolution(mapOf("PATH" to pathWith(unreadable.parent)), "status")

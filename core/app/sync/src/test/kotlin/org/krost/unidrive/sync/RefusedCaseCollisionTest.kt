@@ -11,6 +11,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A case collision between two local files is refused by the reconciler as a [SyncAction.Conflict]
@@ -26,8 +27,8 @@ class RefusedCaseCollisionTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-collision-root")
-        db = StateDatabase(Files.createTempDirectory("ud-collision-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-collision-root")
+        db = StateDatabase(TestScratch.directory("ud-collision-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

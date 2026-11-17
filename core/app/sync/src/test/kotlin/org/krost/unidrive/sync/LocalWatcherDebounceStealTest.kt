@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The hold-and-emit coalescer's slot ownership (the steal fix): a task that runs while a newer event
@@ -34,7 +35,7 @@ class LocalWatcherDebounceStealTest {
     }
 
     private fun armWatcher() {
-        syncRoot = Files.createTempDirectory("unidrive-watch-steal-test")
+        syncRoot = TestScratch.directory("unidrive-watch-steal-test")
         watcher = LocalWatcher(syncRoot, debounceMs = 60_000, coalescer = coalescer)
     }
 
@@ -87,7 +88,7 @@ class LocalWatcherDebounceStealTest {
 
     @Test
     fun `a zero-delay task that runs before schedule returns still emits and leaves no slot behind`() {
-        syncRoot = Files.createTempDirectory("unidrive-watch-steal-test")
+        syncRoot = TestScratch.directory("unidrive-watch-steal-test")
         // The executor may run a zero-delay task on its own thread before schedule() returns; run it inline here.
         val immediate = ImmediateCoalescer()
         watcher = LocalWatcher(syncRoot, debounceMs = 0, coalescer = immediate)
@@ -102,7 +103,7 @@ class LocalWatcherDebounceStealTest {
 
     @Test
     fun `a schedule that throws leaves no slot behind`() {
-        syncRoot = Files.createTempDirectory("unidrive-watch-steal-test")
+        syncRoot = TestScratch.directory("unidrive-watch-steal-test")
         val rejecting =
             object : ScheduledExecutorService by Executors.newSingleThreadScheduledExecutor() {
                 override fun schedule(

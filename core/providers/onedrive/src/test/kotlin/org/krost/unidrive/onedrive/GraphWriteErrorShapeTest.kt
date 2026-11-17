@@ -21,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1256 C: the read paths fail through `requireSuccess`, which keeps Graph's `request-id` on the exception (so a
@@ -34,7 +35,7 @@ class GraphWriteErrorShapeTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-graph-write-error")
+        tokenDir = TestScratch.directory("ud-graph-write-error")
         localFile = tokenDir.resolve("local.bin")
         Files.write(localFile, "bytes".toByteArray())
     }

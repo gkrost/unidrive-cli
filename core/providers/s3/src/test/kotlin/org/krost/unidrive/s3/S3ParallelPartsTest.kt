@@ -8,10 +8,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** The parts of one multipart upload go up several at a time, bounded by the upload concurrency, and complete in order. */
 class S3ParallelPartsTest {
-    private val dir = Files.createTempDirectory("s3-parallel-parts")
+    private val dir = TestScratch.directory("s3-parallel-parts")
     private val mib = 1024L * 1024
 
     private fun provider(fake: FakeS3) =
@@ -32,7 +33,7 @@ class S3ParallelPartsTest {
     }
 
     private fun file(parts: Int) =
-        Files.createTempFile(dir, "big", ".bin").also { f -> Files.write(f, ByteArray((parts * mib).toInt()) { (it % 249).toByte() }) }
+        TestScratch.file(dir, "big", ".bin").also { f -> Files.write(f, ByteArray((parts * mib).toInt()) { (it % 249).toByte() }) }
 
     @Test
     fun `parts overlap up to the default concurrency and the object is whole`() =

@@ -16,6 +16,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#309: a local rename that changes only the case (`case1.txt` to `CASE1.txt`) is one remote move. OneDrive renames an
@@ -37,7 +38,7 @@ class OneDriveCaseOnlyRenameTest {
                 }
             val service =
                 GraphApiService(
-                    config = OneDriveConfig(tokenPath = Files.createTempDirectory("od-case-rename")),
+                    config = OneDriveConfig(tokenPath = TestScratch.directory("od-case-rename")),
                     engine = engine,
                     tokenProvider = { _, _ -> "token" },
                 )

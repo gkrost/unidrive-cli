@@ -14,9 +14,10 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class LocalFsProviderTest {
-    private fun newRoot(): Path = Files.createTempDirectory("localfs-remote")
+    private fun newRoot(): Path = TestScratch.directory("localfs-remote")
 
     @Test
     fun upload_and_download_preserve_source_mtime_and_full_size() =
@@ -24,7 +25,7 @@ class LocalFsProviderTest {
             val p = LocalFsProvider(newRoot())
             p.authenticate()
             val mtime = FileTime.fromMillis(1_600_000_000_000L)
-            val src = Files.createTempFile("src", ".bin")
+            val src = TestScratch.file("src", ".bin")
             Files.write(src, ByteArray(100_000) { it.toByte() })
             Files.setLastModifiedTime(src, mtime)
 
@@ -32,7 +33,7 @@ class LocalFsProviderTest {
             assertEquals(100_000L, item.size)
             assertEquals(mtime.toInstant(), item.modified)
 
-            val dest = Files.createTempDirectory("out").resolve("a.bin")
+            val dest = TestScratch.directory("out").resolve("a.bin")
             assertEquals(100_000L, p.download("/a.bin", dest))
             assertEquals(mtime, Files.getLastModifiedTime(dest))
         }
@@ -44,7 +45,7 @@ class LocalFsProviderTest {
             p.authenticate()
             assertTrue(p.isAuthenticated)
 
-            val src = Files.createTempFile("src", ".txt")
+            val src = TestScratch.file("src", ".txt")
             Files.writeString(src, "hello")
             val item = p.upload(src, "/dir/a.txt")
             assertEquals("/dir/a.txt", item.path)
@@ -53,7 +54,7 @@ class LocalFsProviderTest {
 
             assertEquals(listOf("a.txt"), p.listChildren("/dir").map { it.name })
 
-            val dest = Files.createTempDirectory("out").resolve("out.txt")
+            val dest = TestScratch.directory("out").resolve("out.txt")
             assertEquals(5L, p.download("/dir/a.txt", dest))
             assertEquals("hello", Files.readString(dest))
         }
@@ -128,7 +129,7 @@ class LocalFsProviderTest {
             val p = LocalFsProvider(newRoot())
             p.authenticate()
             p.createFolder("/sub")
-            val src = Files.createTempFile("x", ".txt")
+            val src = TestScratch.file("x", ".txt")
             Files.writeString(src, "y")
             p.upload(src, "/sub/x.txt")
 
@@ -146,7 +147,7 @@ class LocalFsProviderTest {
             val p = LocalFsProvider(newRoot())
             p.authenticate()
             assertTrue(p.capabilities().any { it is org.krost.unidrive.Capability.PermanentDelete })
-            val src = Files.createTempFile("src", ".txt")
+            val src = TestScratch.file("src", ".txt")
             Files.writeString(src, "x")
             p.upload(src, "/d/a.txt")
             p.upload(src, "/top.txt")
@@ -162,7 +163,7 @@ class LocalFsProviderTest {
         runTest {
             val p = LocalFsProvider(newRoot())
             p.authenticate()
-            val src = Files.createTempFile("d", ".txt")
+            val src = TestScratch.file("d", ".txt")
             Files.writeString(src, "z")
             p.upload(src, "/d.txt")
             assertTrue((p.verifyItemExists("/d.txt") as CapabilityResult.Success).value)
@@ -182,7 +183,7 @@ class LocalFsProviderTest {
     fun rejects_paths_through_a_symlink_escaping_root() =
         runTest {
             val root = newRoot()
-            val outside = Files.createTempDirectory("localfs-outside")
+            val outside = TestScratch.directory("localfs-outside")
             Files.writeString(outside.resolve("secret.txt"), "secret")
             val link = root.resolve("link")
             try {
@@ -201,7 +202,7 @@ class LocalFsProviderTest {
     @Test
     fun factory_reports_unhealthy_without_root_path() {
         val factory = LocalFsProviderFactory()
-        val dir = Files.createTempDirectory("localfs-auth")
+        val dir = TestScratch.directory("localfs-auth")
         assertFalse(factory.isAuthenticated(emptyMap(), dir))
         assertTrue(factory.isAuthenticated(mapOf("root_path" to "/some/dir"), dir))
     }
@@ -210,7 +211,7 @@ class LocalFsProviderTest {
     fun delete_does_not_follow_symlinks_out_of_root() =
         runTest {
             val root = newRoot()
-            val outside = Files.createTempDirectory("localfs-outside-del")
+            val outside = TestScratch.directory("localfs-outside-del")
             Files.writeString(outside.resolve("keep.txt"), "keep")
             val p = LocalFsProvider(root)
             p.authenticate()
@@ -341,12 +342,12 @@ class LocalFsProviderTest {
             val root = newRoot()
             val p = LocalFsProvider(root)
             p.authenticate()
-            val src = Files.createTempFile("ro", ".txt")
+            val src = TestScratch.file("ro", ".txt")
             Files.writeString(src, "v1")
             Files.setLastModifiedTime(src, FileTime.fromMillis(1_600_000_000_000L))
             val cloud = root.resolve("c.txt")
             Files.writeString(cloud, "from the cloud")
-            val dest = Files.createTempDirectory("out").resolve("c.txt")
+            val dest = TestScratch.directory("out").resolve("c.txt")
             try {
                 // COPY_ATTRIBUTES carries the read-only attribute along; the copy must still complete, and the
                 // next copy must still be able to replace it.
@@ -375,7 +376,7 @@ class LocalFsProviderTest {
             p.authenticate()
             val cloud = root.resolve("c.txt")
             Files.writeString(cloud, "from the cloud")
-            val outDir = Files.createTempDirectory("out")
+            val outDir = TestScratch.directory("out")
             val dest = outDir.resolve("c.txt")
             Files.writeString(dest, "the file the user has")
 
@@ -394,7 +395,7 @@ class LocalFsProviderTest {
             val p = LocalFsProvider(root)
             p.authenticate()
             Files.writeString(root.resolve("r.txt"), "the old remote")
-            val src = Files.createTempFile("src", ".txt")
+            val src = TestScratch.file("src", ".txt")
             Files.writeString(src, "the new local")
 
             whileUnreadable(src) {
@@ -412,7 +413,7 @@ class LocalFsProviderTest {
             val p = LocalFsProvider(root)
             p.authenticate()
             Files.writeString(root.resolve("report.docx"), "somebody else's")
-            val src = Files.createTempFile("src", ".txt")
+            val src = TestScratch.file("src", ".txt")
             Files.writeString(src, "mine")
 
             assertFailsWith<org.krost.unidrive.RemoteConflictException> { p.upload(src, "/report.docx") }
@@ -427,9 +428,9 @@ class LocalFsProviderTest {
             val p = LocalFsProvider(newRoot())
             p.authenticate()
 
-            val staging = Files.createTempFile("localfs-staging", ".txt")
+            val staging = TestScratch.file("localfs-staging", ".txt")
             Files.writeString(staging, "mine")
-            val target = Files.createTempFile("localfs-target", ".txt")
+            val target = TestScratch.file("localfs-target", ".txt")
             Files.writeString(target, "somebody else's")
 
             // The fallback for file systems without hard links: an atomic move here would replace the taken name.
@@ -447,7 +448,7 @@ class LocalFsProviderTest {
             val root = newRoot()
             val p = LocalFsProvider(root)
             p.authenticate()
-            val src = Files.createTempFile("src", ".txt")
+            val src = TestScratch.file("src", ".txt")
             Files.writeString(src, "v1")
             p.upload(src, "/n.txt")
             assertEquals("v1", Files.readString(root.resolve("n.txt")))
@@ -504,7 +505,7 @@ class LocalFsProviderTest {
             val root = newRoot()
             val p = LocalFsProvider(root)
             p.authenticate()
-            val src = Files.createTempFile("src", ".bin")
+            val src = TestScratch.file("src", ".bin")
             Files.write(src, ByteArray(300_000) { (it % 251).toByte() })
 
             p.upload(src, "/st2/s017.bin") // the write that landed; the process dies here, before the row is written
@@ -514,12 +515,12 @@ class LocalFsProviderTest {
             assertEquals(ContentProof(true, METHOD_BYTE_COMPARE), sameBytes)
 
             // The same size with one byte changed in the middle is another file.
-            val other = Files.createTempFile("other", ".bin")
+            val other = TestScratch.file("other", ".bin")
             Files.write(other, Files.readAllBytes(src).also { it[150_000] = (it[150_000] + 1).toByte() })
             assertEquals(ContentProof(false, METHOD_BYTE_COMPARE), p.contentMatchesLocal("/st2/s017.bin", "/st2/s017.bin", other))
 
             // Another size, and a name nobody holds.
-            val shorter = Files.createTempFile("shorter", ".bin")
+            val shorter = TestScratch.file("shorter", ".bin")
             Files.write(shorter, Files.readAllBytes(src).copyOf(299_999))
             assertEquals(ContentProof(false, METHOD_BYTE_COMPARE), p.contentMatchesLocal("/st2/s017.bin", "/st2/s017.bin", shorter))
             assertNull(p.contentMatchesLocal("/st2/none.bin", "/st2/none.bin", src))
@@ -533,7 +534,7 @@ class LocalFsProviderTest {
         runTest {
             val p = LocalFsProvider(newRoot())
             p.authenticate()
-            val src = Files.createTempFile("src", ".bin")
+            val src = TestScratch.file("src", ".bin")
 
             assertFailsWith<IllegalArgumentException> { p.contentMatchesLocal("x", "/../escape.bin", src) }
         }

@@ -12,6 +12,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A content-host upload that Dropbox never answers is cut by the write-progress watchdog after the response wait, not
@@ -27,7 +28,7 @@ class DropboxUploadWatchdogTest {
             }
         val api =
             DropboxApi(
-                DropboxConfig(appKey = "key", tokenPath = Files.createTempDirectory("dbx-watchdog")),
+                DropboxConfig(appKey = "key", tokenPath = TestScratch.directory("dbx-watchdog")),
                 { _, _ -> "tok" },
                 engine = engine,
                 uploadWatchdog = UploadWatchdogLimits(idleWindowMs = 2_000, responseWaitFloorMs = 300, tickMs = 25),

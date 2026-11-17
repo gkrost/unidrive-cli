@@ -8,6 +8,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Commands with a machine-readable contract (`--json`) print exactly one
@@ -17,7 +18,7 @@ class LogStreamTest {
     @Test
     fun `shipped logback config sends console log lines to stderr`() {
         val config = javaClass.classLoader.getResource("logback.xml")!!
-        val logDir = Files.createTempDirectory("unidrive-logstream")
+        val logDir = TestScratch.directory("unidrive-logstream")
         val context = LoggerContext()
         try {
             context.putProperty("LOCALAPPDATA", logDir.toString())

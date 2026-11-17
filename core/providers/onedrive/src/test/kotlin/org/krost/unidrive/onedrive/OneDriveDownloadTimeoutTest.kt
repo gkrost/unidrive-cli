@@ -14,6 +14,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The client's flat `HttpDefaults.REQUEST_TIMEOUT_MS` (10 minutes) is counted up to the end of the `execute` block, so
@@ -59,7 +60,7 @@ class OneDriveDownloadTimeoutTest {
                 )
 
             // The 4-byte answer is shorter than the declared size: the outcome does not matter, the request's timeout does.
-            runCatching { service.downloadFile("item-1", Files.createTempFile("od-timeout", ".bin")) }
+            runCatching { service.downloadFile("item-1", TestScratch.file("od-timeout", ".bin")) }
 
             val timeout = assertNotNull(contentTimeouts.firstOrNull(), "the content GET carried a request timeout")
             assertTrue(

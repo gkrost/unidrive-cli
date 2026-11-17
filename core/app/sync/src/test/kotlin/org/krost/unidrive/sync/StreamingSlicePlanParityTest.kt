@@ -13,6 +13,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A streamed gather plans page by page, and a path that no page carries must not be decided from one page's view of
@@ -29,8 +30,8 @@ class StreamingSlicePlanParityTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-slice-parity")
-        db = StateDatabase(Files.createTempDirectory("unidrive-slice-parity-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-slice-parity")
+        db = StateDatabase(TestScratch.directory("unidrive-slice-parity-db").resolve("state.db"))
         db.initialize()
     }
 

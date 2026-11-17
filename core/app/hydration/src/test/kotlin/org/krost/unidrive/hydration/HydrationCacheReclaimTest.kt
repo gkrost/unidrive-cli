@@ -18,6 +18,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#391: `daemon.status.cache.bytes` is the engine's running total of the hydration cache. It must follow
@@ -35,14 +36,14 @@ class HydrationCacheReclaimTest {
 
     private fun freshEnv(): Env {
         val provider = MemProvider()
-        val db = StateDatabase(Files.createTempDirectory("ud-391-db").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("ud-391-db").resolve("state.db"))
         db.initialize()
         val engine =
             SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("ud-391-root"),
-                cacheRoot = Files.createTempDirectory("ud-391-cache"),
+                syncRoot = TestScratch.directory("ud-391-root"),
+                cacheRoot = TestScratch.directory("ud-391-cache"),
                 cacheKey = "ud-391-isolated-profile",
             )
         return Env(provider, db, engine)

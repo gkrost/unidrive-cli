@@ -13,6 +13,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * What a buffered reconcile plans around a tombstone of another item than the row it meets (gkrost/unidrive-cli#743):
@@ -25,8 +26,8 @@ class StaleTombstoneIdCoverageTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-stale-tomb-cov")
-        db = StateDatabase(Files.createTempDirectory("unidrive-stale-tomb-cov-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-stale-tomb-cov")
+        db = StateDatabase(TestScratch.directory("unidrive-stale-tomb-cov-db").resolve("state.db"))
         db.initialize()
     }
 

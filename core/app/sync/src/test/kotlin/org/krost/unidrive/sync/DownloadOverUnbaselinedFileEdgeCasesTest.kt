@@ -18,6 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** What a download over a file with no row baseline keeps and what it replaces without a copy (#742 finding 3). */
 class DownloadOverUnbaselinedFileEdgeCasesTest {
@@ -32,8 +33,8 @@ class DownloadOverUnbaselinedFileEdgeCasesTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-dl-nobase-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-dl-nobase-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-dl-nobase-root")
+        db = StateDatabase(TestScratch.directory("unidrive-dl-nobase-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         provider.hashAlgorithmOverride = HashAlgorithm.Sha256Hex

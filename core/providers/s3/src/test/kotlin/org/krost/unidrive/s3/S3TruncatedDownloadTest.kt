@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A GET whose body is shorter than its Content-Length is a truncated transfer (a proxy or a broken store). The guard
@@ -22,8 +23,8 @@ class S3TruncatedDownloadTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("s3-trunc-home")
-        home = Files.createTempDirectory("s3-trunc-out")
+        dir = TestScratch.directory("s3-trunc-home")
+        home = TestScratch.directory("s3-trunc-out")
     }
 
     @AfterTest

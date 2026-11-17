@@ -9,6 +9,7 @@ import java.text.Normalizer
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Seeded code-point fuzzing of the name rules: names made of random graphic code points (letters, marks, numbers,
@@ -66,7 +67,7 @@ class LocalNamesFuzzTest {
             "file names need a UTF-8 file name encoding on this host (sun.jnu.encoding=$jnu)",
             WINDOWS || jnu.equals("UTF-8", ignoreCase = true),
         )
-        val dir = Files.createTempDirectory("ud-names-fuzz")
+        val dir = TestScratch.directory("ud-names-fuzz")
         var n = 0
         var passed = 0
         var tooLong = 0

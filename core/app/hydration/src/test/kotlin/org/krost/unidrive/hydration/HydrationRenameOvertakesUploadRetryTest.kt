@@ -26,6 +26,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A bulk move through the mount while some of the moved files' uploads still wait in their retry backoff (archive#610):
@@ -192,13 +193,13 @@ class HydrationRenameOvertakesUploadRetryTest {
 
     private class Rig(scope: TestScope, uploadQueueDepth: Int = 256) {
         val drive = PathKeyedDrive()
-        val db = StateDatabase(dbPath = Files.createTempDirectory("unidrive-610-db").resolve("state.db"), inMemory = true)
+        val db = StateDatabase(dbPath = TestScratch.directory("unidrive-610-db").resolve("state.db"), inMemory = true)
             .also { it.initialize() }
         val engine = SyncEngine(
             provider = drive,
             db = db,
-            syncRoot = Files.createTempDirectory("unidrive-610-sync"),
-            cacheRoot = Files.createTempDirectory("unidrive-610-cache"),
+            syncRoot = TestScratch.directory("unidrive-610-sync"),
+            cacheRoot = TestScratch.directory("unidrive-610-cache"),
         )
         val impl = HydrationImpl(engine, db, recoveryUploadScope = scope, uploadStallTimeoutMs = 0L, uploadQueueDepth = uploadQueueDepth)
 

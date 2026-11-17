@@ -7,6 +7,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#567, the durability claim: a row whose call has returned is on the disk after a kill, and a row whose
@@ -17,7 +18,7 @@ import kotlin.test.assertTrue
 class StateGroupCommitKillTest {
     @Test
     fun `after a kill every acknowledged row is on the disk and the rows in the stalled transaction are not`() {
-        val dir = Files.createTempDirectory("unidrive-group-commit-kill")
+        val dir = TestScratch.directory("unidrive-group-commit-kill")
         val dbFile = dir.resolve("state.db")
         val exe = if (System.getProperty("os.name").startsWith("Windows")) "java.exe" else "java"
         val java = Path.of(System.getProperty("java.home"), "bin", exe)

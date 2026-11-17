@@ -7,12 +7,13 @@ import org.krost.unidrive.sync.testfixtures.World
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /** A fast bootstrap leaves the pending state agreeing with the cursor it adopted, so `doctor` and `status` read it as complete (#745). */
 class FastBootstrapPendingStateTest {
     private fun withWorld(block: suspend (World) -> Unit) =
         runTest {
-            val world = World(Files.createTempDirectory("ud-bootstrap-pending"))
+            val world = World(TestScratch.directory("ud-bootstrap-pending"))
             try {
                 block(world)
             } finally {

@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A drive without `parentReference.path` (Business, SharePoint) places each item below its parent folder. The folders
@@ -28,7 +29,7 @@ class OneDrivePathlessDeltaPagesTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("ud-pathless-pages")
+        tmp = TestScratch.directory("ud-pathless-pages")
     }
 
     @AfterTest

@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -21,9 +22,9 @@ class LogReadOnlyTest {
 
     @BeforeTest
     fun setUp() {
-        configDir = Files.createTempDirectory("ud-log-ro-cfg")
-        val syncRoot = Files.createTempDirectory("ud-log-ro-local")
-        val remoteRoot = Files.createTempDirectory("ud-log-ro-remote")
+        configDir = TestScratch.directory("ud-log-ro-cfg")
+        val syncRoot = TestScratch.directory("ud-log-ro-local")
+        val remoteRoot = TestScratch.directory("ud-log-ro-remote")
         Files.writeString(
             configDir.resolve("config.toml"),
             """

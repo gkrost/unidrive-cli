@@ -17,10 +17,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** The sign-in request (PKCE, offline access, the loopback redirect) and what the factory asks of a profile. */
 class DropboxAuthTest {
-    private val dir = Files.createTempDirectory("dropbox-auth")
+    private val dir = TestScratch.directory("dropbox-auth")
 
     // The profile's non-secret config the CLI hands to begin and complete.
     private val profile = mapOf("client_id" to "app-key-from-profile")
@@ -178,7 +179,7 @@ class DropboxAuthTest {
                 object : DropboxProviderFactory() {
                     override fun newHttpClientForBegin() = client
                 }
-            val profileDir = Files.createTempDirectory("dropbox-auth-close-begin")
+            val profileDir = TestScratch.directory("dropbox-auth-close-begin")
 
             factory.beginInteractiveAuth(profileDir, profile)
 
@@ -196,7 +197,7 @@ class DropboxAuthTest {
                 object : DropboxProviderFactory() {
                     override fun newHttpClientForBegin(): io.ktor.client.HttpClient = io.ktor.client.HttpClient(fake.engine).also { clients += it }
                 }
-            val profileDir = Files.createTempDirectory("dropbox-auth-close-complete")
+            val profileDir = TestScratch.directory("dropbox-auth-close-complete")
             val begun = factory.beginInteractiveAuth(profileDir, profile)
 
             val outcome = factory.completeInteractiveAuth(profileDir, begun.continuationHandle, "wrong", profile)

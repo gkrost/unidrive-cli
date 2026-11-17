@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * #216: every failures.jsonl line is one valid JSON record that reads back as written, whatever the path, the
@@ -32,8 +33,8 @@ class FailureLogJsonTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-failure-log-root")
-        stateDir = Files.createTempDirectory("ud-failure-log-state")
+        syncRoot = TestScratch.directory("ud-failure-log-root")
+        stateDir = TestScratch.directory("ud-failure-log-state")
         failureLog = stateDir.resolve("failures.jsonl")
         db = StateDatabase(stateDir.resolve("state.db")).also { it.initialize() }
         provider = FakeCloudProvider()

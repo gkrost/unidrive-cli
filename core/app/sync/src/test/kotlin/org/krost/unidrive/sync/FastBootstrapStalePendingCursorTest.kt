@@ -7,6 +7,7 @@ import org.krost.unidrive.sync.testfixtures.World
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The delta cursor only moves forward, to the cursor of the pass whose plan applied (audit 745 finding 5).
@@ -19,7 +20,7 @@ import kotlin.test.assertEquals
 class FastBootstrapStalePendingCursorTest {
     private fun withWorld(block: suspend (World) -> Unit) =
         runTest {
-            val world = World(Files.createTempDirectory("ud-stale-pending"))
+            val world = World(TestScratch.directory("ud-stale-pending"))
             try {
                 block(world)
             } finally {

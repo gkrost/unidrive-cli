@@ -10,6 +10,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#311: the mount records a replace-rename before it parks the old destination and clears the record once the
@@ -17,7 +18,7 @@ import kotlin.test.assertTrue
  * existed keeps its rows and records and gains the table when it is opened.
  */
 class StateDatabaseReplaceIntentTest {
-    private fun newFile(): Path = Files.createTempDirectory("ud-replace-intent-db").resolve("state.db")
+    private fun newFile(): Path = TestScratch.directory("ud-replace-intent-db").resolve("state.db")
 
     private fun open(path: Path = newFile()) = StateDatabase(path).also { it.initialize() }
 

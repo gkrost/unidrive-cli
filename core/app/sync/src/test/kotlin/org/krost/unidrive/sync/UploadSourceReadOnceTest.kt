@@ -9,6 +9,7 @@ import org.krost.unidrive.HashAlgorithm
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.engine.FileEvents
 import org.krost.unidrive.sync.model.ConflictPolicy
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -41,8 +42,8 @@ class UploadSourceReadOnceTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-393-root")
-        db = StateDatabase(Files.createTempDirectory("ud-393-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-393-root")
+        db = StateDatabase(TestScratch.directory("ud-393-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         savedLevel = eventLogger.level

@@ -21,6 +21,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** #531: a stop of the daemon must not leave the server's own transport threads behind because one task is wedged. */
 class IpcServerCloseTest {
@@ -30,7 +31,7 @@ class IpcServerCloseTest {
 
     @BeforeTest
     fun setUp() {
-        socketDir = Files.createTempDirectory("unidrive-ipc-close")
+        socketDir = TestScratch.directory("unidrive-ipc-close")
         socketPath = socketDir.resolve("c.sock")
     }
 

@@ -16,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.sync.HashVerifier
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-366 data-loss regression on OneDrive: create-collision must never blind-overwrite.
@@ -74,7 +75,7 @@ class OneDriveCreateCollisionTest {
                     respond("{}", HttpStatusCode.OK, jsonHeaders())
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-invalid-name", ".txt")
+            val local = TestScratch.file("ud-invalid-name", ".txt")
             try {
                 val uploadFailure =
                     assertFailsWith<PermanentUploadFailureException> {
@@ -122,7 +123,7 @@ class OneDriveCreateCollisionTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-collision", ".md")
+            val local = TestScratch.file("ud-collision", ".md")
             Files.write(local, "hello".toByteArray())
 
             // existingRemoteId == null → a NEW file the engine believes doesn't exist remotely.
@@ -164,7 +165,7 @@ class OneDriveCreateCollisionTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-update", ".txt")
+            val local = TestScratch.file("ud-update", ".txt")
             Files.write(local, "world".toByteArray())
 
             // existingRemoteId != null → a MODIFIED file we own → replace-in-place is correct.
@@ -192,7 +193,7 @@ class OneDriveCreateCollisionTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-fresh", ".txt")
+            val local = TestScratch.file("ud-fresh", ".txt")
             Files.write(local, "data".toByteArray())
 
             val result = provider.upload(local, "/fresh.txt", existingRemoteId = null)
@@ -228,7 +229,7 @@ class OneDriveCreateCollisionTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-big", ".bin")
+            val local = TestScratch.file("ud-big", ".bin")
             Files.write(local, ByteArray(5 * 1024 * 1024) { 0 }) // >4 MiB → chunked path
 
             provider.upload(local, "/big.bin", existingRemoteId = null)
@@ -256,7 +257,7 @@ class OneDriveCreateCollisionTest {
                     )
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-invalid-request", ".txt")
+            val local = TestScratch.file("ud-invalid-request", ".txt")
             Files.write(local, "content".toByteArray())
 
             val failure =
@@ -288,7 +289,7 @@ class OneDriveCreateCollisionTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-invalid-update", ".txt")
+            val local = TestScratch.file("ud-invalid-update", ".txt")
             Files.write(local, "content".toByteArray())
 
             assertFailsWith<PermanentUploadFailureException> {
@@ -306,7 +307,7 @@ class OneDriveCreateCollisionTest {
         remoteContent: ByteArray,
         conflictBehaviors: MutableList<String?>,
     ): MockEngine {
-        val remote = Files.createTempFile("ud-remote", ".bin")
+        val remote = TestScratch.file("ud-remote", ".bin")
         Files.write(remote, remoteContent)
         val remoteHash = HashVerifier.computeQuickXorHash(remote)
         Files.deleteIfExists(remote)
@@ -345,7 +346,7 @@ class OneDriveCreateCollisionTest {
         runTest {
             val conflictBehaviors = mutableListOf<String?>()
             val provider = providerWith(collidingEngine("hello".toByteArray(), conflictBehaviors))
-            val local = Files.createTempFile("ud-identical", ".txt")
+            val local = TestScratch.file("ud-identical", ".txt")
             Files.write(local, "hello".toByteArray())
             try {
                 val result = provider.upload(local, "/report.txt", existingRemoteId = null)
@@ -364,7 +365,7 @@ class OneDriveCreateCollisionTest {
         runTest {
             val conflictBehaviors = mutableListOf<String?>()
             val provider = providerWith(collidingEngine("world".toByteArray(), conflictBehaviors))
-            val local = Files.createTempFile("ud-different", ".txt")
+            val local = TestScratch.file("ud-different", ".txt")
             Files.write(local, "hello".toByteArray())
             try {
                 val result = provider.upload(local, "/report.txt", existingRemoteId = null)

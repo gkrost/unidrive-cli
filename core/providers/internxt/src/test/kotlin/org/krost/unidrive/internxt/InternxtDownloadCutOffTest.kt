@@ -21,6 +21,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A connection that drops in the middle of the shard body ends the Ktor channel with a failure that only shows in
@@ -42,7 +43,7 @@ class InternxtDownloadCutOffTest {
         reset: Boolean,
         chunked: Boolean = false,
     ) {
-        val dir = Files.createTempDirectory("ud-dl-cutoff")
+        val dir = TestScratch.directory("ud-dl-cutoff")
         val destination: Path = dir.resolve("out.bin")
         Files.writeString(destination, "previous local copy")
         LoopbackServer(tls = false) { exchange ->
@@ -93,7 +94,7 @@ class InternxtDownloadCutOffTest {
     // The channel the engine hands over, closed with a failure: the unit-level view of the closedCause rethrow.
     @Test
     fun `a body channel closed with a failure is rethrown, not read as a clean end`() {
-        val destination = Files.createTempDirectory("ud-dl-cutoff").resolve("out.bin")
+        val destination = TestScratch.directory("ud-dl-cutoff").resolve("out.bin")
         val body = ByteChannel(autoFlush = true)
         val client =
             HttpClient(MockEngine { respond(body, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/octet-stream")) })

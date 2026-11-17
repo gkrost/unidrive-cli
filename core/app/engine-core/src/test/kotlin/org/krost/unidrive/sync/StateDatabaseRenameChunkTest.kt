@@ -15,6 +15,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A folder rename through the mount rewrote every row of the subtree inside one locked transaction: 134,877 rows
@@ -30,7 +31,7 @@ class StateDatabaseRenameChunkTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-rename-chunk")
+        dir = TestScratch.directory("unidrive-rename-chunk")
         db = StateDatabase(dir.resolve("state.db"))
         db.initialize()
     }

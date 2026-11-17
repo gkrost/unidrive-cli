@@ -27,6 +27,7 @@ import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcEndpoint
 import org.krost.unidrive.sync.ProfileMode
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.ByteBuffer
 import java.nio.file.Files
@@ -49,7 +50,7 @@ class DaemonLogContextTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("daemon-log-context-test")
+        tempDir = TestScratch.directory("daemon-log-context-test")
         recorder.attach()
     }
 

@@ -20,6 +20,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Protects the invariants from `docs/superpowers/specs/ipc-transport-dispatcher-isolation-design.md`.
@@ -35,7 +36,7 @@ class IpcDispatcherIsolationTest {
 
     @BeforeTest
     fun setUp() {
-        socketDir = Files.createTempDirectory("unidrive-ipc-isolation-test")
+        socketDir = TestScratch.directory("unidrive-ipc-isolation-test")
         socketPath = socketDir.resolve("test.sock")
     }
 

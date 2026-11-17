@@ -18,6 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * At the start of an attempt the stored upload session is asked for its offset. Only an answer that says the session
@@ -33,7 +34,7 @@ class OneDriveSessionProbeTransientTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-probe-transient")
+        tokenDir = TestScratch.directory("ud-probe-transient")
     }
 
     @AfterTest
@@ -177,7 +178,7 @@ class OneDriveSessionProbeTransientTest {
 
     // A local file with a stored session of its revision, created by a plain create (conflictBehavior=fail).
     private fun storedUpload(size: Long): Path {
-        val f = Files.createTempFile(tokenDir, "big", ".bin")
+        val f = TestScratch.file(tokenDir, "big", ".bin")
         Files.write(f, ByteArray(size.toInt()) { 5 })
         UploadSessionStore(tokenDir).put(
             "/big.bin",

@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The shipped systemd user units under dist/. Install and uninstall run against a throwaway HOME with a
@@ -21,7 +22,7 @@ class SystemdUnitsTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("systemd-units")
+        dir = TestScratch.directory("systemd-units")
         home = Files.createDirectories(dir.resolve("home"))
     }
 

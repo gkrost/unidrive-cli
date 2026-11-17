@@ -6,6 +6,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 
 /**
@@ -15,7 +16,7 @@ import picocli.CommandLine
  */
 class TrashRemoteCliTest {
     private fun runPurge(vararg args: String): Pair<Int, String> {
-        val configDir = Files.createTempDirectory("trash-cli-test")
+        val configDir = TestScratch.directory("trash-cli-test")
         val err = ByteArrayOutputStream()
         val originalErr = System.err
         return try {

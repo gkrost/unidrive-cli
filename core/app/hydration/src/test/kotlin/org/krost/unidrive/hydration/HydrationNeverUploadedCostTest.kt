@@ -20,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 // gkrost/unidrive-cli#585: what an unlink of a never-uploaded row and a list of a folder full of them
 // are allowed to cost. A row made while its path was kept local (the default patterns exclude a `~$` name for
@@ -86,7 +87,7 @@ class HydrationNeverUploadedCostTest {
         override suspend fun createFolder(path: String): CloudItem = error("not used")
     }
 
-    private val base: Path = Files.createTempDirectory("ud-585-cost")
+    private val base: Path = TestScratch.directory("ud-585-cost")
     private val provider = CountingProvider()
     private val db = StateDatabase(base.resolve("state.db")).also { it.initialize() }
     private val engine =

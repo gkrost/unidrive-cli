@@ -15,6 +15,7 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.HashAlgorithm
+import org.krost.unidrive.testing.TestScratch
 
 // A remote move or folder tombstone in an incremental delta must follow the remote without ever destroying
 // local work, must keep doing so when the same delta is replayed, and must not apply on a full listing.
@@ -27,7 +28,7 @@ class TrackingEngineIncrementalStructureSafetyTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-incremental-safety")
+        workDir = TestScratch.directory("tracking-incremental-safety")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider =

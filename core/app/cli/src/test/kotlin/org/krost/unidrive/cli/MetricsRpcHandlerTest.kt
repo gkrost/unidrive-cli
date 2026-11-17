@@ -20,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `metrics.query` against a handler over a real `telemetry.db`: the data-bearing transcripts of
@@ -32,7 +33,7 @@ class MetricsRpcHandlerTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("metrics-rpc-test")
+        dir = TestScratch.directory("metrics-rpc-test")
     }
 
     @AfterTest

@@ -10,6 +10,7 @@ import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -47,7 +48,7 @@ private fun runVariant(
     items: Int,
     resume: Boolean,
 ): Long {
-    val tmp = Files.createTempDirectory("heap-probe")
+    val tmp = TestScratch.directory("heap-probe")
     val db = StateDatabase(tmp.resolve("state.db"))
     db.initialize()
     try {

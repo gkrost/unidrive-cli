@@ -21,6 +21,7 @@ import org.krost.unidrive.TransientNetworkException
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessLock
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -116,7 +117,7 @@ class AuthCheckTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("auth-check")
+        dir = TestScratch.directory("auth-check")
         LifecycleHooks.terminalPassword = { null }
         LogoutHooks.socketPath = { dir.resolve("no-daemon").resolve("$it.sock") }
         System.setOut(PrintStream(out, true, Charsets.UTF_8))
@@ -310,7 +311,7 @@ class AuthCheckTest {
         withHandler: Boolean = true,
     ) : AutoCloseable {
         private val profileDir: Path = Files.createDirectories(dir.resolve("od"))
-        private val socketDir: Path = Files.createTempDirectory("auth-check-daemon")
+        private val socketDir: Path = TestScratch.directory("auth-check-daemon")
         private val lock = ProcessLock(profileDir.resolve(".lock")).also { assertTrue(it.tryLock(ProcessLock.Mode.DAEMON)) }
         private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
         private val server: IpcServer

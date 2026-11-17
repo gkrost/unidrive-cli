@@ -3,6 +3,7 @@ package org.krost.unidrive.onedrive
 import java.nio.file.Files
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class UploadSessionStoreTest {
     private lateinit var storeDir: java.nio.file.Path
@@ -10,7 +11,7 @@ class UploadSessionStoreTest {
 
     @BeforeTest
     fun setUp() {
-        storeDir = Files.createTempDirectory("upload-session-store-test")
+        storeDir = TestScratch.directory("upload-session-store-test")
         store = UploadSessionStore(storeDir)
     }
 
@@ -54,7 +55,7 @@ class UploadSessionStoreTest {
 
     @Test
     fun `missing store file returns null gracefully`() {
-        val emptyDir = Files.createTempDirectory("upload-session-empty")
+        val emptyDir = TestScratch.directory("upload-session-empty")
         val emptyStore = UploadSessionStore(emptyDir)
         assertNull(emptyStore.get("/anything.bin"))
     }

@@ -21,6 +21,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#392: cold hydration downloads take a permit of the profile's download budget. Before, nothing in
@@ -58,17 +59,17 @@ class HydrationDownloadBudgetTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("ud-392-db").resolve("state.db"))
+        db = StateDatabase(TestScratch.directory("ud-392-db").resolve("state.db"))
         db.initialize()
         fake = FakeCloudProvider()
         engine =
             SyncEngine(
                 provider = Counting(fake),
                 db = db,
-                syncRoot = Files.createTempDirectory("ud-392-root"),
+                syncRoot = TestScratch.directory("ud-392-root"),
                 conflictPolicy = ConflictPolicy.KEEP_BOTH,
                 reporter = ProgressReporter.Silent,
-                cacheRoot = Files.createTempDirectory("ud-392-cache"),
+                cacheRoot = TestScratch.directory("ud-392-cache"),
             )
     }
 

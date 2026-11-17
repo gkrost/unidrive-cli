@@ -21,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#311: a replace-rename parks the old destination (`<name>.unidrive-replaced`), moves the source onto the free
@@ -141,11 +142,11 @@ class HydrationReplaceRenameRecoveryTest {
     private class Rig(
         private val scope: TestScope,
         val drive: NameHoldingDrive = NameHoldingDrive(),
-        private val dbFile: Path = Files.createTempDirectory("unidrive-replace-recovery-db").resolve("state.db"),
-        private val cacheRoot: Path = Files.createTempDirectory("unidrive-replace-recovery-cache"),
+        private val dbFile: Path = TestScratch.directory("unidrive-replace-recovery-db").resolve("state.db"),
+        private val cacheRoot: Path = TestScratch.directory("unidrive-replace-recovery-cache"),
     ) {
         val db = StateDatabase(dbPath = dbFile).also { it.initialize() }
-        val engine = SyncEngine(provider = drive, db = db, syncRoot = Files.createTempDirectory("unidrive-replace-recovery-sync"), cacheRoot = cacheRoot)
+        val engine = SyncEngine(provider = drive, db = db, syncRoot = TestScratch.directory("unidrive-replace-recovery-sync"), cacheRoot = cacheRoot)
         val impl = HydrationImpl(engine, db, recoveryUploadScope = scope, uploadStallTimeoutMs = 0L)
 
         fun cache(path: String): Path = engine.resolveCachePath(path)

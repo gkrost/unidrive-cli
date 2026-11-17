@@ -11,6 +11,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.time.Duration.Companion.milliseconds
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * #748 finding 1: a token refresh that runs past the latch's 60 s deadline (a token endpoint that accepted and
@@ -23,7 +24,7 @@ import kotlin.time.Duration.Companion.milliseconds
 class DropboxAuthRefreshTimeoutTest {
     @Test
     fun `a token endpoint that stalls past the latch deadline surfaces retryable, not a cancellation`() = runTest {
-        val dir = Files.createTempDirectory("dropbox-refresh-timeout")
+        val dir = TestScratch.directory("dropbox-refresh-timeout")
         // A grant near its expiry, so accessToken() must refresh.
         Files.writeString(
             dir.resolve(DropboxAuth.TOKEN_FILE),

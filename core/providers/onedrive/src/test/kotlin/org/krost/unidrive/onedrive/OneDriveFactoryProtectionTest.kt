@@ -14,6 +14,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The provider factory is where a profile's OneDrive config is built in production (#83 B, archive#1261): the refresh
@@ -53,7 +54,7 @@ class OneDriveFactoryProtectionTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("ud-onedrive-factory-protection")
+        dir = TestScratch.directory("ud-onedrive-factory-protection")
     }
 
     @AfterTest

@@ -15,6 +15,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#24: a client that holds two spellings of one name (an NFC/NFD pair, U+00C5 next to U+212B) uploads
@@ -34,9 +35,9 @@ class TwinNameRefusalTest {
     @BeforeTest
     fun setUp() {
         provider = MemProvider()
-        db = StateDatabase(dbPath = Files.createTempDirectory("ud-twin-db").resolve("state.db"), inMemory = true)
+        db = StateDatabase(dbPath = TestScratch.directory("ud-twin-db").resolve("state.db"), inMemory = true)
         db.initialize()
-        engine = SyncEngine(provider = provider, db = db, syncRoot = Files.createTempDirectory("ud-twin-sync"), cacheRoot = Files.createTempDirectory("ud-twin-cache"))
+        engine = SyncEngine(provider = provider, db = db, syncRoot = TestScratch.directory("ud-twin-sync"), cacheRoot = TestScratch.directory("ud-twin-cache"))
         hydration =
             HydrationImpl(
                 syncEngine = engine,

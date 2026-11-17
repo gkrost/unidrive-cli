@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The provider declares `Md5Hex`, so a hash it reports is read as the content's MD5. An ETag is that MD5 only for a
@@ -22,7 +23,7 @@ class S3EtagHashTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("s3-etag")
+        dir = TestScratch.directory("s3-etag")
     }
 
     @AfterTest

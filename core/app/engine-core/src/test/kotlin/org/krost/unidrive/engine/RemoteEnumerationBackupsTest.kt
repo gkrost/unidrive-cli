@@ -10,6 +10,7 @@ import org.krost.unidrive.ScanContext
 import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -38,7 +39,7 @@ class RemoteEnumerationBackupsTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-backups-enumeration")
+        tmp = TestScratch.directory("unidrive-backups-enumeration")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

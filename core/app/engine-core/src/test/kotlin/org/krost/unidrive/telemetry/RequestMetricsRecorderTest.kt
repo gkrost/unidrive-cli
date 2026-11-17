@@ -17,6 +17,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class RequestMetricsRecorderTest {
     private lateinit var dir: Path
@@ -65,7 +66,7 @@ class RequestMetricsRecorderTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("request-metrics-test")
+        dir = TestScratch.directory("request-metrics-test")
         db = dir.resolve("telemetry.db")
     }
 

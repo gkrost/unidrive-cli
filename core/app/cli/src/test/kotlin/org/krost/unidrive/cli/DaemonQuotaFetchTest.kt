@@ -23,6 +23,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The daemon's quota fetch never signs in (#211): a status poll asks [CloudProvider.checkCredentials], which
@@ -35,7 +36,7 @@ class DaemonQuotaFetchTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("daemon-quota-fetch-test")
+        tempDir = TestScratch.directory("daemon-quota-fetch-test")
         db = StateDatabase(tempDir.resolve("state.db"))
         db.initialize()
     }

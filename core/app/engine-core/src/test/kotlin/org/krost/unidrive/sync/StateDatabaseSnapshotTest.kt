@@ -15,6 +15,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class StateDatabaseSnapshotTest {
     private lateinit var dir: Path
@@ -23,7 +24,7 @@ class StateDatabaseSnapshotTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("snapshot-test")
+        dir = TestScratch.directory("snapshot-test")
     }
 
     @AfterTest

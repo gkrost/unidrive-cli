@@ -9,13 +9,14 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import org.krost.unidrive.testing.TestScratch
 
 class LocalMoveTest {
     private lateinit var dir: Path
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-local-move")
+        dir = TestScratch.directory("unidrive-local-move")
     }
 
     @AfterTest

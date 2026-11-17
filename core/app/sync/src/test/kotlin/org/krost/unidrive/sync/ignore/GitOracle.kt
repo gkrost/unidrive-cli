@@ -5,6 +5,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
+import org.krost.unidrive.testing.TestScratch
 
 /** What `git check-ignore -v` said about one path. [source] is empty when no rule matched. */
 internal data class GitAnswer(
@@ -178,7 +179,7 @@ internal class GitOracle private constructor(
         /** Everything the host might inject: git must see no config, no repository override, no hooks of ours. */
         private fun sanitise(env: MutableMap<String, String>) {
             env.keys.removeIf { it.startsWith("GIT_") }
-            val home = Files.createTempDirectory("ignore-oracle-home")
+            val home = TestScratch.directory("ignore-oracle-home")
             home.toFile().deleteOnExit()
             env["HOME"] = home.toString()
             env["USERPROFILE"] = home.toString()
@@ -228,7 +229,7 @@ internal class GitOracle private constructor(
             System.getenv("UNIDRIVE_ORACLE_GIT_VERSION")?.takeIf { it.isNotBlank() }?.let { pinned ->
                 check(version.joinToString(".") == pinned) { "oracle pinned to git $pinned but '$exe' reports '$versionText'" }
             }
-            val work = Files.createTempDirectory("ignore-oracle-repo")
+            val work = TestScratch.directory("ignore-oracle-repo")
             work.toFile().deleteOnExit()
             val init = ProcessBuilder(exe, "init", "-q", ".").directory(work.toFile()).redirectErrorStream(true)
             sanitise(init.environment())

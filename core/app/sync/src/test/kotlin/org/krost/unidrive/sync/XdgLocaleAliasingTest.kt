@@ -6,6 +6,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Tests for XDG-user-dir locale alias resolution (archive#115).
@@ -21,8 +22,8 @@ class XdgLocaleAliasingTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-xdg-alias-test")
-        val dbPath = Files.createTempDirectory("unidrive-xdg-alias-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-xdg-alias-test")
+        val dbPath = TestScratch.directory("unidrive-xdg-alias-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
     }
@@ -677,7 +678,7 @@ class XdgLocaleDirAliasesTest {
             XDG_MUSIC_DIR="${'$'}HOME/Musik"
             XDG_DOWNLOAD_DIR="${'$'}HOME/Downloads"
         """.trimIndent()
-        val tmpFile = java.nio.file.Files.createTempFile("user-dirs", ".dirs")
+        val tmpFile = TestScratch.file("user-dirs", ".dirs")
         try {
             java.nio.file.Files.writeString(tmpFile, content)
             val result = parseUserDirsFile(tmpFile)
@@ -693,7 +694,7 @@ class XdgLocaleDirAliasesTest {
     fun `parseUserDirsFile handles nested path extracting basename only`() {
         // Some distros write full paths: XDG_PICTURES_DIR="$HOME/Photos/Camera"
         val content = """XDG_PICTURES_DIR="${'$'}HOME/Photos/Camera""""
-        val tmpFile = java.nio.file.Files.createTempFile("user-dirs", ".dirs")
+        val tmpFile = TestScratch.file("user-dirs", ".dirs")
         try {
             java.nio.file.Files.writeString(tmpFile, content)
             val result = parseUserDirsFile(tmpFile)

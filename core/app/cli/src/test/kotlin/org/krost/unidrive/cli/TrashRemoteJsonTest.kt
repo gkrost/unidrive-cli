@@ -19,6 +19,7 @@ import org.krost.unidrive.TransientNetworkException
 import org.krost.unidrive.TrashEmptyOutcome
 import org.krost.unidrive.TrashItem
 import org.krost.unidrive.io.formatSize
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -51,9 +52,9 @@ class TrashRemoteJsonTest {
 
     @BeforeTest
     fun setUp() {
-        configDir = Files.createTempDirectory("ud-trash-json-cfg")
-        remoteRoot = Files.createTempDirectory("ud-trash-json-remote")
-        syncRoot = Files.createTempDirectory("ud-trash-json-local")
+        configDir = TestScratch.directory("ud-trash-json-cfg")
+        remoteRoot = TestScratch.directory("ud-trash-json-remote")
+        syncRoot = TestScratch.directory("ud-trash-json-local")
         Files.writeString(
             configDir.resolve("config.toml"),
             """

@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The watermark rule (archive#337, archive#148): an upload row records the file's stats as
@@ -29,8 +30,8 @@ class SyncEngineWatermarkStatTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-337-root")
-        db = StateDatabase(Files.createTempDirectory("ud-337-db").resolve("state.db")).also { it.initialize() }
+        syncRoot = TestScratch.directory("ud-337-root")
+        db = StateDatabase(TestScratch.directory("ud-337-db").resolve("state.db")).also { it.initialize() }
         provider = FakeCloudProvider()
         engine =
             SyncEngine(
@@ -39,7 +40,7 @@ class SyncEngineWatermarkStatTest {
                 syncRoot = syncRoot,
                 conflictPolicy = ConflictPolicy.KEEP_BOTH,
                 reporter = ProgressReporter.Silent,
-                cacheRoot = Files.createTempDirectory("ud-337-cache"),
+                cacheRoot = TestScratch.directory("ud-337-cache"),
             )
     }
 

@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A Dropbox walk that creates an item and deletes it again reports the item and then a tombstone carrying the item's id
@@ -40,8 +41,8 @@ class SameWalkTombstoneTest {
         pages: List<List<CloudItem>>,
         liveAfter: List<CloudItem>,
     ): Outcome {
-        val root: Path = Files.createTempDirectory("ud-walk-root")
-        val db = StateDatabase(Files.createTempDirectory("ud-walk-db").resolve("state.db")).also { it.initialize() }
+        val root: Path = TestScratch.directory("ud-walk-root")
+        val db = StateDatabase(TestScratch.directory("ud-walk-db").resolve("state.db")).also { it.initialize() }
         try {
             val provider = ListingFeedProvider()
             val engine =
@@ -50,7 +51,7 @@ class SameWalkTombstoneTest {
                     db = db,
                     syncRoot = root,
                     reporter = DuplicateTwinNamesTest.CountingReporter(),
-                    cacheRoot = Files.createTempDirectory("ud-walk-cache"),
+                    cacheRoot = TestScratch.directory("ud-walk-cache"),
                     cacheKey = "same-walk-tombstone-test",
                     streamingReconciliation = streaming,
                 )

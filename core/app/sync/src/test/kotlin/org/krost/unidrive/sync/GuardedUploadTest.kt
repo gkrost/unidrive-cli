@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#57: the mirror's uploads are conditional. A modify carries the row's token as `ifMatchETag`; a write the
@@ -29,8 +30,8 @@ class GuardedUploadTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-57-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-57-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-57-root")
+        db = StateDatabase(TestScratch.directory("unidrive-57-db").resolve("state.db"))
         db.initialize()
         provider =
             FakeCloudProvider().apply {

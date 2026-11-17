@@ -5,6 +5,7 @@ import ch.qos.logback.core.read.ListAppender
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.sync.model.ConflictPolicy
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -28,8 +29,8 @@ class FailureJournalTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-journal-root")
-        stateDir = Files.createTempDirectory("ud-journal-state")
+        syncRoot = TestScratch.directory("ud-journal-root")
+        stateDir = TestScratch.directory("ud-journal-state")
         db = StateDatabase(stateDir.resolve("state.db")).also { it.initialize() }
         provider = FakeCloudProvider()
     }
@@ -162,8 +163,8 @@ class FailureJournalTest {
     )
 
     private fun downloadFailureRun(blockJournal: Boolean): DownloadFailureOutcome {
-        val root = Files.createTempDirectory("ud-journal-dl-root")
-        val state = Files.createTempDirectory("ud-journal-dl-state")
+        val root = TestScratch.directory("ud-journal-dl-root")
+        val state = TestScratch.directory("ud-journal-dl-state")
         val journal = state.resolve("failures.jsonl")
         if (blockJournal) Files.createDirectories(journal)
         val runDb = StateDatabase(state.resolve("state.db")).also { it.initialize() }

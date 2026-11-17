@@ -22,6 +22,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The write timeout is a deadline on progress, not on the whole reply: a large reply that a client reads slowly but
@@ -36,7 +37,7 @@ class IpcServerWriteProgressTest {
 
     @BeforeTest
     fun setUp() {
-        socketDir = Files.createTempDirectory("unidrive-ipc-write")
+        socketDir = TestScratch.directory("unidrive-ipc-write")
         socketPath = socketDir.resolve("w.sock")
     }
 

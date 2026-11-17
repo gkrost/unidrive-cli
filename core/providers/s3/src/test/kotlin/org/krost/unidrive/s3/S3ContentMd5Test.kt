@@ -11,6 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#570: a single-part PUT carries the `Content-MD5` of its body, taken in the read of the file that also makes
@@ -18,7 +19,7 @@ import kotlin.test.assertTrue
  * tree-wide check of the header is in [S3RequestPatternTest]; this has the edges and the failure.
  */
 class S3ContentMd5Test {
-    private val dir = Files.createTempDirectory("s3-content-md5")
+    private val dir = TestScratch.directory("s3-content-md5")
     private val mib = 1024L * 1024
 
     private fun provider(

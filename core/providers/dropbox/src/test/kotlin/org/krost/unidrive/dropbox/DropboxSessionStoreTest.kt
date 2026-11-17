@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#867: the session store's own rules — the identity binding (size, mtime), the 7-day life, and that
@@ -20,7 +21,7 @@ class DropboxSessionStoreTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("dropbox-session-store")
+        dir = TestScratch.directory("dropbox-session-store")
     }
 
     @AfterTest

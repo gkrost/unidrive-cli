@@ -10,13 +10,14 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#187: the shared fake enforces the conditional write by default, as a provider with conditional
  * writes does: an upload whose ifMatchETag names another version than the one the fake holds is a conflict.
  */
 class FakeCloudProviderIfMatchTest {
-    private fun file(text: String) = Files.createTempFile("unidrive-fake-ifmatch", ".bin").also { Files.writeString(it, text) }
+    private fun file(text: String) = TestScratch.file("unidrive-fake-ifmatch", ".bin").also { Files.writeString(it, text) }
 
     private fun seeded(
         path: String,

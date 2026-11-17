@@ -13,6 +13,7 @@ import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The last line of the read-only rule: whichever part of the engine starts a write, an upload, a delete, a move, a
@@ -30,7 +31,7 @@ class ReadOnlyTrashProviderTest {
     private val trash = TrashNamespace(ignoreCase = false)
     private val provider = ReadOnlyTrashProvider(inner, trash)
 
-    private val local: Path = Files.createTempFile("trash-readonly", ".bin")
+    private val local: Path = TestScratch.file("trash-readonly", ".bin")
 
     private fun enterTrash() {
         trash.place(listOf(item("f-in-trash", "/Old/a.txt", trashed = true), item("live", "/Live.txt"))) { emptyList() }
@@ -135,7 +136,7 @@ class ReadOnlyTrashProviderTest {
     fun `reading from the namespace is not a write`() =
         runTest {
             enterTrash()
-            val target = Files.createTempFile("trash-readonly-read", ".bin")
+            val target = TestScratch.file("trash-readonly-read", ".bin")
 
             provider.listChildren("/Papierkorb/Old")
             provider.getMetadata("/Papierkorb/Old/a.txt")
@@ -184,7 +185,7 @@ class ReadOnlyTrashProviderTest {
             assertFailsWith<BackupsReadOnlyException> { withBackups.deleteById(BackupsNamespace.ROOT_ID, "/anything") }
             assertEquals(emptyList(), inner.calls, "nothing reached the provider")
 
-            val target = Files.createTempFile("backups-readonly-read", ".bin")
+            val target = TestScratch.file("backups-readonly-read", ".bin")
             withBackups.downloadById("b1", "/Backups/Laptop/a.txt", target)
             withBackups.upload(local, "/Live.txt", existingRemoteId = "live")
             assertEquals(listOf("downloadById b1 /Backups/Laptop/a.txt", "upload /Live.txt live"), inner.calls)

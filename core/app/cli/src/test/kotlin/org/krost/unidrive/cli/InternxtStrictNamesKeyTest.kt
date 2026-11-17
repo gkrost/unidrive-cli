@@ -6,6 +6,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /** The profile key `internxt_strict_names` travels from config.toml through the properties map into the provider. */
 class InternxtStrictNamesKeyTest {
@@ -15,7 +16,7 @@ class InternxtStrictNamesKeyTest {
         path: String,
     ): String? {
         val raw = SyncConfig.parseRaw("[providers.ix]\ntype = \"internxt\"\n$line\n").providers.getValue("ix")
-        val tokenDir = Files.createTempDirectory("ud-strict-key")
+        val tokenDir = TestScratch.directory("ud-strict-key")
         val provider = InternxtProviderFactory(credentialProtector = null).create(Main().rawProviderToProperties(raw), tokenDir)
         try {
             return provider.newNameIssue(path)

@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A server or proxy that answers a page with a continuation token it was already asked for would otherwise be paged
@@ -21,7 +22,7 @@ class S3PageTokenLoopTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("s3-tok")
+        dir = TestScratch.directory("s3-tok")
     }
 
     @AfterTest

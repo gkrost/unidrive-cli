@@ -38,6 +38,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#778: `daemon.pause` and `daemon.resume` against a live daemon on a real socket: scope, the `paused`
@@ -52,7 +53,7 @@ class DaemonPauseTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("daemon-pause-test")
+        tempDir = TestScratch.directory("daemon-pause-test")
         socketPath = tempDir.resolve("daemon.sock")
     }
 

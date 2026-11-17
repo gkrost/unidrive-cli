@@ -15,6 +15,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * #404: a profile without `hydration_cache_max_bytes` (the config's disabled sentinel) keeps no content cache:
@@ -32,14 +33,14 @@ class HydrationCacheDisabledTest {
 
     private fun freshEnv(): Env {
         val provider = MemProvider()
-        val db = StateDatabase(Files.createTempDirectory("ud-404-db").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("ud-404-db").resolve("state.db"))
         db.initialize()
         val engine =
             SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("ud-404-root"),
-                cacheRoot = Files.createTempDirectory("ud-404-cache"),
+                syncRoot = TestScratch.directory("ud-404-root"),
+                cacheRoot = TestScratch.directory("ud-404-cache"),
                 cacheKey = "ud-404-isolated-profile",
             )
         return Env(provider, db, engine)

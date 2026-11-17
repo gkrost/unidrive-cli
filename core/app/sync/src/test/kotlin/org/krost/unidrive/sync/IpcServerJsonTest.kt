@@ -21,6 +21,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The JSON the IPC server writes itself (the `sync.subscribe` state dump, the `handler_threw`
@@ -38,7 +39,7 @@ class IpcServerJsonTest {
 
     @BeforeTest
     fun setUp() {
-        socketDir = Files.createTempDirectory("unidrive-ipc-json")
+        socketDir = TestScratch.directory("unidrive-ipc-json")
         socketPath = socketDir.resolve("json.sock")
     }
 

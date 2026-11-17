@@ -19,6 +19,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1043: the delta merge copies a new remote hash, size and modified time onto a row before any action runs.
@@ -37,8 +38,8 @@ class RemoteChangeBeforeContentTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-remote-change")
-        db = StateDatabase(Files.createTempDirectory("unidrive-remote-change-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-remote-change")
+        db = StateDatabase(TestScratch.directory("unidrive-remote-change-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine = newEngine()

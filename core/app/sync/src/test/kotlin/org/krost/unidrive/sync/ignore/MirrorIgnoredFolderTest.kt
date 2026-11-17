@@ -12,19 +12,20 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#68: on a mirror, a folder made in the sync root that the ignore rules exclude stays here: the scan
  * does not report it, so it is never created in the cloud, and nothing in it is uploaded.
  */
 class MirrorIgnoredFolderTest {
-    private val syncRoot = Files.createTempDirectory("unidrive-68-root")
+    private val syncRoot = TestScratch.directory("unidrive-68-root")
     private lateinit var db: StateDatabase
     private val provider = FakeCloudProvider()
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("unidrive-68-db").resolve("state.db"))
+        db = StateDatabase(TestScratch.directory("unidrive-68-db").resolve("state.db"))
         db.initialize()
     }
 

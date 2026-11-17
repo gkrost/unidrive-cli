@@ -5,6 +5,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
 import kotlin.time.Duration.Companion.seconds
+import org.krost.unidrive.testing.TestScratch
 
 class LocalWatcherTest {
     private lateinit var syncRoot: Path
@@ -12,7 +13,7 @@ class LocalWatcherTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-watch-test")
+        syncRoot = TestScratch.directory("unidrive-watch-test")
         // UD-211: use a short debounce in tests so existing post-write sleeps (200–1000 ms)
         // still see the trailing-edge emit. Production default is 2000 ms.
         watcher = LocalWatcher(syncRoot, debounceMs = 50L)

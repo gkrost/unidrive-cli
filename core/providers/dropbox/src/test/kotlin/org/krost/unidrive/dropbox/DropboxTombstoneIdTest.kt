@@ -7,6 +7,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A Dropbox deleted entry carries no id: the API names the path alone. The engine ignores a tombstone whose id differs
@@ -17,7 +18,7 @@ import kotlin.test.assertTrue
  * path does; its behaviour must not depend on how long the process has been up.
  */
 class DropboxTombstoneIdTest {
-    private val dir = Files.createTempDirectory("dropbox-tombstone-id")
+    private val dir = TestScratch.directory("dropbox-tombstone-id")
 
     private fun provider(fake: FakeDropbox) = FakeDropbox.provider(fake, dir)
 

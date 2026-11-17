@@ -9,6 +9,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1197: a shard PUT reports the body bytes it has sent while it runs, so a 2 GB upload does not read "0 B" until the
@@ -24,7 +25,7 @@ class InternxtShardPutProgressTest {
     }
 
     private fun file(size: Int): Path =
-        Files.createTempFile("shard", ".bin").also { Files.write(it, ByteArray(size) { i -> (i % 251).toByte() }); files.add(it) }
+        TestScratch.file("shard", ".bin").also { Files.write(it, ByteArray(size) { i -> (i % 251).toByte() }); files.add(it) }
 
     private val limits = UploadWatchdogLimits(idleWindowMs = 20_000, responseWaitFloorMs = 60_000, tickMs = 100)
 

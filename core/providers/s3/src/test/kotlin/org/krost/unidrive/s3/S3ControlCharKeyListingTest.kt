@@ -4,6 +4,7 @@ import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * XML 1.0 cannot carry a control character such as U+0008, so S3 documents `encoding-type=url` for keys that have
@@ -12,7 +13,7 @@ import kotlin.test.assertEquals
  * listing, including every ordinary key beside it.
  */
 class S3ControlCharKeyListingTest {
-    private val dir = Files.createTempDirectory("s3-control-char")
+    private val dir = TestScratch.directory("s3-control-char")
 
     @Test
     fun `a key with a control character does not fail the listing of its neighbours`() =

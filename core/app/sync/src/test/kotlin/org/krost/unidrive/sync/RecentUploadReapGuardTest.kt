@@ -11,6 +11,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The full-sync absence-implies-deletion sweep (detectMissingAfterFullSync)
@@ -33,8 +34,8 @@ class RecentUploadReapGuardTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-reap-root")
-        val dbPath = Files.createTempDirectory("ud-reap-db").resolve("state.db")
+        syncRoot = TestScratch.directory("ud-reap-root")
+        val dbPath = TestScratch.directory("ud-reap-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()

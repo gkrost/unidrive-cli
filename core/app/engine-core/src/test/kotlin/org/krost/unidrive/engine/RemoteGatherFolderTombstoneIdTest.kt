@@ -3,6 +3,7 @@ package org.krost.unidrive.engine
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -33,7 +34,7 @@ class RemoteGatherFolderTombstoneIdTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-folder-tomb")
+        tmp = TestScratch.directory("unidrive-folder-tomb")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

@@ -14,6 +14,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A provider whose delta() walks the whole tree on every call (localfs) hands the engine a cursor
@@ -31,8 +32,8 @@ class FullListingDeltaTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-422-root")
-        val dbPath = Files.createTempDirectory("ud-422-db").resolve("state.db")
+        syncRoot = TestScratch.directory("ud-422-root")
+        val dbPath = TestScratch.directory("ud-422-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()

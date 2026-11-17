@@ -14,6 +14,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * [SyncEngine.resolveCachePath] keeps every cache file inside the profile's hydration cache folder
@@ -33,7 +34,7 @@ class ResolveCachePathContainmentTest {
 
     @BeforeTest
     fun setUp() {
-        base = Files.createTempDirectory("ud-cache-containment")
+        base = TestScratch.directory("ud-cache-containment")
         db = StateDatabase(base.resolve("state.db"))
         db.initialize()
         provider = EnumerateRemoteIntoStateTest.EnumerateFakeProvider()

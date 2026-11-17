@@ -20,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `daemon stop` must ask the daemon to stop over IPC (daemon.shutdown) before it resorts to
@@ -82,7 +83,7 @@ class DaemonStopTest {
 
     @Test
     fun `requestDaemonShutdown returns false when nothing listens on the socket`() {
-        val dir = Files.createTempDirectory("daemon-stop-test")
+        val dir = TestScratch.directory("daemon-stop-test")
         try {
             assertFalse(requestDaemonShutdown(IpcEndpoint(dir.resolve("absent.sock"), dir, "stop_profile")))
         } finally {
@@ -92,7 +93,7 @@ class DaemonStopTest {
 
     @Test
     fun `requestDaemonShutdown stops a live daemon through its clean shutdown path`() = runBlocking {
-        val dir = Files.createTempDirectory("daemon-stop-test")
+        val dir = TestScratch.directory("daemon-stop-test")
         val socketPath: Path = dir.resolve("daemon.sock")
         val lockFile = dir.resolve(".lock")
         val runtime = DaemonRuntime(
@@ -130,7 +131,7 @@ class DaemonStopTest {
 
     @Test
     fun `requestDaemonShutdown without the daemon's token does not stop it`() = runBlocking {
-        val dir = Files.createTempDirectory("daemon-stop-test")
+        val dir = TestScratch.directory("daemon-stop-test")
         val socketPath: Path = dir.resolve("daemon.sock")
         val runtime = DaemonRuntime(
             profileMode = ProfileMode.MOUNT,

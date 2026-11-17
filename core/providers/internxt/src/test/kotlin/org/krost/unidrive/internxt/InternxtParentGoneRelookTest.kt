@@ -11,6 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#134: an upload is refused as `parent_gone` only when a second look through the complete listings, taken
@@ -19,7 +20,7 @@ import kotlin.test.assertTrue
  * live; the refusal was then stored for six hours and re-offered at every open.
  */
 class InternxtParentGoneRelookTest {
-    private val tmp: Path = Files.createTempDirectory("ud-parent-relook-")
+    private val tmp: Path = TestScratch.directory("ud-parent-relook-")
 
     private fun source(): Path = tmp.resolve("f.txt").also { Files.write(it, ByteArray(10) { 0x41 }) }
 

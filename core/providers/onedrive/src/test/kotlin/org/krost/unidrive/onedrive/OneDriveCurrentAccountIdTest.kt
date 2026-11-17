@@ -15,6 +15,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The start-up recording (`CloudProvider.currentAccountId`) reads the same field as the sign-in check, the owner of
@@ -25,7 +26,7 @@ class OneDriveCurrentAccountIdTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("od-curid-")
+        dir = TestScratch.directory("od-curid-")
     }
 
     @AfterTest

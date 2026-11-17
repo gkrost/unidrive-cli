@@ -9,6 +9,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1054 S4: the dry-run copy of state.db lists every path of the profile. On Windows a temp folder inherits the ACL of its
@@ -19,7 +20,7 @@ class StateDatabaseSnapshotPermissionsTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-snapshot-perm-")
+        tmp = TestScratch.directory("unidrive-snapshot-perm-")
     }
 
     @AfterTest

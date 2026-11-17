@@ -14,6 +14,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1045: a conflict that fetches the cloud's version (keep-both, last-writer-wins when the cloud wins, a local
@@ -33,8 +34,8 @@ class ConflictDownloadFailureTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-conflict-failure")
-        dbPath = Files.createTempDirectory("unidrive-conflict-failure-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-conflict-failure")
+        dbPath = TestScratch.directory("unidrive-conflict-failure-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()

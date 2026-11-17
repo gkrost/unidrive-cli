@@ -5,6 +5,7 @@ import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Candidate P5 of the audit: with keep_overwritten on, a replace renames the prior file to an archive name and creates the new
@@ -16,9 +17,9 @@ class InternxtKeepOverwrittenRetryTest {
     @Test
     fun `a create that finds its own file already landed after the archive rename adopts it`() =
         runTest {
-            val tmp = Files.createTempDirectory("ud-keep-retry-")
+            val tmp = TestScratch.directory("ud-keep-retry-")
             try {
-                val local = Files.createTempFile(tmp, "src-", ".bin").also { Files.write(it, ByteArray(16) { b -> b.toByte() }) }
+                val local = TestScratch.file(tmp, "src-", ".bin").also { Files.write(it, ByteArray(16) { b -> b.toByte() }) }
                 val drive = UploadDrive(bucketEntryId = "bucket-entry-new")
                 drive.files += UploadDriveFile("old-1", "doc", "txt", 5, "bucket-entry-old", "root-folder-uuid")
                 // The first create commits server-side but answers 409 (a second create of the same file met the first).

@@ -10,6 +10,7 @@ import org.krost.unidrive.sync.ProgressReporter
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -33,7 +34,7 @@ class MountRenameRecordsMoveTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-164-rename")
+        tmp = TestScratch.directory("unidrive-164-rename")
         Files.createDirectories(tmp.resolve("root"))
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()

@@ -6,6 +6,7 @@ import org.krost.unidrive.CloudItem
 import java.nio.file.Files
 import kotlin.test.*
 import kotlin.time.Duration.Companion.minutes
+import org.krost.unidrive.testing.TestScratch
 
 class OneDriveDeltaIntegrationTest {
     companion object {
@@ -59,7 +60,7 @@ class OneDriveDeltaIntegrationTest {
 
             val (_, cursor) = fullDelta()
 
-            val tempFile = Files.createTempFile("unidrive-delta", ".txt")
+            val tempFile = TestScratch.file("unidrive-delta", ".txt")
             Files.writeString(tempFile, "Delta test content")
             provider.upload(tempFile, remotePath)
             Files.delete(tempFile)
@@ -79,7 +80,7 @@ class OneDriveDeltaIntegrationTest {
             if (!checkEnabled()) return@runTest
             val remotePath = "$TEST_FOLDER/delta_del_${System.currentTimeMillis()}.txt"
 
-            val tempFile = Files.createTempFile("unidrive-delta-del", ".txt")
+            val tempFile = TestScratch.file("unidrive-delta-del", ".txt")
             Files.writeString(tempFile, "To be deleted")
             val uploaded = provider.upload(tempFile, remotePath)
             Files.delete(tempFile)
@@ -102,14 +103,14 @@ class OneDriveDeltaIntegrationTest {
             if (!checkEnabled()) return@runTest
             val remotePath = "$TEST_FOLDER/delta_mod_${System.currentTimeMillis()}.txt"
 
-            val tempFile = Files.createTempFile("unidrive-delta-mod", ".txt")
+            val tempFile = TestScratch.file("unidrive-delta-mod", ".txt")
             Files.writeString(tempFile, "Initial content")
             provider.upload(tempFile, remotePath)
             Files.delete(tempFile)
 
             val (_, cursor) = fullDelta()
 
-            val tempFile2 = Files.createTempFile("unidrive-delta-mod2", ".txt")
+            val tempFile2 = TestScratch.file("unidrive-delta-mod2", ".txt")
             Files.writeString(tempFile2, "Updated content here")
             provider.upload(tempFile2, remotePath)
             Files.delete(tempFile2)

@@ -5,6 +5,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.sync.model.ConflictPolicy
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -31,8 +32,8 @@ class SyncEngineWarnContextTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-warnctx-test")
-        val dbPath = Files.createTempDirectory("unidrive-warnctx-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-warnctx-test")
+        val dbPath = TestScratch.directory("unidrive-warnctx-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         logger = LoggerFactory.getLogger(SyncEngine::class.java) as Logger

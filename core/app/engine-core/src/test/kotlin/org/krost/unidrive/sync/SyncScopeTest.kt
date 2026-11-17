@@ -5,6 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class SyncScopeTest {
     @Test
@@ -71,7 +72,7 @@ class SyncScopeTest {
     }
 
     private fun tree(vararg files: String): java.nio.file.Path {
-        val root = java.nio.file.Files.createTempDirectory("scope-local")
+        val root = TestScratch.directory("scope-local")
         for (f in files) {
             val target = root.resolve(f)
             if (f.endsWith("/")) {

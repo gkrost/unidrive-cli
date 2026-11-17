@@ -9,6 +9,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.krost.unidrive.HashAlgorithm
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The persisted delta cursor moves only when the pass really consumed the delta: never on a dry run, and not
@@ -23,7 +24,7 @@ class TrackingEngineCursorTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-cursor")
+        workDir = TestScratch.directory("tracking-cursor")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider =

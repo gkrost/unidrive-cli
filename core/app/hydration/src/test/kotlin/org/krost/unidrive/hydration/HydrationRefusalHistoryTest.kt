@@ -12,13 +12,14 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#134: a client that offers the same refused file again and again (open_write every few minutes) must not
  * add a failed history row per offer: `history.list result=failed` shows the refusal once.
  */
 class HydrationRefusalHistoryTest {
-    private val dir: Path = Files.createTempDirectory("ud-hydration-refusal-history")
+    private val dir: Path = TestScratch.directory("ud-hydration-refusal-history")
     private val history: TransferHistory = TransferHistory.open("p1", dir.resolve("telemetry.db"))
 
     @AfterTest

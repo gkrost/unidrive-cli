@@ -26,6 +26,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#707: the `hydration.open_read` ok reply names the `etag` of the version it served, the one `hydration.list`
@@ -34,7 +35,7 @@ import kotlin.test.assertTrue
  * an unsynced edit.
  */
 class HydrationOpenReadEtagTest {
-    private val base: Path = Files.createTempDirectory("ud-open-read-etag")
+    private val base: Path = TestScratch.directory("ud-open-read-etag")
     private val db = StateDatabase(base.resolve("state.db")).also { it.initialize() }
     private val drive = MemProvider()
     private val engine =

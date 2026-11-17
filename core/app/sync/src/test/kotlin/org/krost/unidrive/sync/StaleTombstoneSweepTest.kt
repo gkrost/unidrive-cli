@@ -6,6 +6,7 @@ import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.sync.model.ChangeState
 import org.krost.unidrive.sync.model.ConflictPolicy
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -35,8 +36,8 @@ class StaleTombstoneSweepTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-sweep")
-        db = StateDatabase(Files.createTempDirectory("unidrive-sweep-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-sweep")
+        db = StateDatabase(TestScratch.directory("unidrive-sweep-db").resolve("state.db"))
         db.initialize()
     }
 
@@ -177,11 +178,11 @@ class StaleTombstoneSweepTest {
         val streaming: Boolean,
         fullListing: Boolean = false,
     ) {
-        val root: Path = Files.createTempDirectory("ud-sweep-root")
-        val dbPath: Path = Files.createTempDirectory("ud-sweep-edb").resolve("state.db")
+        val root: Path = TestScratch.directory("ud-sweep-root")
+        val dbPath: Path = TestScratch.directory("ud-sweep-edb").resolve("state.db")
         val engineDb = StateDatabase(dbPath).also { it.initialize() }
         val provider = ListingFeedProvider(fullListing)
-        private val cache = Files.createTempDirectory("ud-sweep-cache")
+        private val cache = TestScratch.directory("ud-sweep-cache")
 
         fun engine(on: StateDatabase = engineDb) =
             SyncEngine(

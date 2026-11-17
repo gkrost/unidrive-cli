@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#393: the encrypt pass is the one read of the source. It hashes the plaintext as it goes and reports
@@ -27,7 +28,7 @@ class InternxtUploadSourceReadTest {
     private val bucket = "6928426c1a2316b856c9ab81"
     private val shardUrl = "https://shard-host.invalid/read-once-put"
     private val putBodies: MutableList<Long> = Collections.synchronizedList(mutableListOf())
-    private val tmp: Path = Files.createTempDirectory("ud-393-")
+    private val tmp: Path = TestScratch.directory("ud-393-")
 
     @AfterTest
     fun cleanUp() {

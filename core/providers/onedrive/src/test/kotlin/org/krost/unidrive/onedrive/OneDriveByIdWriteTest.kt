@@ -10,6 +10,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `deleteById` and `moveById` carry the id the engine recorded for the row so that the item it planned the write for is
@@ -26,7 +27,7 @@ class OneDriveByIdWriteTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("ud-by-id-write")
+        tmp = TestScratch.directory("ud-by-id-write")
         graph = SimilarNameGraph()
         val config = OneDriveConfig(tokenPath = tmp.resolve("token"))
         val api = GraphApiService(config = config, httpClient = graph.client(), tokenProvider = { _, _ -> "test-token" })

@@ -21,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#585: the recorded benchmark of unlinking never-uploaded rows (`remote_id` null, a cache copy,
@@ -38,7 +39,7 @@ class HydrationUnlinkListBenchmarkTest {
     private val rowsRtt = 200
 
     private val provider = BenchProvider()
-    private val base: Path = Files.createTempDirectory("ud-585-bench")
+    private val base: Path = TestScratch.directory("ud-585-bench")
     private val db = StateDatabase(base.resolve("state.db")).also { it.initialize() }
     private val engine =
         SyncEngine(
@@ -325,7 +326,7 @@ class HydrationUnlinkListBenchmarkTest {
     // A second, throw-away stack for the sibling-count comparisons (its own db, engine and hydration).
     private fun freshSmall(): Triple<HydrationImpl, List<String>, StateDatabase> {
         val p = BenchProvider()
-        val b = Files.createTempDirectory("ud-585-small")
+        val b = TestScratch.directory("ud-585-small")
         val d = StateDatabase(b.resolve("state.db")).also { it.initialize() }
         val e =
             SyncEngine(

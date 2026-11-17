@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * #531: the open of the writable connection pauses between its tries (after a killed process, Windows needs the dead
@@ -24,7 +25,7 @@ class StateDatabaseOpenRetryTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-open-retry")
+        dir = TestScratch.directory("unidrive-open-retry")
     }
 
     @AfterTest
@@ -117,7 +118,7 @@ class StateDatabaseOpenRetryTest {
         for (reset in listOf<(StateDatabase) -> Unit>({ it.resetAll() }, { it.resetKeepingPending() }, { it.clearEnumerationBaseline() })) {
             val held = mutableListOf<Boolean>()
             lateinit var db: StateDatabase
-            db = StateDatabase(Files.createTempDirectory(dir, "reset").resolve("state.db"), connector = StagingOpenWatcher(held) { db })
+            db = StateDatabase(TestScratch.directory(dir, "reset").resolve("state.db"), connector = StagingOpenWatcher(held) { db })
             db.initialize()
             try {
                 reset(db)

@@ -12,6 +12,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#165: the both-new equal-size rule on a provider that reports no content hash
@@ -25,8 +26,8 @@ class BothNewEqualSizeNoHashTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-165-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-165-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-165-root")
+        db = StateDatabase(TestScratch.directory("unidrive-165-db").resolve("state.db"))
         db.initialize()
         // FakeCloudProvider reports no hash algorithm by default: the localfs shape.
         provider = FakeCloudProvider()

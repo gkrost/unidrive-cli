@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Two devices create the same name in different case on a provider that folds case (OneDrive): device A holds an
@@ -34,8 +35,8 @@ class CaseInsensitiveTwinDevicesTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-case-twins-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-case-twins-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-case-twins-root")
+        db = StateDatabase(TestScratch.directory("unidrive-case-twins-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         provider.caseSensitivity = CaseSensitivity.INSENSITIVE_PRESERVING

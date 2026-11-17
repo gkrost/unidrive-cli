@@ -11,6 +11,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A provider that reports no content hash and no discriminating etag (Internxt) leaves
@@ -93,7 +94,7 @@ class TrackingEngineHashlessRemoteDeleteTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-hashless-delete")
+        workDir = TestScratch.directory("tracking-hashless-delete")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider =

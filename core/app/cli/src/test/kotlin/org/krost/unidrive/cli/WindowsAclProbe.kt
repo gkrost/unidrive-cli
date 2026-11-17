@@ -3,6 +3,7 @@ package org.krost.unidrive.cli
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Reads and changes Windows ACLs through `icacls`, independently of the code under test, so a test
@@ -16,7 +17,7 @@ internal object WindowsAclProbe {
 
     /** The DACL of [path] in SDDL, as `icacls /save` writes it. */
     fun dacl(path: Path): String {
-        val out = Files.createTempFile("unidrive-acl-probe-", ".txt")
+        val out = TestScratch.file("unidrive-acl-probe-", ".txt")
         try {
             run("icacls", path.toString(), "/save", out.toString())
             return String(Files.readAllBytes(out), Charsets.UTF_16LE)

@@ -65,6 +65,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Golden NDJSON contract corpus for the daemon's IPC wire (issue: one
@@ -161,7 +162,7 @@ class IpcContractCorpusTest {
 
     @Test
     fun daemon_verb_replies_match_corpus_over_live_socket() = runBlocking {
-        val tempDir = Files.createTempDirectory("ipc-contract-test")
+        val tempDir = TestScratch.directory("ipc-contract-test")
         val socketPath = tempDir.resolve("daemon.sock")
         val runtime = DaemonRuntime(
             profileMode = ProfileMode.MOUNT,
@@ -274,7 +275,7 @@ class IpcContractCorpusTest {
         val pairs = loadSession(sessionName)
         val expectedPaused = loadEventLine(pausedEvent)
         val expectedResumed = loadEventLine("resumed")
-        val tempDir = Files.createTempDirectory("ipc-contract-pause-test")
+        val tempDir = TestScratch.directory("ipc-contract-pause-test")
         val socketPath = tempDir.resolve("daemon.sock")
         val runtime = DaemonRuntime(
             profileMode = ProfileMode.MOUNT,
@@ -368,7 +369,7 @@ class IpcContractCorpusTest {
     ) = runBlocking {
         val pairs = loadSession(session)
         assertEquals(2, pairs.size, "$session: one enumerate and one status")
-        val tempDir = Files.createTempDirectory("ipc-contract-trash-status")
+        val tempDir = TestScratch.directory("ipc-contract-trash-status")
         val socketPath = tempDir.resolve("daemon.sock")
         val runtime = DaemonRuntime(
             profileMode = ProfileMode.MOUNT,
@@ -447,7 +448,7 @@ class IpcContractCorpusTest {
     @Test
     fun share_session_matches_corpus_over_live_socket() = runBlocking {
         val pairs = loadSession("share")
-        val tempDir = Files.createTempDirectory("ipc-contract-share")
+        val tempDir = TestScratch.directory("ipc-contract-share")
         val socketPath = tempDir.resolve("daemon.sock")
         val runtime = DaemonRuntime(
             profileMode = ProfileMode.MOUNT,
@@ -506,7 +507,7 @@ class IpcContractCorpusTest {
     @Test
     fun view_invalidated_is_pushed_to_a_subscriber_when_the_list_of_a_view_lands() = runBlocking {
         val expected = Json.parseToJsonElement(loadEventLine("view.invalidated-recents"))
-        val tempDir = Files.createTempDirectory("ipc-contract-view-event")
+        val tempDir = TestScratch.directory("ipc-contract-view-event")
         val socketPath = tempDir.resolve("daemon.sock")
         val file = CloudItem("22222222-todo", "todo.txt", "/todo.txt", 5, false, null, null, null, null)
         // gkrost/unidrive-cli#631: the daemon fills the view once at start, so the list lands without the client's
@@ -840,7 +841,7 @@ class IpcContractCorpusTest {
         spec: ViewSpec = ViewSpec(ViewKind.RECENTS, limit = 10),
     ) = runBlocking {
         val pairs = loadSession(session)
-        val tempDir = Files.createTempDirectory("ipc-contract-views")
+        val tempDir = TestScratch.directory("ipc-contract-views")
         val socketPath = tempDir.resolve("daemon.sock")
         seedViewRows(tempDir.resolve("state.db"))
         val runtime = DaemonRuntime(
@@ -944,7 +945,7 @@ class IpcContractCorpusTest {
                     "${file.fileName}: '$verb' is neither a handshake verb nor a classified verb",
                 )
             }
-            val dir = Files.createTempDirectory("ipc-contract-auth")
+            val dir = TestScratch.directory("ipc-contract-auth")
             val socketPath = dir.resolve("a.sock")
             val auth = IpcAuth("p1", token, token, "contract", serverNonces = { ByteArray(16) { (0x10 + it).toByte() } })
             val server = IpcServer(socketPath, auth = auth)
@@ -973,7 +974,7 @@ class IpcContractCorpusTest {
     @Test
     fun connection_refusal_matches_corpus_over_live_socket() = runBlocking {
         val expected = loadConnectionLine("too_many_clients")
-        val tempDir = Files.createTempDirectory("ipc-contract-refusal-test")
+        val tempDir = TestScratch.directory("ipc-contract-refusal-test")
         val socketPath = tempDir.resolve("daemon.sock")
         val runtime = DaemonRuntime(
             profileMode = ProfileMode.MOUNT,
@@ -1029,7 +1030,7 @@ class IpcContractCorpusTest {
     @Test
     fun history_verbs_on_a_mirror_daemon_match_corpus_over_live_socket() = runBlocking {
         val pairs = loadSession("history-unavailable")
-        val tempDir = Files.createTempDirectory("ipc-contract-history-mirror")
+        val tempDir = TestScratch.directory("ipc-contract-history-mirror")
         val socketPath = tempDir.resolve("daemon.sock")
         val runtime = DaemonRuntime(
             profileMode = ProfileMode.MIRROR,
@@ -1073,7 +1074,7 @@ class IpcContractCorpusTest {
     @Test
     fun history_rows_of_retrying_uploads_match_corpus_over_live_socket() = runBlocking {
         val pairs = loadSession("history-retry")
-        val tempDir = Files.createTempDirectory("ipc-contract-history-retry")
+        val tempDir = TestScratch.directory("ipc-contract-history-retry")
         val socketPath = tempDir.resolve("daemon.sock")
         val runtime = DaemonRuntime(
             profileMode = ProfileMode.MOUNT,
@@ -1221,7 +1222,7 @@ class IpcContractCorpusTest {
     @Test
     fun history_row_event_matches_corpus_over_live_socket() = runBlocking {
         val expectedRow = Json.parseToJsonElement(loadEventLine("history.row")) as JsonObject
-        val tempDir = Files.createTempDirectory("ipc-contract-history-event")
+        val tempDir = TestScratch.directory("ipc-contract-history-event")
         val socketPath = tempDir.resolve("daemon.sock")
         var history: TransferHistory? = null
         val runtime = DaemonRuntime(

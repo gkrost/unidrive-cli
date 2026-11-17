@@ -27,6 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class InternxtApiServiceTest {
     // One instance for the wire-model tests: building a Json per use is slow and the compiler says so.
@@ -1250,7 +1251,7 @@ class InternxtApiServiceTest {
 
             // Tombstone-isolated tempDir so this test can't trip over a
             // sidecar from a prior failed run (or leak one to the next).
-            val tmpRoot = java.nio.file.Files.createTempDirectory("ud-iv-pin-")
+            val tmpRoot = TestScratch.directory("ud-iv-pin-")
             val provider = newProviderRooted(tmpRoot, engine)
             val tempLocal =
                 java.nio.file.Files
@@ -1459,7 +1460,7 @@ class InternxtApiServiceTest {
 
     @Test
     fun `tombstone round-trip writes the JSON sidecar and reads back identical bytes`() {
-        val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-rt-")
+        val tmp = TestScratch.directory("ud-tomb-rt-")
         try {
             val store = UploadTombstoneStore(tmp)
             val pathHash = UploadTombstoneStore.pathHash("/some/file.bin")
@@ -1495,11 +1496,11 @@ class InternxtApiServiceTest {
     // GC would otherwise keep for the 7-day TTL) must not outlive the file.
     @Test
     fun `discardStagedUpload removes the tombstone sidecar and the ciphertext`() {
-        val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-discard-")
+        val tmp = TestScratch.directory("ud-tomb-discard-")
         try {
             val provider = newProviderRooted(tmp)
             val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             val localPathString = local.toAbsolutePath().toString()
@@ -1536,8 +1537,8 @@ class InternxtApiServiceTest {
     @Test
     fun `resume at ENCRYPTING re-runs the encrypt with the same indexBytes`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-enc-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-enc-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -1584,8 +1585,8 @@ class InternxtApiServiceTest {
     @Test
     fun `a tombstone with a short index is discarded and the upload cold-starts with a fresh one`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-short-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-short-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -1629,8 +1630,8 @@ class InternxtApiServiceTest {
     @Test
     fun `resume at PUT_PENDING with fresh URL re-PUTs cached ciphertext + indexBytes`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-put-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-put-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -1683,8 +1684,8 @@ class InternxtApiServiceTest {
     @Test
     fun `resume at PUT_DONE skips re-PUT and calls finishUpload once`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-putdone-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-putdone-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -1735,8 +1736,8 @@ class InternxtApiServiceTest {
     @Test
     fun `a resume that pinned a plain SHA-256 finishes with RIPEMD-160 of it (#946)`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-hash946-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-hash946-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -1783,8 +1784,8 @@ class InternxtApiServiceTest {
     @Test
     fun `resume at FINISH_DONE skips bridge calls and only re-finishes`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-finishdone-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-finishdone-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -1838,8 +1839,8 @@ class InternxtApiServiceTest {
     @Test
     fun `stale-on-mtime-drift discards the tombstone and rotates indexBytes`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-mtime-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-mtime-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -1891,8 +1892,8 @@ class InternxtApiServiceTest {
     @Test
     fun `stale-on-size-drift discards the tombstone and rotates indexBytes`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-size-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-size-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -1952,8 +1953,8 @@ class InternxtApiServiceTest {
     @Test
     fun `stale-on-URL-TTL re-issues startUpload but preserves indexBytes (IV-pinning regression)`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-urlttl-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-urlttl-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -2017,8 +2018,8 @@ class InternxtApiServiceTest {
     @Test
     fun `stale-on-existingRemoteId-mismatch discards the tombstone`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-rid-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-rid-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -2081,8 +2082,8 @@ class InternxtApiServiceTest {
     @Test
     fun `content drift with same mtime and size discards the tombstone and rotates indexBytes (#311)`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-content-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-content-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -2149,8 +2150,8 @@ class InternxtApiServiceTest {
     @Test
     fun `content drift at PUT_PENDING with intact ciphertext discards and uploads fresh content (#311)`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-staleput-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-staleput-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -2213,8 +2214,8 @@ class InternxtApiServiceTest {
     @Test
     fun `unverifiable ciphertext beyond ENCRYPTING cold-restarts instead of re-encrypting under the pinned keystream (#311 backstop)`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-backstop-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-backstop-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -2266,8 +2267,8 @@ class InternxtApiServiceTest {
     @Test
     fun `409-reconcile on resumed finishUpload uses the original startedAt instant`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-409-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-409-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -2387,8 +2388,8 @@ class InternxtApiServiceTest {
     @Test
     fun `a tombstone written for another account's bucket is not resumed`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-otheracct-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-otheracct-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -2439,8 +2440,8 @@ class InternxtApiServiceTest {
     @Test
     fun `logout removes the upload tombstones and their staged ciphertext`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-logout-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-logout-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -2482,8 +2483,8 @@ class InternxtApiServiceTest {
     @Test
     fun `missing local path during resume cleans up the tombstone`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-missing-")
-            val local = java.nio.file.Files.createTempFile(tmp, "src-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-missing-")
+            val local = TestScratch.file(tmp, "src-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -2547,11 +2548,11 @@ class InternxtApiServiceTest {
     @Test
     fun `a running upload's tombstone survives another upload's cleanup and the upload resumes`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-tomb-concurrent-")
-            val localA = java.nio.file.Files.createTempFile(tmp, "src-a-", ".bin").also { p ->
+            val tmp = TestScratch.directory("ud-tomb-concurrent-")
+            val localA = TestScratch.file(tmp, "src-a-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
-            val localB = java.nio.file.Files.createTempFile(tmp, "src-b-", ".bin").also { p ->
+            val localB = TestScratch.file(tmp, "src-b-", ".bin").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
             try {
@@ -2742,7 +2743,7 @@ class InternxtApiServiceTest {
     @Test
     fun `upload modify with keepOverwritten=false calls replaceFile directly`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-kov-off-")
+            val tmp = TestScratch.directory("ud-kov-off-")
             // Local source file with a deterministic name so plainName=foo, ext=txt.
             val local = tmp.resolve("foo.txt").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
@@ -2816,7 +2817,7 @@ class InternxtApiServiceTest {
     @Test
     fun `upload modify with keepOverwritten=true renames before creating`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-kov-on-")
+            val tmp = TestScratch.directory("ud-kov-on-")
             val local = tmp.resolve("foo.txt").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
@@ -2919,7 +2920,7 @@ class InternxtApiServiceTest {
     @Test
     fun `upload modify with keepOverwritten=true and rename collision appends counter`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-kov-collision-")
+            val tmp = TestScratch.directory("ud-kov-collision-")
             val local = tmp.resolve("foo.txt").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }
@@ -3005,7 +3006,7 @@ class InternxtApiServiceTest {
     @Test
     fun `upload modify with keepOverwritten=true falls through to destructive replace on rename failure`() =
         kotlinx.coroutines.test.runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-kov-fail-")
+            val tmp = TestScratch.directory("ud-kov-fail-")
             val local = tmp.resolve("foo.txt").also { p ->
                 java.nio.file.Files.write(p, ByteArray(32) { it.toByte() })
             }

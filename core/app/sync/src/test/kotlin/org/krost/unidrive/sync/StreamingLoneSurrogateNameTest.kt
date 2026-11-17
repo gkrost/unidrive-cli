@@ -11,6 +11,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A cloud name holding a lone UTF-16 surrogate cannot be a local name and no store keeps it as it is (gkrost/unidrive-cli#582),
@@ -25,8 +26,8 @@ class StreamingLoneSurrogateNameTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-surrogate-root")
-        db = StateDatabase(Files.createTempDirectory("ud-surrogate-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-surrogate-root")
+        db = StateDatabase(TestScratch.directory("ud-surrogate-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

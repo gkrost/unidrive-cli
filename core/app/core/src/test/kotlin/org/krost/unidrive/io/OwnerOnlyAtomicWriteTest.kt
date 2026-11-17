@@ -10,6 +10,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** #222 item 2: the one owner-only, synced, atomic replace behind config.toml, the vault, the credentials and the verify report. */
 class OwnerOnlyAtomicWriteTest {
@@ -18,7 +19,7 @@ class OwnerOnlyAtomicWriteTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-owner-atomic-")
+        dir = TestScratch.directory("unidrive-owner-atomic-")
         target = dir.resolve("secret.toml")
     }
 

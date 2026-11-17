@@ -6,12 +6,13 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** gkrost/unidrive-cli#581: the move-aside of a corrupt state.db keeps every byte and the sidecars. */
 class StateDbRecoveryTest {
     @Test
     fun `moveAside keeps the file, its wal and shm and the scan staging under a corrupt-time name`() {
-        val dir = Files.createTempDirectory("unidrive-recovery-test")
+        val dir = TestScratch.directory("unidrive-recovery-test")
         val db = dir.resolve("state.db")
         Files.write(db, byteArrayOf(1))
         Files.write(dir.resolve("state.db-wal"), byteArrayOf(2))

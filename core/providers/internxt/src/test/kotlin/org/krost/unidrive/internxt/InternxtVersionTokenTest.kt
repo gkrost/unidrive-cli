@@ -12,6 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // archive#464: Internxt has no etag or hash. The write token the engine hands back to upload() is "<uuid>|<modificationTime>|<size>" of
 // the listing; upload() compares it with fresh metadata right before the replace. These tests pin the two halves: the token
@@ -72,7 +73,7 @@ class InternxtVersionTokenTest {
         assertEquals(fromDelta.version, fromFolder.version)
         assertEquals(fromDelta.size, fromFolder.size)
         assertEquals(fromDelta.contentId, fromFolder.contentId)
-        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = java.nio.file.Files.createTempFile("ud-cid-token", ".tmp")))
+        val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("ud-cid-token", ".tmp")))
         assertTrue(provider.reportsContentIds)
     }
 
@@ -83,7 +84,7 @@ class InternxtVersionTokenTest {
     ): InternxtProvider {
         val payload = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
         return InternxtProvider(
-            InternxtConfig(credentialProtector = null, tokenPath = java.nio.file.Files.createTempDirectory("ud-token-")),
+            InternxtConfig(credentialProtector = null, tokenPath = TestScratch.directory("ud-token-")),
             httpClient = io.ktor.client.HttpClient(
                 io.ktor.client.engine.mock.MockEngine { request ->
                     val url = request.url.toString()
@@ -116,7 +117,7 @@ class InternxtVersionTokenTest {
     @Test
     fun `a stale base token stops the replace before any byte is sent`() =
         runTest {
-            val local = java.nio.file.Files.createTempFile("ud-token-local-", ".bin").also { java.nio.file.Files.write(it, ByteArray(100)) }
+            val local = TestScratch.file("ud-token-local-", ".bin").also { java.nio.file.Files.write(it, ByteArray(100)) }
             val startCalls = AtomicInteger()
             val metaCalls = AtomicInteger()
             // The cloud copy changed after the caller listed it: a newer modification time than the token carries.

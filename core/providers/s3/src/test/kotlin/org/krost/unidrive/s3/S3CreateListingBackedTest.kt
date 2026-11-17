@@ -5,6 +5,7 @@ import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#573, profile key `s3_create_from_listing = true`: a create on a vendor that refuses `If-None-Match` is
@@ -13,7 +14,7 @@ import kotlin.test.assertEquals
  * refusal costs a HEAD before the retry unless the profile opted in.
  */
 class S3CreateListingBackedTest {
-    private val dir = Files.createTempDirectory("s3-create-listing")
+    private val dir = TestScratch.directory("s3-create-listing")
     private val mib = 1024L * 1024
 
     private fun provider(

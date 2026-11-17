@@ -10,6 +10,7 @@ import java.net.UnknownHostException
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1256 B: a throttle or a server error from the token endpoint says nothing about the refresh token. Only the
@@ -20,7 +21,7 @@ class DropboxRefreshStatusTest {
     private fun providerWhoseRefreshAnswers(answer: Answer): DropboxProvider {
         val fake = FakeDropbox()
         fake.on("oauth2/token") { answer }
-        return FakeDropbox.provider(fake, Files.createTempDirectory("dropbox-refresh-status"), expiresAt = System.currentTimeMillis() + 1_000)
+        return FakeDropbox.provider(fake, TestScratch.directory("dropbox-refresh-status"), expiresAt = System.currentTimeMillis() + 1_000)
     }
 
     @Test
@@ -45,7 +46,7 @@ class DropboxRefreshStatusTest {
         for ((name, failure) in shapes) {
             val fake = FakeDropbox()
             fake.on("oauth2/token") { throw failure() }
-            val provider = FakeDropbox.provider(fake, Files.createTempDirectory("dropbox-refresh-network"), expiresAt = System.currentTimeMillis() + 1_000)
+            val provider = FakeDropbox.provider(fake, TestScratch.directory("dropbox-refresh-network"), expiresAt = System.currentTimeMillis() + 1_000)
             runTest {
                 assertFailsWith<TransientNetworkException>(name) { provider.getMetadata("/a.txt") }
             }

@@ -16,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The mirror engine and the trash namespace. Items the provider reports as trashed are shown under the root folder;
@@ -36,8 +37,8 @@ class TrashNamespaceMirrorTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-trash-mirror")
-        db = StateDatabase(Files.createTempDirectory("unidrive-trash-mirror-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-trash-mirror")
+        db = StateDatabase(TestScratch.directory("unidrive-trash-mirror-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         trash = TrashNamespace(ignoreCase = false)

@@ -20,6 +20,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#392 (G1): the engine an Internxt profile runs builds its download budget from the Internxt
@@ -33,7 +34,7 @@ class InternxtDownloadBudgetWiringTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-internxt-392-g1")
+        tmp = TestScratch.directory("unidrive-internxt-392-g1")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

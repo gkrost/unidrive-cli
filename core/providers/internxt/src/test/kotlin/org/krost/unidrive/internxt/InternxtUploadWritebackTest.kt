@@ -15,6 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // Upload write-back recovery: a createFile whose response is LOST (the
 // "server prematurely closed the connection" truncation) AFTER the server
@@ -115,7 +116,7 @@ class InternxtUploadWritebackTest {
     @Test
     fun `lost create response but file landed with our content adopts the real uuid`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-wb-adopt-")
+            val tmp = TestScratch.directory("ud-wb-adopt-")
             val local =
                 java.nio.file.Files
                     .createTempFile(tmp, "deb-", ".deb")
@@ -154,7 +155,7 @@ class InternxtUploadWritebackTest {
     @Test
     fun `lost create response and file not landed re-throws`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-wb-absent-")
+            val tmp = TestScratch.directory("ud-wb-absent-")
             val local =
                 java.nio.file.Files
                     .createTempFile(tmp, "deb-", ".deb")
@@ -184,7 +185,7 @@ class InternxtUploadWritebackTest {
     @Test
     fun `lost create response but landed content differs re-throws`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-wb-diff-")
+            val tmp = TestScratch.directory("ud-wb-diff-")
             val local =
                 java.nio.file.Files
                     .createTempFile(tmp, "deb-", ".deb")
@@ -311,7 +312,7 @@ class InternxtUploadWritebackTest {
     @Test
     fun `lost finish response but shard landed adopts the bucket entry and writes a real uuid`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-fin-adopt-")
+            val tmp = TestScratch.directory("ud-fin-adopt-")
             val local =
                 java.nio.file.Files
                     .createTempFile(tmp, "deb-", ".deb")
@@ -353,7 +354,7 @@ class InternxtUploadWritebackTest {
     @Test
     fun `lost finish response and shard not landed re-throws without creating a file`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-fin-absent-")
+            val tmp = TestScratch.directory("ud-fin-absent-")
             val local =
                 java.nio.file.Files
                     .createTempFile(tmp, "deb-", ".deb")
@@ -386,7 +387,7 @@ class InternxtUploadWritebackTest {
     @Test
     fun `pre-commit connect failure never adopts a coincidental same-name file`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-fin-precommit-")
+            val tmp = TestScratch.directory("ud-fin-precommit-")
             val local =
                 java.nio.file.Files
                     .createTempFile(tmp, "deb-", ".deb")
@@ -438,8 +439,8 @@ class InternxtUploadWritebackTest {
     private fun lockedSourceFixture(block: suspend (java.nio.file.Path, java.nio.file.Path, FileChannel) -> Unit) =
         runTest {
             assumeTrue(System.getProperty("os.name").lowercase().contains("windows"))
-            val tmp = java.nio.file.Files.createTempDirectory("ud-lock-")
-            val local = java.nio.file.Files.createTempFile(tmp, "deb-", ".deb")
+            val tmp = TestScratch.directory("ud-lock-")
+            val local = TestScratch.file(tmp, "deb-", ".deb")
             java.nio.file.Files.write(local, ByteArray(200) { i -> i.toByte() })
             val channel = FileChannel.open(local, StandardOpenOption.READ, ExtendedOpenOption.NOSHARE_READ)
             try {
@@ -509,8 +510,8 @@ class InternxtUploadWritebackTest {
     fun `encrypt step waits for a source file locked after the fingerprint read`() =
         runTest {
             assumeTrue(System.getProperty("os.name").lowercase().contains("windows"))
-            val tmp = java.nio.file.Files.createTempDirectory("ud-lock-enc-")
-            val local = java.nio.file.Files.createTempFile(tmp, "deb-", ".deb")
+            val tmp = TestScratch.directory("ud-lock-enc-")
+            val local = TestScratch.file(tmp, "deb-", ".deb")
             java.nio.file.Files.write(local, ByteArray(200) { i -> i.toByte() })
             val finishPosts = AtomicInteger(0)
             val landed =

@@ -9,6 +9,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Regression tests for bugs found during code audit.
@@ -22,8 +23,8 @@ class BugRegressionTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-bug-test")
-        val dbPath = Files.createTempDirectory("unidrive-bug-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-bug-test")
+        val dbPath = TestScratch.directory("unidrive-bug-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()

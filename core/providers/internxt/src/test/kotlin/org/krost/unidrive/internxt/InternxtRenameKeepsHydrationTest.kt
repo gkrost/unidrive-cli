@@ -14,6 +14,7 @@ import org.krost.unidrive.internxt.model.InternxtFile
 import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -38,7 +39,7 @@ class InternxtRenameKeepsHydrationTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-internxt-164")
+        tmp = TestScratch.directory("unidrive-internxt-164")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

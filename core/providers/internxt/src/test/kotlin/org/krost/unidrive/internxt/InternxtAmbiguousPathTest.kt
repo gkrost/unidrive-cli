@@ -22,6 +22,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#402: Internxt path-to-id resolution must fail closed on ambiguity. Where two
@@ -65,7 +66,7 @@ class InternxtAmbiguousPathTest {
                 .withoutPadding()
                 .encodeToString(payload.toByteArray())
         return InternxtProvider(
-            InternxtConfig(credentialProtector = null, tokenPath = java.nio.file.Files.createTempFile("ud-amb-token", ".tmp")),
+            InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("ud-amb-token", ".tmp")),
             httpClient = HttpClient(MockEngine { request -> handle(request) }),
             credentials =
                 org.krost.unidrive.internxt.model.InternxtCredentials(

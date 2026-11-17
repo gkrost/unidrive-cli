@@ -13,9 +13,10 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class VaultTest {
-    private fun tempVaultPath() = Files.createTempFile("vault-test-", ".enc")
+    private fun tempVaultPath() = TestScratch.file("vault-test-", ".enc")
 
     @Test
     fun `init creates vault file`() {
@@ -132,7 +133,7 @@ class VaultTest {
     private val newData = mapOf("new" to mapOf("secret_access_key" to "new-secret"))
 
     /** A folder of its own, so the temp files of a write can be counted. */
-    private fun vaultFolder(): Path = Files.createTempDirectory("vault-atomic-")
+    private fun vaultFolder(): Path = TestScratch.directory("vault-atomic-")
 
     private fun filesIn(folder: Path): List<String> = Files.list(folder).use { stream -> stream.map { it.fileName.toString() }.sorted().toList() }
 

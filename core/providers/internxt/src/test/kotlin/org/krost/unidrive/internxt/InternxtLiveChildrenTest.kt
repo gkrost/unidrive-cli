@@ -19,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class InternxtLiveChildrenTest {
     @Test
@@ -77,7 +78,7 @@ class InternxtLiveChildrenTest {
                 .withoutPadding()
                 .encodeToString("""{"exp":9999999999}""".toByteArray())
         return InternxtProvider(
-            InternxtConfig(credentialProtector = null, tokenPath = java.nio.file.Files.createTempFile("ud-live-token", ".tmp")),
+            InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("ud-live-token", ".tmp")),
             httpClient = HttpClient(MockEngine { request -> handle(request) }),
             credentials =
                 org.krost.unidrive.internxt.model.InternxtCredentials(

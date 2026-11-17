@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1256 A: Dropbox answers a missing path with HTTP 409 `path/not_found`, which was passed through as it came, so no
@@ -16,7 +17,7 @@ import kotlin.test.assertTrue
  * (`RemoteErrors.isNotFound`) reads: the `Item not found: ` message and an HTTP status of 404.
  */
 class DropboxNotFoundSignalTest {
-    private val dir = Files.createTempDirectory("dropbox-notfound")
+    private val dir = TestScratch.directory("dropbox-notfound")
     private val fake = FakeDropbox()
     private val provider = FakeDropbox.provider(fake, dir)
 

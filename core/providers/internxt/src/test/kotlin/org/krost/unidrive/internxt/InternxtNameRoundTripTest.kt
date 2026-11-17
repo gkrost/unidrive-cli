@@ -4,6 +4,7 @@ import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Candidate P1 of the audit: the name a file is uploaded under must be the name it is listed and found under. The upload
@@ -14,9 +15,9 @@ import kotlin.test.assertEquals
 class InternxtNameRoundTripTest {
     private fun assertRoundTrips(leaf: String) =
         runTest {
-            val tmp = Files.createTempDirectory("ud-name-rt-")
+            val tmp = TestScratch.directory("ud-name-rt-")
             try {
-                val local = Files.createTempFile(tmp, "src-", ".bin").also { Files.write(it, ByteArray(16) { b -> b.toByte() }) }
+                val local = TestScratch.file(tmp, "src-", ".bin").also { Files.write(it, ByteArray(16) { b -> b.toByte() }) }
                 val drive = UploadDrive()
                 val provider = rootedInternxtProvider(tmp, drive.engine)
                 try {
@@ -56,7 +57,7 @@ class InternxtNameRoundTripTest {
     @Test
     fun `a folder with a leading space is listed, walked and created into under its own name`() =
         runTest {
-            val tmp = Files.createTempDirectory("ud-name-rt-")
+            val tmp = TestScratch.directory("ud-name-rt-")
             try {
                 val drive = UploadDrive()
                 drive.folders += UploadDriveFolder("fs", " spaced", "root-folder-uuid")
@@ -93,7 +94,7 @@ class InternxtNameRoundTripTest {
     @Test
     fun `a rename to a double extension is listed under the new name`() =
         runTest {
-            val tmp = Files.createTempDirectory("ud-name-rt-")
+            val tmp = TestScratch.directory("ud-name-rt-")
             try {
                 val drive = UploadDrive()
                 drive.files += UploadDriveFile("f1", "a", "txt", 4, "fid", "root-folder-uuid")

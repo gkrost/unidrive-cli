@@ -13,6 +13,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Scan-end planning of the local changes no delta page carries (finalizeStreaming): it must agree with the pages on
@@ -25,8 +26,8 @@ class StreamingFinalizeTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-finalize")
-        db = StateDatabase(Files.createTempDirectory("unidrive-finalize-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-finalize")
+        db = StateDatabase(TestScratch.directory("unidrive-finalize-db").resolve("state.db"))
         db.initialize()
     }
 

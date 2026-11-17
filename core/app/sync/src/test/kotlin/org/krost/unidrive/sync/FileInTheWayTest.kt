@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#737: when the remote needs a folder where the sync root holds a regular file (the remote turned
@@ -30,8 +31,8 @@ class FileInTheWayTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-737-root")
-        db = StateDatabase(Files.createTempDirectory("ud-737-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-737-root")
+        db = StateDatabase(TestScratch.directory("ud-737-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

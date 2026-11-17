@@ -8,6 +8,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /** ScopeState stores the sync root and the effective scope under the stored names (gkrost/unidrive-cli#269). */
 class ScopeStateTest {
@@ -17,7 +18,7 @@ class ScopeStateTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-scope-state")
+        tmp = TestScratch.directory("unidrive-scope-state")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
         state = ScopeState(db)

@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * dist/install.sh runs against a throwaway HOME with a fake `systemctl` first on PATH, so the real user
@@ -24,7 +25,7 @@ class InstallShTest {
     @BeforeTest
     fun setUp() {
         assumeTrue("install.sh: Linux only", System.getProperty("os.name").lowercase().contains("linux"))
-        dir = Files.createTempDirectory("install-sh")
+        dir = TestScratch.directory("install-sh")
         home = Files.createDirectories(dir.resolve("home"))
         jar = dir.resolve("unidrive-1.jar")
         Files.writeString(jar, "new jar")

@@ -18,6 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A view reference to a folder is a read-only alias of the real folder: a path below the entry is the real folder's
@@ -33,7 +34,7 @@ class ViewAliasTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-view-alias")
+        tmp = TestScratch.directory("unidrive-view-alias")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

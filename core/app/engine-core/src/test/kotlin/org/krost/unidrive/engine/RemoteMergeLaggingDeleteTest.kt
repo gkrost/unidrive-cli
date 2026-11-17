@@ -4,6 +4,7 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.EntryStatus
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -27,7 +28,7 @@ class RemoteMergeLaggingDeleteTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-remote-merge-lag")
+        tmp = TestScratch.directory("unidrive-remote-merge-lag")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

@@ -15,6 +15,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#233: a OneDrive row names its bytes ([org.krost.unidrive.CloudItem.contentId]) so a client tells a rename from
@@ -22,7 +23,7 @@ import kotlin.test.assertTrue
  * names the bytes; the `file.hashes` of the item do, and a rename leaves them alone.
  */
 class OneDriveContentIdTest {
-    private val tmp = Files.createTempDirectory("ud-onedrive-content-id")
+    private val tmp = TestScratch.directory("ud-onedrive-content-id")
 
     @BeforeTest
     fun setUp() {

@@ -13,6 +13,7 @@ import org.krost.unidrive.sync.ProgressReporter
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -48,7 +49,7 @@ class ScopeCommandTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("scope-command")
+        dir = TestScratch.directory("scope-command")
         System.setProperty("user.home", dir.toString())
         local = Files.createDirectories(dir.resolve("roots").resolve("mirror"))
         remote = Files.createDirectories(dir.resolve("remote"))

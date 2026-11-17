@@ -10,10 +10,11 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** The stored user of a profile's state ([AccountOwner]): the verdict a sign-in gets before it stores anything. */
 class AccountOwnerTest {
-    private val dir = Files.createTempDirectory("account-owner")
+    private val dir = TestScratch.directory("account-owner")
 
     @AfterTest
     fun tearDown() {

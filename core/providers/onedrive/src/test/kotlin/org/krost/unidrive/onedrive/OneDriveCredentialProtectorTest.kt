@@ -20,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1261: OneDrive's token.json goes through [OneDriveConfig.credentialProtector], as
@@ -58,7 +59,7 @@ class OneDriveCredentialProtectorTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("ud-onedrive-protector")
+        dir = TestScratch.directory("ud-onedrive-protector")
     }
 
     @AfterTest

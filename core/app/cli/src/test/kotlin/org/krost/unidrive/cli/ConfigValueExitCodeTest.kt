@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -11,7 +12,7 @@ import kotlin.test.assertTrue
 /** A config value the schema refuses ends a command with exit 78 (configuration problem) and a line that names the key. */
 class ConfigValueExitCodeTest {
     private fun run(general: String): Pair<Int, String> {
-        val dir = Files.createTempDirectory("config-value-exit")
+        val dir = TestScratch.directory("config-value-exit")
         try {
             val root = Files.createDirectories(dir.resolve("local")).toString().replace('\\', '/')
             val remote = Files.createDirectories(dir.resolve("remote")).toString().replace('\\', '/')

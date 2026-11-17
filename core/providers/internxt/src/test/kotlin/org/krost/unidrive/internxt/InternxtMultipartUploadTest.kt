@@ -32,6 +32,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#578: multipart upload of a large file — parts in parallel up to the configured
@@ -42,7 +43,7 @@ import kotlin.test.assertTrue
  */
 class InternxtMultipartUploadTest {
     private val bucket = "6928426c1a2316b856c9ab81"
-    private val tmp: Path = Files.createTempDirectory("ud-multipart-")
+    private val tmp: Path = TestScratch.directory("ud-multipart-")
 
     // Wire record: every bridge/PUT request, the part bodies by part index, the finish bodies.
     private val requests: MutableList<String> = Collections.synchronizedList(mutableListOf())
@@ -580,7 +581,7 @@ class InternxtMultipartUploadTest {
     @Test
     fun `the factory refuses out-of-range or malformed upload keys`() {
         val factory = InternxtProviderFactory()
-        val dir = Files.createTempDirectory("ud-mp-factory")
+        val dir = TestScratch.directory("ud-mp-factory")
         try {
             fun create(vararg pairs: Pair<String, String?>) =
                 factory.create(mapOf(*pairs), dir)

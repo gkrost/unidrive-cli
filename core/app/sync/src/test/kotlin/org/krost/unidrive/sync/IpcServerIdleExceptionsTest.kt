@@ -14,6 +14,7 @@ import java.nio.channels.SocketChannel
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * An idle connection wakes its reader every second to re-run the idle-timeout check. That used to be a coroutine
@@ -23,7 +24,7 @@ import kotlin.test.assertEquals
  */
 class IpcServerIdleExceptionsTest {
     private fun timeoutExceptionsWhileIdle(): Int {
-        val dir = Files.createTempDirectory("unidrive-ipc-idle-exceptions")
+        val dir = TestScratch.directory("unidrive-ipc-idle-exceptions")
         val socketPath = dir.resolve("idle.sock")
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         val server = IpcServer(socketPath, idleTimeoutMs = 3_600_000)

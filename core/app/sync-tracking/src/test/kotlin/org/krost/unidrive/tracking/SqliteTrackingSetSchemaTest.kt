@@ -9,6 +9,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // archive#323 (tracking.db half): tracking_meta exists but carried no schema version, so the
 // format could not evolve without ad-hoc probes. The version is stamped at open; a db
@@ -40,7 +41,7 @@ class SqliteTrackingSetSchemaTest {
 
     @Test
     fun `a fresh tracking_db is stamped with the schema version and reopens`() {
-        val dbPath = Files.createTempDirectory("ud-323-tracking-fresh").resolve("tracking.db")
+        val dbPath = TestScratch.directory("ud-323-tracking-fresh").resolve("tracking.db")
         SqliteTrackingSet(dbPath).let { it.initialize(); it.close() }
         assertEquals(SqliteTrackingSet.SCHEMA_VERSION, schemaVersionOf(dbPath))
 
@@ -50,7 +51,7 @@ class SqliteTrackingSetSchemaTest {
 
     @Test
     fun `opening a tracking_db stamped by a newer schema is refused and the stamp is untouched`() {
-        val dbPath = Files.createTempDirectory("ud-323-tracking-newer").resolve("tracking.db")
+        val dbPath = TestScratch.directory("ud-323-tracking-newer").resolve("tracking.db")
         SqliteTrackingSet(dbPath).let { it.initialize(); it.close() }
         overwriteSchemaVersion(dbPath, SqliteTrackingSet.SCHEMA_VERSION + 1)
 
@@ -73,7 +74,7 @@ class SqliteTrackingSetSchemaTest {
 
     @Test
     fun `opening a tracking_db with an invalid schema stamp is refused without replacing it`() {
-        val dbPath = Files.createTempDirectory("tracking-invalid-schema").resolve("tracking.db")
+        val dbPath = TestScratch.directory("tracking-invalid-schema").resolve("tracking.db")
         SqliteTrackingSet(dbPath).let { it.initialize(); it.close() }
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { c ->
             c.createStatement().use { stmt ->
@@ -98,7 +99,7 @@ class SqliteTrackingSetSchemaTest {
         // Pre-version database: tracking_meta exists (it always has) but carries no
         // schema_version row. There is no migration to perform — the first versioned
         // build adopts the format as-is and stamps it.
-        val dbPath = Files.createTempDirectory("ud-323-tracking-legacy").resolve("tracking.db")
+        val dbPath = TestScratch.directory("ud-323-tracking-legacy").resolve("tracking.db")
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { c ->
             c.createStatement().use { stmt ->
                 stmt.executeUpdate(

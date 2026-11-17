@@ -19,6 +19,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class EnumerateRemoteIntoStateTest {
     private lateinit var syncRoot: Path
@@ -30,9 +31,9 @@ class EnumerateRemoteIntoStateTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-enum-root")
-        dbDir = Files.createTempDirectory("ud-enum-db")
-        cacheRoot = Files.createTempDirectory("ud-enum-cache")
+        syncRoot = TestScratch.directory("ud-enum-root")
+        dbDir = TestScratch.directory("ud-enum-db")
+        cacheRoot = TestScratch.directory("ud-enum-cache")
         db = StateDatabase(dbDir.resolve("state.db"))
         db.initialize()
         provider = EnumerateFakeProvider()

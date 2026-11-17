@@ -15,6 +15,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The final chunk PUT reached Graph and committed the item, but its response was lost: the finished upload session no
@@ -31,7 +32,7 @@ class OneDriveLostFinalChunkTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-lost-final")
+        tokenDir = TestScratch.directory("ud-lost-final")
     }
 
     @AfterTest
@@ -278,7 +279,7 @@ class OneDriveLostFinalChunkTest {
     }
 
     private fun localFile(size: Long): Path {
-        val f = Files.createTempFile(tokenDir, "big", ".bin")
+        val f = TestScratch.file(tokenDir, "big", ".bin")
         Files.write(f, ByteArray(size.toInt()) { 3 })
         return f
     }

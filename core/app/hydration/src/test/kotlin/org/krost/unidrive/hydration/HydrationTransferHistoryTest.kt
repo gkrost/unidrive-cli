@@ -22,6 +22,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#652: the mount's transfers are recorded as logical transfers in the profile's history. One row per upload
@@ -33,7 +34,7 @@ import kotlin.test.assertTrue
  * the wall and the monotonic reading, so the order of the three instants is exact.
  */
 class HydrationTransferHistoryTest {
-    private val dir: Path = Files.createTempDirectory("ud-hydration-history")
+    private val dir: Path = TestScratch.directory("ud-hydration-history")
     private val dbPath: Path = dir.resolve("telemetry.db")
     private val ticks = AtomicLong(1_000)
 

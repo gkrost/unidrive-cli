@@ -16,6 +16,7 @@ import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.http.RequestAttempt
+import org.krost.unidrive.testing.TestScratch
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
@@ -101,7 +102,7 @@ class S3MinioContainerTest {
         private val MTIME: Instant = Instant.parse("2026-02-03T04:05:06.123Z")
     }
 
-    private val dir: Path = Files.createTempDirectory("s3-minio")
+    private val dir: Path = TestScratch.directory("s3-minio")
     private val bucket = "t-" + UUID.randomUUID().toString().replace("-", "").take(16)
 
     @BeforeTest

@@ -7,6 +7,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.testing.CloudProviderConformanceTest
 import java.nio.file.Files
 import java.nio.file.Path
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The SPI's conformance contracts against [DropboxProvider] over [FakeDropbox], the scripted HTTP fake.
@@ -28,7 +29,7 @@ class DropboxConformanceTest : CloudProviderConformanceTest() {
 
     override fun newProvider(): CloudProvider {
         fake = FakeDropbox()
-        dir = Files.createTempDirectory("conformance-dropbox")
+        dir = TestScratch.directory("conformance-dropbox")
         return FakeDropbox.provider(fake, dir)
     }
 
@@ -49,7 +50,7 @@ class DropboxConformanceTest : CloudProviderConformanceTest() {
     }
 
     override fun localFile(content: String): Path =
-        Files.createTempFile("conformance-local", ".txt").also { Files.writeString(it, content) }
+        TestScratch.file("conformance-local", ".txt").also { Files.writeString(it, content) }
 
     // A 64-hex token: Dropbox compares it against the scripted metadata's content hash and refuses on the spot.
     override fun staleWriteToken(): String = "1".repeat(64)

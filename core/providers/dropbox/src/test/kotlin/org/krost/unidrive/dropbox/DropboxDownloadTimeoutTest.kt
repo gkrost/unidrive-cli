@@ -7,6 +7,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The client's flat `HttpDefaults.REQUEST_TIMEOUT_MS` (10 minutes) is counted up to the end of the `execute` block, so
@@ -18,7 +19,7 @@ class DropboxDownloadTimeoutTest {
     @Test
     fun `a download of a big file is not under the flat 10 minute request cap`() =
         runTest {
-            val dir = Files.createTempDirectory("dbx-dl-timeout")
+            val dir = TestScratch.directory("dbx-dl-timeout")
             val fake = FakeDropbox()
             val fiveGiB = 5L * 1024 * 1024 * 1024
             fake.json("files/get_metadata", FakeDropbox.file("/big.bin", "id:1", size = fiveGiB))

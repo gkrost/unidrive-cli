@@ -48,6 +48,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Spec test T1: `daemon_binds_socket_and_serves_hydration_verbs`.
@@ -69,7 +70,7 @@ class DaemonRuntimeTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("daemon-runtime-test")
+        tempDir = TestScratch.directory("daemon-runtime-test")
         lockFile = tempDir.resolve(".lock")
         dbPath = tempDir.resolve("state.db")
         socketPath = tempDir.resolve("daemon.sock")

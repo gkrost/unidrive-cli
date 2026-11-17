@@ -13,6 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The planner statistics a writable [StateDatabase] records before its close checkpoint (#384, from the #310
@@ -83,7 +84,7 @@ class StateDatabaseOptimizeTest {
 
     @Test
     fun `a close records planner statistics - sqlite_stat1 exists and sqlite_stat4 does not`() {
-        val path = seededFile(Files.createTempDirectory("sdb-optimize-stats"))
+        val path = seededFile(TestScratch.directory("sdb-optimize-stats"))
 
         assertEquals(listOf("sqlite_stat1"), statTables(path), "the statistics the next start reads are there, and no stat4 table with them")
         DriverManager.getConnection("jdbc:sqlite:$path").use { c ->
@@ -95,7 +96,7 @@ class StateDatabaseOptimizeTest {
     @Test
     fun `the optimize runs before the checkpoint on a writable close`() {
         val connector = CapturingConnector()
-        val db = StateDatabase(Files.createTempDirectory("sdb-optimize-order").resolve("state.db"), connector = connector)
+        val db = StateDatabase(TestScratch.directory("sdb-optimize-order").resolve("state.db"), connector = connector)
         db.initialize()
         try {
             db.setSyncState("probe", "1")
@@ -113,7 +114,7 @@ class StateDatabaseOptimizeTest {
 
     @Test
     fun `a read-only close runs no optimize`() {
-        val path = seededFile(Files.createTempDirectory("sdb-optimize-readonly"))
+        val path = seededFile(TestScratch.directory("sdb-optimize-readonly"))
         val connector = CapturingConnector()
         val db = StateDatabase(path, readOnly = true, connector = connector)
         db.initialize()
@@ -128,7 +129,7 @@ class StateDatabaseOptimizeTest {
 
     @Test
     fun `a snapshot close runs no optimize`() {
-        val dir = Files.createTempDirectory("sdb-optimize-snapshot")
+        val dir = TestScratch.directory("sdb-optimize-snapshot")
         val copy = dir.resolve("copy").resolve("state.db")
         Files.createDirectories(copy.parent)
         StateDatabase.copyInto(seededFile(dir), copy)
@@ -146,7 +147,7 @@ class StateDatabaseOptimizeTest {
 
     @Test
     fun `a close goes on when the optimize fails`() {
-        val dir = Files.createTempDirectory("sdb-optimize-fail")
+        val dir = TestScratch.directory("sdb-optimize-fail")
         val connector = CapturingConnector(failOn = "PRAGMA optimize")
         val path = dir.resolve("state.db")
         val db = StateDatabase(path, connector = connector)

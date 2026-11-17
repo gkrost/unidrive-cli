@@ -6,6 +6,7 @@ import ch.qos.logback.core.read.ListAppender
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.krost.unidrive.internxt.model.InternxtCredentials
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import kotlin.test.Test
@@ -49,7 +50,7 @@ class InternxtNotificationsSwitchTest {
     @Test
     fun `authenticate without a remote-change listener starts no notifications client`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-notif-oneshot-")
+            val tmp = TestScratch.directory("internxt-notif-oneshot-")
             try {
                 writeValidCredentials(tmp)
                 val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmp, notificationsUrl = "http://127.0.0.1:9", notificationsEnabled = true))
@@ -68,7 +69,7 @@ class InternxtNotificationsSwitchTest {
     @Test
     fun `a listener starts the client whether it registers before or after authenticate`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-notif-listener-")
+            val tmp = TestScratch.directory("internxt-notif-listener-")
             try {
                 writeValidCredentials(tmp)
                 for (registerFirst in listOf(true, false)) {
@@ -90,7 +91,7 @@ class InternxtNotificationsSwitchTest {
     @Test
     fun `a disabled provider starts no notifications client and logs one INFO line`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-notif-off-")
+            val tmp = TestScratch.directory("internxt-notif-off-")
             val logger = LoggerFactory.getLogger(InternxtProvider::class.java) as ch.qos.logback.classic.Logger
             val appender = ListAppender<ILoggingEvent>().also { it.start() }
             logger.addAppender(appender)

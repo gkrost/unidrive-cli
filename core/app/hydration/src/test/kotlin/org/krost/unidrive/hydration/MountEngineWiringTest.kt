@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#560 U3: the mount front-end runs on its host's shared core and there is one of it per host, as when the
@@ -21,13 +22,13 @@ class MountEngineWiringTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("ud-u3-wiring-db").resolve("state.db")).also { it.initialize() }
+        db = StateDatabase(TestScratch.directory("ud-u3-wiring-db").resolve("state.db")).also { it.initialize() }
         engine =
             SyncEngine(
                 provider = MinimalFakeProvider(),
                 db = db,
-                syncRoot = Files.createTempDirectory("ud-u3-wiring-root"),
-                cacheRoot = Files.createTempDirectory("ud-u3-wiring-cache"),
+                syncRoot = TestScratch.directory("ud-u3-wiring-root"),
+                cacheRoot = TestScratch.directory("ud-u3-wiring-cache"),
             )
     }
 
@@ -42,7 +43,7 @@ class MountEngineWiringTest {
         assertSame(first, MountEngine.over(engine))
         assertSame(engine.mountWiring, engine.mountWiring, "the wiring is built once per engine")
 
-        val other = SyncEngine(provider = MinimalFakeProvider(), db = db, syncRoot = Files.createTempDirectory("ud-u3-other"))
+        val other = SyncEngine(provider = MinimalFakeProvider(), db = db, syncRoot = TestScratch.directory("ud-u3-other"))
         assertTrue(MountEngine.over(other) !== first, "another engine has its own")
     }
 

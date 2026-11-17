@@ -4,6 +4,7 @@ import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The 401 replay asks the token supplier for a forced refresh *naming the token the refused request
@@ -21,7 +22,7 @@ class DropboxApiRejectedTokenTest {
             var tokens = 0
             val api =
                 DropboxApi(
-                    DropboxConfig(appKey = "key", tokenPath = Files.createTempDirectory("dbx-rejected")),
+                    DropboxConfig(appKey = "key", tokenPath = TestScratch.directory("dbx-rejected")),
                     { forceRefresh, rejectedToken ->
                         asks += forceRefresh to rejectedToken
                         if (tokens++ == 0) "tok-1" else "tok-2"
@@ -50,7 +51,7 @@ class DropboxApiRejectedTokenTest {
             var stored = "A"
             val api =
                 DropboxApi(
-                    DropboxConfig(appKey = "key", tokenPath = Files.createTempDirectory("dbx-rejected")),
+                    DropboxConfig(appKey = "key", tokenPath = TestScratch.directory("dbx-rejected")),
                     { forceRefresh, rejectedToken ->
                         asks += forceRefresh to rejectedToken
                         if (forceRefresh) stored = "B"
@@ -72,7 +73,7 @@ class DropboxApiRejectedTokenTest {
     @Test
     fun `a download throttled after the 401 replay does not force a second refresh`() =
         runTest {
-            val dir = Files.createTempDirectory("dbx-rejected-dl")
+            val dir = TestScratch.directory("dbx-rejected-dl")
             val fake = FakeDropbox()
             val meta = FakeDropbox.file("/a.bin", "id:1", size = 4)
             fake.on("files/download") { FakeDropbox.Answer(401, """{"error_summary":"expired_access_token/.."}""") }

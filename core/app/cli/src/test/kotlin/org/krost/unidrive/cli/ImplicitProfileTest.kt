@@ -3,11 +3,12 @@ package org.krost.unidrive.cli
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 class ImplicitProfileTest {
     @Test
     fun `the only configured profile is used without -p or default_profile`() {
-        val dir = Files.createTempDirectory("implicit-profile")
+        val dir = TestScratch.directory("implicit-profile")
         Files.writeString(dir.resolve("config.toml"), "[providers.internxt-3]\ntype = \"internxt\"\nmode = \"mount\"\n")
         val main = Main().apply { configDir = dir.toString() }
         val profile = main.resolveCurrentProfile()

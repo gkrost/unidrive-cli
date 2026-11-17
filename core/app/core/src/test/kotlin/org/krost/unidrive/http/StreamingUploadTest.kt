@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-342: pin the contract of the shared streaming-upload body. The
@@ -150,7 +151,7 @@ class StreamingUploadTest {
         }
 
     private fun createTempFile(content: ByteArray): Path {
-        val p = Files.createTempFile("ud342-upload", ".bin")
+        val p = TestScratch.file("ud342-upload", ".bin")
         Files.write(p, content)
         return p
     }

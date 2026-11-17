@@ -8,6 +8,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 class ResumeSessionStoreTest {
     @Serializable
@@ -20,7 +21,7 @@ class ResumeSessionStoreTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("resume-session-store")
+        dir = TestScratch.directory("resume-session-store")
     }
 
     @AfterTest

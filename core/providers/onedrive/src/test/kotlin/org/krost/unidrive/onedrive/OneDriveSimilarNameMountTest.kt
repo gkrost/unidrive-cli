@@ -25,6 +25,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The real OneDriveProvider under the real mount front-end (HydrationImpl over a SyncEngine host and a state.db),
@@ -49,7 +50,7 @@ class OneDriveSimilarNameMountTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("ud-similar-mount")
+        tmp = TestScratch.directory("ud-similar-mount")
         graph = SimilarNameGraph()
         val config = OneDriveConfig(tokenPath = tmp.resolve("token"))
         val api = GraphApiService(config = config, httpClient = graph.client(), tokenProvider = { _, _ -> "test-token" })

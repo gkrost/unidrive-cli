@@ -22,6 +22,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A OneDrive sign-in compares the drive owner id (`/me/drive` `owner.user.id`) of the new token with the profile's stored user
@@ -32,7 +33,7 @@ class OneDriveAccountOwnerTest {
 
     @BeforeTest
     fun setUp() {
-        profileDir = Files.createTempDirectory("od-owner-")
+        profileDir = TestScratch.directory("od-owner-")
     }
 
     @AfterTest

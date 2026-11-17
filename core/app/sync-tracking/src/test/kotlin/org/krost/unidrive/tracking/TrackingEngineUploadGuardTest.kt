@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** A replace upload carries the etag the pass saw: a version saved in the cloud after the scan is not overwritten. */
 class TrackingEngineUploadGuardTest {
@@ -18,7 +19,7 @@ class TrackingEngineUploadGuardTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-upload-guard")
+        workDir = TestScratch.directory("tracking-upload-guard")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider = FakeTrackingProvider()

@@ -16,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A real `daemon run` process, started from the shipped jar on a scratch localfs profile, must answer
@@ -32,7 +33,7 @@ class DaemonRoundTripTest {
 
     @Test
     fun `daemon run answers daemon_status and exits on daemon stop`() {
-        val scratch = Files.createTempDirectory(shortTempBase(), "udrt")
+        val scratch = TestScratch.directory(shortTempBase(), "udrt")
         val configDir = Files.createDirectories(scratch.resolve("config"))
         val profileDir = configDir.resolve(profile)
         val daemonLog = scratch.resolve("daemon.out").toFile()

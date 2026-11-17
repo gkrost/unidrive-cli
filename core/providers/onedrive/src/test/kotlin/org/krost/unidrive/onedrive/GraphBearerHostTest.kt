@@ -17,6 +17,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Paging and delta links come from response bodies and are kept as the cursor, then fetched with the bearer token
@@ -29,7 +30,7 @@ class GraphBearerHostTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("ud-bearer-host")
+        tmp = TestScratch.directory("ud-bearer-host")
     }
 
     @AfterTest

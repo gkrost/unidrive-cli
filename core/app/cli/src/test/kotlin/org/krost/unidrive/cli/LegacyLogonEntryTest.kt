@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** Runs against a temp dir only: the real Startup folder and %LOCALAPPDATA%\unidrive are never touched. */
 class LegacyLogonEntryTest {
@@ -15,7 +16,7 @@ class LegacyLogonEntryTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("legacy-logon-entry")
+        dir = TestScratch.directory("legacy-logon-entry")
     }
 
     @AfterTest

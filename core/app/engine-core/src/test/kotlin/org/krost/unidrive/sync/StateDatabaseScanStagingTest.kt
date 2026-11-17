@@ -15,6 +15,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The staged scan lives in a file of its own: a listing written page by page, read back on resume and cleared at the
@@ -26,7 +27,7 @@ class StateDatabaseScanStagingTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-scan-staging")
+        dir = TestScratch.directory("unidrive-scan-staging")
         dbFile = dir.resolve("state.db")
     }
 

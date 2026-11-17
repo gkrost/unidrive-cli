@@ -16,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Keep-both on "remote deleted, local modified" must upload the kept file to the row's
@@ -38,8 +39,8 @@ class KeepBothRemoteDeletedCanonicalUploadTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-keepboth-canonical-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-keepboth-canonical-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-keepboth-canonical-root")
+        db = StateDatabase(TestScratch.directory("unidrive-keepboth-canonical-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine =

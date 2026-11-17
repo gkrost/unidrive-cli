@@ -31,6 +31,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#171: a `hydration.list` file entry carries `content_id`, the name the provider gives the bytes of the
@@ -39,7 +40,7 @@ import kotlin.test.assertTrue
  * through a rename and changes with new bytes. The key is absent where the row names none, and on a folder.
  */
 class HydrationListContentIdTest {
-    private val base: Path = Files.createTempDirectory("ud-list-content-id")
+    private val base: Path = TestScratch.directory("ud-list-content-id")
     private val db = StateDatabase(base.resolve("state.db")).also { it.initialize() }
 
     @AfterTest

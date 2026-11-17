@@ -1,6 +1,7 @@
 package org.krost.unidrive.sync.ignore
 
 import org.krost.unidrive.engine.RuleFileTransfers
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.MDC
 import java.io.IOException
 import java.nio.file.Files
@@ -13,7 +14,7 @@ import kotlin.test.assertTrue
 
 /** archive#660: rule files only the cloud holds are downloaded on purpose, once per cloud copy, capped and fail closed. */
 class CloudRuleFilesTest {
-    private val dir: Path = Files.createTempDirectory("ud-cloud-rules")
+    private val dir: Path = TestScratch.directory("ud-cloud-rules")
     private val cloud = mutableMapOf<String, Pair<CloudRuleFile, String>>()
     private val downloads = mutableListOf<String>()
     private var failNext = 0

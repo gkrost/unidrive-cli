@@ -20,6 +20,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#27: while a profile's first enumeration has not completed, `hydration.list` reads a folder
@@ -27,7 +28,7 @@ import kotlin.test.assertTrue
  * The first scan of these tests is held on a gate (a drive that takes hours); the tests run on real time.
  */
 class HydrationLiveListTest {
-    private val base: Path = Files.createTempDirectory("ud-live-list")
+    private val base: Path = TestScratch.directory("ud-live-list")
     private val provider = MemProvider()
     private val db = StateDatabase(base.resolve("state.db")).also { it.initialize() }
     private var engine = newEngine(emptyList())

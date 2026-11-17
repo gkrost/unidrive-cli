@@ -33,6 +33,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `view.page` on a live mount daemon whose profile shows the Recents view as the config asks for it when it does not say
@@ -48,7 +49,7 @@ class RecentsPagingDaemonTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("recents-paging-daemon-test")
+        tempDir = TestScratch.directory("recents-paging-daemon-test")
         socketPath = tempDir.resolve("daemon.sock")
     }
 

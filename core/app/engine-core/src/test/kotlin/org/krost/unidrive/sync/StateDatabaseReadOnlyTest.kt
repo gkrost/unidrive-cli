@@ -11,6 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Commands that only report (`status`, `sweep` without --rehydrate) open state.db read-only: opening it
@@ -21,7 +22,7 @@ class StateDatabaseReadOnlyTest {
         MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(p)).joinToString("") { "%02x".format(it) }
 
     private fun seededDb(): Path {
-        val path = Files.createTempDirectory("ud-400-db").resolve("state.db")
+        val path = TestScratch.directory("ud-400-db").resolve("state.db")
         StateDatabase(path).also {
             it.initialize()
             it.upsertEntry(
@@ -89,7 +90,7 @@ class StateDatabaseReadOnlyTest {
 
     @Test
     fun `a read-only open does not create a missing file or its directory`() {
-        val dir = Files.createTempDirectory("ud-400-missing").resolve("nested")
+        val dir = TestScratch.directory("ud-400-missing").resolve("nested")
         val path = dir.resolve("state.db")
 
         val db = StateDatabase(path, readOnly = true)
@@ -103,7 +104,7 @@ class StateDatabaseReadOnlyTest {
     fun `a read-only open refuses an old-format file instead of rebuilding it`() {
         // A pre-redesign file: sync_state without a schema_version row, and a sync_entries table that
         // a normal open would DROP.
-        val path = Files.createTempDirectory("ud-400-old").resolve("state.db")
+        val path = TestScratch.directory("ud-400-old").resolve("state.db")
         java.sql.DriverManager.getConnection("jdbc:sqlite:$path").use { c ->
             c.createStatement().use {
                 it.executeUpdate("CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT)")

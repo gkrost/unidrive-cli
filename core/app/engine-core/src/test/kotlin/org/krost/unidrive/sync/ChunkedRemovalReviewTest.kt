@@ -11,6 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 class ChunkedRemovalReviewTest {
     private fun entry(path: String) = SyncEntry(
@@ -29,7 +30,7 @@ class ChunkedRemovalReviewTest {
 
     @Test
     fun `scope narrowing retains only case-sensitive descendants`() {
-        val db = StateDatabase(Files.createTempDirectory("scope-review").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("scope-review").resolve("state.db"))
         db.initialize()
         try {
             db.upsertEntry(entry("/in/kept.txt"))
@@ -46,7 +47,7 @@ class ChunkedRemovalReviewTest {
     @Test
     fun `reap commits once per chunk instead of once per row`() {
         val connector = RemovalRecordingConnector()
-        val db = StateDatabase(Files.createTempDirectory("reap-review").resolve("state.db"), connector = connector)
+        val db = StateDatabase(TestScratch.directory("reap-review").resolve("state.db"), connector = connector)
         db.initialize()
         try {
             val paths = (0 until 7).map { "/f$it.txt" }
@@ -69,7 +70,7 @@ class ChunkedRemovalReviewTest {
 
     @Test
     fun `reap gives the monitor back after each chunk`() {
-        val db = StateDatabase(Files.createTempDirectory("reap-monitor-review").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("reap-monitor-review").resolve("state.db"))
         db.initialize()
         try {
             val paths = (0 until 7).map { "/f$it.txt" }
@@ -90,7 +91,7 @@ class ChunkedRemovalReviewTest {
 
     @Test
     fun `scope narrowing gives the monitor back after each chunk`() {
-        val db = StateDatabase(Files.createTempDirectory("scope-monitor-review").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("scope-monitor-review").resolve("state.db"))
         db.initialize()
         try {
             db.batch { (0 until 7).forEach { db.upsertEntry(entry("/out/f$it.txt")) } }
@@ -110,7 +111,7 @@ class ChunkedRemovalReviewTest {
 
     @Test
     fun `chunked removals join the owners manual batch`() {
-        val db = StateDatabase(Files.createTempDirectory("removal-batch").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("removal-batch").resolve("state.db"))
         db.initialize()
         try {
             val paths = (0 until 7).map { "/out/f$it.txt" }
@@ -128,7 +129,7 @@ class ChunkedRemovalReviewTest {
 
     @Test
     fun `guarded removal keeps changed identity edit and pending rows`() {
-        val db = StateDatabase(Files.createTempDirectory("removal-guard").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("removal-guard").resolve("state.db"))
         db.initialize()
         try {
             val paths = listOf("/identity", "/edited", "/pending", "/clean")

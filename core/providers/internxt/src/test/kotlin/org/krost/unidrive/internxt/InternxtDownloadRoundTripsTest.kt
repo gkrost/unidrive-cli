@@ -22,6 +22,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#392: a download of a listed Internxt file used to open with `GET /files/{uuid}/meta` (about 160 ms per
@@ -75,14 +76,14 @@ class InternxtDownloadRoundTripsTest {
     }
 
     private fun newProvider(): InternxtProvider {
-        destination = Files.createTempDirectory("ud-roundtrips").resolve("out.bin")
+        destination = TestScratch.directory("ud-roundtrips").resolve("out.bin")
         val payloadB64 =
             java.util.Base64
                 .getUrlEncoder()
                 .withoutPadding()
                 .encodeToString("""{"exp":9999999999}""".toByteArray())
         return InternxtProvider(
-            InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-roundtrips-token", ".tmp")),
+            InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("ud-roundtrips-token", ".tmp")),
             httpClient = HttpClient(MockEngine { request -> handle(request) }),
             credentials =
                 org.krost.unidrive.internxt.model.InternxtCredentials(

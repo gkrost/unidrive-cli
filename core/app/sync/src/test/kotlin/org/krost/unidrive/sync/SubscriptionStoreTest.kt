@@ -4,13 +4,14 @@ import java.nio.file.Files
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class SubscriptionStoreTest {
     private lateinit var store: SubscriptionStore
 
     @BeforeTest
     fun setUp() {
-        val tmpDir = Files.createTempDirectory("sub-store-test")
+        val tmpDir = TestScratch.directory("sub-store-test")
         store = SubscriptionStore(tmpDir.resolve("state.db"))
         store.initialize()
     }

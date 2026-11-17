@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * close() waits a short while for a notifications start that holds the start lock and then tears down
@@ -46,7 +47,7 @@ class InternxtNotificationsCloseDuringStartTest {
 
     @Test
     fun `a start stalled past close never connects a socket afterwards`() {
-        val tmp = Files.createTempDirectory("internxt-notif-close-")
+        val tmp = TestScratch.directory("internxt-notif-close-")
         try {
             writeValidCredentials(tmp)
             val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmp, notificationsUrl = "http://127.0.0.1:9", notificationsEnabled = true))

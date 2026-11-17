@@ -4,6 +4,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-235: the "no provider profiles parsed from config" diagnostic flags MSIX-sandbox
@@ -49,7 +50,7 @@ class ConfigMissingDiagnosticTest {
 
     @Test
     fun `renderer with MSIX parent emits the sandbox hint block`() {
-        val sandbox = Files.createTempDirectory("ud235-")
+        val sandbox = TestScratch.directory("ud235-")
         try {
             val configFile = sandbox.resolve("config.toml")
             val msg =
@@ -74,7 +75,7 @@ class ConfigMissingDiagnosticTest {
 
     @Test
     fun `renderer with MSIX parent and existing file resolves NTFS FileID`() {
-        val sandbox = Files.createTempDirectory("ud235-")
+        val sandbox = TestScratch.directory("ud235-")
         val configFile = sandbox.resolve("config.toml")
         try {
             Files.writeString(configFile, "[general]\n")
@@ -102,7 +103,7 @@ class ConfigMissingDiagnosticTest {
 
     @Test
     fun `renderer without MSIX parent does not emit sandbox hint`() {
-        val sandbox = Files.createTempDirectory("ud235-")
+        val sandbox = TestScratch.directory("ud235-")
         try {
             val configFile = sandbox.resolve("config.toml")
             val msg =
@@ -120,7 +121,7 @@ class ConfigMissingDiagnosticTest {
 
     @Test
     fun `renderer with null parent does not emit sandbox hint`() {
-        val sandbox = Files.createTempDirectory("ud235-")
+        val sandbox = TestScratch.directory("ud235-")
         try {
             val configFile = sandbox.resolve("config.toml")
             // Default-arg path: no parent passed at all.
@@ -133,7 +134,7 @@ class ConfigMissingDiagnosticTest {
 
     @Test
     fun `renderer preserves the unified UD-242 header line`() {
-        val sandbox = Files.createTempDirectory("ud235-")
+        val sandbox = TestScratch.directory("ud235-")
         try {
             val configFile = sandbox.resolve("config.toml")
             val msg = renderConfigMissingMessage(configFile)
@@ -151,7 +152,7 @@ class ConfigMissingDiagnosticTest {
 
     @Test
     fun `renderer in verbose mode still surfaces legacy diagnostic fields`() {
-        val sandbox = Files.createTempDirectory("ud235-")
+        val sandbox = TestScratch.directory("ud235-")
         try {
             val configFile = sandbox.resolve("config.toml")
             val msg = renderConfigMissingMessage(configFile, verbose = true)

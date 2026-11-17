@@ -13,6 +13,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A pass with many planned transfers runs them on the provider's transfer concurrency in coroutines (4 for the fake),
@@ -26,8 +27,8 @@ class BoundedTransferLaunchTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-bounded-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-bounded-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-bounded-root")
+        db = StateDatabase(TestScratch.directory("unidrive-bounded-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

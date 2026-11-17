@@ -4,6 +4,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#455: `status` never signs in beside a process that holds the profile. A daemon is asked for the quota it
@@ -44,7 +45,7 @@ class StatusQuotaSourceTest {
 
     @Test
     fun `the lock sidecar names the holder, and a dead writer holds nothing`() {
-        val dir = Files.createTempDirectory("ud455-status")
+        val dir = TestScratch.directory("ud455-status")
         assertEquals(ProfileLockHolder.NONE, profileLockHolder(dir) { _, _ -> true }, "no sidecar")
 
         Files.writeString(dir.resolve(".lock.pid"), "4242 daemon\n")
@@ -60,7 +61,7 @@ class StatusQuotaSourceTest {
 
     @Test
     fun `a sidecar that cannot be read leaves the holder unknown, and nothing signs in beside it`() {
-        val dir = Files.createTempDirectory("ud455-status-unreadable")
+        val dir = TestScratch.directory("ud455-status-unreadable")
         // A directory at the sidecar path: reading it fails with an IOException (access denied on Windows), not "no such file".
         Files.createDirectory(dir.resolve(".lock.pid"))
 

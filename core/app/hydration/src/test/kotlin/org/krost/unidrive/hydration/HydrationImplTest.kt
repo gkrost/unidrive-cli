@@ -37,6 +37,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Minimal fake CloudProvider for HydrationImpl tests.
@@ -627,8 +628,8 @@ internal class HydrationTestEnv(
     /** gkrost/unidrive-cli#23: the gap between `downloading` events; off (0) in this harness unless a test asks for them. */
     downloadProgressIntervalMs: Long = 0,
 ) {
-    val cacheRoot: Path = Files.createTempDirectory("unidrive-hydration-cache")
-    private val dbPath: Path = Files.createTempDirectory("unidrive-hydration-db").resolve("state.db")
+    val cacheRoot: Path = TestScratch.directory("unidrive-hydration-cache")
+    private val dbPath: Path = TestScratch.directory("unidrive-hydration-db").resolve("state.db")
     private val fakeProvider = MinimalFakeProvider(id = providerId, reportsItemVersions = reportsItemVersions)
 
     /**
@@ -671,7 +672,7 @@ internal class HydrationTestEnv(
         engine = SyncEngine(
             provider = fakeProvider,
             db = db,
-            syncRoot = Files.createTempDirectory("unidrive-hydration-sync"),
+            syncRoot = TestScratch.directory("unidrive-hydration-sync"),
             cacheRoot = cacheRoot,
             syncPaths = syncPaths,
             standingScope = syncPaths,

@@ -9,9 +9,9 @@ import org.krost.unidrive.cli.ext.CliServices
 import org.krost.unidrive.cli.ext.Formatter
 import org.krost.unidrive.cli.ext.ProfileView
 import org.krost.unidrive.sync.SyncConfig
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.nio.file.Path
-import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -86,7 +86,7 @@ class TsAuthenticateOrderTest {
             override suspend fun quota(): QuotaInfo = touched("quota")
         }
 
-    private val base = createTempDirectory("ts-auth-order")
+    private val base = TestScratch.directory("ts-auth-order")
 
     private fun services() =
         object : CliServices {

@@ -25,6 +25,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1186: `auth.logout` on a running daemon signs the daemon's own provider instance out, not only the stored
@@ -33,7 +34,7 @@ import kotlin.test.assertTrue
  * kept using the old token.
  */
 class DaemonAuthLogoutTest {
-    private val dir: Path = Files.createTempDirectory("daemon-auth-logout-")
+    private val dir: Path = TestScratch.directory("daemon-auth-logout-")
     private val socketPath: Path = dir.resolve("daemon.sock")
 
     @AfterTest

@@ -13,6 +13,7 @@ import org.krost.unidrive.internxt.model.InternxtCredentials
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#74: the service can say what its own requests are doing - the calls in flight per endpoint
@@ -87,7 +88,7 @@ class InternxtRequestStatusTest {
     fun `the provider reports its service's status, and the daemon can feature-detect it`() {
         val provider =
             InternxtProvider(
-                InternxtConfig(credentialProtector = null, tokenPath = java.nio.file.Files.createTempFile("inxt-status-token", ".tmp")),
+                InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("inxt-status-token", ".tmp")),
                 credentials =
                     InternxtCredentials(
                         jwt = "jwt",

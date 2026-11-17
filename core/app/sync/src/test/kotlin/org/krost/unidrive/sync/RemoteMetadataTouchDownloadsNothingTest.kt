@@ -15,6 +15,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A remote mtime-only change on a file whose bytes the row already records downloads nothing
@@ -33,8 +34,8 @@ class RemoteMetadataTouchDownloadsNothingTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-touch-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-touch-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-touch-root")
+        db = StateDatabase(TestScratch.directory("unidrive-touch-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine =

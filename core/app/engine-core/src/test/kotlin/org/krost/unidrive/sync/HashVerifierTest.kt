@@ -4,13 +4,14 @@ import org.krost.unidrive.HashAlgorithm
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class HashVerifierTest {
     private lateinit var tempDir: Path
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("unidrive-hash-test")
+        tempDir = TestScratch.directory("unidrive-hash-test")
     }
 
     // Dropbox's content_hash, restated from its published definition: SHA-256 over the SHA-256s of 4 MiB blocks.

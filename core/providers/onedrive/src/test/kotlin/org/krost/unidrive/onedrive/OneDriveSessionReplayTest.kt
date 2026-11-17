@@ -15,6 +15,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The server-side upload session of a file revision survives a failed attempt AND the replay that follows it, whatever
@@ -31,7 +32,7 @@ class OneDriveSessionReplayTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-session-replay")
+        tokenDir = TestScratch.directory("ud-session-replay")
     }
 
     @AfterTest
@@ -193,7 +194,7 @@ class OneDriveSessionReplayTest {
         }
 
     private fun localFile(): Path {
-        val f = Files.createTempFile(tokenDir, "big", ".bin")
+        val f = TestScratch.file(tokenDir, "big", ".bin")
         Files.write(f, ByteArray(fileSize.toInt()) { 5 })
         return f
     }

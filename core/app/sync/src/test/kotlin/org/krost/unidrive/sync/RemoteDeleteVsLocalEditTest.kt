@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A DeleteLocal planned against the scan's baseline must not take an edit that landed after the scan:
@@ -38,8 +39,8 @@ class RemoteDeleteVsLocalEditTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-delete-edit-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-delete-edit-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-delete-edit-root")
+        db = StateDatabase(TestScratch.directory("unidrive-delete-edit-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine = engineWith(ProgressReporter.Silent)
@@ -334,7 +335,7 @@ class RemoteDeleteVsLocalEditTest {
             val newerMtime = FileTime.from(Instant.parse("2026-04-02T09:00:00Z"))
             var racedWrite = false
             val racingLog =
-                object : ConflictLog(Files.createTempDirectory("unidrive-delete-edit-log").resolve("log.json"), Files.createTempDirectory("unidrive-delete-edit-backups")) {
+                object : ConflictLog(TestScratch.directory("unidrive-delete-edit-log").resolve("log.json"), TestScratch.directory("unidrive-delete-edit-backups")) {
                     override fun record(
                         path: String,
                         localState: String,

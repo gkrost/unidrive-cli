@@ -9,13 +9,14 @@ import java.time.temporal.ChronoUnit
 import kotlin.io.path.*
 import kotlin.test.*
 import org.junit.Assume.assumeTrue
+import org.krost.unidrive.testing.TestScratch
 
 class VersionManagerTest {
     private lateinit var syncRoot: Path
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("version-manager-test")
+        syncRoot = TestScratch.directory("version-manager-test")
     }
 
     @AfterTest

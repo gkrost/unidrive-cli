@@ -10,6 +10,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The engine-level byte-rate cap (config `max_bandwidth_kbps`): one shared
@@ -29,8 +30,8 @@ class BandwidthTotalTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-bandwidth-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-bandwidth-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-bandwidth-root")
+        db = StateDatabase(TestScratch.directory("unidrive-bandwidth-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

@@ -14,6 +14,7 @@ import org.krost.unidrive.sync.EnumerateResult
 import org.krost.unidrive.sync.EnumerationStatus
 import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -48,7 +49,7 @@ class RemoteEnumerationTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-remote-enumeration")
+        tmp = TestScratch.directory("unidrive-remote-enumeration")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

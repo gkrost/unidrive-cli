@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** The profile key `s3_create_from_listing` (gkrost/unidrive-cli#573) travels from config.toml through the properties map into the provider. */
 class S3CreateFromListingKeyTest {
@@ -17,7 +18,7 @@ class S3CreateFromListingKeyTest {
                 .parseRaw("[providers.s3]\ntype = \"s3\"\nbucket = \"b\"\naccess_key_id = \"AK\"\nsecret_access_key = \"SK\"\n$line\n")
                 .providers
                 .getValue("s3")
-        val tokenDir = Files.createTempDirectory("ud-s3-key")
+        val tokenDir = TestScratch.directory("ud-s3-key")
         val provider = S3ProviderFactory().create(Main().rawProviderToProperties(raw), tokenDir) as S3Provider
         try {
             return provider.config.createFromListing

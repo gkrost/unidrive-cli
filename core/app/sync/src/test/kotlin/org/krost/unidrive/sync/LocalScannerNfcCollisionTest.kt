@@ -6,6 +6,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import org.krost.unidrive.sync.model.ChangeState
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -34,8 +35,8 @@ class LocalScannerNfcCollisionTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-nfc-test")
-        db = StateDatabase(Files.createTempDirectory("unidrive-nfc-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-nfc-test")
+        db = StateDatabase(TestScratch.directory("unidrive-nfc-db").resolve("state.db"))
         db.initialize()
         scanner = LocalScanner(syncRoot, db)
         appender = ListAppender<ILoggingEvent>().apply { start() }

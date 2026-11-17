@@ -9,6 +9,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#183: minimal-tombstone orphan fix — a Graph delta item carrying only `id` +
@@ -32,8 +33,8 @@ class OneDriveAccessRevokedTombstoneTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-183-test")
-        val dbPath = Files.createTempDirectory("ud-183-db").resolve("state.db")
+        syncRoot = TestScratch.directory("ud-183-test")
+        val dbPath = TestScratch.directory("ud-183-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()
@@ -84,7 +85,7 @@ class OneDriveAccessRevokedTombstoneTest {
     fun `access_revoked_tombstone_retires_db_row_and_preserves_local_file`() =
         runTest {
             // Seed an existing DB row (hydrated) and a local cache file for /shared.txt.
-            val cacheRoot = Files.createTempDirectory("ud-183-cache")
+            val cacheRoot = TestScratch.directory("ud-183-cache")
             seedEntry("/shared.txt", remoteId = "item-shared-1", isHydrated = true)
 
             val eng = engine(cacheRoot = cacheRoot)

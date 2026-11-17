@@ -10,6 +10,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `reloadCredentials()` (archive#813): a running daemon's provider instance picks up the credentials a sign-in through the
@@ -20,7 +21,7 @@ class InternxtReloadCredentialsTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("ix-reload-")
+        dir = TestScratch.directory("ix-reload-")
     }
 
     @AfterTest

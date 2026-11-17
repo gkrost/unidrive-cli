@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The reads of [StateDatabase.recovery] go where every other read goes: on the writer connection they wait for the
@@ -23,7 +24,7 @@ class StateDatabaseRecoveryLockTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-recovery-lock")
+        dir = TestScratch.directory("unidrive-recovery-lock")
         // A snapshot copy has no reader connections: its reads run on the one connection.
         db = StateDatabase.snapshotOf(dir.resolve("absent.db"), tempRoot = dir)
     }

@@ -17,6 +17,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#586: the mount records when the provider refused its credentials (an authentication failure, raised after the
@@ -31,17 +32,17 @@ class MountEngineAuthRejectionTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("unidrive-auth-db").resolve("state.db"))
+        db = StateDatabase(TestScratch.directory("unidrive-auth-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine =
             SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("unidrive-auth-root"),
+                syncRoot = TestScratch.directory("unidrive-auth-root"),
                 conflictPolicy = ConflictPolicy.KEEP_BOTH,
                 reporter = ProgressReporter.Silent,
-                cacheRoot = Files.createTempDirectory("unidrive-auth-cache"),
+                cacheRoot = TestScratch.directory("unidrive-auth-cache"),
             )
         mount = MountEngine.over(engine)
     }

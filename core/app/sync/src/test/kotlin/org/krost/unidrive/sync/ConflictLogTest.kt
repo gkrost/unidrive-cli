@@ -9,9 +9,10 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.junit.Assume.assumeTrue
+import org.krost.unidrive.testing.TestScratch
 
 class ConflictLogTest {
-    private fun tempDir(): Path = Files.createTempDirectory("conflict-test-")
+    private fun tempDir(): Path = TestScratch.directory("conflict-test-")
 
     private fun createLog(dir: Path = tempDir()): ConflictLog =
         ConflictLog(

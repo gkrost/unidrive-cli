@@ -20,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertIs
+import org.krost.unidrive.testing.TestScratch
 
 /** gkrost/unidrive-cli#438: a cancelled caller is not a failed request; no reply is made up for it. */
 class HydrationCancellationTest {
@@ -121,13 +122,13 @@ class HydrationCancellationTest {
 
     private fun freshEnv(): CancelEnv {
         val provider = CancellingFakeProvider()
-        val db = StateDatabase(dbPath = Files.createTempDirectory("ud-cancel-db").resolve("state.db"), inMemory = true)
+        val db = StateDatabase(dbPath = TestScratch.directory("ud-cancel-db").resolve("state.db"), inMemory = true)
         db.initialize()
         val engine = SyncEngine(
             provider = provider,
             db = db,
-            syncRoot = Files.createTempDirectory("ud-cancel-sync"),
-            cacheRoot = Files.createTempDirectory("ud-cancel-cache"),
+            syncRoot = TestScratch.directory("ud-cancel-sync"),
+            cacheRoot = TestScratch.directory("ud-cancel-cache"),
         )
         return CancelEnv(HydrationImpl(syncEngine = engine, stateDb = db), provider, db)
     }

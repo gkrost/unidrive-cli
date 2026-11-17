@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A folder with no parent that is not the drive root is the top of a tree of its own: the desktop app's backups keep one
@@ -135,7 +136,7 @@ class InternxtDetachedTreeTest {
         runTest {
             val drive = drive()
             val provider = internxtProviderOn(drive.engine)
-            val local = Files.createTempFile("ud-detached", ".txt")
+            val local = TestScratch.file("ud-detached", ".txt")
             try {
                 Files.writeString(local, "edited")
 

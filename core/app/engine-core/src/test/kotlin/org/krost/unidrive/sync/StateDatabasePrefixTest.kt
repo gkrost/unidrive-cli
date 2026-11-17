@@ -8,6 +8,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Prefix and child queries of [StateDatabase] match paths exactly, by code points: archive#489 (UTF-16 length against
@@ -20,7 +21,7 @@ class StateDatabasePrefixTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("unidrive-prefix").resolve("state.db"))
+        db = StateDatabase(TestScratch.directory("unidrive-prefix").resolve("state.db"))
         db.initialize()
     }
 

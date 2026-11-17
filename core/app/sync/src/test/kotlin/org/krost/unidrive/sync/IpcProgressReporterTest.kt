@@ -12,6 +12,7 @@ import java.nio.channels.SocketChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class IpcProgressReporterTest {
     private lateinit var socketDir: Path
@@ -20,7 +21,7 @@ class IpcProgressReporterTest {
 
     @BeforeTest
     fun setUp() {
-        socketDir = Files.createTempDirectory("unidrive-ipc-reporter-test")
+        socketDir = TestScratch.directory("unidrive-ipc-reporter-test")
         socketPath = socketDir.resolve("test.sock")
     }
 

@@ -12,6 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The read-only rule reaches the views through the same two places as the trash namespace: the guard that every mount
@@ -26,7 +27,7 @@ class ViewReadOnlyTest {
     private val trash = TrashNamespace(ignoreCase = false)
     private val inner = FakeViewProvider()
     private val provider = ReadOnlyTrashProvider(inner, trash, views)
-    private val local: Path = Files.createTempFile("view-readonly", ".bin")
+    private val local: Path = TestScratch.file("view-readonly", ".bin")
 
     private fun guard(withViews: ViewNamespaces = views) =
         RemoteOperationGuard(
@@ -108,7 +109,7 @@ class ViewReadOnlyTest {
     @Test
     fun `reading from a view path is not a write`() =
         runTest {
-            val target = Files.createTempFile("view-readonly-read", ".bin")
+            val target = TestScratch.file("view-readonly-read", ".bin")
 
             provider.listChildren("/Recents")
             provider.getMetadata("/Recents/a.txt")

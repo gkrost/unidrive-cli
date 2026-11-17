@@ -17,6 +17,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#437 (d): an upload a daemon stop cut short is replayed at the next start under the client's own handle id,
@@ -25,9 +26,9 @@ import kotlin.test.assertTrue
  */
 class HydrationReplayHandleIdTest {
     private class Dirs {
-        val syncRoot: Path = Files.createTempDirectory("ud437-root")
-        val cacheRoot: Path = Files.createTempDirectory("ud437-cache")
-        val dbPath: Path = Files.createTempDirectory("ud437-db").resolve("state.db")
+        val syncRoot: Path = TestScratch.directory("ud437-root")
+        val cacheRoot: Path = TestScratch.directory("ud437-cache")
+        val dbPath: Path = TestScratch.directory("ud437-db").resolve("state.db")
     }
 
     private class Daemon(

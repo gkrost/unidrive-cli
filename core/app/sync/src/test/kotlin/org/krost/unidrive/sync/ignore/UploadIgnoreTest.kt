@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import kotlin.test.AfterTest
@@ -114,7 +115,7 @@ class UploadIgnoreTest {
 
     @Test
     fun aRuleFileOfTheCloudThatTheCacheDoesNotHoldIsNotDownloadedButHoldsBack() {
-        val cache = Files.createTempDirectory("unidrive-ignore-cache")
+        val cache = TestScratch.directory("unidrive-ignore-cache")
         Files.createDirectories(cache.resolve("local"))
         Files.writeString(cache.resolve("local/.unidrive.ignore"), "*.o\n")
         val inCloud = setOf("/remote/.unidrive.ignore", "/local/.unidrive.ignore")

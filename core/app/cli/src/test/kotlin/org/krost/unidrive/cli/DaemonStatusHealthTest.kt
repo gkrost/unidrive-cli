@@ -38,6 +38,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#658: the `uploads`, `cache` and `provider_health` objects of `daemon.status` (docs/dev/specs/unidrive-daemon-design.md
@@ -49,7 +50,7 @@ class DaemonStatusHealthTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("daemon-status-health-test")
+        tempDir = TestScratch.directory("daemon-status-health-test")
         socketPath = tempDir.resolve("daemon.sock")
     }
 

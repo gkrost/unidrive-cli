@@ -16,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#739: a file with no state row cannot be an engine placeholder (the engine's placeholders are
@@ -33,8 +34,8 @@ class AllZeroNewFileTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-739-root")
-        db = StateDatabase(Files.createTempDirectory("ud-739-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-739-root")
+        db = StateDatabase(TestScratch.directory("ud-739-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

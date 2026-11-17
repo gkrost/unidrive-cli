@@ -7,6 +7,7 @@ import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class ReconcilerTest {
     private lateinit var db: StateDatabase
@@ -15,8 +16,8 @@ class ReconcilerTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-recon-test")
-        val dbPath = Files.createTempDirectory("unidrive-recon-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-recon-test")
+        val dbPath = TestScratch.directory("unidrive-recon-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         reconciler = Reconciler(db, syncRoot, ConflictPolicy.KEEP_BOTH)

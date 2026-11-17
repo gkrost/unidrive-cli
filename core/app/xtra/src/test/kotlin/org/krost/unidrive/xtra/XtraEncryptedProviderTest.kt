@@ -18,6 +18,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class XtraEncryptedProviderTest {
 
@@ -38,7 +39,7 @@ class XtraEncryptedProviderTest {
 
     @Test
     fun `upload encrypts and download decrypts round-trip`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
 
@@ -58,7 +59,7 @@ class XtraEncryptedProviderTest {
 
     @Test
     fun `downloadWithHash answers the plaintext bytes and digest`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
 
@@ -79,7 +80,7 @@ class XtraEncryptedProviderTest {
 
     @Test
     fun `downloadById and downloadByIdWithHash also decrypt`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
 
@@ -99,7 +100,7 @@ class XtraEncryptedProviderTest {
 
     @Test
     fun `a file without the XTRA header fails its download`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         storage["/plain.txt"] = "not encrypted".toByteArray()
         val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
@@ -112,7 +113,7 @@ class XtraEncryptedProviderTest {
 
     @Test
     fun `empty file round-trip`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
 
@@ -131,7 +132,7 @@ class XtraEncryptedProviderTest {
 
     @Test
     fun `large file round-trip`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
 
@@ -150,7 +151,7 @@ class XtraEncryptedProviderTest {
     private fun stageAndDecryptFails(
         corrupt: (ByteArray) -> ByteArray,
     ) {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
         val original = ByteArray(200_000) { (it * 31 + 7).toByte() }
@@ -189,7 +190,7 @@ class XtraEncryptedProviderTest {
 
     @Test
     fun `a good download replaces the destination and leaves no staging file`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
         val original = ByteArray(200_000) { (it * 17).toByte() }
@@ -218,7 +219,7 @@ class XtraEncryptedProviderTest {
         dest: Path,
         previousPerms: String?,
     ) {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
         val original = ByteArray(50_000) { (it * 3).toByte() }
@@ -238,7 +239,7 @@ class XtraEncryptedProviderTest {
     @Test
     fun `the replacement keeps the previous file's permissions instead of the staging file's`() {
         if (!posix()) return
-        val dest = Files.createTempDirectory("xtra-provider-test").resolve("h.bin")
+        val dest = TestScratch.directory("xtra-provider-test").resolve("h.bin")
 
         downloadOver(dest, "rw-------")
 
@@ -252,7 +253,7 @@ class XtraEncryptedProviderTest {
     @Test
     fun `the replacement keeps a wider destination's modes`() {
         if (!posix()) return
-        val dest = Files.createTempDirectory("xtra-provider-test").resolve("h.bin")
+        val dest = TestScratch.directory("xtra-provider-test").resolve("h.bin")
 
         downloadOver(dest, "rw-rw-r--")
 
@@ -266,7 +267,7 @@ class XtraEncryptedProviderTest {
     @Test
     fun `a download to a destination that does not exist yet lands owner-only`() {
         if (!posix()) return
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
         val original = ByteArray(50_000) { (it * 11).toByte() }
@@ -286,7 +287,7 @@ class XtraEncryptedProviderTest {
 
     @Test
     fun `the key loads lazily, a listing never touches it`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         var loaded = false
         val keys = lazy { loaded = true; XtraKeyManager(tmpDir.resolve("xtra.key")) }
@@ -305,7 +306,7 @@ class XtraEncryptedProviderTest {
 
     @Test
     fun `upload forwards the replace and conditional-write parameters`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val inner = InMemoryProvider(mutableMapOf<String, ByteArray>())
         val xtra = provider(inner, keys(tmpDir))
 
@@ -321,7 +322,7 @@ class XtraEncryptedProviderTest {
     // completeness check, the warm-cache size match): every item crossing the wrapper up answers the plaintext size.
     @Test
     fun `listings and metadata answer the plaintext size`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val inner = FakeCloudProvider()
         val xtra = provider(inner, keys(tmpDir))
 
@@ -349,7 +350,7 @@ class XtraEncryptedProviderTest {
     // decryption lands the plaintext in a fresh file, so the wrapper applies the target and says so.
     @Test
     fun `the hash variants apply the target mtime and answer the decrypted stats`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val inner = FakeCloudProvider()
         val xtra = provider(inner, keys(tmpDir))
 
@@ -375,7 +376,7 @@ class XtraEncryptedProviderTest {
     // stream fails its decrypt, and a content id would name bytes the client does not hold).
     @Test
     fun `the hash answers cross the boundary as cannot tell`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val inner = FakeCloudProvider()
         inner.hashAlgorithmOverride = org.krost.unidrive.HashAlgorithm.Sha256Hex
         val xtra = provider(inner, keys(tmpDir))
@@ -391,7 +392,7 @@ class XtraEncryptedProviderTest {
     // The layer refuses instead of creating one; links that already exist stay listable and revocable.
     @Test
     fun `share refuses instead of handing out a link to ciphertext`() {
-        val tmpDir = Files.createTempDirectory("xtra-provider-test")
+        val tmpDir = TestScratch.directory("xtra-provider-test")
         val supporting = object : CloudProvider by FakeCloudProvider() {
             override suspend fun share(
                 path: String,

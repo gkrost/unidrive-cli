@@ -7,6 +7,7 @@ import java.sql.DriverManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1040 M4: the mount records a rename before its cloud move and clears the record once the row and its cache copy are at
@@ -14,11 +15,11 @@ import kotlin.test.assertTrue
  * and a state.db written before the table existed gains it when it is opened.
  */
 class StateDatabaseRenameIntentTest {
-    private fun open(path: Path = Files.createTempDirectory("ud-rename-intent-db").resolve("state.db")) = StateDatabase(path).also { it.initialize() }
+    private fun open(path: Path = TestScratch.directory("ud-rename-intent-db").resolve("state.db")) = StateDatabase(path).also { it.initialize() }
 
     @Test
     fun `a recorded rename is read back after a reopen until it is cleared`() {
-        val file = Files.createTempDirectory("ud-rename-intent-db").resolve("state.db")
+        val file = TestScratch.directory("ud-rename-intent-db").resolve("state.db")
         val first = open(file)
         first.recordRenameIntent(RenameIntent("/a.txt", "/b.txt", remoteId = "id-a", ghost = false))
         first.recordRenameIntent(RenameIntent("/g.txt", "/h.txt", remoteId = "ghost-id", ghost = true))
@@ -52,7 +53,7 @@ class StateDatabaseRenameIntentTest {
 
     @Test
     fun `a state db from before the table gains it when opened`() {
-        val file = Files.createTempDirectory("ud-rename-intent-db").resolve("state.db")
+        val file = TestScratch.directory("ud-rename-intent-db").resolve("state.db")
         open(file).close()
         DriverManager.getConnection("jdbc:sqlite:$file").use { conn -> conn.createStatement().use { it.executeUpdate("DROP TABLE rename_intents") } }
 

@@ -6,6 +6,7 @@ import java.nio.file.Files
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 // gkrost/unidrive-cli#455: `status` asks for four numbers; one aggregate query must give what counting every row gave.
 class StateDatabaseStatusAggregatesTest {
@@ -34,7 +35,7 @@ class StateDatabaseStatusAggregatesTest {
 
     @Test
     fun `the aggregates equal the per-row computation, folders and tombstones excluded`() {
-        val db = StateDatabase(Files.createTempDirectory("status-agg").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("status-agg").resolve("state.db"))
         try {
             db.initialize()
             db.upsertEntry(row("/hydrated-a", "r1", remoteSize = 10, localSize = 1_000, hydrated = true))
@@ -61,7 +62,7 @@ class StateDatabaseStatusAggregatesTest {
 
     @Test
     fun `an empty table gives zeros`() {
-        val db = StateDatabase(Files.createTempDirectory("status-agg").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("status-agg").resolve("state.db"))
         try {
             db.initialize()
             assertEquals(StatusAggregates(0, 0, 0, 0), db.statusAggregates())

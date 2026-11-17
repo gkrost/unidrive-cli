@@ -17,6 +17,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.testing.CloudProviderConformanceTest
 import java.nio.file.Files
 import java.nio.file.Path
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The SPI's conformance contracts against [InternxtProvider] over a scripted HTTP fake.
@@ -46,7 +47,7 @@ class InternxtConformanceTest : CloudProviderConformanceTest() {
     private var fileCounter = 0
 
     override fun newProvider(): CloudProvider {
-        dir = Files.createTempDirectory("conformance-ix")
+        dir = TestScratch.directory("conformance-ix")
         storeCredentials()
         return InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = dir))
     }
@@ -58,7 +59,7 @@ class InternxtConformanceTest : CloudProviderConformanceTest() {
         renameTargets.clear()
         folderFilesJson = "[]"
         fileCounter = 0
-        return internxtProviderOn(scriptedEngine(), InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("conformance-ix-token", ".tmp")))
+        return internxtProviderOn(scriptedEngine(), InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("conformance-ix-token", ".tmp")))
     }
 
     override suspend fun seedFile(
@@ -74,7 +75,7 @@ class InternxtConformanceTest : CloudProviderConformanceTest() {
     }
 
     override fun localFile(content: String): Path =
-        Files.createTempFile("conformance-local", ".txt").also { Files.writeString(it, content) }
+        TestScratch.file("conformance-local", ".txt").also { Files.writeString(it, content) }
 
     override fun recordedDeleteTargets(): List<String> =
         trashBodies.flatMap { UUID_IN_BODY.findAll(it).map { m -> m.groupValues[1] } }

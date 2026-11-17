@@ -25,6 +25,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#414: the download hint #392/#402 keep in memory dies with the daemon. The row in state.db carries
@@ -91,7 +92,7 @@ class InternxtPersistedHintDownloadTest {
         storedObject: StoredObject?,
         status: EntryStatus = EntryStatus.EXISTS,
     ): SyncEntry {
-        stateDbFile = Files.createTempDirectory("ud-persisted-hint").resolve("state.db")
+        stateDbFile = TestScratch.directory("ud-persisted-hint").resolve("state.db")
         StateDatabase(stateDbFile).also { it.initialize() }.let { db ->
             try {
                 db.upsertEntry(
@@ -127,14 +128,14 @@ class InternxtPersistedHintDownloadTest {
     }
 
     private fun newProvider(): InternxtProvider {
-        destination = Files.createTempDirectory("ud-persisted-hint").resolve("out.bin")
+        destination = TestScratch.directory("ud-persisted-hint").resolve("out.bin")
         val payloadB64 =
             java.util.Base64
                 .getUrlEncoder()
                 .withoutPadding()
                 .encodeToString("""{"exp":9999999999}""".toByteArray())
         return InternxtProvider(
-            InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-persisted-hint-token", ".tmp")),
+            InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("ud-persisted-hint-token", ".tmp")),
             httpClient = HttpClient(MockEngine { request -> handle(request) }),
             credentials =
                 InternxtCredentials(

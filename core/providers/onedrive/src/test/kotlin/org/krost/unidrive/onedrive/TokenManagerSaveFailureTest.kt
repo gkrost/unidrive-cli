@@ -15,6 +15,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A token-file save that fails after a successful refresh (an antivirus scanner or a backup tool
@@ -38,7 +39,7 @@ class TokenManagerSaveFailureTest {
         runTest {
             // A regular file where the token DIRECTORY should be: every save fails with
             // FileAlreadyExistsException, deterministically on every platform.
-            val blocked = Files.createTempFile("unidrive-token-blocked-", ".json")
+            val blocked = TestScratch.file("unidrive-token-blocked-", ".json")
             try {
                 var refreshCalls = 0
                 val engine =
@@ -89,7 +90,7 @@ class TokenManagerSaveFailureTest {
     @Test
     fun `the next refresh after the blocking file is gone saves the token and clears the failure`() =
         runTest {
-            val blocked = Files.createTempFile("unidrive-token-blocked-", ".json")
+            val blocked = TestScratch.file("unidrive-token-blocked-", ".json")
             try {
                 val config = OneDriveConfig(tokenPath = blocked)
                 val oauth = OAuthService(config, httpClient = HttpClient(refreshEngine()))
@@ -115,7 +116,7 @@ class TokenManagerSaveFailureTest {
     @Test
     fun `a plain getValidToken retries the failed save and clears the failure`() =
         runTest {
-            val blocked = Files.createTempFile("unidrive-token-blocked-", ".json")
+            val blocked = TestScratch.file("unidrive-token-blocked-", ".json")
             try {
                 val config = OneDriveConfig(tokenPath = blocked)
                 val oauth = OAuthService(config, httpClient = HttpClient(refreshEngine()))
@@ -139,7 +140,7 @@ class TokenManagerSaveFailureTest {
     @Test
     fun `a retried save does not store a token after a sign-out`() =
         runTest {
-            val blocked = Files.createTempFile("unidrive-token-blocked-", ".json")
+            val blocked = TestScratch.file("unidrive-token-blocked-", ".json")
             try {
                 val config = OneDriveConfig(tokenPath = blocked)
                 val oauth = OAuthService(config, httpClient = HttpClient(refreshEngine()))

@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A junction inside the sync root (a package manager's `deps` folder, say) is one entry: a local delete removes the
@@ -25,7 +26,7 @@ class JunctionInSyncRootTest {
     @BeforeTest
     fun setUp() {
         assumeTrue("junctions (mklink /J) exist only on Windows", System.getProperty("os.name").lowercase().contains("win"))
-        base = Files.createTempDirectory("junction-sync-root")
+        base = TestScratch.directory("junction-sync-root")
         syncRoot = Files.createDirectories(base.resolve("root"))
         outside = Files.createDirectories(base.resolve("outside"))
         Files.writeString(outside.resolve("must-survive.txt"), "x")

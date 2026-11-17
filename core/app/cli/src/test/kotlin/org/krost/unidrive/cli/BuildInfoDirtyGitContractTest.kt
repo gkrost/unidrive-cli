@@ -6,6 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#65 / UD-733: pins the git ground-truth that `generateBuildInfo`'s DIRTY
@@ -50,7 +51,7 @@ class BuildInfoDirtyGitContractTest {
     }
 
     private fun initRepo(): Path {
-        val dir = Files.createTempDirectory("buildinfo-dirty-git")
+        val dir = TestScratch.directory("buildinfo-dirty-git")
         git(dir, "init", "-q")
         git(dir, "config", "user.email", "test@unidrive.local")
         git(dir, "config", "user.name", "unidrive-test")

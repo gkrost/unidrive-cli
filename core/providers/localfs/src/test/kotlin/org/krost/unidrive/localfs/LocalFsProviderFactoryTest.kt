@@ -12,6 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#910: `profile add` must refuse an unusable `root_path` with a token the wizard can map,
@@ -25,7 +26,7 @@ class LocalFsProviderFactoryTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("localfs-factory")
+        dir = TestScratch.directory("localfs-factory")
     }
 
     @AfterTest

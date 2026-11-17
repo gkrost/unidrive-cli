@@ -18,6 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#744 finding 1: the scan walks the whole tree inside one manual batch, which takes the
@@ -36,8 +37,8 @@ class LocalScannerWriteLockTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-scan-lock")
-        dbFile = Files.createTempDirectory("unidrive-scan-lock-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-scan-lock")
+        dbFile = TestScratch.directory("unidrive-scan-lock-db").resolve("state.db")
         db = StateDatabase(dbFile).also { it.initialize() }
         // The other writer gives up after 1.5 s, far below the scan's duration and well above any commit interval.
         other = StateDatabase(dbFile, busyTimeoutMs = 1_500).also { it.initialize() }

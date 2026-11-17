@@ -21,6 +21,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1054 S2: a request line is bytes until its newline. A read that ends inside a multi-byte UTF-8 character used to be
@@ -34,7 +35,7 @@ class IpcServerUtf8Test {
 
     @BeforeTest
     fun setUp() {
-        socketDir = Files.createTempDirectory("unidrive-ipc-utf8")
+        socketDir = TestScratch.directory("unidrive-ipc-utf8")
         socketPath = socketDir.resolve("test.sock")
     }
 

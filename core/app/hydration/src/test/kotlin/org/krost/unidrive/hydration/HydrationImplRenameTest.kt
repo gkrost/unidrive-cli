@@ -19,6 +19,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.assertFalse
+import org.krost.unidrive.testing.TestScratch
 
 class HydrationImplRenameTest {
 
@@ -79,12 +80,12 @@ class HydrationImplRenameTest {
     }
 
     private fun freshEnv(): Triple<HydrationImpl, RenameFakeProvider, StateDatabase> {
-        val cacheRoot = Files.createTempDirectory("unidrive-hydration-rename-cache")
-        val dbPath = Files.createTempDirectory("unidrive-hydration-rename-db").resolve("state.db")
+        val cacheRoot = TestScratch.directory("unidrive-hydration-rename-cache")
+        val dbPath = TestScratch.directory("unidrive-hydration-rename-db").resolve("state.db")
         val provider = RenameFakeProvider()
         val db = StateDatabase(dbPath = dbPath, inMemory = true)
         db.initialize()
-        val syncRoot = Files.createTempDirectory("unidrive-hydration-rename-sync")
+        val syncRoot = TestScratch.directory("unidrive-hydration-rename-sync")
         val engine = SyncEngine(
             provider = provider,
             db = db,
@@ -170,13 +171,13 @@ class HydrationImplRenameTest {
     @Test
     fun `a rename that only changes the case moves the cache copy to the new name`() = runTest {
         val provider = RenameFakeProvider()
-        val db = StateDatabase(dbPath = Files.createTempDirectory("unidrive-hydration-case-db").resolve("state.db"), inMemory = true)
+        val db = StateDatabase(dbPath = TestScratch.directory("unidrive-hydration-case-db").resolve("state.db"), inMemory = true)
         db.initialize()
         val engine = SyncEngine(
             provider = provider,
             db = db,
-            syncRoot = Files.createTempDirectory("unidrive-hydration-case-sync"),
-            cacheRoot = Files.createTempDirectory("unidrive-hydration-case-cache"),
+            syncRoot = TestScratch.directory("unidrive-hydration-case-sync"),
+            cacheRoot = TestScratch.directory("unidrive-hydration-case-cache"),
         )
         val impl = HydrationImpl(syncEngine = engine, stateDb = db)
         seedFile(db, "/report.txt")

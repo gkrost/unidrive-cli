@@ -5,11 +5,12 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class OneDriveCaseSensitivityTest {
     @Test
     fun `OneDrive declares case-insensitive, case-preserving names`() {
-        val provider = OneDriveProvider(OneDriveConfig(tokenPath = Files.createTempDirectory("od-case")))
+        val provider = OneDriveProvider(OneDriveConfig(tokenPath = TestScratch.directory("od-case")))
         assertEquals(CaseSensitivity.INSENSITIVE_PRESERVING, provider.caseSensitivity)
         // The provider's own name comparison agrees.
         assertTrue(OneDriveServerNames.sameName("case1.txt", "CASE1.txt"))

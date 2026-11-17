@@ -18,6 +18,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#491 on the mount: two cloud items whose names differ only in Unicode normalisation (the golden suite v2's
@@ -114,7 +115,7 @@ class HydrationNormalisationTwinsTest {
 
     private class Env {
         val provider = PathAddressedProvider()
-        val db = StateDatabase(dbPath = Files.createTempDirectory("unidrive-nfctwin-db").resolve("state.db"), inMemory = true)
+        val db = StateDatabase(dbPath = TestScratch.directory("unidrive-nfctwin-db").resolve("state.db"), inMemory = true)
         val engine: SyncEngine
         val mount: MountEngine
         val handler: HydrationIpcHandler
@@ -125,8 +126,8 @@ class HydrationNormalisationTwinsTest {
                 SyncEngine(
                     provider = provider,
                     db = db,
-                    syncRoot = Files.createTempDirectory("unidrive-nfctwin-sync"),
-                    cacheRoot = Files.createTempDirectory("unidrive-nfctwin-cache"),
+                    syncRoot = TestScratch.directory("unidrive-nfctwin-sync"),
+                    cacheRoot = TestScratch.directory("unidrive-nfctwin-cache"),
                 )
             mount = MountEngine.over(engine)
             handler = HydrationIpcHandler(HydrationImpl(syncEngine = engine, stateDb = db))

@@ -9,6 +9,7 @@ import org.krost.unidrive.sync.IpcEndpoint
 import org.krost.unidrive.sync.IpcServer
 import java.nio.file.Files
 import java.nio.file.Path
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A real, authenticated [IpcServer] with only the verbs a test registers: the commands under test connect through
@@ -18,7 +19,7 @@ import java.nio.file.Path
 internal class FakeIpcDaemon(
     private val profile: String = "fake_profile",
 ) : AutoCloseable {
-    private val dir: Path = Files.createTempDirectory("fake-ipc-daemon")
+    private val dir: Path = TestScratch.directory("fake-ipc-daemon")
     private val profileDir: Path = Files.createDirectories(dir.resolve("p"))
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val server: IpcServer

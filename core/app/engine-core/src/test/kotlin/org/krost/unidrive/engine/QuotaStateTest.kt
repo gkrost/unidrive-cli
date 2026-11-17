@@ -9,6 +9,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /** QuotaState stores and parses the cached quota tuple the way the string-keyed calls did (gkrost/unidrive-cli#269). */
 class QuotaStateTest {
@@ -18,7 +19,7 @@ class QuotaStateTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-quota-state")
+        tmp = TestScratch.directory("unidrive-quota-state")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
         state = QuotaState(db)

@@ -9,10 +9,11 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import org.krost.unidrive.testing.TestScratch
 
 /** A Dropbox sign-in compares the token answer's `account_id` with the profile's stored user before it stores the grant. */
 class DropboxAccountOwnerTest {
-    private val dir: Path = Files.createTempDirectory("dropbox-owner")
+    private val dir: Path = TestScratch.directory("dropbox-owner")
     private val profile = mapOf("client_id" to "app-key")
 
     @AfterTest

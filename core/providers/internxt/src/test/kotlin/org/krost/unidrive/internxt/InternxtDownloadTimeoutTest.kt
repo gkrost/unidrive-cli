@@ -22,6 +22,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1065: the shared client caps every call at HttpDefaults.REQUEST_TIMEOUT_MS (600 s) and Ktor counts that cap up to
@@ -40,7 +41,7 @@ class InternxtDownloadTimeoutTest {
             it.init(Cipher.DECRYPT_MODE, SecretKeySpec(ByteArray(32) { b -> b.toByte() }, "AES"), IvParameterSpec(ByteArray(16)))
         }
 
-    private fun tempDestination(): Path = Files.createTempDirectory("ud-dl-timeout").resolve("out.bin")
+    private fun tempDestination(): Path = TestScratch.directory("ud-dl-timeout").resolve("out.bin")
 
     // A real client engine: a MockEngine's response body is not tied to the call, so the request timeout cannot cut it.
     // The server sends 4 KiB over a second; the client allows a whole call 300 ms.
@@ -144,7 +145,7 @@ class InternxtDownloadTimeoutTest {
             }
         val provider =
             InternxtProvider(
-                InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-dl-timeout-token", ".tmp")),
+                InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("ud-dl-timeout-token", ".tmp")),
                 httpClient = HttpClient(engine),
                 credentials =
                     InternxtCredentials(

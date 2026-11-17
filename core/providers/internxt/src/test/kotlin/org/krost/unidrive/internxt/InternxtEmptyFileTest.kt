@@ -24,6 +24,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#485: empty files. The drive API validates `fileId` against `size` on create (POST /files) and replace
@@ -40,7 +41,7 @@ class InternxtEmptyFileTest {
 
     // The `size` of the file meta, as JSON.
     private var metaSizeJson = "\"0\""
-    private val tmp: Path = Files.createTempDirectory("ud-empty-")
+    private val tmp: Path = TestScratch.directory("ud-empty-")
 
     @AfterTest
     fun cleanUp() {

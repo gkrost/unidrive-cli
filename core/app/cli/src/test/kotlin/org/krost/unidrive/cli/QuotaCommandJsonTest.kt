@@ -18,6 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#655: `quota --json` is the read-only surface — the running daemon's snapshot or the cached
@@ -32,7 +33,7 @@ class QuotaCommandJsonTest {
 
     @BeforeTest
     fun setUp() {
-        profileDir = Files.createTempDirectory("quota-json-profile")
+        profileDir = TestScratch.directory("quota-json-profile")
         System.setOut(PrintStream(out))
         System.setErr(PrintStream(err))
     }

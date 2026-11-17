@@ -9,6 +9,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class CacheFolderTest {
     private lateinit var base: Path
@@ -16,7 +17,7 @@ class CacheFolderTest {
 
     @BeforeTest
     fun setUp() {
-        base = Files.createTempDirectory("ud-cache-folder")
+        base = TestScratch.directory("ud-cache-folder")
         dir = Files.createDirectories(base.resolve("cache").resolve("profile"))
     }
 

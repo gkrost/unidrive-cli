@@ -21,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The mirror applies the ignore rules (`.unidrive.ignore`, the account's rules, the content defaults) the way it
@@ -45,7 +46,7 @@ class LocalfsMirrorIgnoreTest {
 
     @BeforeTest
     fun setUp() {
-        base = Files.createTempDirectory("ud-mirror-ignore")
+        base = TestScratch.directory("ud-mirror-ignore")
         local = Files.createDirectories(base.resolve("local"))
         remote = Files.createDirectories(base.resolve("remote"))
         db = StateDatabase(Files.createDirectories(base.resolve("profile")).resolve("state.db")).also { it.initialize() }

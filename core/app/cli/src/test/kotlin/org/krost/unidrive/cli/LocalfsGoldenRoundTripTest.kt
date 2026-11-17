@@ -17,6 +17,7 @@ import org.krost.unidrive.localfs.LocalFsProvider
 import org.krost.unidrive.sync.ProgressReporter
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -60,7 +61,7 @@ class LocalfsGoldenRoundTripTest {
 
     @BeforeTest
     fun setUp() {
-        base = Files.createTempDirectory("ud-golden")
+        base = TestScratch.directory("ud-golden")
         local = Files.createDirectories(base.resolve("local"))
         remote = Files.createDirectories(base.resolve("remote"))
         profileDir = Files.createDirectories(base.resolve("profile"))

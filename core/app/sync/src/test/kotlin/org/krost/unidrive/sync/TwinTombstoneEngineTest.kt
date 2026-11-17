@@ -14,6 +14,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * An incremental delta that carries only the tombstone of a twin (a duplicate-named item kept under its decorated name)
@@ -37,8 +38,8 @@ class TwinTombstoneEngineTest {
         streaming: Boolean,
         beforeSecondPass: (Path) -> Unit = {},
     ): Outcome {
-        val syncRoot = Files.createTempDirectory("ud-twintomb-root")
-        val db = StateDatabase(Files.createTempDirectory("ud-twintomb-db").resolve("state.db"))
+        val syncRoot = TestScratch.directory("ud-twintomb-root")
+        val db = StateDatabase(TestScratch.directory("ud-twintomb-db").resolve("state.db"))
         db.initialize()
         try {
             val provider = TombstoneFakeProvider()
@@ -48,7 +49,7 @@ class TwinTombstoneEngineTest {
                     db = db,
                     syncRoot = syncRoot,
                     reporter = DuplicateTwinNamesTest.CountingReporter(),
-                    cacheRoot = Files.createTempDirectory("ud-twintomb-cache"),
+                    cacheRoot = TestScratch.directory("ud-twintomb-cache"),
                     cacheKey = "twin-tombstone-test",
                     streamingReconciliation = streaming,
                 )

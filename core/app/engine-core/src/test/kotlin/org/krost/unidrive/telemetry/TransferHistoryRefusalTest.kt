@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#134: the same refusal of the same path, offered again, is one history row whose finish instant says when
@@ -23,7 +24,7 @@ class TransferHistoryRefusalTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("telemetry-refusal-test")
+        dir = TestScratch.directory("telemetry-refusal-test")
         history = TransferHistory.open("p1", dir.resolve("telemetry.db"), clock = { wallMs.get() }, nanoClock = { wallMs.get() * 1_000_000L })
     }
 

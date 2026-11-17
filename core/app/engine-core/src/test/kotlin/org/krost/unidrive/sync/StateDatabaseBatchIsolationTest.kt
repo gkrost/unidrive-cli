@@ -6,6 +6,7 @@ import java.nio.file.Path
 import java.sql.DriverManager
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#300: the engine's manual batch ([StateDatabase.beginBatch] .. [StateDatabase.commitBatch] /
@@ -20,7 +21,7 @@ class StateDatabaseBatchIsolationTest {
 
     @BeforeTest
     fun setUp() {
-        dbFile = Files.createTempDirectory("unidrive-batch-isolation").resolve("state.db")
+        dbFile = TestScratch.directory("unidrive-batch-isolation").resolve("state.db")
         db = StateDatabase(dbFile)
         db.initialize()
     }

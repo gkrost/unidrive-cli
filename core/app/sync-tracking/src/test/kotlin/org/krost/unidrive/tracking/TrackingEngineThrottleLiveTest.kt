@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Throttling / 429-storm handling — structurally exercised through the engine.
@@ -38,7 +39,7 @@ class TrackingEngineThrottleLiveTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("ts-throttle")
+        workDir = TestScratch.directory("ts-throttle")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider = FakeTrackingProvider()

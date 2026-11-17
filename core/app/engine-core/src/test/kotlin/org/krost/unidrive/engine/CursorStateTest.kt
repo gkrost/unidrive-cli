@@ -12,6 +12,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** CursorState stores the same text the string-keyed calls stored, and adds no default (gkrost/unidrive-cli#269). */
 class CursorStateTest {
@@ -21,7 +22,7 @@ class CursorStateTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-cursor-state")
+        tmp = TestScratch.directory("unidrive-cursor-state")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
         state = CursorState(db)

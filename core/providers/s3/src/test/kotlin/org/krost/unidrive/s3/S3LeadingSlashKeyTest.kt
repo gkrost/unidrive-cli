@@ -8,6 +8,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * An object key may start with a slash (another tool wrote `/a.txt`). `keyOf` used to strip every leading slash, so
@@ -19,7 +20,7 @@ class S3LeadingSlashKeyTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("s3-slash")
+        dir = TestScratch.directory("s3-slash")
     }
 
     @AfterTest

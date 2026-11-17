@@ -8,6 +8,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#22: a scope root counts as "the remote had something there" only for a row with a remote item's id.
@@ -19,7 +20,7 @@ class HasRemoteRowAtOrBelowTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("unidrive-remote-row").resolve("state.db")).also { it.initialize() }
+        db = StateDatabase(TestScratch.directory("unidrive-remote-row").resolve("state.db")).also { it.initialize() }
     }
 
     @AfterTest

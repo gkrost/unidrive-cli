@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A chunked create whose session was lost can meet the 0-byte item an earlier session of the same upload left under
@@ -79,7 +80,7 @@ class OneDriveUnfinishedStubTest {
         runTest {
             val recorded = Recorded()
             val provider = providerWith(engine(existingSize = 0, recorded))
-            val local = Files.createTempFile("ud-stub", ".bin")
+            val local = TestScratch.file("ud-stub", ".bin")
             Files.write(local, ByteArray(size) { 7 })
             try {
                 val result = provider.upload(local, "/big.bin", existingRemoteId = null)
@@ -99,7 +100,7 @@ class OneDriveUnfinishedStubTest {
         runTest {
             val recorded = Recorded()
             val provider = providerWith(engine(existingSize = 1234, recorded))
-            val local = Files.createTempFile("ud-stub-nonempty", ".bin")
+            val local = TestScratch.file("ud-stub-nonempty", ".bin")
             Files.write(local, ByteArray(size) { 7 })
             try {
                 provider.upload(local, "/big.bin", existingRemoteId = null)

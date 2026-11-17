@@ -9,6 +9,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#269 (the schema part): eleven columns of `sync_entries` were added while the file stayed at schema 2,
@@ -59,7 +60,7 @@ class StateDatabaseSchemaVersionTest {
 
     @Test
     fun `a file this build writes is refused by a build that knows schema 3 only`() {
-        val file = Files.createTempDirectory("unidrive-schema").resolve("state.db")
+        val file = TestScratch.directory("unidrive-schema").resolve("state.db")
         StateDatabase(file).also { it.initialize() }.close()
 
         val recorded = assertNotNull(stampedVersion(file))
@@ -71,7 +72,7 @@ class StateDatabaseSchemaVersionTest {
 
     @Test
     fun `a schema 2 file without the added columns migrates forward with its rows and is stamped with this schema`() {
-        val file = Files.createTempDirectory("unidrive-schema").resolve("state.db")
+        val file = TestScratch.directory("unidrive-schema").resolve("state.db")
         DriverManager.getConnection("jdbc:sqlite:$file").use { conn ->
             conn.createStatement().use { stmt ->
                 // The shape of sync_entries at schema 2 before any of the eleven columns.
@@ -129,7 +130,7 @@ class StateDatabaseSchemaVersionTest {
 
     @Test
     fun `a schema 3 file without the hint columns migrates forward and the hint columns are writable`() {
-        val file = Files.createTempDirectory("unidrive-schema").resolve("state.db")
+        val file = TestScratch.directory("unidrive-schema").resolve("state.db")
         DriverManager.getConnection("jdbc:sqlite:$file").use { conn ->
             conn.createStatement().use { stmt ->
                 // The shape of sync_entries at schema 3 (#337): the eleven columns are there, the hint columns are not.
@@ -206,7 +207,7 @@ class StateDatabaseSchemaVersionTest {
 
     @Test
     fun `a file of a newer schema is refused before anything is written, read-only too`() {
-        val file = Files.createTempDirectory("unidrive-schema").resolve("state.db")
+        val file = TestScratch.directory("unidrive-schema").resolve("state.db")
         StateDatabase(file).also { it.initialize() }.close()
         val newer = StateDatabase.SCHEMA_VERSION + 1
         DriverManager.getConnection("jdbc:sqlite:$file").use { c ->

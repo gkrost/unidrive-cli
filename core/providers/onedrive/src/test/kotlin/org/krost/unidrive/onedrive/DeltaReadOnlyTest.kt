@@ -13,6 +13,7 @@ import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Every successful Graph delta call stamps `delta_last_seen` in the token directory; it is the clock
@@ -41,7 +42,7 @@ class DeltaReadOnlyTest {
     @Test
     fun `a read-only delta does not stamp delta_last_seen`() =
         runTest {
-            val tokenDir = Files.createTempDirectory("ud-400-token")
+            val tokenDir = TestScratch.directory("ud-400-token")
             val provider = providerWithTokenDir(tokenDir)
 
             provider.delta(null, scanContext = context(readOnly = true))
@@ -53,7 +54,7 @@ class DeltaReadOnlyTest {
     @Test
     fun `a normal delta still stamps delta_last_seen`() =
         runTest {
-            val tokenDir = Files.createTempDirectory("ud-400-token")
+            val tokenDir = TestScratch.directory("ud-400-token")
             val provider = providerWithTokenDir(tokenDir)
 
             provider.delta(null, scanContext = context(readOnly = false))
@@ -65,7 +66,7 @@ class DeltaReadOnlyTest {
     @Test
     fun `a read-only fast bootstrap does not stamp delta_last_seen`() =
         runTest {
-            val tokenDir = Files.createTempDirectory("ud-400-token")
+            val tokenDir = TestScratch.directory("ud-400-token")
             val provider = providerWithTokenDir(tokenDir)
 
             provider.deltaFromLatest(context(readOnly = true))
@@ -80,7 +81,7 @@ class DeltaReadOnlyTest {
     @Test
     fun `a normal fast bootstrap stamps delta_last_seen`() =
         runTest {
-            val tokenDir = Files.createTempDirectory("ud-400-token")
+            val tokenDir = TestScratch.directory("ud-400-token")
             val provider = providerWithTokenDir(tokenDir)
 
             provider.deltaFromLatest(context(readOnly = false))

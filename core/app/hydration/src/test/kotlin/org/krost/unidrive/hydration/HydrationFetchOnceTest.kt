@@ -9,6 +9,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#392: each file's content is fetched from the provider once per hydration. The provider here counts every
@@ -24,14 +25,14 @@ class HydrationFetchOnceTest {
 
     private fun freshEnv(vararg files: Pair<String, Int>): Env {
         val provider = MemProvider()
-        val db = StateDatabase(Files.createTempDirectory("ud-392-db").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("ud-392-db").resolve("state.db"))
         db.initialize()
         val engine =
             SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("ud-392-root"),
-                cacheRoot = Files.createTempDirectory("ud-392-cache"),
+                syncRoot = TestScratch.directory("ud-392-root"),
+                cacheRoot = TestScratch.directory("ud-392-cache"),
                 cacheKey = "ud-392-isolated-profile",
             )
         files.forEachIndexed { i, (name, size) -> provider.seed("/$name", ByteArray(size) { (i + it).toByte() }) }
