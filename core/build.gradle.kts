@@ -28,6 +28,57 @@ configure<JacocoPluginExtension> {
 val flakyCategory = "org.krost.unidrive.testing.FlakyTests"
 val flakyTestTask = "flakyTest"
 
+// #790: empties a redirected test scratch dir before its task runs. Not File.deleteRecursively: it follows every link,
+// and so does a plain walkFileTree into a Windows junction (the JDK reports it as a directory). A symbolic link or a
+// directory that is a reparse point is deleted itself and never entered, so a junction a test left in its scratch cannot
+// take the files of the directory it leads to. Best effort: nothing here fails the build. The same rule, for test
+// scratch at JVM exit, is TestScratch's (:app:core test fixtures), tested in TestScratchTest.
+fun deleteScratchTree(root: java.io.File) {
+    val start = root.toPath()
+    if (!java.nio.file.Files.exists(start, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return
+    fun remove(path: java.nio.file.Path) {
+        runCatching { java.nio.file.Files.deleteIfExists(path) }
+    }
+    java.nio.file.Files.walkFileTree(
+        start,
+        object : java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+            override fun preVisitDirectory(
+                dir: java.nio.file.Path,
+                attrs: java.nio.file.attribute.BasicFileAttributes,
+            ): java.nio.file.FileVisitResult {
+                if (!attrs.isSymbolicLink && !attrs.isOther) return java.nio.file.FileVisitResult.CONTINUE
+                remove(dir)
+                return java.nio.file.FileVisitResult.SKIP_SUBTREE
+            }
+
+            override fun visitFile(
+                file: java.nio.file.Path,
+                attrs: java.nio.file.attribute.BasicFileAttributes,
+            ): java.nio.file.FileVisitResult {
+                remove(file)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+
+            override fun postVisitDirectory(
+                dir: java.nio.file.Path,
+                exc: java.io.IOException?,
+            ): java.nio.file.FileVisitResult {
+                remove(dir)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+
+            // A junction whose target is gone fails to open before preVisitDirectory: remove the entry itself.
+            override fun visitFileFailed(
+                file: java.nio.file.Path,
+                exc: java.io.IOException,
+            ): java.nio.file.FileVisitResult {
+                remove(file)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+        },
+    )
+}
+
 // The groups the third-party Central mirrors may serve (see the long comment in settings.gradle.kts).
 val mirrorGroups =
     file("gradle/mirror-groups.txt")
@@ -338,7 +389,7 @@ subprojects {
                     "ut%05x".format((rootDir.absolutePath + "|" + project.path + ":" + name).hashCode() and 0xFFFFF),
                 )
             doFirst {
-                testTmp.deleteRecursively()
+                deleteScratchTree(testTmp)
                 testTmp.mkdirs()
             }
             systemProperty("java.io.tmpdir", testTmp.absolutePath)

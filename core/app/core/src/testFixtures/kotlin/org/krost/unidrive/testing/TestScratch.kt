@@ -1,11 +1,9 @@
 package org.krost.unidrive.testing
 
-import java.io.IOException
-import java.nio.file.FileVisitResult
+import org.krost.unidrive.io.LinkedEntries
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
-import java.nio.file.SimpleFileVisitor
-import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.DosFileAttributeView
 import java.nio.file.attribute.FileAttribute
 import java.util.concurrent.ConcurrentLinkedDeque
@@ -54,42 +52,22 @@ object TestScratch {
         for (path in created) runCatching { deleteTree(path) }
     }
 
-    // walkFileTree without FOLLOW_LINKS: a symlink or a junction a test made is deleted itself, its target is never
-    // entered (a plain File.deleteRecursively would walk into it).
-    private fun deleteTree(root: Path) {
-        if (!Files.exists(root, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return
-        Files.walkFileTree(
-            root,
-            object : SimpleFileVisitor<Path>() {
-                override fun visitFile(
-                    file: Path,
-                    attrs: BasicFileAttributes,
-                ): FileVisitResult {
-                    delete(file)
-                    return FileVisitResult.CONTINUE
-                }
-
-                override fun postVisitDirectory(
-                    dir: Path,
-                    exc: IOException?,
-                ): FileVisitResult {
-                    delete(dir)
-                    return FileVisitResult.CONTINUE
-                }
-
-                override fun visitFileFailed(
-                    file: Path,
-                    exc: IOException,
-                ): FileVisitResult = FileVisitResult.CONTINUE
-            },
-        )
+    /**
+     * Deletes [root] and what is below it, best effort. A symbolic link or a Windows junction a test made is deleted
+     * itself and never entered ([LinkedEntries.deleteTree]: `walkFileTree` alone descends into a junction, and so does
+     * Kotlin's `File.deleteRecursively`), so a scratch directory that holds a junction to a directory the test does not
+     * own cannot take that directory's files with it. Public for its own test.
+     */
+    fun deleteTree(root: Path) {
+        LinkedEntries.deleteTree(root, ::delete)
     }
 
     private fun delete(path: Path) {
         if (runCatching { Files.deleteIfExists(path) }.isSuccess) return
-        // A read-only entry (a test that made one) refuses deletion on Windows: clear the flag and try once more.
+        // A read-only entry (a test that made one) refuses deletion on Windows: clear the flag (of the entry itself,
+        // not of what a link leads to) and try once more.
         runCatching {
-            Files.getFileAttributeView(path, DosFileAttributeView::class.java)?.setReadOnly(false)
+            Files.getFileAttributeView(path, DosFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS)?.setReadOnly(false)
             Files.deleteIfExists(path)
         }
     }
