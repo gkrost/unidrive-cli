@@ -86,6 +86,28 @@ class PauseRpcHandler(
         timer = null
     }
 
+    /**
+     * The programmatic pause behind `vault.lock` (issue#796): the same gate, in-flight rule and
+     * event as `daemon.pause`, with the fixed reason [VAULT_LOCKED_REASON] (`auto`, untimed). A
+     * no-op when the daemon is already paused with exactly that state (no event, no change).
+     */
+    fun pauseForVaultLock() {
+        synchronized(gate) {
+            val change = gate.pause(VAULT_LOCKED_REASON, auto = true, untilMs = null)
+            if (change == PauseGate.Change.UNCHANGED) return
+            gate.abortSlowTransfers()
+            val state = checkNotNull(gate.current) { "paused just now" }
+            publish(HydrationEvent.Paused(state.reason, state.sinceMs, state.auto, state.untilMs))
+        }
+    }
+
+    /** The resume behind `vault.unlock` after a `vault.lock`: true when a pause of this daemon actually ended. */
+    fun resumeForVaultUnlock(): Boolean =
+        synchronized(gate) {
+            cancelTimer()
+            gate.resume().also { if (it) publish(HydrationEvent.Resumed()) }
+        }
+
     // Caller holds synchronized(gate). Replaces any earlier timer; null [untilMs] leaves the pause untimed.
     private fun armTimer(untilMs: Long?) {
         cancelTimer()
@@ -109,6 +131,9 @@ class PauseRpcHandler(
 
     companion object {
         const val REASON_MAX_LENGTH = 32
+
+        /** The reason the programmatic pause of `vault.lock` pauses with (issue#796). */
+        const val VAULT_LOCKED_REASON = "vault_locked"
 
         /** The longest the timer sleeps before it reads the wall clock again. */
         const val CLOCK_RECHECK_MS = 30_000L

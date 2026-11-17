@@ -228,6 +228,9 @@ class IpcAuth(
                 // The sign-in steps carry a password or a code in their body: owner-only (full scope), like auth.logout. auth.check carries nothing
                 // secret but makes a provider call with the profile's credentials on the caller's say-so: owner-only too.
                 listOf("auth.begin", "auth.complete", "auth.login", "auth.check").forEach { put(it, VerbClass.ADMIN) }
+                // The vault verbs (issue#796): vault.unlock carries the vault passphrase in its body
+                // and vault.lock drops the loaded vault data — owner-only (full scope) both.
+                listOf("vault.unlock", "vault.lock").forEach { put(it, VerbClass.ADMIN) }
             }
 
         fun classOf(verb: String): VerbClass = VERB_CLASSES[verb] ?: VerbClass.ADMIN

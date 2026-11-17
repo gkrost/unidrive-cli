@@ -507,6 +507,10 @@ class DaemonRuntimeTest {
                     """{"verb":"auth.check"}""",
                     // share.create is answered (ok or a typed error), never unknown_verb: the stub provider cannot share, so it answers unsupported.
                     """{"verb":"share.create","path":"/startup/share.txt"}""",
+                    // issue#796: the vault verbs are registered on every daemon; this runtime has no
+                    // vault.enc, so both answer vault_absent (still a reply).
+                    """{"verb":"vault.unlock","passphrase":"x"}""",
+                    """{"verb":"vault.lock"}""",
                     """{"verb":"daemon.shutdown"}""",
                 )
                 // The IPC verb classes (IpcAuth) name exactly these verbs: each reaches a handler below,

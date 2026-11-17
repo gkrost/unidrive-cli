@@ -157,6 +157,14 @@ class DaemonRuntime(
     private val log = LoggerFactory.getLogger(DaemonRuntime::class.java)
 
     /**
+     * issue#796: the daemon.status renderer. Registered once as a delegating handler (a verb is
+     * registered exactly one time), it answers the locked shape while null and the full shape once
+     * the tail has built everything it reports.
+     */
+    @Volatile
+    private var statusHandler: (suspend () -> String)? = null
+
+    /**
      * archive#652: how the transfer history file is opened; a seam for tests, which need an open to fail on demand (and to
      * keep hold of the history to see it closed). Default retention (90 days or 200 MB) applies until the config keys
      * exist.
@@ -174,6 +182,15 @@ class DaemonRuntime(
     /** archive#813: when a sign-in through this daemon last loaded new credentials; a credential rejection before it is history. */
     @Volatile
     private var signedInAtMs: Long? = null
+
+    /**
+     * issue#796: the vault seam of this run — non-null when vault.enc exists, so the vault.unlock /
+     * vault.lock verbs are registered and the `vault-unlock:v1` capability is advertised. The gate
+     * starts locked exactly on a locked start: the lifecycle then serves the locked daemon.status
+     * shape and defers the provider tail until vault.unlock. `daemon run` sets it before [start];
+     * a runtime a test builds without it registers no vault verbs.
+     */
+    internal var vault: DaemonVault? = null
 
     private var lock: ProcessLock? = null
     private var db: StateDatabase? = null
@@ -271,6 +288,21 @@ class DaemonRuntime(
             // values flagged stale instead of nulls.
             quotaMonitor.seedFromCache(db!!)
 
+            // issue#796: the IPC auth and the server exist before the provider, so a locked start
+            // can bind the socket and take vault.unlock; the pre-provider verbs register and the
+            // locked wait runs inside (see servePreProviderIpc). Token rotation stays behind the lock acquisition.
+            val pre =
+                servePreProviderIpc(
+                    ipcTokenDir, profileName, socketPath, profileMode, vault,
+                    PreProviderHooks({ ipcServer = it }, { statusHandler }, { startedAtMs }, { startedAtMs = it }, { close() }),
+                )
+            val server = pre.server
+            val serveScope = pre.serveScope
+            val hydrationLink = pre.hydrationLink
+            var transferHistory = pre.transferHistory
+            var historyRpc = pre.historyRpc
+
+
             // 4. Authenticate. NO socket is bound until this succeeds.
             // The trash namespace is read-only: this wrapper is the last line of that rule, whichever part of the
             // engine starts a write (the same namespace is handed to the engine, whose guard and planner ask it too).
@@ -306,42 +338,10 @@ class DaemonRuntime(
                 throw e
             }
 
-            // New IPC tokens for this start, written before the socket exists (only the lock holder
-            // gets here, so a refused second start never rotates a running daemon's tokens). A refusal
-            // has printed its one line; start() rethrows it and `daemon run` exits 78.
-            val ipcAuth = IpcAuth.issueOrReport(ipcTokenDir, profileName, BuildInfo.versionString())
-
-            Files.createDirectories(socketPath.parent)
-            val server = IpcServer(socketPath, auth = ipcAuth)
-            ipcServer = server
-
-            // Use supervisorScope-with-explicit-cancel so the SERVE block returns
-            // promptly on close(). A plain coroutineScope would wait for the
-            // hydration.events.collect launch (infinite flow) and any handler
-            // children spawned by IpcServer/HydrationIpcHandler to complete —
-            // they don't. Solution: launch the long-lived children under a
-            // dedicated SupervisorJob that we cancel before the scope exits.
-            // The scope inherits the daemon's logContext from start() (gkrost/unidrive-cli#225).
-            val serveJob = kotlinx.coroutines.SupervisorJob()
-            val serveScope = serveScopeOf(kotlin.coroutines.coroutineContext, serveJob)
             // A profile signed in before ids were kept has no account_id (AccountOwner): one identity call with the
             // credentials this start just authenticated with records it. Off the start's path and bounded: a failed or slow
             // call logs one line, the daemon serves either way and the next start tries again.
             serveScope.launch { AccountOwner.recordIfMissing(ipcTokenDir, cloud) }
-            // The engine's two hooks into the hydration layer (see HydrationLink). Declared outside the
-            // try below: its finally joins the hydration uploads through it.
-            val hydrationLink = HydrationLink()
-            // archive#652: opened with the mount's hydration layer, closed (flushed) after its uploads have been joined.
-            var transferHistory: TransferHistory? = null
-            var historyRpc: HistoryRpcHandler? = null
-            // Coroutine-debug probes (archive#613 ask 1): with UNIDRIVE_COROUTINE_DEBUG=1 the
-            // daemon captures suspension stacks at start and dumps every live coroutine when a
-            // coroutine-dump.trigger file appears in the profile folder — a hung upload becomes one
-            // stack trace instead of a silent wait. Off by default; see CoroutineDebug.
-            if (CoroutineDebug.enabled()) {
-                CoroutineDebug.install()
-                CoroutineDebug.watchForDumpRequests(ipcTokenDir, serveScope)
-            }
             try {
                 // cacheKey = profileName keeps the daemon's hydration cache
                 // subtree per-account and consistent with MountCommand's
@@ -727,7 +727,8 @@ class DaemonRuntime(
                 // hosting contract before it sends a verb the profile refuses (additive, read-only). Fixed for the run, so
                 // rendered once here, not at every status request (gkrost/unidrive-cli#442).
                 val modeJson = ndjsonString(profileMode.wireName)
-                val capabilitiesJson = daemonCapabilitiesJson(profileMode, hydration != null, engine.uploadIgnore != null, viewNamespaces, shareCapable)
+                val capabilitiesJson =
+                    daemonCapabilitiesJson(profileMode, hydration != null, engine.uploadIgnore != null, viewNamespaces, shareCapable, vaultUnlockable = vault != null)
 
                 // daemon.status verb (spec §4.3). protocol_version is the
                 // additive cross-repo handshake field (IPC_PROTOCOL_VERSION):
@@ -740,7 +741,11 @@ class DaemonRuntime(
                 // the remote enumeration (additive, object always present). Before a
                 // connection authenticates, IpcAuth answers daemon.status itself with
                 // the minimal reply; this handler serves authenticated connections.
-                server.registerHandler("daemon.status") { _, _ ->
+                // issue#796: the handler was registered before the provider (the locked start's
+                // delegating registration); the tail swaps the full renderer in. It keeps a `locked`
+                // member while the vault data is unavailable — a start still waiting is past this
+                // line only after its unlock, but vault.lock on the running daemon returns here.
+                statusHandler = {
                     val uptimeMs = System.currentTimeMillis() - startedAtMs
                     val clientCount = server.clientCount
                     val refreshInFlight = refreshHandler.isInFlight()
@@ -886,6 +891,9 @@ class DaemonRuntime(
                         .put("remote_incomplete", mount.remoteIncompleteCount().takeIf { it > 0 }?.let { remoteIncompleteJson(it).toString() })
                         // paused (archive#778): present only while the daemon is paused; uploads and quota above keep reporting.
                         .put("paused", pause.current?.toJson()?.toString())
+                        // locked (issue#796): present only while the vault data is unavailable — the
+                        // paused dependents of a vault.lock, or a start that never got here.
+                        .put("locked", if (vault?.gate?.locked == true) "true" else null)
                         // archive#578: the effective part parallelism of the provider's multipart uploads
                         // (null when it does not upload in parts). Additive, read-only.
                         .put("upload_concurrency", provider.multipartUploadConcurrency()?.let { kotlinx.serialization.json.JsonPrimitive(it).toString() } ?: "null")
@@ -917,6 +925,10 @@ class DaemonRuntime(
                     }
                 server.registerHandler("daemon.pause") { _, json -> pauseHandler.pause(json) }
                 server.registerHandler("daemon.resume") { _, _ -> pauseHandler.resume() }
+                // issue#796: vault.lock pauses the dependents through the same gate (reason
+                // vault_locked, an event to the same subscribers), vault.unlock resumes them.
+                pre.vaultRpc.onLocked = { pauseHandler.pauseForVaultLock() }
+                pre.vaultRpc.onResumed = { pauseHandler.resumeForVaultUnlock() }
 
                 // auth.logout (§4.10): sign the account out while the daemon keeps running — the daemon is the
                 // profile-lock holder, so the credential removal is its job (the CLI hands it over over IPC).
@@ -977,17 +989,6 @@ class DaemonRuntime(
                 val metricsHandler = MetricsRpcHandler(requestMetrics)
                 server.registerHandler("metrics.query") { _, json -> metricsHandler.query(json) }
 
-                // daemon.shutdown verb: graceful stop over IPC, signal-free and identical on every
-                // OS (Windows has no SIGTERM; Process.destroy() there is TerminateProcess, which
-                // skips the shutdown path entirely). Acks first, then runs the same path as a
-                // clean exit: the serve scope is cancelled, then cleanup() closes the IPC server,
-                // the state database and the process lock. The ack means "accepted"; completion
-                // is observable as the connection closing and, finally, the process exiting.
-                server.registerHandler("daemon.shutdown") { connId, _ ->
-                    server.scheduleAfterReply(connId) { close() }
-                    """{"ok":true}"""
-                }
-
                 // Bind LAST, after every handler above is registered. The socket
                 // file appearing is what clients poll for before sending their
                 // first verb — starting the server any earlier opens a window in
@@ -995,8 +996,10 @@ class DaemonRuntime(
                 // handler"), hanging the client that sent it. With the bind here,
                 // a connect that succeeds is guaranteed a reply for every
                 // documented verb; authentication, engine construction and handler
-                // registration all complete before the socket exists.
-                server.start(serveScope)
+                // registration all complete before the socket exists. (A locked
+                // start bound earlier to take vault.unlock — issue#796; the verbs
+                // it serves while waiting are the pre-registered set.)
+                if (!pre.socketBoundEarly) server.start(serveScope)
                 startedAtMs = System.currentTimeMillis()
 
                 System.err.println(
@@ -1010,7 +1013,7 @@ class DaemonRuntime(
                 // workers have their own scope, so join them explicitly before cleanup closes state.db.
                 server.close()
                 ipcServer = null
-                serveJob.cancelAndJoin()
+                pre.serveJob.cancelAndJoin()
                 try {
                     hydrationLink.hydration?.shutdownUploads(uploadDrainMs)
                 } finally {
@@ -1237,7 +1240,7 @@ class DaemonRuntime(
         // verb, capability or field), so a client orders engine builds by what they answer; protocol_version moves only
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
         // of each level and fails when the surface changes without a raise.
-        const val IPC_CONTRACT_LEVEL: Int = 5
+        const val IPC_CONTRACT_LEVEL: Int = 6
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a

@@ -5,6 +5,7 @@ import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.sync.escapeTomlValue
 import picocli.CommandLine.Command
+import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
 import java.nio.file.Files
 
@@ -35,6 +36,17 @@ class VaultInitCommand : Runnable {
     @ParentCommand
     lateinit var vaultCmd: VaultCommand
 
+    // issue#796: a client can set up the vault without a console (issue#796); the
+    // passphrase is never an argument.
+    @Option(
+        names = ["--passphrase-stdin"],
+        description = [
+            "Read the new vault passphrase from the first line of standard input instead of the " +
+                "terminal (no confirmation line; no interactive terminal required)",
+        ],
+    )
+    var passphraseStdin: Boolean = false
+
     override fun run() {
         val vault = Vault(vaultCmd.parent.configBaseDir().resolve("vault.enc"))
         if (vault.exists()) {
@@ -42,19 +54,30 @@ class VaultInitCommand : Runnable {
             System.exit(1)
         }
 
-        val console = System.console()
-        if (console == null) {
-            System.err.println("Error: interactive terminal required.")
-            System.exit(1)
-        }
+        val pass1 =
+            if (passphraseStdin) {
+                readPassphraseStdin("--passphrase-stdin")
+            } else {
+                val console = System.console()
+                if (console == null) {
+                    System.err.println("Error: interactive terminal required.")
+                    System.exit(1)
+                }
+                val pass = console.readPassword("New vault passphrase (min ${Vault.MIN_PASSPHRASE_LENGTH} chars): ") ?: run {
+                    System.err.println("Error: could not read passphrase.")
+                    kotlin.system.exitProcess(1)
+                }
+                val confirmed = console.readPassword("Confirm passphrase: ") ?: run {
+                    System.err.println("Error: could not read passphrase.")
+                    kotlin.system.exitProcess(1)
+                }
+                if (!pass.contentEquals(confirmed)) {
+                    System.err.println("Passphrases do not match.")
+                    System.exit(1)
+                }
+                pass
+            }
 
-        val pass1 = console.readPassword("New vault passphrase (min ${Vault.MIN_PASSPHRASE_LENGTH} chars): ")
-        val pass2 = console.readPassword("Confirm passphrase: ")
-
-        if (!pass1.contentEquals(pass2)) {
-            System.err.println("Passphrases do not match.")
-            System.exit(1)
-        }
         if (pass1.size < Vault.MIN_PASSPHRASE_LENGTH) {
             System.err.println("Passphrase must be at least ${Vault.MIN_PASSPHRASE_LENGTH} characters.")
             System.exit(1)
@@ -72,6 +95,16 @@ class VaultEncryptCommand : Runnable {
     @ParentCommand
     lateinit var vaultCmd: VaultCommand
 
+    // issue#796: the passphrase from standard input instead of the terminal; never an argument.
+    @Option(
+        names = ["--passphrase-stdin"],
+        description = [
+            "Read the vault passphrase from the first line of standard input instead of the " +
+                "terminal (no interactive terminal required)",
+        ],
+    )
+    var passphraseStdin: Boolean = false
+
     override fun run() {
         val baseDir = vaultCmd.parent.configBaseDir()
         val vault = Vault(baseDir.resolve("vault.enc"))
@@ -80,7 +113,8 @@ class VaultEncryptCommand : Runnable {
             System.exit(1)
         }
 
-        val passphrase = readPassphrase("Vault passphrase: ")
+        val passphrase =
+            if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
 
         val configPath = baseDir.resolve("config.toml")
         ConfigFileTransaction.withLock(configPath) {
@@ -139,8 +173,8 @@ class VaultEncryptCommand : Runnable {
     }
 }
 
-/** The named sensitive field of a parsed provider profile, for the post-filter plaintext check. */
-private fun rawProviderSecret(
+/** The named sensitive field of a parsed provider profile; the vault filter's post-check reads it, and so does the locked-start check (issue#796). */
+internal fun rawProviderSecret(
     profile: org.krost.unidrive.sync.RawProvider?,
     key: String,
 ): String? =
@@ -298,6 +332,26 @@ class VaultChangePassphraseCommand : Runnable {
     @ParentCommand
     lateinit var vaultCmd: VaultCommand
 
+    // issue#796: a client can re-key the vault without a console (issue#796); the
+    // passphrases are never arguments.
+    @Option(
+        names = ["--passphrase-stdin"],
+        description = [
+            "Read the current vault passphrase from the first line of standard input instead of " +
+                "the terminal (no interactive terminal required)",
+        ],
+    )
+    var passphraseStdin: Boolean = false
+
+    @Option(
+        names = ["--new-passphrase-stdin"],
+        description = [
+            "Read the new vault passphrase from the first line of standard input instead of the " +
+                "terminal (no confirmation line; no interactive terminal required)",
+        ],
+    )
+    var newPassphraseStdin: Boolean = false
+
     override fun run() {
         val vault = Vault(vaultCmd.parent.configBaseDir().resolve("vault.enc"))
         if (!vault.exists()) {
@@ -305,22 +359,34 @@ class VaultChangePassphraseCommand : Runnable {
             System.exit(1)
         }
 
-        val console = System.console()
-        if (console == null) {
-            System.err.println("Error: interactive terminal required.")
-            System.exit(1)
-        }
-
-        val oldPass = console.readPassword("Current passphrase: ")
+        val oldPass =
+            if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Current passphrase: ")
         val data = vault.read(oldPass)
 
-        val newPass1 = console.readPassword("New passphrase (min ${Vault.MIN_PASSPHRASE_LENGTH} chars): ")
-        val newPass2 = console.readPassword("Confirm new passphrase: ")
+        val newPass1 =
+            if (newPassphraseStdin) {
+                readPassphraseStdin("--new-passphrase-stdin")
+            } else {
+                val console = System.console()
+                if (console == null) {
+                    System.err.println("Error: interactive terminal required.")
+                    System.exit(1)
+                }
+                val pass = console.readPassword("New passphrase (min ${Vault.MIN_PASSPHRASE_LENGTH} chars): ") ?: run {
+                    System.err.println("Error: could not read passphrase.")
+                    kotlin.system.exitProcess(1)
+                }
+                val confirmed = console.readPassword("Confirm new passphrase: ") ?: run {
+                    System.err.println("Error: could not read passphrase.")
+                    kotlin.system.exitProcess(1)
+                }
+                if (!pass.contentEquals(confirmed)) {
+                    System.err.println("Passphrases do not match.")
+                    System.exit(1)
+                }
+                pass
+            }
 
-        if (!newPass1.contentEquals(newPass2)) {
-            System.err.println("Passphrases do not match.")
-            System.exit(1)
-        }
         if (newPass1.size < Vault.MIN_PASSPHRASE_LENGTH) {
             System.err.println("Passphrase must be at least ${Vault.MIN_PASSPHRASE_LENGTH} characters.")
             System.exit(1)
@@ -331,7 +397,7 @@ class VaultChangePassphraseCommand : Runnable {
     }
 }
 
-// ── Shared helper ────────────────────────────────────────────────────────────
+// ── Shared helpers ───────────────────────────────────────────────────────────
 
 private fun readPassphrase(prompt: String): CharArray {
     val console = System.console()
@@ -341,7 +407,26 @@ private fun readPassphrase(prompt: String): CharArray {
     }
     return console!!.readPassword(prompt) ?: run {
         System.err.println("Error: could not read passphrase.")
-        System.exit(1)
-        throw IllegalStateException("unreachable")
+        kotlin.system.exitProcess(1)
     }
+}
+
+/**
+ * The first line of standard input, read byte by byte so nothing past the line terminator is
+ * consumed (the same shape `auth login --password-stdin` reads). Empty input is a refusal naming
+ * the flag, never a blank passphrase.
+ */
+private fun readPassphraseStdin(flag: String): CharArray {
+    val bytes = java.io.ByteArrayOutputStream()
+    while (true) {
+        val b = System.`in`.read()
+        if (b < 0 || b == '\n'.code) break
+        bytes.write(b)
+    }
+    val line = bytes.toString(Charsets.UTF_8).removeSuffix("\r")
+    if (line.isEmpty()) {
+        System.err.println("Error: $flag was given but standard input held no passphrase.")
+        kotlin.system.exitProcess(1)
+    }
+    return line.toCharArray()
 }
