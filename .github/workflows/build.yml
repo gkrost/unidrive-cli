@@ -110,10 +110,10 @@ jobs:
       pull-requests: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
-      full: ${{ steps.filter.outputs.full }}
-      runtime_image: ${{ steps.filter.outputs.runtime_image }}
-      s3: ${{ steps.filter.outputs.s3 }}
-      ignore_oracle: ${{ steps.filter.outputs.ignore_oracle }}
+      full: ${{ steps.secondary.outputs.full }}
+      runtime_image: ${{ steps.secondary.outputs.runtime_image }}
+      s3: ${{ steps.secondary.outputs.s3 }}
+      ignore_oracle: ${{ steps.secondary.outputs.ignore_oracle }}
     steps:
       - id: filter
         env:
@@ -167,6 +167,26 @@ jobs:
           else
             echo full=false >> "$GITHUB_OUTPUT"
             echo "check-windows and check-runtime-jdk skipped (main runs them; label ci:full or a manual run brings them to a PR)."
+          fi
+
+      # The switch of the secondary checks (a temporary measure, no end date): the repository variable SECONDARY_CHECKS
+      # set to `off` skips check-windows, check-runtime-jdk, runtime-image, s3-minio and ignore-oracle on every event, pushes
+      # to main and the ci:full label included. The two required checks (`check`, `windows-security`) and the advisory scanners
+      # (gitleaks, semgrep, detekt, CodeQL) are not touched by it. Set it: `gh variable set SECONDARY_CHECKS --body off`;
+      # switch back: `gh variable delete SECONDARY_CHECKS` (or any other value). Unset, nothing changes.
+      - id: secondary
+        env:
+          SWITCH: ${{ vars.SECONDARY_CHECKS }}
+          FULL: ${{ steps.filter.outputs.full }}
+          RUNTIME_IMAGE: ${{ steps.filter.outputs.runtime_image }}
+          S3: ${{ steps.filter.outputs.s3 }}
+          IGNORE_ORACLE: ${{ steps.filter.outputs.ignore_oracle }}
+        run: |
+          if [ "$SWITCH" = off ]; then
+            printf 'full=false\nruntime_image=false\ns3=false\nignore_oracle=false\n' >> "$GITHUB_OUTPUT"
+            echo "SECONDARY_CHECKS=off: check-windows, check-runtime-jdk, runtime-image, s3-minio and ignore-oracle are skipped."
+          else
+            printf 'full=%s\nruntime_image=%s\ns3=%s\nignore_oracle=%s\n' "$FULL" "$RUNTIME_IMAGE" "$S3" "$IGNORE_ORACLE" >> "$GITHUB_OUTPUT"
           fi
 
   check:
