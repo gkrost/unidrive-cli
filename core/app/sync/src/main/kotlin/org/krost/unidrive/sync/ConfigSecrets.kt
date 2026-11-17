@@ -148,17 +148,21 @@ object ConfigSecrets {
     )
 
     /**
-     * The header and key shapes are the tolerant ones ktoml accepts (the filterVaultedLines contract):
-     * inner and trailing whitespace in the header, a trailing comment, spacing around the `=`. The value
-     * is a one-line basic string with TOML escapes intact.
+     * The header shape is the tolerant one ktoml accepts (the filterVaultedLines contract): inner and trailing
+     * whitespace in the header, a trailing comment. A sensitive key may be bare or quoted (either quoting), and
+     * the value a one-line basic or literal string; the spelling after the `=` decides which, and a spelling
+     * neither matches (a multiline string) is not rewritten — the completeness check then refuses it.
      */
     private val headerPattern = Regex("""^\s*\[([^\]]+)]\s*(?:#.*)?$""")
 
-    private val fieldPatterns: Map<String, Regex> =
-        SENSITIVE_FIELDS.associateWith { field ->
-            // One capture group: the raw body between the quotes (TOML escapes intact).
-            Regex("""^\s*${Regex.escape(field)}\s*=\s*"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$""")
-        }
+    /** One setter line per sensitive field: the key spelling (captured) and everything after the `=`. */
+    private val sensitiveSetter =
+        SENSITIVE_FIELDS.joinToString("|") { field -> """"${Regex.escape(field)}"|'${Regex.escape(field)}'|${Regex.escape(field)}""" }
+            .let { Regex("""^\s*((?:$it))\s*=\s*(.*)$""") }
+
+    private val basicStringValue = Regex("""^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$""")
+
+    private val literalStringValue = Regex("""^'([^']*)'\s*(?:#.*)?$""")
 
     private fun protect(
         text: String,
@@ -167,17 +171,72 @@ object ConfigSecrets {
     ): Protected? {
         if (protector == null) return null
         val id = identity(configPath)
+        // The parsed config is the source of truth for what a secret IS (issue#786): what the parser reads — any
+        // key quoting, literal strings, the full escape grammar, even spellings spread over shapes the rewrite
+        // below does not carry — is what must end up protected, and the baseline it must round-trip to. A text
+        // the parser rejects falls back to the line shapes alone, best effort as before.
+        val parsedFields = runCatching { parsedSensitiveFields(SyncConfig.parseRaw(text)) }.getOrNull()
         var section: String? = null
         val rewritten = mutableListOf<Triple<String, String, String>>()
         val out = text.split("\n").map { line ->
             headerPattern.matchEntire(line)?.groupValues?.get(1)?.trim()?.let { section = it }
             val profileName = section?.takeIf { it.startsWith("providers.") }?.substringAfter("providers.")?.substringBefore('.')
             if (profileName == null) return@map line
-            val replaced = rewriteLine(line, profileName, id, protector, rewritten)
+            val replaced = rewriteLine(line, profileName, id, protector, parsedFields?.get(profileName), rewritten)
             replaced ?: line
         }
+        // The completeness check runs even when nothing was rewritten: a config whose only plaintext secret
+        // sits in a spelling the rewrite cannot carry must refuse, not pass as a no-op with nothing to do.
+        val candidate = if (rewritten.isEmpty()) text else out.joinToString("\n")
+        if (parsedFields != null) requireCompleteProtection(candidate, parsedFields, id, protector)
         if (rewritten.isEmpty()) return null
-        return Protected(out.joinToString("\n"), rewritten)
+        return Protected(candidate, rewritten)
+    }
+
+    /** The non-empty sensitive fields of every provider, as the parser read them: profile → (field → value). */
+    private fun parsedSensitiveFields(config: RawSyncConfig): Map<String, Map<String, String>> =
+        config.providers.entries.associate { (name, rp) ->
+            val fields =
+                rp?.let { provider ->
+                    SENSITIVE_FIELDS.mapNotNull { field ->
+                        fieldOf(provider, field)?.takeIf { it.isNotEmpty() }?.let { field to it }
+                    }
+                }.orEmpty().toMap()
+            name to fields
+        }
+
+    /**
+     * Nothing passes as protected while a parsed secret is not (issue#786; migrateText's round-trip backstop,
+     * made complete over every field the parser read): the candidate is re-parsed, and each sensitive field the
+     * original held must either decode, as this protector's own reference, to the value the parser read — or be
+     * exactly what it was, when it was already a value this protector cannot decode (left for the read path to
+     * report). A spelling the rewrite cannot carry (a multiline string) refuses here, naming profile and field,
+     * never the value.
+     */
+    private fun requireCompleteProtection(
+        candidateText: String,
+        parsedFields: Map<String, Map<String, String>>,
+        id: String,
+        protector: CredentialProtector,
+    ) {
+        val candidate = SyncConfig.parseRaw(candidateText)
+        for ((profileName, fields) in parsedFields) {
+            for ((field, original) in fields) {
+                val now = candidate.providers[profileName]?.let { fieldOf(it, field) }
+                val existing = runCatching { protector.decode(id, original) }.getOrNull()
+                val decodes = runCatching { protector.decode(id, now ?: "") }.getOrNull()
+                val ok =
+                    when {
+                        existing == null -> now == original // not this protector's to touch; it must be untouched
+                        existing.protected -> decodes?.protected == true && decodes.plaintext == existing.plaintext
+                        else -> decodes?.protected == true && decodes.plaintext == original
+                    }
+                require(ok) {
+                    "the $field of profile '$profileName' is a plaintext spelling this protection cannot rewrite; " +
+                        "refusing to leave it unprotected (nothing was written)"
+                }
+            }
+        }
     }
 
     /** The line with the first plaintext sensitive field replaced, appended to [rewritten]; null to keep [line]. */
@@ -186,29 +245,34 @@ object ConfigSecrets {
         profileName: String,
         id: String,
         protector: CredentialProtector,
+        parsed: Map<String, String>?,
         rewritten: MutableList<Triple<String, String, String>>,
     ): String? {
         val lead = line.substringBefore(line.trimStart())
         val trimmed = line.trimStart()
-        for ((field, pattern) in fieldPatterns) {
-            val m = pattern.matchEntire(trimmed) ?: continue
-            val raw = m.groupValues[1]
-            if (raw.isEmpty()) return null
-            val plain = unescapeTomlValue(raw)
-            val data =
-                try {
-                    protector.decode(id, plain)
-                } catch (_: CredentialProtectionException) {
-                    // Already protected, but undecodable on this host/identity: leave the value for the
-                    // read path to report; rewriting it would throw away the only copy.
-                    return null
-                }
-            if (data.protected) return null
-            val reference = protector.protect(id, plain)
-            rewritten += Triple(profileName, field, plain)
-            return "$lead$field = \"${escapeTomlValue(reference)}\""
-        }
-        return null
+        val setter = sensitiveSetter.matchEntire(trimmed) ?: return null
+        val basic = basicStringValue.matchEntire(setter.groupValues[2])
+        val literal = if (basic == null) literalStringValue.matchEntire(setter.groupValues[2]) else null
+        if (basic == null && literal == null) return null
+        val field = setter.groupValues[1].trim('"', '\'')
+        // The parser's value is the truth; the spelling is only where the bytes are. Without a parse (a text the
+        // parser rejected) the spelling is the best available: a literal body is raw, a basic body carries escapes.
+        val plain =
+            parsed?.get(field)
+                ?: (literal?.groupValues?.get(1) ?: unescapeTomlValue(basic!!.groupValues[1]))
+        if (plain.isEmpty()) return null
+        val data =
+            try {
+                protector.decode(id, plain)
+            } catch (_: CredentialProtectionException) {
+                // Already protected, but undecodable on this host/identity: leave the value for the
+                // read path to report; rewriting it would throw away the only copy.
+                return null
+            }
+        if (data.protected) return null
+        val reference = protector.protect(id, plain)
+        rewritten += Triple(profileName, field, plain)
+        return "$lead$field = \"${escapeTomlValue(reference)}\""
     }
 
     private fun fieldOf(
@@ -244,12 +308,13 @@ object ConfigSecrets {
                     't' -> append('\t')
                     'b' -> append('\b')
                     'f' -> append('\u000C')
-                    'u' -> {
-                        val hex = raw.substring(i + 2, (i + 6).coerceAtMost(raw.length))
+                    'u', 'U' -> {
+                        val width = if (esc == 'u') 4 else 8
+                        val hex = raw.substring(i + 2, (i + 2 + width).coerceAtMost(raw.length))
                         val code = hex.toIntOrNull(16)
-                        if (hex.length == 4 && code != null) {
-                            append(code.toChar())
-                            i += 6
+                        if (hex.length == width && code != null && code <= 0x10FFFF) {
+                            appendCodePoint(code) // an eight-digit \U spans the supplementary planes: a surrogate pair
+                            i += 2 + width
                             continue
                         }
                         append(c).append(esc)
