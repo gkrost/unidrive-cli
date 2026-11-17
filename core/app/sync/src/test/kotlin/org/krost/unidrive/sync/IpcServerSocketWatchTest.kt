@@ -52,19 +52,24 @@ class IpcServerSocketWatchTest {
             SocketChannel.open(StandardProtocolFamily.UNIX).use { c ->
                 c.connect(UnixDomainSocketAddress.of(socket))
                 c.write(ByteBuffer.wrap("""{"verb":"no.such.verb"}""".toByteArray() + '\n'.code.toByte()))
-                val buf = ByteBuffer.allocate(4096)
-                val deadline = System.currentTimeMillis() + 3_000
-                var n = 0
-                while (n <= 0 && System.currentTimeMillis() < deadline) {
-                    c.configureBlocking(false)
-                    n = c.read(buf)
-                    if (n == 0) Thread.sleep(20)
-                }
-                n > 0
+                readSomeBytes(c) > 0
             }
         } catch (_: java.io.IOException) {
             false
         }
+
+    // The bytes the server sends back, waiting up to 3 s for the first of them.
+    private fun readSomeBytes(c: SocketChannel): Int {
+        c.configureBlocking(false)
+        val buf = ByteBuffer.allocate(4096)
+        val deadline = System.currentTimeMillis() + 3_000
+        var n = c.read(buf)
+        while (n == 0 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20)
+            n = c.read(buf)
+        }
+        return n
+    }
 
     private suspend fun await(
         timeoutMs: Long = 10_000,
@@ -84,7 +89,7 @@ class IpcServerSocketWatchTest {
             val scope = CoroutineScope(coroutineContext + SupervisorJob())
             try {
                 val socket = base.resolve("d.sock")
-                server = IpcServer(socket, socketWatchIntervalMs = 50).also { it.start(scope) }
+                server = IpcServer(socket).also { it.socketWatchIntervalMs = 50; it.start(scope) }
                 assertTrue(canConnect(socket), "the daemon answers before the cleanup")
 
                 Files.delete(socket) // what a temp cleanup does to a live daemon
@@ -105,7 +110,7 @@ class IpcServerSocketWatchTest {
             try {
                 val folder = Files.createDirectory(base.resolve("ipc"))
                 val socket = folder.resolve("d.sock")
-                server = IpcServer(socket, socketWatchIntervalMs = 50).also { it.start(scope) }
+                server = IpcServer(socket).also { it.socketWatchIntervalMs = 50; it.start(scope) }
                 assertTrue(canConnect(socket))
 
                 Files.delete(socket)
@@ -124,7 +129,7 @@ class IpcServerSocketWatchTest {
             val scope = CoroutineScope(coroutineContext + SupervisorJob())
             try {
                 val socket = base.resolve("d.sock")
-                server = IpcServer(socket, socketWatchIntervalMs = 20).also { it.start(scope) }
+                server = IpcServer(socket).also { it.socketWatchIntervalMs = 20; it.start(scope) }
 
                 delay(400) // many rounds of the watcher
 
@@ -141,7 +146,7 @@ class IpcServerSocketWatchTest {
             val scope = CoroutineScope(coroutineContext + SupervisorJob())
             try {
                 val socket = base.resolve("d.sock")
-                server = IpcServer(socket, socketWatchIntervalMs = 0).also { it.start(scope) }
+                server = IpcServer(socket).also { it.socketWatchIntervalMs = 0; it.start(scope) }
                 Files.delete(socket)
 
                 delay(300)
@@ -159,7 +164,7 @@ class IpcServerSocketWatchTest {
             val scope = CoroutineScope(coroutineContext + SupervisorJob())
             try {
                 val socket = base.resolve("d.sock")
-                val s = IpcServer(socket, socketWatchIntervalMs = 20).also { it.start(scope) }
+                val s = IpcServer(socket).also { it.socketWatchIntervalMs = 20; it.start(scope) }
                 server = s
                 s.close()
                 assertFalse(Files.exists(socket), "close removes the socket it bound")

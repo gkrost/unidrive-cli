@@ -43,12 +43,13 @@ class IpcServer(
     // How long a refused connection is kept open for its peer's request (see refuse); a test widens it so that a slow
     // runner cannot make the peer's request arrive after the server stopped waiting for it.
     private val refusalLingerMs: Long = REFUSAL_LINGER_MS,
-    // How often the server checks that its socket file is still there and binds it again when it is not (0 = never); see
-    // IpcSocketWatcher (gkrost/unidrive-cli#794).
-    private val socketWatchIntervalMs: Long = SOCKET_WATCH_INTERVAL_MS,
 ) {
     // How long close() waits for the server's own transport threads to finish before it interrupts them (#531).
     internal var transportShutdownWaitMs: Long = TRANSPORT_SHUTDOWN_WAIT_MS
+
+    // How often start()'s IpcSocketWatcher checks that the socket file is still there and binds it again (0 = never,
+    // gkrost/unidrive-cli#794). Not a constructor parameter: the tests set it before start(), like the wait above.
+    internal var socketWatchIntervalMs: Long = SOCKET_WATCH_INTERVAL_MS
 
     // Captured at construction so a later companion-object change can't accidentally
     // re-read the env var mid-flight. Multiply once into nanos so writeNonBlocking
@@ -510,7 +511,7 @@ class IpcServer(
         // second close() cannot delete a successor's socket.
         if (ownsSocketFiles) {
             ownsSocketFiles = false
-            IpcSocketPaths.deleteSocketFiles(socketPath)
+            IpcSocketFiles.deleteSocketFiles(socketPath)
         }
         ownedTransport?.let { es ->
             es.shutdown()
@@ -1120,8 +1121,8 @@ class IpcServer(
         internal fun canonicalDiskName(profileName: String, socketDirectory: Path): String =
             IpcSocketPaths.canonicalDiskName(profileName, socketDirectory)
 
-        /** Removes the socket file and its `.meta` sibling of a daemon that is gone (archive#419): see [IpcSocketPaths.removeStaleSocketFiles]. */
-        fun removeStaleSocketFiles(socketPath: Path) = IpcSocketPaths.removeStaleSocketFiles(socketPath)
+        /** Removes the socket file and its `.meta` sibling of a daemon that is gone (archive#419): see [IpcSocketFiles.removeStaleSocketFiles]. */
+        fun removeStaleSocketFiles(socketPath: Path) = IpcSocketFiles.removeStaleSocketFiles(socketPath)
 
         fun defaultSocketPath(profileName: String): Path = IpcSocketPaths.defaultSocketPath(profileName)
 

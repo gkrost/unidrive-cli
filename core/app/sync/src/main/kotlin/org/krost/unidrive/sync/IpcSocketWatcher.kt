@@ -1,11 +1,11 @@
 package org.krost.unidrive.sync
 
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import org.krost.unidrive.io.OwnerOnly
 import org.slf4j.LoggerFactory
+import java.io.IOException
 import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
 import java.nio.channels.ServerSocketChannel
@@ -36,7 +36,7 @@ internal class IpcSocketWatcher(
         private set
 
     // The profile name a hashed socket's sidecar holds, kept to write it again with the file.
-    private val meta: String? = runCatching { Files.readString(IpcSocketPaths.metaPathFor(socketPath)) }.getOrNull()
+    private val meta: String? = runCatching { Files.readString(IpcSocketFiles.metaPathFor(socketPath)) }.getOrNull()
 
     suspend fun run() {
         var reported = false
@@ -52,18 +52,24 @@ internal class IpcSocketWatcher(
             if (!reported) {
                 log.warn("IPC: the socket file {} is gone (a cleanup of its folder?); no client can connect until it is bound again", socketPath)
             }
-            try {
-                if (rebind()) {
-                    rebinds++
-                    log.info("IPC: bound the socket file {} again (rebind #{}); open connections were not touched", socketPath, rebinds)
-                    reported = false
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (!reported) log.error("IPC: could not bind the socket file {} again: {}; trying again every {} ms", socketPath, e.toString(), intervalMs)
-                reported = true
+            val failure = rebindOrFailure() ?: continue
+            if (!reported) log.error("IPC: could not bind the socket file {} again: {}; trying again every {} ms", socketPath, failure.toString(), intervalMs)
+            reported = true
+        }
+    }
+
+    /** One attempt: null when it bound the file again or the server was closed first, else what went wrong (an I/O problem, or a folder it refuses to use). */
+    private fun rebindOrFailure(): Exception? {
+        try {
+            if (rebind()) {
+                rebinds++
+                log.info("IPC: bound the socket file {} again (rebind #{}); open connections were not touched", socketPath, rebinds)
             }
+            return null
+        } catch (e: IOException) {
+            return e
+        } catch (e: IllegalStateException) {
+            return e
         }
     }
 
@@ -71,18 +77,17 @@ internal class IpcSocketWatcher(
     private fun rebind(): Boolean {
         IpcSocketPaths.restoreSocketDirectory(socketPath)
         val next = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+        var installed = false
         try {
             next.bind(UnixDomainSocketAddress.of(socketPath))
             val restricted = OwnerOnly.restrictFile(socketPath)
             if (!restricted.restricted) log.warn("IPC: could not restrict the permissions of {}: {}", socketPath, restricted)
-            meta?.let { runCatching { Files.writeString(IpcSocketPaths.metaPathFor(socketPath), it) } }
-        } catch (e: Exception) {
-            runCatching { next.close() }
-            throw e
+            meta?.let { runCatching { Files.writeString(IpcSocketFiles.metaPathFor(socketPath), it) } }
+            installed = install(next)
+        } finally {
+            if (!installed) runCatching { next.close() } // not bound, or the server was closed first: nothing keeps the listener
         }
-        if (install(next)) return true
-        runCatching { next.close() }
-        IpcSocketPaths.deleteSocketFiles(socketPath)
-        return false
+        if (!installed) IpcSocketFiles.deleteSocketFiles(socketPath) // closed first: the file this attempt bound goes with it
+        return installed
     }
 }

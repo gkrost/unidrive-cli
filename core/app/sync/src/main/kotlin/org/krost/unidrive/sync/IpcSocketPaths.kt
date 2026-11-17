@@ -41,45 +41,6 @@ internal object IpcSocketPaths {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(profileName.toByteArray(Charsets.UTF_8)), 0, 4)
     }
 
-    private fun writeMetaFile(
-        socketPath: Path,
-        profileName: String,
-    ) {
-        Files.writeString(metaPathFor(socketPath), "$profileName\n")
-    }
-
-    fun metaPathFor(socketPath: Path): Path = socketPath.resolveSibling("${socketPath.fileName}.meta")
-
-    fun deleteSocketFiles(socketPath: Path) {
-        runCatching { Files.deleteIfExists(socketPath) }
-        runCatching { Files.deleteIfExists(metaPathFor(socketPath)) }
-    }
-
-    /**
-     * archive#419: remove the socket file at [socketPath] and its `.meta` sibling after the
-     * daemon that owned them is gone, ignoring failures. [IpcServer.close] never runs when the
-     * daemon is hard-killed (`daemon stop` on Windows is TerminateProcess, which skips
-     * shutdown hooks), so `daemon stop` calls this once the process has exited. A socket
-     * that still accepts a connection belongs to a live daemon and is left alone —
-     * the same probe the server's start uses.
-     */
-    fun removeStaleSocketFiles(socketPath: Path) {
-        runCatching {
-            if (Files.exists(socketPath)) {
-                try {
-                    SocketChannel.open(UnixDomainSocketAddress.of(socketPath)).close()
-                    return // somebody is listening: not ours to delete
-                } catch (_: ConnectException) {
-                    // Stale socket — nobody listening
-                } catch (_: java.net.SocketException) {
-                    // Stale socket — Windows "Invalid argument"
-                }
-                // Other IOExceptions abort via runCatching — never delete a socket we can't classify
-            }
-            deleteSocketFiles(socketPath)
-        }
-    }
-
     fun defaultSocketPath(profileName: String): Path =
         defaultSocketPath(
             profileName,
@@ -160,8 +121,50 @@ internal object IpcSocketPaths {
         val result = dir.resolve("unidrive-${canonicalDiskName(profileName, nameDir)}.sock")
         // Write .meta file when name was hashed so UI can recover the profile name
         if (result.fileName.toString() != "unidrive-$profileName.sock") {
-            writeMetaFile(result, profileName)
+            IpcSocketFiles.writeMetaFile(result, profileName)
         }
         return result
+    }
+}
+
+/** The socket file and its `.meta` sidecar as files (split from [IpcSocketPaths] for its function count). */
+internal object IpcSocketFiles {
+    fun writeMetaFile(
+        socketPath: Path,
+        profileName: String,
+    ) {
+        Files.writeString(metaPathFor(socketPath), "$profileName\n")
+    }
+
+    fun metaPathFor(socketPath: Path): Path = socketPath.resolveSibling("${socketPath.fileName}.meta")
+
+    fun deleteSocketFiles(socketPath: Path) {
+        runCatching { Files.deleteIfExists(socketPath) }
+        runCatching { Files.deleteIfExists(metaPathFor(socketPath)) }
+    }
+
+    /**
+     * archive#419: remove the socket file at [socketPath] and its `.meta` sibling after the
+     * daemon that owned them is gone, ignoring failures. [IpcServer.close] never runs when the
+     * daemon is hard-killed (`daemon stop` on Windows is TerminateProcess, which skips
+     * shutdown hooks), so `daemon stop` calls this once the process has exited. A socket
+     * that still accepts a connection belongs to a live daemon and is left alone —
+     * the same probe the server's start uses.
+     */
+    fun removeStaleSocketFiles(socketPath: Path) {
+        runCatching {
+            if (Files.exists(socketPath)) {
+                try {
+                    SocketChannel.open(UnixDomainSocketAddress.of(socketPath)).close()
+                    return // somebody is listening: not ours to delete
+                } catch (_: ConnectException) {
+                    // Stale socket — nobody listening
+                } catch (_: java.net.SocketException) {
+                    // Stale socket — Windows "Invalid argument"
+                }
+                // Other IOExceptions abort via runCatching — never delete a socket we can't classify
+            }
+            deleteSocketFiles(socketPath)
+        }
     }
 }
