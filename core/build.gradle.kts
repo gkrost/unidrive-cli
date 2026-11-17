@@ -317,15 +317,17 @@ subprojects {
         // scratch behind and the next run removes it. The base is %TEMP%/udt, or -PunidriveTestTmp=<dir> / the
         // UNIDRIVE_TEST_TMP variable: point it at a RAM disk (R:\udt, /dev/shm/udt) to keep the scratch off the SSD.
         // Not under build/: several tests bind a unix socket in their scratch and the OS limit is 108 characters,
-        // which a worktree path plus a module's build dir exceeds. The names are hashes for the same reason; the
-        // root hash keeps two checkouts running the same task at once (agent sessions) out of each other's dir.
+        // which a worktree path plus a module's build dir exceeds. The scratch dir is ONE short hash of the checkout and
+        // the task (6 hex digits, no nesting): on the Windows runner (a 38-character temp dir) OwnerOnlyTest's socket
+        // already sits at 88 of the 108 characters, so every character here is spent from that margin. The checkout
+        // part keeps two checkouts running the same task at once (agent sessions) out of each other's dir.
         val testTmpBase =
             providers.gradleProperty("unidriveTestTmp").orElse(providers.environmentVariable("UNIDRIVE_TEST_TMP")).orNull
                 ?: java.io.File(System.getProperty("java.io.tmpdir"), "udt").path
         val testTmp =
             java.io.File(
-                java.io.File(java.io.File(testTmpBase), Integer.toHexString(rootDir.absolutePath.hashCode())),
-                Integer.toHexString((project.path + ":" + name).hashCode()),
+                java.io.File(testTmpBase),
+                "%06x".format((rootDir.absolutePath + "|" + project.path + ":" + name).hashCode() and 0xFFFFFF),
             )
         doFirst {
             testTmp.deleteRecursively()
