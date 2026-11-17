@@ -293,7 +293,7 @@ class DaemonStatusCommand : Runnable {
         // we've already printed the file-derived line.
         val socketPath = org.krost.unidrive.sync.IpcServer.defaultSocketPath(profile.name)
         if (!java.nio.file.Files.exists(socketPath)) {
-            System.err.println("daemon socket not found at $socketPath (daemon may be mid-shutdown)")
+            System.err.println(daemonSocketGoneMessage(pid, socketPath))
             return
         }
         try {
@@ -626,6 +626,20 @@ internal fun checkDaemonLock(
             }
         }
     }
+
+/**
+ * gkrost/unidrive-cli#794: what `daemon status` says when the daemon (pid [pid]) runs but its socket file is not there.
+ * Not necessarily a shutdown: a cleanup of the temp folder leaves a healthy daemon unreachable, and the daemon binds the
+ * file again within a few seconds (IpcServer.watchSocketFile), so the first advice is to ask again, the second to restart.
+ */
+internal fun daemonSocketGoneMessage(
+    pid: Long,
+    socketPath: java.nio.file.Path,
+): String =
+    "the daemon (pid $pid) is running but its IPC socket $socketPath is gone: it is shutting down, or something deleted the " +
+        "file (a cleanup of its folder). A running daemon binds it again within " +
+        "${IpcServer.SOCKET_WATCH_INTERVAL_MS / 1000} s: ask again; if it stays gone, restart the daemon " +
+        "(`daemon stop`, then start it; a stop does not need the socket)."
 
 /**
  * Operator-facing message for the case where a `.lock.pid` holder's mode is
