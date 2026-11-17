@@ -94,4 +94,37 @@ class AuditLogTest {
         // Should NOT throw — sync engine must never be blocked by audit-log failures.
         log.emit("Upload", "/x.txt", result = "success")
     }
+
+    // #780: an unwritable audit log used to warn on EVERY emit (a full disk floods the log with one WARN per
+    // event, the flood the failure journal's helper of #778 does not make). One WARN per failure episode of the
+    // day file: the next write errors are silent until a write succeeds again, and the episode after a recovery
+    // is reported afresh.
+    @Test
+    fun `an unwritable audit log warns once per episode, not once per entry`() {
+        dir = createTempDirectory("audit-")
+        val logger = org.slf4j.LoggerFactory.getLogger(AuditLog::class.java) as ch.qos.logback.classic.Logger
+        val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().also { it.start() }
+        logger.addAppender(appender)
+        try {
+            val log = AuditLog(dir, profileName = "p1", clock = { Instant.parse("2026-05-03T19:00:00Z") })
+            val auditFile = dir.resolve("audit-2026-05-03.jsonl")
+
+            Files.createDirectories(auditFile) // a directory where the file belongs
+            repeat(5) { log.emit("Upload", "/x.txt", result = "success") }
+            assertEquals(1, appender.list.size, appender.list.joinToString { it.formattedMessage })
+
+            Files.delete(auditFile) // the log is writable again
+            log.emit("Upload", "/x.txt", result = "success")
+            assertEquals(1, appender.list.size, "the recovery is silent and the file is written")
+            assertEquals(1, Files.readAllLines(auditFile).size)
+
+            Files.delete(auditFile)
+            Files.createDirectories(auditFile) // a new failure after a recovery: a new episode
+            repeat(3) { log.emit("Upload", "/x.txt", result = "success") }
+            assertEquals(2, appender.list.size, appender.list.joinToString { it.formattedMessage })
+        } finally {
+            logger.detachAppender(appender)
+            appender.stop()
+        }
+    }
 }
