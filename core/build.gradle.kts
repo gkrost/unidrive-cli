@@ -311,6 +311,27 @@ subprojects {
         environment("HOME", testHome)
         systemProperty("user.home", testHome)
         systemProperty("unidrive.test.home", testHome)
+        // #790: the tests' scratch (Files.createTempDirectory, ~1,100 sites, almost none deleted afterwards) used to
+        // land in the developer's %TEMP% and stay there: millions of entries after a few weeks of runs. Every test
+        // task now gets its own java.io.tmpdir, emptied before the task runs, so a run leaves at most its own
+        // scratch behind and the next run removes it. The base is %TEMP%/udt, or -PunidriveTestTmp=<dir> / the
+        // UNIDRIVE_TEST_TMP variable: point it at a RAM disk (R:\udt, /dev/shm/udt) to keep the scratch off the SSD.
+        // Not under build/: several tests bind a unix socket in their scratch and the OS limit is 108 characters,
+        // which a worktree path plus a module's build dir exceeds. The names are hashes for the same reason; the
+        // root hash keeps two checkouts running the same task at once (agent sessions) out of each other's dir.
+        val testTmpBase =
+            providers.gradleProperty("unidriveTestTmp").orElse(providers.environmentVariable("UNIDRIVE_TEST_TMP")).orNull
+                ?: java.io.File(System.getProperty("java.io.tmpdir"), "udt").path
+        val testTmp =
+            java.io.File(
+                java.io.File(java.io.File(testTmpBase), Integer.toHexString(rootDir.absolutePath.hashCode())),
+                Integer.toHexString((project.path + ":" + name).hashCode()),
+            )
+        doFirst {
+            testTmp.deleteRecursively()
+            testTmp.mkdirs()
+        }
+        systemProperty("java.io.tmpdir", testTmp.absolutePath)
         // CI turns the build cache on (build.yml, #596) so a module nobody touched is not compiled again. Test results
         // are never taken from it: tests read inputs Gradle does not track (SyncConfigScopeTest reads
         // docs/config-schema/, others the CI and UNIDRIVE_* environment, the ignore oracle its pinned git), and a cached
