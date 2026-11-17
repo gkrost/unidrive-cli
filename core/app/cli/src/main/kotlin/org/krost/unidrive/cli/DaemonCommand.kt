@@ -111,6 +111,10 @@ class DaemonRunCommand : Runnable {
         // archive#603 (U4): the hosting contract. The daemon serves both modes, but a profile without a mode is
         // refused before any provider write, token rotation or mutable startup recovery.
         val mode = parent.requireAnyProfileMode(profile, "daemon run")
+        // issue#786: the config folder and config.toml stop inheriting other principals' access, and any
+        // plaintext secret fields migrate to at-rest protection before a provider reads the config.
+        StoragePermissions.restrictConfig(parent.configBaseDir())
+        ConfigSecretMigration.migrateAtStart(parent.configBaseDir().resolve("config.toml"))
         // archive#865: a daemon start never runs an interactive sign-in. When the offline credential
         // check says the profile cannot authenticate without one, refuse here — typed reason on
         // stderr (the start log a front-end reads), non-zero exit — instead of letting the

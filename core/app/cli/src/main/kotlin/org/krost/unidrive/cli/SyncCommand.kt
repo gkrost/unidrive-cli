@@ -348,6 +348,13 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         // Owner-only credentials and profile folder before the provider reads them (StoragePermissions);
         // a dry run skips it (see restrictProfileForSync).
         restrictProfileForSync(dryRun, parent.providerConfigDir())
+        // issue#786: the same treatment for the config folder + config.toml itself (owner-only, so it
+        // stops inheriting other principals' access), and the first-start migration of the config's
+        // plaintext secret fields; both rewrite nothing, so a dry run skips them too.
+        if (!dryRun) {
+            StoragePermissions.restrictConfig(parent.configBaseDir())
+            ConfigSecretMigration.migrateAtStart(parent.configBaseDir().resolve("config.toml"))
+        }
         val rawProvider = parent.createProvider()
         shutdown.closing(SyncShutdown.Step.PROVIDER) { rawProvider.close() }
         // #578: the opt-in per-run request summary, attached through the same late-bound seam the daemon attaches
