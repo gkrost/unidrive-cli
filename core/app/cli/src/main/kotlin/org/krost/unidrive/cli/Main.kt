@@ -6,6 +6,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.ProviderFactory
 import org.krost.unidrive.ProviderRegistry
+import org.krost.unidrive.sync.ConfigSecrets
 import org.krost.unidrive.sync.ConfigValueException
 import org.krost.unidrive.sync.ProfileInfo
 import org.krost.unidrive.sync.ProfileMode
@@ -307,7 +308,10 @@ open class Main : Runnable {
     }
 
     private fun mergeVaultCreds(profile: ProfileInfo): RawProvider? {
-        val rp = profile.rawProvider
+        // issue#786: config secret fields are protected at rest; decode before anything — including the
+        // vault fallback below — reads them. An undecodable protected value throws naming the field and
+        // is never silently replaced by the vault's copy.
+        val rp = ConfigSecrets.decode(profile.rawProvider, profile.name, baseConfigDir.resolve("config.toml"))
         val vaultCreds = loadVaultData()[profile.name] ?: return rp
         if (rp == null) {
             return RawProvider(
@@ -588,7 +592,8 @@ open class Main : Runnable {
     fun isProviderAuthenticated(): Boolean {
         val profile = resolveCurrentProfile()
         val profileDir = baseConfigDir.resolve(profile.name)
-        val rp = profile.rawProvider
+        // issue#786: the factory's isAuthenticated check needs the real values, not the at-rest references.
+        val rp = ConfigSecrets.decode(profile.rawProvider, profile.name, baseConfigDir.resolve("config.toml"))
 
         val factory = ProviderRegistry.get(profile.type) ?: return false
         val properties = rawProviderToProperties(rp)
@@ -607,7 +612,12 @@ open class Main : Runnable {
         val factory = ProviderRegistry.get(profile.type) ?: return CredentialHealth.Missing("Unknown provider type: ${profile.type}")
         // useVault = false is the non-interactive callers' (`profile list --json`): reading the vault
         // may prompt for a passphrase on a terminal, which a front-end cannot answer.
-        val rp = if (useVault) mergeVaultCreds(profile) else profile.rawProvider
+        val rp =
+            ConfigSecrets.decode(
+                if (useVault) mergeVaultCreds(profile) else profile.rawProvider,
+                profile.name,
+                baseConfigDir.resolve("config.toml"),
+            )
         val properties = rawProviderToProperties(rp)
         return factory.checkCredentialHealth(properties, configDir)
     }

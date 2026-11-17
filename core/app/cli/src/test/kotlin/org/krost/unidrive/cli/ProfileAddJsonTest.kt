@@ -458,7 +458,18 @@ class ProfileAddJsonTest {
         val code = runWithStdin("STDIN-SECRET-VALUE\r\nsecond line\n", *s3("--option", "bucket=mybucket", "--option", "access_key_id=AKID", "--secret-stdin"))
 
         assertEquals(0, code, out.toString())
-        assertTrue("secret_access_key = \"STDIN-SECRET-VALUE\"" in Files.readString(configFile))
+        // issue#786: written protected where a protector exists, plaintext where none does; it reads
+        // back either way and is never echoed on stdout/stderr.
+        val onDisk = Files.readString(configFile)
+        if (org.krost.unidrive.auth.CredentialProtectors.atRestDefaultOrNull() == null) {
+            assertTrue("secret_access_key = \"STDIN-SECRET-VALUE\"" in onDisk)
+        } else {
+            assertFalse("STDIN-SECRET-VALUE" in onDisk)
+        }
+        assertEquals(
+            "STDIN-SECRET-VALUE",
+            org.krost.unidrive.sync.ConfigSecrets.decode(SyncConfig.parseRaw(onDisk).providers.getValue("scw")!!, "scw", configFile)!!.secret_access_key,
+        )
         assertFalse("STDIN-SECRET-VALUE" in out.toString() + err.toString())
     }
 

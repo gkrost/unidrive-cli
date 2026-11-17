@@ -256,6 +256,10 @@ fun isProfileAuthenticated(
     configDir: Path,
 ): Boolean {
     val profileDir = configDir.resolve(profileName)
+    // issue#786: the config's secret fields are protected at rest; the factory check needs the real
+    // values. Decoded outside the try: an undecodable protected value must surface as the named error,
+    // not as this function's generic "not authenticated" false.
+    val decoded = ConfigSecrets.decode(rp, profileName, configDir.resolve("config.toml")) ?: return false
     return try {
         val factory =
             org.krost.unidrive.ProviderRegistry
@@ -263,18 +267,18 @@ fun isProfileAuthenticated(
         if (factory != null) {
             val properties =
                 mapOf(
-                    "bucket" to rp.bucket,
-                    "access_key_id" to rp.access_key_id,
-                    "secret_access_key" to rp.secret_access_key,
-                    "host" to rp.host,
-                    "user" to rp.user,
-                    "password" to rp.password,
-                    "url" to rp.url,
-                    "client_id" to rp.client_id,
-                    "client_secret" to rp.client_secret,
+                    "bucket" to decoded.bucket,
+                    "access_key_id" to decoded.access_key_id,
+                    "secret_access_key" to decoded.secret_access_key,
+                    "host" to decoded.host,
+                    "user" to decoded.user,
+                    "password" to decoded.password,
+                    "url" to decoded.url,
+                    "client_id" to decoded.client_id,
+                    "client_secret" to decoded.client_secret,
                     // localfs answers isAuthenticated from this key; without it every localfs
                     // profile reads as "none" regardless of its root.
-                    "root_path" to rp.root_path,
+                    "root_path" to decoded.root_path,
                 )
             factory.isAuthenticated(properties, profileDir)
         } else {

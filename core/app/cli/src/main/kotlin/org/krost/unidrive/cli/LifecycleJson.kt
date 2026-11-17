@@ -8,6 +8,7 @@ import org.krost.unidrive.ProviderRegistry
 import org.krost.unidrive.internxt.InternxtConfig
 import org.krost.unidrive.internxt.authenticateInternxt
 import org.krost.unidrive.internxt.model.InternxtCredentials
+import org.krost.unidrive.sync.ConfigSecrets
 import org.krost.unidrive.sync.IpcEndpoint
 import org.krost.unidrive.sync.ProcessLock
 import org.krost.unidrive.sync.NoDefaultProfileException
@@ -126,7 +127,10 @@ internal fun resolveProfileTarget(
         throw LifecycleError("invalid_profile_name", "'$name' is not a valid profile name")
     }
     val rp = raw.providers[name] ?: throw LifecycleError("profile_not_found", "profile '$name' is not configured")
-    val properties = main.rawProviderToProperties(rp).filterKeys { it !in SECRET_PROPERTY_KEYS }
+    // issue#786: the config's secret fields are protected at rest; the sign-in flow needs the real values
+    // (Dropbox's app key). The SECRET_PROPERTY_KEYS strip happens after decoding, so its three keys never
+    // reach the flow either way.
+    val properties = main.rawProviderToProperties(ConfigSecrets.decode(rp, name, configPath)).filterKeys { it !in SECRET_PROPERTY_KEYS }
     return ProfileTarget(name, rp.type ?: name, baseDir.resolve(name), properties)
 }
 

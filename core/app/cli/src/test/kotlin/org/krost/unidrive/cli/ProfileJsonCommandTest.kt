@@ -10,7 +10,9 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import org.krost.unidrive.auth.CredentialProtectors
 import org.krost.unidrive.engine.NameKey
+import org.krost.unidrive.sync.ConfigSecrets
 import org.krost.unidrive.sync.SyncConfig
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
@@ -58,7 +60,38 @@ class ProfileJsonCommandTest {
 
     private fun writeConfig(text: String) = Files.writeString(configFile, text)
 
-    private fun config(): String = Files.readString(configFile)
+    /**
+     * The file's logical text: with at-rest protection (issue#786) a config write protects the secret
+     * fields, so the byte-for-byte assertions decode them back. On a host without a protector this is
+     * the raw text; on one with a protector the decoded text is byte-identical to what went in.
+     */
+    private fun config(): String {
+        val onDisk = Files.readString(configFile)
+        val protector = CredentialProtectors.atRestDefaultOrNull() ?: return onDisk
+        val parsed = SyncConfig.parseRaw(onDisk)
+        val lines = onDisk.split("\n").toMutableList()
+        var section: String? = null
+        val header = Regex("""^\s*\[([^\]]+)]""")
+        val fieldLine = Regex("""(\s*)(access_key_id|secret_access_key|password|client_id|client_secret)(\s*=\s*")((?:[^"\\]|\\.)*)(")""")
+        for (i in lines.indices) {
+            header.matchEntire(lines[i])?.groupValues?.get(1)?.trim()?.let { section = it }
+            val profileName = section?.takeIf { it.startsWith("providers.") }?.substringAfter("providers.")?.substringBefore('.') ?: continue
+            val m = fieldLine.matchEntire(lines[i].trimStart()) ?: continue
+            val decoded = ConfigSecrets.decode(parsed.providers[profileName], profileName, configFile, protector)
+            val plain =
+                when (m.groupValues[2]) {
+                    "access_key_id" -> decoded?.access_key_id
+                    "secret_access_key" -> decoded?.secret_access_key
+                    "password" -> decoded?.password
+                    "client_id" -> decoded?.client_id
+                    else -> decoded?.client_secret
+                } ?: continue
+            lines[i] =
+                m.groupValues[1] + m.groupValues[2] + m.groupValues[3] +
+                    plain.replace("\\", "\\\\").replace("\"", "\\\"") + m.groupValues[5]
+        }
+        return lines.joinToString("\n")
+    }
 
     private fun run(vararg args: String): Int {
         out.reset()
