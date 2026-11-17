@@ -17,6 +17,11 @@ detekt = "1.23.8"
 socket-io-client = "2.1.2"
 # Test only: the S3 provider's MinIO suite (:providers:s3:minioTest).
 testcontainers = "2.0.5"
+# The age-v1 X-tra content algorithm (AgeV1Strategy). kage 0.8.0's POM pulls bcprov 1.86; the engine
+# pins 1.87 in the module (CVE fixes + upstream's ChaCha20-Poly1305 speedups, measured ~4x on the
+# benchmark corpus), so the strategy must never resolve to 1.86.
+kage = "0.8.0"
+bouncycastle-bcprov = "1.87"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
@@ -40,6 +45,8 @@ ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
 socket-io-client = { module = "io.socket:socket.io-client", version.ref = "socket-io-client" }
 testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
 detekt-cli = { module = "io.gitlab.arturbosch.detekt:detekt-cli", version.ref = "detekt" }
+kage = { module = "com.github.android-password-store:kage", version.ref = "kage" }
+bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk15to18", version.ref = "bouncycastle-bcprov" }
 
 [bundles]
 ktor-client = ["ktor-client-core", "ktor-client-okhttp", "ktor-client-content-negotiation", "ktor-serialization-kotlinx-json", "ktor-client-logging"]

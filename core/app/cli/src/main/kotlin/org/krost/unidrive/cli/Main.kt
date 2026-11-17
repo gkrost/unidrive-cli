@@ -15,7 +15,9 @@ import org.krost.unidrive.sync.RawSyncConfig
 import org.krost.unidrive.sync.NoDefaultProfileException
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
+import org.krost.unidrive.xtra.AgeV1Strategy
 import org.krost.unidrive.xtra.AesGcmStrategy
+import org.krost.unidrive.xtra.XtraAgeKeyStore
 import org.krost.unidrive.xtra.XtraEncryptedProvider
 import org.krost.unidrive.xtra.XtraPlaintextListings
 import org.krost.unidrive.xtra.XtraKeyManager
@@ -430,7 +432,26 @@ open class Main : Runnable {
             System.exit(1)
             throw IllegalStateException("unreachable")
         }
-        val strategy = AesGcmStrategy()
+        val strategy =
+            when (val algorithm = rp?.xtra_algorithm?.trim()?.takeIf { it.isNotEmpty() } ?: "aes-gcm") {
+                "aes-gcm" -> AesGcmStrategy()
+                "age-v1" -> AgeV1Strategy(
+                    lazy {
+                        val store = XtraAgeKeyStore(keyPath.parent.resolve("xtra-age.key"))
+                        if (!store.exists()) {
+                            store.generate(xtraPassphrase())
+                            System.err.println("Generated a new X-tra age identity at ${store.path}")
+                        }
+                        store
+                    },
+                    ::xtraPassphrase,
+                )
+                else -> {
+                    System.err.println("Error: unknown xtra_algorithm \"$algorithm\" (known: aes-gcm, age-v1).")
+                    System.exit(1)
+                    throw IllegalStateException("unreachable")
+                }
+            }
         // The listings decorator sits below the cipher, so both halves see the same provider: the listings answer
         // the plaintext size the engines' size contracts hold downloads against, and the cipher seals the content
         // and answers the hash questions with "cannot tell" (the AEAD tag is the integrity check).

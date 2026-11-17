@@ -459,6 +459,10 @@ data class RawProvider(
     // reaches the provider and decrypted on the way back; names, sizes and the tree stay as they are. One key per
     // installation, beside the vault (`unidrive xtra init`). Absent = off.
     val xtra_encryption: Boolean? = null,
+    // The X-tra content algorithm when xtra_encryption is on: "aes-gcm" (the default, algorithm 1) or "age-v1"
+    // (algorithm 2, standard age-encryption.org/v1 files an offline `age` tool decrypts from the identity alone).
+    // Absent = "aes-gcm".
+    val xtra_algorithm: String? = null,
     // UD-223: skip first-sync enumeration by adopting the provider's current cursor.
     // OneDrive / Graph: `?token=latest`. Other providers: flag is a warn+no-op.
     // Persists in config.toml so a user who opts in at profile creation doesn't need

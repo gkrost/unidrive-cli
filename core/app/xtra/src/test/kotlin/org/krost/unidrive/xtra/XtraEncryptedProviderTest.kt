@@ -32,10 +32,13 @@ class XtraEncryptedProviderTest {
     private fun provider(
         inner: CloudProvider,
         keys: Lazy<XtraKeyManager>,
-    ): CloudProvider {
-        val strategy = AesGcmStrategy()
-        return XtraEncryptedProvider(XtraPlaintextListings(inner, strategy), keys, strategy)
-    }
+    ): CloudProvider = provider(inner, keys, AesGcmStrategy())
+
+    private fun provider(
+        inner: CloudProvider,
+        keys: Lazy<XtraKeyManager>,
+        strategy: XtraEncryptionStrategy,
+    ): CloudProvider = XtraEncryptedProvider(XtraPlaintextListings(inner, strategy), keys, strategy)
 
     @Test
     fun `upload encrypts and download decrypts round-trip`() {
@@ -405,6 +408,84 @@ class XtraEncryptedProviderTest {
         val answer = kotlinx.coroutines.runBlocking { xtra.share("/a.txt", 24) }
         assertTrue(answer is CapabilityResult.Unsupported, "$answer")
         assertTrue(answer.reason.contains("X-tra"), answer.reason)
+    }
+
+    // ── The age-v1 algorithm (xtra_algorithm = "age-v1", AgeV1Strategy) through the same decorator ──
+
+    private fun ageProvider(
+        inner: CloudProvider,
+        dir: Path,
+    ): CloudProvider {
+        val store = XtraAgeKeyStore(dir.resolve("xtra-age.key"))
+        store.generate("testpass1234".toCharArray())
+        val strategy = AgeV1Strategy(lazy { store }, { "testpass1234".toCharArray() })
+        return provider(inner, keys(dir), strategy)
+    }
+
+    @Test
+    fun `age-v1 upload encrypts and download decrypts round-trip`() {
+        val tmpDir = TestScratch.directory("xtra-age-provider-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val xtra = ageProvider(InMemoryProvider(storage), tmpDir)
+
+        val localFile = tmpDir.resolve("age.txt")
+        Files.writeString(localFile, "Hello from age-v1!")
+        kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/age.txt") }
+
+        // The stored bytes carry the XTRA header, and under it a standard age file — not the plaintext.
+        val stored = storage["/age.txt"]!!
+        assertEquals("XTRA", String(stored.copyOfRange(0, 4)))
+        assertTrue(
+            String(stored, Charsets.ISO_8859_1).substringAfter("XTRA").contains("age-encryption.org/v1"),
+            "the body must be a standard age file",
+        )
+
+        val dest = tmpDir.resolve("age-dl.txt")
+        kotlinx.coroutines.runBlocking { xtra.download("/age.txt", dest) }
+        assertEquals("Hello from age-v1!", Files.readString(dest))
+    }
+
+    @Test
+    fun `age-v1 tampered ciphertext refuses the download and keeps the previous file`() {
+        val tmpDir = TestScratch.directory("xtra-age-provider-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val xtra = ageProvider(InMemoryProvider(storage), tmpDir)
+        val original = ByteArray(200_000) { (it * 29 + 5).toByte() }
+        val localFile = tmpDir.resolve("src.bin")
+        Files.write(localFile, original)
+        kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/a.bin") }
+        val stored = storage.getValue("/a.bin")
+        stored[stored.size / 2] = (stored[stored.size / 2].toInt() xor 0x55).toByte()
+
+        val dest = tmpDir.resolve("a.bin")
+        Files.write(dest, "the previous content".toByteArray())
+        val failure = assertFailsWith<org.krost.unidrive.RemoteContentRefusedDownloadException> {
+            kotlinx.coroutines.runBlocking { xtra.download("/a.bin", dest) }
+        }
+        assertEquals("authentication failed", failure.reason)
+        assertContentEquals("the previous content".toByteArray(), Files.readAllBytes(dest))
+    }
+
+    @Test
+    fun `age-v1 listings answer the plaintext size`() {
+        val tmpDir = TestScratch.directory("xtra-age-provider-test")
+        val inner = FakeCloudProvider()
+        val xtra = ageProvider(inner, tmpDir)
+
+        val localFile = tmpDir.resolve("sized.txt")
+        val original = "Hello, aged world!"
+        Files.writeString(localFile, original)
+        kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/sized.txt") }
+
+        // The stored object's size is the ciphertext's (XTRA header + age file); the listing must answer the
+        // plaintext size the engines' size contracts hold downloads against.
+        val ciphertextSize = inner.files.getValue("/sized.txt").size.toLong()
+        assertTrue(ciphertextSize > original.length, "the test means something only if the wrapper adds bytes: $ciphertextSize")
+        inner.deltaItems = listOf(
+            org.krost.unidrive.CloudItem("id-sized", "sized.txt", "/sized.txt", ciphertextSize, false, null, null, null, null),
+        )
+        val listed = kotlinx.coroutines.runBlocking { xtra.getMetadata("/sized.txt") }
+        assertEquals(original.length.toLong(), listed.size)
     }
 }
 
