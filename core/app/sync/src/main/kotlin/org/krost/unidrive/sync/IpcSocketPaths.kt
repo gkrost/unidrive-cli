@@ -19,7 +19,7 @@ internal object IpcSocketPaths {
     private const val MAX_SOCKET_PATH_LENGTH = 90
 
     // A unix socket path holds 108 bytes with its terminating NUL; a longer one cannot be bound.
-    private const val MAX_UNIX_SOCKET_PATH_CHARS = 107
+    private const val MAX_UNIX_SOCKET_PATH_BYTES = 107
 
     fun socketBaseName(profileName: String): String = "unidrive-${canonicalDiskName(profileName, diskNameDirectory())}.sock"
 
@@ -60,9 +60,10 @@ internal object IpcSocketPaths {
             // file name is still the one of the default folder, so the hydration cache folder named after it does not move.
             IpcSocketDir.ensureOverrideDir(override, windows)
             val path = resolveAndMeta(override, profileName, legacySocketDirectory(tmpDir, windows))
-            check(path.toString().length <= MAX_UNIX_SOCKET_PATH_CHARS) {
-                "The IPC socket path $path is ${path.toString().length} characters; a unix socket path holds at most " +
-                    "$MAX_UNIX_SOCKET_PATH_CHARS. Point ${IpcSocketDir.OVERRIDE_ENV} at a shorter folder."
+            val pathBytes = path.toString().toByteArray(Charsets.UTF_8).size
+            check(pathBytes <= MAX_UNIX_SOCKET_PATH_BYTES) {
+                "The IPC socket path $path is $pathBytes bytes; a unix socket path holds at most " +
+                    "$MAX_UNIX_SOCKET_PATH_BYTES bytes. Point ${IpcSocketDir.OVERRIDE_ENV} at a shorter folder."
             }
             return path
         }

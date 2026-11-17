@@ -3,6 +3,7 @@ package org.krost.unidrive.sync
 import org.krost.unidrive.io.Os
 import org.krost.unidrive.testing.TestScratch
 import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -64,5 +65,47 @@ class IpcSocketDirOverrideTest {
 
         assertTrue("UNIDRIVE_IPC_DIR" in e.message!!, e.message)
         assertTrue("107" in e.message!!, e.message)
+    }
+
+    @Test
+    fun `a non ascii override over the socket byte limit is refused even when its character count fits`() {
+        val tmp = TestScratch.directory("ipc-override-tmp")
+        val prefix = TestScratch.directory("ipc-override-dir")
+        var count = 1
+        var chosen = prefix.resolve("ä".repeat(count))
+        var path = chosen.resolve("unidrive-work.sock")
+        while (path.toString().toByteArray(Charsets.UTF_8).size <= 107) {
+            chosen = prefix.resolve("ä".repeat(++count))
+            path = chosen.resolve("unidrive-work.sock")
+        }
+        assertTrue(path.toString().length <= 107, "the regression requires a short character count: $path")
+        val byteCount = path.toString().toByteArray(Charsets.UTF_8).size
+
+        val e = assertFailsWith<IllegalStateException> { IpcServer.defaultSocketPath("work", tmp, windows, override = chosen) }
+
+        assertTrue("$byteCount bytes" in e.message!!, e.message)
+        assertTrue("UNIDRIVE_IPC_DIR" in e.message!!, e.message)
+    }
+
+    @Test
+    fun `a non ascii override at the socket byte limit is accepted`() {
+        val tmp = TestScratch.directory("ipc-override-tmp")
+        val prefix = TestScratch.directory("ipc-override-dir")
+        var chosen: Path? = null
+        for (nonAscii in 0..60) {
+            for (ascii in 0..1) {
+                val segment = "a".repeat(ascii) + "ä".repeat(nonAscii)
+                val candidate = prefix.resolve(segment).resolve("unidrive-work.sock")
+                if (candidate.toString().toByteArray(Charsets.UTF_8).size == 107 && candidate.toString().length <= 107) {
+                    chosen = prefix.resolve(segment)
+                    break
+                }
+            }
+            if (chosen != null) break
+        }
+        val folder = chosen ?: error("could not construct a 107-byte socket path under $prefix")
+        val expected = folder.resolve("unidrive-work.sock")
+
+        assertEquals(expected, IpcServer.defaultSocketPath("work", tmp, windows, override = folder))
     }
 }
