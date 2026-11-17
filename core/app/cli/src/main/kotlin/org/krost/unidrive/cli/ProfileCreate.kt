@@ -52,9 +52,13 @@ internal fun mirrorSyncRootDefault(type: String): String {
  * secret is entered through the provider's own flow (`auth begin`/`auth login`, or the wizard).
  */
 internal object ProfileCreator {
+    // The refusals are the contract: each names one misconfiguration, so create throws per case.
+    @Suppress("ThrowsCount")
     fun create(
         configDir: Path,
         req: NewProfile,
+        /** The at-rest protector for the written secret fields (issue#786); null = the platform's default. */
+        secretProtector: org.krost.unidrive.auth.CredentialProtector? = null,
     ): JsonObject {
         val configPath = configDir.resolve("config.toml")
         return ConfigFileTransaction.withLock(configPath) {
@@ -135,7 +139,7 @@ internal object ProfileCreator {
             throw LifecycleError("permissions_failed", "the profile folder could not be made owner-only: ${e.javaClass.simpleName}")
         }
         try {
-            appendProfile(configPath, generateProfileToml(type, name, syncRoot, creds, mode), label, if (req.makeDefault) name else null)
+            appendProfile(configPath, generateProfileToml(type, name, syncRoot, creds, mode), label, if (req.makeDefault) name else null, secretProtector)
         } catch (e: IOException) {
             if (createdDir) profileDir.toFile().deleteRecursively()
             throw LifecycleError("write_failed", "config.toml could not be written: ${e.javaClass.simpleName}")
@@ -327,6 +331,7 @@ internal object ProfileCreator {
         toml: String,
         label: String?,
         makeDefault: String?,
+        secretProtector: org.krost.unidrive.auth.CredentialProtector?,
     ) {
         val existing = if (Files.exists(configPath)) Files.readString(configPath) else "[general]\n\n"
         // setDefaultProfile rewrites the [general] section; a config that exists without one is a
@@ -340,6 +345,6 @@ internal object ProfileCreator {
         // One atomic replace: a kill between an append and a default-profile rewrite must not leave a
         // truncated config.toml (every profile gone) or a profile without the default that was asked for.
         Files.createDirectories(configPath.parent)
-        ConfigFileTransaction.writeAtomically(configPath, text)
+        ConfigFileTransaction.writeAtomically(configPath, text, secretProtector ?: org.krost.unidrive.auth.CredentialProtectors.atRestDefaultOrNull())
     }
 }

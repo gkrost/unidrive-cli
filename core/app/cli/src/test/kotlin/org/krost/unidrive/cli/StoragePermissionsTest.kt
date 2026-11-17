@@ -175,4 +175,45 @@ class StoragePermissionsTest {
         assertEquals(null, org.krost.unidrive.AccountName.read(profileDir))
         assertTrue(Files.exists(keep))
     }
+
+    // issue#786: config.toml holds the providers' secret fields, so the config folder and the file itself
+    // get the profile treatment — on a real install the folder used to inherit a sandbox-user group's
+    // read access from its parents.
+    @Test
+    fun `the config folder and its config file stop inheriting other principals' access on Windows`() {
+        assumeTrue("Windows ACLs only", WindowsAclProbe.isWindows)
+        WindowsAclProbe.grantInheritableRead(root, WindowsAclProbe.USERS_SID)
+        val config = Files.writeString(root.resolve("config.toml"), "[general]\n")
+        assertTrue(WindowsAclProbe.USERS_SID in sids(config) || "BU" in sids(config), "precondition: inherited extra grant")
+
+        StoragePermissions.restrictConfig(root)
+
+        assertTrue(WindowsAclProbe.dacl(root).startsWith("D:P"))
+        assertEquals(ownerOnlySids, sids(root))
+        assertTrue(WindowsAclProbe.dacl(config).startsWith("D:P"))
+        assertEquals(ownerOnlySids, sids(config))
+    }
+
+    @Test
+    fun `the config folder and its config file become 0700 and 0600 on POSIX`() {
+        assumeTrue(
+            "POSIX file attributes only",
+            FileSystems.getDefault().supportedFileAttributeViews().contains("posix"),
+        )
+        Files.setPosixFilePermissions(root, PosixFilePermissions.fromString("rwxr-xr-x"))
+        val config = Files.writeString(root.resolve("config.toml"), "[general]\n")
+        Files.setPosixFilePermissions(config, PosixFilePermissions.fromString("rw-r--r--"))
+
+        StoragePermissions.restrictConfig(root)
+
+        fun mode(p: Path) = PosixFilePermissions.toString(Files.getPosixFilePermissions(p))
+        assertEquals("rwx------", mode(root))
+        assertEquals("rw-------", mode(config))
+    }
+
+    @Test
+    fun `restrictConfig without a config file only tightens the folder`() {
+        StoragePermissions.restrictConfig(root)
+        assertTrue(Files.notExists(root.resolve("config.toml")))
+    }
 }

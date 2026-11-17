@@ -1,7 +1,10 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.auth.CredentialProtector
+import org.krost.unidrive.auth.CredentialProtectors
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.io.OwnerOnlyAtomicWrite
+import org.krost.unidrive.sync.ConfigSecrets
 import java.nio.channels.FileChannel
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
@@ -29,13 +32,25 @@ internal object ConfigFileTransaction {
         }
     }
 
-    /** Replace a config through a sibling temp file; callers must hold [withLock] for read-modify-write edits. */
+    /**
+     * Replace a config through a sibling temp file; callers must hold [withLock] for read-modify-write edits.
+     *
+     * Provider secret fields are protected at rest before the bytes are written (issue#786, through
+     * [ConfigSecrets.protectText]): a host with a native protector never sees them as plaintext on disk,
+     * whatever command produced [text]. Already-protected values and sections without sensitive fields
+     * pass through unchanged, so the call is idempotent. [secretProtector] defaults to the platform's
+     * at-rest protector (null on hosts without one — the text is written as-is); tests pass a fake. A
+     * protection failure propagates: the transaction does not commit plaintext where protection was
+     * expected.
+     */
     fun writeAtomically(
         target: Path,
         text: String,
+        secretProtector: CredentialProtector? = CredentialProtectors.atRestDefaultOrNull(),
     ) {
         target.parent?.let(Files::createDirectories)
-        OwnerOnlyAtomicWrite.replace(target, text.toByteArray(Charsets.UTF_8))
+        val written = ConfigSecrets.protectText(text, target, secretProtector)
+        OwnerOnlyAtomicWrite.replace(target, written.toByteArray(Charsets.UTF_8))
     }
 
     private fun createLockFile(lockPath: Path) {

@@ -39,6 +39,19 @@ internal object StoragePermissions {
     }
 
     /**
+     * The app config folder and config.toml itself (issue#786): the config holds the providers' secret
+     * fields, so it gets the same owner-only treatment as a profile folder — on a real install it used
+     * to inherit a sandbox-user group's read access and an app container's full control from its
+     * parents. Throws like [restrictProfile]: the engine does not start on credentials it cannot keep
+     * to the current user.
+     */
+    fun restrictConfig(configDir: Path) {
+        timed(configDir) { OwnerOnly.requireDirectory(configDir) }
+        val configFile = configDir.resolve("config.toml")
+        if (Files.isRegularFile(configFile)) timed(configFile) { OwnerOnly.requireFile(configFile) }
+    }
+
+    /**
      * Creates [cacheProfileRoot] (the hydration cache's `<cache>/unidrive/hydration/<profile>`) and
      * restricts it, then [logDir] when it exists. Best effort: a failure is logged once at WARN.
      */

@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.sync.ConfigSecrets
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.sync.escapeTomlValue
@@ -94,7 +95,9 @@ class VaultEncryptCommand : Runnable {
         val raw = SyncConfig.parseRaw(configLines.joinToString("\n"), configPath.toString())
         val vaultedCreds = mutableMapOf<String, Map<String, String>>()
         for ((profileName, rp) in raw.providers) {
-            val creds = secretCreds(rp)
+            // issue#786: config secret fields are protected at rest; the vault stores the decoded value,
+            // never the at-rest reference (which would be useless outside this machine/user).
+            val creds = secretCreds(ConfigSecrets.decode(rp, profileName, configPath) ?: rp)
             if (creds.isNotEmpty()) {
                 mutableData[profileName] = (mutableData[profileName] ?: emptyMap()) + creds
                 vaultedCreds[profileName] = creds
