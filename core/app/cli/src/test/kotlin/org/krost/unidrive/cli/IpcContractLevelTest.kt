@@ -132,6 +132,9 @@ class IpcContractLevelTest {
                 setOf("field:daemon.status.bandwidth_limit_kib"),
                 // 5 (gkrost/unidrive-cli#717): a rmdir refused with not_empty names its reason and one child.
                 setOf("capability:hydration.rmdir_not_empty_reason"),
+                // 6 (issue#796): the vault verbs (vault.unlock / vault.lock, ADMIN class) and the
+                // capability that names them on a daemon whose vault.enc exists.
+                setOf("verb:vault.unlock", "verb:vault.lock", "capability:vault-unlock:v1"),
             )
     }
 }

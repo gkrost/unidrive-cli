@@ -35,7 +35,9 @@
         "file_versioning": { "type": "boolean" },
         "max_versions": { "type": "integer", "minimum": 1 },
         "version_retention_days": { "type": "integer", "minimum": 1 },
-        "streaming_reconciliation": { "type": "boolean" }
+        "streaming_reconciliation": { "type": "boolean" },
+        "unlock_helper": { "type": "string" },
+        "require_vault": { "type": "boolean" }
       }
     },
     "providers": {

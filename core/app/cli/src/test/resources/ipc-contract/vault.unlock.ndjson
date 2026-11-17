@@ -1,0 +1,6 @@
+{"verb":"vault.unlock"}
+{"ok":false,"error":"missing_passphrase"}
+{"verb":"vault.unlock","passphrase":12}
+{"ok":false,"error":"invalid_passphrase"}
+{"verb":"vault.unlock","passphrase":"fixture-vault-pass-1"}
+{"ok":false,"error":"already_unlocked"}

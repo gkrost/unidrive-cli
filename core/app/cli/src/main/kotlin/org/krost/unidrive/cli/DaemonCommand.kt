@@ -12,6 +12,7 @@ import org.krost.unidrive.sync.StateDbCorruptException
 import org.krost.unidrive.sync.backups
 import org.krost.unidrive.sync.isLockHolder
 import org.krost.unidrive.sync.lookupProcess
+import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
@@ -50,6 +51,45 @@ internal fun effectiveBandwidthKib(
     flag: Int?,
     general: Int?,
 ): Int? = (flag ?: general)?.takeIf { it > 0 }
+
+/**
+ * issue#796: the vault's start state, resolved once before the credential health reads it: the
+ * passphrase chain (env → systemd credential → unlock helper → console) runs here. A headless run
+ * with vault.enc and no answering source starts locked instead of exiting, unless
+ * `[general] require_vault` keeps the exit-78 semantics — and a profile that needs no vaulted
+ * fields runs normally either way. The config comes back for the rest of the start.
+ */
+private fun resolveStartVault(
+    parent: Main,
+    profile: org.krost.unidrive.sync.ProfileInfo,
+): Pair<SyncConfig, DaemonVaultStart> {
+    val config = parent.loadSyncConfig()
+    val vaultStart = parent.resolveDaemonVaultStart(profile, parent.rawGeneral())
+    return config to vaultStart
+}
+
+/**
+ * archive#865: a daemon start never runs an interactive sign-in. When the offline credential
+ * check says the profile cannot authenticate without one, refuse here — typed reason on
+ * stderr (the start log a front-end reads), non-zero exit — instead of letting the
+ * provider camp on its prompt. useVault = true because the start's own provider creation
+ * merges vault credentials; a vault-stored S3 key must not read as "missing" here. A locked
+ * start (issue#796) reads the check without the vault (it cannot be read yet) and its refusal is
+ * not an error: the missing credentials are the ones vault.unlock will bring.
+ */
+private fun credentialHealthGate(
+    parent: Main,
+    profile: org.krost.unidrive.sync.ProfileInfo,
+    startLocked: Boolean,
+) {
+    val health = parent.checkCredentialHealth(profile, parent.providerConfigDir(), useVault = !startLocked)
+    if (!startLocked) {
+        daemonStartCredentialRefusal(profile.name, health, parent.providerConfigDir())?.let { refusal ->
+            System.err.println(refusal)
+            kotlin.system.exitProcess(parent.MODE_REFUSAL_EXIT)
+        }
+    }
+}
 
 @Command(name = "run", description = ["Run the daemon in the foreground until SIGTERM"], mixinStandardHelpOptions = true)
 class DaemonRunCommand : Runnable {
@@ -112,17 +152,9 @@ class DaemonRunCommand : Runnable {
         // refused before any provider write, token rotation or mutable startup recovery.
         val mode = parent.requireAnyProfileMode(profile, "daemon run")
         protectConfigAtStart(parent)
-        // archive#865: a daemon start never runs an interactive sign-in. When the offline credential
-        // check says the profile cannot authenticate without one, refuse here — typed reason on
-        // stderr (the start log a front-end reads), non-zero exit — instead of letting the
-        // provider camp on its prompt. useVault = true because the start's own provider creation
-        // merges vault credentials; a vault-stored S3 key must not read as "missing" here.
-        val health = parent.checkCredentialHealth(profile, parent.providerConfigDir(), useVault = true)
-        daemonStartCredentialRefusal(profile.name, health, parent.providerConfigDir())?.let { refusal ->
-            System.err.println(refusal)
-            kotlin.system.exitProcess(parent.MODE_REFUSAL_EXIT)
-        }
-        val config = parent.loadSyncConfig()
+        val (config, vaultStart) = resolveStartVault(parent, profile)
+        val startLocked = vaultStart is DaemonVaultStart.Locked
+        credentialHealthGate(parent, profile, startLocked)
         // Owner-only permissions, also for what an earlier version created: the credentials and the
         // profile folder, the IPC folder (defaultSocketPath), then the hydration cache and the logs.
         StoragePermissions.restrictProfile(parent.providerConfigDir())
@@ -182,7 +214,10 @@ class DaemonRunCommand : Runnable {
             // null leaves the key in force. Applied to the provider right after construction.
             uploadConcurrencyOverride = uploadConcurrency,
             maxBandwidthKib = effectiveBandwidthKib(maxBandwidthKib, config.maxBandwidthKbps),
+            // issue#796: the vault seam — the verbs and the `vault-unlock:v1` capability exist when
+            // vault.enc exists; the gate starts locked exactly on a locked start.
         )
+        runtime.vault = parent.daemonVault(vaultStart)
         // archive#813: the profile the sign-in verbs sign in (its non-secret config, as `auth begin/complete/login` resolve it).
         // A config that cannot be read for it leaves them answering sign_in_unavailable; the daemon runs either way.
         runtime.signInTarget =
