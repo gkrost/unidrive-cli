@@ -32,9 +32,15 @@ object DaemonAutospawn {
 
     const val DEFAULT_WAIT_TIMEOUT_MS: Long = 60_000
 
-    /** JEP 536 JFR redaction: adds `*vault*` to the default patterns so UNIDRIVE_VAULT_PASS stays out of recordings.
-     *  Java 25 and 26 reject the `redact-key` option and fail to start, hence the version gate. */
-    internal const val JFR_REDACT_FLAG = "-XX:FlightRecorderOptions=redact-key=+*vault*"
+    /**
+     * JEP 536 JFR redaction: adds `*pass*` to the default patterns so a passphrase env var (UNIDRIVE_VAULT_PASS,
+     * UNIDRIVE_XTRA_PASS, #785) stays out of recordings; the default patterns (*password*, *pwd*, *token*, ...)
+     * do not match plain PASS. The option takes ONE glob — a comma is a parse error, a repeat is rejected, and a
+     * space-separated second pattern silently disables redaction altogether (probed on a JDK 27 recording) — so
+     * the family name covers the set instead of enumerating it. Java 25 and 26 reject the `redact-key` option
+     * and fail to start, hence the version gate.
+     */
+    internal const val JFR_REDACT_FLAG = "-XX:FlightRecorderOptions=redact-key=+*pass*"
     internal const val JFR_REDACT_MIN_JAVA = 27
 
     /** Who holds the profile lock; the tests' seam for the sidecar and the process table. */

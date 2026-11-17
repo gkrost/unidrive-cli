@@ -151,18 +151,19 @@ class LauncherShTemplateTest {
         assertTrue(r.args.indexOf("-Djava.net.preferIPv6Addresses=system") < r.args.indexOf("-jar"), r.args.toString())
     }
 
-    // gkrost/unidrive-cli#522: without the JFR redact key *vault*, a recording of a run whose vault
-    // passphrase rode the environment as UNIDRIVE_VAULT_PASS carries the passphrase in cleartext — the
-    // JEP 536 default patterns (*password*, *pwd*, *token*, ...) do not match plain PASS. If this flag
-    // is dropped, every shared recording leaks that passphrase again. Java 25 and 26 reject the option
+    // gkrost/unidrive-cli#522: without the JFR redact key *pass*, a recording of a run whose vault or
+    // X-tra passphrase rode the environment (UNIDRIVE_VAULT_PASS, UNIDRIVE_XTRA_PASS, #785) carries the
+    // passphrase in cleartext — the JEP 536 default patterns (*password*, *pwd*, *token*, ...) do not
+    // match plain PASS, and the option takes one glob, so the family name covers both vars. If this flag
+    // is dropped, every shared recording leaks those passphrases again. Java 25 and 26 reject the option
     // ("Unknown argument 'redact-key'") and do not start, so only a 27+ runtime may receive it.
     @Test
-    fun `the launcher passes the JFR vault redact key to a Java 27 runtime before the jar`() {
+    fun `the launcher passes the JFR passphrase redact key to a Java 27 runtime before the jar`() {
         val j27 = fakeJdk(dir.resolve("jvm"), "jdk-27", "27.0.1")
         val r = run(j27, "status")
-        assertTrue("-XX:FlightRecorderOptions=redact-key=+*vault*" in r.args, r.args.toString())
+        assertTrue("-XX:FlightRecorderOptions=redact-key=+*pass*" in r.args, r.args.toString())
         assertTrue(
-            r.args.indexOf("-XX:FlightRecorderOptions=redact-key=+*vault*") < r.args.indexOf("-jar"),
+            r.args.indexOf("-XX:FlightRecorderOptions=redact-key=+*pass*") < r.args.indexOf("-jar"),
             r.args.toString(),
         )
     }

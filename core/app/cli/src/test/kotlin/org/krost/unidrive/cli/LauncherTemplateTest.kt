@@ -389,13 +389,14 @@ class LauncherTemplateTest {
         }
     }
 
-    // gkrost/unidrive-cli#522, the Windows twin of LauncherShTemplateTest's cases: the JFR redact key *vault* keeps
-    // the vault passphrase out of flight recordings, but Java 25 and 26 reject the option ("Unknown argument
-    // 'redact-key'") and do not start. So only a runtime whose version reads as 27+ may receive it, before the jar.
+    // gkrost/unidrive-cli#522, the Windows twin of LauncherShTemplateTest's cases: the JFR redact key *pass* keeps
+    // a passphrase env var (UNIDRIVE_VAULT_PASS, UNIDRIVE_XTRA_PASS, #785) out of flight recordings, but Java 25
+    // and 26 reject the option ("Unknown argument 'redact-key'") and do not start. So only a runtime whose version
+    // reads as 27+ may receive it, before the jar.
     @Test
-    fun `the powershell launcher passes the JFR vault redact key to Java 27 only, before the jar`() {
+    fun `the powershell launcher passes the JFR passphrase redact key to Java 27 only, before the jar`() {
         assumeTrue("Windows PowerShell 5.1 only exists on Windows", System.getProperty("os.name").startsWith("Windows"))
-        val flag = "-XX:FlightRecorderOptions=redact-key=+*vault*"
+        val flag = "-XX:FlightRecorderOptions=redact-key=+*pass*"
         val jdks = Files.createTempDirectory("launcher-fake-jdks")
         try {
             for ((name, version) in listOf("jdk25" to "25.0.4", "jdk26" to "26.0.2", "jdk27" to "27.0.1")) {

@@ -158,10 +158,11 @@ for pid in $(pgrep -u "$(id -u)" -f 'unidrive[^ ]*\.jar .*daemon run' 2>/dev/nul
         fi
     fi
 done
-# JFR in-process redaction (JEP 536, gkrost/unidrive-cli#522): add *vault* to the default redact patterns so the
-# vault passphrase (UNIDRIVE_VAULT_PASS) never reaches a flight recording. Java 25 and 26 reject the option and
-# would not start, so only a runtime known to be 27+ gets it (an unreadable version gets nothing).
+# JFR in-process redaction (JEP 536, gkrost/unidrive-cli#522): add *pass* to the default redact patterns so a
+# passphrase env var (UNIDRIVE_VAULT_PASS, UNIDRIVE_XTRA_PASS, #785) never reaches a flight recording. The option
+# takes one glob, so the family name covers both. Java 25 and 26 reject the option and would not start, so only a
+# runtime known to be 27+ gets it (an unreadable version gets nothing).
 if [[ -n "$major" && "$major" -ge 27 ]]; then
-    diag_args+=("-XX:FlightRecorderOptions=redact-key=+*vault*")
+    diag_args+=("-XX:FlightRecorderOptions=redact-key=+*pass*")
 fi
 exec "$java_bin" "-Xmx${UNIDRIVE_XMX:-2g}" @STATIC_FLAGS_SH@ "${agent_args[@]}" "${locale_args[@]}" "-Djdk.net.unixdomain.tmpdir=${TMPDIR:-/tmp}" "${diag_args[@]}" "${cache_args[@]}" -jar "@JAR@" "${pass[@]}"
