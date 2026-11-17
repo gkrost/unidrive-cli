@@ -52,6 +52,8 @@ internal fun mirrorSyncRootDefault(type: String): String {
  * secret is entered through the provider's own flow (`auth begin`/`auth login`, or the wizard).
  */
 internal object ProfileCreator {
+    // The refusals are the contract: each names one misconfiguration, so create throws per case.
+    @Suppress("ThrowsCount")
     fun create(
         configDir: Path,
         req: NewProfile,

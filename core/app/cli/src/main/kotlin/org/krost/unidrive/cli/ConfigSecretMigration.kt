@@ -4,6 +4,7 @@ import org.krost.unidrive.auth.CredentialProtector
 import org.krost.unidrive.auth.CredentialProtectors
 import org.krost.unidrive.sync.ConfigSecrets
 import org.slf4j.LoggerFactory
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -39,8 +40,17 @@ internal object ConfigSecretMigration {
                     log.info("Protected {} config secret field(s) at rest ({}; issue#786)", migrated.count, configPath.fileName)
                 }
             }
-        } catch (e: Exception) {
-            log.warn("Could not protect config.toml secret fields at start (retrying on the next start): {}", e.message)
+        } catch (e: IOException) {
+            warnSkipped(e)
+        } catch (e: IllegalStateException) {
+            // CredentialProtectionException (the protector failed) and the round-trip backstop's refusals.
+            warnSkipped(e)
+        } catch (e: IllegalArgumentException) {
+            warnSkipped(e)
         }
+    }
+
+    private fun warnSkipped(e: Exception) {
+        log.warn("Could not protect config.toml secret fields at start (retrying on the next start): {}", e.message)
     }
 }
