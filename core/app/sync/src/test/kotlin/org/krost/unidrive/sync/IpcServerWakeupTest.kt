@@ -18,6 +18,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#687: the connection reader sleeps until its socket has data instead of polling every 20 ms. The
@@ -33,7 +34,7 @@ class IpcServerWakeupTest {
 
     @BeforeTest
     fun setUp() {
-        socketDir = Files.createTempDirectory("unidrive-ipc-wakeup")
+        socketDir = TestScratch.directory("unidrive-ipc-wakeup")
         socketPath = socketDir.resolve("wakeup.sock")
     }
 

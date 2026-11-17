@@ -11,6 +11,7 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 // UD-209: sparse-file production support missing on Windows — tests below skip there.
 private val IS_WINDOWS = System.getProperty("os.name", "").lowercase().contains("win")
@@ -21,7 +22,7 @@ class PlaceholderManagerTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-ph-test")
+        syncRoot = TestScratch.directory("unidrive-ph-test")
         mgr = PlaceholderManager(syncRoot)
     }
 
@@ -176,7 +177,7 @@ class PlaceholderManagerTest {
 
     @Test
     fun `deleteLocal of the only file keeps a non-normalized sync root`() {
-        val base = Files.createTempDirectory("unidrive-ph-raw-root")
+        val base = TestScratch.directory("unidrive-ph-raw-root")
         try {
             // A hand-edited config value can hold dot segments; the root then never equals the
             // resolved parents the empty-parent walk climbs, and the walk would remove the empty

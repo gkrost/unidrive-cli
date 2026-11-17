@@ -8,6 +8,7 @@ import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -28,7 +29,7 @@ class RemoteGatherCaseTwinTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-case-twins")
+        tmp = TestScratch.directory("unidrive-case-twins")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

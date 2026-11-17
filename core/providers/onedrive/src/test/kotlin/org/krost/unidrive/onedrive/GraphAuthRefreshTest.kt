@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-806 (chunk: 401 → refresh attempt): pin the GraphApiService auth-refresh
@@ -303,7 +304,7 @@ class GraphAuthRefreshTest {
                         stored
                     },
                 )
-            val dest = java.nio.file.Files.createTempFile("od-401-429", ".bin")
+            val dest = TestScratch.file("od-401-429", ".bin")
 
             service.downloadFile("item-9", dest)
 

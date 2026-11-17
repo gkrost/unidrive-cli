@@ -13,6 +13,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The bandwidth cap is charged for the bytes a transfer actually moved: a transfer that fails fast does not keep the
@@ -27,8 +28,8 @@ class BandwidthFailedTransfersTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-bandwidth-failed-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-bandwidth-failed-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-bandwidth-failed-root")
+        db = StateDatabase(TestScratch.directory("unidrive-bandwidth-failed-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

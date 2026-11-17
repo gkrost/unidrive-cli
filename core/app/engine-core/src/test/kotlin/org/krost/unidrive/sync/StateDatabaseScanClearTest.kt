@@ -12,6 +12,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Clearing a finished scan: the staged rows are the whole listing, and a recording of a large drive caught the
@@ -23,7 +24,7 @@ class StateDatabaseScanClearTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("unidrive-scan-clear").resolve("state.db"))
+        db = StateDatabase(TestScratch.directory("unidrive-scan-clear").resolve("state.db"))
         db.initialize()
     }
 

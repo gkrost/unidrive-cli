@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#436 (sync finding 11): a pass runs under `runBlocking`, so its transfers, the HTTP pipeline of the
@@ -33,8 +34,8 @@ class PassBlockingWorkOffLoopTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-436-root")
-        db = StateDatabase(Files.createTempDirectory("ud-436-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-436-root")
+        db = StateDatabase(TestScratch.directory("ud-436-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         digests.clear()

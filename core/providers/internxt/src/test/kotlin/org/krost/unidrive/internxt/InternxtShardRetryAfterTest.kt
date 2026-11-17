@@ -21,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A storage host that throttles a shard GET or a shard PUT (429 or 503 with `Retry-After`) is waited for as long as it
@@ -56,7 +57,7 @@ class InternxtShardRetryAfterTest {
         runTest {
             val bridge = bridgeBudget()
             val api = service(MockEngine { respond("", HttpStatusCode.TooManyRequests, throttled) }, bridge)
-            val destination = Files.createTempDirectory("ud-shard-retry").resolve("out.bin")
+            val destination = TestScratch.directory("ud-shard-retry").resolve("out.bin")
 
             val e =
                 assertFailsWith<InternxtApiException> {
@@ -81,7 +82,7 @@ class InternxtShardRetryAfterTest {
                     puts += currentTime
                     respond("", HttpStatusCode.ServiceUnavailable, throttled)
                 }
-            val shard = Files.createTempFile("ud-shard-retry", ".bin").also { Files.write(it, ByteArray(16)) }
+            val shard = TestScratch.file("ud-shard-retry", ".bin").also { Files.write(it, ByteArray(16)) }
 
             val e =
                 assertFailsWith<InternxtApiException> {
@@ -149,7 +150,7 @@ class InternxtShardRetryAfterTest {
             }
         val provider =
             InternxtProvider(
-                InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-shard-retry-token", ".tmp")),
+                InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("ud-shard-retry-token", ".tmp")),
                 httpClient = HttpClient(engine),
                 credentials =
                     credentials.copy(
@@ -160,7 +161,7 @@ class InternxtShardRetryAfterTest {
             )
 
         assertFailsWith<Exception> {
-            provider.downloadById(fileUuid, "/big.bin", Files.createTempDirectory("ud-shard-retry").resolve("out.bin"))
+            provider.downloadById(fileUuid, "/big.bin", TestScratch.directory("ud-shard-retry").resolve("out.bin"))
         }
         return shardGets
     }

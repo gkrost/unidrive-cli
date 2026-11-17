@@ -14,6 +14,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A tracked file that a complete full listing no longer contains is a remote deletion, and the sync pass must plan the
@@ -28,8 +29,8 @@ class StreamingFullListingDeletionTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-stream-del-root")
-        db = StateDatabase(Files.createTempDirectory("ud-stream-del-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-stream-del-root")
+        db = StateDatabase(TestScratch.directory("ud-stream-del-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

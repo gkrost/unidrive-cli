@@ -15,6 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#742 finding 3: user data created locally must never be silently overwritten.
@@ -36,8 +37,8 @@ class DownloadOverFileCreatedAfterScanTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-dl-late-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-dl-late-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-dl-late-root")
+        db = StateDatabase(TestScratch.directory("unidrive-dl-late-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine =

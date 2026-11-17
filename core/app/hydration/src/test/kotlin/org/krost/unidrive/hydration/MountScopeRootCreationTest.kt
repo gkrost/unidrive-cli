@@ -20,6 +20,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#22: a `sync_path` root that is a folder in the local root and that the cloud does not have is created
@@ -37,8 +38,8 @@ class MountScopeRootCreationTest {
 
     @BeforeTest
     fun setUp() {
-        root = Files.createTempDirectory("unidrive-mount-scope-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-mount-scope-db").resolve("state.db"))
+        root = TestScratch.directory("unidrive-mount-scope-root")
+        db = StateDatabase(TestScratch.directory("unidrive-mount-scope-db").resolve("state.db"))
         db.initialize()
         fake = FakeCloudProvider().apply { walksScopeRoots = true }
     }
@@ -68,7 +69,7 @@ class MountScopeRootCreationTest {
                 reporter = ProgressReporter.Silent,
                 syncPaths = scope,
                 standingScope = scope,
-                cacheRoot = Files.createTempDirectory("unidrive-mount-scope-cache"),
+                cacheRoot = TestScratch.directory("unidrive-mount-scope-cache"),
             ),
         )
 

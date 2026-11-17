@@ -7,9 +7,10 @@ import java.nio.file.Files
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 class InternxtProviderFactoryTest {
-    private val profileDir = Files.createTempDirectory("internxt-factory-test")
+    private val profileDir = TestScratch.directory("internxt-factory-test")
     private val factory = InternxtProviderFactory(credentialProtector = null)
 
     @AfterTest

@@ -8,6 +8,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-014 cross-cutting invariant: every factory that declares
@@ -26,7 +27,7 @@ class InteractiveAuthSpiContractTest {
 
     @BeforeTest
     fun setUp() {
-        tmpProfileDir = Files.createTempDirectory("ud-014-spi-")
+        tmpProfileDir = TestScratch.directory("ud-014-spi-")
     }
 
     @AfterTest

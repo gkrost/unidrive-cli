@@ -7,6 +7,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /** #222: the scan staging file opens like state.db does, so a refused switch to WAL costs a warning, not the scan. */
 class ScanStagingWalTest {
@@ -15,7 +16,7 @@ class ScanStagingWalTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-staging-wal")
+        dir = TestScratch.directory("unidrive-staging-wal")
         dbFile = dir.resolve("state.db")
     }
 

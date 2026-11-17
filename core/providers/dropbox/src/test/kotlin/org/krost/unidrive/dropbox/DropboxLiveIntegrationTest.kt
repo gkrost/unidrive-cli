@@ -8,6 +8,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The live Dropbox checks (archive#867): run them by hand with a TEST app and account — never a real one:
@@ -35,7 +36,7 @@ class DropboxLiveIntegrationTest {
             "live Dropbox calls need UNIDRIVE_INTEGRATION_TESTS=true and a TEST access token",
             System.getenv("UNIDRIVE_INTEGRATION_TESTS") == "true" && !token.isNullOrBlank(),
         )
-        dir = Files.createTempDirectory("dropbox-live")
+        dir = TestScratch.directory("dropbox-live")
         // The live flow signs in with the token the runner exported; the auth surface itself is P34's.
         provider = DropboxProvider(DropboxConfig(appKey = System.getenv("UNIDRIVE_TEST_APP_KEY") ?: "", tokenPath = dir))
         runBlocking { provider.authenticate() }

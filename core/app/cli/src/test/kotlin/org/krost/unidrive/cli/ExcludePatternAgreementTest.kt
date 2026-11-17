@@ -7,6 +7,7 @@ import org.krost.unidrive.sync.ProgressReporter
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -40,7 +41,7 @@ class ExcludePatternAgreementTest {
 
     @BeforeTest
     fun setUp() {
-        base = Files.createTempDirectory("ud-exclude-agree")
+        base = TestScratch.directory("ud-exclude-agree")
         syncRoot = Files.createDirectories(base.resolve("sync-root"))
         remote = Files.createDirectories(base.resolve("remote"))
         Files.createDirectories(base.resolve(profile))

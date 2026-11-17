@@ -7,6 +7,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A stop mid-apply is not a failed action: the cancel must rethrow out of the pass, not be
@@ -20,7 +21,7 @@ class TrackingEngineCancelTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-cancel")
+        workDir = TestScratch.directory("tracking-cancel")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider = FakeTrackingProvider()

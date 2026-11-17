@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /** archive#1054 S4: a temp folder for a copy of user data is owner-only, not whatever the temp folder grants. */
 class OwnerOnlyTempTest {
@@ -17,7 +18,7 @@ class OwnerOnlyTempTest {
 
     @BeforeTest
     fun setUp() {
-        parent = Files.createTempDirectory("unidrive-owner-temp-")
+        parent = TestScratch.directory("unidrive-owner-temp-")
     }
 
     @AfterTest
@@ -31,7 +32,7 @@ class OwnerOnlyTempTest {
         WindowsAclProbe.grantInheritableRead(parent, WindowsAclProbe.USERS_SID)
 
         // What Files.createTempDirectory alone leaves: the inherited grant (the bug).
-        assertNotNull(OwnerOnly.grantProblem(Files.createTempDirectory(parent, "plain-")))
+        assertNotNull(OwnerOnly.grantProblem(TestScratch.directory(parent, "plain-")))
 
         val dir = createOwnerOnlyTempDirectory(parent, "owner-")
         val copy = Files.writeString(dir.resolve("state.db"), "paths")

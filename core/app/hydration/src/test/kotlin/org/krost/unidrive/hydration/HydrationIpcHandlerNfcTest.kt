@@ -17,6 +17,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The two byte-forms of the same visible filename "foo.txt"-with-diaereses. The
@@ -77,14 +78,14 @@ class HydrationIpcHandlerNfcTest {
         val handler: HydrationIpcHandler
 
         init {
-            val cacheRoot = Files.createTempDirectory("unidrive-nfc-cache")
-            val dbPath = Files.createTempDirectory("unidrive-nfc-db").resolve("state.db")
+            val cacheRoot = TestScratch.directory("unidrive-nfc-cache")
+            val dbPath = TestScratch.directory("unidrive-nfc-db").resolve("state.db")
             db = StateDatabase(dbPath = dbPath, inMemory = true)
             db.initialize()
             engine = SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("unidrive-nfc-sync"),
+                syncRoot = TestScratch.directory("unidrive-nfc-sync"),
                 cacheRoot = cacheRoot,
             )
             handler = HydrationIpcHandler(HydrationImpl(syncEngine = engine, stateDb = db))

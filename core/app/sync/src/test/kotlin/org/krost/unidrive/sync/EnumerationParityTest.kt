@@ -16,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#560 U1: characterization tests for what the mirror engine ([SyncEngine]) does for the mount's
@@ -36,9 +37,9 @@ class EnumerationParityTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-560-root")
-        cacheRoot = Files.createTempDirectory("ud-560-cache")
-        db = StateDatabase(Files.createTempDirectory("ud-560-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-560-root")
+        cacheRoot = TestScratch.directory("ud-560-cache")
+        db = StateDatabase(TestScratch.directory("ud-560-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

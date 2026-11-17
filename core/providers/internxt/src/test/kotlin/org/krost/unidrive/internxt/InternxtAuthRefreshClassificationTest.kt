@@ -19,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Pins how `AuthService.fetchRefreshedJwt` classifies a non-2xx answer from
@@ -73,7 +74,7 @@ class InternxtAuthRefreshClassificationTest {
 
     private fun withTempDir(block: suspend (Path) -> Unit) =
         runTest {
-            val dir = Files.createTempDirectory("internxt-refresh-class-")
+            val dir = TestScratch.directory("internxt-refresh-class-")
             try {
                 block(dir)
             } finally {

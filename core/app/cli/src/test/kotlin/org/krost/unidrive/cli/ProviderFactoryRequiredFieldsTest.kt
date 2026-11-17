@@ -6,6 +6,7 @@ import org.krost.unidrive.ProviderRegistry
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-818 — parametric replacement for the duplicated "create throws when
@@ -125,7 +126,7 @@ class ProviderFactoryRequiredFieldsTest {
         mode: String,
         failures: MutableList<String>,
     ) {
-        val tokenDir = Files.createTempDirectory("ud818-${factory.id}-")
+        val tokenDir = TestScratch.directory("ud818-${factory.id}-")
         try {
             val props: Map<String, String?> =
                 full.mapValues<String, String, String?> { it.value }.toMutableMap().also { it[key] = replacement }

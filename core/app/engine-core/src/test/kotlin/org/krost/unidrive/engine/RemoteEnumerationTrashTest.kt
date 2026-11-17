@@ -10,6 +10,7 @@ import org.krost.unidrive.ScanContext
 import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -44,7 +45,7 @@ class RemoteEnumerationTrashTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-trash-enumeration")
+        tmp = TestScratch.directory("unidrive-trash-enumeration")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }
@@ -365,7 +366,7 @@ class RemoteEnumerationTrashTest {
             provider.items = listedNow()
             enumeration.enumerate(reset = false)
             val guarded = ReadOnlyTrashProvider(provider, trash)
-            val local = Files.createTempFile("edited", ".txt")
+            val local = TestScratch.file("edited", ".txt")
 
             // A queued upload still carries the old place and the id of the row it was queued for.
             assertFailsWith<TrashReadOnlyException> { guarded.upload(local, "/OldStuff/edited.txt", existingRemoteId = "ed") }
@@ -443,7 +444,7 @@ class RemoteEnumerationTrashTest {
             assertFalse(trash.contains("/Papierkorb/mine.txt"), "the user's folder is not read-only")
             assertTrue(trash.contains("/Papierkorb (2)/OldStuff/edited.txt"))
             val guarded = ReadOnlyTrashProvider(provider, trash)
-            val local = Files.createTempFile("new", ".txt")
+            val local = TestScratch.file("new", ".txt")
             assertFailsWith<TrashReadOnlyException> { guarded.createFolder("/Papierkorb (2)/OldStuff/new") }
             assertFailsWith<TrashReadOnlyException> { guarded.upload(local, "/Papierkorb (2)/OldStuff/new.txt", existingRemoteId = null) }
             assertEquals(0, provider.writes)

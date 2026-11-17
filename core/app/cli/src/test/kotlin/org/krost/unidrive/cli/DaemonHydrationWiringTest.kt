@@ -29,6 +29,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The daemon's wiring order (archive#607 c): the hydration layer exists before any request can reach it, and the
@@ -40,7 +41,7 @@ class DaemonHydrationWiringTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("daemon-hydration-wiring")
+        tempDir = TestScratch.directory("daemon-hydration-wiring")
         socketPath = tempDir.resolve("daemon.sock")
     }
 

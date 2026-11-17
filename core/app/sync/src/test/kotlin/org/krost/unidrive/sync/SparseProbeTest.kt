@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class SparseProbeTest {
     private lateinit var dir: Path
@@ -19,8 +20,8 @@ class SparseProbeTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-sparse-probe")
-        dbDir = Files.createTempDirectory("unidrive-sparse-db")
+        dir = TestScratch.directory("unidrive-sparse-probe")
+        dbDir = TestScratch.directory("unidrive-sparse-db")
         db = StateDatabase(dbDir.resolve("state.db"))
         db.initialize()
     }
@@ -119,7 +120,7 @@ class SparseProbeTest {
         // archive#739: a path with no row cannot be an engine placeholder (those are 0-byte and keep their
         // row), so the scanner no longer probes new files: an all-zero one is real content to upload.
         // This test used to assert the opposite for stub.bin, which is the bug archive#739 fixes.
-        val root = Files.createTempDirectory("unidrive-sparse-scan")
+        val root = TestScratch.directory("unidrive-sparse-scan")
         FileChannel.open(root.resolve("stub.bin"), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use {
             it.position(99_999)
             it.write(ByteBuffer.wrap(byteArrayOf(0)))

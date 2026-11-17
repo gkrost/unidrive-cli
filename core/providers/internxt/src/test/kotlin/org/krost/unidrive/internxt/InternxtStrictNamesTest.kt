@@ -15,6 +15,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The profile key `internxt_strict_names`: with it on, a create, an upload, a move or a rename to a name the official
@@ -22,7 +23,7 @@ import kotlin.test.assertTrue
  * `name_incompatible: <rule>`. With it off the same calls go to the drive as before.
  */
 class InternxtStrictNamesTest {
-    private val tmp: Path = Files.createTempDirectory("ud-strict-names-")
+    private val tmp: Path = TestScratch.directory("ud-strict-names-")
     private val requests = AtomicInteger()
 
     // Every request is counted and refused as a bad request: the refusals under test must come before the first one.

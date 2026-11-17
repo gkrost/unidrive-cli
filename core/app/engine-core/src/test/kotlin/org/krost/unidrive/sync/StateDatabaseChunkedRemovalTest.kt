@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * windows#454 items 9 and 10: the removal writers that used to be one unbounded transaction per pass — the scope
@@ -23,7 +24,7 @@ class StateDatabaseChunkedRemovalTest {
 
     @BeforeTest
     fun setUp() {
-        dbFile = Files.createTempDirectory("unidrive-chunked-removal").resolve("state.db")
+        dbFile = TestScratch.directory("unidrive-chunked-removal").resolve("state.db")
         db = StateDatabase(dbFile)
         db.initialize()
     }

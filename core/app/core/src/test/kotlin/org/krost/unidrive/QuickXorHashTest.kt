@@ -5,6 +5,7 @@ import java.nio.file.Files
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Known-answer tests for [QuickXorHash] (archive#1055). The expected values are not produced by this class: the small ones
@@ -79,7 +80,7 @@ class QuickXorHashTest {
 
     @Test
     fun `a file is hashed like its bytes`() {
-        val dir = Files.createTempDirectory("unidrive-qxh")
+        val dir = TestScratch.directory("unidrive-qxh")
         try {
             val file = dir.resolve("a.bin")
             Files.write(file, "abc".toByteArray())

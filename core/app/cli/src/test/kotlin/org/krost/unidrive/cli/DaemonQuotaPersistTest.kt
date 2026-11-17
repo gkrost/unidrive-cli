@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The daemon writes each quota snapshot to state.db for `quota --json` and the next start. The local scanner's
@@ -25,7 +26,7 @@ class DaemonQuotaPersistTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("daemon-quota-persist-test")
+        tempDir = TestScratch.directory("daemon-quota-persist-test")
         db = StateDatabase(tempDir.resolve("state.db"))
         db.initialize()
     }

@@ -7,6 +7,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-366 LIVE data-loss drive (Internxt) — Unit 1 acceptance.
@@ -42,8 +43,8 @@ class InternxtCreateCollisionLiveTest {
             val path = "/ud-collision-drive-$stamp.txt"
             val originalBytes = "REMOTE-ORIGINAL-$stamp-must-not-be-overwritten".toByteArray()
             val localBytes = "LOCAL-CREATE-$stamp-different-content".toByteArray()
-            val a = Files.createTempFile("ud-coll-a", ".txt").also { Files.write(it, originalBytes) }
-            val b = Files.createTempFile("ud-coll-b", ".txt").also { Files.write(it, localBytes) }
+            val a = TestScratch.file("ud-coll-a", ".txt").also { Files.write(it, originalBytes) }
+            val b = TestScratch.file("ud-coll-b", ".txt").also { Files.write(it, localBytes) }
             var conflictPath: String? = null
             try {
                 // 1. Pre-existing remote (simulates an out-of-band upload): a fresh create, no collision.
@@ -52,7 +53,7 @@ class InternxtCreateCollisionLiveTest {
                 val conflict = provider.upload(b, path, existingRemoteId = null)
                 conflictPath = "/" + conflict.path.removePrefix("/")
                 // 3. Data-loss invariant: the ORIGINAL path must still hold the original bytes.
-                val dest = Files.createTempFile("ud-coll-dl", ".txt")
+                val dest = TestScratch.file("ud-coll-dl", ".txt")
                 provider.download(path, dest)
                 assertContentEquals(
                     originalBytes,

@@ -7,12 +7,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class XtraKeyManagerTest {
 
     @Test
     fun `generate then load round-trips a wrap`() {
-        val dir = Files.createTempDirectory("xtra-key-test")
+        val dir = TestScratch.directory("xtra-key-test")
         val km = XtraKeyManager(dir.resolve("xtra.key"))
         assertFalse(km.exists())
         km.generate("testpass1234".toCharArray())
@@ -31,7 +32,7 @@ class XtraKeyManagerTest {
 
     @Test
     fun `a wrong passphrase fails the load`() {
-        val dir = Files.createTempDirectory("xtra-key-test")
+        val dir = TestScratch.directory("xtra-key-test")
         val km = XtraKeyManager(dir.resolve("xtra.key"))
         km.generate("testpass1234".toCharArray())
 
@@ -42,14 +43,14 @@ class XtraKeyManagerTest {
 
     @Test
     fun `a short passphrase is refused`() {
-        val dir = Files.createTempDirectory("xtra-key-test")
+        val dir = TestScratch.directory("xtra-key-test")
         val km = XtraKeyManager(dir.resolve("xtra.key"))
         assertFailsWith<IllegalArgumentException> { km.generate("short".toCharArray()) }
     }
 
     @Test
     fun `changePassphrase keeps the key pair`() {
-        val dir = Files.createTempDirectory("xtra-key-test")
+        val dir = TestScratch.directory("xtra-key-test")
         val km = XtraKeyManager(dir.resolve("xtra.key"))
         km.generate("testpass1234".toCharArray())
         val fileKey = ByteArray(32) { 9 }
@@ -64,7 +65,7 @@ class XtraKeyManagerTest {
 
     @Test
     fun `export and import carry the key to a second machine`() {
-        val dir = Files.createTempDirectory("xtra-key-test")
+        val dir = TestScratch.directory("xtra-key-test")
         val km = XtraKeyManager(dir.resolve("xtra.key"))
         km.generate("testpass1234".toCharArray())
         val fileKey = ByteArray(32) { 3 }
@@ -78,7 +79,7 @@ class XtraKeyManagerTest {
 
     @Test
     fun `import refuses bytes that cannot be a key`() {
-        val dir = Files.createTempDirectory("xtra-key-test")
+        val dir = TestScratch.directory("xtra-key-test")
         val km = XtraKeyManager(dir.resolve("xtra.key"))
         assertFailsWith<IllegalArgumentException> { km.importKey(ByteArray(10)) }
         assertFalse(km.exists())
@@ -88,7 +89,7 @@ class XtraKeyManagerTest {
     // older key) never silently retires it.
     @Test
     fun `import refuses to replace an existing key without force and keeps no backup then`() {
-        val dir = Files.createTempDirectory("xtra-key-test")
+        val dir = TestScratch.directory("xtra-key-test")
         val km = XtraKeyManager(dir.resolve("xtra.key"))
         km.generate("testpass1234".toCharArray())
         val fileKey = ByteArray(32) { 5 }
@@ -106,7 +107,7 @@ class XtraKeyManagerTest {
 
     @Test
     fun `a forced import replaces the key and keeps the retired one as a backup`() {
-        val dir = Files.createTempDirectory("xtra-key-test")
+        val dir = TestScratch.directory("xtra-key-test")
         val km = XtraKeyManager(dir.resolve("xtra.key"))
         km.generate("testpass1234".toCharArray())
         val fileKey = ByteArray(32) { 11 }

@@ -32,6 +32,7 @@ import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcEndpoint
 import org.krost.unidrive.sync.ProfileMode
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.ByteBuffer
 import java.nio.file.Files
@@ -61,7 +62,7 @@ class AuthLoginRpcHandlerTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("auth-login-handler")
+        dir = TestScratch.directory("auth-login-handler")
         rootLevel = root.level
         root.level = Level.TRACE
         logs.start()

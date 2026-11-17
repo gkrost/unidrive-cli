@@ -17,6 +17,7 @@ import java.nio.file.Path
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The X-tra wrapper against the engine it must satisfy (gkrost/unidrive-cli#710 review): the engines' size
@@ -30,7 +31,7 @@ import kotlin.test.assertEquals
  * re-scan plus a re-read serves warm without touching the provider again.
  */
 class XtraMountEngineTest {
-    private val base: Path = Files.createTempDirectory("ud-xtra-mount")
+    private val base: Path = TestScratch.directory("ud-xtra-mount")
     private val db = StateDatabase(base.resolve("state.db")).also { it.initialize() }
     private val inner = FakeCloudProvider()
     private val keys =

@@ -15,6 +15,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#723: a tracked file that the user replaces by a folder of the same name, or a tracked folder
@@ -29,8 +30,8 @@ class KindChangeTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-723-root")
-        db = StateDatabase(Files.createTempDirectory("ud-723-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-723-root")
+        db = StateDatabase(TestScratch.directory("ud-723-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

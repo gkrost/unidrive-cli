@@ -9,11 +9,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
 import java.io.IOException
+import org.krost.unidrive.testing.TestScratch
 
 class TrashCrossVolumeTest {
     @Test
     fun `copies a nonempty directory across filesystems before removing it`() {
-        val tmp = Files.createTempDirectory("trash-cross-volume")
+        val tmp = TestScratch.directory("trash-cross-volume")
         try {
             val uri = URI.create("jar:" + tmp.resolve("source.zip").toUri())
             FileSystems.newFileSystem(uri, mapOf("create" to "true")).use { fs ->
@@ -32,7 +33,7 @@ class TrashCrossVolumeTest {
     }
     @Test
     fun `unavailable trash leaves source intact`() {
-        val tmp = Files.createTempDirectory("trash-unavailable")
+        val tmp = TestScratch.directory("trash-unavailable")
         try {
             val source = tmp.resolve("file")
             Files.writeString(source, "preserved")
@@ -44,7 +45,7 @@ class TrashCrossVolumeTest {
     }
     @Test
     fun `partial copy failure leaves the original directory intact`() {
-        val tmp = Files.createTempDirectory("trash-failed-copy")
+        val tmp = TestScratch.directory("trash-failed-copy")
         try {
             val uri = URI.create("jar:" + tmp.resolve("source.zip").toUri())
             FileSystems.newFileSystem(uri, mapOf("create" to "true")).use { fs ->

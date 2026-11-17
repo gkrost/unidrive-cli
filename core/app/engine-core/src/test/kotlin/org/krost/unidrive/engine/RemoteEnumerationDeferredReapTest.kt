@@ -7,6 +7,7 @@ import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -29,7 +30,7 @@ class RemoteEnumerationDeferredReapTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-deferred-reap")
+        tmp = TestScratch.directory("unidrive-deferred-reap")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

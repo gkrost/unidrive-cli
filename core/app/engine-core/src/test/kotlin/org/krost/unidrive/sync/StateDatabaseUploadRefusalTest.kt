@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#493: a refused upload is recorded on its row (`upload_refused`, an additive column like `cache_backed`), read back,
@@ -34,7 +35,7 @@ class StateDatabaseUploadRefusalTest {
 
     @Test
     fun `a refusal is recorded, read back, and cleared by a rewrite of the row`() {
-        val dbPath = Files.createTempDirectory("ud-refusal-db").resolve("state.db")
+        val dbPath = TestScratch.directory("ud-refusal-db").resolve("state.db")
         val db = open(dbPath)
         try {
             db.upsertEntry(entry("/empty.txt"))
@@ -52,7 +53,7 @@ class StateDatabaseUploadRefusalTest {
 
     @Test
     fun `a refusal moves the baseline onto the refused bytes, except for a cloud row when asked to keep it`() {
-        val db = open(Files.createTempDirectory("ud-refusal-baseline").resolve("state.db"))
+        val db = open(TestScratch.directory("ud-refusal-baseline").resolve("state.db"))
         try {
             db.upsertEntry(entry("/pending.txt")) // never uploaded: its baseline is the recovery watermark
             db.upsertEntry(entry("/mirror.txt").copy(remoteId = "id-mirror"))
@@ -74,7 +75,7 @@ class StateDatabaseUploadRefusalTest {
 
     @Test
     fun `a state db written before the column gets it on open, and its rows read as not refused`() {
-        val dbPath = Files.createTempDirectory("ud-refusal-old").resolve("state.db")
+        val dbPath = TestScratch.directory("ud-refusal-old").resolve("state.db")
         open(dbPath).also { it.upsertEntry(entry("/old.txt")) }.close()
         // Turn it into a pre-archive#493 database: no upload_refused column (the view goes first, it selects *).
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->

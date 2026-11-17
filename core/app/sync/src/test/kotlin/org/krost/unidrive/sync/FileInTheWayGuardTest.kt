@@ -17,6 +17,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#737: a file in the way of a remote folder is replaced without a copy only when its state row
@@ -33,8 +34,8 @@ class FileInTheWayGuardTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-737-guard-root")
-        db = StateDatabase(Files.createTempDirectory("ud-737-guard-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-737-guard-root")
+        db = StateDatabase(TestScratch.directory("ud-737-guard-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }
@@ -163,7 +164,7 @@ class FileInTheWayGuardTest {
     fun `an unsynced file is kept as a copy and recorded as a conflict`() {
         val x = syncRoot.resolve("x")
         Files.write(x, bytes)
-        val log = ConflictLog(Files.createTempDirectory("ud-737-log").resolve("conflicts.jsonl"), Files.createTempDirectory("ud-737-bk"))
+        val log = ConflictLog(TestScratch.directory("ud-737-log").resolve("conflicts.jsonl"), TestScratch.directory("ud-737-bk"))
         val manager = PlaceholderManager(syncRoot)
         SyncEngine(
             provider = provider,

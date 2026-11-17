@@ -13,6 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Mirror-engine audit candidate X4 (gkrost/unidrive-cli#55): a provider that reports a deleted folder alone
@@ -25,8 +26,8 @@ class MirrorAuditEngineTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-audit55-root")
-        db = StateDatabase(Files.createTempDirectory("ud-audit55-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-audit55-root")
+        db = StateDatabase(TestScratch.directory("ud-audit55-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

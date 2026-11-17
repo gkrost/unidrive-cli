@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Empty-directory reaping: after a pass deletes a file from the remote (because
@@ -31,7 +32,7 @@ class TrackingEngineDirReapTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("ts-reap")
+        workDir = TestScratch.directory("ts-reap")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider = FakeTrackingProvider()

@@ -7,6 +7,7 @@ import java.nio.file.attribute.AclEntryPermission
 import java.nio.file.attribute.AclEntryType
 import java.nio.file.attribute.AclFileAttributeView
 import java.nio.file.attribute.PosixFilePermissions
+import org.krost.unidrive.testing.TestScratch
 
 /** True on Windows, where access denial goes through ACL entries instead of POSIX bits. */
 internal fun isWindows(): Boolean = System.getProperty("os.name", "").lowercase().contains("win")
@@ -89,7 +90,7 @@ internal fun denyWrite(path: Path): (() -> Unit)? {
         } catch (_: Exception) {
             return null
         }
-    return if (runCatching { Files.createTempFile(path, ".deny-probe", null).let { Files.deleteIfExists(it) } }.isSuccess) {
+    return if (runCatching { TestScratch.file(path, ".deny-probe", null).let { Files.deleteIfExists(it) } }.isSuccess) {
         restore()
         null
     } else {

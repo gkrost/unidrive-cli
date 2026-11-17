@@ -22,6 +22,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `checkCredentials()` (archive#1240): one authenticated GET of the usage figure with the stored session, no console prompt
@@ -33,7 +34,7 @@ class InternxtCheckCredentialsTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("ix-check-")
+        dir = TestScratch.directory("ix-check-")
     }
 
     @AfterTest

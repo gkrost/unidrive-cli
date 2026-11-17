@@ -11,6 +11,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The backups namespace on its own: the device folders and the items below them that a provider marks [CloudItem.backup]
@@ -145,7 +146,7 @@ class BackupsNamespaceTest {
 
     @Test
     fun `a root an earlier run left stays read-only and moves aside for a live item of its name while the namespace is off`() {
-        val dir = Files.createTempDirectory("backups-namespace-db")
+        val dir = TestScratch.directory("backups-namespace-db")
         val db = StateDatabase(dir.resolve("state.db"))
         db.initialize()
         try {

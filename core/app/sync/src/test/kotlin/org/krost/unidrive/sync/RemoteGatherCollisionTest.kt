@@ -17,6 +17,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#401: two live remote items resolving to one path key must not silently drop a
@@ -37,9 +38,9 @@ class RemoteGatherCollisionTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-collide-root")
-        dbDir = Files.createTempDirectory("ud-collide-db")
-        cacheRoot = Files.createTempDirectory("ud-collide-cache")
+        syncRoot = TestScratch.directory("ud-collide-root")
+        dbDir = TestScratch.directory("ud-collide-db")
+        cacheRoot = TestScratch.directory("ud-collide-cache")
         db = StateDatabase(dbDir.resolve("state.db"))
         db.initialize()
         provider = CollisionFakeProvider()

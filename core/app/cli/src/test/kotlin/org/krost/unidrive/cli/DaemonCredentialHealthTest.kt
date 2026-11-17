@@ -34,6 +34,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#586: `credential_health` in `daemon.status` over a live socket (docs/dev/specs/unidrive-daemon-design.md §4.3).
@@ -47,7 +48,7 @@ class DaemonCredentialHealthTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("daemon-credential-health-test")
+        tempDir = TestScratch.directory("daemon-credential-health-test")
         socketPath = tempDir.resolve("daemon.sock")
     }
 

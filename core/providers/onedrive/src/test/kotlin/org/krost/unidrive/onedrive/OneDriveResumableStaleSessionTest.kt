@@ -18,6 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Silent-data-loss regression: a resumable (>4 MiB) OneDrive upload must NOT resume a
@@ -35,7 +36,7 @@ class OneDriveResumableStaleSessionTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-stale-session")
+        tokenDir = TestScratch.directory("ud-stale-session")
     }
 
     @AfterTest
@@ -56,7 +57,7 @@ class OneDriveResumableStaleSessionTest {
     }
 
     private fun writeLocalFile(size: Int, fill: Byte): Path {
-        val f = Files.createTempFile("ud-stale-local", ".bin")
+        val f = TestScratch.file("ud-stale-local", ".bin")
         Files.write(f, ByteArray(size) { fill })
         return f
     }

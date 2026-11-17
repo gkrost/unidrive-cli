@@ -11,6 +11,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Part of #742 (finding 7): failures.jsonl is a diary of what failed, not part of the sync. A write error on that
@@ -30,8 +31,8 @@ class FailureLogWriteErrorTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-failure-write-root")
-        stateDir = Files.createTempDirectory("ud-failure-write-state")
+        syncRoot = TestScratch.directory("ud-failure-write-root")
+        stateDir = TestScratch.directory("ud-failure-write-state")
         failureLog = stateDir.resolve("failures.jsonl")
         db = StateDatabase(stateDir.resolve("state.db")).also { it.initialize() }
         provider = FakeCloudProvider()

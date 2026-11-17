@@ -10,6 +10,7 @@ import org.krost.unidrive.sync.model.SyncEntry
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A profile with its own temp folders for the cache-containment tests: a [SyncEngine] over a [MemProvider], its
@@ -17,7 +18,7 @@ import java.time.Instant
  */
 internal class ContainmentEnv {
     val provider = MemProvider()
-    val base: Path = Files.createTempDirectory("ud-containment")
+    val base: Path = TestScratch.directory("ud-containment")
     val db = StateDatabase(base.resolve("state.db")).also { it.initialize() }
     val engine =
         SyncEngine(

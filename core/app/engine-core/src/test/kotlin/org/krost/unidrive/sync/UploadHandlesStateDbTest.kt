@@ -8,6 +8,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#437: the `upload_handles` table keeps the client handle of an unfinished upload across a close and reopen of
@@ -34,7 +35,7 @@ class UploadHandlesStateDbTest {
 
     @BeforeTest
     fun setUp() {
-        dbFile = Files.createTempDirectory("unidrive-upload-handles").resolve("state.db")
+        dbFile = TestScratch.directory("unidrive-upload-handles").resolve("state.db")
         db = StateDatabase(dbFile).also { it.initialize() }
     }
 

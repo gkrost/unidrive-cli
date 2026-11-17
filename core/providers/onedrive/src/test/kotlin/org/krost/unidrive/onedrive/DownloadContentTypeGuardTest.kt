@@ -13,6 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-231: guard against the "200 + text/html" CDN failure mode. A SharePoint / Azure edge node
@@ -84,7 +85,7 @@ class DownloadContentTypeGuardTest {
 
             val service = newService(engine)
 
-            val tempDir = Files.createTempDirectory("ud231-guard-")
+            val tempDir = TestScratch.directory("ud231-guard-")
             val destPath = tempDir.resolve("photo.jpg")
 
             // Deliberately does NOT pre-create the file so we can assert it's never written.
@@ -141,7 +142,7 @@ class DownloadContentTypeGuardTest {
 
             val service = newService(engine)
 
-            val tempDir = Files.createTempDirectory("ud231-positive-")
+            val tempDir = TestScratch.directory("ud231-positive-")
             val destPath = tempDir.resolve("photo.bin")
 
             service.downloadFile("test-id", destPath)
@@ -186,7 +187,7 @@ class DownloadContentTypeGuardTest {
                 }
 
             val service = newService(engine)
-            val tempDir = Files.createTempDirectory("od-trunc-")
+            val tempDir = TestScratch.directory("od-trunc-")
             val destPath = tempDir.resolve("f.bin")
 
             assertFailsWith<Exception> { service.downloadFile("test-id", destPath) }
@@ -227,7 +228,7 @@ class DownloadContentTypeGuardTest {
                 }
 
             val service = newService(engine)
-            val tempDir = Files.createTempDirectory("od354-guard-")
+            val tempDir = TestScratch.directory("od354-guard-")
             val destPath = tempDir.resolve("f.bin")
             val goodBytes = "GOOD-BYTES-V1".toByteArray()
             Files.write(destPath, goodBytes)
@@ -283,7 +284,7 @@ class DownloadContentTypeGuardTest {
                 }
 
             val service = newService(engine)
-            val tempDir = Files.createTempDirectory("od354-ok-")
+            val tempDir = TestScratch.directory("od354-ok-")
             val destPath = tempDir.resolve("f.bin")
             Files.write(destPath, "OLD-CONTENT".toByteArray())
 

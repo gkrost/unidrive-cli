@@ -7,13 +7,14 @@ import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `forgetCredentials()` (archive#1186): after a sign-out through the running daemon, the daemon's own instance drops the
  * grant it holds in memory, without the browser fallback of `authenticate()` and without touching the token file.
  */
 class DropboxForgetCredentialsTest {
-    private val dir = Files.createTempDirectory("dropbox-forget")
+    private val dir = TestScratch.directory("dropbox-forget")
     private val fake = FakeDropbox()
 
     @Test

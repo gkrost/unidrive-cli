@@ -7,6 +7,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import org.krost.unidrive.testing.TestScratch
 
 /** A remote tombstone is resolved by the remote-id index, not by walking the whole tracking set per tombstone. */
 class TrackingEngineTombstoneLookupTest {
@@ -17,7 +18,7 @@ class TrackingEngineTombstoneLookupTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-tombstone")
+        workDir = TestScratch.directory("tracking-tombstone")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider = FakeTrackingProvider().apply { incrementalAware = true }

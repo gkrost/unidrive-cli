@@ -3,6 +3,7 @@ package org.krost.unidrive.cli
 import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncDirection
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -18,7 +19,7 @@ class BackupCommandTest {
 
     @Test
     fun `backup add writes a mirror profile whose effective direction is upload`() {
-        val configDir = Files.createTempDirectory("backup-add-config")
+        val configDir = TestScratch.directory("backup-add-config")
         try {
             val configFile = configDir.resolve("config.toml")
             Files.writeString(

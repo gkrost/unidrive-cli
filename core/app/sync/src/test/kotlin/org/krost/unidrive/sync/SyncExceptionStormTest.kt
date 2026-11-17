@@ -14,6 +14,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-249 regression — after UD-248's per-action failure isolation, a sync pass hitting a
@@ -43,8 +44,8 @@ class SyncExceptionStormTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-storm-test")
-        val dbPath = Files.createTempDirectory("unidrive-storm-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-storm-test")
+        val dbPath = TestScratch.directory("unidrive-storm-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
     }

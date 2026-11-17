@@ -20,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#403: two live remote items with one path are both kept locally. The winner rule (archive#401) keeps the path for one;
@@ -41,9 +42,9 @@ class DuplicateTwinNamesTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-twinname-root")
-        dbDir = Files.createTempDirectory("ud-twinname-db")
-        cacheRoot = Files.createTempDirectory("ud-twinname-cache")
+        syncRoot = TestScratch.directory("ud-twinname-root")
+        dbDir = TestScratch.directory("ud-twinname-db")
+        cacheRoot = TestScratch.directory("ud-twinname-cache")
         db = StateDatabase(dbDir.resolve("state.db"))
         db.initialize()
         provider = TwinNamesFakeProvider()

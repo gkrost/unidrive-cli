@@ -2,6 +2,7 @@ package org.krost.unidrive.cli
 
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -16,7 +17,7 @@ import kotlin.test.assertTrue
 class SyncResetValidationTest {
     @Test
     fun `a bad streaming-reconciliation value is refused before --reset clears the state`() {
-        val dir = Files.createTempDirectory("sync-reset-validation")
+        val dir = TestScratch.directory("sync-reset-validation")
         try {
             val syncRoot = Files.createDirectories(dir.resolve("local"))
             val remote = Files.createDirectories(dir.resolve("remote"))

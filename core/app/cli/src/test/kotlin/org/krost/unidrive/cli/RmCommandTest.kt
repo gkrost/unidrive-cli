@@ -12,6 +12,7 @@ import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessLock
 import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -40,10 +41,10 @@ class RmCommandTest {
 
     @BeforeTest
     fun setUp() {
-        configDir = Files.createTempDirectory("ud-rm-cfg")
-        remoteRoot = Files.createTempDirectory("ud-rm-remote")
-        syncRoot = Files.createTempDirectory("ud-rm-local")
-        socketDir = Files.createTempDirectory("ud-rm-sock")
+        configDir = TestScratch.directory("ud-rm-cfg")
+        remoteRoot = TestScratch.directory("ud-rm-remote")
+        syncRoot = TestScratch.directory("ud-rm-local")
+        socketDir = TestScratch.directory("ud-rm-sock")
         writeProfile("mount")
         // The real socket lives in the user's runtime folder and ignores -c; the tests point it at their own folder.
         RmHooks.socketPath = { socketDir.resolve("$it.sock") }

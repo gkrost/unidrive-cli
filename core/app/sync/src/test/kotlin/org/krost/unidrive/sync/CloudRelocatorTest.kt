@@ -10,6 +10,7 @@ import kotlinx.coroutines.slf4j.MDCContext
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.*
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import java.nio.file.Files
@@ -815,7 +816,7 @@ class CloudRelocatorTest {
 
     @Test
     fun `UD-269 - cleanStaleTempDirs deletes dirs older than maxAge`() {
-        val tmp = Files.createTempDirectory("ud269-gc-test-")
+        val tmp = TestScratch.directory("ud269-gc-test-")
         try {
             val stale = tmp.resolve("unidrive-relocate-stale-001")
             Files.createDirectory(stale)
@@ -837,7 +838,7 @@ class CloudRelocatorTest {
 
     @Test
     fun `UD-269 - cleanStaleTempDirs leaves fresh dirs alone`() {
-        val tmp = Files.createTempDirectory("ud269-gc-fresh-test-")
+        val tmp = TestScratch.directory("ud269-gc-fresh-test-")
         try {
             val fresh = tmp.resolve("unidrive-relocate-fresh-001")
             Files.createDirectory(fresh)
@@ -853,7 +854,7 @@ class CloudRelocatorTest {
 
     @Test
     fun `UD-269 - cleanStaleTempDirs ignores non-relocate dirs`() {
-        val tmp = Files.createTempDirectory("ud269-gc-other-test-")
+        val tmp = TestScratch.directory("ud269-gc-other-test-")
         try {
             // A directory that's old but doesn't match the prefix — must not
             // get deleted (might be another tool's working dir).
@@ -876,7 +877,7 @@ class CloudRelocatorTest {
     fun `UD-269 - cleanStaleTempDirs returns 0 when tmpdir does not exist`() {
         // Pointing at a non-existent dir must not throw — the helper is
         // called silently at every relocate startup.
-        val nonexistent = Files.createTempDirectory("ud269-nx-").resolve("nope")
+        val nonexistent = TestScratch.directory("ud269-nx-").resolve("nope")
         assertEquals(0, CloudRelocator.cleanStaleTempDirs(tmpDir = nonexistent))
     }
 

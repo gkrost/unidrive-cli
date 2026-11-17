@@ -23,6 +23,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // Ghost-guard for the mount's rename/unlink (archive#203 layer-2). A state.db row with a
 // local: synthetic id is normally a genuinely-never-uploaded file. But a "ghost" —
@@ -132,12 +133,12 @@ class HydrationImplGhostGuardTest {
     )
 
     private fun freshEnv(): Env {
-        val cacheRoot = Files.createTempDirectory("ud-ghost-cache")
-        val dbPath = Files.createTempDirectory("ud-ghost-db").resolve("state.db")
+        val cacheRoot = TestScratch.directory("ud-ghost-cache")
+        val dbPath = TestScratch.directory("ud-ghost-db").resolve("state.db")
         val provider = GhostFakeProvider()
         val db = StateDatabase(dbPath = dbPath, inMemory = true)
         db.initialize()
-        val syncRoot = Files.createTempDirectory("ud-ghost-sync")
+        val syncRoot = TestScratch.directory("ud-ghost-sync")
         val engine = SyncEngine(provider = provider, db = db, syncRoot = syncRoot, cacheRoot = cacheRoot)
         val hydration = HydrationImpl(syncEngine = engine, stateDb = db)
         return Env(hydration, provider, db, engine)
@@ -323,7 +324,7 @@ class HydrationImplGhostGuardTest {
         runTest {
             val env = freshEnv()
             val (hydration, provider, db) = env
-            val other = Files.createTempFile("ud-ghost-other", ".bin").also { Files.write(it, ByteArray(GHOST_SIZE.toInt()) { 7 }) }
+            val other = TestScratch.file("ud-ghost-other", ".bin").also { Files.write(it, ByteArray(GHOST_SIZE.toInt()) { 7 }) }
             provider.algorithm = HashAlgorithm.Sha256Hex
             provider.ghostHash = HashVerifier.computeSha256Hex(other)
             env.seedLocalGhostRow("/same-size.bin")

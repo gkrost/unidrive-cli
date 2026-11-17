@@ -13,6 +13,7 @@ import org.krost.unidrive.io.LinkedEntries
 import java.io.IOException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.LinkOption
+import org.krost.unidrive.testing.TestScratch
 
 class TrashManagerTest {
     private lateinit var syncRoot: Path
@@ -20,7 +21,7 @@ class TrashManagerTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("trash-manager-test")
+        syncRoot = TestScratch.directory("trash-manager-test")
     }
 
     @AfterTest
@@ -32,7 +33,7 @@ class TrashManagerTest {
 
     // A folder beside the sync root that must stay untouched; the link tests point their links at it.
     private fun outsideFolder(): Path {
-        outside = Files.createTempDirectory("trash-manager-outside")
+        outside = TestScratch.directory("trash-manager-outside")
         Files.writeString(outside.resolve("keep.txt"), "keep")
         return outside
     }

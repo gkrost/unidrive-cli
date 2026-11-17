@@ -18,6 +18,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class IpcServerPermissionsTest {
     private lateinit var socketDir: Path
@@ -26,7 +27,7 @@ class IpcServerPermissionsTest {
 
     @BeforeTest
     fun setUp() {
-        socketDir = Files.createTempDirectory("unidrive-ipc-perm-test")
+        socketDir = TestScratch.directory("unidrive-ipc-perm-test")
         socketPath = socketDir.resolve("test.sock")
     }
 

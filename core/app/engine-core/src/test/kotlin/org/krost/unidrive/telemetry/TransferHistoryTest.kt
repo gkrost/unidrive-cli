@@ -21,6 +21,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 class TransferHistoryTest {
     private lateinit var dir: Path
@@ -46,7 +47,7 @@ class TransferHistoryTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("telemetry-test")
+        dir = TestScratch.directory("telemetry-test")
         db = dir.resolve("telemetry.db")
     }
 

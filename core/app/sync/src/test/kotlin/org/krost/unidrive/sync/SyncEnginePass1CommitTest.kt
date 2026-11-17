@@ -16,6 +16,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#439: Pass 1 commits its batch by time (and at a cap), so a pass that dies without unwinding
@@ -31,8 +32,8 @@ class SyncEnginePass1CommitTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-pass1-commit")
-        db = StateDatabase(Files.createTempDirectory("unidrive-pass1-commit-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-pass1-commit")
+        db = StateDatabase(TestScratch.directory("unidrive-pass1-commit-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

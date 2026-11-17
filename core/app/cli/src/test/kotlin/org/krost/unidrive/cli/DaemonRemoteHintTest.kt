@@ -20,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#111: a provider's remote-change hint ([CloudProvider.onRemoteChangeHint]) wakes the poll of a mount daemon; a mirror
@@ -31,7 +32,7 @@ class DaemonRemoteHintTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("daemon-remote-hint-test")
+        tempDir = TestScratch.directory("daemon-remote-hint-test")
         socketPath = tempDir.resolve("daemon.sock")
     }
 

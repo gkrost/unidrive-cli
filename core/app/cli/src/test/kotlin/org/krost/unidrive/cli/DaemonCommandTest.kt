@@ -11,6 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Daemon-lifecycle reliability guards.
@@ -78,7 +79,7 @@ class DaemonCommandTest {
     // ── daemon status does not trust a stale .lock.pid ───────────────────────
 
     private fun withPidFile(contents: String?, block: (java.nio.file.Path) -> Unit) {
-        val dir = java.nio.file.Files.createTempDirectory("daemon-status-test")
+        val dir = TestScratch.directory("daemon-status-test")
         try {
             val pidFile = dir.resolve(".lock.pid")
             if (contents != null) java.nio.file.Files.writeString(pidFile, contents)

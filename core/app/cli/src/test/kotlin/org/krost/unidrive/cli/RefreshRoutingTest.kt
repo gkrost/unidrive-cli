@@ -23,6 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class RefreshRoutingTest {
     private lateinit var db: StateDatabase
@@ -30,8 +31,8 @@ class RefreshRoutingTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("ud-route-db").resolve("state.db")).also { it.initialize() }
-        server = IpcServer(Files.createTempDirectory("ud-route-sock").resolve("d.sock"))
+        db = StateDatabase(TestScratch.directory("ud-route-db").resolve("state.db")).also { it.initialize() }
+        server = IpcServer(TestScratch.directory("ud-route-sock").resolve("d.sock"))
     }
 
     @AfterTest
@@ -438,7 +439,7 @@ private class ThrowingEngine(
 ) : SyncEngine(
         provider = ThrowingNoopProvider,
         db = freshDb(),
-        syncRoot = Files.createTempDirectory("ud-throwing-root"),
+        syncRoot = TestScratch.directory("ud-throwing-root"),
     ) {
     override suspend fun enumerateRemoteIntoState(reset: Boolean): EnumerateResult = throw failure
 
@@ -454,7 +455,7 @@ private class ThrowingEngine(
 
     companion object {
         private fun freshDb(): StateDatabase {
-            val dir = Files.createTempDirectory("ud-throwing-db")
+            val dir = TestScratch.directory("ud-throwing-db")
             return StateDatabase(dir.resolve("state.db")).also { it.initialize() }
         }
     }

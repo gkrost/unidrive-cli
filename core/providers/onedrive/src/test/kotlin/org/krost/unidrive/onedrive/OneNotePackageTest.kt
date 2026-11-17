@@ -17,6 +17,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A OneNote notebook is a OneDrive item with the `package` facet (`type: oneNote`) and neither a `file` nor a `folder`
@@ -31,7 +32,7 @@ class OneNotePackageTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("ud-onenote-package")
+        tmp = TestScratch.directory("ud-onenote-package")
     }
 
     @AfterTest

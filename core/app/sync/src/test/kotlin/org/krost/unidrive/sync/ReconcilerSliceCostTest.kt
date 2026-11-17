@@ -6,6 +6,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The per-page cost of the streaming reconcile slice: `resolveSlice` reads the rows its page and the
@@ -19,8 +20,8 @@ class ReconcilerSliceCostTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-slice-cost")
-        db = StateDatabase(Files.createTempDirectory("unidrive-slice-cost-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-slice-cost")
+        db = StateDatabase(TestScratch.directory("unidrive-slice-cost-db").resolve("state.db"))
         db.initialize()
     }
 

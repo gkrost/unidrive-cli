@@ -9,6 +9,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import org.krost.unidrive.HashAlgorithm
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A provider whose delta is a full listing of everything (localfs, S3: no change feed —
@@ -27,7 +28,7 @@ class TrackingEngineFullListingTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-full-listing")
+        workDir = TestScratch.directory("tracking-full-listing")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider =

@@ -10,13 +10,14 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1052: a sign-out revokes the grant at Dropbox (`auth/token/revoke`) before the local files go; the answer is
  * [TokenRevocation.REVOKED] only when Dropbox accepted the call.
  */
 class DropboxRevokeTest {
-    private val dir = Files.createTempDirectory("dropbox-revoke")
+    private val dir = TestScratch.directory("dropbox-revoke")
     private val fake = FakeDropbox()
 
     @Test

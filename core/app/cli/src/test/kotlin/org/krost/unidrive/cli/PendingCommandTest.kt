@@ -9,6 +9,7 @@ import org.krost.unidrive.sync.ProcessLock
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -44,7 +45,7 @@ class PendingCommandTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("pending-rows")
+        dir = TestScratch.directory("pending-rows")
         System.setProperty("user.home", dir.toString())
         Files.createDirectories(dir.resolve("roots").resolve("mirror"))
         Files.createDirectories(profileDir)

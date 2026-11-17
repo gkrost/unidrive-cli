@@ -13,6 +13,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A manual batch ([StateDatabase.beginBatch] .. [StateDatabase.commitBatch]) that opens as a
@@ -33,7 +34,7 @@ class StateDatabaseBatchWriteLockTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("sdb-batch-writelock")
+        dir = TestScratch.directory("sdb-batch-writelock")
         dbFile = dir.resolve("state.db")
         db1 = StateDatabase(dbFile).also { it.initialize() }
         db2 = StateDatabase(dbFile).also { it.initialize() }

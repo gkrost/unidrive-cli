@@ -19,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Dry-run purity ratchet. A dry-run must leave state.db, the sync tree, logs, caches and the provider exactly
@@ -155,7 +156,7 @@ class DryRunPurityTest {
 
     private fun run(s: Scenario): TwinResult =
         kotlinx.coroutines.runBlocking {
-            val base = Files.createTempDirectory("dryrun-twin-")
+            val base = TestScratch.directory("dryrun-twin-")
             val world = World(base.resolve("world"), createSyncRoot = s.createSyncRoot)
             try {
                 s.arrange(world)
@@ -186,7 +187,7 @@ class DryRunPurityTest {
     }
 
     private fun tempWorld(): Pair<Path, World> {
-        val base = Files.createTempDirectory("dryrun-repro-")
+        val base = TestScratch.directory("dryrun-repro-")
         return base to World(base.resolve("world"))
     }
 

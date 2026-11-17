@@ -4,6 +4,7 @@ import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Candidate P4 of the audit: the folder-uuid cache must follow the drive. It is filled by every path walk and by every create,
@@ -15,7 +16,7 @@ class InternxtFolderCacheStaleTest {
     @Test
     fun `a folder renamed elsewhere and replaced by a new one of the old name is walked afresh after the poll`() =
         runTest {
-            val tmp = Files.createTempDirectory("ud-cache-stale-")
+            val tmp = TestScratch.directory("ud-cache-stale-")
             try {
                 val drive = UploadDrive()
                 drive.folders += UploadDriveFolder("fa", "A", "root-folder-uuid")
@@ -44,7 +45,7 @@ class InternxtFolderCacheStaleTest {
     @Test
     fun `a batch create answered in another order still pairs each folder with its name`() =
         runTest {
-            val tmp = Files.createTempDirectory("ud-cache-batch-")
+            val tmp = TestScratch.directory("ud-cache-batch-")
             try {
                 val drive = UploadDrive()
                 drive.batchAnswerOrder = { it.reversed() }

@@ -6,10 +6,10 @@ import org.krost.unidrive.cli.ext.Formatter
 import org.krost.unidrive.cli.ext.ProfileView
 import org.krost.unidrive.sync.SyncConfig
 import java.nio.file.Path
-import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The global `-p` accepts a provider TYPE (e.g. "internxt"), which the root
@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
  * instead of the actual profile.
  */
 class TsContextProfileResolutionTest {
-    private val base = createTempDirectory("ts-ctx")
+    private val base = TestScratch.directory("ts-ctx")
 
     /** A services fake that maps the provider type "internxt" to profile "my_inxt". */
     private fun services(globalProfile: String?) =

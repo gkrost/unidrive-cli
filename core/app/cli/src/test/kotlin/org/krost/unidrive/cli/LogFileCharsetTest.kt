@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * #147: a log line naming an Arabic, Cyrillic, CJK or emoji path must reach the file as those characters, not as `?`.
@@ -26,7 +27,7 @@ class LogFileCharsetTest {
 
     @Test
     fun `the shipped logback config writes unidrive log in UTF-8 on every appender`() {
-        val dir = Files.createTempDirectory("unidrive-logcharset")
+        val dir = TestScratch.directory("unidrive-logcharset")
         try {
             val shipped =
                 javaClass.classLoader
@@ -57,7 +58,7 @@ class LogFileCharsetTest {
 
     @Test
     fun `the log_file redirect writes UTF-8 too`() {
-        val dir = Files.createTempDirectory("unidrive-logcharset")
+        val dir = TestScratch.directory("unidrive-logcharset")
         try {
             val context = LoggerContext().also { it.setMDCAdapter(LogbackMDCAdapter()) }
             val logFile = dir.resolve("redirect.log")

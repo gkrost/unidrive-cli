@@ -18,6 +18,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Refresh-race invariants.
@@ -79,7 +80,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `refreshToken serializes concurrent callers into single http roundtrip`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-race-")
+            val tmp = TestScratch.directory("internxt-auth-race-")
             try {
                 seedCredentials(tmp)
                 val auth = CountingAuthService(InternxtConfig(credentialProtector = null, tokenPath = tmp))
@@ -108,7 +109,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `refreshToken returns consistent credentials to all concurrent callers`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-consistency-")
+            val tmp = TestScratch.directory("internxt-auth-consistency-")
             try {
                 seedCredentials(tmp)
                 val auth = CountingAuthService(InternxtConfig(credentialProtector = null, tokenPath = tmp))
@@ -154,7 +155,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `a forced refresh naming the rejected jwt does not refresh a token already rotated for it`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-rejected-")
+            val tmp = TestScratch.directory("internxt-auth-rejected-")
             try {
                 seedCredentials(tmp, jwt = "rejected-jwt")
                 val auth = CountingAuthService(InternxtConfig(credentialProtector = null, tokenPath = tmp))
@@ -184,7 +185,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `getValidCredentials proactively refreshes when stored jwt is expired`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-proactive-")
+            val tmp = TestScratch.directory("internxt-auth-proactive-")
             try {
                 // Seed with an expired JWT (exp = 1 second after epoch).
                 val expiredJwt = makeJwtWithExp(1L)
@@ -215,7 +216,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `getValidCredentials does not refresh when stored jwt is still valid`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-valid-")
+            val tmp = TestScratch.directory("internxt-auth-valid-")
             try {
                 // exp = now + 10 days → well past the 1-day pre-expiry refresh
                 // margin (JWT_REFRESH_MARGIN_MS), so getValidCredentials must
@@ -249,7 +250,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `getValidCredentials still throws when no credentials are stored`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-empty-")
+            val tmp = TestScratch.directory("internxt-auth-empty-")
             try {
                 // No seedCredentials() call — store is empty.
                 val auth = CountingAuthService(InternxtConfig(credentialProtector = null, tokenPath = tmp))
@@ -289,7 +290,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `a short-lifetime token issued just now is NOT near expiry`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-clamp-fresh-")
+            val tmp = TestScratch.directory("internxt-auth-clamp-fresh-")
             try {
                 val nowSec = System.currentTimeMillis() / 1000
                 // 12 h lifetime, issued now: margin clamps to 3 h → 9 h of clean runway.
@@ -314,7 +315,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `the same short-lifetime token 10h later IS near expiry (lifetime-over-4 before the end)`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-clamp-late-")
+            val tmp = TestScratch.directory("internxt-auth-clamp-late-")
             try {
                 val nowSec = System.currentTimeMillis() / 1000
                 // 12 h lifetime issued 10 h ago: 2 h remain, margin = 3 h → within margin.
@@ -341,7 +342,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `a 30-day token behaves exactly as with the fixed margin`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-clamp-long-")
+            val tmp = TestScratch.directory("internxt-auth-clamp-long-")
             try {
                 val nowSec = System.currentTimeMillis() / 1000
                 // 30-day lifetime: min(24h, 180h) = 24h — the fixed-margin behaviour.
@@ -363,7 +364,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `a token without iat keeps the fixed 24h margin`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-clamp-noiat-")
+            val tmp = TestScratch.directory("internxt-auth-clamp-noiat-")
             try {
                 val nowSec = System.currentTimeMillis() / 1000
                 // 12 h left but no iat claim: lifetime unknown → fixed 24 h margin
@@ -400,7 +401,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `getValidCredentials forceRefresh refreshes even when stored jwt is still fresh`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-force-")
+            val tmp = TestScratch.directory("internxt-auth-force-")
             try {
                 val futureExp = System.currentTimeMillis() / 1000 + 10L * 24 * 3600
                 val freshJwt = makeJwtWithExp(futureExp)
@@ -452,7 +453,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `isJwtExpired correctly handles every reachable base64 padding residue`() =
         runBlocking {
-            val tmp = Files.createTempDirectory("internxt-auth-padding-")
+            val tmp = TestScratch.directory("internxt-auth-padding-")
             try {
                 val futureExp = System.currentTimeMillis() / 1000 + 3600
                 val encoder = java.util.Base64.getUrlEncoder().withoutPadding()
@@ -552,7 +553,7 @@ class InternxtAuthServiceTest {
 
     @Test
     fun `char array authentication uses char based crypto and sends only the derived hash`() = runBlocking {
-        val tempDir = Files.createTempDirectory("internxt-auth-char-password-").also { tempDirs.add(it) }
+        val tempDir = TestScratch.directory("internxt-auth-char-password-").also { tempDirs.add(it) }
         val crypto =
             object : InternxtCrypto() {
                 override fun hashPassword(password: CharArray, sKey: String, cryptoKey: String): String {
@@ -759,7 +760,7 @@ class InternxtAuthServiceTest {
     @Test
     fun `interactive auth without a console fails with the typed auth-required reason`(): Unit = runBlocking {
         if (System.console() != null) return@runBlocking
-        val tmp = Files.createTempDirectory("internxt-auth-headless-")
+        val tmp = TestScratch.directory("internxt-auth-headless-")
         try {
             seedCredentials(tmp, jwt = "expired-jwt")
             val auth = CountingAuthService(InternxtConfig(credentialProtector = null, tokenPath = tmp))

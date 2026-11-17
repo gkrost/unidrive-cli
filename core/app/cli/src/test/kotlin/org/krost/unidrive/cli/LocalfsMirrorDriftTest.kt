@@ -13,6 +13,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Mirror drift on the `localfs` provider: the "cloud" is a plain directory, so a remote change is a plain file
@@ -38,7 +39,7 @@ class LocalfsMirrorDriftTest {
 
     @BeforeTest
     fun setUp() {
-        base = Files.createTempDirectory("ud-mirror-drift")
+        base = TestScratch.directory("ud-mirror-drift")
         local = Files.createDirectories(base.resolve("local"))
         remote = Files.createDirectories(base.resolve("remote"))
         val profileDir = Files.createDirectories(base.resolve("profile"))

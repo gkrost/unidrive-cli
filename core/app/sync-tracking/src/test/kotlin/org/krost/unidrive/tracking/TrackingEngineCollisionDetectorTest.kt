@@ -9,6 +9,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#401: where two live remote items share one path, the path-keyed tracking set
@@ -25,7 +26,7 @@ class TrackingEngineCollisionDetectorTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-collide")
+        workDir = TestScratch.directory("tracking-collide")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider = FakeTrackingProvider()

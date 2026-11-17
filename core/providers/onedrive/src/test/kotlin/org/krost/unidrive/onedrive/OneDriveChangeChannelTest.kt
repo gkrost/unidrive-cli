@@ -13,6 +13,7 @@ import io.ktor.http.headersOf
 import io.socket.client.Socket
 import kotlinx.coroutines.runBlocking
 import org.krost.unidrive.RemoteChangeChannelStatus.State
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import java.nio.file.Files
@@ -458,7 +459,7 @@ class OneDriveChangeChannelTest {
     @Test
     fun `the provider opens the channel lazily and close, logout and forgetCredentials stop it`() =
         runBlocking {
-            val dir = Files.createTempDirectory("od-channel-")
+            val dir = TestScratch.directory("od-channel-")
             try {
                 val made = mutableListOf<OneDriveChangeChannel>()
                 fun provider(enabled: Boolean) =
@@ -507,7 +508,7 @@ class OneDriveChangeChannelTest {
 
     @Test
     fun `the profile key switches the channel and defaults to on`() {
-        val dir = Files.createTempDirectory("od-channel-key-")
+        val dir = TestScratch.directory("od-channel-key-")
         try {
             fun configOf(props: Map<String, String?>) =
                 (OneDriveProviderFactory().create(props, dir) as OneDriveProvider).let { p ->
@@ -526,7 +527,7 @@ class OneDriveChangeChannelTest {
     @Test
     fun `the endpoint request reads notificationUrl and expirationDateTime from Graph's reply`() =
         runBlocking {
-            val dir = Files.createTempDirectory("od-socketio-")
+            val dir = TestScratch.directory("od-socketio-")
             try {
                 var path: String? = null
                 val engine =

@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A download whose body is shorter than its Content-Length is a truncated transfer (a proxy or a broken store). The
@@ -22,8 +23,8 @@ class DropboxTruncatedDownloadTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("dbx-trunc-home")
-        home = Files.createTempDirectory("dbx-trunc-out")
+        dir = TestScratch.directory("dbx-trunc-home")
+        home = TestScratch.directory("dbx-trunc-out")
     }
 
     @AfterTest

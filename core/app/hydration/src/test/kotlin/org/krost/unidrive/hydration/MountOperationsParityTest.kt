@@ -27,6 +27,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#560 U1: characterization tests for the mount operations (`ensureHydrated`, `uploadFromCache`,
@@ -49,9 +50,9 @@ class MountOperationsParityTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-560-root")
-        cacheRoot = Files.createTempDirectory("ud-560-cache")
-        db = StateDatabase(Files.createTempDirectory("ud-560-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-560-root")
+        cacheRoot = TestScratch.directory("ud-560-cache")
+        db = StateDatabase(TestScratch.directory("ud-560-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }
@@ -211,7 +212,7 @@ class MountOperationsParityTest {
     @Test
     fun `current behaviour - a cancelled uploadFromCache rethrows, is audited as failed and leaves the row pending`() =
         runTest {
-            val auditDir = Files.createTempDirectory("ud-560-audit")
+            val auditDir = TestScratch.directory("ud-560-audit")
             val audit = AuditLog(auditDir, profileName = "parity")
             val e = engine(auditLog = audit)
             val created = mountCreatedRow("/new.txt")

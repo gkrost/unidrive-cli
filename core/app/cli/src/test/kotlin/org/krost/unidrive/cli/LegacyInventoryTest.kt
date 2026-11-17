@@ -9,6 +9,7 @@ import org.krost.unidrive.cli.LegacyInventory.PathClass
 import org.krost.unidrive.sync.ProcessLock
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.nio.file.Files
 import java.nio.file.Path
@@ -39,7 +40,7 @@ class LegacyInventoryTest {
 
     @BeforeTest
     fun setUp() {
-        root = Files.createTempDirectory("unidrive-inventory-test-")
+        root = TestScratch.directory("unidrive-inventory-test-")
         profileDir = Files.createDirectories(root.resolve("profile"))
         syncRoot = Files.createDirectories(root.resolve("sync"))
         cacheDir = Files.createDirectories(root.resolve("cache"))

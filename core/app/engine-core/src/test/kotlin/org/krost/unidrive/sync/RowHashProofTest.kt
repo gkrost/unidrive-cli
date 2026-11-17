@@ -7,6 +7,7 @@ import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1219: the proof from the content hash a cloud row carries. The recorded values are Microsoft's published quickXorHash
@@ -20,7 +21,7 @@ class RowHashProofTest {
     // SHA-256("abc"), what a Graph item without a quickXorHash may carry.
     private val sha256Abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
-    private fun file(content: String): Path = Files.createTempFile("row-hash-proof", ".bin").also { Files.writeString(it, content) }
+    private fun file(content: String): Path = TestScratch.file("row-hash-proof", ".bin").also { Files.writeString(it, content) }
 
     @Test
     fun `a file with the recorded quickXor is the same`() {

@@ -4,6 +4,7 @@ import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.io.grantProblem
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -36,7 +37,7 @@ class ResetConfirmationTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("reset-confirmation")
+        dir = TestScratch.directory("reset-confirmation")
         val syncRoot = Files.createDirectories(dir.resolve("local"))
         val remote = Files.createDirectories(dir.resolve("remote"))
         Files.writeString(

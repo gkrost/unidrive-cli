@@ -7,6 +7,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#110: legacy SyncEngine self-heals a 410-Gone expired delta cursor.
@@ -29,8 +30,8 @@ class LegacyEngine410SelfHealTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-410-test")
-        val dbPath = Files.createTempDirectory("ud-410-db").resolve("state.db")
+        syncRoot = TestScratch.directory("ud-410-test")
+        val dbPath = TestScratch.directory("ud-410-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()
@@ -236,7 +237,7 @@ class LegacyEngine410SelfHealTest {
         runTest {
             val alwaysExpiredProvider = AlwaysExpiredDeltaProvider()
             val localDb = StateDatabase(
-                Files.createTempDirectory("ud-410-neg-db").resolve("state.db"),
+                TestScratch.directory("ud-410-neg-db").resolve("state.db"),
             )
             localDb.initialize()
             // Seed a cursor so the first delta() call is a "resumed" (non-null cursor) call.

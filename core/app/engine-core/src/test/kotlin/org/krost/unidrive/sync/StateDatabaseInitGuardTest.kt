@@ -4,6 +4,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-217: calling any public StateDatabase method before initialize() must
@@ -13,7 +14,7 @@ import kotlin.test.assertTrue
 class StateDatabaseInitGuardTest {
     @Test
     fun publicMethodBeforeInitializeThrowsClearError() {
-        val tmpDir = Files.createTempDirectory("unidrive-init-guard-test")
+        val tmpDir = TestScratch.directory("unidrive-init-guard-test")
         val db = StateDatabase(tmpDir.resolve("state.db"))
         val ex = assertFailsWith<IllegalStateException> { db.getEntryCount() }
         assertTrue(

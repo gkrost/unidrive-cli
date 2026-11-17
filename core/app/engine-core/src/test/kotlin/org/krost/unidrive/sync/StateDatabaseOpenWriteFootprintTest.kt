@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The most common open of state.db — a CLI command against an up-to-date file — must not write.
@@ -96,7 +97,7 @@ class StateDatabaseOpenWriteFootprintTest {
 
     @Test
     fun `an open that finds the current schema writes nothing`() {
-        val dir = Files.createTempDirectory("sdb-open-footprint")
+        val dir = TestScratch.directory("sdb-open-footprint")
         val file = dir.resolve("state.db")
         try {
             // One fresh open stamps the schema; the spy must see it (sensitivity control).
@@ -129,7 +130,7 @@ class StateDatabaseOpenWriteFootprintTest {
 
     @Test
     fun `an open of an out-of-date file still stamps`() {
-        val dir = Files.createTempDirectory("sdb-open-footprint-old")
+        val dir = TestScratch.directory("sdb-open-footprint-old")
         val file = dir.resolve("state.db")
         try {
             StateDatabase(file).also { it.initialize() }.close()

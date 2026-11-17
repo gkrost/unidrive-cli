@@ -19,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The CLI's `auth begin` and `auth complete` are separate processes, so the device-code flow has to
@@ -30,7 +31,7 @@ class OneDrivePendingFlowTest {
 
     @BeforeTest
     fun setUp() {
-        profileDir = Files.createTempDirectory("od-pending-")
+        profileDir = TestScratch.directory("od-pending-")
     }
 
     @AfterTest

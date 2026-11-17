@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // archive#171: the NFC canonicalization helper + the on-disk resolution fallback.
 class PathNormalizerTest {
@@ -28,7 +29,7 @@ class PathNormalizerTest {
     // via its NFC logical path so uploads read the real bytes (issue archive#211 P2).
     @Test
     fun `safeResolveLocal finds an NFD on-disk file via its NFC path`() {
-        val root = Files.createTempDirectory("ud-nfc-resolve")
+        val root = TestScratch.directory("ud-nfc-resolve")
         val nfdName = "scho\u0308n.txt" // decomposed name on disk
         Files.createFile(root.resolve(nfdName))
         val resolved = safeResolveLocal(root, "/sch\u00F6n.txt") // NFC query

@@ -11,6 +11,7 @@ import org.krost.unidrive.sync.EnumerateResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class EnumeratePollerTest {
     // advanceTimeBy runs tasks in [now, now+delta); a delay at exactly `intervalMs`
@@ -851,7 +852,7 @@ class EnumeratePollerTest {
     @Test
     fun `a sync_path root that is missing remotely fails the poll, which reports it and backs off`() = pollTest { scope ->
         val provider = MissingRootProvider("/zz_missing_in_cloud")
-        val tmp = java.nio.file.Files.createTempDirectory("ud-missing-root")
+        val tmp = TestScratch.directory("ud-missing-root")
         val db = org.krost.unidrive.sync.StateDatabase(tmp.resolve("state.db")).also { it.initialize() }
         try {
             val engine =

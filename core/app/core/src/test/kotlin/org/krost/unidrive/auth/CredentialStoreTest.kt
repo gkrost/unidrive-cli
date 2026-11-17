@@ -23,6 +23,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-344: covers the lifted credential-store invariants.
@@ -44,7 +45,7 @@ class CredentialStoreTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-credstore-test")
+        dir = TestScratch.directory("unidrive-credstore-test")
     }
 
     @AfterTest
@@ -387,7 +388,7 @@ class CredentialStoreTest {
     }
 
     private fun linkToDir(): Path {
-        val link = Files.createTempDirectory("unidrive-credstore-link").resolve("alias")
+        val link = TestScratch.directory("unidrive-credstore-link").resolve("alias")
         val made = runCatching { Files.createSymbolicLink(link, dir) }.isSuccess
         assumeTrue("symbolic links cannot be created here", made)
         return link

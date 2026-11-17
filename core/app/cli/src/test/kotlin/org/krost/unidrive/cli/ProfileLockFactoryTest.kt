@@ -10,6 +10,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 class ProfileLockFactoryTest {
     private val originalErr = System.err
@@ -19,7 +20,7 @@ class ProfileLockFactoryTest {
     @BeforeTest
     fun setUp() {
         System.setErr(PrintStream(capturedErr))
-        lockFile = Files.createTempFile("profile-lock-factory", ".lock")
+        lockFile = TestScratch.file("profile-lock-factory", ".lock")
     }
 
     @AfterTest

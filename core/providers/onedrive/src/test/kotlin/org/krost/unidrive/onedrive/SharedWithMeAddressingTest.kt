@@ -26,6 +26,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A shared-with-me item lives in another user's drive: every call that takes its id must address it as
@@ -98,7 +99,7 @@ class SharedWithMeAddressingTest {
 
     private fun fixture(resource: String): String = javaClass.getResource(resource)!!.readText()
 
-    private fun tempDir(): Path = Files.createTempDirectory("ud-shared-addressing").also { tempDirs.add(it) }
+    private fun tempDir(): Path = TestScratch.directory("ud-shared-addressing").also { tempDirs.add(it) }
 
     private fun providerWith(engine: MockEngine): OneDriveProvider {
         val config = OneDriveConfig(tokenPath = tempDir(), includeShared = true)

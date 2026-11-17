@@ -19,6 +19,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A tombstone is the delete of one remote item. When the row at its path tracks another item (a provider that replaces a
@@ -33,8 +34,8 @@ class StaleTombstoneIdTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-stale-tomb")
-        db = StateDatabase(Files.createTempDirectory("unidrive-stale-tomb-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-stale-tomb")
+        db = StateDatabase(TestScratch.directory("unidrive-stale-tomb-db").resolve("state.db"))
         db.initialize()
     }
 
@@ -198,8 +199,8 @@ class StaleTombstoneIdTest {
     )
 
     private fun engineScenario(streaming: Boolean): Outcome {
-        val root = Files.createTempDirectory("ud-stale-tomb-root")
-        val engineDb = StateDatabase(Files.createTempDirectory("ud-stale-tomb-edb").resolve("state.db"))
+        val root = TestScratch.directory("ud-stale-tomb-root")
+        val engineDb = StateDatabase(TestScratch.directory("ud-stale-tomb-edb").resolve("state.db"))
         engineDb.initialize()
         try {
             val provider = ReplacingFakeProvider()
@@ -209,7 +210,7 @@ class StaleTombstoneIdTest {
                     db = engineDb,
                     syncRoot = root,
                     reporter = DuplicateTwinNamesTest.CountingReporter(),
-                    cacheRoot = Files.createTempDirectory("ud-stale-tomb-cache"),
+                    cacheRoot = TestScratch.directory("ud-stale-tomb-cache"),
                     cacheKey = "stale-tombstone-test",
                     streamingReconciliation = streaming,
                 )

@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // #743 finding 1: a local file with a pending-upload row (scanned, never uploaded) and a remote file
 // another device later created at the same path. The remote state classifies as NEW against the
@@ -36,8 +37,8 @@ class PendingUploadRemoteNewcomerTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-743-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-743-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-743-root")
+        db = StateDatabase(TestScratch.directory("unidrive-743-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider().apply { hashAlgorithmOverride = HashAlgorithm.Sha256Hex }
     }

@@ -18,6 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#491, download direction: two cloud items whose names differ only in Unicode normalisation (an NFC/NFD pair, the
@@ -40,9 +41,9 @@ class NormalisationTwinsTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-nfctwin-root")
-        dbDir = Files.createTempDirectory("ud-nfctwin-db")
-        cacheRoot = Files.createTempDirectory("ud-nfctwin-cache")
+        syncRoot = TestScratch.directory("ud-nfctwin-root")
+        dbDir = TestScratch.directory("ud-nfctwin-db")
+        cacheRoot = TestScratch.directory("ud-nfctwin-cache")
         db = StateDatabase(dbDir.resolve("state.db"))
         db.initialize()
         provider = PathAddressedProvider()

@@ -13,6 +13,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#421: renaming a synced local folder (`d1` -> `d2`, same parent) planned `mkdir-remote d2`,
@@ -28,8 +29,8 @@ class FolderRenameOrderTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-rename-order-test")
-        dbPath = Files.createTempDirectory("unidrive-rename-order-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-rename-order-test")
+        dbPath = TestScratch.directory("unidrive-rename-order-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         reconciler = Reconciler(db, syncRoot, ConflictPolicy.KEEP_BOTH)

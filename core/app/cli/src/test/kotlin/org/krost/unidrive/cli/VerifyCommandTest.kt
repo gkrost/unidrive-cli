@@ -9,6 +9,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -39,9 +40,9 @@ class VerifyCommandTest {
 
     @BeforeTest
     fun setUp() {
-        configDir = Files.createTempDirectory("ud-verify-cfg")
-        syncRoot = Files.createTempDirectory("ud-verify-local")
-        remoteRoot = Files.createTempDirectory("ud-verify-remote")
+        configDir = TestScratch.directory("ud-verify-cfg")
+        syncRoot = TestScratch.directory("ud-verify-local")
+        remoteRoot = TestScratch.directory("ud-verify-remote")
         Files.writeString(
             configDir.resolve("config.toml"),
             """

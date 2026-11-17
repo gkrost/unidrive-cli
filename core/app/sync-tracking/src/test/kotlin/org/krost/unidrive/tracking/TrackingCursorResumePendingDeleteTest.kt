@@ -9,6 +9,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class TrackingCursorResumePendingDeleteTest {
     private lateinit var workDir: Path
@@ -18,7 +19,7 @@ class TrackingCursorResumePendingDeleteTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-cursor-resume")
+        workDir = TestScratch.directory("tracking-cursor-resume")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider = FakeTrackingProvider().apply { incrementalAware = true }

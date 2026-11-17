@@ -20,6 +20,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `refresh.run` with `"reset": true` and no mount client clears state.db and re-enumerates. The rows that
@@ -37,7 +38,7 @@ class RefreshResetKeepsPendingTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("ud-reset-keeps")
+        tmp = TestScratch.directory("ud-reset-keeps")
         db = StateDatabase(tmp.resolve("state.db")).also { it.initialize() }
         server = IpcServer(tmp.resolve("d.sock"))
         engine = RecordingEngine(cacheRoot = tmp.resolve("cache"))

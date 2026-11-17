@@ -28,6 +28,7 @@ import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The rename half of #210 (#234): a rename's re-key finds the moved slot's count at zero (its last upload has just
@@ -110,13 +111,13 @@ class UploadSlotRekeyRaceTest {
 
     private class Rig {
         val provider = GatedProvider()
-        val db = StateDatabase(dbPath = Files.createTempDirectory("unidrive-rekey-db").resolve("state.db"), inMemory = true)
+        val db = StateDatabase(dbPath = TestScratch.directory("unidrive-rekey-db").resolve("state.db"), inMemory = true)
             .also { it.initialize() }
         val engine = SyncEngine(
             provider = provider,
             db = db,
-            syncRoot = Files.createTempDirectory("unidrive-rekey-sync"),
-            cacheRoot = Files.createTempDirectory("unidrive-rekey-cache"),
+            syncRoot = TestScratch.directory("unidrive-rekey-sync"),
+            cacheRoot = TestScratch.directory("unidrive-rekey-cache"),
         )
         val uploadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val impl = HydrationImpl(engine, db, recoveryUploadScope = uploadScope)

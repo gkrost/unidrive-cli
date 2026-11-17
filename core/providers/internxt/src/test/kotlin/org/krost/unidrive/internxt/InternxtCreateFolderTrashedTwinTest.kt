@@ -7,6 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The server refuses a folder create with 409 while any folder of that name holds the slot, a trashed one included. The
@@ -17,7 +18,7 @@ import kotlin.test.assertTrue
 class InternxtCreateFolderTrashedTwinTest {
     private fun withDrive(block: suspend (UploadDrive, InternxtProvider) -> Unit) =
         runTest {
-            val tmp = Files.createTempDirectory("ud-folder-twin-")
+            val tmp = TestScratch.directory("ud-folder-twin-")
             try {
                 val drive = UploadDrive()
                 val provider = rootedInternxtProvider(tmp, drive.engine)

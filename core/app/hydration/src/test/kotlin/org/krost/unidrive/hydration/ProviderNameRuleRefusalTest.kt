@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A provider that refuses some names by its own rules before any request (Internxt's `internxt_strict_names`): the
@@ -91,14 +92,14 @@ class ProviderNameRuleRefusalTest {
 
     private fun env(refused: Map<String, String>): Env {
         val provider = RuleProvider(refused)
-        val db = StateDatabase(dbPath = Files.createTempDirectory("ud-name-rule-db").resolve("state.db"), inMemory = true)
+        val db = StateDatabase(dbPath = TestScratch.directory("ud-name-rule-db").resolve("state.db"), inMemory = true)
         db.initialize()
         val engine =
             SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("ud-name-rule-sync"),
-                cacheRoot = Files.createTempDirectory("ud-name-rule-cache"),
+                syncRoot = TestScratch.directory("ud-name-rule-sync"),
+                cacheRoot = TestScratch.directory("ud-name-rule-cache"),
             )
         db.upsertEntry(
             SyncEntry(

@@ -4,6 +4,7 @@ import org.junit.Assume.assumeTrue
 import java.nio.file.Files
 import kotlin.system.measureTimeMillis
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class NotifyProgressReporterTest {
     private val noOpExecutor: (List<String>) -> Unit = {}
@@ -46,7 +47,7 @@ class NotifyProgressReporterTest {
     @Test
     fun `the default executor destroys a notifier that outlives its budget`() {
         assumeTrue("the trap-and-destroy oracle needs a POSIX shell", !System.getProperty("os.name").orEmpty().contains("windows", ignoreCase = true))
-        val marker = Files.createTempDirectory("unidrive-notify-destroy-").resolve("destroyed.marker")
+        val marker = TestScratch.directory("unidrive-notify-destroy-").resolve("destroyed.marker")
         val elapsed = measureTimeMillis {
             DEFAULT_NOTIFY_EXECUTOR(listOf("sh", "-c", "trap 'touch ${marker.toAbsolutePath()}' TERM; sleep 30 & wait"))
         }

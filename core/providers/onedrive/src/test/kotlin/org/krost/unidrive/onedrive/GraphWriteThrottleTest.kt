@@ -28,6 +28,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#293: every mutating Graph call (simple PUT, DELETE, folder POST, move PATCH, fileSystemInfo PATCH,
@@ -45,7 +46,7 @@ class GraphWriteThrottleTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-graph-write-throttle")
+        tokenDir = TestScratch.directory("ud-graph-write-throttle")
         localFile = tokenDir.resolve("local.bin")
         Files.write(localFile, "bytes".toByteArray())
     }

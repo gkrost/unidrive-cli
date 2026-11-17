@@ -20,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * #212: a probe of a cloud rule file waits for its transfer outside the node's monitor. The `CloudRuleFiles`-wide
@@ -28,7 +29,7 @@ import kotlin.test.assertTrue
  * permit-holding upload of the same folder behind its wait.
  */
 class IgnoreTreeConcurrencyTest {
-    private val dir: Path = Files.createTempDirectory("ud-ignore-tree-concurrency")
+    private val dir: Path = TestScratch.directory("ud-ignore-tree-concurrency")
     private val bodies = ConcurrentHashMap<String, String>()
     private val downloads = AtomicInteger()
 

@@ -16,6 +16,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The hot calls of [StateDatabase] (the lookups, the upsert, the sync_state pair, the staging insert) reuse prepared
@@ -30,7 +31,7 @@ class StateDatabaseStatementCacheTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-stmt-cache")
+        dir = TestScratch.directory("unidrive-stmt-cache")
         dbFile = dir.resolve("state.db")
         db = StateDatabase(dbFile)
         db.initialize()

@@ -4,6 +4,7 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.EntryStatus
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -28,7 +29,7 @@ class RemoteGatherSweepTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-sweep")
+        tmp = TestScratch.directory("unidrive-sweep")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

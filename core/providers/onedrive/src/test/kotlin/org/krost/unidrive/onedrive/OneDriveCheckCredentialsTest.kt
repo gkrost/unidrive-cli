@@ -22,6 +22,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `checkCredentials()` (archive#1240): one authenticated GET of the drive root with the stored token, no sign-in whatever is
@@ -33,7 +34,7 @@ class OneDriveCheckCredentialsTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("od-check-")
+        dir = TestScratch.directory("od-check-")
     }
 
     @AfterTest

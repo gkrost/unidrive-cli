@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-366 data-loss regression: create-collision keep-both.
@@ -104,7 +105,7 @@ class InternxtCreateCollisionTest {
     @Test
     fun `create_collision_with_differing_remote_keeps_both_does_not_overwrite`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-coll-diff-")
+            val tmp = TestScratch.directory("ud-coll-diff-")
             // Uploaded file: "AGENTS.md" (31 KB plaintext — real size doesn't matter
             // for the HTTP-mock path; we use a small actual file here)
             val local =
@@ -279,7 +280,7 @@ class InternxtCreateCollisionTest {
     @Test
     fun `create_collision_with_identical_remote_adopts_no_conflict_copy`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-coll-ident-")
+            val tmp = TestScratch.directory("ud-coll-ident-")
             val local =
                 java.nio.file.Files
                     .createTempFile(tmp, "notes-", ".txt")
@@ -390,7 +391,7 @@ class InternxtCreateCollisionTest {
     @Test
     fun `create_collision_on_folder_path_still_throws`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-coll-folder-")
+            val tmp = TestScratch.directory("ud-coll-folder-")
             val local =
                 java.nio.file.Files
                     .createTempFile(tmp, "thing-", ".bin")
@@ -494,7 +495,7 @@ class InternxtCreateCollisionTest {
     @Test
     fun `create collision with only a trashed file of that name lands a conflict copy not a retry`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-coll-trashed-")
+            val tmp = TestScratch.directory("ud-coll-trashed-")
             val local =
                 java.nio.file.Files
                     .createTempFile(tmp, "AGENTS-", ".md")
@@ -615,7 +616,7 @@ class InternxtCreateCollisionTest {
     @Test
     fun `create collision with a case-form name holder runs the identity ladder and adopts it`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-coll-case-")
+            val tmp = TestScratch.directory("ud-coll-case-")
             val local =
                 java.nio.file.Files
                     .createTempFile(tmp, "notes-", ".txt")
@@ -710,7 +711,7 @@ class InternxtCreateCollisionTest {
     @Test
     fun `create collision with a same-base file of a different extension is not adopted and rethrows`() =
         runTest {
-            val tmp = java.nio.file.Files.createTempDirectory("ud-coll-ext-")
+            val tmp = TestScratch.directory("ud-coll-ext-")
             val local =
                 java.nio.file.Files
                     .createTempFile(tmp, "notes-", ".txt")
@@ -883,7 +884,7 @@ class InternxtCreateCollisionTest {
                     else -> error("unexpected request in same-size collision test: ${request.method} $url")
                 }
             }
-        val tmp = java.nio.file.Files.createTempDirectory("ud-coll-same-size-")
+        val tmp = TestScratch.directory("ud-coll-same-size-")
         val local = tmp.resolve("report.pdf").also { java.nio.file.Files.write(it, case.localBytes) }
         val provider = newProviderRooted(tmp, engine)
         try {
@@ -1118,7 +1119,7 @@ class InternxtCreateCollisionTest {
                     else -> error("unexpected request in makefile collision test: ${request.method} $url")
                 }
             }
-        val tmp = java.nio.file.Files.createTempDirectory("ud-coll-makefile-")
+        val tmp = TestScratch.directory("ud-coll-makefile-")
         val local = tmp.resolve("Makefile").also { java.nio.file.Files.write(it, localBytes) }
         val provider = newProviderRooted(tmp, engine)
         try {

@@ -21,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class InternxtRemoteObjectAuditTest {
     private val requestLog = mutableListOf<String>()
@@ -28,7 +29,7 @@ class InternxtRemoteObjectAuditTest {
     private val maxActiveRequests = AtomicInteger()
 
     private fun newProvider(): InternxtProvider {
-        val tokenPath = Files.createTempDirectory("ud-audit-token")
+        val tokenPath = TestScratch.directory("ud-audit-token")
         val payload = """{"exp":9999999999}"""
         val payloadB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(payload.toByteArray())
         return InternxtProvider(

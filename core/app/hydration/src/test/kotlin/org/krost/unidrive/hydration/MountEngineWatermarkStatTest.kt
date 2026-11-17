@@ -16,6 +16,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The watermark rule (archive#337, archive#148) for the mount's write-back (moved here from
@@ -31,8 +32,8 @@ class MountEngineWatermarkStatTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-337-root")
-        db = StateDatabase(Files.createTempDirectory("ud-337-db").resolve("state.db")).also { it.initialize() }
+        syncRoot = TestScratch.directory("ud-337-root")
+        db = StateDatabase(TestScratch.directory("ud-337-db").resolve("state.db")).also { it.initialize() }
         provider = FakeCloudProvider()
         engine =
             SyncEngine(
@@ -41,7 +42,7 @@ class MountEngineWatermarkStatTest {
                 syncRoot = syncRoot,
                 conflictPolicy = ConflictPolicy.KEEP_BOTH,
                 reporter = ProgressReporter.Silent,
-                cacheRoot = Files.createTempDirectory("ud-337-cache"),
+                cacheRoot = TestScratch.directory("ud-337-cache"),
             )
     }
 
@@ -68,7 +69,7 @@ class MountEngineWatermarkStatTest {
             engine.syncOnce()
             // archive#319: the write-back requires the row the FUSE create flow wrote.
             seedLocalOnlyRow("/local.txt")
-            val cacheCopy = Files.createTempDirectory("ud-337-wb").resolve("local.txt")
+            val cacheCopy = TestScratch.directory("ud-337-wb").resolve("local.txt")
             Files.writeString(cacheCopy, "first version")
             val preUploadMtime = Files.getLastModifiedTime(cacheCopy).toMillis()
 

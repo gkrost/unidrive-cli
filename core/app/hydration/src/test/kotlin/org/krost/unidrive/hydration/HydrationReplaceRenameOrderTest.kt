@@ -19,6 +19,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#182 (the owner's decision of 2026-11-01, option 1): a replace-rename deletes the old destination only after
@@ -135,14 +136,14 @@ class HydrationReplaceRenameOrderTest {
 
     private fun env(): Env {
         val provider = NameHoldingProvider()
-        val db = StateDatabase(dbPath = Files.createTempDirectory("unidrive-replace-order-db").resolve("state.db"), inMemory = true)
+        val db = StateDatabase(dbPath = TestScratch.directory("unidrive-replace-order-db").resolve("state.db"), inMemory = true)
         db.initialize()
         val engine =
             SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("unidrive-replace-order-sync"),
-                cacheRoot = Files.createTempDirectory("unidrive-replace-order-cache"),
+                syncRoot = TestScratch.directory("unidrive-replace-order-sync"),
+                cacheRoot = TestScratch.directory("unidrive-replace-order-cache"),
             )
         return Env(HydrationImpl(syncEngine = engine, stateDb = db), provider, db, engine)
     }

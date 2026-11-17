@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * #517 review: a dehydrate whose locked cache delete is REFUSED (the copy is not the one the caller vetted)
@@ -26,14 +27,14 @@ class ReviewRefusedDehydrateAccountingTest {
 
     private fun freshEnv(): Env {
         val provider = MemProvider()
-        val db = StateDatabase(Files.createTempDirectory("ud-517-db").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("ud-517-db").resolve("state.db"))
         db.initialize()
         val engine =
             SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("ud-517-root"),
-                cacheRoot = Files.createTempDirectory("ud-517-cache"),
+                syncRoot = TestScratch.directory("ud-517-root"),
+                cacheRoot = TestScratch.directory("ud-517-cache"),
                 cacheKey = "ud-517-isolated-profile",
             )
         return Env(provider, db, engine)

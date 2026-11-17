@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A walk that deletes or lists a tree stops at a junction or a link: the entry itself goes (or is listed), never what it
@@ -24,7 +25,7 @@ class LinkedEntriesTest {
 
     @BeforeTest
     fun setUp() {
-        base = Files.createTempDirectory("linked-entries")
+        base = TestScratch.directory("linked-entries")
         tree = Files.createDirectories(base.resolve("tree"))
         outside = Files.createDirectories(base.resolve("outside"))
         Files.writeString(outside.resolve("must-survive.txt"), "x")

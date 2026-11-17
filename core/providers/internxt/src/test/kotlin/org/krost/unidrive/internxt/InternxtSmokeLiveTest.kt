@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Live smoke set for Internxt that closes the delete, delta-change and sync round-trip gaps of the
@@ -53,7 +54,7 @@ class InternxtSmokeLiveTest {
         }
     }
 
-    private fun tempFile(content: String): Path = Files.createTempFile("ud-smoke", ".txt").also { Files.writeString(it, content) }
+    private fun tempFile(content: String): Path = TestScratch.file("ud-smoke", ".txt").also { Files.writeString(it, content) }
 
     @Test
     fun `delete removes the remote file`() {
@@ -121,7 +122,7 @@ class InternxtSmokeLiveTest {
 
                     engine.syncOnce()
 
-                    val dest = Files.createTempFile("ud-smoke-dl", ".txt")
+                    val dest = TestScratch.file("ud-smoke-dl", ".txt")
                     try {
                         provider.download("$folder/local-create.txt", dest)
                         assertContentEquals(content.toByteArray(), Files.readAllBytes(dest))
@@ -165,8 +166,8 @@ class InternxtSmokeLiveTest {
         folder: String,
         block: suspend (SyncEngine, Path) -> Unit,
     ) {
-        val syncRoot = Files.createTempDirectory("ud-smoke-root")
-        val dbDir = Files.createTempDirectory("ud-smoke-db")
+        val syncRoot = TestScratch.directory("ud-smoke-root")
+        val dbDir = TestScratch.directory("ud-smoke-db")
         val db = StateDatabase(dbDir.resolve("state.db"))
         db.initialize()
         try {

@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The bookkeeping of a download's end: a cancellation is not a failed attempt (the tally would inflate
@@ -78,7 +79,7 @@ class TransfersTest {
             mimeType = null,
         )
 
-    private fun destination(): Path = Files.createTempDirectory("transfers-test").resolve("file.bin")
+    private fun destination(): Path = TestScratch.directory("transfers-test").resolve("file.bin")
 }
 
 /** A provider whose download ends the way [thrown] says; everything else is out of scope for these tests. */

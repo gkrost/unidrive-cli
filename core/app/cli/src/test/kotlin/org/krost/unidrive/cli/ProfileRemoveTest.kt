@@ -13,6 +13,7 @@ import org.krost.unidrive.sync.ProcessLock
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -52,7 +53,7 @@ class ProfileRemoveTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("profile-remove")
+        dir = TestScratch.directory("profile-remove")
         socketDir = Files.createDirectories(dir.resolve("sock"))
         ProfileRemoveHooks.socketPath = { socketDir.resolve("$it.sock") }
         ProfileRemoveHooks.requestShutdown = { error("a test must set requestShutdown before it can be called") }

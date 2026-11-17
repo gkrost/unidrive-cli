@@ -19,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#335: multi-shard files used to download only the first shard; the decrypted
@@ -41,7 +42,7 @@ class InternxtMultiShardDownloadTest {
     private lateinit var destination: Path
 
     private fun newProvider(): InternxtProvider {
-        destination = Files.createTempDirectory("ud-shard-dl").resolve("out.bin")
+        destination = TestScratch.directory("ud-shard-dl").resolve("out.bin")
         val payload = """{"exp":9999999999}"""
         val payloadB64 =
             java.util.Base64
@@ -49,7 +50,7 @@ class InternxtMultiShardDownloadTest {
                 .withoutPadding()
                 .encodeToString(payload.toByteArray())
         return InternxtProvider(
-            InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-shard-token", ".tmp")),
+            InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("ud-shard-token", ".tmp")),
             httpClient = HttpClient(MockEngine { request -> handle(request) }),
             credentials =
                 org.krost.unidrive.internxt.model.InternxtCredentials(

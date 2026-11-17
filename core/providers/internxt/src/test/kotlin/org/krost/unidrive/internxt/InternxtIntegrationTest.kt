@@ -2,11 +2,11 @@ package org.krost.unidrive.internxt
 
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
-import kotlin.io.path.createTempFile
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class InternxtIntegrationTest {
     companion object {
@@ -65,7 +65,7 @@ class InternxtIntegrationTest {
         val expectedSha = System.getenv("INTERNXT_TEST_FILE_SHA256") ?: return
 
         val provider = InternxtProvider()
-        val dest = createTempFile("internxt-dl-test")
+        val dest = TestScratch.file("internxt-dl-test")
         try {
             runBlocking {
                 provider.authenticate()
@@ -89,8 +89,8 @@ class InternxtIntegrationTest {
 
         val provider = InternxtProvider()
         val content = "unidrive upload test ${System.currentTimeMillis()}".toByteArray()
-        val localFile = createTempFile("internxt-ul-test")
-        val dest = createTempFile("internxt-dl-roundtrip")
+        val localFile = TestScratch.file("internxt-ul-test")
+        val dest = TestScratch.file("internxt-dl-roundtrip")
         try {
             Files.write(localFile, content)
             runBlocking {

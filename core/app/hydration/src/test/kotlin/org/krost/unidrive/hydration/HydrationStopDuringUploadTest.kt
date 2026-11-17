@@ -24,6 +24,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#72, point 1: a daemon stop and the uploads it meets (owner decision 2026-11-02). An upload that is
@@ -80,9 +81,9 @@ class HydrationStopDuringUploadTest {
     private fun daemonOver(dbPath: Path, cacheRoot: Path, syncRoot: Path, provider: MinimalFakeProvider) = Daemon(dbPath, cacheRoot, syncRoot, provider)
 
     private class Dirs {
-        val syncRoot: Path = Files.createTempDirectory("ud72-root")
-        val cacheRoot: Path = Files.createTempDirectory("ud72-cache")
-        val dbPath: Path = Files.createTempDirectory("ud72-db").resolve("state.db")
+        val syncRoot: Path = TestScratch.directory("ud72-root")
+        val cacheRoot: Path = TestScratch.directory("ud72-cache")
+        val dbPath: Path = TestScratch.directory("ud72-db").resolve("state.db")
     }
 
     /**
@@ -372,9 +373,9 @@ class HydrationStopDuringUploadTest {
 
     @Test
     fun `a stop during the first upload of a file leaves it pending and the next start uploads it`() = runBlocking {
-        val syncRoot = Files.createTempDirectory("ud72-root")
-        val cacheRoot = Files.createTempDirectory("ud72-cache")
-        val dbPath = Files.createTempDirectory("ud72-db").resolve("state.db")
+        val syncRoot = TestScratch.directory("ud72-root")
+        val cacheRoot = TestScratch.directory("ud72-cache")
+        val dbPath = TestScratch.directory("ud72-db").resolve("state.db")
         val provider = MinimalFakeProvider()
         provider.uploadGate = CompletableDeferred() // the PUT never finishes
 
@@ -408,9 +409,9 @@ class HydrationStopDuringUploadTest {
 
     @Test
     fun `a stop during the overwrite of an uploaded file keeps the edit and the next start sends it`() = runBlocking {
-        val syncRoot = Files.createTempDirectory("ud72-root")
-        val cacheRoot = Files.createTempDirectory("ud72-cache")
-        val dbPath = Files.createTempDirectory("ud72-db").resolve("state.db")
+        val syncRoot = TestScratch.directory("ud72-root")
+        val cacheRoot = TestScratch.directory("ud72-cache")
+        val dbPath = TestScratch.directory("ud72-db").resolve("state.db")
         val provider = MinimalFakeProvider()
 
         val first = daemonOver(dbPath, cacheRoot, syncRoot, provider)

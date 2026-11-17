@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A remote folder deletion removes the local folder with its subtree. The plan walked the folder before it planned
@@ -42,8 +43,8 @@ class RemoteFolderDeleteKeepsPostPlanFilesTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-folder-del-postplan-root")
-        db = StateDatabase(Files.createTempDirectory("ud-folder-del-postplan-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-folder-del-postplan-root")
+        db = StateDatabase(TestScratch.directory("ud-folder-del-postplan-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         writes.clear()

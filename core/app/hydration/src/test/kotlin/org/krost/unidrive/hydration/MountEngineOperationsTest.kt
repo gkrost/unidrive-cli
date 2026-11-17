@@ -13,6 +13,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The mount operations (`ensureHydrated`, `uploadFromCache`, `deleteRemote`) on the mount front-end
@@ -28,8 +29,8 @@ class MountEngineOperationsTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-engine-test")
-        dbFile = Files.createTempDirectory("unidrive-engine-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-engine-test")
+        dbFile = TestScratch.directory("unidrive-engine-db").resolve("state.db")
         db = StateDatabase(dbFile)
         db.initialize()
         provider = FakeCloudProvider()
@@ -343,7 +344,7 @@ class MountEngineOperationsTest {
     fun `ensureHydrated downloads a missing file and returns the local cache path`() =
         runTest {
             // Use a dedicated temp cache root so the test does not pollute ~/.cache.
-            val cacheRoot = Files.createTempDirectory("unidrive-cache-test")
+            val cacheRoot = TestScratch.directory("unidrive-cache-test")
             val engineWithCache =
                 SyncEngine(
                     provider = provider,
@@ -382,7 +383,7 @@ class MountEngineOperationsTest {
     @Test
     fun `ensureHydrated is idempotent — warm path skips re-download`() =
         runTest {
-            val cacheRoot = Files.createTempDirectory("unidrive-cache-test")
+            val cacheRoot = TestScratch.directory("unidrive-cache-test")
             val engineWithCache =
                 SyncEngine(
                     provider = provider,
@@ -429,7 +430,7 @@ class MountEngineOperationsTest {
     @Test
     fun `uploadFromCache uploads the cache file and updates state`() =
         runTest {
-            val cacheRoot = Files.createTempDirectory("unidrive-cache-test")
+            val cacheRoot = TestScratch.directory("unidrive-cache-test")
             val engineWithCache =
                 SyncEngine(
                     provider = provider,
@@ -479,8 +480,8 @@ class MountEngineOperationsTest {
     @Test
     fun `uploadFromCache emits audit log on success`() =
         runTest {
-            val cacheRoot = Files.createTempDirectory("unidrive-cache-test")
-            val auditDir = Files.createTempDirectory("unidrive-audit-test")
+            val cacheRoot = TestScratch.directory("unidrive-cache-test")
+            val auditDir = TestScratch.directory("unidrive-audit-test")
             val auditLog = AuditLog(auditDir, profileName = "test")
             val engineWithAudit =
                 SyncEngine(
@@ -526,8 +527,8 @@ class MountEngineOperationsTest {
     @Test
     fun `uploadFromCache emits audit log when provider throws`() =
         runTest {
-            val cacheRoot = Files.createTempDirectory("unidrive-cache-test")
-            val auditDir = Files.createTempDirectory("unidrive-audit-test")
+            val cacheRoot = TestScratch.directory("unidrive-cache-test")
+            val auditDir = TestScratch.directory("unidrive-audit-test")
             val auditLog = AuditLog(auditDir, profileName = "test")
             val engineWithAudit =
                 SyncEngine(
@@ -586,7 +587,7 @@ class MountEngineOperationsTest {
                 "/pics/Thumbs.db",
                 "/work/draft.tmp",
             )
-            val cacheRoot = Files.createTempDirectory("unidrive-excl-test")
+            val cacheRoot = TestScratch.directory("unidrive-excl-test")
             val engineWithDefaults =
                 SyncEngine(
                     provider = provider,
@@ -598,7 +599,7 @@ class MountEngineOperationsTest {
                 )
 
             for (excludedPath in excludedPaths) {
-                val cacheFile = Files.createTempFile("excl-cache", ".bin")
+                val cacheFile = TestScratch.file("excl-cache", ".bin")
                 Files.writeString(cacheFile, "junk")
                 val uploadsBefore = provider.uploadedPaths.size
 
@@ -615,7 +616,7 @@ class MountEngineOperationsTest {
     @Test
     fun `uploadFromCache uploads non-excluded paths normally`() =
         runTest {
-            val cacheRoot = Files.createTempDirectory("unidrive-excl-nonexcl-test")
+            val cacheRoot = TestScratch.directory("unidrive-excl-nonexcl-test")
             val engineWithDefaults =
                 SyncEngine(
                     provider = provider,
@@ -626,7 +627,7 @@ class MountEngineOperationsTest {
                     cacheRoot = cacheRoot,
                 )
 
-            val cacheFile = Files.createTempFile("real-cache", ".bin")
+            val cacheFile = TestScratch.file("real-cache", ".bin")
             Files.writeString(cacheFile, "real content")
             db.upsertEntry(
                 org.krost.unidrive.sync.model.SyncEntry(
@@ -659,7 +660,7 @@ class MountEngineOperationsTest {
             // crash-recovery scanner replays open_write for any cache file whose mtime
             // exceeds HydrationImpl.lastSynced() (= localMtime); a skipped keep-local file
             // with a stale/absent watermark would be replayed on EVERY daemon restart.
-            val cacheRoot = Files.createTempDirectory("unidrive-excl-watermark-test")
+            val cacheRoot = TestScratch.directory("unidrive-excl-watermark-test")
             val engineWithDefaults =
                 SyncEngine(
                     provider = provider,
@@ -670,7 +671,7 @@ class MountEngineOperationsTest {
                     cacheRoot = cacheRoot,
                 )
             val excludedPath = "/sub/.directory.lock"
-            val cacheFile = Files.createTempFile("excl-watermark", ".bin")
+            val cacheFile = TestScratch.file("excl-watermark", ".bin")
             Files.writeString(cacheFile, "junk")
             val cacheMtime = Files.getLastModifiedTime(cacheFile).toMillis()
 
@@ -766,7 +767,7 @@ class MountEngineOperationsTest {
                     override suspend fun quota() = QuotaInfo(total = 0, used = 0, remaining = 0)
                 }
 
-            val cacheRoot = Files.createTempDirectory("unidrive-cache-test")
+            val cacheRoot = TestScratch.directory("unidrive-cache-test")
             val engineWithIntegrity =
                 SyncEngine(
                     provider = hashingProvider,
@@ -1099,7 +1100,7 @@ class MountEngineOperationsTest {
                 syncRoot = syncRoot,
                 conflictPolicy = ConflictPolicy.KEEP_BOTH,
                 reporter = ProgressReporter.Silent,
-                cacheRoot = Files.createTempDirectory("unidrive-cache-511"),
+                cacheRoot = TestScratch.directory("unidrive-cache-511"),
             )
         return versioned to host.mount
     }

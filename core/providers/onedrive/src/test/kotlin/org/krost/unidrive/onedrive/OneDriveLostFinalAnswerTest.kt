@@ -18,6 +18,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The last chunk of a chunked replace reaches Graph and commits the item, but its answer is lost. Graph removes a
@@ -32,7 +33,7 @@ class OneDriveLostFinalAnswerTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-lost-final")
+        tokenDir = TestScratch.directory("ud-lost-final")
     }
 
     @AfterTest
@@ -146,7 +147,7 @@ class OneDriveLostFinalAnswerTest {
     }
 
     private fun localFile(size: Long): Path {
-        val local = Files.createTempFile(tokenDir, "big", ".bin")
+        val local = TestScratch.file(tokenDir, "big", ".bin")
         Files.write(local, ByteArray(size.toInt()) { (it % 251).toByte() })
         return local
     }

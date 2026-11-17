@@ -29,6 +29,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Writes and reads against the fake: the upload modes (overwrite, or `update` against the rev of the content the engine
@@ -36,7 +37,7 @@ import kotlin.test.assertTrue
  * and Dropbox's own wait on 429.
  */
 class DropboxWriteTest {
-    private val dir = Files.createTempDirectory("dropbox-write")
+    private val dir = TestScratch.directory("dropbox-write")
     private val fake = FakeDropbox()
     private val provider = FakeDropbox.provider(fake, dir)
     private val hashSeen = "b".repeat(64)

@@ -5,12 +5,13 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 /** A folder create answered 409 never settles on a twin whose status is DELETED either; only a live twin counts. */
 class InternxtCreateFolderDeletedTwinTest {
     private fun withDrive(block: suspend (UploadDrive, InternxtProvider) -> Unit) =
         runTest {
-            val tmp = Files.createTempDirectory("ud-folder-deleted-twin-")
+            val tmp = TestScratch.directory("ud-folder-deleted-twin-")
             try {
                 val drive = UploadDrive()
                 val provider = rootedInternxtProvider(tmp, drive.engine)

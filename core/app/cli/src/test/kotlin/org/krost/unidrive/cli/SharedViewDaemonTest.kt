@@ -34,6 +34,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The Shared view as a profile's config asks for it: `shared_view` and `shared_folder_name` decide which views the daemon is
@@ -47,7 +48,7 @@ class SharedViewDaemonTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("shared-view-daemon-test")
+        tempDir = TestScratch.directory("shared-view-daemon-test")
         socketPath = tempDir.resolve("daemon.sock")
     }
 

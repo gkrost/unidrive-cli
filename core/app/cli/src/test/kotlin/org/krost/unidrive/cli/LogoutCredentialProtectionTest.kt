@@ -6,11 +6,12 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class LogoutCredentialProtectionTest {
     @Test
     fun `locked keyring failure preserves credential marker`() {
-        val profileDir = Files.createTempDirectory("logout-protected-credentials")
+        val profileDir = TestScratch.directory("logout-protected-credentials")
         val marker = profileDir.resolve("credentials.json")
         Files.writeString(marker, "unidrive-secret-service-v1:opaque-version")
         try {

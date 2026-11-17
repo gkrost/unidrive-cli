@@ -14,6 +14,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `resetKeepingPending` is `resetAll` for a profile whose mount may hold writes that have not reached
@@ -26,7 +27,7 @@ class ResetKeepingPendingTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-reset-keep")
+        dir = TestScratch.directory("unidrive-reset-keep")
         dbFile = dir.resolve("state.db")
         db = StateDatabase(dbFile).also { it.initialize() }
     }

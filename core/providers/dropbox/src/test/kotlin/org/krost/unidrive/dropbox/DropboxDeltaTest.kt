@@ -12,6 +12,7 @@ import org.krost.unidrive.ProviderFactory
 import org.krost.unidrive.dropbox.FakeDropbox.Companion.deleted
 import org.krost.unidrive.dropbox.FakeDropbox.Companion.file
 import org.krost.unidrive.dropbox.FakeDropbox.Companion.folder
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.MDC
 import java.nio.file.Files
 import java.time.Instant
@@ -28,7 +29,7 @@ import kotlin.test.assertTrue
  * fast bootstrap, `reset` as an expired cursor, the long-poll as the wake-up hint. Display paths follow the parent's case.
  */
 class DropboxDeltaTest {
-    private val dir = Files.createTempDirectory("dropbox-delta")
+    private val dir = TestScratch.directory("dropbox-delta")
     private val fake = FakeDropbox()
     private val provider = FakeDropbox.provider(fake, dir)
 

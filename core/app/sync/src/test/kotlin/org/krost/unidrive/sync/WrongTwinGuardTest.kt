@@ -20,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#402: where a folder holds two remote items with the same name, path-based
@@ -40,10 +41,10 @@ class WrongTwinGuardTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-twin-root")
-        dbDir = Files.createTempDirectory("ud-twin-db")
-        cacheRoot = Files.createTempDirectory("ud-twin-cache")
-        skippedOpsPath = Files.createTempDirectory("ud-twin-log").resolve("skipped-ops.jsonl")
+        syncRoot = TestScratch.directory("ud-twin-root")
+        dbDir = TestScratch.directory("ud-twin-db")
+        cacheRoot = TestScratch.directory("ud-twin-cache")
+        skippedOpsPath = TestScratch.directory("ud-twin-log").resolve("skipped-ops.jsonl")
         db = StateDatabase(dbDir.resolve("state.db"))
         db.initialize()
         provider = TwinFakeProvider()

@@ -9,6 +9,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The Linux launcher runs unidrive on the system's JDK and requires Java 25+ (the jar is compiled for it). The template is rendered like the deploys render it
@@ -20,7 +21,7 @@ class LauncherShTemplateTest {
     @BeforeTest
     fun setUp() {
         assumeTrue("bash launcher: Linux/macOS only", !System.getProperty("os.name").lowercase().contains("win"))
-        dir = Files.createTempDirectory("launcher-sh")
+        dir = TestScratch.directory("launcher-sh")
     }
 
     @AfterTest

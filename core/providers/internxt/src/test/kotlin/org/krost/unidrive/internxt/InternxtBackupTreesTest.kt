@@ -15,6 +15,7 @@ import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.internxt.model.InternxtFolder
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import kotlin.test.Test
@@ -168,7 +169,7 @@ class InternxtBackupTreesTest {
             val drive = drive()
             val provider = internxtProviderOn(drive.engine)
             provider.delta(null, null, FakeStaging().context())
-            val local = Files.createTempFile("ud-backup", ".txt")
+            val local = TestScratch.file("ud-backup", ".txt")
             try {
                 Files.writeString(local, "edited")
 

@@ -15,6 +15,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class EnumerateCorroborationGuardTest {
     private lateinit var syncRoot: Path
@@ -26,9 +27,9 @@ class EnumerateCorroborationGuardTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-corr-root")
-        dbDir = Files.createTempDirectory("ud-corr-db")
-        cacheRoot = Files.createTempDirectory("ud-corr-cache")
+        syncRoot = TestScratch.directory("ud-corr-root")
+        dbDir = TestScratch.directory("ud-corr-db")
+        cacheRoot = TestScratch.directory("ud-corr-cache")
         db = StateDatabase(dbDir.resolve("state.db"))
         db.initialize()
         provider = CorroborationFakeProvider()

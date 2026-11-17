@@ -16,13 +16,14 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 class OneDriveCommittedChunkRetryTest {
     private lateinit var tokenDir: Path
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-committed-chunk")
+        tokenDir = TestScratch.directory("ud-committed-chunk")
     }
 
     @AfterTest
@@ -34,7 +35,7 @@ class OneDriveCommittedChunkRetryTest {
     fun `a fully committed chunk is not retried with an empty invalid range`() =
         runTest {
             val fileSize = 11 * 1024 * 1024
-            val local = Files.createTempFile(tokenDir, "large", ".bin")
+            val local = TestScratch.file(tokenDir, "large", ".bin")
             Files.write(local, ByteArray(fileSize) { 7 })
             val uploadUrl = "https://upload.example/committed-chunk"
             val contentRanges = mutableListOf<String?>()
@@ -92,7 +93,7 @@ class OneDriveCommittedChunkRetryTest {
         runTest {
             val fileSize = 20 * 1024 * 1024
             val half = 5 * 1024 * 1024
-            val local = Files.createTempFile(tokenDir, "partial", ".bin")
+            val local = TestScratch.file(tokenDir, "partial", ".bin")
             // Distinct bytes per 1 MiB block, so a resend from the wrong offset cannot go unnoticed.
             val content = ByteArray(fileSize) { (it / (1024 * 1024)).toByte() }
             Files.write(local, content)
@@ -152,7 +153,7 @@ class OneDriveCommittedChunkRetryTest {
     fun `a final chunk confirmed by the status probe returns the uploaded item`() =
         runTest {
             val fileSize = 5 * 1024 * 1024
-            val local = Files.createTempFile(tokenDir, "final", ".bin")
+            val local = TestScratch.file(tokenDir, "final", ".bin")
             Files.write(local, ByteArray(fileSize) { 9 })
             val uploadUrl = "https://upload.example/committed-final-chunk"
             var chunkPuts = 0

@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1219, `hydration.matches_local`: whether a plain local file holds the bytes of the cloud copy, proven without downloading it.
@@ -25,7 +26,7 @@ class HydrationMatchesLocalTest {
     private val quickXorAbc = "YRDDGAAAAAAAAAAAAwAAAAAAAAA="
     private val sha256Abc = MessageDigest.getInstance("SHA-256").digest("abc".toByteArray()).joinToString("") { "%02x".format(it) }
 
-    private fun local(content: String): Path = Files.createTempFile("matches-local", ".bin").also { Files.writeString(it, content) }
+    private fun local(content: String): Path = TestScratch.file("matches-local", ".bin").also { Files.writeString(it, content) }
 
     private fun row(
         path: String,
@@ -191,8 +192,8 @@ class HydrationMatchesLocalTest {
             val env = HydrationTestEnv()
             env.stateDb.upsert(row("/a.txt"))
 
-            val missing = Files.createTempDirectory("matches-local-dir").resolve("not-there.bin")
-            val folder = Files.createTempDirectory("matches-local-dir")
+            val missing = TestScratch.directory("matches-local-dir").resolve("not-there.bin")
+            val folder = TestScratch.directory("matches-local-dir")
 
             for (p in listOf(missing, folder)) {
                 val r = env.hydration.matchesLocal("/a.txt", p)

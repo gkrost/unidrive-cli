@@ -8,6 +8,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#24: the `name_spellings` table keeps the first spelling a client used for a name across a close
@@ -38,7 +39,7 @@ class NameSpellingsStateDbTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-name-spellings")
+        dir = TestScratch.directory("unidrive-name-spellings")
         dbFile = dir.resolve("state.db")
         db = StateDatabase(dbFile).also { it.initialize() }
     }

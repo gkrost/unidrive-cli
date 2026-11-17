@@ -12,6 +12,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // gkrost/unidrive-cli#419: the engine calls a provider from several threads at once (CloudRelocator downloads on
 // Dispatchers.IO, up to four at a time; RelocateCommand runs the whole migrate there). The fake's call histories were
@@ -25,7 +26,7 @@ class FakeCloudProviderConcurrencyTest {
     @Test
     fun `concurrent transfers on a shared fake lose no call and throw nothing`() {
         val provider = FakeCloudProvider()
-        val dir = Files.createTempDirectory("ud-fake-concurrency")
+        val dir = TestScratch.directory("ud-fake-concurrency")
         try {
             val local = dir.resolve("src.bin").also { Files.write(it, byteArrayOf(1)) }
             repeat(threads) { provider.files["/t$it.bin"] = byteArrayOf(2) }

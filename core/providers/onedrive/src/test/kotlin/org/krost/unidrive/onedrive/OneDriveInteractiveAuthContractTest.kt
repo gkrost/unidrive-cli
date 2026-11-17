@@ -23,6 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-014 acceptance test. Drives OneDriveProviderFactory's three
@@ -37,7 +38,7 @@ class OneDriveInteractiveAuthContractTest {
 
     @BeforeTest
     fun setUp() {
-        tmpProfileDir = Files.createTempDirectory("ud-014-")
+        tmpProfileDir = TestScratch.directory("ud-014-")
     }
 
     @AfterTest
@@ -561,7 +562,7 @@ class OneDriveInteractiveAuthContractTest {
             //
             // We need a fresh profileDir for this arm so the prior arms'
             // token.json doesn't pre-exist as a regular file.
-            val svProfileDir = Files.createTempDirectory("ud-014-savefail-")
+            val svProfileDir = TestScratch.directory("ud-014-savefail-")
             try {
                 Files.createDirectory(svProfileDir.resolve("token.json"))
                 val sv = factoryWithEngine(deviceCodeThenTokenEngine())

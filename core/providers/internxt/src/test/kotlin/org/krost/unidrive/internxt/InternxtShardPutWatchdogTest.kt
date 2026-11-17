@@ -23,6 +23,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#571: a shard PUT is cut only when it stops making progress, not when it is slow.
@@ -49,7 +50,7 @@ class InternxtShardPutWatchdogTest {
 
     private fun bytes(size: Int) = ByteArray(size) { (it % 251).toByte() }
 
-    private fun file(size: Int): Path = Files.createTempFile("shard", ".bin").also { Files.write(it, bytes(size)); files.add(it) }
+    private fun file(size: Int): Path = TestScratch.file("shard", ".bin").also { Files.write(it, bytes(size)); files.add(it) }
 
     // The watchdog's limits in these tests, in wall-clock milliseconds. Where the watchdog must cut, the idle window is
     // short: such a test only waits for it.

@@ -7,6 +7,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A listing reports the object's time with milliseconds, a HEAD's RFC-1123 date only whole seconds. The engine
@@ -19,7 +20,7 @@ class S3ModifiedSecondsTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("s3-seconds")
+        dir = TestScratch.directory("s3-seconds")
     }
 
     @AfterTest

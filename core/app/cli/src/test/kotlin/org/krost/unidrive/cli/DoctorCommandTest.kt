@@ -8,6 +8,7 @@ import kotlinx.serialization.json.jsonObject
 import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.nio.file.Files
 import java.nio.file.Path
@@ -37,8 +38,8 @@ class DoctorCommandTest {
 
     @BeforeTest
     fun setUp() {
-        profileDir = Files.createTempDirectory("unidrive-doctor-profile")
-        syncRoot = Files.createTempDirectory("unidrive-doctor-syncroot")
+        profileDir = TestScratch.directory("unidrive-doctor-profile")
+        syncRoot = TestScratch.directory("unidrive-doctor-syncroot")
         dbPath = profileDir.resolve("state.db")
     }
 
@@ -519,7 +520,7 @@ class DoctorCommandTest {
 
     @Test
     fun `hydration-cache check reports size against the budget and warns over it`() {
-        val cacheDir = Files.createTempDirectory("unidrive-doctor-cache")
+        val cacheDir = TestScratch.directory("unidrive-doctor-cache")
         Files.write(cacheDir.resolve("a.bin"), ByteArray(3000))
         Files.createDirectories(cacheDir.resolve("sub"))
         Files.write(cacheDir.resolve("sub/b.bin"), ByteArray(2000))
@@ -553,7 +554,7 @@ class DoctorCommandTest {
             syncRoot,
             false,
             nowOverride = Instant.parse("2026-05-17T12:00:00Z"),
-            cacheDir = Files.createTempDirectory("unidrive-doctor-cache2"),
+            cacheDir = TestScratch.directory("unidrive-doctor-cache2"),
             cacheBudgetBytes = 1000,
         )
         assertEquals(DoctorCommand.Severity.OK, result(withCache, "hydration-cache").severity)
@@ -628,7 +629,7 @@ class DoctorCommandTest {
 
     @Test
     fun `a mount profile's hydrated rows are looked for in the hydration cache, not the sync root`() {
-        val cacheDir = Files.createTempDirectory("unidrive-doctor-mountcache")
+        val cacheDir = TestScratch.directory("unidrive-doctor-mountcache")
         seedHydratedRows(60, cacheDir)
         val now = Instant.parse("2026-05-17T12:00:00Z")
 
@@ -663,7 +664,7 @@ class DoctorCommandTest {
 
     @Test
     fun `a mount profile with hydrated rows missing from the cache still warns, naming the cache`() {
-        val cacheDir = Files.createTempDirectory("unidrive-doctor-mountcache-empty")
+        val cacheDir = TestScratch.directory("unidrive-doctor-mountcache-empty")
         seedHydratedRows(60, null)
 
         val mount =

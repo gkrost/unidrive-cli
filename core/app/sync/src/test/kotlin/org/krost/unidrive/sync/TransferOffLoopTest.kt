@@ -17,6 +17,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#567: the CLI runs a sync pass under `runBlocking`, so its transfers, the Ktor pipeline of the other
@@ -37,8 +38,8 @@ class TransferOffLoopTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-567-root")
-        dbDir = Files.createTempDirectory("ud-567-db")
+        syncRoot = TestScratch.directory("ud-567-root")
+        dbDir = TestScratch.directory("ud-567-db")
         db = StateDatabase(dbDir.resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()

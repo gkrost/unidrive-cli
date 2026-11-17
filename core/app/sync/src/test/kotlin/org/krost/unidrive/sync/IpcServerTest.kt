@@ -21,6 +21,7 @@ import java.nio.channels.SocketChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class IpcServerTest {
     private lateinit var socketDir: Path
@@ -29,7 +30,7 @@ class IpcServerTest {
 
     @BeforeTest
     fun setUp() {
-        socketDir = Files.createTempDirectory("unidrive-ipc-test")
+        socketDir = TestScratch.directory("unidrive-ipc-test")
         socketPath = socketDir.resolve("test.sock")
     }
 
@@ -446,7 +447,7 @@ class IpcServerTest {
         runTest {
             // Bug: Files.createTempDirectory fallback creates a dir that close() never deletes.
             // Only the socket file inside is deleted, leaking the directory.
-            val tmpBase = Files.createTempDirectory("unidrive-ipc-cleanup-test")
+            val tmpBase = TestScratch.directory("unidrive-ipc-cleanup-test")
             val tmpSocket =
                 tmpBase
                     .resolve("inner")

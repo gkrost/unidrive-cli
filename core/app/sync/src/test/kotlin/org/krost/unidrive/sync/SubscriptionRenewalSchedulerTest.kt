@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-303: scheduled webhook renewal fires at (expiry − 24h) on the virtual
@@ -28,7 +29,7 @@ class SubscriptionRenewalSchedulerTest {
 
     @BeforeTest
     fun setUp() {
-        val dir = Files.createTempDirectory("ud-303-test-")
+        val dir = TestScratch.directory("ud-303-test-")
         dbPath = dir.resolve("state.db")
         store = SubscriptionStore(dbPath)
         store.initialize()

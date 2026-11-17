@@ -9,6 +9,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#29: at start the strict-name blocks follow the provider's mode, for rows that no delivery touches: a mode turned
@@ -20,7 +21,7 @@ class StrictNameBlocksTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("unidrive-strict-sweep").resolve("state.db")).also { it.initialize() }
+        db = StateDatabase(TestScratch.directory("unidrive-strict-sweep").resolve("state.db")).also { it.initialize() }
         provider = FakeCloudProvider().also { it.strictNameMode = true }
         for (p in listOf("/ok.txt", "/bad.txt", "/twin.txt")) db.upsertEntry(row(p))
     }

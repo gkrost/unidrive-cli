@@ -6,6 +6,7 @@ import java.sql.Connection
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import org.krost.unidrive.testing.TestScratch
 
 // A platform without the xerial driver (Android) hands StateDatabase its own connections: every open goes through
 // the connector, and the database works the same on what it returns.
@@ -26,7 +27,7 @@ class StateDatabaseConnectorTest {
 
     @Test
     fun `a file database opens through the connector`() {
-        val dir = Files.createTempDirectory("sdb-connector")
+        val dir = TestScratch.directory("sdb-connector")
         val connector = RecordingConnector()
         val db = StateDatabase(dir.resolve("state.db"), connector = connector)
         db.initialize()

@@ -12,6 +12,7 @@ import java.nio.file.Path
 import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class LocalScannerTest {
     private lateinit var syncRoot: Path
@@ -20,8 +21,8 @@ class LocalScannerTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-scan-test")
-        val dbPath = Files.createTempDirectory("unidrive-scan-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-scan-test")
+        val dbPath = TestScratch.directory("unidrive-scan-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         scanner = LocalScanner(syncRoot, db)

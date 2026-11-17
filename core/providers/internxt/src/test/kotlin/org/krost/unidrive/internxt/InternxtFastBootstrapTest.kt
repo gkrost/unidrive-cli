@@ -8,6 +8,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-223 booster: fast-bootstrap parity for Internxt. The engine's
@@ -25,7 +26,7 @@ import kotlin.test.assertTrue
  */
 class InternxtFastBootstrapTest {
     private fun provider(): InternxtProvider {
-        val tmpToken = Files.createTempDirectory("unidrive-internxt-fastboot-test-")
+        val tmpToken = TestScratch.directory("unidrive-internxt-fastboot-test-")
         return InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmpToken))
     }
 

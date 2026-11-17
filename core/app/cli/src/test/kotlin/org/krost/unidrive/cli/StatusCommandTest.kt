@@ -6,6 +6,7 @@ import org.krost.unidrive.sync.RawProvider
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.nio.file.Files
 import java.sql.DriverManager
@@ -161,7 +162,7 @@ class StatusCommandTest {
             |sync_root = "~/InternxtPst"
             """.trimMargin()
         val raw = SyncConfig.parseRaw(toml)
-        val baseDir = Files.createTempDirectory("status-test-")
+        val baseDir = TestScratch.directory("status-test-")
         try {
             val profiles = discoverProfilesFromRaw(raw, baseDir)
             assertEquals(
@@ -243,7 +244,7 @@ class StatusCommandTest {
             |type = "onedrive"
             """.trimMargin()
         val raw = SyncConfig.parseRaw(toml)
-        val baseDir = Files.createTempDirectory("status-test-")
+        val baseDir = TestScratch.directory("status-test-")
         try {
             val profiles = discoverProfilesFromRaw(raw, baseDir)
             assertEquals(
@@ -264,7 +265,7 @@ class StatusCommandTest {
         // accounts existed, while plain `status` said "no unidrive config found". The
         // discovery step must report an empty list so the caller can say the same thing.
         val raw = SyncConfig.parseRaw("[general]\n")
-        val baseDir = Files.createTempDirectory("status-test-")
+        val baseDir = TestScratch.directory("status-test-")
         try {
             assertEquals(
                 emptyList(),
@@ -285,7 +286,7 @@ class StatusCommandTest {
 
     @Test
     fun `#361 status names the config file path when a backslash path makes it unreadable`() {
-        val dir = Files.createTempDirectory("status-config-")
+        val dir = TestScratch.directory("status-config-")
         try {
             val bs = Char(92)
             val configFile = dir.resolve("config.toml")
@@ -324,7 +325,7 @@ class StatusCommandTest {
             |sync_root = "~/OneDrive"
             """.trimMargin()
         val raw = SyncConfig.parseRaw(toml)
-        val baseDir = Files.createTempDirectory("status-orphan-test-")
+        val baseDir = TestScratch.directory("status-orphan-test-")
         try {
             // Declared profile dir
             Files.createDirectories(baseDir.resolve("onedrive"))
@@ -356,7 +357,7 @@ class StatusCommandTest {
             |sync_root = "~/Internxt"
             """.trimMargin()
         val raw = SyncConfig.parseRaw(toml)
-        val baseDir = Files.createTempDirectory("status-orphan-test-")
+        val baseDir = TestScratch.directory("status-orphan-test-")
         try {
             Files.createDirectories(baseDir.resolve("internxt"))
             val profiles = discoverProfilesFromRaw(raw, baseDir)
@@ -379,7 +380,7 @@ class StatusCommandTest {
             |type = "onedrive"
             """.trimMargin()
         val raw = SyncConfig.parseRaw(toml)
-        val baseDir = Files.createTempDirectory("status-orphan-test-")
+        val baseDir = TestScratch.directory("status-orphan-test-")
         try {
             // Intentionally do NOT create baseDir/onedrive
             val profiles = discoverProfilesFromRaw(raw, baseDir)
@@ -395,7 +396,7 @@ class StatusCommandTest {
         // Directories starting with '.' (e.g. .cache, .tmp) must never appear
         // as profile rows — they are OS/tool artifacts, not profiles.
         val raw = SyncConfig.parseRaw("[general]\n")
-        val baseDir = Files.createTempDirectory("status-orphan-test-")
+        val baseDir = TestScratch.directory("status-orphan-test-")
         try {
             Files.createDirectories(baseDir.resolve(".hidden-artifact"))
             Files.createDirectories(baseDir.resolve("real-orphan"))
@@ -444,7 +445,7 @@ class StatusCommandTest {
             |sync_root = "~/OneDrive"
             """.trimMargin()
         val raw = SyncConfig.parseRaw(toml)
-        val baseDir = Files.createTempDirectory("pr196-test-")
+        val baseDir = TestScratch.directory("pr196-test-")
         try {
             // Stale orphan dir — present on disk, no matching [providers.onedrive] section
             Files.createDirectories(baseDir.resolve("onedrive"))
@@ -479,7 +480,7 @@ class StatusCommandTest {
             |sync_root = "~/OneDrive"
             """.trimMargin()
         val raw = SyncConfig.parseRaw(toml)
-        val baseDir = Files.createTempDirectory("pr196-test-")
+        val baseDir = TestScratch.directory("pr196-test-")
         try {
             Files.createDirectories(baseDir.resolve("my-lost-profile"))
 
@@ -572,7 +573,7 @@ class StatusCommandTest {
         // Core invariant: a profile whose configDir contains tracking.db must NOT
         // be reported as "[✔ OK]" with zeros — that was the misleading display this
         // fix addresses.  The status label must be the [TS] marker.
-        val dir = Files.createTempDirectory("ts-status-test-")
+        val dir = TestScratch.directory("ts-status-test-")
         try {
             val trackingDb = dir.resolve("tracking.db")
             createTrackingDb(
@@ -603,7 +604,7 @@ class StatusCommandTest {
     fun `readTrackingDbCounts returns null when tracking-db absent`() {
         // Legacy profiles with no tracking.db must not be affected — the reader
         // returns null so the caller stays on the state.db path.
-        val dir = Files.createTempDirectory("ts-status-test-")
+        val dir = TestScratch.directory("ts-status-test-")
         try {
             val missing = dir.resolve("tracking.db")
             val counts = readTrackingDbCounts(missing)
@@ -618,7 +619,7 @@ class StatusCommandTest {
         // Pending entries signal in-flight transfers. The counts must distinguish
         // them from synced entries so the operator can see that a transfer is
         // underway (not just a clean state count of zero pending).
-        val dir = Files.createTempDirectory("ts-status-test-")
+        val dir = TestScratch.directory("ts-status-test-")
         try {
             val trackingDb = dir.resolve("tracking.db")
             createTrackingDb(
@@ -644,7 +645,7 @@ class StatusCommandTest {
         // When both tracking.db (TS engine) and state.db (legacy engine) are
         // present, tracking.db takes precedence.  The profile was migrated to the
         // TS engine; showing legacy state.db figures would be misleading.
-        val dir = Files.createTempDirectory("ts-status-test-")
+        val dir = TestScratch.directory("ts-status-test-")
         try {
             val trackingDb = dir.resolve("tracking.db")
             createTrackingDb(
@@ -670,7 +671,7 @@ class StatusCommandTest {
     fun `readTrackingDbCounts returns null for a corrupt or non-sqlite file`() {
         // A malformed tracking.db must not crash the status command — readTrackingDbCounts
         // must return null and let buildAccountRow fall through to the legacy path.
-        val dir = Files.createTempDirectory("ts-status-test-")
+        val dir = TestScratch.directory("ts-status-test-")
         try {
             val badDb = dir.resolve("tracking.db")
             Files.writeString(badDb, "this is not a sqlite database")
@@ -722,7 +723,7 @@ class StatusCommandTest {
     fun `legacy state-db-only profile is not affected by tracking-set detection`() {
         // A profile with only state.db (no tracking.db) must return null from
         // readTrackingDbCounts so buildAccountRow follows the unchanged legacy path.
-        val dir = Files.createTempDirectory("ts-status-test-")
+        val dir = TestScratch.directory("ts-status-test-")
         try {
             val stateDb = dir.resolve("state.db")
             DriverManager.getConnection("jdbc:sqlite:$stateDb").use { conn ->
@@ -840,7 +841,7 @@ class StatusCommandTest {
     // archive#395: the multi-profile view names a scoped profile; whole-drive profiles stay silent.
     @Test
     fun `multi-profile scope lines list scoped profiles and skip whole-drive ones`() {
-        val baseDir = Files.createTempDirectory("status-scope-test-")
+        val baseDir = TestScratch.directory("status-scope-test-")
         fun profile(
             name: String,
             syncPath: List<String>?,
@@ -872,7 +873,7 @@ class StatusCommandTest {
 
     @Test
     fun `status --all prints the scope of a scoped profile under the table`() {
-        val dir = Files.createTempDirectory("status-scope-all-")
+        val dir = TestScratch.directory("status-scope-all-")
         val originalOut = System.out
         try {
             val bs = Char(92)
@@ -905,7 +906,7 @@ class StatusCommandTest {
     // end the process (Main exits on a ConfigurationException; the refusal is a ProviderException the probe absorbs).
     @Test
     fun `status --all lists a localfs profile whose used root has vanished`() {
-        val dir = Files.createTempDirectory("status-vanished-root-")
+        val dir = TestScratch.directory("status-vanished-root-")
         val originalOut = System.out
         try {
             val bs = Char(92)
@@ -949,7 +950,7 @@ class StatusCommandTest {
     // A folder outside sync_path that only [general] excludes must not be counted, and neither a profile pattern nor a built-in.
     @Test
     fun `status out-of-scope line skips general, profile and built-in excludes`() {
-        val dir = Files.createTempDirectory("status-general-exclude-")
+        val dir = TestScratch.directory("status-general-exclude-")
         val originalOut = System.out
         try {
             val root = dir.resolve("root")
@@ -984,7 +985,7 @@ class StatusCommandTest {
     // A profile with no exclude_patterns of its own and no [general] ones: only the built-in defaults hide a folder.
     @Test
     fun `status out-of-scope line with no configured excludes hides only the built-in ones`() {
-        val dir = Files.createTempDirectory("status-no-exclude-")
+        val dir = TestScratch.directory("status-no-exclude-")
         val originalOut = System.out
         try {
             val root = dir.resolve("root")

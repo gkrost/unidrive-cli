@@ -4,12 +4,13 @@ import java.nio.file.Files
 import java.sql.DriverManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /** #222: the subscription table shares state.db, so its connection must not switch the file away from WAL or fail a commit as busy. */
 class SubscriptionStoreWalTest {
     @Test
     fun `a store on a fresh file runs it in WAL`() {
-        val dir = Files.createTempDirectory("sub-store-wal")
+        val dir = TestScratch.directory("sub-store-wal")
         try {
             val dbPath = dir.resolve("state.db")
             val store = SubscriptionStore(dbPath).also { it.initialize() }

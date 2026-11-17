@@ -5,6 +5,7 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -33,7 +34,7 @@ class RemoteMergeKindTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-merge-kind")
+        tmp = TestScratch.directory("unidrive-merge-kind")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

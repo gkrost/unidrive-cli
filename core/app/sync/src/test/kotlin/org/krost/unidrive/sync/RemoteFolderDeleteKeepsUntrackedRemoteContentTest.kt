@@ -12,6 +12,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A hydrated folder that went missing locally plans one remote delete of the folder, and the provider's delete takes
@@ -47,8 +48,8 @@ class RemoteFolderDeleteKeepsUntrackedRemoteContentTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-folder-del-untracked-root")
-        db = StateDatabase(Files.createTempDirectory("ud-folder-del-untracked-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("ud-folder-del-untracked-root")
+        db = StateDatabase(TestScratch.directory("ud-folder-del-untracked-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
     }

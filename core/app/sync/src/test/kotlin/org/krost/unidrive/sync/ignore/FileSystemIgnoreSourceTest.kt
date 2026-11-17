@@ -14,10 +14,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** Rule files on a real file system, in a temp directory. */
 class FileSystemIgnoreSourceTest {
-    private val root: Path = Files.createTempDirectory("ignore-fs-source")
+    private val root: Path = TestScratch.directory("ignore-fs-source")
 
     @AfterTest
     fun cleanup() {
@@ -71,7 +72,7 @@ class FileSystemIgnoreSourceTest {
 
     @Test
     fun aRuleFileReachedThroughALinkedDirectoryOutsideTheRootIsNotFollowed() {
-        val outside = Files.createTempDirectory("ignore-fs-outside")
+        val outside = TestScratch.directory("ignore-fs-outside")
         try {
             outside.resolve(".unidrive.ignore").writeText("*\n")
             try {

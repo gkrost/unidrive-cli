@@ -27,6 +27,7 @@ import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The per-path upload slot must never be lost out from under a submitter (#210): the last release's
@@ -105,13 +106,13 @@ class UploadSlotReleaseRaceTest {
 
     private class Rig {
         val provider = GatedProvider()
-        val db = StateDatabase(dbPath = Files.createTempDirectory("unidrive-slot-db").resolve("state.db"), inMemory = true)
+        val db = StateDatabase(dbPath = TestScratch.directory("unidrive-slot-db").resolve("state.db"), inMemory = true)
             .also { it.initialize() }
         val engine = SyncEngine(
             provider = provider,
             db = db,
-            syncRoot = Files.createTempDirectory("unidrive-slot-sync"),
-            cacheRoot = Files.createTempDirectory("unidrive-slot-cache"),
+            syncRoot = TestScratch.directory("unidrive-slot-sync"),
+            cacheRoot = TestScratch.directory("unidrive-slot-cache"),
         )
         val uploadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val impl = HydrationImpl(engine, db, recoveryUploadScope = uploadScope)

@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.sync.model.ConflictPolicy
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.MDC
 import java.nio.file.Files
 import java.nio.file.Path
@@ -33,8 +34,8 @@ class SyncScanIdTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-scanid-test")
-        val dbPath = Files.createTempDirectory("unidrive-scanid-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-scanid-test")
+        val dbPath = TestScratch.directory("unidrive-scanid-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         engine =

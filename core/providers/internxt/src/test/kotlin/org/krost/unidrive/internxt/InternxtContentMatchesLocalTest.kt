@@ -18,6 +18,7 @@ import java.security.MessageDigest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1219 through the provider: [InternxtProvider.contentMatchesLocal] with the real key derivation (the account's mnemonic,
@@ -42,7 +43,7 @@ class InternxtContentMatchesLocalTest {
     private fun provider(): InternxtProvider {
         val payloadB64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
         return InternxtProvider(
-            InternxtConfig(credentialProtector = null, tokenPath = Files.createTempFile("ud-proof-token", ".tmp")),
+            InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("ud-proof-token", ".tmp")),
             httpClient = HttpClient(MockEngine { request -> handle(request) }),
             credentials =
                 org.krost.unidrive.internxt.model.InternxtCredentials(
@@ -81,7 +82,7 @@ class InternxtContentMatchesLocalTest {
         }
     }
 
-    private fun localFile(bytes: ByteArray): Path = Files.createTempFile("ud-proof-local", ".bin").also { Files.write(it, bytes) }
+    private fun localFile(bytes: ByteArray): Path = TestScratch.file("ud-proof-local", ".bin").also { Files.write(it, bytes) }
 
     @Test
     fun `the file of the stored bytes is proven the same with the key of the files own bucket, and nothing is downloaded`() =
@@ -104,7 +105,7 @@ class InternxtContentMatchesLocalTest {
     fun `the proof and the download agree on the key, so the downloaded file is proven the same`() =
         runTest {
             val provider = provider()
-            val downloaded = Files.createTempDirectory("ud-proof-dl").resolve("out.bin")
+            val downloaded = TestScratch.directory("ud-proof-dl").resolve("out.bin")
 
             provider.downloadById(fileUuid, "/docs/a.bin", downloaded)
 

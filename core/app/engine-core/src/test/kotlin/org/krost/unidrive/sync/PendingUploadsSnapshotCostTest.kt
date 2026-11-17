@@ -12,6 +12,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** The upload snapshot asks "is the file there" of every queued row: the cost must follow the folders and the changes, not the rows. */
 class PendingUploadsSnapshotCostTest {
@@ -20,7 +21,7 @@ class PendingUploadsSnapshotCostTest {
 
     @BeforeTest
     fun setUp() {
-        base = Files.createTempDirectory("ud-snapshot-cost")
+        base = TestScratch.directory("ud-snapshot-cost")
         cache = Files.createDirectories(base.resolve("cache"))
     }
 

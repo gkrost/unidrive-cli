@@ -27,6 +27,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The server side of the IPC handshake (protocol version 2) without a socket: the fixed test vectors,
@@ -38,7 +39,7 @@ class IpcAuthTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("ipc-auth-test")
+        dir = TestScratch.directory("ipc-auth-test")
     }
 
     @AfterTest

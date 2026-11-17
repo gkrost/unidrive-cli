@@ -10,6 +10,7 @@ import kotlinx.serialization.json.*
 import java.nio.file.Files
 import kotlin.test.*
 import kotlin.time.Duration.Companion.minutes
+import org.krost.unidrive.testing.TestScratch
 
 class DeltaDiagnosticTest {
     companion object {
@@ -62,7 +63,7 @@ class DeltaDiagnosticTest {
             println("DIAG: items under $TEST_FOLDER: ${testItems.map { "${it.path} (deleted=${it.deleted})" }}")
 
             // Upload
-            val tempFile = Files.createTempFile("diag", ".txt")
+            val tempFile = TestScratch.file("diag", ".txt")
             Files.writeString(tempFile, "diagnostic content $ts")
             val uploadResult = provider.upload(tempFile, remotePath)
             Files.delete(tempFile)

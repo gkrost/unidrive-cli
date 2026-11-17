@@ -7,6 +7,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD: graceful shutdown ordering for LocalWatcher.stop().
@@ -19,7 +20,7 @@ import kotlin.test.assertTrue
  * that /proc/self/fd doesn't grow without bound across the loop.
  *
  * Note: spec called for JUnit 5 (@TempDir), but this module is configured for
- * JUnit 4 (`useJUnit()` in build.gradle.kts). Uses Files.createTempDirectory()
+ * JUnit 4 (`useJUnit()` in build.gradle.kts). Uses TestScratch.directory()
  * with explicit teardown, matching the convention used by sibling tests
  * (LocalWatcherTest, LocalScannerTest, etc.).
  */
@@ -29,7 +30,7 @@ class LocalWatcherShutdownTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-watcher-shutdown-test")
+        tmp = TestScratch.directory("unidrive-watcher-shutdown-test")
     }
 
     @AfterTest

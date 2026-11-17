@@ -8,13 +8,14 @@ import java.sql.DriverManager
 import java.time.Duration
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class StateDatabaseTest {
     private lateinit var db: StateDatabase
 
     @BeforeTest
     fun setUp() {
-        val tmpDir = Files.createTempDirectory("unidrive-test")
+        val tmpDir = TestScratch.directory("unidrive-test")
         db = StateDatabase(tmpDir.resolve("state.db"))
         db.initialize()
     }
@@ -469,7 +470,7 @@ class StateDatabaseTest {
 
     @Test
     fun `UD-738 inMemory true creates a working DB without touching dbPath on disk`() {
-        val tmpDir = Files.createTempDirectory("unidrive-shadow")
+        val tmpDir = TestScratch.directory("unidrive-shadow")
         val sentinelPath = tmpDir.resolve("never-created.db")
         val shadow = StateDatabase(sentinelPath, inMemory = true)
         shadow.initialize()
@@ -490,7 +491,7 @@ class StateDatabaseTest {
     @Test
     fun `UD-738 inMemory true is isolated from any real on-disk DB at the same path`() {
         // Real, file-backed DB with one entry
-        val tmpDir = Files.createTempDirectory("unidrive-isolated")
+        val tmpDir = TestScratch.directory("unidrive-isolated")
         val realPath = tmpDir.resolve("state.db")
         val real = StateDatabase(realPath)
         real.initialize()
@@ -754,7 +755,7 @@ class StateDatabaseTest {
         // new schema would consider non-rescannable (its remote_id would be
         // a synthetic pending-upload row, but we want to prove that the
         // upgrade drops everything regardless of row content).
-        val tmpDir = Files.createTempDirectory("unidrive-upgrade")
+        val tmpDir = TestScratch.directory("unidrive-upgrade")
         val dbFile = tmpDir.resolve("state.db")
         DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
             conn.createStatement().use { stmt ->
@@ -837,7 +838,7 @@ class StateDatabaseTest {
     // dropped every row the reset run had just written.
     @Test
     fun `resetAll keeps the schema stamp so rows written after it survive a reopen`() {
-        val path = Files.createTempDirectory("unidrive-reset").resolve("state.db")
+        val path = TestScratch.directory("unidrive-reset").resolve("state.db")
         val first = StateDatabase(path)
         first.initialize()
         first.upsertEntry(entry("/before.txt"))
@@ -862,7 +863,7 @@ class StateDatabaseTest {
 
     @Test
     fun `a dry-run snapshot of a database that was reset and repopulated still has its rows`() {
-        val dir = Files.createTempDirectory("unidrive-reset-snap")
+        val dir = TestScratch.directory("unidrive-reset-snap")
         val path = dir.resolve("state.db")
         val real = StateDatabase(path)
         real.initialize()
@@ -1179,7 +1180,7 @@ class StateDatabaseTest {
         // remote_path). The next initialize() must ADD the column without
         // truncating rows or bumping schema_version, and every existing row
         // must read back with remotePath=null → identical, non-aliased behaviour.
-        val tmpDir = Files.createTempDirectory("unidrive-remotepath-migration")
+        val tmpDir = TestScratch.directory("unidrive-remotepath-migration")
         val dbFile = tmpDir.resolve("state.db")
         DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
             conn.createStatement().use { stmt ->
@@ -1276,7 +1277,7 @@ class StateDatabaseTest {
         // columns but not local_hash. The next initialize() must ADD the column without
         // dropping rows or bumping schema_version; existing rows read localHash = null
         // ("unknown"), which keeps today's mtime+size behaviour for them.
-        val tmpDir = Files.createTempDirectory("unidrive-localhash-migration")
+        val tmpDir = TestScratch.directory("unidrive-localhash-migration")
         val dbFile = tmpDir.resolve("state.db")
         DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
             conn.createStatement().use { stmt ->
@@ -1379,7 +1380,7 @@ class StateDatabaseTest {
         // archive#449: the shipped shape BEFORE cache_backed (includes local_hash). The next initialize() must ADD
         // the column without dropping rows or bumping schema_version; an existing row reads
         // cacheBacked = null ("unknown"), which keeps the cache-presence guard for it.
-        val tmpDir = Files.createTempDirectory("unidrive-cachebacked-migration")
+        val tmpDir = TestScratch.directory("unidrive-cachebacked-migration")
         val dbFile = tmpDir.resolve("state.db")
         DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
             conn.createStatement().use { stmt ->
@@ -1467,7 +1468,7 @@ class StateDatabaseTest {
     fun `migration — edit_base column is added in-place to an existing DB and existing rows read it as null`() {
         // archive#1070/#1069: the shipped shape BEFORE edit_base. The next initialize() must ADD the column without
         // dropping rows or bumping schema_version; an existing row reads editBase = null (no unsynced edit known).
-        val tmpDir = Files.createTempDirectory("unidrive-editbase-migration")
+        val tmpDir = TestScratch.directory("unidrive-editbase-migration")
         val dbFile = tmpDir.resolve("state.db")
         DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
             conn.createStatement().use { stmt ->
@@ -1541,7 +1542,7 @@ class StateDatabaseTest {
         // The shipped shape BEFORE remote_version (edit_base is the newest column). The next initialize() must ADD the
         // column without dropping rows or bumping schema_version; an existing row reads remoteVersion = null, so its
         // write token stays its remote_hash.
-        val tmpDir = Files.createTempDirectory("unidrive-remoteversion-migration")
+        val tmpDir = TestScratch.directory("unidrive-remoteversion-migration")
         val dbFile = tmpDir.resolve("state.db")
         DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
             conn.createStatement().use { stmt ->
@@ -1635,7 +1636,7 @@ class StateDatabaseTest {
     fun `migration - remote_content_id column is added in-place to an existing DB and existing rows read it as null`() {
         // gkrost/unidrive-cli#164: the shipped shape BEFORE remote_content_id (mount_deleted_at is the newest column). An existing
         // row survives and names no bytes: its remote_hash decides alone, as before.
-        val tmpDir = Files.createTempDirectory("unidrive-contentid-migration")
+        val tmpDir = TestScratch.directory("unidrive-contentid-migration")
         val dbFile = tmpDir.resolve("state.db")
         DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
             conn.createStatement().use { stmt ->
@@ -1728,7 +1729,7 @@ class StateDatabaseTest {
     fun `the folders of rows from before the content-id column, in order and after a bound`() {
         // gkrost/unidrive-cli#202: the shipped shape before remote_content_id, with alive files, a folder row, a file awaiting its first
         // upload and a deleted file. Only the folders of alive files with a remote id are named, each once.
-        val tmpDir = Files.createTempDirectory("unidrive-contentid-folders")
+        val tmpDir = TestScratch.directory("unidrive-contentid-folders")
         val dbFile = tmpDir.resolve("state.db")
         DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
             conn.createStatement().use { stmt ->
@@ -1877,7 +1878,7 @@ class StateDatabaseTest {
         // sync_entries + alive_entries + indexes are present, schema_version
         // is 2, scan_staging is absent. The next initialize() must add
         // scan_staging without touching the existing live rows.
-        val tmpDir = Files.createTempDirectory("unidrive-staging-migration")
+        val tmpDir = TestScratch.directory("unidrive-staging-migration")
         val dbFile = tmpDir.resolve("state.db")
         DriverManager.getConnection("jdbc:sqlite:$dbFile").use { conn ->
             conn.createStatement().use { stmt ->
@@ -1995,7 +1996,7 @@ class StateDatabaseTest {
 
     @Test
     fun `opening a state_db stamped by a newer schema is refused and the stamp is untouched`() {
-        val dbPath = Files.createTempDirectory("ud-323-newer").resolve("state.db")
+        val dbPath = TestScratch.directory("ud-323-newer").resolve("state.db")
         StateDatabase(dbPath).let { it.initialize(); it.close() }
         writeSchemaVersion(dbPath, StateDatabase.SCHEMA_VERSION + 1)
 
@@ -2018,7 +2019,7 @@ class StateDatabaseTest {
 
     @Test
     fun `a state_db at the current schema version opens`() {
-        val dbPath = Files.createTempDirectory("ud-323-current").resolve("state.db")
+        val dbPath = TestScratch.directory("ud-323-current").resolve("state.db")
         StateDatabase(dbPath).let { it.initialize(); it.close() }
         assertEquals(StateDatabase.SCHEMA_VERSION, schemaVersionOf(dbPath))
 
@@ -2028,7 +2029,7 @@ class StateDatabaseTest {
 
     @Test
     fun `a state_db at an older schema version migrates and is stamped current`() {
-        val dbPath = Files.createTempDirectory("ud-323-older").resolve("state.db")
+        val dbPath = TestScratch.directory("ud-323-older").resolve("state.db")
         StateDatabase(dbPath).let { it.initialize(); it.close() }
         writeSchemaVersion(dbPath, 1)
 

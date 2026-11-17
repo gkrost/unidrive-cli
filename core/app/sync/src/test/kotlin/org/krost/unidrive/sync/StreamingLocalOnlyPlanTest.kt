@@ -13,6 +13,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The plan a streamed gather ends with (resolveSlice per page, classify, drainDeferred, finalizeStreaming) equals the plan
@@ -25,8 +26,8 @@ class StreamingLocalOnlyPlanTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-local-only")
-        db = StateDatabase(Files.createTempDirectory("unidrive-local-only-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-local-only")
+        db = StateDatabase(TestScratch.directory("unidrive-local-only-db").resolve("state.db"))
         db.initialize()
     }
 

@@ -21,6 +21,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * #220: every throttle wait OneDrive takes obeys one cap (five minutes) and one floor (one second). A chunk PUT and a
@@ -43,7 +44,7 @@ class OneDriveThrottleWaitBoundsTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-throttle-bounds")
+        tokenDir = TestScratch.directory("ud-throttle-bounds")
     }
 
     @AfterTest
@@ -216,7 +217,7 @@ class OneDriveThrottleWaitBoundsTest {
         }
 
     private fun localFile(size: Long): Path {
-        val f = Files.createTempFile(tokenDir, "big", ".bin")
+        val f = TestScratch.file(tokenDir, "big", ".bin")
         Files.write(f, ByteArray(size.toInt()) { 7 })
         return f
     }

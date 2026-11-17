@@ -4,6 +4,7 @@ import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -29,7 +30,7 @@ class RemoteMergeRenamesTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("unidrive-merge-renames")
+        tmp = TestScratch.directory("unidrive-merge-renames")
         db = StateDatabase(tmp.resolve("state.db"))
         db.initialize()
     }

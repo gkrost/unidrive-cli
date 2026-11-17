@@ -30,6 +30,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The IPC handshake over a real socket: [IpcServer] with an [IpcAuth] against raw connections and the
@@ -46,7 +47,7 @@ class IpcAuthServerTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("ipc-auth-sock")
+        dir = TestScratch.directory("ipc-auth-sock")
         profileDir = Files.createDirectories(dir.resolve("p"))
         socketPath = dir.resolve("d.sock")
     }

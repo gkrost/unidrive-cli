@@ -27,6 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#567: the row write of a finished transfer leaves the event loop and shares its commit with the
@@ -40,7 +41,7 @@ class StateGroupCommitTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-group-commit")
+        dir = TestScratch.directory("unidrive-group-commit")
         dbFile = dir.resolve("state.db")
         db = StateDatabase(dbFile)
         db.initialize()

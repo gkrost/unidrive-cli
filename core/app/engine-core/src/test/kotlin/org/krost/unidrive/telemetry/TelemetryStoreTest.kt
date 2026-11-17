@@ -12,6 +12,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class TelemetryStoreTest {
     private lateinit var dir: Path
@@ -20,7 +21,7 @@ class TelemetryStoreTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("telemetry-store-test")
+        dir = TestScratch.directory("telemetry-store-test")
         db = dir.resolve("telemetry.db")
     }
 

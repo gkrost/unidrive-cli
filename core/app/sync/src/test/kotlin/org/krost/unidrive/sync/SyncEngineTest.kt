@@ -12,6 +12,7 @@ import org.krost.unidrive.sync.model.ConflictPolicy
 import org.krost.unidrive.sync.model.PendingLocal
 import org.krost.unidrive.sync.model.SyncAction
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -27,8 +28,8 @@ class SyncEngineTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-engine-test")
-        dbPath = Files.createTempDirectory("unidrive-engine-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-engine-test")
+        dbPath = TestScratch.directory("unidrive-engine-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()
@@ -2511,10 +2512,10 @@ class SyncEngineTest {
         runTest {
             // An aborted (guard-fired) bidirectional run must not leave an empty
             // sync_root dir behind. createDirectories now runs after the guard.
-            val guardSyncRoot = Files.createTempDirectory("unidrive-guard-test-parent")
+            val guardSyncRoot = TestScratch.directory("unidrive-guard-test-parent")
                 .resolve("never-created")
             val guardDb = StateDatabase(
-                Files.createTempDirectory("unidrive-guard-db").resolve("state.db"),
+                TestScratch.directory("unidrive-guard-db").resolve("state.db"),
             )
             guardDb.initialize()
             val now = Instant.parse("2026-01-01T00:00:00Z")
@@ -2562,9 +2563,9 @@ class SyncEngineTest {
         runTest {
             // Fresh sync on a non-existent sync_root that passes the guard (empty DB).
             // After syncOnce, sync_root must exist — the watcher can walk it.
-            val freshSyncRoot = Files.createTempDirectory("unidrive-p2test-parent").resolve("new-root")
+            val freshSyncRoot = TestScratch.directory("unidrive-p2test-parent").resolve("new-root")
             assertFalse(Files.exists(freshSyncRoot), "precondition: sync_root must not exist before syncOnce")
-            val freshDb = StateDatabase(Files.createTempDirectory("unidrive-p2db").resolve("state.db"))
+            val freshDb = StateDatabase(TestScratch.directory("unidrive-p2db").resolve("state.db"))
             freshDb.initialize()
             val freshEngine = SyncEngine(
                 provider = FakeCloudProvider().also { it.deltaItems = emptyList() },
@@ -2595,8 +2596,8 @@ class SyncEngineTest {
             // without creating sync_root. A watcher started on a non-existent
             // sync_root must throw — proving that if the guard fires the watcher
             // must not be started (which is the SyncCommand ordering invariant).
-            val guardSyncRoot2 = Files.createTempDirectory("unidrive-p2guard-parent").resolve("absent")
-            val guardDb2 = StateDatabase(Files.createTempDirectory("unidrive-p2guarddb").resolve("state.db"))
+            val guardSyncRoot2 = TestScratch.directory("unidrive-p2guard-parent").resolve("absent")
+            val guardDb2 = StateDatabase(TestScratch.directory("unidrive-p2guarddb").resolve("state.db"))
             guardDb2.initialize()
             val now = Instant.parse("2026-01-01T00:00:00Z")
             for (i in 0 until 50) {
@@ -2805,7 +2806,7 @@ class SyncEngineTest {
             Files.writeString(syncRoot.resolve("placeholder.txt"), "x")
             provider.deltaItems = emptyList()
 
-            val logPath = Files.createTempDirectory("unidrive-skipped").resolve("skipped-ops.jsonl")
+            val logPath = TestScratch.directory("unidrive-skipped").resolve("skipped-ops.jsonl")
             val reporter = RecordingReporter()
             engineWithGuards(reporter = reporter, skippedOpsLogPath = logPath).syncOnce()
 
@@ -2933,7 +2934,7 @@ class SyncEngineTest {
             Files.writeString(syncRoot.resolve("placeholder.txt"), "x")
             provider.deltaItems = emptyList()
 
-            val logPath = Files.createTempDirectory("unidrive-skipped").resolve("skipped-ops.jsonl")
+            val logPath = TestScratch.directory("unidrive-skipped").resolve("skipped-ops.jsonl")
             val reporter = RecordingReporter()
             engineWithGuards(
                 reporter = reporter,
@@ -3205,7 +3206,7 @@ class SyncEngineTest {
             provider.deltaItems = emptyList()
             engine.syncOnce()
 
-            val newRoot = Files.createTempDirectory("unidrive-engine-test-new")
+            val newRoot = TestScratch.directory("unidrive-engine-test-new")
             val ex =
                 assertFailsWith<IllegalStateException> {
                     engineWithSyncRoot(newRoot).syncOnce()
@@ -3222,7 +3223,7 @@ class SyncEngineTest {
             provider.deltaItems = emptyList()
             engine.syncOnce()
 
-            val newRoot = Files.createTempDirectory("unidrive-engine-test-new")
+            val newRoot = TestScratch.directory("unidrive-engine-test-new")
             // Simulate `--reset` — the SyncCommand wires this up by calling
             // db.resetAll() before the engine starts.
             db.resetAll()
@@ -3759,8 +3760,8 @@ class SyncEngineTest {
         // removes the edited cloud copy. The buffered gather sees the whole delta at once and plans only the Conflict.
         for (streaming in listOf(false, true)) {
             runTest {
-                val root = Files.createTempDirectory("unidrive-del-vs-edit-root")
-                val localDb = StateDatabase(Files.createTempDirectory("unidrive-del-vs-edit-db").resolve("state.db"))
+                val root = TestScratch.directory("unidrive-del-vs-edit-root")
+                val localDb = StateDatabase(TestScratch.directory("unidrive-del-vs-edit-db").resolve("state.db"))
                 localDb.initialize()
                 val fake = FakeCloudProvider()
                 try {
@@ -4018,7 +4019,7 @@ class SyncEngineTest {
             seedUnhydratedFolders("/Documents", count = 3)
             Files.writeString(syncRoot.resolve("placeholder.txt"), "x")
             provider.deltaItems = emptyList()
-            val logPath = Files.createTempDirectory("unidrive-skipped").resolve("skipped-ops.jsonl")
+            val logPath = TestScratch.directory("unidrive-skipped").resolve("skipped-ops.jsonl")
             val reporter = RecordingReporter()
 
             preview { engineWithGuards(reporter = reporter, skippedOpsLogPath = logPath).syncOnce(dryRun = true) }
@@ -5750,7 +5751,7 @@ class SyncEngineTest {
     // isolation has regressed — do not "fix" it by collapsing cacheKey.
     @Test
     fun `cache path is keyed per-account so same-type profiles do not collide`() {
-        val cacheRoot = Files.createTempDirectory("unidrive-cache-collision-test")
+        val cacheRoot = TestScratch.directory("unidrive-cache-collision-test")
         val accountA =
             SyncEngine(
                 provider = provider,
@@ -5788,7 +5789,7 @@ class SyncEngineTest {
     // providerId. Pins that the default isn't silently dropped to "default".
     @Test
     fun `cacheKey defaults to providerId when unset`() {
-        val cacheRoot = Files.createTempDirectory("unidrive-cache-default-test")
+        val cacheRoot = TestScratch.directory("unidrive-cache-default-test")
         val engineTypeOnly =
             SyncEngine(
                 provider = provider,

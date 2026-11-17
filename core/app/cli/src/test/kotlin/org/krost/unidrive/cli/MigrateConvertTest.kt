@@ -15,6 +15,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#604 U5b: the legacy-profile conversion. The gate the tests pin: every unique local byte
@@ -23,9 +24,9 @@ import kotlin.test.assertTrue
  */
 class MigrateConvertTest {
     private fun fixture(): Triple<Path, Path, Path> {
-        val configDir = Files.createTempDirectory("u5-config")
-        val profileDir = Files.createTempDirectory("u5-profile")
-        val syncRoot = Files.createTempDirectory("u5-root")
+        val configDir = TestScratch.directory("u5-config")
+        val profileDir = TestScratch.directory("u5-profile")
+        val syncRoot = TestScratch.directory("u5-root")
         val config = configDir.resolve("config.toml")
         config.writeText("[general]\n\n[providers.p]\ntype = \"localfs\"\nsync_root = \"${syncRoot.toString().replace("\\", "\\\\")}\"\n")
         return Triple(config, profileDir, syncRoot)
@@ -260,8 +261,8 @@ class MigrateConvertTest {
     @Test
     fun `a profile populated only by the mirror engine converts to a mirror`() {
         val (config, profileDir, syncRoot) = fixture()
-        val cache = Files.createTempDirectory("u5-cache")
-        val remote = Files.createTempDirectory("u5-remote")
+        val cache = TestScratch.directory("u5-cache")
+        val remote = TestScratch.directory("u5-remote")
         putFile(remote, "/down.txt", "downloaded by the mirror")
         putFile(remote, "/sub/nested.txt", "nested")
         val db = StateDatabase(profileDir.resolve("state.db"))
@@ -298,7 +299,7 @@ class MigrateConvertTest {
     @Test
     fun `a hybrid profile with a cache-only file is still refused`() {
         val (config, profileDir, syncRoot) = fixture()
-        val cache = Files.createTempDirectory("u5-cache")
+        val cache = TestScratch.directory("u5-cache")
         seed(profileDir, hydratedRow("/mount-written.txt", true), mirrorRow("/mirror.txt"))
         putFile(cache, "/mount-written.txt", "bytes only in the cache")
         putFile(syncRoot, "/mirror.txt", "a mirror row")
@@ -314,7 +315,7 @@ class MigrateConvertTest {
     @Test
     fun `a NULL row whose cache copy exists but whose sync_root file is missing is refused`() {
         val (config, profileDir, syncRoot) = fixture()
-        val cache = Files.createTempDirectory("u5-cache")
+        val cache = TestScratch.directory("u5-cache")
         seed(profileDir, mirrorRow("/cache-only.txt"))
         putFile(cache, "/cache-only.txt", "bytes only in the cache")
         val configBefore = config.readText()
@@ -329,7 +330,7 @@ class MigrateConvertTest {
     @Test
     fun `a NULL row with its sync_root file present passes even when a cache copy exists`() {
         val (config, profileDir, syncRoot) = fixture()
-        val cache = Files.createTempDirectory("u5-cache")
+        val cache = TestScratch.directory("u5-cache")
         seed(profileDir, mirrorRow("/both.txt"), mirrorRow("/root-only.txt"))
         putFile(syncRoot, "/both.txt", "same bytes")
         putFile(cache, "/both.txt", "same bytes")
@@ -344,7 +345,7 @@ class MigrateConvertTest {
     @Test
     fun `a NULL hydrated row with no local copy at all is refused`() {
         val (config, profileDir, syncRoot) = fixture()
-        val cache = Files.createTempDirectory("u5-cache")
+        val cache = TestScratch.directory("u5-cache")
         // Neither a sync_root file nor a cache copy: the row's bytes are absent from the sync root, so
         // the first mirror sync would read it as a local delete and plan DeleteRemote (archive#706).
         seed(profileDir, mirrorRow("/gone.txt"))

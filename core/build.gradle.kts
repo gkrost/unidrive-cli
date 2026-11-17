@@ -28,6 +28,57 @@ configure<JacocoPluginExtension> {
 val flakyCategory = "org.krost.unidrive.testing.FlakyTests"
 val flakyTestTask = "flakyTest"
 
+// #790: empties a redirected test scratch dir before its task runs. Not File.deleteRecursively: it follows every link,
+// and so does a plain walkFileTree into a Windows junction (the JDK reports it as a directory). A symbolic link or a
+// directory that is a reparse point is deleted itself and never entered, so a junction a test left in its scratch cannot
+// take the files of the directory it leads to. Best effort: nothing here fails the build. The same rule, for test
+// scratch at JVM exit, is TestScratch's (:app:core test fixtures), tested in TestScratchTest.
+fun deleteScratchTree(root: java.io.File) {
+    val start = root.toPath()
+    if (!java.nio.file.Files.exists(start, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return
+    fun remove(path: java.nio.file.Path) {
+        runCatching { java.nio.file.Files.deleteIfExists(path) }
+    }
+    java.nio.file.Files.walkFileTree(
+        start,
+        object : java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+            override fun preVisitDirectory(
+                dir: java.nio.file.Path,
+                attrs: java.nio.file.attribute.BasicFileAttributes,
+            ): java.nio.file.FileVisitResult {
+                if (!attrs.isSymbolicLink && !attrs.isOther) return java.nio.file.FileVisitResult.CONTINUE
+                remove(dir)
+                return java.nio.file.FileVisitResult.SKIP_SUBTREE
+            }
+
+            override fun visitFile(
+                file: java.nio.file.Path,
+                attrs: java.nio.file.attribute.BasicFileAttributes,
+            ): java.nio.file.FileVisitResult {
+                remove(file)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+
+            override fun postVisitDirectory(
+                dir: java.nio.file.Path,
+                exc: java.io.IOException?,
+            ): java.nio.file.FileVisitResult {
+                remove(dir)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+
+            // A junction whose target is gone fails to open before preVisitDirectory: remove the entry itself.
+            override fun visitFileFailed(
+                file: java.nio.file.Path,
+                exc: java.io.IOException,
+            ): java.nio.file.FileVisitResult {
+                remove(file)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+        },
+    )
+}
+
 // The groups the third-party Central mirrors may serve (see the long comment in settings.gradle.kts).
 val mirrorGroups =
     file("gradle/mirror-groups.txt")
@@ -311,6 +362,38 @@ subprojects {
         environment("HOME", testHome)
         systemProperty("user.home", testHome)
         systemProperty("unidrive.test.home", testHome)
+        // #790: the tests' scratch (Files.createTempDirectory, ~1,100 sites, almost none deleted afterwards) used to
+        // land in the developer's %TEMP% and stay there: millions of entries after a few weeks of runs. Every test
+        // task now gets its own java.io.tmpdir, emptied before the task runs, so a run leaves at most its own
+        // scratch behind and the next run removes it. OPT-IN: -PunidriveTestTmp=<dir> (a line in ~/.gradle/gradle.properties
+        // does it for every build of a machine) or the UNIDRIVE_TEST_TMP variable names a directory, ideally on a RAM
+        // disk (R:\, /dev/shm), and each test task gets <dir>/ut<hash> inside it. A directory that does not exist (a RAM
+        // disk that is not mounted) is ignored with a warning and the tests keep the plain temp dir.
+        // Opt-in because the scratch dir cannot be free: several tests bind a unix socket in their scratch and the OS
+        // limit is 108 characters. On the Windows runner (a 38-character temp dir) DaemonCredentialHealthTest's socket
+        // sits at 99-100 of them, so a scratch dir nested in the temp dir broke it (check-windows), and a developer with
+        // a long user name has the same margin. On a short base (R:\) the cost is nothing. The dir is ONE 5-digit hash of
+        // the checkout and the task, no nesting; the checkout part keeps two checkouts running the same task at once
+        // (agent sessions) out of each other's dir.
+        val testTmpBase =
+            providers.gradleProperty("unidriveTestTmp").orElse(providers.environmentVariable("UNIDRIVE_TEST_TMP")).orNull
+                ?.takeIf {
+                    java.io.File(it).isDirectory.also { ok ->
+                        if (!ok) logger.warn("unidriveTestTmp/UNIDRIVE_TEST_TMP '$it' is not a directory: tests keep the temp dir (#790)")
+                    }
+                }
+        if (testTmpBase != null) {
+            val testTmp =
+                java.io.File(
+                    java.io.File(testTmpBase),
+                    "ut%05x".format((rootDir.absolutePath + "|" + project.path + ":" + name).hashCode() and 0xFFFFF),
+                )
+            doFirst {
+                deleteScratchTree(testTmp)
+                testTmp.mkdirs()
+            }
+            systemProperty("java.io.tmpdir", testTmp.absolutePath)
+        }
         // CI turns the build cache on (build.yml, #596) so a module nobody touched is not compiled again. Test results
         // are never taken from it: tests read inputs Gradle does not track (SyncConfigScopeTest reads
         // docs/config-schema/, others the CI and UNIDRIVE_* environment, the ignore oracle its pinned git), and a cached

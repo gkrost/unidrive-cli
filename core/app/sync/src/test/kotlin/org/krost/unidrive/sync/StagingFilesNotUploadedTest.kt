@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1049 X2: the providers stage a download as `<name>.unidrive-tmp` beside its destination (`.ud-<hex>.unidrive-tmp` for
@@ -25,8 +26,8 @@ class StagingFilesNotUploadedTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-staging-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-staging-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-staging-root")
+        db = StateDatabase(TestScratch.directory("unidrive-staging-db").resolve("state.db"))
         db.initialize()
     }
 

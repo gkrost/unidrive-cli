@@ -14,6 +14,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The name hazards the golden unicode tree leaves out (reserved device names, a trailing dot or space, all-dots names,
@@ -44,7 +45,7 @@ class LocalfsHazardNamesTest {
 
     @BeforeTest
     fun setUp() {
-        base = Files.createTempDirectory("ud-hazards")
+        base = TestScratch.directory("ud-hazards")
         local = Files.createDirectories(base.resolve("local"))
         remote = Files.createDirectories(base.resolve("remote"))
         db = StateDatabase(Files.createDirectories(base.resolve("profile")).resolve("state.db")).also { it.initialize() }

@@ -14,6 +14,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A sign-in compares the login answer's user uuid with the profile's stored user ([AccountOwner]) before it stores the
@@ -24,7 +25,7 @@ class InternxtAccountOwnerTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("internxt-owner-")
+        dir = TestScratch.directory("internxt-owner-")
     }
 
     @AfterTest

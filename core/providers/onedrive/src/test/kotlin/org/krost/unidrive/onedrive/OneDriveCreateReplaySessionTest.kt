@@ -15,6 +15,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A create always asks for `fail` first. When the name is taken, the upload goes on under another behaviour: a guarded
@@ -32,7 +33,7 @@ class OneDriveCreateReplaySessionTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-create-replay")
+        tokenDir = TestScratch.directory("ud-create-replay")
     }
 
     @AfterTest
@@ -148,7 +149,7 @@ class OneDriveCreateReplaySessionTest {
         }
 
     private fun localFile(): Path {
-        val f = Files.createTempFile(tokenDir, "big", ".bin")
+        val f = TestScratch.file(tokenDir, "big", ".bin")
         Files.write(f, ByteArray(fileSize.toInt()) { 5 })
         return f
     }

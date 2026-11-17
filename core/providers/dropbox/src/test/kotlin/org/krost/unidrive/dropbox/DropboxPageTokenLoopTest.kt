@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A server or proxy that answers a listing with a cursor it was already asked for would otherwise be paged for ever,
@@ -19,7 +20,7 @@ class DropboxPageTokenLoopTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("dbx-tok")
+        dir = TestScratch.directory("dbx-tok")
     }
 
     @AfterTest

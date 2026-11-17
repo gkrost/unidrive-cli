@@ -10,10 +10,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** `checkCredentials()` (archive#1240): one `users/get_space_usage` with the stored grant, never the browser sign-in. */
 class DropboxCheckCredentialsTest {
-    private val dir = Files.createTempDirectory("dropbox-check")
+    private val dir = TestScratch.directory("dropbox-check")
     private val fake = FakeDropbox()
 
     private fun fresh() = DropboxProvider(DropboxConfig(appKey = "key", tokenPath = dir), fake.engine) // no authenticate()

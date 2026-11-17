@@ -12,6 +12,7 @@ import org.krost.unidrive.sync.LocalScanner
 import org.krost.unidrive.sync.ProgressReporter
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -52,7 +53,7 @@ class LocalfsMirrorSkipsTest {
         scannerLog.start()
         scannerLogger.addAppender(scannerLog)
         engineLogger.addAppender(scannerLog)
-        base = Files.createTempDirectory("ud-mirror-skips")
+        base = TestScratch.directory("ud-mirror-skips")
         local = Files.createDirectories(base.resolve("local"))
         remote = Files.createDirectories(base.resolve("remote"))
         outside = Files.createDirectories(base.resolve("outside"))

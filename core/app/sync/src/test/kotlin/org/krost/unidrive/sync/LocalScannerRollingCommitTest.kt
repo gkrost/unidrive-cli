@@ -19,6 +19,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#744 finding 1: the scan's writes commit in chunks (see [ScanWriteBatch]). What that must not change:
@@ -31,8 +32,8 @@ class LocalScannerRollingCommitTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-scan-rolling")
-        val dbFile = Files.createTempDirectory("unidrive-scan-rolling-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-scan-rolling")
+        val dbFile = TestScratch.directory("unidrive-scan-rolling-db").resolve("state.db")
         db = StateDatabase(dbFile).also { it.initialize() }
         other = StateDatabase(dbFile, busyTimeoutMs = 1_500).also { it.initialize() }
     }
@@ -169,7 +170,7 @@ class LocalScannerRollingCommitTest {
         assertEquals(ChangeState.DELETED, second["/cloud/only.bin"])
 
         // The tree an uninterrupted scan leaves, for comparison.
-        val cleanDb = StateDatabase(Files.createTempDirectory("unidrive-scan-rolling-clean").resolve("state.db")).also { it.initialize() }
+        val cleanDb = StateDatabase(TestScratch.directory("unidrive-scan-rolling-clean").resolve("state.db")).also { it.initialize() }
         try {
             cleanDb.upsertEntry(row("/cloud/only.bin"))
             LocalScanner(syncRoot, cleanDb).scan()

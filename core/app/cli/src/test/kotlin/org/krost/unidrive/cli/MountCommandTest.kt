@@ -3,6 +3,7 @@ package org.krost.unidrive.cli
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.IpcServer
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.nio.file.Files
 import java.nio.file.Path
@@ -156,7 +157,7 @@ class MountCommandTest {
 
     @Test
     fun `migrates an existing long profile cache before using the canonical directory`() {
-        val root = Files.createTempDirectory("ud-cache-migration")
+        val root = TestScratch.directory("ud-cache-migration")
         val key = "long-profile-" + "x".repeat(90)
         val legacy = root.resolve("unidrive/hydration/$key")
         Files.createDirectories(legacy)
@@ -208,7 +209,7 @@ class MountCommandTest {
 
     @Test
     fun `the co-daemon search takes per-user before system-wide and each when it is the only one`() {
-        val dir = Files.createTempDirectory("mount-bin-search")
+        val dir = TestScratch.directory("mount-bin-search")
         try {
             val perUser = dir.resolve("home").resolve("unidrive-mount")
             val systemWide = dir.resolve("system").resolve("unidrive-mount")
@@ -225,7 +226,7 @@ class MountCommandTest {
 
     @Test
     fun `a non-executable per-user file is skipped in favour of the system-wide one`() {
-        val dir = Files.createTempDirectory("mount-bin-skips")
+        val dir = TestScratch.directory("mount-bin-skips")
         try {
             val perUser = dir.resolve("home").resolve("unidrive-mount")
             val systemWide = executableFile(dir.resolve("system").resolve("unidrive-mount"))
@@ -247,7 +248,7 @@ class MountCommandTest {
 
     @Test
     fun `an explicit UNIDRIVE_MOUNT_BIN wins without falling back, the missing-file message names it`() {
-        val dir = Files.createTempDirectory("mount-bin-env")
+        val dir = TestScratch.directory("mount-bin-env")
         try {
             val perUser = executableFile(dir.resolve("home").resolve("unidrive-mount"))
             val systemWide = dir.resolve("system").resolve("unidrive-mount")
@@ -267,7 +268,7 @@ class MountCommandTest {
 
     @Test
     fun `an empty UNIDRIVE_MOUNT_BIN counts as unset and the search runs`() {
-        val dir = Files.createTempDirectory("mount-bin-empty")
+        val dir = TestScratch.directory("mount-bin-empty")
         try {
             val perUser = executableFile(dir.resolve("home").resolve("unidrive-mount"))
             assertEquals(perUser, MountCommand.chooseBinary("", listOf(perUser)), "empty value: search, not Paths.get(\"\")")
@@ -290,7 +291,7 @@ class MountCommandTest {
     fun `binary present returns 0`() {
         // archive#239: any existing file qualifies (checkBinaryExists accepts isExecutable OR exists).
         // The prior `/bin/sh` hardcode failed on Windows; use a temp file so the test is OS-agnostic.
-        val present = Files.createTempFile("unidrive-mount-present", ".bin")
+        val present = TestScratch.file("unidrive-mount-present", ".bin")
         try {
             assertEquals(0, MountCommand.checkBinaryExists(present))
         } finally {

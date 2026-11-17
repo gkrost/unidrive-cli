@@ -19,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class IpcSocketDirTest {
     private lateinit var tmp: Path
@@ -28,7 +29,7 @@ class IpcSocketDirTest {
         // Short prefix: the socket test below binds <temp>/uipcd-<up to 20 digits>/unidrive-ipc/s.sock, and the
         // JDK binds an AF_UNIX path of at most 106 bytes on Windows, which leaves 59 bytes for the temp folder.
         // ("udipc-" is taken: the Windows client's tests use and sweep %TEMP%/udipc-*.)
-        tmp = Files.createTempDirectory("uipcd-")
+        tmp = TestScratch.directory("uipcd-")
     }
 
     @AfterTest

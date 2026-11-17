@@ -10,6 +10,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A streamed download is in flight (no row, nothing on disk) when a page delivers a tombstone for its path. The delete
@@ -23,9 +24,9 @@ class InFlightIdlessDeleteTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("unidrive-inflight-db").resolve("state.db"))
+        db = StateDatabase(TestScratch.directory("unidrive-inflight-db").resolve("state.db"))
         db.initialize()
-        reconciler = Reconciler(db, Files.createTempDirectory("unidrive-inflight"), ConflictPolicy.KEEP_BOTH)
+        reconciler = Reconciler(db, TestScratch.directory("unidrive-inflight"), ConflictPolicy.KEEP_BOTH)
     }
 
     @AfterTest

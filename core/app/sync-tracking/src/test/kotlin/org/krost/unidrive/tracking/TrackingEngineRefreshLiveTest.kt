@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * JWT / OAuth-refresh path — structurally exercised through the engine.
@@ -41,7 +42,7 @@ class TrackingEngineRefreshLiveTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("ts-refresh")
+        workDir = TestScratch.directory("ts-refresh")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider = FakeTrackingProvider()

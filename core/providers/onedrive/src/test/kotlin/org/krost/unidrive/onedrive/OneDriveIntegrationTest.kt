@@ -8,6 +8,7 @@ import org.krost.unidrive.sync.model.ConflictPolicy
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class OneDriveIntegrationTest {
     companion object {
@@ -35,8 +36,8 @@ class OneDriveIntegrationTest {
             provider = OneDriveProvider()
             provider.authenticate()
             ensureTestFolder()
-            syncRoot = Files.createTempDirectory("unidrive-integration")
-            dbPath = Files.createTempDirectory("unidrive-integration-db").resolve("state.db")
+            syncRoot = TestScratch.directory("unidrive-integration")
+            dbPath = TestScratch.directory("unidrive-integration-db").resolve("state.db")
             db = StateDatabase(dbPath)
             db.initialize()
             engine =
@@ -72,7 +73,7 @@ class OneDriveIntegrationTest {
             val remotePath = "$TEST_FOLDER/sync_create_${System.currentTimeMillis()}.txt"
             val content = "Hello integration test"
 
-            val tempFile = Files.createTempFile("unidrive-upload", ".txt")
+            val tempFile = TestScratch.file("unidrive-upload", ".txt")
             Files.writeString(tempFile, content)
             provider.upload(tempFile, remotePath)
             Files.delete(tempFile)
@@ -91,7 +92,7 @@ class OneDriveIntegrationTest {
             if (!checkEnabled()) return@runTest
             val remotePath = "$TEST_FOLDER/sync_delete_${System.currentTimeMillis()}.txt"
 
-            val tempFile = Files.createTempFile("unidrive-delete", ".txt")
+            val tempFile = TestScratch.file("unidrive-delete", ".txt")
             Files.writeString(tempFile, "To be deleted")
             provider.upload(tempFile, remotePath)
             Files.delete(tempFile)

@@ -10,6 +10,7 @@ import org.krost.unidrive.ItemRemoteState
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#632: [OneDriveProvider.itemStateById] asks `GET /items/{id}`. A move keeps the item's id, so a
@@ -20,7 +21,7 @@ class OneDriveItemStateTest {
     private val json = headersOf("Content-Type", "application/json")
 
     private fun providerAnswering(status: HttpStatusCode, body: String): OneDriveProvider {
-        val config = OneDriveConfig(tokenPath = Files.createTempDirectory("ud-itemstate"))
+        val config = OneDriveConfig(tokenPath = TestScratch.directory("ud-itemstate"))
         val service = GraphApiService(config = config, httpClient = io.ktor.client.HttpClient(MockEngine { request ->
             if (request.url.encodedPath.endsWith("/items/rid-1")) {
                 respond(body, status, json)

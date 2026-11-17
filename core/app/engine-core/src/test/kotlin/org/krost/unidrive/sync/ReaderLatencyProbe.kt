@@ -8,6 +8,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.LockSupport
 import kotlin.concurrent.thread
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The reader latency harness of the state database: a writer replays a merge over every row of a temp `state.db` (per
@@ -68,7 +69,7 @@ private class Reader(
 
 fun main(args: Array<String>) {
     val rows = args.firstOrNull()?.toInt() ?: 200_000
-    val dir = Files.createTempDirectory("reader-latency-probe")
+    val dir = TestScratch.directory("reader-latency-probe")
     val db = StateDatabase(dir.resolve("state.db"))
     db.initialize()
     try {

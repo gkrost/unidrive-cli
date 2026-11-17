@@ -7,6 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.junit.Assume.assumeTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The --full-tree refusal of a scoped profile is an operator refusal, not a usage
@@ -38,7 +39,7 @@ class SyncFullTreeRefusalSmokeTest {
     @Test
     fun `the full-tree refusal prints one line and no usage block`() {
         assumeTrue("requires :app:cli:shadowJar — run ./gradlew :app:cli:shadowJar first", jarPath.exists())
-        val configDir = Files.createTempDirectory("full-tree-refusal").toFile()
+        val configDir = TestScratch.directory("full-tree-refusal").toFile()
         try {
             val syncRoot =
                 Files.createDirectories(configDir.toPath().resolve("sync-root"))

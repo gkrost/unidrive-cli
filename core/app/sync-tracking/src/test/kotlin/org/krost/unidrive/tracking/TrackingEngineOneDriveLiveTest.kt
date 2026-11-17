@@ -7,10 +7,10 @@ import org.krost.unidrive.onedrive.OneDriveProvider
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
-import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Live-integration smoke test for the tracking-set engine against the
@@ -88,7 +88,7 @@ class TrackingEngineOneDriveLiveTest {
             return
         }
 
-        val workDir = createTempDirectory("ts-onedrive-live")
+        val workDir = TestScratch.directory("ts-onedrive-live")
         val syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         val dbPath = workDir.resolve("tracking.db")
 

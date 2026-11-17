@@ -7,6 +7,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The shared throttle-wait rule: a 429 never waits under the one-second floor however the server spells its
@@ -14,7 +15,7 @@ import kotlin.test.assertTrue
  * matrix counts only 429/503 as throttles, and a 500 on S3 used to trip the budget's spacing for every transfer.
  */
 class S3ThrottleWaitTest {
-    private val dir = Files.createTempDirectory("s3-throttle")
+    private val dir = TestScratch.directory("s3-throttle")
 
     private fun api(
         fake: FakeS3,

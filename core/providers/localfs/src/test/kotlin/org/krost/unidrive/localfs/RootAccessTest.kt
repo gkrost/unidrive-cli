@@ -7,11 +7,12 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 class RootAccessTest {
     @Test
     fun `without create a missing root under a writable folder passes and is not created`() {
-        val base = Files.createTempDirectory("root-access")
+        val base = TestScratch.directory("root-access")
         try {
             val missing = base.resolve("a").resolve("b")
             assertNull(RootAccess.validate(missing, create = false))
@@ -24,7 +25,7 @@ class RootAccessTest {
 
     @Test
     fun `without create a missing root under a file is not creatable and a file root is not a directory`() {
-        val base = Files.createTempDirectory("root-access")
+        val base = TestScratch.directory("root-access")
         try {
             val file = Files.createFile(base.resolve("f"))
             assertEquals("root_not_creatable", RootAccess.validate(file.resolve("sub"), create = false))
@@ -36,7 +37,7 @@ class RootAccessTest {
 
     @Test
     fun `without create an existing usable root passes`() {
-        val base = Files.createTempDirectory("root-access")
+        val base = TestScratch.directory("root-access")
         try {
             assertNull(RootAccess.validate(base, create = false))
         } finally {
@@ -67,7 +68,7 @@ class RootAccessTest {
         deny: (Path) -> (() -> Unit)?,
         body: (Path) -> Unit,
     ) {
-        val root = Files.createTempDirectory("root-access-deny")
+        val root = TestScratch.directory("root-access-deny")
         var restore: (() -> Unit)? = null
         try {
             restore = deny(root)

@@ -26,6 +26,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `unidrive ls` (the live-query surface) must not contradict the FUSE mount (the
@@ -41,7 +42,7 @@ class LsCommandTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("ls-command-test")
+        tempDir = TestScratch.directory("ls-command-test")
         lockFile = tempDir.resolve(".lock")
         dbPath = tempDir.resolve("state.db")
         socketPath = tempDir.resolve("daemon.sock")
@@ -214,7 +215,7 @@ class LsCommandTest {
 
     @Test
     fun `the exclusion guard marks ignore-rule folders and files like the daemon`() {
-        val cache = java.nio.file.Files.createTempDirectory("ls-ignore-cache")
+        val cache = TestScratch.directory("ls-ignore-cache")
         try {
             java.nio.file.Files.writeString(cache.resolve(".unidrive.ignore"), "build/\n")
             val guard =

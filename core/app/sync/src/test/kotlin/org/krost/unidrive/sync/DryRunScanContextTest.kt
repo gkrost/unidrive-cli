@@ -7,6 +7,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The engine tells the provider when a pass is a preview, through ScanContext.readOnly, so a provider can
@@ -20,14 +21,14 @@ class DryRunScanContextTest {
     @BeforeTest
     fun setUp() {
         // Dry-runs require a disposable database; an in-memory one serves both passes.
-        db = StateDatabase(Files.createTempDirectory("ud-400-db").resolve("state.db"), inMemory = true)
+        db = StateDatabase(TestScratch.directory("ud-400-db").resolve("state.db"), inMemory = true)
         db.initialize()
         provider = FakeCloudProvider()
         engine =
             SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("ud-400-root"),
+                syncRoot = TestScratch.directory("ud-400-root"),
                 conflictPolicy = ConflictPolicy.KEEP_BOTH,
                 reporter = ProgressReporter.Silent,
             )

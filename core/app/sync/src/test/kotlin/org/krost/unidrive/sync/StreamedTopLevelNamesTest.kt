@@ -8,6 +8,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * finalizeStreaming alias-maps with the top-level names the pages of THIS gather used. The engine is long-lived: a pass
@@ -17,7 +18,7 @@ class StreamedTopLevelNamesTest {
     @Test
     fun `a fast-bootstrap pass does not keep the top-level names of the previous pass`() =
         runTest {
-            val world = World(Files.createTempDirectory("ud-topnames"))
+            val world = World(TestScratch.directory("ud-topnames"))
             try {
                 val engine = world.engine(EngineOpts(streaming = true, fastBootstrap = true))
                 world.provider.deltaItems = listOf(TwinProvider.item("/Pictures", folder = true), TwinProvider.item("/a.txt"))

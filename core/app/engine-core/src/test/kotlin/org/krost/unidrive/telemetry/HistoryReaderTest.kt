@@ -14,6 +14,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class HistoryReaderTest {
     private lateinit var dir: Path
@@ -46,7 +47,7 @@ class HistoryReaderTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("history-reader-test")
+        dir = TestScratch.directory("history-reader-test")
         db = dir.resolve("telemetry.db")
     }
 

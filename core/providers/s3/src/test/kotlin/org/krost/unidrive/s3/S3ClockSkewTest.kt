@@ -7,13 +7,14 @@ import java.time.Duration
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A host clock more than 15 minutes off (a VM resumed with a stale clock) makes S3 refuse every signature with
  * 403 RequestTimeTooSkewed. The client learns S3's time from the refusal, signs again once, and keeps the offset.
  */
 class S3ClockSkewTest {
-    private val dir = Files.createTempDirectory("s3-skew")
+    private val dir = TestScratch.directory("s3-skew")
     private val serverNow = Instant.parse("2026-06-01T12:00:00Z")
 
     private fun provider(
@@ -39,9 +40,9 @@ class S3ClockSkewTest {
 
             p.authenticate()
             assertEquals(listOf("a.txt"), p.listChildren("/docs").map { it.name })
-            val dest = Files.createTempDirectory("s3-skew-out").resolve("a.txt")
+            val dest = TestScratch.directory("s3-skew-out").resolve("a.txt")
             assertEquals(5L, p.download("/docs/a.txt", dest))
-            val src = Files.createTempFile("s3-skew", ".txt").also { Files.writeString(it, "new") }
+            val src = TestScratch.file("s3-skew", ".txt").also { Files.writeString(it, "new") }
             p.upload(src, "/docs/b.txt")
 
             assertEquals(1, refusals(fake), "only the first request went out with the host's own time")
@@ -55,7 +56,7 @@ class S3ClockSkewTest {
             fake.put("a.txt", "hello")
             val p = provider(fake, Duration.ofMinutes(40))
 
-            val dest = Files.createTempDirectory("s3-skew-out").resolve("a.txt")
+            val dest = TestScratch.directory("s3-skew-out").resolve("a.txt")
             assertEquals(5L, p.download("/a.txt", dest))
 
             assertEquals(2, fake.count { it.method == HttpMethod.Get })

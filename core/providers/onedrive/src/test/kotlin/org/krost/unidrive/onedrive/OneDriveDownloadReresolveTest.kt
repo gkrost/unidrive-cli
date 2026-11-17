@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Pins the download re-resolve-and-retry-once contract that makes a live
@@ -117,7 +118,7 @@ class OneDriveDownloadReresolveTest {
 
             val provider = providerWith(engine)
 
-            val dest = Files.createTempFile("od-stale", ".bin")
+            val dest = TestScratch.file("od-stale", ".bin")
             val size = provider.download("/f.bin", dest)
 
             assertEquals(4L, size, "download should report the re-resolved item size")
@@ -176,7 +177,7 @@ class OneDriveDownloadReresolveTest {
                     tokenProvider = { _, _ -> "tok" },
                 )
 
-            val dest = Files.createTempFile("od-html", ".bin")
+            val dest = TestScratch.file("od-html", ".bin")
             service.downloadFile("item-9", dest)
 
             assertEquals("REAL", Files.readString(dest), "the post-reresolve bytes must land on disk")
@@ -224,7 +225,7 @@ class OneDriveDownloadReresolveTest {
 
             val provider = providerWith(engine)
 
-            val dest = Files.createTempFile("od-gone", ".bin")
+            val dest = TestScratch.file("od-gone", ".bin")
             val ex =
                 assertFailsWith<PermanentDownloadFailureException> {
                     provider.download("/gone.bin", dest)
@@ -283,7 +284,7 @@ class OneDriveDownloadReresolveTest {
 
             val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "tok" })
 
-            val dest = Files.createTempFile("od-329", ".bin")
+            val dest = TestScratch.file("od-329", ".bin")
             service.downloadFile("item-401", dest)
 
             assertEquals("FRESH", Files.readString(dest), "the fresh URL must serve the download")
@@ -325,7 +326,7 @@ class OneDriveDownloadReresolveTest {
 
             val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "tok" })
 
-            val dest = Files.createTempFile("od-329b", ".bin")
+            val dest = TestScratch.file("od-329b", ".bin")
             assertFailsWith<AuthenticationException> {
                 service.downloadFile("item-401b", dest)
             }
@@ -369,7 +370,7 @@ class OneDriveDownloadReresolveTest {
 
             val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "tok" })
 
-            val dest = Files.createTempFile("od-329c", ".bin")
+            val dest = TestScratch.file("od-329c", ".bin")
             val ex = assertFailsWith<GraphApiException> { service.downloadFile("item-403", dest) }
             assertEquals(403, ex.statusCode)
             assertEquals(2, itemByIdCalls.get(), "still exactly one re-resolve")
@@ -399,7 +400,7 @@ class OneDriveDownloadReresolveTest {
 
             val provider = providerWith(engine)
 
-            val dest = Files.createTempFile("od-247", ".bin")
+            val dest = TestScratch.file("od-247", ".bin")
             assertFailsWith<PermanentDownloadFailureException> {
                 provider.download("/never-was.bin", dest)
             }
@@ -439,7 +440,7 @@ class OneDriveDownloadReresolveTest {
 
             val provider = providerWith(engine)
 
-            val dest = Files.createTempFile("od-247b", ".bin")
+            val dest = TestScratch.file("od-247b", ".bin")
             assertFailsWith<GraphApiException> {
                 provider.download("/other-code.bin", dest)
             }

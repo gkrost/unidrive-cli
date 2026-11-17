@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#142: auto-spawn of the daemon on the first client connection. The spawner probes before it
@@ -19,7 +20,7 @@ class DaemonAutospawnTest {
     @Test
     fun `an authenticated daemon that never answers status is not ready`() =
         kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
-            val dir = Files.createTempDirectory("autospawn-silent")
+            val dir = TestScratch.directory("autospawn-silent")
             val socket = dir.resolve("daemon.sock")
             val auth = org.krost.unidrive.sync.IpcAuth.issue(dir, "p", "test")
             val server = org.krost.unidrive.sync.IpcServer(socketPath = socket, auth = auth)
@@ -45,7 +46,7 @@ class DaemonAutospawnTest {
         val ok =
             DaemonAutospawn.ensureDaemonRunning(
                 profileName = "p",
-                configDir = Files.createTempDirectory("autospawn-alive"),
+                configDir = TestScratch.directory("autospawn-alive"),
                 probe = { _, _ -> true },
                 locateJar = { error("a live daemon must not need the jar") },
                 spawn = { command, _ ->
@@ -59,7 +60,7 @@ class DaemonAutospawnTest {
 
     @Test
     fun `a stopped daemon is spawned as java -jar daemon run profile and waited for`() {
-        val tempDir = Files.createTempDirectory("autospawn-stopped")
+        val tempDir = TestScratch.directory("autospawn-stopped")
         var spawnCalls = 0
         var seenCommand: List<String>? = null
         val ok =
@@ -98,8 +99,8 @@ class DaemonAutospawnTest {
 
     @Test
     fun `the spawned daemon carries the launchers' flag set from the single source`() {
-        val jarDir = Files.createTempDirectory("autospawn-flags")
-        val diag = Files.createTempDirectory("autospawn-flags-diag")
+        val jarDir = TestScratch.directory("autospawn-flags")
+        val diag = TestScratch.directory("autospawn-flags-diag")
         Files.write(
             jarDir.resolve("jvm-flags.txt"),
             listOf(
@@ -113,7 +114,7 @@ class DaemonAutospawnTest {
             DaemonAutospawn.spawnCommand(
                 javaBin = Path.of("java"),
                 jar = jarDir.resolve("unidrive.jar"),
-                configRoot = Files.createTempDirectory("autospawn-flags-config"),
+                configRoot = TestScratch.directory("autospawn-flags-config"),
                 profileName = "p",
                 env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
                 props = { name ->
@@ -136,13 +137,13 @@ class DaemonAutospawnTest {
     // only on Java 27+: Java 25 and 26 reject the redact-key option and the daemon would not start.
     @Test
     fun `the daemon child gets the JFR vault redact key only on Java 27 or newer`() {
-        val diag = Files.createTempDirectory("autospawn-jfr-diag")
+        val diag = TestScratch.directory("autospawn-jfr-diag")
 
         fun command(javaFeature: Int): List<String> =
             DaemonAutospawn.spawnCommand(
                 javaBin = Path.of("java"),
-                jar = Files.createTempDirectory("autospawn-jfr").resolve("unidrive.jar"),
-                configRoot = Files.createTempDirectory("autospawn-jfr-config"),
+                jar = TestScratch.directory("autospawn-jfr").resolve("unidrive.jar"),
+                configRoot = TestScratch.directory("autospawn-jfr-config"),
                 profileName = "p",
                 env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
                 props = { name -> if (name == "java.specification.version") javaFeature.toString() else null },
@@ -161,12 +162,12 @@ class DaemonAutospawnTest {
     // rotate a file the first one holds open ("Could not rename log file ... Permission denied").
     @Test
     fun `two profiles give two different GC log paths`() {
-        val diag = Files.createTempDirectory("autospawn-gc-diag")
+        val diag = TestScratch.directory("autospawn-gc-diag")
         fun gcFlag(profile: String): String =
             DaemonAutospawn.spawnCommand(
                 javaBin = Path.of("java"),
-                jar = Files.createTempDirectory("autospawn-gc").resolve("unidrive.jar"),
-                configRoot = Files.createTempDirectory("autospawn-gc-config"),
+                jar = TestScratch.directory("autospawn-gc").resolve("unidrive.jar"),
+                configRoot = TestScratch.directory("autospawn-gc-config"),
                 profileName = profile,
                 env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
                 props = { null },
@@ -198,12 +199,12 @@ class DaemonAutospawnTest {
 
     @Test
     fun `UNIDRIVE_XMX and UNIDRIVE_LOCALE steer the spawned daemon`() {
-        val diag = Files.createTempDirectory("autospawn-env-diag")
+        val diag = TestScratch.directory("autospawn-env-diag")
         val command =
             DaemonAutospawn.spawnCommand(
                 javaBin = Path.of("java"),
-                jar = Files.createTempDirectory("autospawn-env").resolve("unidrive.jar"),
-                configRoot = Files.createTempDirectory("autospawn-env-config"),
+                jar = TestScratch.directory("autospawn-env").resolve("unidrive.jar"),
+                configRoot = TestScratch.directory("autospawn-env-config"),
                 profileName = "p",
                 env = { name ->
                     mapOf("UNIDRIVE_XMX" to "4g", "UNIDRIVE_LOCALE" to "de_lu", "UNIDRIVE_DIAG_DIR" to diag.toString())[name]
@@ -218,15 +219,15 @@ class DaemonAutospawnTest {
 
     @Test
     fun `the spawned daemon passes the coroutine debug agent with a colon`() {
-        val jarDir = Files.createTempDirectory("autospawn-agent")
-        val diagDir = Files.createTempDirectory("autospawn-agent-diag")
+        val jarDir = TestScratch.directory("autospawn-agent")
+        val diagDir = TestScratch.directory("autospawn-agent-diag")
         val agentJar = jarDir.resolve("${CoroutineDebug.AGENT_JAR_PREFIX}test.jar")
         Files.createFile(agentJar)
         val command =
             DaemonAutospawn.spawnCommand(
                 javaBin = Path.of("java"),
                 jar = jarDir.resolve("unidrive.jar"),
-                configRoot = Files.createTempDirectory("autospawn-agent-config"),
+                configRoot = TestScratch.directory("autospawn-agent-config"),
                 profileName = "p",
                 env = { name ->
                     when (name) {
@@ -244,12 +245,12 @@ class DaemonAutospawnTest {
 
     @Test
     fun `a jar without a sibling jvm-flags txt still spawns the heap and diagnostics flags`() {
-        val diag = Files.createTempDirectory("autospawn-nostatic-diag")
+        val diag = TestScratch.directory("autospawn-nostatic-diag")
         val command =
             DaemonAutospawn.spawnCommand(
                 javaBin = Path.of("java"),
-                jar = Files.createTempDirectory("autospawn-nostatic").resolve("unidrive.jar"),
-                configRoot = Files.createTempDirectory("autospawn-nostatic-config"),
+                jar = TestScratch.directory("autospawn-nostatic").resolve("unidrive.jar"),
+                configRoot = TestScratch.directory("autospawn-nostatic-config"),
                 profileName = "p",
                 env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
                 props = { null },
@@ -266,14 +267,14 @@ class DaemonAutospawnTest {
     // the dynamic CDS archive in one JVM, so exactly one of the two may be on the command line.
     @Test
     fun `the spawned daemon gets the AOT cache when one lies beside the jar`() {
-        val jarDir = Files.createTempDirectory("autospawn-aot")
+        val jarDir = TestScratch.directory("autospawn-aot")
         Files.createFile(jarDir.resolve("unidrive.aot"))
-        val diag = Files.createTempDirectory("autospawn-aot-diag")
+        val diag = TestScratch.directory("autospawn-aot-diag")
         val command =
             DaemonAutospawn.spawnCommand(
                 javaBin = Path.of("java"),
                 jar = jarDir.resolve("unidrive.jar"),
-                configRoot = Files.createTempDirectory("autospawn-aot-config"),
+                configRoot = TestScratch.directory("autospawn-aot-config"),
                 profileName = "p",
                 env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
                 props = { null },
@@ -289,13 +290,13 @@ class DaemonAutospawnTest {
 
     @Test
     fun `the spawned daemon falls back to the dynamic CDS archive when the jar's folder is writable`() {
-        val jarDir = Files.createTempDirectory("autospawn-cds")
-        val diag = Files.createTempDirectory("autospawn-cds-diag")
+        val jarDir = TestScratch.directory("autospawn-cds")
+        val diag = TestScratch.directory("autospawn-cds-diag")
         val command =
             DaemonAutospawn.spawnCommand(
                 javaBin = Path.of("java"),
                 jar = jarDir.resolve("unidrive.jar"),
-                configRoot = Files.createTempDirectory("autospawn-cds-config"),
+                configRoot = TestScratch.directory("autospawn-cds-config"),
                 profileName = "p",
                 env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
                 props = { null },
@@ -307,15 +308,15 @@ class DaemonAutospawnTest {
 
     @Test
     fun `the armed coroutine agent keeps the daemon off the AOT cache but not off the CDS archive`() {
-        val jarDir = Files.createTempDirectory("autospawn-agent-aot")
+        val jarDir = TestScratch.directory("autospawn-agent-aot")
         Files.createFile(jarDir.resolve("unidrive.aot"))
         Files.createFile(jarDir.resolve("${CoroutineDebug.AGENT_JAR_PREFIX}test.jar"))
-        val diag = Files.createTempDirectory("autospawn-agent-aot-diag")
+        val diag = TestScratch.directory("autospawn-agent-aot-diag")
         val command =
             DaemonAutospawn.spawnCommand(
                 javaBin = Path.of("java"),
                 jar = jarDir.resolve("unidrive.jar"),
-                configRoot = Files.createTempDirectory("autospawn-agent-aot-config"),
+                configRoot = TestScratch.directory("autospawn-agent-aot-config"),
                 profileName = "p",
                 env = { name ->
                     when (name) {
@@ -333,12 +334,12 @@ class DaemonAutospawnTest {
 
     @Test
     fun `a jar whose folder does not exist gets no startup cache flags`() {
-        val diag = Files.createTempDirectory("autospawn-nodir-diag")
+        val diag = TestScratch.directory("autospawn-nodir-diag")
         val command =
             DaemonAutospawn.spawnCommand(
                 javaBin = Path.of("java"),
-                jar = Files.createTempDirectory("autospawn-nodir").resolve("gone").resolve("unidrive.jar"),
-                configRoot = Files.createTempDirectory("autospawn-nodir-config"),
+                jar = TestScratch.directory("autospawn-nodir").resolve("gone").resolve("unidrive.jar"),
+                configRoot = TestScratch.directory("autospawn-nodir-config"),
                 profileName = "p",
                 env = { name -> if (name == "UNIDRIVE_DIAG_DIR") diag.toString() else null },
                 props = { null },
@@ -354,7 +355,7 @@ class DaemonAutospawnTest {
 
     @Test
     fun `the default diagnostics dir sits under the OS data root`() {
-        val home = Files.createTempDirectory("autospawn-diaghome")
+        val home = TestScratch.directory("autospawn-diaghome")
         val nothing: (String) -> String? = { null }
         val homeProps: (String) -> String? = { name -> if (name == "user.home") home.toString() else null }
         assertEquals(
@@ -379,7 +380,7 @@ class DaemonAutospawnTest {
         val ok =
             DaemonAutospawn.ensureDaemonRunning(
                 profileName = "p",
-                configDir = Files.createTempDirectory("autospawn-never"),
+                configDir = TestScratch.directory("autospawn-never"),
                 waitTimeoutMs = 400,
                 probe = { _, _ -> false },
                 locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
@@ -393,7 +394,7 @@ class DaemonAutospawnTest {
         val ok =
             DaemonAutospawn.ensureDaemonRunning(
                 profileName = "p",
-                configDir = Files.createTempDirectory("autospawn-fail"),
+                configDir = TestScratch.directory("autospawn-fail"),
                 probe = { _, _ -> false },
                 locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
                 spawn = { _, _ -> throw IOException("disk full") },
@@ -406,7 +407,7 @@ class DaemonAutospawnTest {
         val ok =
             DaemonAutospawn.ensureDaemonRunning(
                 profileName = "p",
-                configDir = Files.createTempDirectory("autospawn-nojar"),
+                configDir = TestScratch.directory("autospawn-nojar"),
                 probe = { _, _ -> false },
                 locateJar = { null },
                 spawn = { _, _ -> error("nothing can be spawned without a jar") },
@@ -417,7 +418,7 @@ class DaemonAutospawnTest {
     // gkrost/unidrive-cli#455: a daemon that exits at once is reported with its exit code and the log's tail, not after the full wait.
     @Test
     fun `a daemon that exits at once is reported at once with its exit code and the log tail`() {
-        val dir = Files.createTempDirectory("autospawn-exits")
+        val dir = TestScratch.directory("autospawn-exits")
         Files.writeString(dir.resolve("daemon-spawn.log"), "line one\nrefused: no credentials\n")
         val started = System.currentTimeMillis()
         val ok =
@@ -440,7 +441,7 @@ class DaemonAutospawnTest {
         val ok =
             DaemonAutospawn.ensureDaemonRunning(
                 profileName = "p",
-                configDir = Files.createTempDirectory("autospawn-slow"),
+                configDir = TestScratch.directory("autospawn-slow"),
                 waitTimeoutMs = 5_000,
                 probe = { _, _ -> ++polls > 3 },
                 locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
@@ -470,7 +471,7 @@ class DaemonAutospawnTest {
     @Test
     fun `on Windows a detached child that reads stdin sees the end of input at once`() {
         assumeTrue("Windows only", System.getProperty("os.name").orEmpty().startsWith("Windows"))
-        val dir = Files.createTempDirectory("autospawn-detach-win")
+        val dir = TestScratch.directory("autospawn-detach-win")
         // `sort` reads stdin to its end: with a pipe or an inherited console it would wait for input and never exit.
         val child = startDetached(listOf("cmd", "/c", "sort"), dir.resolve("spawn.log"))
         try {
@@ -484,7 +485,7 @@ class DaemonAutospawnTest {
     fun `a detached child runs in a session of its own, is the started process itself and reads no terminal`() {
         assumeTrue("Linux: the session id is read from /proc", Files.isReadable(Path.of("/proc/self/stat")))
         assumeTrue("setsid (util-linux) is installed", listOf("/usr/bin/setsid", "/bin/setsid").any { Files.isExecutable(Path.of(it)) })
-        val dir = Files.createTempDirectory("autospawn-detach")
+        val dir = TestScratch.directory("autospawn-detach")
         val child = startDetached(listOf("sh", "-c", "read x; echo read=\$x; exec sleep 30"), dir.resolve("spawn.log"))
         try {
             // setsid execs the command in the started process: the pid becomes the shell, then sleep.
@@ -514,7 +515,7 @@ class DaemonAutospawnTest {
 
     @Test
     fun `logTail of a large log returns the last lines from a bounded read`() {
-        val log = Files.createTempDirectory("autospawn-tail").resolve("daemon-spawn.log")
+        val log = TestScratch.directory("autospawn-tail").resolve("daemon-spawn.log")
         // 48 MB of history before the lines that matter (the review's reproduction: it exhausted a 64 MB heap).
         Files.newOutputStream(log).use { out ->
             val filler = ("x".repeat(99) + "\n").toByteArray()
@@ -526,7 +527,7 @@ class DaemonAutospawnTest {
 
     @Test
     fun `logTail handles CRLF and a single line longer than the window`() {
-        val dir = Files.createTempDirectory("autospawn-tail-short")
+        val dir = TestScratch.directory("autospawn-tail-short")
         val short = dir.resolve("short.log")
         Files.writeString(short, "a\r\nb\r\n")
         assertEquals("\n    a\n    b", logTail(short))
@@ -538,7 +539,7 @@ class DaemonAutospawnTest {
 
     @Test
     fun `logTail caps a very long line to its end`() {
-        val log = Files.createTempDirectory("autospawn-tail-cap").resolve("daemon-spawn.log")
+        val log = TestScratch.directory("autospawn-tail-cap").resolve("daemon-spawn.log")
         Files.writeString(log, "z".repeat(5_000) + "END\n")
         assertEquals("\n    " + "z".repeat(497) + "END", logTail(log))
     }
@@ -557,11 +558,11 @@ class DaemonAutospawnTest {
         windows: Boolean,
         env: Map<String, String> = emptyMap(),
     ): List<String> {
-        val diag = Files.createTempDirectory("autospawn-trust-diag")
+        val diag = TestScratch.directory("autospawn-trust-diag")
         return DaemonAutospawn.spawnCommand(
             javaBin = Path.of("java"),
-            jar = Files.createTempDirectory("autospawn-trust-jar").resolve("unidrive.jar"),
-            configRoot = Files.createTempDirectory("autospawn-trust-config"),
+            jar = TestScratch.directory("autospawn-trust-jar").resolve("unidrive.jar"),
+            configRoot = TestScratch.directory("autospawn-trust-config"),
             profileName = "p",
             env = { name -> (env + ("UNIDRIVE_DIAG_DIR" to diag.toString()))[name] },
             props = { null },
@@ -623,7 +624,7 @@ class DaemonAutospawnTest {
             withLock(DaemonLockCheck.Running(4242)) {
             DaemonAutospawn.ensureDaemonRunning(
                 profileName = "p",
-                configDir = Files.createTempDirectory("autospawn-busy"),
+                configDir = TestScratch.directory("autospawn-busy"),
                 probe = { _, _ -> ++probes > 3 },
                 locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
                 spawn = { _, _ ->
@@ -643,7 +644,7 @@ class DaemonAutospawnTest {
             withLock(DaemonLockCheck.Refused("lock for profile 'p' is held by mode 'sync'")) {
                 DaemonAutospawn.ensureDaemonRunning(
                     profileName = "p",
-                    configDir = Files.createTempDirectory("autospawn-sync-holder"),
+                    configDir = TestScratch.directory("autospawn-sync-holder"),
                     probe = { _, _ -> false },
                     locateJar = { Path.of("/opt/unidrive/unidrive.jar") },
                     spawn = { _, _ ->

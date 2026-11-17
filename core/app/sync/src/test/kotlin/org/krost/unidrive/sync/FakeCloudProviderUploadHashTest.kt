@@ -6,13 +6,14 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#187: a hash-capable fake answers the bytes' own hash. The constant `"uploaded"` made every
  * upload compare equal, so a row whose recorded remote hash a regression corrupts could not be caught.
  */
 class FakeCloudProviderUploadHashTest {
-    private fun file(bytes: ByteArray) = Files.createTempFile("unidrive-fake-upload", ".bin").also { Files.write(it, bytes) }
+    private fun file(bytes: ByteArray) = TestScratch.file("unidrive-fake-upload", ".bin").also { Files.write(it, bytes) }
 
     @Test
     fun `a hashless upload answers the constant, which is not a content hash`() =

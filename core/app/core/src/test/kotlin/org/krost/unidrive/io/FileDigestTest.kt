@@ -8,13 +8,14 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * cli#223 item 6 / cli#222 item 7: one streaming digest of a file. The known answers were computed outside this code base
  * (Python hashlib) from the same byte pattern, so they do not restate the implementation.
  */
 class FileDigestTest {
-    private val dir: Path = Files.createTempDirectory("unidrive-file-digest")
+    private val dir: Path = TestScratch.directory("unidrive-file-digest")
 
     @AfterTest
     fun cleanUp() {

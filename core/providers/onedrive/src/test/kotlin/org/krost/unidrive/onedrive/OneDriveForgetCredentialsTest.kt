@@ -19,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `forgetCredentials()` (archive#1186): after a sign-out through the running daemon, the daemon's own instance drops the
@@ -30,7 +31,7 @@ class OneDriveForgetCredentialsTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("od-forget-")
+        dir = TestScratch.directory("od-forget-")
     }
 
     @AfterTest

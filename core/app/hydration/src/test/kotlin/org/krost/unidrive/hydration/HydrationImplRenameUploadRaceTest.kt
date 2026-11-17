@@ -24,6 +24,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * rename(replace=true) is the editors' safe-save: close the temp file (the client fires
@@ -94,13 +95,13 @@ class HydrationImplRenameUploadRaceTest {
 
     private class Rig(uploadScope: CoroutineScope) {
         val provider = UploadingProvider()
-        val db = StateDatabase(dbPath = Files.createTempDirectory("unidrive-race-db").resolve("state.db"), inMemory = true)
+        val db = StateDatabase(dbPath = TestScratch.directory("unidrive-race-db").resolve("state.db"), inMemory = true)
             .also { it.initialize() }
         val engine = SyncEngine(
             provider = provider,
             db = db,
-            syncRoot = Files.createTempDirectory("unidrive-race-sync"),
-            cacheRoot = Files.createTempDirectory("unidrive-race-cache"),
+            syncRoot = TestScratch.directory("unidrive-race-sync"),
+            cacheRoot = TestScratch.directory("unidrive-race-cache"),
         )
         val impl = HydrationImpl(engine, db, recoveryUploadScope = uploadScope)
 

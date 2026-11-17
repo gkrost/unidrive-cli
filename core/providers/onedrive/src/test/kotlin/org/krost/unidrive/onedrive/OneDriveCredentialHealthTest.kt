@@ -6,6 +6,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The credential health of a profile is read by `status --check-auth`: a healthy
@@ -17,7 +18,7 @@ class OneDriveCredentialHealthTest {
     private fun factory() = ProviderRegistry.get("onedrive")!!
 
     private fun health(tokenJson: String): CredentialHealth {
-        val dir = Files.createTempDirectory("od-health")
+        val dir = TestScratch.directory("od-health")
         try {
             Files.writeString(dir.resolve("token.json"), tokenJson)
             return factory().checkCredentialHealth(emptyMap(), dir)

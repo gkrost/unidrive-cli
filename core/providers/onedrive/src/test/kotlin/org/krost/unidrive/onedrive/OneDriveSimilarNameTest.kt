@@ -14,6 +14,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * OneDrive stores names exactly but judges the uniqueness of siblings on a key that ignores some
@@ -33,7 +34,7 @@ class OneDriveSimilarNameTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("ud-similar-name")
+        tmp = TestScratch.directory("ud-similar-name")
     }
 
     @AfterTest
@@ -50,7 +51,7 @@ class OneDriveSimilarNameTest {
     }
 
     private fun local(content: String = "hello", size: Int? = null): Path {
-        val f = Files.createTempFile(tmp, "src", ".bin")
+        val f = TestScratch.file(tmp, "src", ".bin")
         if (size != null) Files.write(f, ByteArray(size)) else Files.write(f, content.toByteArray())
         return f
     }

@@ -18,6 +18,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * How the IPC server limits connections (private tracker, item F7; engine archive#494): the cap is 32
@@ -36,7 +37,7 @@ class IpcServerConnectionLimitsTest {
 
     @BeforeTest
     fun setUp() {
-        socketDir = Files.createTempDirectory("unidrive-ipc-limits")
+        socketDir = TestScratch.directory("unidrive-ipc-limits")
         socketPath = socketDir.resolve("limits.sock")
     }
 

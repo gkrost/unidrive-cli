@@ -14,6 +14,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The provider factory is where a profile's Dropbox config is built in production (issue#83 B): the refresh token it
@@ -55,7 +56,7 @@ class DropboxFactoryProtectionTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("ud-dropbox-factory-protection")
+        dir = TestScratch.directory("ud-dropbox-factory-protection")
     }
 
     @AfterTest

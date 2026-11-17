@@ -13,6 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1086: the cloud renames `report.txt` to `Report.txt`. On a case-insensitive file system (NTFS) the JDK's move
@@ -28,8 +29,8 @@ class RemoteCaseOnlyRenameTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-case-rename")
-        db = StateDatabase(Files.createTempDirectory("unidrive-case-rename-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-case-rename")
+        db = StateDatabase(TestScratch.directory("unidrive-case-rename-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine =

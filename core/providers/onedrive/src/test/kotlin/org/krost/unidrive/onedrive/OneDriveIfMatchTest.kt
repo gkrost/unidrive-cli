@@ -19,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#291: OneDrive lost-update — a MODIFIED file ≤4 MiB replaced via the simple content PUT
@@ -106,7 +107,7 @@ class OneDriveIfMatchTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-ifmatch", ".txt")
+            val local = TestScratch.file("ud-ifmatch", ".txt")
             Files.write(local, "world".toByteArray()) // ≤4 MiB → simple PUT
 
             provider.upload(local, "/doc.txt", existingRemoteId = "owned-id")
@@ -150,7 +151,7 @@ class OneDriveIfMatchTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-412", ".txt")
+            val local = TestScratch.file("ud-412", ".txt")
             Files.write(local, "world".toByteArray())
 
             val result = provider.upload(local, "/doc.txt", existingRemoteId = "owned-id")
@@ -197,7 +198,7 @@ class OneDriveIfMatchTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-stale-similar", ".txt")
+            val local = TestScratch.file("ud-stale-similar", ".txt")
             try {
                 Files.writeString(local, "local edit")
                 val item = provider.upload(local, "/$name", existingRemoteId = "owned-id", ifMatchETag = "stale")
@@ -228,7 +229,7 @@ class OneDriveIfMatchTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-new", ".txt")
+            val local = TestScratch.file("ud-new", ".txt")
             Files.write(local, "data".toByteArray())
 
             val result = provider.upload(local, "/fresh.txt", existingRemoteId = null)
@@ -259,7 +260,7 @@ class OneDriveIfMatchTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-noedit", ".txt")
+            val local = TestScratch.file("ud-noedit", ".txt")
             Files.write(local, "world".toByteArray())
 
             val result = provider.upload(local, "/doc.txt", existingRemoteId = "owned-id")
@@ -292,7 +293,7 @@ class OneDriveIfMatchTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-plantime", ".txt")
+            val local = TestScratch.file("ud-plantime", ".txt")
             Files.write(local, "world".toByteArray())
 
             provider.upload(local, "/doc.txt", existingRemoteId = "owned-id", ifMatchETag = "etag-plan-time")
@@ -333,7 +334,7 @@ class OneDriveIfMatchTest {
                     }
                 }
             val provider = providerWithVirtualBudget(engine)
-            val local = Files.createTempFile("ud-guard-503", ".txt")
+            val local = TestScratch.file("ud-guard-503", ".txt")
             Files.write(local, "world".toByteArray())
 
             val thrown =
@@ -369,7 +370,7 @@ class OneDriveIfMatchTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-guard-name404", ".txt")
+            val local = TestScratch.file("ud-guard-name404", ".txt")
             Files.write(local, "world".toByteArray())
 
             val thrown =
@@ -408,7 +409,7 @@ class OneDriveIfMatchTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-guard-404", ".txt")
+            val local = TestScratch.file("ud-guard-404", ".txt")
             Files.write(local, "world".toByteArray())
 
             val result = provider.upload(local, "/doc.txt", existingRemoteId = "owned-id")
@@ -445,7 +446,7 @@ class OneDriveIfMatchTest {
                     }
                 }
             val provider = providerWith(engine)
-            val local = Files.createTempFile("ud-guard-cancel", ".txt")
+            val local = TestScratch.file("ud-guard-cancel", ".txt")
             Files.write(local, "world".toByteArray())
 
             assertFailsWith<CancellationException> {

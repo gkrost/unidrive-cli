@@ -14,6 +14,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A batch rename plans one move per file and nothing else: the pairs a move replaces leave the plan in one pass after
@@ -28,8 +29,8 @@ class ReconcilerBatchRenameTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-batch-rename")
-        db = StateDatabase(Files.createTempDirectory("unidrive-batch-rename-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-batch-rename")
+        db = StateDatabase(TestScratch.directory("unidrive-batch-rename-db").resolve("state.db"))
         db.initialize()
     }
 

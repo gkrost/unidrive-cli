@@ -12,6 +12,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * UD-312: guards that prevent a corrupt or half-written `token.json` from
@@ -35,7 +36,7 @@ class OAuthServiceTokenShapeTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("unidrive-oauth-token-shape-test")
+        tokenDir = TestScratch.directory("unidrive-oauth-token-shape-test")
         oauthService = OAuthService(OneDriveConfig(tokenPath = tokenDir))
     }
 

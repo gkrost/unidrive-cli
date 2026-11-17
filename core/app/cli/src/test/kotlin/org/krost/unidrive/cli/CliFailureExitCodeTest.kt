@@ -2,6 +2,7 @@ package org.krost.unidrive.cli
 
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -50,7 +51,7 @@ class CliFailureExitCodeTest {
     }
 
     private fun withProfile(body: (Profile) -> Unit) {
-        val dir = Files.createTempDirectory("cli-exit-codes")
+        val dir = TestScratch.directory("cli-exit-codes")
         try {
             val syncRoot = Files.createDirectories(dir.resolve("local"))
             val remote = Files.createDirectories(dir.resolve("remote"))

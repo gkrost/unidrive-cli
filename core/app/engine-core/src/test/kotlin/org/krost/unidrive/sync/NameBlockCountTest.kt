@@ -7,6 +7,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /** gkrost/unidrive-cli#29: `daemon.status` counts the strict-name blocks with one query, by the reason's prefix as text. */
 class NameBlockCountTest {
@@ -14,7 +15,7 @@ class NameBlockCountTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("unidrive-name-block-count").resolve("state.db")).also { it.initialize() }
+        db = StateDatabase(TestScratch.directory("unidrive-name-block-count").resolve("state.db")).also { it.initialize() }
     }
 
     @AfterTest
@@ -48,6 +49,6 @@ class NameBlockCountTest {
         db.setStatusTrashed("id-/e")
 
         assertEquals(2, db.countNameBlocked("name_incompatible"))
-        assertEquals(0, StateDatabase(Files.createTempDirectory("unidrive-name-block-count-empty").resolve("state.db")).also { it.initialize() }.countNameBlocked("name_incompatible"))
+        assertEquals(0, StateDatabase(TestScratch.directory("unidrive-name-block-count-empty").resolve("state.db")).also { it.initialize() }.countNameBlocked("name_incompatible"))
     }
 }

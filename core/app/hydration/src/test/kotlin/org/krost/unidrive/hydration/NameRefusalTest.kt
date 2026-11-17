@@ -27,6 +27,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A drive that refuses an entry by NAME (OneDrive: the name compares as equal to a sibling's). The provider
@@ -161,9 +162,9 @@ class NameRefusalTest {
     @BeforeTest
     fun setUp() {
         provider = NameRuleProvider()
-        db = StateDatabase(dbPath = Files.createTempDirectory("ud-name-db").resolve("state.db"), inMemory = true)
+        db = StateDatabase(dbPath = TestScratch.directory("ud-name-db").resolve("state.db"), inMemory = true)
         db.initialize()
-        engine = SyncEngine(provider = provider, db = db, syncRoot = Files.createTempDirectory("ud-name-sync"), cacheRoot = Files.createTempDirectory("ud-name-cache"))
+        engine = SyncEngine(provider = provider, db = db, syncRoot = TestScratch.directory("ud-name-sync"), cacheRoot = TestScratch.directory("ud-name-cache"))
         hydration =
             HydrationImpl(
                 syncEngine = engine,

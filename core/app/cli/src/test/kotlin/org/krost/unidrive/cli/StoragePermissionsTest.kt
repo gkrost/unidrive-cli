@@ -10,6 +10,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Engine start tightens what earlier versions created with inherited permissions: the credential
@@ -21,7 +22,7 @@ class StoragePermissionsTest {
 
     @BeforeTest
     fun setUp() {
-        root = Files.createTempDirectory("unidrive-storage-perm-")
+        root = TestScratch.directory("unidrive-storage-perm-")
     }
 
     @AfterTest

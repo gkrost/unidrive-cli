@@ -8,6 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#581: a damaged state.db is told apart from an older schema. The open names the file and the
@@ -15,7 +16,7 @@ import kotlin.test.assertTrue
  * "no schema version (written by an older unidrive)".
  */
 class StateDatabaseCorruptFileTest {
-    private fun newDir(): Path = Files.createTempDirectory("unidrive-corrupt-db-test")
+    private fun newDir(): Path = TestScratch.directory("unidrive-corrupt-db-test")
 
     private fun seededDb(dir: Path): Path {
         val path = dir.resolve("state.db")

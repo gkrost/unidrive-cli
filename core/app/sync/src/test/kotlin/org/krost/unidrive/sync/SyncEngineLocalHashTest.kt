@@ -10,6 +10,7 @@ import java.nio.file.attribute.FileTime
 import java.security.MessageDigest
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#396: for a provider with no remote content hash (Internxt), an mtime-only change of a
@@ -28,8 +29,8 @@ class SyncEngineLocalHashTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-396-root")
-        val dbPath = Files.createTempDirectory("ud-396-db").resolve("state.db")
+        syncRoot = TestScratch.directory("ud-396-root")
+        val dbPath = TestScratch.directory("ud-396-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()
@@ -195,7 +196,7 @@ class SyncEngineLocalHashTest {
 
     @Test
     fun `a local hash that cannot be read drops the previous contents' hash`() {
-        val file = Files.createTempDirectory("ud-396-fail").resolve("stale.bin")
+        val file = TestScratch.directory("ud-396-fail").resolve("stale.bin")
         Files.write(file, "new bytes".toByteArray())
         val row = rowWithStaleHash(file)
         Files.delete(file)
@@ -207,7 +208,7 @@ class SyncEngineLocalHashTest {
 
     @Test
     fun `a file that changes while it is hashed drops the previous contents' hash`() {
-        val file = Files.createTempDirectory("ud-396-race").resolve("stale.bin")
+        val file = TestScratch.directory("ud-396-race").resolve("stale.bin")
         Files.write(file, "new bytes".toByteArray())
         val row = rowWithStaleHash(file)
 

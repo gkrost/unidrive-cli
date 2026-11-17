@@ -5,10 +5,10 @@ import org.junit.Assume.assumeTrue
 import org.krost.unidrive.internxt.InternxtConfig
 import org.krost.unidrive.internxt.InternxtProvider
 import java.nio.file.Files
-import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Live-integration smoke test for the tracking-set engine against a real
@@ -76,7 +76,7 @@ class TrackingEngineInternxtLiveTest {
             return
         }
 
-        val workDir = createTempDirectory("ts-internxt-live")
+        val workDir = TestScratch.directory("ts-internxt-live")
         val syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         val dbPath = workDir.resolve("tracking.db")
 

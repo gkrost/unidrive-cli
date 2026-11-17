@@ -6,6 +6,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import java.nio.file.Files
 import java.nio.file.Path
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#311: unit coverage for the tombstone content fingerprint — the cheap
@@ -21,8 +22,8 @@ import java.nio.file.Path
  */
 class UploadTombstoneContentFingerprintTest {
     private fun tempFile(name: String, size: Int, fill: (Int) -> Byte): Path {
-        val dir = Files.createTempDirectory("ud-fp-")
-        return Files.createTempFile(dir, name, ".bin").also { p ->
+        val dir = TestScratch.directory("ud-fp-")
+        return TestScratch.file(dir, name, ".bin").also { p ->
             Files.write(p, ByteArray(size) { fill(it) })
         }
     }
@@ -44,8 +45,8 @@ class UploadTombstoneContentFingerprintTest {
 
     @Test
     fun `any byte change in a window-sized file trips the fingerprint`() {
-        val dir = Files.createTempDirectory("ud-fp-small-")
-        val p = Files.createTempFile(dir, "small-", ".bin").also { f ->
+        val dir = TestScratch.directory("ud-fp-small-")
+        val p = TestScratch.file(dir, "small-", ".bin").also { f ->
             Files.write(f, ByteArray(1024) { (it % 251).toByte() })
         }
         val original = UploadTombstoneStore.contentFingerprint(p)
@@ -63,9 +64,9 @@ class UploadTombstoneContentFingerprintTest {
 
     @Test
     fun `head and tail windows of a large file are covered`() {
-        val dir = Files.createTempDirectory("ud-fp-large-")
+        val dir = TestScratch.directory("ud-fp-large-")
         val size = 3 * 64 * 1024 // 192 KiB — comfortably two windows plus a middle
-        val p = Files.createTempFile(dir, "large-", ".bin").also { f ->
+        val p = TestScratch.file(dir, "large-", ".bin").also { f ->
             Files.write(f, ByteArray(size) { (it % 241).toByte() })
         }
         val original = UploadTombstoneStore.contentFingerprint(p)
@@ -83,9 +84,9 @@ class UploadTombstoneContentFingerprintTest {
 
     @Test
     fun `middle-only change beyond the windows is a documented blind spot (#311 residual)`() {
-        val dir = Files.createTempDirectory("ud-fp-mid-")
+        val dir = TestScratch.directory("ud-fp-mid-")
         val size = 3 * 64 * 1024
-        val p = Files.createTempFile(dir, "mid-", ".bin").also { f ->
+        val p = TestScratch.file(dir, "mid-", ".bin").also { f ->
             Files.write(f, ByteArray(size) { (it % 239).toByte() })
         }
         val original = UploadTombstoneStore.contentFingerprint(p)
@@ -121,7 +122,7 @@ class UploadTombstoneContentFingerprintTest {
 
     @Test
     fun `schema-1 (pre-fingerprint) tombstones are rejected at parse time`() {
-        val dir = Files.createTempDirectory("ud-fp-schema-")
+        val dir = TestScratch.directory("ud-fp-schema-")
         try {
             val store = UploadTombstoneStore(dir)
             val pathHash = UploadTombstoneStore.pathHash("/some/file.bin")

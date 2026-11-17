@@ -9,6 +9,7 @@ import org.krost.unidrive.sync.FakeCloudProvider
 import org.krost.unidrive.sync.MigrateEvent
 import org.krost.unidrive.sync.MigrationManifest
 import org.krost.unidrive.sync.RelocateMdc
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.MDC
 import picocli.CommandLine
 import java.time.Instant
@@ -572,8 +573,8 @@ class RelocateCommandTest {
 
     @Test
     fun `delete pass deletes the whole migrated subtree and only it`() {
-        val srcRoot = java.nio.file.Files.createTempDirectory("ud-relocate-61-src")
-        val dstRoot = java.nio.file.Files.createTempDirectory("ud-relocate-61-dst")
+        val srcRoot = TestScratch.directory("ud-relocate-61-src")
+        val dstRoot = TestScratch.directory("ud-relocate-61-dst")
         try {
             java.nio.file.Files.createDirectories(srcRoot.resolve("docs/sub"))
             java.nio.file.Files.createDirectories(srcRoot.resolve("docs-old"))
@@ -638,7 +639,7 @@ class RelocateCommandTest {
 
     /** A temp dir with `src/`, `dst/` and a config naming them as the localfs profiles `src` and `dst`. */
     private fun withLocalProfiles(body: (src: java.nio.file.Path, dst: java.nio.file.Path, config: java.nio.file.Path) -> Unit) {
-        val base = java.nio.file.Files.createTempDirectory("ud-relocate-653")
+        val base = TestScratch.directory("ud-relocate-653")
         try {
             val src = java.nio.file.Files.createDirectories(base.resolve("src"))
             val dst = java.nio.file.Files.createDirectories(base.resolve("dst"))
@@ -973,7 +974,7 @@ class RelocateCommandTest {
 
     @Test
     fun `relocate with an unknown profile fails with a non-zero exit and creates nothing`() {
-        val dir = java.nio.file.Files.createTempDirectory("ud-relocate-unknown")
+        val dir = TestScratch.directory("ud-relocate-unknown")
         try {
             val keep = java.nio.file.Files.writeString(dir.resolve("keep.txt"), "must survive")
             val before = java.nio.file.Files.walk(dir).use { it.map { p -> dir.relativize(p).toString() }.sorted().toList() }

@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The pre-transfer edit check covers only scan→placement-cleared. A save that lands while a long
@@ -34,8 +35,8 @@ class DownloadKeepsMidTransferEditTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-dl-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-dl-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-dl-root")
+        db = StateDatabase(TestScratch.directory("unidrive-dl-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine =

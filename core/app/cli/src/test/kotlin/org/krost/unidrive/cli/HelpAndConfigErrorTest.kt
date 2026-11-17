@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -104,7 +105,7 @@ class HelpAndConfigErrorTest {
 
     @Test
     fun `config-missing renders one actionable first line`() {
-        val sandbox = Files.createTempDirectory("ud242-")
+        val sandbox = TestScratch.directory("ud242-")
         try {
             val msg = renderConfigMissingMessage(sandbox.resolve("config.toml"), verbose = false)
             val firstLine = msg.lineSequence().first()
@@ -122,7 +123,7 @@ class HelpAndConfigErrorTest {
 
     @Test
     fun `config-missing non-verbose hides diagnostic block`() {
-        val sandbox = Files.createTempDirectory("ud242-")
+        val sandbox = TestScratch.directory("ud242-")
         try {
             val msg = renderConfigMissingMessage(sandbox.resolve("config.toml"), verbose = false)
             assertFalse(msg.contains("APPDATA env"), "no diagnostic dump without -v")
@@ -135,7 +136,7 @@ class HelpAndConfigErrorTest {
 
     @Test
     fun `config-missing non-verbose includes the searched path hint`() {
-        val sandbox = Files.createTempDirectory("ud242-")
+        val sandbox = TestScratch.directory("ud242-")
         try {
             val configFile = sandbox.resolve("config.toml")
             val msg = renderConfigMissingMessage(configFile, verbose = false)
@@ -147,7 +148,7 @@ class HelpAndConfigErrorTest {
 
     @Test
     fun `config-missing verbose shows diagnostic block`() {
-        val sandbox = Files.createTempDirectory("ud242-")
+        val sandbox = TestScratch.directory("ud242-")
         try {
             val msg = renderConfigMissingMessage(sandbox.resolve("config.toml"), verbose = true)
             assertTrue(msg.contains("[verbose]"), "verbose diagnostic header expected")
@@ -163,7 +164,7 @@ class HelpAndConfigErrorTest {
         // When config.toml exists and has content but parseRaw returns zero providers,
         // the diagnostic hints at filtered-FS views. We simulate by creating a
         // non-empty file; the renderer just reports what Files.exists/size show.
-        val sandbox = Files.createTempDirectory("ud242-")
+        val sandbox = TestScratch.directory("ud242-")
         try {
             val configFile = sandbox.resolve("config.toml")
             Files.writeString(configFile, "[general]\n# content\n")

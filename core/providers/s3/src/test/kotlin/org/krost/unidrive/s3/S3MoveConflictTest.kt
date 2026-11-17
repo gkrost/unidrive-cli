@@ -6,6 +6,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#176: a move onto a taken key is a conflict, not an overwrite. Every other provider refuses a
@@ -18,7 +19,7 @@ import kotlin.test.assertFailsWith
  * the copy may go over it again.
  */
 class S3MoveConflictTest {
-    private val dir = Files.createTempDirectory("s3-move-conflict")
+    private val dir = TestScratch.directory("s3-move-conflict")
 
     private fun provider(fake: FakeS3) = S3Provider(
         S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", dir),

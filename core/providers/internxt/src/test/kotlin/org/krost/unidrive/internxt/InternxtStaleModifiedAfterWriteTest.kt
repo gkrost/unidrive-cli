@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // archive#417: after a replace-in-place upload (PUT /files/{uuid}) and after a rename/move
 // (PUT .../meta, PATCH ...) Internxt answers with the entity as it was BEFORE the server
@@ -133,7 +134,7 @@ class InternxtStaleModifiedAfterWriteTest {
         mtime: Instant = sentMtime,
         block: (java.nio.file.Path, java.nio.file.Path) -> Unit,
     ) {
-        val tmp = java.nio.file.Files.createTempDirectory("ud-417-")
+        val tmp = TestScratch.directory("ud-417-")
         val local = tmp.resolve(name).also { java.nio.file.Files.write(it, ByteArray(bytes) { i -> i.toByte() }) }
         java.nio.file.Files.setLastModifiedTime(local, java.nio.file.attribute.FileTime.from(mtime))
         try {
@@ -392,7 +393,7 @@ class InternxtStaleModifiedAfterWriteTest {
         from: String,
         to: String,
     ): org.krost.unidrive.CloudItem {
-        val tmp = java.nio.file.Files.createTempDirectory("ud-417-mv-")
+        val tmp = TestScratch.directory("ud-417-mv-")
         val provider = newProviderRooted(tmp, engine)
         try {
             return provider.move(from, to)
@@ -518,7 +519,7 @@ class InternxtStaleModifiedAfterWriteTest {
 
     @Test
     fun `the default re-read delays cap the extra wait at about two seconds`() {
-        val tmp = java.nio.file.Files.createTempDirectory("ud-417-delays-")
+        val tmp = TestScratch.directory("ud-417-delays-")
         val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmp))
         try {
             val delays = provider.modifiedRereadDelaysMs

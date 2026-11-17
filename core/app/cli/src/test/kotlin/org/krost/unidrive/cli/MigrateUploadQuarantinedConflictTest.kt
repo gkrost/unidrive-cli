@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `upload-quarantined` places a quarantined copy beside a live cloud file whose name it wants. On providers
@@ -103,7 +104,7 @@ class MigrateUploadQuarantinedConflictTest {
     }
 
     private fun localCopy(content: String): Path {
-        val dir = Files.createTempDirectory("u5-conflict")
+        val dir = TestScratch.directory("u5-conflict")
         return dir.resolve("report.txt").also { Files.writeString(it, content) }
     }
 
@@ -149,7 +150,7 @@ class MigrateUploadQuarantinedConflictTest {
     fun `the real local-directory provider's taken name is never overwritten`() {
         // The real provider, not a fake's guess at its shapes: getMetadata answers a missing path with
         // FileNotFoundException, so every probe of a conflict candidate must read that as absence.
-        val root = Files.createTempDirectory("u5-localfs-probe")
+        val root = TestScratch.directory("u5-localfs-probe")
         Files.createDirectories(root.resolve("docs"))
         Files.writeString(root.resolve("docs/report.txt"), "the live copy")
         val provider = org.krost.unidrive.localfs.LocalFsProvider(root)

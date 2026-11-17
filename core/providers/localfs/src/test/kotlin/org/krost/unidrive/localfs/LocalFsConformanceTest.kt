@@ -5,6 +5,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.testing.CloudProviderConformanceTest
 import java.nio.file.Files
 import java.nio.file.Path
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The SPI's conformance contracts against the real localfs provider over a fresh directory.
@@ -21,7 +22,7 @@ class LocalFsConformanceTest : CloudProviderConformanceTest() {
     override val guardedUpload: Boolean = false
     override val guardedDelete: Boolean = false
 
-    override fun newProvider(): CloudProvider = LocalFsProvider(Files.createTempDirectory("conformance-localfs"))
+    override fun newProvider(): CloudProvider = LocalFsProvider(TestScratch.directory("conformance-localfs"))
 
     override suspend fun seedFile(
         provider: CloudProvider,
@@ -30,5 +31,5 @@ class LocalFsConformanceTest : CloudProviderConformanceTest() {
     ): CloudItem = provider.upload(localFile(content), path)
 
     override fun localFile(content: String): Path =
-        Files.createTempFile("conformance-local", ".txt").also { Files.writeString(it, content) }
+        TestScratch.file("conformance-local", ".txt").also { Files.writeString(it, content) }
 }

@@ -17,6 +17,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Graph documents that a delta item may come without `parentReference.path` (OneDrive Business and SharePoint
@@ -33,7 +34,7 @@ class OneDrivePathlessDeltaTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("ud-pathless-delta")
+        tmp = TestScratch.directory("ud-pathless-delta")
     }
 
     @AfterTest

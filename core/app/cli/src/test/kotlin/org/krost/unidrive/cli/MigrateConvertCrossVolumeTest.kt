@@ -11,6 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The retire move when the sync root lies on another volume than the profile folder: no atomic move exists
@@ -35,7 +36,7 @@ class MigrateConvertCrossVolumeTest {
 
     @Test
     fun `a sync root on another volume is retired whole`() {
-        val tmp = Files.createTempDirectory("migrate-cross-volume")
+        val tmp = TestScratch.directory("migrate-cross-volume")
         try {
             val uri = URI.create("jar:" + tmp.resolve("root.zip").toUri())
             FileSystems.newFileSystem(uri, mapOf("create" to "true")).use { fs ->
@@ -78,7 +79,7 @@ class MigrateConvertCrossVolumeTest {
 
     @Test
     fun `a copy that falls short is caught before the source is given up`() {
-        val tmp = Files.createTempDirectory("migrate-fell-short")
+        val tmp = TestScratch.directory("migrate-fell-short")
         try {
             val source = tmp.resolve("file.txt")
             Files.write(source, "12345".toByteArray())
@@ -103,7 +104,7 @@ class MigrateConvertCrossVolumeTest {
 
     @Test
     fun `a read-only source is moved aside on the cross-volume path`() {
-        val tmp = Files.createTempDirectory("migrate-readonly")
+        val tmp = TestScratch.directory("migrate-readonly")
         val source = tmp.resolve("file.txt")
         try {
             Files.write(source, "locked bytes".toByteArray())
@@ -123,7 +124,7 @@ class MigrateConvertCrossVolumeTest {
 
     @Test
     fun `a verified copy is renamed whole before the source is deleted`() {
-        val tmp = Files.createTempDirectory("migrate-verified-copy")
+        val tmp = TestScratch.directory("migrate-verified-copy")
         try {
             val source = tmp.resolve("file.txt")
             Files.write(source, "carry me over".toByteArray())

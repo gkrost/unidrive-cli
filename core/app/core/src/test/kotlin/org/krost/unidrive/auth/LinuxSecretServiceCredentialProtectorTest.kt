@@ -11,9 +11,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.junit.Assume.assumeTrue
 import kotlin.test.BeforeTest
+import org.krost.unidrive.testing.TestScratch
 
 class LinuxSecretServiceCredentialProtectorTest {
-    private val dir = Files.createTempDirectory("fake-secret-tool")
+    private val dir = TestScratch.directory("fake-secret-tool")
     private val state = Files.createDirectory(dir.resolve("items"))
     private val unavailable = dir.resolve("unavailable")
     private val hang = dir.resolve("hang")

@@ -11,6 +11,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.HashAlgorithm
+import org.krost.unidrive.testing.TestScratch
 
 // An incremental delta (a resumed cursor on a provider with a change feed) lists only what changed. A
 // remote move arrives as the same object under a new path, and a deleted folder arrives as one folder
@@ -27,7 +28,7 @@ class TrackingEngineIncrementalStructureTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = Files.createTempDirectory("tracking-incremental-structure")
+        workDir = TestScratch.directory("tracking-incremental-structure")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider =

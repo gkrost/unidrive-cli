@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#951 S5: the two indexes no query needs are gone (the one on parent_uuid, the one on COALESCE(remote_path, path)),
@@ -48,7 +49,7 @@ class StateDatabaseSchemaTrimTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-schema-trim")
+        dir = TestScratch.directory("unidrive-schema-trim")
         dbFile = dir.resolve("state.db")
         db = StateDatabase(dbFile, connector = recording)
         db.initialize()

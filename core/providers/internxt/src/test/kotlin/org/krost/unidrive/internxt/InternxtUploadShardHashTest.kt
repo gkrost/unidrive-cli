@@ -23,6 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#946: a new upload records RIPEMD-160(SHA-256(ciphertext)) as the shard hash in `files/finish`, 40 hex, like the official clients
@@ -34,7 +35,7 @@ class InternxtUploadShardHashTest {
     private val shardUrl = "https://shard-host.invalid/hash-put"
     private val putBodies: MutableList<ByteArray> = Collections.synchronizedList(mutableListOf())
     private val finishHashes: MutableList<String> = Collections.synchronizedList(mutableListOf())
-    private val tmp: Path = Files.createTempDirectory("ud-shardhash-")
+    private val tmp: Path = TestScratch.directory("ud-shardhash-")
 
     @AfterTest
     fun cleanUp() {

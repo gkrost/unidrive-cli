@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1060: a provider exception can quote a pre-authenticated URL (Ktor's timeout exceptions print the whole
@@ -21,7 +22,7 @@ class RedactingLogConfigTest {
 
     @Test
     fun `the bundled logback config writes no URL query, neither in a message nor in a stack trace`() {
-        val dir = Files.createTempDirectory("unidrive-logcfg")
+        val dir = TestScratch.directory("unidrive-logcfg")
         try {
             val shipped =
                 javaClass.classLoader

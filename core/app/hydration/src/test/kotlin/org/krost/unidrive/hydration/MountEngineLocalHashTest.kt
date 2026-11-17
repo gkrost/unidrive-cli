@@ -15,6 +15,7 @@ import java.nio.file.attribute.FileTime
 import java.security.MessageDigest
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#396: the local hash the mount operations record (moved here from `SyncEngineLocalHashTest`
@@ -30,8 +31,8 @@ class MountEngineLocalHashTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-396-root")
-        val dbPath = Files.createTempDirectory("ud-396-db").resolve("state.db")
+        syncRoot = TestScratch.directory("ud-396-root")
+        val dbPath = TestScratch.directory("ud-396-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()
@@ -114,7 +115,7 @@ class MountEngineLocalHashTest {
             // (HydrationImpl.create) — a row-less upload is refused so it cannot
             // resurrect a vanished path. Seed the never-uploaded row here.
             seedLocalOnlyRow("/local.txt")
-            val cacheCopy = Files.createTempDirectory("ud-396-wb").resolve("local.txt")
+            val cacheCopy = TestScratch.directory("ud-396-wb").resolve("local.txt")
             val bytes = "written through the mount".toByteArray()
             Files.write(cacheCopy, bytes)
 
@@ -151,7 +152,7 @@ class MountEngineLocalHashTest {
             // ensureHydrated rewrites the row's local stats from the freshly downloaded cache
             // copy; keeping a hash recorded for the previous contents would pair stale bytes
             // with a fresh mtime/size — the stale-hash shape the touch check must never see.
-            val cacheRoot = Files.createTempDirectory("ud-396-hyd-cache")
+            val cacheRoot = TestScratch.directory("ud-396-hyd-cache")
             val eng = engine(cacheRoot)
             val first = ByteArray(1024) { ((it * 3) and 0xff).toByte() }
             downloadFile(eng, "doc.bin", first)
@@ -183,7 +184,7 @@ class MountEngineLocalHashTest {
             eng.syncOnce()
             // archive#319: the write-back requires the row the FUSE create flow wrote.
             seedLocalOnlyRow("/local.txt")
-            val cacheCopy = Files.createTempDirectory("ud-396-wb-race").resolve("local.txt")
+            val cacheCopy = TestScratch.directory("ud-396-wb-race").resolve("local.txt")
             Files.writeString(cacheCopy, "first version")
             editDuringUpload("edited version".toByteArray())
 
@@ -197,7 +198,7 @@ class MountEngineLocalHashTest {
     // gkrost/unidrive-cli#438: withDownloadedHash takes the hash read from the staged file before the swap lock only while the
     // placed copy has the stats the staged file had; the cases below pin that guard and the streamed-wins rule directly.
     private fun placedCopy(content: ByteArray): Triple<Path, SyncEntry, Pair<Long, Long>> {
-        val placed = Files.createTempDirectory("ud-438-placed").resolve("doc.bin")
+        val placed = TestScratch.directory("ud-438-placed").resolve("doc.bin")
         Files.write(placed, content)
         val stats = Files.getLastModifiedTime(placed).toMillis() to Files.size(placed)
         val row =

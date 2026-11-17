@@ -13,6 +13,7 @@ import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.time.Instant
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 // UD-209: sparse-file production support missing on Windows — affected tests skip there.
 private val IS_WINDOWS_CORNER = System.getProperty("os.name", "").lowercase().contains("win")
@@ -49,8 +50,8 @@ class SyncCornerCaseTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-corner-test")
-        val dbPath = Files.createTempDirectory("unidrive-corner-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-corner-test")
+        val dbPath = TestScratch.directory("unidrive-corner-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()

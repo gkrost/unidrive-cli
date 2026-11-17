@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Credentials on disk are not proof they still work. `profile list` used to show
@@ -19,7 +20,7 @@ import kotlin.test.assertTrue
 class CredentialReauthHintTest {
     @Test
     fun `expired internxt jwt needs reauth even though credentials file exists`() {
-        val dir = Files.createTempDirectory("reauth-hint")
+        val dir = TestScratch.directory("reauth-hint")
         try {
             val payload = Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":1}""".toByteArray())
             Files.writeString(

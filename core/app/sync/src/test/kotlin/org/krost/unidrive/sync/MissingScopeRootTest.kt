@@ -15,6 +15,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // gkrost/unidrive-cli#22: a sync_path root that is a folder in the local sync root but not on the remote is an empty
 // remote folder the engine creates; one that neither side has still fails the run (the typo case).
@@ -26,8 +27,8 @@ class MissingScopeRootTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-missing-root")
-        dbPath = Files.createTempDirectory("unidrive-missing-root-db").resolve("state.db")
+        syncRoot = TestScratch.directory("unidrive-missing-root")
+        dbPath = TestScratch.directory("unidrive-missing-root-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider().apply { walksScopeRoots = true }

@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A drive that refuses an entry by its name: the block is recorded on the row (`name_block`, an additive column like
@@ -37,7 +38,7 @@ class StateDatabaseNameBlockTest {
         lastSynced = Instant.parse("2026-03-28T12:00:00Z"),
     )
 
-    private fun open(path: Path = Files.createTempDirectory("ud-nameblock-db").resolve("state.db")) = StateDatabase(path).also { it.initialize() }
+    private fun open(path: Path = TestScratch.directory("ud-nameblock-db").resolve("state.db")) = StateDatabase(path).also { it.initialize() }
 
     @Test
     fun `a block is recorded with the sibling, read back, listed, and cleared by a rewrite of the row`() {
@@ -79,7 +80,7 @@ class StateDatabaseNameBlockTest {
         // Asked every few seconds by the upload snapshot, under the monitor. `ORDER BY path` alone made SQLite walk
         // the whole path index to get the order for free: on a drive of 372,000 rows that was 0.3 s a call, with the
         // status request queued behind it.
-        val dbPath = Files.createTempDirectory("ud-nameblock-plan").resolve("state.db")
+        val dbPath = TestScratch.directory("ud-nameblock-plan").resolve("state.db")
         val db = open(dbPath)
         try {
             db.upsertEntry(entry("/a.txt"))
@@ -172,7 +173,7 @@ class StateDatabaseNameBlockTest {
 
     @Test
     fun `a state db written before the column gets it on open, and its rows read as not blocked`() {
-        val dbPath = Files.createTempDirectory("ud-nameblock-old").resolve("state.db")
+        val dbPath = TestScratch.directory("ud-nameblock-old").resolve("state.db")
         open(dbPath).also { it.upsertEntry(entry("/old.txt")) }.close()
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
             conn.createStatement().use { stmt ->

@@ -19,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * #212: a probe holds no lock across the download, and never waits for a transfer permit while it holds one. Before,
@@ -26,7 +27,7 @@ import kotlin.test.assertTrue
  * other probe, including those of uploads holding the permits it waited for, until the download's timeout.
  */
 class CloudRuleFilesConcurrencyTest {
-    private val dir: Path = Files.createTempDirectory("ud-cloud-rules-concurrency")
+    private val dir: Path = TestScratch.directory("ud-cloud-rules-concurrency")
     private val bodies = ConcurrentHashMap<String, String>()
     private val downloads = AtomicInteger()
 

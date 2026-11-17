@@ -28,6 +28,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#450: the hydration cache has a per-profile budget and an eviction pass. The rules that matter most are
@@ -60,15 +61,15 @@ class HydrationCacheBudgetTest {
 
     private fun freshEnv(): Env {
         val provider = MemProvider()
-        val db = StateDatabase(Files.createTempDirectory("ud-450-db").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("ud-450-db").resolve("state.db"))
         db.initialize()
-        val syncRoot = Files.createTempDirectory("ud-450-root")
+        val syncRoot = TestScratch.directory("ud-450-root")
         val engine =
             SyncEngine(
                 provider = provider,
                 db = db,
                 syncRoot = syncRoot,
-                cacheRoot = Files.createTempDirectory("ud-450-cache"),
+                cacheRoot = TestScratch.directory("ud-450-cache"),
                 cacheKey = "ud-450-isolated-profile",
             )
         return Env(provider, db, engine, syncRoot)

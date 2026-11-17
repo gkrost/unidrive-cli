@@ -27,6 +27,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // What a client learns about the enumeration from SyncEngine.enumerationStatus(): the engine wiring of the tracker,
 // from the progress a provider reports to the totals a complete run leaves for the next one.
@@ -41,9 +42,9 @@ class EnumerationStatusTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-enumstatus-root")
-        dbDir = Files.createTempDirectory("ud-enumstatus-db")
-        cacheRoot = Files.createTempDirectory("ud-enumstatus-cache")
+        syncRoot = TestScratch.directory("ud-enumstatus-root")
+        dbDir = TestScratch.directory("ud-enumstatus-db")
+        cacheRoot = TestScratch.directory("ud-enumstatus-cache")
         db = StateDatabase(dbDir.resolve("state.db"))
         db.initialize()
         provider = ReportingProvider()

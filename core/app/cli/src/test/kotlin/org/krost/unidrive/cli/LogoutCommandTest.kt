@@ -5,6 +5,7 @@ import org.krost.unidrive.ProviderException
 import org.krost.unidrive.ProviderFactory
 import org.krost.unidrive.ProviderMetadata
 import org.krost.unidrive.sync.IpcServer
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -19,7 +20,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class LogoutCommandTest {
-    private val configDir = Files.createTempDirectory("unidrive-logout-")
+    private val configDir = TestScratch.directory("unidrive-logout-")
     private lateinit var socketDir: Path
 
     @BeforeTest

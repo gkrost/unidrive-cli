@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -21,7 +22,7 @@ class GetCommandExclusionTest {
         seed: (profileDir: Path) -> Unit = {},
         setup: (remoteRoot: Path) -> Unit,
     ): Pair<Run, Path> {
-        val configDir = Files.createTempDirectory("get-excluded-config")
+        val configDir = TestScratch.directory("get-excluded-config")
         val localRoot = Files.createDirectories(configDir.resolve("local"))
         val remoteRoot = Files.createDirectories(configDir.resolve("remote"))
         setup(remoteRoot)

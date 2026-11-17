@@ -3,13 +3,14 @@ package org.krost.unidrive.sync
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class TrashTest {
     private lateinit var tmpDir: Path
 
     @BeforeTest
     fun setUp() {
-        tmpDir = Files.createTempDirectory("trash-test")
+        tmpDir = TestScratch.directory("trash-test")
     }
 
     @AfterTest

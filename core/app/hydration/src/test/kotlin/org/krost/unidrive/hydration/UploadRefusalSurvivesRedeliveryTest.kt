@@ -10,6 +10,7 @@ import org.krost.unidrive.engine.RemoteOperationGuard
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -40,14 +41,14 @@ class UploadRefusalSurvivesRedeliveryTest {
     // A row the mount hydrated: its baseline is the cache copy, then the file is edited and the edit is queued.
     private suspend fun TestScope.editedRow(): Pair<Env, HydrationImpl> {
         val provider = MinimalFakeProvider(mutableMapOf("/a.txt" to "original".toByteArray()))
-        val db = StateDatabase(Files.createTempDirectory("refusal-redelivery-db").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("refusal-redelivery-db").resolve("state.db"))
         db.initialize()
         val engine =
             SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("refusal-redelivery-root"),
-                cacheRoot = Files.createTempDirectory("refusal-redelivery-cache"),
+                syncRoot = TestScratch.directory("refusal-redelivery-root"),
+                cacheRoot = TestScratch.directory("refusal-redelivery-cache"),
                 cacheKey = "refusal-redelivery-isolated-profile",
             )
         db.upsertEntry(

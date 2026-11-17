@@ -1,6 +1,7 @@
 package org.krost.unidrive.engine
 
 import org.junit.Assume
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
@@ -21,7 +22,7 @@ class CachePathsTest {
 
     @BeforeTest
     fun setUp() {
-        base = Files.createTempDirectory("ud-cache-paths")
+        base = TestScratch.directory("ud-cache-paths")
         dir = Files.createDirectories(base.resolve("cache").resolve("profile"))
     }
 

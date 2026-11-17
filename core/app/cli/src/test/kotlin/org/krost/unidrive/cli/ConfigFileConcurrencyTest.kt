@@ -16,12 +16,13 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class ConfigFileConcurrencyTest {
     @Test
     fun `atomic config replacement stays owner only`() {
         if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) return
-        val dir = Files.createTempDirectory("config-permissions")
+        val dir = TestScratch.directory("config-permissions")
         try {
             val config = dir.resolve("config.toml")
             ConfigFileTransaction.withLock(config) {
@@ -52,7 +53,7 @@ class ConfigFileConcurrencyTest {
     @Test
     fun `concurrent profile creation preserves every config update`() {
         withFactory {
-            val configDir = Files.createTempDirectory("config-concurrency")
+            val configDir = TestScratch.directory("config-concurrency")
             try {
                 Files.writeString(configDir.resolve("config.toml"), "[general]\n")
                 val count = 12
@@ -89,7 +90,7 @@ class ConfigFileConcurrencyTest {
     @Test
     fun `concurrent creation of one name writes one profile section`() {
         withFactory {
-            val configDir = Files.createTempDirectory("config-duplicate")
+            val configDir = TestScratch.directory("config-duplicate")
             try {
                 Files.writeString(configDir.resolve("config.toml"), "[general]\n")
                 val count = 8

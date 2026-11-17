@@ -26,6 +26,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#417: a children listing carries each file's download URL, a delta page does NOT (measured live on a
@@ -34,7 +35,7 @@ import kotlin.test.assertTrue
 class OneDriveListingDownloadUrlTest {
     private val json = headersOf(HttpHeaders.ContentType, "application/json")
     private val bytes = headersOf(HttpHeaders.ContentType, "application/octet-stream")
-    private val dir = Files.createTempDirectory("od-417-")
+    private val dir = TestScratch.directory("od-417-")
 
     // Every state file the service writes (the delta clock, upload sessions) lands in the test's own directory.
     private val cfg = OneDriveConfig(tokenPath = dir)

@@ -5,13 +5,14 @@ import kotlinx.coroutines.test.runTest
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A folder move takes the keys, sizes and ETags from its listing: no HEAD per key, only for an object above the
  * single-copy limit, whose multipart copy writes its mtime again. The copies run several at a time.
  */
 class S3FolderMoveRequestsTest {
-    private val dir = Files.createTempDirectory("s3-folder-move")
+    private val dir = TestScratch.directory("s3-folder-move")
 
     private fun provider(fake: FakeS3) = S3Provider(S3Config("b", "us-east-1", "http://localhost:9000", "AK", "SK", dir), fake.engine)
 

@@ -17,6 +17,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * One delta item Graph sends in a shape the model cannot read (here a `size` that is not a number) is skipped, not the
@@ -31,7 +32,7 @@ class DeltaUndecodableItemTest {
 
     @BeforeTest
     fun setUp() {
-        tmp = Files.createTempDirectory("ud-delta-undecodable")
+        tmp = TestScratch.directory("ud-delta-undecodable")
     }
 
     @AfterTest

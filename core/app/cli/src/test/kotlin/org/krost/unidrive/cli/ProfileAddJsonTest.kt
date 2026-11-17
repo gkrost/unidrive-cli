@@ -14,6 +14,7 @@ import org.krost.unidrive.ProviderRegistry
 import org.krost.unidrive.PromptSpec
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.sync.SyncConfig
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -60,7 +61,7 @@ class ProfileAddJsonTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("profile-add-json")
+        dir = TestScratch.directory("profile-add-json")
         System.setOut(PrintStream(out, true, Charsets.UTF_8))
         System.setErr(PrintStream(err, true, Charsets.UTF_8))
     }

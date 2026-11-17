@@ -20,6 +20,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The daemon's coroutine-dump facility (archive#613 ask 1): with the probes installed,
@@ -46,7 +47,7 @@ class CoroutineDebugTest {
 
     @Test
     fun `a dump names the suspension point of a coroutine that hangs forever`() {
-        val dir = Files.createTempDirectory("unidrive-coroutine-fork")
+        val dir = TestScratch.directory("unidrive-coroutine-fork")
         val javaBin =
             Path.of(System.getProperty("java.home"), "bin", if (isWindows) "java.exe" else "java")
         val agentJar = Path.of(Job::class.java.protectionDomain.codeSource.location.toURI())
@@ -83,7 +84,7 @@ class CoroutineDebugTest {
             DebugProbes.isInstalled,
             "step \"install the probes\": install() returned with the probes not installed; swallowed errors: $failures",
         )
-        val dir = Files.createTempDirectory("unidrive-coroutine-watch")
+        val dir = TestScratch.directory("unidrive-coroutine-watch")
         // The watcher gets a thread of its own: on the shared Dispatchers.Default a busy pool could delay its 2 s poll.
         val watcherThread = Executors.newSingleThreadExecutor { Thread(it, "coroutine-dump-watcher-test").apply { isDaemon = true } }
         val scope = CoroutineScope(watcherThread.asCoroutineDispatcher())
@@ -119,7 +120,7 @@ class CoroutineDebugTest {
     fun `a dump that cannot be written reaches the failure hook instead of vanishing`() {
         val failures = CopyOnWriteArrayList<Pair<String, Throwable>>()
         CoroutineDebug.onFailure = { what, cause -> failures.add(what to cause) }
-        val notADirectory = Files.createTempFile("unidrive-coroutine-not-a-dir", ".tmp")
+        val notADirectory = TestScratch.file("unidrive-coroutine-not-a-dir", ".tmp")
         try {
             CoroutineDebug.dumpCoroutines(notADirectory.resolve("sub")) // the folder cannot be created under a file
 
@@ -132,7 +133,7 @@ class CoroutineDebugTest {
     @Test
     fun `a hook that throws does not turn a swallowed dump error into a thrown one`() {
         CoroutineDebug.onFailure = { _, _ -> throw IllegalStateException("the hook itself failed") }
-        val notADirectory = Files.createTempFile("unidrive-coroutine-not-a-dir", ".tmp")
+        val notADirectory = TestScratch.file("unidrive-coroutine-not-a-dir", ".tmp")
         try {
             CoroutineDebug.dumpCoroutines(notADirectory.resolve("sub")) // must return normally
         } finally {

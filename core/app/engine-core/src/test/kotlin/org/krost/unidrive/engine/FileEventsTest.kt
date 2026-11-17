@@ -6,6 +6,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import org.krost.unidrive.HashAlgorithm
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.attribute.FileTime
@@ -200,7 +201,7 @@ class FileEventsTest {
 
     @Test
     fun `a hash the provider reported is recorded without reading the file`() {
-        val file = Files.createTempFile("ud-393-", ".bin").also { Files.write(it, "payload".toByteArray()) }
+        val file = TestScratch.file("ud-393-", ".bin").also { Files.write(it, "payload".toByteArray()) }
         val sent = Files.getLastModifiedTime(file).toMillis() to Files.size(file)
         var told: Pair<Boolean, Long>? = null
 
@@ -213,7 +214,7 @@ class FileEventsTest {
 
     @Test
     fun `without a reported hash the file is read once for it`() {
-        val file = Files.createTempFile("ud-393-", ".bin").also { Files.write(it, "payload".toByteArray()) }
+        val file = TestScratch.file("ud-393-", ".bin").also { Files.write(it, "payload".toByteArray()) }
         val sent = Files.getLastModifiedTime(file).toMillis() to Files.size(file)
         var fromProvider: Boolean? = null
 
@@ -225,7 +226,7 @@ class FileEventsTest {
 
     @Test
     fun `a reported hash is dropped when the file changed after it was sent`() {
-        val file = Files.createTempFile("ud-393-", ".bin").also { Files.write(it, "payload".toByteArray()) }
+        val file = TestScratch.file("ud-393-", ".bin").also { Files.write(it, "payload".toByteArray()) }
         val sent = Files.getLastModifiedTime(file).toMillis() to Files.size(file)
         Files.setLastModifiedTime(file, FileTime.fromMillis(sent.first + 60_000))
 
@@ -236,7 +237,7 @@ class FileEventsTest {
 
     @Test
     fun `a provider with a content hash needs no local hash at all`() {
-        val file = Files.createTempFile("ud-393-", ".bin").also { Files.write(it, "payload".toByteArray()) }
+        val file = TestScratch.file("ud-393-", ".bin").also { Files.write(it, "payload".toByteArray()) }
         val sent = Files.getLastModifiedTime(file).toMillis() to Files.size(file)
         var called = false
 

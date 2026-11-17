@@ -5,13 +5,14 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class SyncConfigTest {
     private lateinit var tmpDir: Path
 
     @BeforeTest
     fun setUp() {
-        tmpDir = Files.createTempDirectory("unidrive-config-test")
+        tmpDir = TestScratch.directory("unidrive-config-test")
     }
 
     @Test

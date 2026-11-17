@@ -16,6 +16,7 @@ import org.krost.unidrive.testing.CloudProviderConformanceTest
 import org.krost.unidrive.onedrive.model.Token
 import java.nio.file.Files
 import java.nio.file.Path
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The SPI's conformance contracts against [OneDriveProvider].
@@ -39,7 +40,7 @@ class OneDriveConformanceTest : CloudProviderConformanceTest() {
     private val guardEtag = "etag-conformance-1"
 
     override fun newProvider(): CloudProvider {
-        dir = Files.createTempDirectory("conformance-od")
+        dir = TestScratch.directory("conformance-od")
         val config = OneDriveConfig(tokenPath = dir)
         kotlinx.coroutines.runBlocking {
             OAuthService(config).use {
@@ -58,7 +59,7 @@ class OneDriveConformanceTest : CloudProviderConformanceTest() {
 
     override fun newWriteProvider(): CloudProvider {
         guardMode = false
-        dir = Files.createTempDirectory("conformance-od-write")
+        dir = TestScratch.directory("conformance-od-write")
         graph = SimilarNameGraph()
         val config = OneDriveConfig(tokenPath = dir)
         val api = GraphApiService(config = config, httpClient = graph.client(), tokenProvider = { _, _ -> "test-token" })
@@ -67,7 +68,7 @@ class OneDriveConformanceTest : CloudProviderConformanceTest() {
 
     override fun newGuardProvider(): CloudProvider {
         guardMode = true
-        dir = Files.createTempDirectory("conformance-od-guard")
+        dir = TestScratch.directory("conformance-od-guard")
         val config = OneDriveConfig(tokenPath = dir)
         val api = GraphApiService(config = config, httpClient = HttpClient(guardEngine()), tokenProvider = { _, _ -> "test-token" })
         return OneDriveProvider(config, graphApi = api)
@@ -87,7 +88,7 @@ class OneDriveConformanceTest : CloudProviderConformanceTest() {
     }
 
     override fun localFile(content: String): Path =
-        Files.createTempFile("conformance-local", ".txt").also { Files.writeString(it, content) }
+        TestScratch.file("conformance-local", ".txt").also { Files.writeString(it, content) }
 
     override fun clearStoredCredentials() {
         Files.delete(dir.resolve("token.json"))

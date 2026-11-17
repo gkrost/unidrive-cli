@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The mirror engine's planner and the backups namespace: what the provider lists as backup items is placed under the
@@ -28,8 +29,8 @@ class BackupsNamespaceMirrorTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-backups-mirror")
-        db = StateDatabase(Files.createTempDirectory("unidrive-backups-mirror-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-backups-mirror")
+        db = StateDatabase(TestScratch.directory("unidrive-backups-mirror-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine =

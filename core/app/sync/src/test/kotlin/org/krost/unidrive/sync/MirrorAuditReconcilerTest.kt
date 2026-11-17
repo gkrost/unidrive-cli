@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Mirror-engine audit candidates X1, X5 and X6 (gkrost/unidrive-cli#55), each as the smallest reconcile call that shows it.
@@ -24,8 +25,8 @@ class MirrorAuditReconcilerTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-audit55-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-audit55-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-audit55-root")
+        db = StateDatabase(TestScratch.directory("unidrive-audit55-db").resolve("state.db"))
         db.initialize()
     }
 

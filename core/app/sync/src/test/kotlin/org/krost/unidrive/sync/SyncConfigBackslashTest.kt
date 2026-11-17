@@ -6,6 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#361: a Windows path with backslashes in a double-quoted (TOML basic) string is an invalid
@@ -46,7 +47,7 @@ class SyncConfigBackslashTest {
 
     @Test
     fun `load names the config file by its path`() {
-        val dir = Files.createTempDirectory("unidrive-config-backslash")
+        val dir = TestScratch.directory("unidrive-config-backslash")
         try {
             val file = dir.resolve("config.toml")
             Files.writeString(file, config("$dq$windowsPath$dq"))

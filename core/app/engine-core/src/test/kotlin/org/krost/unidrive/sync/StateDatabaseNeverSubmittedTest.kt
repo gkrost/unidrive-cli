@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#585: a never-uploaded file row can record that no upload of it was ever submitted (`never_submitted`, an
@@ -38,7 +39,7 @@ class StateDatabaseNeverSubmittedTest {
 
     @Test
     fun `a pending file row takes the record, reads it back, and ends it on request`() {
-        val db = open(Files.createTempDirectory("ud-never-sub").resolve("state.db"))
+        val db = open(TestScratch.directory("ud-never-sub").resolve("state.db"))
         try {
             db.upsertEntry(entry("/~\$lock.tmp"))
             assertFalse(db.neverSubmitted("/~\$lock.tmp"), "a row says nothing of its history until it is told")
@@ -56,7 +57,7 @@ class StateDatabaseNeverSubmittedTest {
 
     @Test
     fun `only a pending file row takes it`() {
-        val db = open(Files.createTempDirectory("ud-never-sub-kind").resolve("state.db"))
+        val db = open(TestScratch.directory("ud-never-sub-kind").resolve("state.db"))
         try {
             db.upsertEntry(entry("/cloud.txt", remoteId = "id-cloud"))
             db.upsertEntry(entry("/folder", remoteId = "id-folder", isFolder = true))
@@ -72,7 +73,7 @@ class StateDatabaseNeverSubmittedTest {
 
     @Test
     fun `any rewrite of the row ends it`() {
-        val db = open(Files.createTempDirectory("ud-never-sub-rewrite").resolve("state.db"))
+        val db = open(TestScratch.directory("ud-never-sub-rewrite").resolve("state.db"))
         try {
             db.upsertEntry(entry("/a.tmp"))
             assertTrue(db.markNeverSubmitted("/a.tmp"))
@@ -87,7 +88,7 @@ class StateDatabaseNeverSubmittedTest {
 
     @Test
     fun `the record survives a reopen`() {
-        val dbPath = Files.createTempDirectory("ud-never-sub-reopen").resolve("state.db")
+        val dbPath = TestScratch.directory("ud-never-sub-reopen").resolve("state.db")
         open(dbPath).also {
             it.upsertEntry(entry("/kept.tmp"))
             it.markNeverSubmitted("/kept.tmp")
@@ -103,7 +104,7 @@ class StateDatabaseNeverSubmittedTest {
 
     @Test
     fun `a state db written before the column gets it on open, and its rows vouch for nothing`() {
-        val dbPath = Files.createTempDirectory("ud-never-sub-old").resolve("state.db")
+        val dbPath = TestScratch.directory("ud-never-sub-old").resolve("state.db")
         open(dbPath).also { it.upsertEntry(entry("/old.tmp")) }.close()
         // Turn it into a pre-#585 database: no never_submitted column (the view goes first, it selects *).
         DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->

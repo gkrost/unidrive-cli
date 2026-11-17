@@ -12,6 +12,7 @@ import org.krost.unidrive.sync.IpcEndpoint
 import org.krost.unidrive.sync.ProcessLock
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -50,7 +51,7 @@ class LogoutCommandJsonTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("logout-json")
+        dir = TestScratch.directory("logout-json")
         socketDir = Files.createDirectories(dir.resolve("sock"))
         LogoutHooks.socketPath = { socketDir.resolve("$it.sock") }
         LogoutHooks.requestLogout = { _, _ -> error("a test must set requestLogout before it can be called") }

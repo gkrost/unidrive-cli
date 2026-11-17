@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -34,7 +35,7 @@ class BackupAddValidationTest {
     }
 
     private fun withConfig(body: (dir: Path, config: Path) -> Unit) {
-        val dir = Files.createTempDirectory("backup-add-validation")
+        val dir = TestScratch.directory("backup-add-validation")
         try {
             val config = dir.resolve("config.toml")
             Files.writeString(config, "[general]\n")

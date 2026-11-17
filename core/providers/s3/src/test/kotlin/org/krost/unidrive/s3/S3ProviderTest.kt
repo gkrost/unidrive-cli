@@ -30,10 +30,11 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** The provider against [FakeS3]: listing, uploads (single and multipart, resumed), conditional writes, copies, deletes, links. */
 class S3ProviderTest {
-    private val dir = Files.createTempDirectory("s3-provider")
+    private val dir = TestScratch.directory("s3-provider")
     private val mib = 1024L * 1024
 
     private fun provider(

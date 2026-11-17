@@ -15,6 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1219: the proof that a local file is the stored file by the ciphertext hash the network recorded, with injected lookups
@@ -78,7 +79,7 @@ class InternxtLocalContentProofTest {
         crypto = crypto,
     )
 
-    private fun localFile(bytes: ByteArray): Path = Files.createTempFile("internxt-proof", ".bin").also { Files.write(it, bytes) }
+    private fun localFile(bytes: ByteArray): Path = TestScratch.file("internxt-proof", ".bin").also { Files.write(it, bytes) }
 
     private val plain = "the plaintext of a file of the account, long enough to be more than one block of sixteen bytes".toByteArray()
 

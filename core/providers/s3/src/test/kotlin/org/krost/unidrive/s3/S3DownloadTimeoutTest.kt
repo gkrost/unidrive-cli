@@ -23,6 +23,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The client's flat `HttpDefaults.REQUEST_TIMEOUT_MS` (10 minutes) is counted up to the end of the `execute` block, so
@@ -41,7 +42,7 @@ class S3DownloadTimeoutTest {
     @Test
     fun `a download is one GET with no request-level cap, and no HEAD sizes it`() =
         runTest {
-            val dir = Files.createTempDirectory("s3-dl-timeout")
+            val dir = TestScratch.directory("s3-dl-timeout")
             val fake = FakeS3()
             fake.put("big.bin", "bytes")
             val provider = S3Provider(config(dir), fake.engine)
@@ -62,7 +63,7 @@ class S3DownloadTimeoutTest {
     @Test
     fun `the body cap is asked for the Content-Length of the GET`() =
         runTest {
-            val dir = Files.createTempDirectory("s3-dl-timeout")
+            val dir = TestScratch.directory("s3-dl-timeout")
             val fake = FakeS3()
             fake.put("a.bin", "x".repeat(1234))
             val asked = mutableListOf<Long?>()
@@ -153,7 +154,7 @@ class S3DownloadTimeoutTest {
 
     @Test
     fun `headers that never come end at the socket timeout, with no request cap to fall back on`() {
-        val dir = Files.createTempDirectory("s3-dl-silent")
+        val dir = TestScratch.directory("s3-dl-silent")
         ScriptedServer { Thread.sleep(60_000) }.use { server ->
             val api = S3Api(config(dir, server.endpoint), socketTimeoutMs = 500)
             val started = System.nanoTime()
@@ -170,7 +171,7 @@ class S3DownloadTimeoutTest {
 
     @Test
     fun `a body that outlasts its cap is cut, leaving the destination and no staging file`() {
-        val dir = Files.createTempDirectory("s3-dl-slow")
+        val dir = TestScratch.directory("s3-dl-slow")
         val destination = dir.resolve("a.bin")
         Files.writeString(destination, "PREVIOUS")
         ScriptedServer(ScriptedServer.trickle(length = 20, intervalMs = 150)).use { server ->
@@ -186,7 +187,7 @@ class S3DownloadTimeoutTest {
 
     @Test
     fun `a steady body inside its cap completes however long the request has been open`() {
-        val dir = Files.createTempDirectory("s3-dl-steady")
+        val dir = TestScratch.directory("s3-dl-steady")
         val destination = dir.resolve("a.bin")
         ScriptedServer(ScriptedServer.trickle(length = 20, intervalMs = 50)).use { server ->
             val api = S3Api(config(dir, server.endpoint), downloadBodyTimeoutMs = { 10_000 })
@@ -211,7 +212,7 @@ class S3DownloadTimeoutTest {
 
     @Test
     fun `a chunked answer without Content-Length is written whole, with the flat cap asked for and no staging file left`() {
-        val dir = Files.createTempDirectory("s3-dl-chunked")
+        val dir = TestScratch.directory("s3-dl-chunked")
         val destination = dir.resolve("a.bin")
         ScriptedServer(chunked("hello", " world")).use { server ->
             val asked = mutableListOf<Long?>()
@@ -233,7 +234,7 @@ class S3DownloadTimeoutTest {
 
     @Test
     fun `a chunked answer cut off in the middle of a chunk fails, leaving the destination and no staging file`() {
-        val dir = Files.createTempDirectory("s3-dl-chunked-cut")
+        val dir = TestScratch.directory("s3-dl-chunked-cut")
         val destination = dir.resolve("a.bin")
         Files.writeString(destination, "PREVIOUS")
         val cut: (OutputStream) -> Unit = { out ->
@@ -255,7 +256,7 @@ class S3DownloadTimeoutTest {
 
     @Test
     fun `an object stored with a content encoding comes down as the stored bytes, not decoded`() {
-        val dir = Files.createTempDirectory("s3-dl-encoded")
+        val dir = TestScratch.directory("s3-dl-encoded")
         val destination = dir.resolve("a.bin")
         val stored =
             java.io.ByteArrayOutputStream().also { sink -> java.util.zip.GZIPOutputStream(sink).use { it.write("plain text of the object".toByteArray()) } }.toByteArray()

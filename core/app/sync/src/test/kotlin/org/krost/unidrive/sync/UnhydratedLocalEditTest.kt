@@ -17,6 +17,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A row that was never hydrated (an interrupted first sync, or a file freed with `unidrive free`)
@@ -38,8 +39,8 @@ class UnhydratedLocalEditTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-297-root")
-        val dbPath = Files.createTempDirectory("ud-297-db").resolve("state.db")
+        syncRoot = TestScratch.directory("ud-297-root")
+        val dbPath = TestScratch.directory("ud-297-db").resolve("state.db")
         db = StateDatabase(dbPath)
         db.initialize()
         provider = FakeCloudProvider()

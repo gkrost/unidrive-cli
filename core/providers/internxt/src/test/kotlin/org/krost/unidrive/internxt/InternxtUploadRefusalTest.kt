@@ -19,6 +19,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import java.util.concurrent.atomic.AtomicInteger
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#493: an upload the drive server refuses as a request (400, 413, 415, 422) is refused again with the same bytes; it is
@@ -44,7 +45,7 @@ class InternxtUploadRefusalTest {
 
     private val bucket = "6928426c1a2316b856c9ab81"
     private val shardUrl = "https://shard-host.invalid/refusal-put"
-    private val tmp: Path = Files.createTempDirectory("ud-refusal-")
+    private val tmp: Path = TestScratch.directory("ud-refusal-")
 
     @AfterTest
     fun cleanUp() {

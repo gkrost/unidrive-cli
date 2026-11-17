@@ -19,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * A chunk whose PUT breaks off (the connection is closed while the body is in flight, or the server never answers) is
@@ -32,7 +33,7 @@ class OneDriveChunkDropRetryTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-chunk-drop")
+        tokenDir = TestScratch.directory("ud-chunk-drop")
     }
 
     @AfterTest
@@ -171,7 +172,7 @@ class OneDriveChunkDropRetryTest {
         }
 
     private fun localFile(size: Long): Path {
-        val f = Files.createTempFile(tokenDir, "big", ".bin")
+        val f = TestScratch.file(tokenDir, "big", ".bin")
         Files.write(f, ByteArray(size.toInt()) { 3 })
         return f
     }

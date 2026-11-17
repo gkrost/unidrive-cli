@@ -10,6 +10,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 // The WAL and its index hold what state.db holds (rows not yet checkpointed), so they are the current user's only,
 // like the file itself: restricted on desktop once the open has created them.
@@ -19,7 +20,7 @@ class StateDatabaseSidecarPermissionsTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-sidecar-acl")
+        dir = TestScratch.directory("unidrive-sidecar-acl")
         dbFile = dir.resolve("state.db")
     }
 

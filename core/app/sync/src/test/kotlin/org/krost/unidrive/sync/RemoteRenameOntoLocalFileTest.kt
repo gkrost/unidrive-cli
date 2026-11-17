@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1046: a remote rename `/a` -> `/b` while an unsynced local `/b` of the same size exists. Both sides are new at
@@ -26,8 +27,8 @@ class RemoteRenameOntoLocalFileTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-rename-onto-local")
-        db = StateDatabase(Files.createTempDirectory("unidrive-rename-onto-local-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-rename-onto-local")
+        db = StateDatabase(TestScratch.directory("unidrive-rename-onto-local-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine =

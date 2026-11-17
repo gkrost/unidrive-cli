@@ -10,6 +10,7 @@ import java.security.MessageDigest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#392: a hydration reads the downloaded file from the local disk zero extra times when the provider
@@ -28,14 +29,14 @@ class HydrationDownloadHashOnceTest {
 
     private fun freshEnv(): Env {
         val provider = MemProvider()
-        val db = StateDatabase(Files.createTempDirectory("ud-392-hash-db").resolve("state.db"))
+        val db = StateDatabase(TestScratch.directory("ud-392-hash-db").resolve("state.db"))
         db.initialize()
         val engine =
             SyncEngine(
                 provider = provider,
                 db = db,
-                syncRoot = Files.createTempDirectory("ud-392-hash-root"),
-                cacheRoot = Files.createTempDirectory("ud-392-hash-cache"),
+                syncRoot = TestScratch.directory("ud-392-hash-root"),
+                cacheRoot = TestScratch.directory("ud-392-hash-cache"),
                 cacheKey = "ud-392-hash-isolated-profile",
             )
         provider.seed("/a.bin", content)

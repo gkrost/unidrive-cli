@@ -6,6 +6,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.localfs.LocalFsProvider
+import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
 import java.nio.file.Files
 import java.nio.file.Path
@@ -29,7 +30,7 @@ class SyncEarlyFailureTest {
 
     @BeforeTest
     fun setUp() {
-        base = Files.createTempDirectory("ud-sync-early-failure")
+        base = TestScratch.directory("ud-sync-early-failure")
     }
 
     @AfterTest

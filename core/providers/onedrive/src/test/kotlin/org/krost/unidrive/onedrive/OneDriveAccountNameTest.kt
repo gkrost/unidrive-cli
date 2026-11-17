@@ -14,6 +14,7 @@ import kotlinx.coroutines.runBlocking
 import org.krost.unidrive.AccountName
 import org.krost.unidrive.CompleteAuthResult
 import org.krost.unidrive.onedrive.model.Token
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -32,7 +33,7 @@ class OneDriveAccountNameTest {
 
     @BeforeTest
     fun setUp() {
-        profileDir = Files.createTempDirectory("od-account-")
+        profileDir = TestScratch.directory("od-account-")
     }
 
     @AfterTest

@@ -17,6 +17,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * Guards the remote-shrink trust gate: a FULL enumeration that observed far fewer
@@ -61,9 +62,9 @@ class RemoteShrinkGuardTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("ud-shrink-root")
-        dbDir = Files.createTempDirectory("ud-shrink-db")
-        cacheRoot = Files.createTempDirectory("ud-shrink-cache")
+        syncRoot = TestScratch.directory("ud-shrink-root")
+        dbDir = TestScratch.directory("ud-shrink-db")
+        cacheRoot = TestScratch.directory("ud-shrink-cache")
         db = StateDatabase(dbDir.resolve("state.db"))
         db.initialize()
         provider = ShrinkFakeProvider()

@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import kotlin.test.*
+import org.krost.unidrive.testing.TestScratch
 
 class LocalWatcherDebounceTest {
     private lateinit var syncRoot: Path
@@ -15,7 +16,7 @@ class LocalWatcherDebounceTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-watch-debounce-test")
+        syncRoot = TestScratch.directory("unidrive-watch-debounce-test")
         watcher = LocalWatcher(syncRoot, debounceMs = debounceMs)
         watcher.start()
         // Give WatchService a moment to register before producing events.

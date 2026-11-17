@@ -18,6 +18,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#309: the user renames a synced `case1.txt` to `CASE1.txt`. Where case folds (OneDrive, NTFS) that is one name, so the
@@ -35,8 +36,8 @@ class LocalCaseOnlyRenameTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-local-case-rename")
-        db = StateDatabase(Files.createTempDirectory("unidrive-local-case-rename-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-local-case-rename")
+        db = StateDatabase(TestScratch.directory("unidrive-local-case-rename-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         provider.caseSensitivity = CaseSensitivity.INSENSITIVE_PRESERVING

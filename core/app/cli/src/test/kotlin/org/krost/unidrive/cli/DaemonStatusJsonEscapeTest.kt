@@ -26,6 +26,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * `daemon.status` is one NDJSON line whatever the provider's name, the sync paths or a failed quota fetch's message carry:
@@ -41,7 +42,7 @@ class DaemonStatusJsonEscapeTest {
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("daemon-status-json-escape-test")
+        tempDir = TestScratch.directory("daemon-status-json-escape-test")
         socketPath = tempDir.resolve("daemon.sock")
     }
 

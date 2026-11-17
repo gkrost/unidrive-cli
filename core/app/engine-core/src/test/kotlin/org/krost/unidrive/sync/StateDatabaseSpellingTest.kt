@@ -8,6 +8,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#491: state.db keys paths in NFC (archive#171), and so a remote path. A row of a normalisation collision keeps the
@@ -21,7 +22,7 @@ class StateDatabaseSpellingTest {
 
     @BeforeTest
     fun setUp() {
-        db = StateDatabase(Files.createTempDirectory("unidrive-spelling").resolve("state.db"))
+        db = StateDatabase(TestScratch.directory("unidrive-spelling").resolve("state.db"))
         db.initialize()
     }
 

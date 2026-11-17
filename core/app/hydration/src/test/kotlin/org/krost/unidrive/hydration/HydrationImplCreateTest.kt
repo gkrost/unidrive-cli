@@ -19,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class HydrationImplCreateTest {
 
@@ -47,12 +48,12 @@ class HydrationImplCreateTest {
     )
 
     private fun freshEnv(): Env {
-        val cacheRoot = Files.createTempDirectory("unidrive-hydration-create-cache")
-        val dbPath = Files.createTempDirectory("unidrive-hydration-create-db").resolve("state.db")
+        val cacheRoot = TestScratch.directory("unidrive-hydration-create-cache")
+        val dbPath = TestScratch.directory("unidrive-hydration-create-db").resolve("state.db")
         val provider = CreateFakeProvider()
         val db = StateDatabase(dbPath = dbPath, inMemory = true)
         db.initialize()
-        val syncRoot = Files.createTempDirectory("unidrive-hydration-create-sync")
+        val syncRoot = TestScratch.directory("unidrive-hydration-create-sync")
         val engine = SyncEngine(
             provider = provider,
             db = db,

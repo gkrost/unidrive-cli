@@ -8,6 +8,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#1194: deploy stops the engine processes that hold a profile by their `.lock.pid` sidecar, gracefully for a
@@ -23,7 +24,7 @@ class DeployedProcessStopperTest {
 
     @BeforeTest
     fun setUp() {
-        configDir = Files.createTempDirectory("unidrive-deploy-stopper")
+        configDir = TestScratch.directory("unidrive-deploy-stopper")
     }
 
     @AfterTest

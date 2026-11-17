@@ -20,6 +20,7 @@ import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.RemoteContentRefusedDownloadException
 import org.krost.unidrive.RemoteIncompleteDownloadException
+import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -59,7 +60,7 @@ class InternxtShardHashDownloadTest {
         Ripemd160.digest(MessageDigest.getInstance("SHA-256").digest(bytes)).joinToString("") { "%02x".format(it) }
 
     private fun newProvider(allowUnverifiedShardHash: Boolean = false): InternxtProvider {
-        destination = Files.createTempDirectory("ud-shard-hash").resolve("out.bin")
+        destination = TestScratch.directory("ud-shard-hash").resolve("out.bin")
         val payloadB64 =
             java.util.Base64
                 .getUrlEncoder()
@@ -68,7 +69,7 @@ class InternxtShardHashDownloadTest {
         return InternxtProvider(
             InternxtConfig(
                 credentialProtector = null,
-                tokenPath = Files.createTempFile("ud-shard-token", ".tmp"),
+                tokenPath = TestScratch.file("ud-shard-token", ".tmp"),
                 allowUnverifiedShardHash = allowUnverifiedShardHash,
             ),
             httpClient = HttpClient(MockEngine { request -> handle(request) }),

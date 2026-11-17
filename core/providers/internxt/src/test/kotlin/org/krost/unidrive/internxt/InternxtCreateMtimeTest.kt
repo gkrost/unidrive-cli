@@ -19,6 +19,7 @@ import java.util.Collections
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * archive#486: a new file kept its content and name but not its modification time: the create sent none and the server stamped
@@ -29,7 +30,7 @@ class InternxtCreateMtimeTest {
     private val bucket = "6928426c1a2316b856c9ab81"
     private val shardUrl = "https://shard-host.invalid/mtime-put"
     private val creates: MutableList<JsonObject> = Collections.synchronizedList(mutableListOf())
-    private val tmp: Path = Files.createTempDirectory("ud-mtime-")
+    private val tmp: Path = TestScratch.directory("ud-mtime-")
     private val dated = Instant.parse("2001-02-03T04:05:06Z")
 
     @AfterTest

@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The two telemetry writers sleep on their queue until something is due. They polled every 500 ms, so a daemon with
@@ -27,7 +28,7 @@ class TelemetryWritersIdleTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("telemetry-idle-test")
+        dir = TestScratch.directory("telemetry-idle-test")
         db = dir.resolve("telemetry.db")
     }
 

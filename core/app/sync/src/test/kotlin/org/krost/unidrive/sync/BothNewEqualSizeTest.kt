@@ -15,6 +15,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#97: a path that is new on both sides with equal sizes. Identical content is adopted; a local file of
@@ -29,8 +30,8 @@ class BothNewEqualSizeTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-97-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-97-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-97-root")
+        db = StateDatabase(TestScratch.directory("unidrive-97-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider().apply { hashAlgorithmOverride = HashAlgorithm.Sha256Hex }
     }
@@ -148,7 +149,7 @@ class BothNewEqualSizeTest {
             Files.writeString(local, "local!")
             Files.setLastModifiedTime(local, FileTime.from(Instant.parse("2026-03-01T00:00:00Z")))
             provider.deltaItems = listOf(cloudFile("/a.txt", "cloud!".toByteArray(), modified = Instant.parse("2026-03-28T12:00:00Z")))
-            val logDir = Files.createTempDirectory("unidrive-97-log")
+            val logDir = TestScratch.directory("unidrive-97-log")
             val log = ConflictLog(logDir.resolve("conflicts.jsonl"), logDir.resolve("backup"))
 
             engine(ConflictPolicy.LAST_WRITER_WINS, log).syncOnce()

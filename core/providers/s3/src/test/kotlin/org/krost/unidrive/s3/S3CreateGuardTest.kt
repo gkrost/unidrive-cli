@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#57: a create must not replace an object that appeared after the plan. The PUT (or the multipart complete)
@@ -17,7 +18,7 @@ import kotlin.test.assertNull
  * other 400 is a real failure, and a vendor that supports conditional writes never loses its guard to one.
  */
 class S3CreateGuardTest {
-    private val dir = Files.createTempDirectory("s3-create-guard")
+    private val dir = TestScratch.directory("s3-create-guard")
     private val mib = 1024L * 1024
 
     private fun provider(

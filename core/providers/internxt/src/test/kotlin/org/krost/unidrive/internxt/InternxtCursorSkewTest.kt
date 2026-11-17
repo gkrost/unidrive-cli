@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#181: the cursor a gather hands the engine is a time. A poll asks for the rows changed since that cursor
@@ -32,7 +33,7 @@ class InternxtCursorSkewTest {
         drive: UploadDrive,
         block: suspend (InternxtProvider) -> Unit,
     ) = runTest {
-        val tmp = Files.createTempDirectory("ud-cursor-skew-")
+        val tmp = TestScratch.directory("ud-cursor-skew-")
         try {
             val provider = rootedInternxtProvider(tmp, drive.engine)
             try {

@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
+import org.krost.unidrive.testing.TestScratch
 
 /** Shared fixture for engine tests that run against a [HashlessFakeProvider] with a real SQLite tracking set. */
 abstract class HashlessEngineTestBase {
@@ -16,7 +17,7 @@ abstract class HashlessEngineTestBase {
 
     @BeforeTest
     fun setUpHashlessFixture() {
-        workDir = Files.createTempDirectory("tracking-hashless")
+        workDir = TestScratch.directory("tracking-hashless")
         syncRoot = workDir.resolve("sync-root").also { Files.createDirectories(it) }
         dbPath = workDir.resolve("tracking.db")
         provider = HashlessFakeProvider()

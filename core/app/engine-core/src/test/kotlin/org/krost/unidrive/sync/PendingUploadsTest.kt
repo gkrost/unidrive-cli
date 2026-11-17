@@ -11,6 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /** #86: what counts as an upload on its way, and the drop of a row whose file is gone. */
 class PendingUploadsTest {
@@ -19,7 +20,7 @@ class PendingUploadsTest {
 
     @BeforeTest
     fun setUp() {
-        dir = Files.createTempDirectory("unidrive-pending-uploads")
+        dir = TestScratch.directory("unidrive-pending-uploads")
         db = StateDatabase(dir.resolve("state.db")).also { it.initialize() }
     }
 

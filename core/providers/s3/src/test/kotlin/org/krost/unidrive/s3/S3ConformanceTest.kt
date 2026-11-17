@@ -5,6 +5,7 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.testing.CloudProviderConformanceTest
 import java.nio.file.Files
 import java.nio.file.Path
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The SPI's conformance contracts against [S3Provider] over [FakeS3], the stateful in-memory bucket.
@@ -18,7 +19,7 @@ import java.nio.file.Path
 class S3ConformanceTest : CloudProviderConformanceTest() {
     override val idAddressedMove: Boolean = false
 
-    private val dir = Files.createTempDirectory("conformance-s3")
+    private val dir = TestScratch.directory("conformance-s3")
 
     private lateinit var fake: FakeS3
 
@@ -34,5 +35,5 @@ class S3ConformanceTest : CloudProviderConformanceTest() {
     ): CloudItem = provider.upload(localFile(content), path)
 
     override fun localFile(content: String): Path =
-        Files.createTempFile("conformance-local", ".txt").also { Files.writeString(it, content) }
+        TestScratch.file("conformance-local", ".txt").also { Files.writeString(it, content) }
 }

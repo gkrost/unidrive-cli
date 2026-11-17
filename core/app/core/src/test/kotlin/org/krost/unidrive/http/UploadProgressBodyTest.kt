@@ -13,6 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * The body contract of the watchdog bodies ([progressTrackingFileBody], [progressTrackingFileRangeBody]):
@@ -110,7 +111,7 @@ class UploadProgressBodyTest {
     }
 
     private fun createTempFile(content: ByteArray): Path {
-        val p = Files.createTempFile("ud342-progress-upload", ".bin")
+        val p = TestScratch.file("ud342-progress-upload", ".bin")
         Files.write(p, content)
         return p
     }

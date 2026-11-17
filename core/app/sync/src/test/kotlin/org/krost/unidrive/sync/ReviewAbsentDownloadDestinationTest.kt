@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * #513 review: a download whose destination was PROVEN empty when cleared (an unhydrated row, no local
@@ -35,8 +36,8 @@ class ReviewAbsentDownloadDestinationTest {
 
     @BeforeTest
     fun setUp() {
-        syncRoot = Files.createTempDirectory("unidrive-dl-absent-root")
-        db = StateDatabase(Files.createTempDirectory("unidrive-dl-absent-db").resolve("state.db"))
+        syncRoot = TestScratch.directory("unidrive-dl-absent-root")
+        db = StateDatabase(TestScratch.directory("unidrive-dl-absent-db").resolve("state.db"))
         db.initialize()
         provider = FakeCloudProvider()
         engine =

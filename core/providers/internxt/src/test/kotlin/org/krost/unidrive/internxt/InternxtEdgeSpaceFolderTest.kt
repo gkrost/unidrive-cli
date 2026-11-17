@@ -5,6 +5,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#180: a folder created under a name whose ends the server answer differs from (a space, a control
@@ -14,7 +15,7 @@ import kotlin.test.assertTrue
 class InternxtEdgeSpaceFolderTest {
     private fun withProvider(block: suspend (InternxtProvider, UploadDrive) -> Unit) =
         runTest {
-            val tmp = Files.createTempDirectory("ud-edge-space-")
+            val tmp = TestScratch.directory("ud-edge-space-")
             try {
                 val drive = UploadDrive()
                 val provider = rootedInternxtProvider(tmp, drive.engine)
@@ -33,7 +34,7 @@ class InternxtEdgeSpaceFolderTest {
         withProvider { provider, drive ->
             provider.createFolder("/ docs ")
             assertEquals(emptyList(), provider.listChildren("/ docs "), "from the cache the create filled")
-            val tmp = Files.createTempDirectory("ud-edge-space-2-")
+            val tmp = TestScratch.directory("ud-edge-space-2-")
             try {
                 // A second provider over the same drive has no cache: the folder is found in the listing.
                 val fresh = rootedInternxtProvider(tmp, drive.engine)
@@ -55,7 +56,7 @@ class InternxtEdgeSpaceFolderTest {
             assertTrue(listed.isSuccess, "the folder was created and then not found: ${listed.exceptionOrNull()?.message}")
             assertEquals(emptyList(), listed.getOrThrow())
             assertEquals(1, drive.folders.size, "the create made one folder")
-            val tmp = Files.createTempDirectory("ud-edge-ctl-2-")
+            val tmp = TestScratch.directory("ud-edge-ctl-2-")
             try {
                 val fresh = rootedInternxtProvider(tmp, drive.engine)
                 try {

@@ -16,6 +16,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.krost.unidrive.testing.TestScratch
 
 class OneDriveSlowUploadTimeoutTest {
     private lateinit var tokenDir: Path
@@ -23,7 +24,7 @@ class OneDriveSlowUploadTimeoutTest {
 
     @BeforeTest
     fun setUp() {
-        tokenDir = Files.createTempDirectory("ud-slow-upload")
+        tokenDir = TestScratch.directory("ud-slow-upload")
         server = ServerSocket(0)
     }
 
