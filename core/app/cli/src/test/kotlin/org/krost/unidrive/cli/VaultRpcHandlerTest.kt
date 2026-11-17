@@ -117,7 +117,7 @@ class VaultRpcHandlerTest {
     }
 
     @Test
-    fun `locking a waiting or locked daemon is a no-op that answers ok`() {
+    fun `locking a waiting or locked daemon is a no-op that answers ok`() = runBlocking {
         val gate = lockedGate()
         val dropped = AtomicBoolean(false)
         val handler = handler(gate, outcome = { VaultUnlockOutcome.Ok(emptyMap()) }, dropped = dropped)
@@ -128,7 +128,7 @@ class VaultRpcHandlerTest {
     }
 
     @Test
-    fun `locking an unlocked daemon drops the data and pauses`() {
+    fun `locking an unlocked daemon drops the data and pauses`() = runBlocking {
         val gate = VaultGate.unlocked()
         val dropped = AtomicBoolean(false)
         val locked = AtomicInteger(0)

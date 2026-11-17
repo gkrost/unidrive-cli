@@ -1,6 +1,8 @@
 package org.krost.unidrive.cli
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import org.krost.unidrive.io.ndjsonString
@@ -29,6 +31,11 @@ internal class PreProviderIpc(
     var historyRpc: HistoryRpcHandler?,
     /** True when a locked start already bound the socket (the tail must not bind again). */
     val socketBoundEarly: Boolean,
+    /**
+     * True when the daemon was shut down while still locked (issue#796 review): the lifecycle must
+     * not run its provider tail — it goes straight to cleanup, which the outer finally runs.
+     */
+    val shutDownWhileLocked: Boolean,
 )
 
 private val preProviderLog = LoggerFactory.getLogger(DaemonRuntime::class.java)
@@ -52,6 +59,8 @@ internal class PreProviderHooks(
     val startedAtMs: () -> Long,
     val setStartedAtMs: (Long) -> Unit,
     val close: () -> Unit,
+    /** Suspends until the daemon's shutdown was requested (`daemon.shutdown` or a stop). */
+    val awaitShutdown: suspend () -> Unit,
 )
 
 internal suspend fun servePreProviderIpc(
@@ -111,17 +120,31 @@ internal suspend fun servePreProviderIpc(
     }
 
     var socketBoundEarly = false
+    var shutDownWhileLocked = false
     val gate = vault?.gate
     if (gate != null && gate.locked) {
         // issue#796 (decision D6): a locked start serves the locked status and waits for
         // vault.unlock; the provider tail runs when the verb answers. The reason is the one line
-        // in the start log a front-end reads.
+        // in the start log a front-end reads. The wait also ends on the daemon's shutdown — a
+        // still-locked daemon must honor daemon.shutdown (issue#796 review): it holds the profile
+        // lock, the state database and the socket, and none of those may outlive the ack.
         server.start(serveScope)
         socketBoundEarly = true
         hooks.setStartedAtMs(System.currentTimeMillis())
         System.err.println("daemon locked, waiting for vault.unlock: ${gate.startReason}")
         preProviderLog.info("daemon: started locked ({}); profiles that read vaulted fields wait for vault.unlock", gate.startReason)
-        gate.awaitUnlock()
+        val unlockArrived = CompletableDeferred<Unit>()
+        val shutdownArrived = CompletableDeferred<Unit>()
+        serveScope.launch { gate.awaitUnlock(); unlockArrived.complete(Unit) }
+        serveScope.launch { hooks.awaitShutdown(); shutdownArrived.complete(Unit) }
+        shutDownWhileLocked =
+            kotlinx.coroutines.selects.select {
+                unlockArrived.onAwait { false }
+                shutdownArrived.onAwait { true }
+            }
+        if (shutDownWhileLocked) preProviderLog.info("daemon: shutting down while locked")
     }
-    return PreProviderIpc(server, serveJob, serveScope, vaultRpc, hydrationLink, transferHistory, historyRpc, socketBoundEarly)
+    return PreProviderIpc(
+        server, serveJob, serveScope, vaultRpc, hydrationLink, transferHistory, historyRpc, socketBoundEarly, shutDownWhileLocked,
+    )
 }

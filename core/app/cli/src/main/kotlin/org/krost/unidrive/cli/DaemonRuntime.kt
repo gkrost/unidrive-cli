@@ -156,11 +156,7 @@ class DaemonRuntime(
 ) {
     private val log = LoggerFactory.getLogger(DaemonRuntime::class.java)
 
-    /**
-     * issue#796: the daemon.status renderer. Registered once as a delegating handler (a verb is
-     * registered exactly one time), it answers the locked shape while null and the full shape once
-     * the tail has built everything it reports.
-     */
+    /** issue#796: the delegating daemon.status renderer — the locked shape while null, the full tail shape after. */
     @Volatile
     private var statusHandler: (suspend () -> String)? = null
 
@@ -294,14 +290,20 @@ class DaemonRuntime(
             val pre =
                 servePreProviderIpc(
                     ipcTokenDir, profileName, socketPath, profileMode, vault,
-                    PreProviderHooks({ ipcServer = it }, { statusHandler }, { startedAtMs }, { startedAtMs = it }, { close() }),
+                    PreProviderHooks({ ipcServer = it }, { statusHandler }, { startedAtMs }, { startedAtMs = it }, { close() }, { closeSignal.await() }),
                 )
+            if (pre.shutDownWhileLocked) {
+                // A locked daemon honored daemon.shutdown (issue#796 review): the tail's closeSignal
+                // await is unreachable before an unlock, so the lifecycle ends here — the outer
+                // finally releases db and lock, servePreProviderIpc closed the pre-provider IPC.
+                log.info("daemon: locked start ended by shutdown; cleaning up")
+                return
+            }
             val server = pre.server
             val serveScope = pre.serveScope
             val hydrationLink = pre.hydrationLink
             var transferHistory = pre.transferHistory
             var historyRpc = pre.historyRpc
-
 
             // 4. Authenticate. NO socket is bound until this succeeds.
             // The trash namespace is read-only: this wrapper is the last line of that rule, whichever part of the

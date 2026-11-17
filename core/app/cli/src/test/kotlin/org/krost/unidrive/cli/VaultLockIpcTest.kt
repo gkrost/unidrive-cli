@@ -38,6 +38,25 @@ class VaultLockIpcTest {
     private val passphrase = "the-right-passphrase"
     private val wrongPassphrase = "the-wrong-passphrase"
 
+    @Test
+    fun `a locked daemon honors shutdown before its first unlock`() = runBlocking {
+        val tempDir = TestScratch.directory("vault-stop-review")
+        val socket = tempDir.resolve("daemon.sock")
+        val runtime = runtimeAt(tempDir, socket)
+        val daemonJob = launch { runtime.start() }
+        try {
+            awaitDaemonSocket(socket)
+            val reply = ask(IpcEndpoint(socket, tempDir, "locked_profile"), IpcAuth.Scope.FULL, """{"verb":"daemon.shutdown"}""")
+            assertEquals("true", (reply.getValue("ok") as JsonPrimitive).content)
+            val stopped = kotlinx.coroutines.withTimeoutOrNull(1500) { daemonJob.join(); true } ?: false
+            assertTrue(stopped, "a locked daemon acknowledged shutdown but is still waiting for its first unlock")
+        } finally {
+            runtime.close()
+            daemonJob.cancel()
+            daemonJob.join()
+        }
+    }
+
     private fun runtimeAt(
         tempDir: Path,
         socketPath: Path,

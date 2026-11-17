@@ -1,6 +1,8 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
@@ -21,7 +23,10 @@ import kotlinx.serialization.json.JsonPrimitive
  *
  * The verbs are registered on every daemon (the bind-last guarantee: a verb the class table names
  * always has a handler); a daemon without `vault.enc` answers both `vault_absent`, and its
- * capabilities do not advertise `vault-unlock:v1`. The passphrase never reaches the log: the
+ * capabilities do not advertise `vault-unlock:v1`. The whole transition of each verb — the phase
+ * prerequisite, the vault read, the data drop, the pause/resume of the dependents — is one step
+ * under a shared mutex, so a lock and an unlock cannot interleave their side effects and no stale
+ * write survives the other verb (issue#796 review). The passphrase never reaches the log: the
  * request line is logged as its shape only (`IpcServer.requestShape`), and this handler does not
  * put the param into any message.
  */
@@ -43,6 +48,11 @@ internal class VaultRpcHandler(
 
     private val gate: VaultGate? get() = vault?.gate
 
+    // Serializes the two verbs' transitions against each other: phase prerequisite, vault read and
+    // cache install, phase flip, data drop, dependent pause/resume are one step (issue#796 review).
+    // The wrong-passphrase delay is deliberately spent outside it.
+    private val transition = Mutex()
+
     suspend fun unlockVerb(jsonRequest: String): String {
         val body = jsonRequest.asJsonObjectOrNull()
         val element = body?.get("passphrase") ?: return MISSING_PASSPHRASE
@@ -50,37 +60,51 @@ internal class VaultRpcHandler(
             (element as? JsonPrimitive)?.takeIf { it.isString }?.content?.toCharArray()
                 ?: return INVALID_PASSPHRASE
         try {
-            return unlockWithGate(passphrase)
+            val gate = this.gate ?: return VAULT_ABSENT
+            val reply = unlockWithGate(gate, passphrase)
+            if (reply == BAD_PASSPHRASE) delayFn(failureDelayMs)
+            return reply
         } finally {
             passphrase.fill('\u0000')
         }
     }
 
-    /** The gate phases of one unlock; [passphrase] is scrubbed by the caller. */
-    private suspend fun unlockWithGate(passphrase: CharArray): String {
-        val gate = this.gate ?: return VAULT_ABSENT
-        if (!gate.locked) return ALREADY_UNLOCKED
-        return when (requireNotNull(vault).unlockAttempt(passphrase)) {
-            is VaultUnlockOutcome.Ok -> {
-                val previous = gate.markUnlocked()
-                if (previous == VaultGate.Phase.LOCKED_RUNNING) onResumed?.invoke()
-                OK
+    /**
+     * The whole unlock transition under the shared mutex: the phase prerequisite is re-checked
+     * inside it, the vault read installs the data, the phase flips — a lock that started before
+     * this unlock waits, and one that starts after sees the daemon unlocked (issue#796 review).
+     * [passphrase] is scrubbed by the caller.
+     */
+    private suspend fun unlockWithGate(
+        gate: VaultGate,
+        passphrase: CharArray,
+    ): String =
+        transition.withLock {
+            when {
+                !gate.locked -> ALREADY_UNLOCKED
+                else ->
+                    when (requireNotNull(vault).unlockAttempt(passphrase)) {
+                        is VaultUnlockOutcome.Ok -> {
+                            val previous = gate.markUnlocked()
+                            if (previous == VaultGate.Phase.LOCKED_RUNNING) onResumed?.invoke()
+                            OK
+                        }
+                        VaultUnlockOutcome.BadPassphrase -> BAD_PASSPHRASE
+                        is VaultUnlockOutcome.Failed -> UNLOCK_FAILED
+                    }
             }
-            VaultUnlockOutcome.BadPassphrase -> {
-                delayFn(failureDelayMs)
-                BAD_PASSPHRASE
-            }
-            is VaultUnlockOutcome.Failed -> UNLOCK_FAILED
         }
-    }
 
-    fun lockVerb(): String {
+    /** The whole lock transition under the same mutex: phase flip, data drop, dependent pause. */
+    suspend fun lockVerb(): String {
         val gate = this.gate ?: return VAULT_ABSENT
-        if (gate.markLocked()) {
-            requireNotNull(vault).dropData()
-            onLocked?.invoke()
+        return transition.withLock {
+            if (gate.markLocked()) {
+                requireNotNull(vault).dropData()
+                onLocked?.invoke()
+            }
+            OK
         }
-        return OK
     }
 
     companion object {

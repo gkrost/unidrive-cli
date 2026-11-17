@@ -135,22 +135,28 @@ internal fun Main.daemonVault(start: DaemonVaultStart): DaemonVault? {
 }
 
 /**
- * Whether [profile]'s provider type has required secret fields that neither config.toml nor the
+ * Whether [profile]'s provider type has required vault fields that neither config.toml nor the
  * environment provides — the fields only the vault can supply once it is unlocked (issue#796).
  * The daemon of a profile that needs nothing from the vault runs normally while locked.
+ *
+ * The vault's field set is [Vault.SENSITIVE_FIELDS], not the prompt's presentation: an unmasked
+ * required prompt (S3's `access_key_id`) is still a field the vault stores and can supply
+ * (issue#796 review). The environment mappings are read in their declared direction — env var →
+ * config field — so a credential the provider takes from the environment counts as available.
  */
 internal fun Main.profileNeedsVaultedFields(profile: ProfileInfo): Boolean {
     val factory = ProviderRegistry.get(profile.type) ?: return false
-    val secrets = factory.credentialPrompts().filter { it.required && it.isMasked }
-    if (secrets.isEmpty()) return false
+    val vaultFields = factory.credentialPrompts().filter { it.required && it.key in Vault.SENSITIVE_FIELDS }
+    if (vaultFields.isEmpty()) return false
     val rp =
         runCatching {
             ConfigSecrets.decode(profile.rawProvider, profile.name, baseConfigDir.resolve("config.toml"))
         }.getOrNull()
-    return secrets.any { prompt ->
+    return vaultFields.any { prompt ->
         val inConfig = rawProviderSecret(rp, prompt.key)?.takeIf { it.isNotBlank() } != null
-        val envVar = factory.envVarMappings()[prompt.key]
-        val inEnv = envVar != null && !System.getenv(envVar).isNullOrBlank()
+        val inEnv = factory.envVarMappings().any { (envVar, field) ->
+            field == prompt.key && !LifecycleHooks.env(envVar).isNullOrBlank()
+        }
         !inConfig && !inEnv
     }
 }

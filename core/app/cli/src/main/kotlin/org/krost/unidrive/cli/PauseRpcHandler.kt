@@ -89,11 +89,14 @@ class PauseRpcHandler(
     /**
      * The programmatic pause behind `vault.lock` (issue#796): the same gate, in-flight rule and
      * event as `daemon.pause`, with the fixed reason [VAULT_LOCKED_REASON] (`auto`, untimed). A
-     * no-op when the daemon is already paused with exactly that state (no event, no change).
+     * no-op when the daemon is already paused with exactly that state (no event, no change). The
+     * timer of a pause this replaces is cancelled with the transition — a timed pause's deadline
+     * must not resume the untimed vault lock (issue#796 review).
      */
     fun pauseForVaultLock() {
         synchronized(gate) {
             val change = gate.pause(VAULT_LOCKED_REASON, auto = true, untilMs = null)
+            cancelTimer()
             if (change == PauseGate.Change.UNCHANGED) return
             gate.abortSlowTransfers()
             val state = checkNotNull(gate.current) { "paused just now" }
