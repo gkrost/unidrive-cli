@@ -10,3 +10,9 @@ import java.nio.file.attribute.BasicFileAttributes
  * fresh copy written in the millisecond of the vetted one, with the same size, shares that pair while being another file.
  */
 internal fun fileKeyOf(path: Path): Any? = runCatching { Files.readAttributes(path, BasicFileAttributes::class.java).fileKey() }.getOrNull()
+
+/** What a dehydrate saw of the cache copy when it vetted it: its (mtime, size) [stat] (null: no copy) and its file [key]. */
+internal data class CacheCopyIdentity(
+    val stat: Pair<Long, Long>?,
+    val key: Any?,
+)
