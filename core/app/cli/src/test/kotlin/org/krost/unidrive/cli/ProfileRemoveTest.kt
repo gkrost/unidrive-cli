@@ -487,6 +487,107 @@ class ProfileRemoveTest {
         assertNoSecret()
     }
 
+    // ── the protected root is the one the engine resolves (#749 finding 11) ──
+
+    /** A config where `gone` takes its local root from [goneSyncRoot] (a raw TOML value, or none) and [generalSyncRoot]. */
+    private fun writeRootConfig(
+        goneSyncRoot: String?,
+        generalSyncRoot: String? = null,
+    ) {
+        Files.writeString(
+            configFile,
+            buildString {
+                append("[general]\ndefault_profile = \"keep\"\n")
+                if (generalSyncRoot != null) append("sync_root = \"$generalSyncRoot\"\n")
+                append("\n[providers.gone]\ntype = \"localfs\"\nmode = \"mirror\"\n")
+                if (goneSyncRoot != null) append("sync_root = \"$goneSyncRoot\"\n")
+                append("root_path = \"${toml(dir.resolve("remote-gone"))}\"\n")
+                append("\n[providers.keep]\ntype = \"localfs\"\nmode = \"mirror\"\n")
+                append("sync_root = \"${toml(dir.resolve("roots").resolve("keep"))}\"\n")
+                append("root_path = \"${toml(dir.resolve("remote-keep"))}\"\n")
+            },
+        )
+    }
+
+    @Test
+    fun `a sync root inherited from general that lies inside the profile folder survives`() {
+        val inherited = goneDir.resolve("data")
+        writeRootConfig(goneSyncRoot = null, generalSyncRoot = toml(inherited))
+        writeState()
+        Files.createDirectories(inherited)
+        Files.writeString(inherited.resolve("my-document.txt"), "precious")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertTrue(Files.exists(inherited.resolve("my-document.txt")), "the inherited sync root is never deleted")
+        assertFalse(Files.exists(goneDir.resolve("state.db")))
+        assertEquals(toml(inherited), json().getValue("kept").jsonObject.getValue("sync_root").jsonPrimitive.content.replace('\\', '/'))
+    }
+
+    @Test
+    fun `a tilde sync root is protected and reported at the home folder path the engine uses`() {
+        // Nothing under the home folder is created or touched: only the reported (and protected) path is checked.
+        val leaf = "unidrive-test-never-created-${System.nanoTime()}"
+        writeRootConfig(goneSyncRoot = "~/$leaf")
+        writeState()
+        val home = System.getenv("HOME") ?: System.getProperty("user.home")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertEquals(
+            Path.of(home, leaf).toAbsolutePath().normalize().toString(),
+            json().getValue("kept").jsonObject.getValue("sync_root").jsonPrimitive.content,
+        )
+        assertFalse(Files.exists(Path.of(home, leaf)))
+    }
+
+    @Test
+    fun `a profile of an unknown type still protects the root it inherits from general`() {
+        val inherited = goneDir.resolve("data")
+        writeRootConfig(goneSyncRoot = null, generalSyncRoot = toml(inherited))
+        Files.writeString(configFile, Files.readString(configFile).replaceFirst("type = \"localfs\"", "type = \"no-such-type\""))
+        writeState()
+        Files.createDirectories(inherited)
+        Files.writeString(inherited.resolve("my-document.txt"), "precious")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertTrue(Files.exists(inherited.resolve("my-document.txt")), "the root of an unknown-type profile is never deleted")
+        assertFalse(Files.exists(goneDir.resolve("state.db")))
+    }
+
+    @Test
+    fun `a sync root spelled through a link and a trailing separator still protects the folder it names`() {
+        val alias = dir.resolve("alias")
+        Files.createDirectories(goneDir)
+        val made = runCatching { Files.createSymbolicLink(alias, goneDir) }
+        assumeTrue("symbolic links are not available here", made.isSuccess)
+        val data = goneDir.resolve("data")
+        writeRootConfig(goneSyncRoot = toml(alias.resolve("data")) + "/")
+        writeState()
+        Files.createDirectories(data)
+        Files.writeString(data.resolve("my-document.txt"), "precious")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertTrue(Files.exists(data.resolve("my-document.txt")), "the root reached through a link is never deleted")
+        assertFalse(Files.exists(goneDir.resolve("state.db")))
+    }
+
+    @Test
+    fun `on windows a sync root spelled in other letter case still protects the folder`() {
+        assumeTrue("letter case only folds on Windows", System.getProperty("os.name").startsWith("Windows"))
+        val data = goneDir.resolve("data")
+        writeRootConfig(goneSyncRoot = toml(data).uppercase())
+        writeState()
+        Files.createDirectories(data)
+        Files.writeString(data.resolve("my-document.txt"), "precious")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertTrue(Files.exists(data.resolve("my-document.txt")), "the root in other letter case is never deleted")
+    }
+
     // ── links and junctions are leaves ──────────────────────────────────────
 
     /** A folder outside the profile with a file in it, which no removal may touch. */

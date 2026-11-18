@@ -140,6 +140,27 @@ internal object ProfileRemover {
         }
     }
 
+    /**
+     * The local root of [name] as the engine resolves it (#749 finding 11): a `~` is expanded against the home folder, a profile
+     * without `sync_root` inherits `[general] sync_root`, and the path is absolute and normalised. A profile of an unknown type,
+     * which [SyncConfig.resolveProfile] refuses, gets the same resolution here: its root must be protected all the same.
+     */
+    internal fun localRootOf(
+        name: String,
+        raw: org.krost.unidrive.sync.RawSyncConfig,
+        provider: org.krost.unidrive.sync.RawProvider,
+    ): Path =
+        try {
+            SyncConfig.resolveProfile(name, raw).syncRoot
+        } catch (_: IllegalArgumentException) {
+            val home = System.getenv("HOME") ?: System.getProperty("user.home")
+            (provider.sync_root ?: raw.general.sync_root)
+                ?.let { if (it.startsWith("~")) Path.of(home, it.substring(1)) else Path.of(it) }
+                ?.toAbsolutePath()
+                ?.normalize()
+                ?: SyncConfig.defaultSyncRoot(provider.type ?: name)
+        }
+
     /** Asks the daemon to stop over IPC and waits a bounded time for the profile to be free; never kills it. */
     private fun stopDaemon(
         profileDir: Path,
@@ -241,8 +262,7 @@ internal object ProfileRemover {
             ConfigFileTransaction.withLock(configPath) {
                 val (content, latestRaw) = readConfig(configDir)
                 val latestProvider = lookup(latestRaw, name)
-                val type = latestProvider.type ?: name
-                syncRoot = latestProvider.sync_root ?: SyncConfig.defaultSyncRoot(type).toString()
+                syncRoot = localRootOf(name, latestRaw, latestProvider).toString()
                 wasDefault = latestRaw.general.default_profile == name
                 removedMode = latestProvider.mode
                 try {
