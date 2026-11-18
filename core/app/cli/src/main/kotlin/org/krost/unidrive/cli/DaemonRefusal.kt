@@ -27,7 +27,8 @@ internal fun notEmptyRefusal(
                     "Let the upload finish, or delete that file on its own first.",
             )
         "remote_unobserved" ->
-            LifecycleError(reason, "the cloud lists items in '$path'$named the engine has not seen yet; $nothing; try again shortly")
+            // The named child can be a row the engine has (it uploaded it): what is missing is a fresh full listing of the folder.
+            LifecycleError(reason, "the engine has not yet confirmed the current cloud listing of '$path'$named; $nothing; try again shortly")
         "remote_changed" ->
             LifecycleError(reason, "an item in '$path'$named changed in the cloud since the engine last saw it; $nothing; try again shortly")
         "remote_listing_repeats" ->

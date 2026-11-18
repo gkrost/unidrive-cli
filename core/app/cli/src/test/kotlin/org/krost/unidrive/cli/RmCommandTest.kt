@@ -365,10 +365,12 @@ class RmCommandTest {
     }
 
     @Test
-    fun `a refusal for a child the engine has not seen yet is remote_unobserved, not unsynced_below`() {
+    fun `a refusal before the engine confirmed the folder's listing is remote_unobserved, not unsynced_below`() {
+        // Live: the named child was a row the engine had itself uploaded; what it lacked was a fresh full listing.
         val r = refusedRecursiveRm("""{"ok":false,"error":"not_empty","reason":"remote_unobserved","child":"/dir/late.txt"}""")
         assertEquals("remote_unobserved", r.str("error"))
-        assertTrue("not seen yet" in r.message(), r.message())
+        assertTrue("has not yet confirmed the current cloud listing of '/dir' (/dir/late.txt)" in r.message(), r.message())
+        assertFalse("not seen" in r.message(), "the child may be one the engine knows: ${r.message()}")
         assertTrue("try again shortly" in r.message(), r.message())
         assertFalse("has not received" in r.message(), "a listing lag is not unsynced local changes: ${r.message()}")
     }

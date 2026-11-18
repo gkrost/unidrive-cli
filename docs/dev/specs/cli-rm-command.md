@@ -50,8 +50,8 @@ refusals). Tokens: `root_refused`, `mirror_profile`, `mode_missing`, `profile_in
 `daemon_not_running`, `not_found`, `path_is_folder`, `path_is_file`, `folder_not_empty`, `confirmation_required`,
 `cancelled`, `busy` (an upload in flight), `unsynced_below` (a recursive delete over a file whose bytes the cloud has
 not received, archive#1035), `remote_unobserved` / `remote_changed` / `remote_listing_repeats` / `provider_not_empty`
-(the daemon's not_empty reasons when the cloud listing has items the engine has not seen or that moved, or the
-provider still lists children: retry shortly, gkrost/unidrive-cli#717; a reason this CLI does not know is passed on
+(the daemon's not_empty reasons when the engine has not yet confirmed the folder's current cloud listing, a listed
+item moved since, the listing repeats an item, or the provider still lists children: retry shortly, gkrost/unidrive-cli#717; a reason this CLI does not know is passed on
 verbatim as the token), `read_only`, `outside_scope`, `auth_required`, `delete_failed`, plus the profile-resolution
 tokens shared with `logout` (`config_not_found`, `profile_not_found`, ...).
 

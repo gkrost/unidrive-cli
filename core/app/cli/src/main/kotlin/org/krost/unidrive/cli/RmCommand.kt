@@ -33,8 +33,8 @@ import java.util.concurrent.Callable
  * engine's back would be re-uploaded from the sync root by the next sync. With the profile's daemon running the
  * delete goes through the daemon (`hydration.unlink` / `hydration.rmdir` over a full-scope IPC connection), so its
  * state.db and the mount view drop the item at once and the daemon's own guards apply (an upload in flight is
- * `busy`; a recursive delete over a file whose bytes the cloud has not seen is `unsynced_below`; a listing the engine
- * has not caught up with is `remote_unobserved` and its siblings, see [notEmptyRefusal]). A daemon that holds
+ * `busy`; a recursive delete over a file whose bytes the cloud has not seen is `unsynced_below`; a folder whose current
+ * cloud listing the engine has not yet confirmed is `remote_unobserved` and its siblings, see [notEmptyRefusal]). A daemon that holds
  * the profile but does not answer is refused (`daemon_not_answering`); nothing is deleted behind its back. Without a
  * daemon the provider is called directly, but only while the profile has no state.db yet: once the mount has state,
  * a delete that bypasses the daemon would leave its rows and cache copies stale (`daemon_not_running`).
