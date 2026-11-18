@@ -118,4 +118,20 @@ class FolderMoveApplyTest {
             assertEquals(emptyList(), provider.uploadedPaths, "a carried child is not uploaded: $events")
             assertTrue("/b/docs/keep.txt" in provider.files.keys && "/b/docs/sub/deep.txt" in provider.files.keys, "${provider.files.keys}")
         }
+
+    @Test
+    fun `unhydrated_file_moved_with_its_folder_is_neither_downloaded_nor_uploaded`() =
+        runTest {
+            // The UD-740 shape: the file's bytes never arrived, so its row is not hydrated when the folder moves.
+            provider.deltaItems = listOf(item("/a", isFolder = true), item("/a/docs", isFolder = true), item("/a/docs/file.txt", 42))
+            engine().syncOnce()
+
+            moveDocsToB()
+            provider.deltaItems = emptyList()
+            events.clear()
+            engine().syncOnce()
+
+            assertTrue(events.any { it.startsWith("move ") }, "the folder moves: $events")
+            assertEquals(emptyList(), events.filter { it.startsWith("down ") || it.startsWith("up ") }, "the move carries the file: $events")
+        }
 }

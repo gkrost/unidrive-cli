@@ -1438,6 +1438,7 @@ class Reconciler(
     //    the move puts the cloud copy (moves apply before deletes);
     //  - the uploads and folder creates of carried names under the new folder go; a genuinely new file keeps its upload,
     //    and a conflict or anything else there stays planned (#743 finding 10);
+    //  - a download of a carried name at its old path goes: the move takes the row, and the file, along (UD-740 shape).
     private fun settleChildrenOfFolderMove(
         actions: MutableList<SyncAction>,
         oldPrefix: String,
@@ -1460,6 +1461,8 @@ class Reconciler(
                 }
                 (action is SyncAction.Upload || action is SyncAction.CreateRemoteFolder) &&
                     action.path.startsWith(newPrefix) && action.path.removePrefix(newPrefix) in movedNames -> iterator.remove()
+                action is SyncAction.DownloadContent &&
+                    action.path.startsWith(oldPrefix) && action.path.removePrefix(oldPrefix) in movedNames -> iterator.remove()
             }
         }
     }
