@@ -1461,7 +1461,15 @@ class Reconciler(
             //     stale row corresponds to the user's actual intent)
             //   - otherwise → pick the highest-scoring candidate, ties
             //     broken by iteration order
-            data class Candidate(val del: SyncAction.DeleteRemote, val score: Int)
+            // #743 finding 10: a candidate also needs evidence that the new folder is the old one: at least one child
+            // name the old folder held (a row under it) that the new folder uploads or creates, and the old folder gone
+            // from disk. A same-named folder alone is two independent operations, not a move.
+            data class Candidate(val del: SyncAction.DeleteRemote, val score: Int, val movedNames: Set<String>)
+            val newPrefix = create.path + "/"
+            val newNames =
+                actions
+                    .filter { (it is SyncAction.Upload || it is SyncAction.CreateRemoteFolder) && it.path.startsWith(newPrefix) }
+                    .mapTo(HashSet()) { it.path.removePrefix(newPrefix) }
             val candidates = deletes
                 .asSequence()
                 .filter { it.path !in matchedFolderDeletes }
@@ -1469,7 +1477,10 @@ class Reconciler(
                 .mapNotNull { d ->
                     val e = entryByPath[d.path] ?: return@mapNotNull null
                     if (!e.isFolder || e.remoteId == null) return@mapNotNull null
-                    Candidate(d, commonPrefixSegments(parentSegments(d.path), createParentSegs))
+                    val oldPrefix = d.path + "/"
+                    val shared = newNames.filterTo(HashSet()) { (oldPrefix + it) in entryByPath }
+                    if (shared.isEmpty() || !isAbsentLocally(d.path)) return@mapNotNull null
+                    Candidate(d, commonPrefixSegments(parentSegments(d.path), createParentSegs), shared)
                 }
                 .toList()
             if (candidates.isEmpty()) continue
@@ -1502,18 +1513,13 @@ class Reconciler(
             actions.remove(create)
             // Remove child deletes under old prefix — API move handles them
             val oldPrefix = del.path + "/"
-            val newPrefix = create.path + "/"
-            val movedNames =
-                actions
-                    .filter { it is SyncAction.DeleteRemote && it.path.startsWith(oldPrefix) }
-                    .map { it.path.removePrefix(oldPrefix) }
-                    .toSet()
             actions.removeAll { it is SyncAction.DeleteRemote && it.path.startsWith(oldPrefix) }
-            // Only remove new-prefix actions that have a matching old-prefix counterpart (moved files)
-            // Keep uploads for files that are genuinely new (never existed under old folder)
+            // Only remove the new-prefix uploads and folder creates the move replaces (names it carries over). A
+            // genuinely new file keeps its upload; a conflict, download or anything else there stays planned.
             actions.removeAll { action ->
-                action.path.startsWith(newPrefix) &&
-                    action.path.removePrefix(newPrefix) in movedNames
+                (action is SyncAction.Upload || action is SyncAction.CreateRemoteFolder) &&
+                    action.path.startsWith(newPrefix) &&
+                    action.path.removePrefix(newPrefix) in best.movedNames
             }
             matchedFolderDeletes.add(del.path)
             matchedFolderCreates.add(create.path)
