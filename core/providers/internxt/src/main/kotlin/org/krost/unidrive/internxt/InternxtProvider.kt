@@ -1207,7 +1207,7 @@ class InternxtProvider(
         ifMatchETag: String?,
         remotePath: String,
     ) {
-        if (ifMatchETag != null && internxtVersionToken(current) != ifMatchETag) {
+        if (ifMatchETag != null && !sameWriteToken(internxtVersionToken(current), ifMatchETag)) {
             throw RemoteConflictException("Internxt item changed before replace: $remotePath")
         }
     }

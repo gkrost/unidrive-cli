@@ -89,3 +89,23 @@ internal suspend fun ensureStagingSpace(
         usableBytes = usable,
     )
 }
+
+/**
+ * Whether two write tokens ([InternxtProvider.internxtVersionToken], "uuid|modificationTime|size") name the same version of
+ * a file (live finding F1, 2026-11-18). The uuid and the size must be equal as written; the modification time is compared
+ * to the whole second when both sides read as an instant, because the server spells one instant with and without
+ * milliseconds depending on the answer. A time that does not read is compared as written.
+ */
+internal fun sameWriteToken(
+    a: String,
+    b: String,
+): Boolean {
+    val pa = a.split('|')
+    val pb = b.split('|')
+    if (pa.size != 3 || pb.size != 3) return a == b
+    if (pa[0] != pb[0] || pa[2] != pb[2]) return false
+    val ta = org.krost.unidrive.internxt.model.tryParseInternxtInstant(pa[1])
+    val tb = org.krost.unidrive.internxt.model.tryParseInternxtInstant(pb[1])
+    if (ta == null || tb == null) return pa[1] == pb[1]
+    return ta.epochSecond == tb.epochSecond
+}
