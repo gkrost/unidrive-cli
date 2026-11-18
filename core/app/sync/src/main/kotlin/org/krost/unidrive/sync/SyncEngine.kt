@@ -14,6 +14,8 @@ import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.stagingSiblingName
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.PermanentDownloadFailureException
+import org.krost.unidrive.InsufficientLocalSpaceException
+import org.krost.unidrive.InsufficientRemoteSpaceException
 import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
@@ -257,6 +259,11 @@ open class SyncEngine(
     // reports deleted, or whose path is now a folder, does not count as being in the cloud.
     @Volatile
     private var passRemoteChanges: Map<String, CloudItem> = emptyMap()
+
+    // Set by the first upload of a pass the provider refused because the account's storage is full: the uploads not yet
+    // started in this pass are deferred instead of being sent to the same refusal. Reset at the start of every pass.
+    @Volatile
+    private var uploadsHeldForRemoteSpace = false
 
     // Conflict copies this pass's deletes moved aside. A folder delete runs after its children, and the
     // child's row is already tombstoned, so the folder walk cannot see the copy. Cleared at each apply.
@@ -919,6 +926,7 @@ open class SyncEngine(
         // failure counter + auth-failure latch. On the non-streaming path
         // only Pass 2 increments them, so the move is behaviour-preserving.
         val transferFailures = AtomicInteger(0)
+        uploadsHeldForRemoteSpace = false
         val authFailure =
             java.util.concurrent.atomic
                 .AtomicReference<AuthenticationException?>(null)
@@ -2192,6 +2200,11 @@ open class SyncEngine(
                     upload != null -> "upload"
                     else -> actionLabel(action)
                 }
+        if (upload != null && uploadsHeldForRemoteSpace) {
+            log.info("Upload of {} deferred: the cloud storage is full; it is retried on the next pass", action.path)
+            settled()
+            return
+        }
         try {
             when (action) {
                 is SyncAction.DownloadContent -> applyDownload(action)
@@ -2215,6 +2228,12 @@ open class SyncEngine(
         } catch (e: CancellationException) {
             download?.let { restoreToPlaceholder(it.path, it.remoteItem) }
             throw e
+        } catch (e: InsufficientRemoteSpaceException) {
+            deferForSpace(action, e)
+            settled()
+        } catch (e: InsufficientLocalSpaceException) {
+            deferForSpace(action, e)
+            settled()
         } catch (e: PermanentDownloadFailureException) {
             if (download != null) handlePermanentDownloadFailure(download, e) else transferFailed(action, what, e)
             transferFailures.incrementAndGet()
@@ -2231,6 +2250,28 @@ open class SyncEngine(
             settled()
             failed()
         }
+    }
+
+    // A transfer the provider refused for space: deferred to the next pass, not counted or journalled as a failure.
+    // Not a failure of the item: the same transfer goes once space is freed. The first upload refused for remote space holds
+    // the uploads not yet started in this pass.
+    private fun deferForSpace(
+        action: SyncAction,
+        e: ProviderException,
+    ) {
+        if (action is SyncAction.DownloadContent) restoreToPlaceholder(action.path, action.remoteItem)
+        val reason =
+            when {
+                e is InsufficientLocalSpaceException ->
+                    "not enough local space (${e.requiredBytes} bytes needed, ${e.usableBytes} free)"
+                !uploadsHeldForRemoteSpace -> {
+                    uploadsHeldForRemoteSpace = true
+                    "no space left in the cloud storage; no further uploads start in this pass"
+                }
+                else -> "no space left in the cloud storage"
+            }
+        log.warn("Deferred {} to the next pass: {} ({})", action.path, reason, e.message)
+        reporter.onWarning("Deferred: ${action.path} - $reason; retried on the next pass")
     }
 
     // A transfer failure that is no auth failure, no cancel and no permanent refusal of the transfer's own kind.
