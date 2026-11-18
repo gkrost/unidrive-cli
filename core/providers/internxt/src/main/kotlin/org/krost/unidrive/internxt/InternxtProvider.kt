@@ -1298,6 +1298,13 @@ class InternxtProvider(
                 val item = uploadUnclassified(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress, sourceSha256)
                 sourceSha256.get()?.let { item.copy(sentSha256 = it) } ?: item
             } catch (e: InternxtApiException) {
+                if (isMaxSpaceUsed(e)) {
+                    throw org.krost.unidrive.InsufficientRemoteSpaceException(
+                        "Internxt refused the upload of $remotePath: the account's storage is full (${e.statusCode}: ${serverSentence(e.message) ?: e.message})",
+                        cause = e,
+                        requestId = e.requestId,
+                    )
+                }
                 if (e.statusCode == PLAN_LIMIT_STATUS) {
                     throw org.krost.unidrive.PlanLimitException(
                         "Internxt refused the upload of $remotePath (${e.statusCode}): ${e.message}",
@@ -5083,6 +5090,14 @@ class InternxtProvider(
 
         // gkrost/unidrive-cli#145: Payment Required, the plan's refusal of an upload.
         internal const val PLAN_LIMIT_STATUS = 402
+
+        // Live finding 2026-11-18: the bridge answers an upload start (single-part and multipart) with 420
+        // {"message":"Max space used"} when the account's storage is full. Only that sentence is mapped; another 420 keeps
+        // its own type.
+        internal const val MAX_SPACE_STATUS = 420
+
+        internal fun isMaxSpaceUsed(e: InternxtApiException): Boolean =
+            e.statusCode == MAX_SPACE_STATUS && e.message.orEmpty().contains("Max space used", ignoreCase = true)
 
         private val SERVER_MESSAGE = Regex("\"message\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
 

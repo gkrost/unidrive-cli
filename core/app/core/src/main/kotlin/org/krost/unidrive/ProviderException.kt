@@ -266,6 +266,18 @@ open class InsufficientLocalSpaceException(
     cause: Throwable? = null,
 ) : ProviderException(message, cause)
 
+/**
+ * The provider refuses an upload because the account's storage is full (Internxt: HTTP 420 "Max space used" on the
+ * upload start, answered even while the drive's usage still shows some space free). Nothing was stored. Not a
+ * [PermanentUploadFailureException]: the same upload goes once space is freed or the plan grows, so a caller defers the
+ * item instead of failing it for good, and does not retry it in a tight loop.
+ */
+open class InsufficientRemoteSpaceException(
+    message: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+) : ProviderException(message, cause, requestId)
+
 /** A remote item changed after the caller captured its write token. */
 open class RemoteConflictException(
     message: String,
