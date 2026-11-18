@@ -1618,7 +1618,7 @@ open class SyncEngine(
         val passOneFailures = AtomicInteger(0)
         // Pass 1 actions that were applied (mkdir, delete, move, ...), by label, for the sync summary;
         // transfers are reported through the downloaded/uploaded counts.
-        val appliedCounts = mutableMapOf<String, Int>()
+        val appliedCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
         // archive#419: paths this pass has already deleted on the remote, so the empty-directory
         // reaper below leaves them alone instead of re-probing a folder it just trashed.
         val remoteDeletedPaths = mutableSetOf<String>()
@@ -1631,10 +1631,13 @@ open class SyncEngine(
         // Wrap in Priority.Foreground so the provider's throttle coordinator
         // gates the corresponding Drive REST calls in the foreground lane and
         // any concurrent background scan traffic yields.
+        // #742 finding 5: the Pass 1 actions whose apply moves bytes (a conflict resolution, a placeholder that downloads)
+        // run in Pass 2 with the transfers, paced and under a transfer permit; a refresh (skipTransfers) moves none of them.
+        val bytesInPassTwo = actions.filterTo(HashSet()) { movesBytesInPassTwo(it) }
         val sequentialActions =
             topologicalApplyOrder(
                 actions.filter {
-                    it !is SyncAction.DownloadContent && it !is SyncAction.Upload
+                    it !is SyncAction.DownloadContent && it !is SyncAction.Upload && it !in bytesInPassTwo
                 },
             )
         db.beginBatch()
@@ -1854,7 +1857,7 @@ open class SyncEngine(
         // remain pending in the DB as remoteId=null / isHydrated=false rows. The
         // pending_cursor stays unpromoted so the next `apply` (or `sync`) finalises.
         if (skipTransfers) {
-            val pendingTransfers = actions.count { it is SyncAction.DownloadContent || it is SyncAction.Upload }
+            val pendingTransfers = actions.count { it is SyncAction.DownloadContent || it is SyncAction.Upload || it in bytesInPassTwo }
             log.info(
                 "Refresh mode: skipping Pass 2; {} pending transfer(s) deferred (downloads + uploads)",
                 pendingTransfers,
@@ -1877,7 +1880,7 @@ open class SyncEngine(
         // advance past the failed items and they'd never retry.
         val transferActions =
             actions.filter {
-                it is SyncAction.DownloadContent || it is SyncAction.Upload
+                it is SyncAction.DownloadContent || it is SyncAction.Upload || it in bytesInPassTwo
             }
         // transferFailures + authFailure are now declared at the top of
         // doSyncOnce so the streaming-gather executor (gatherStreamingChanges)
@@ -1896,7 +1899,7 @@ open class SyncEngine(
                     // file-locked-by-prior-write race.
                     if (action.path in executedPaths) continue
                     when (action) {
-                        is SyncAction.DownloadContent, is SyncAction.Upload -> {
+                        is SyncAction.DownloadContent, is SyncAction.Upload, in bytesInPassTwo -> {
                             workers.launch {
                                 withContext(Priority.Foreground) {
                                     // Reserve the shared budget first: the wait for this transfer's line
@@ -1906,10 +1909,21 @@ open class SyncEngine(
                                             runTransfer(
                                                 action = action,
                                                 streaming = false,
-                                                succeeded = if (action is SyncAction.Upload) uploaded else downloaded,
+                                                succeeded =
+                                                    when (action) {
+                                                        is SyncAction.Upload -> uploaded
+                                                        is SyncAction.DownloadContent -> downloaded
+                                                        is SyncAction.Conflict -> conflicts
+                                                        is SyncAction.CreatePlaceholder -> if (action.shouldHydrate) downloaded else AtomicInteger()
+                                                        else -> downloaded
+                                                    },
                                                 transferFailures = transferFailures,
                                                 authFailure = authFailure,
                                                 stopPass = { this@coroutineScope.cancel() },
+                                                // A Pass 1 action run here is reported with the other Pass 1 actions, by label.
+                                                applied = {
+                                                    if (action in bytesInPassTwo) appliedCounts.merge(actionLabel(action), 1, Int::plus)
+                                                },
                                             )
                                         } finally {
                                             reporter.onActionProgress(
@@ -2126,14 +2140,29 @@ open class SyncEngine(
         authFailure: java.util.concurrent.atomic.AtomicReference<AuthenticationException?>,
         stopPass: () -> Unit,
         settled: () -> Unit = {},
+        applied: () -> Unit = {},
     ) {
         val download = action as? SyncAction.DownloadContent
         val upload = action as? SyncAction.Upload
-        require(download != null || upload != null) { "not a transfer: ${action::class.simpleName}" }
-        val what = (if (streaming) "streaming " else "") + (if (download != null) "download" else "upload")
+        require(download != null || upload != null || movesBytesInPassTwo(action)) { "not a transfer: ${action::class.simpleName}" }
+        val what =
+            (if (streaming) "streaming " else "") +
+                when {
+                    download != null -> "download"
+                    upload != null -> "upload"
+                    else -> actionLabel(action)
+                }
         try {
-            if (download != null) applyDownload(download) else applyUpload(upload!!)
+            when (action) {
+                is SyncAction.DownloadContent -> applyDownload(action)
+                is SyncAction.Upload -> applyUpload(action)
+                is SyncAction.Conflict -> applyConflict(action)
+                is SyncAction.CreatePlaceholder -> applyCreatePlaceholder(action)
+                is SyncAction.UpdatePlaceholder -> applyUpdatePlaceholder(action)
+                else -> error("not a transfer: ${action::class.simpleName}")
+            }
             succeeded.incrementAndGet()
+            applied()
             settled()
         } catch (e: AuthenticationException) {
             // UD-253: include exception class + full stack.
@@ -4897,6 +4926,15 @@ open class SyncEngine(
     private fun transferBytes(action: SyncAction): Long =
         when (action) {
             is SyncAction.DownloadContent -> action.remoteItem.size
+            // #742 finding 5: a placeholder that downloads, and a conflict, which downloads the cloud's version or uploads
+            // the local one (keep-both does both; what moves beyond the reservation is charged as it moves).
+            is SyncAction.CreatePlaceholder -> action.remoteItem.size
+            is SyncAction.UpdatePlaceholder -> action.remoteItem.size
+            is SyncAction.Conflict ->
+                maxOf(
+                    action.remoteItem?.takeUnless { it.deleted || it.isFolder }?.size ?: 0L,
+                    transferBytes(SyncAction.Upload(action.path)),
+                )
             is SyncAction.Upload ->
                 runCatching {
                     placeholder.resolveLocal(action.path).let { p ->
@@ -4904,6 +4942,21 @@ open class SyncEngine(
                     }
                 }.getOrDefault(0L)
             else -> 0L
+        }
+
+    // #742 finding 5: a Pass 1 action whose apply moves bytes. A refused case collision (no remote item) moves none; a
+    // placeholder moves bytes when the local file is not already the remote's content (applyCreatePlaceholder's rule).
+    private fun movesBytesInPassTwo(action: SyncAction): Boolean =
+        when (action) {
+            is SyncAction.Conflict -> action.remoteItem != null
+            is SyncAction.CreatePlaceholder -> {
+                val item = action.remoteItem
+                val local = placeholder.resolveLocal(action.path)
+                !item.isFolder && item.size > 0 &&
+                    !(Files.isRegularFile(local) && Files.size(local) == item.size && !placeholder.isSparse(local, item.size))
+            }
+            is SyncAction.UpdatePlaceholder -> action.wasHydrated && !action.remoteItem.isFolder
+            else -> false
         }
 
     // UD-740: display path used in the user-facing progress line. For move
