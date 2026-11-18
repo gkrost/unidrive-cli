@@ -844,6 +844,7 @@ class HydrationImpl(
         // row's now), so that the replay at the next start sends it from that base and nothing downloads over it.
         // An edit begun by open_write_begin has been noted since then.
         if (entry.remoteId != null) stateDb.markEdited(path, baseEtag ?: writeToken.orEmpty())
+        val precondition = baseEtag ?: stateDb.getEntry(path)?.editBase?.ifEmpty { null } // live drive F1: never unconditional
 
         // Crash-recovery replay: the co-daemon's cache_scanner fires open_write with
         // handle_id = "recovery-<n>" for each cache file whose mtime exceeds the
@@ -858,7 +859,7 @@ class HydrationImpl(
         // from the co-daemon's paired close_handle call cleans it up normally.
         if (handleId.startsWith("recovery-")) {
             registerHandle(connectionId, handleId, path)
-            launchSerializedUpload(path, cachePath, handleId, baseEtag)
+            launchSerializedUpload(path, cachePath, handleId, precondition)
             return OpenResult.Ok(cachePath)
         }
 
@@ -872,7 +873,7 @@ class HydrationImpl(
         // On failure: stamp the row so `unidrive doctor` can surface the unsynced gap.
         registerHandle(connectionId, handleId, path)
         rememberClientHandle(path, handleId)
-        launchSerializedUpload(path, cachePath, handleId, baseEtag)
+        launchSerializedUpload(path, cachePath, handleId, precondition)
         return OpenResult.Ok(cachePath)
     }
 

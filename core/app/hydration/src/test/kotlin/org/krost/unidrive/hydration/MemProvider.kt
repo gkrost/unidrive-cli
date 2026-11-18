@@ -42,6 +42,10 @@ internal class MemProvider : CloudProvider {
     @Volatile var uploadFailure: Exception? = null
     val uploadAttempts = java.util.concurrent.atomic.AtomicInteger()
 
+    // The ifMatchETag of every upload, in order; with [enforceIfMatch] a replace whose token is not the item's hash is refused.
+    val uploadIfMatch = java.util.concurrent.CopyOnWriteArrayList<String?>()
+    @Volatile var enforceIfMatch = false
+
     // When set, delete() signals deleteReached and suspends on deleteRelease before deleting: holds a provider delete.
     @Volatile var deleteReached: CompletableDeferred<Unit>? = null
     @Volatile var deleteRelease: CompletableDeferred<Unit>? = null
@@ -145,6 +149,11 @@ internal class MemProvider : CloudProvider {
         uploadGate?.await()
         uploadAttempts.incrementAndGet()
         uploadFailure?.let { throw it }
+        uploadIfMatch += ifMatchETag
+        val stale = ifMatchETag != null && items[remotePath]?.hash != ifMatchETag
+        if (enforceIfMatch && existingRemoteId != null && stale) {
+            throw org.krost.unidrive.RemoteConflictException("precondition failed: $remotePath moved on")
+        }
         val parent = remotePath.substringBeforeLast('/')
         if (requireParents && parent.isNotEmpty() && items[parent]?.isFolder != true) {
             throw org.krost.unidrive.ParentGoneException("parent folder not found: $parent", parent)
