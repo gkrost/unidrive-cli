@@ -3,6 +3,8 @@ package org.krost.unidrive.hydration
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
@@ -66,6 +68,40 @@ class HydrationRmdirDuringDeleteTest {
             assertNotNull(env.db.getEntry("/dir/new.txt"), "the new file's row must stay alive")
             assertEquals("only copy", Files.readString(created.cachePath), "the new file's only copy must stay")
             assertNull(env.db.getEntry("/dir/old.txt"), "the vetted file goes with the tree")
+        }
+
+    // gkrost/unidrive-cli#746 finding 3 follow-up: the kept file's folder is gone in the cloud; its upload puts the folder back
+    // and lands, end to end.
+    @Test
+    fun `a file kept below the just-deleted folder uploads, the folder put back`() =
+        runTest(timeout = 5.minutes) {
+            val env = syncedTree()
+            env.provider.requireParents = true
+            val hydration = HydrationImpl(env.engine, env.db, recoveryUploadScope = this)
+            val events = mutableListOf<HydrationEvent>()
+            val collector = launch { hydration.events.collect { events.add(it) } }
+            val reached = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            env.provider.deleteReached = reached
+            env.provider.deleteRelease = release
+
+            val rmdir = async(Dispatchers.IO) { hydration.rmdir("/dir", recursive = true) }
+            reached.await()
+            val created = assertIs<CreateResult.Ok>(hydration.create("conn", "h1", "/dir/new.txt"))
+            Files.writeString(created.cachePath, "only copy")
+            release.complete(Unit)
+            assertIs<RmdirResult.Ok>(rmdir.await())
+            assertNull(env.provider.items["/dir"], "precondition: the folder is gone in the cloud")
+
+            hydration.openForWrite("conn", "h1", "/dir/new.txt", created.cachePath)
+            advanceUntilIdle()
+            collector.cancel()
+
+            val completed = events.filterIsInstance<HydrationEvent.Completed>().lastOrNull { it.path == "/dir/new.txt" }
+            assertEquals(true, completed?.ok, "the kept file uploads: $completed")
+            assertEquals("only copy", env.provider.remote["/dir/new.txt"]?.let { String(it) })
+            assertEquals(true, env.provider.items["/dir"]?.isFolder, "the folder is back in the cloud")
+            assertNotNull(env.db.getEntry("/dir/new.txt")?.remoteId, "the kept row is cloud-backed now")
         }
 
     @Test

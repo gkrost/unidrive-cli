@@ -1212,7 +1212,7 @@ class HydrationImpl(
         // the next attempt retries that move instead of uploading the bytes a second time.
         var strayed: UploadOutcome? = null
         // gkrost/unidrive-cli#134: a parent_gone refusal gets one look at the folder before it stands; see [MountEngine.recoverGoneParent].
-        val parentLook = OneLookAtTheParent(mount)
+        val parentLook = OneLookAtTheParent(mount, ::remakeFolderOfKeptRow)
         var attempt = 0
         while (attempt < maxUploadAttempts) {
             attempt++
@@ -3305,6 +3305,7 @@ class HydrationImpl(
 
         return runCatching {
             val kept = mount.deleteRemote(normalised, permanent, keepBelow)
+            if (kept.isNotEmpty()) deletedWithKeptRows += normalised
             evictCacheTree(normalised, kept)
             RmdirResult.Ok
         }.getOrElse { e ->
@@ -3399,6 +3400,18 @@ class HydrationImpl(
     // a no-op and a partial failure must not abort the op (the cloud delete
     // already succeeded). Deletes children before parents so the directory
     // empties before it is removed.
+    // gkrost/unidrive-cli#746 finding 3: the folders a recursive rmdir deleted while it kept rows below them (made or written during
+    // its provider delete). The upload of such a row finds its folder gone: only a folder in here (or below one) is made again.
+    private val deletedWithKeptRows: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    private suspend fun remakeFolderOfKeptRow(gone: String): Boolean {
+        val deleted = deletedWithKeptRows.firstOrNull { gone == it || gone.startsWith("$it/") } ?: return false
+        if (stateDb.getEntry(gone) != null) return false
+        val made = mkdirParents(gone).let { it == MkdirResult.Ok || it == MkdirResult.Existed }
+        if (made && gone == deleted) deletedWithKeptRows -= deleted
+        return made
+    }
+
     // gkrost/unidrive-cli#746 finding 3: the copies of [keep] (rows the delete left alive) stay.
     private fun evictCacheTree(path: String, keep: Set<String> = emptySet()) {
         val keepFiles = keep.mapNotNullTo(HashSet()) { runCatching { mount.resolveCachePath(it).toAbsolutePath().normalize() }.getOrNull() }
@@ -4238,21 +4251,4 @@ class HydrationImpl(
         handles.values.forEach { accountCacheFileOnDisk(it) }
     }
 
-}
-
-// gkrost/unidrive-cli#134: the one look at a missing folder that one submission gets ([MountEngine.recoverGoneParent]); a refusal
-// that comes again after it stands.
-private class OneLookAtTheParent(
-    private val mount: MountEngine,
-) {
-    private var looked = false
-
-    suspend fun putBack(
-        path: String,
-        goneFolder: String,
-    ): Boolean {
-        if (looked) return false
-        looked = true
-        return mount.recoverGoneParent(path, goneFolder)
-    }
 }

@@ -35,6 +35,9 @@ internal class MemProvider : CloudProvider {
     // When set, runs on the written staging file before download() returns (e.g. to pin its modification time).
     @Volatile var downloadWritten: ((Path) -> Unit)? = null
 
+    // When set, an upload into a folder the remote does not hold is refused as a gone parent, as a path-walking provider does.
+    @Volatile var requireParents = false
+
     // When set, delete() signals deleteReached and suspends on deleteRelease before deleting: holds a provider delete.
     @Volatile var deleteReached: CompletableDeferred<Unit>? = null
     @Volatile var deleteRelease: CompletableDeferred<Unit>? = null
@@ -136,6 +139,10 @@ internal class MemProvider : CloudProvider {
         onProgress: ((Long, Long) -> Unit)?,
     ): CloudItem {
         uploadGate?.await()
+        val parent = remotePath.substringBeforeLast('/')
+        if (requireParents && parent.isNotEmpty() && items[parent]?.isFolder != true) {
+            throw org.krost.unidrive.ParentGoneException("parent folder not found: $parent", parent)
+        }
         val bytes = Files.readAllBytes(localPath)
         remote[remotePath] = bytes
         version++
