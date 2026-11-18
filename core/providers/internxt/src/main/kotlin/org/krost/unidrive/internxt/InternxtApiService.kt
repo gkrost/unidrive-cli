@@ -1386,28 +1386,16 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         // 404 is treated as already-gone (idempotent delete) — short-circuits
         // before checkResponse so retryOnTransient never sees it as transient. The repeat of a
         // 500/502/504 whose origin committed answers that same 404, so the 5xx are retried too.
+        // The folder's own route, no body: drive-server-wip FolderController `@Delete('/:uuid')` (204), the route of the
+        // SDK's `deleteFolderByUuid`. `DELETE /folders` with an items body hit the collection route (`@Delete('/')`,
+        // orphan cleanup), which answers 400 without its `status` query: no permanent folder delete ever succeeded
+        // (live finding 2026-11-18).
         retryOnTransient(retryServerErrors = true) {
             withAuthRetry { creds ->
                 budgeted(driveBudget) {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            put(
-                                "items",
-                                kotlinx.serialization.json.buildJsonArray {
-                                    add(
-                                        kotlinx.serialization.json.buildJsonObject {
-                                            put("uuid", kotlinx.serialization.json.JsonPrimitive(uuid))
-                                            put("type", kotlinx.serialization.json.JsonPrimitive("folder"))
-                                        },
-                                    )
-                                },
-                            )
-                        }
                     val response =
-                        httpClient.delete("$baseUrl/folders") {
+                        httpClient.delete("$baseUrl/folders/$uuid") {
                             applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
                         }
                     if (response.status != HttpStatusCode.NotFound) checkResponse(response)
                 }
