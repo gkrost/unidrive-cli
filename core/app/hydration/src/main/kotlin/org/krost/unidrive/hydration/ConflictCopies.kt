@@ -41,7 +41,11 @@ internal class ConflictCopies(
         val handle = "conflict-${UUID.randomUUID()}"
         val created = hydration.create(CONNECTION, handle, copy) as? CreateResult.Ok ?: return null
         try {
-            Files.move(mount.resolveCachePath(path), created.cachePath, StandardCopyOption.REPLACE_EXISTING)
+            // Test drive 3: the move sits between the cloud lookup and the row write, so the row never lists the base's size
+            // without its bytes.
+            mount.rebaseToCloudAfterConflict(path) {
+                Files.move(mount.resolveCachePath(path), created.cachePath, StandardCopyOption.REPLACE_EXISTING)
+            }
         } catch (e: java.io.IOException) {
             log.warn("the edit of {} could not be kept as {}: {}", path, copy, e.message)
             hydration.closeHandle(CONNECTION, handle)
@@ -50,7 +54,6 @@ internal class ConflictCopies(
         }
         hydration.openForWrite(CONNECTION, handle, copy, created.cachePath)
         hydration.closeHandle(CONNECTION, handle)
-        mount.rebaseToCloudAfterConflict(path)
         forgetCacheFile(path)
         made.incrementAndGet()
         return copy

@@ -1801,17 +1801,17 @@ class MountEngine private constructor(
         return UploadOutcome(sent = true, size = size, oldHash = prevHash, newHash = copy.hash, keptBothAs = copyPath, copyAdopted = adopted)
     }
 
-    // Test drive 2: an edit lost to a newer cloud version went to a conflict copy; the row at [path] becomes the cloud item's.
-    suspend fun rebaseToCloudAfterConflict(path: String) = rebaseRowToCloud(path, remotePathOf(path), keepEdit = false)
+    // Test drive 2/3: a lost edit goes to a conflict copy ([moveAway], between the cloud lookup and the row write); [path] takes the cloud's.
+    suspend fun rebaseToCloudAfterConflict(path: String, moveAway: () -> Unit) = rebaseRowToCloud(path, remotePathOf(path), false, moveAway)
 
-    // The row at [path] becomes the cloud item's (current version, no cache copy); [keepEdit] keeps mid-upload bytes as an edit.
     private suspend fun rebaseRowToCloud(
         path: String,
         remotePath: String,
-        keepEdit: Boolean,
+        keepEdit: Boolean, // bytes written mid-upload stay as an edit
+        beforeWrite: () -> Unit = {},
     ) {
         db.getEntry(path)?.let { row ->
-            val current = currentCloudItemOrNull(remotePath)?.takeIf { !it.isFolder && it.id == row.remoteId }
+            val current = currentCloudItemOrNull(remotePath)?.takeIf { !it.isFolder && it.id == row.remoteId }.also { beforeWrite() }
             db.upsertEntry(
                 row.copy(
                     remoteHash = current?.hash ?: row.remoteHash,
