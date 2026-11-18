@@ -1865,6 +1865,13 @@ class InternxtProvider(
                     ceilDivLong(encryptedSize, mp.chunkSize).toInt() == mp.numParts &&
                     mp.parts.all { it.index in 0 until mp.numParts }
             val persisted = currentTomb.multipart
+            // A finished session resumes without re-finishing: the bucket entry id was pinned the moment the finish call
+            // answered. Checked before the plan and URL-age checks (#747): the part URLs are not needed any more, and a
+            // fresh session would re-put every part and finish a second bucket entry, leaving the first unreferenced.
+            val finishedEntryId = persisted?.bucketEntryId
+            if (currentTomb.stage == UploadTombstone.Stage.FINISH_DONE && finishedEntryId != null) {
+                return org.krost.unidrive.internxt.model.BucketEntry(id = finishedEntryId, index = indexHex, bucket = bucket)
+            }
             var session =
                 when {
                     persisted == null -> null
@@ -1886,12 +1893,6 @@ class InternxtProvider(
                     }
                     else -> persisted
                 } ?: startFreshSession()
-
-            // A finished session resumes without re-finishing: the bucket entry id
-            // was pinned the moment the finish call answered.
-            if (currentTomb.stage == UploadTombstone.Stage.FINISH_DONE && session.bucketEntryId != null) {
-                return org.krost.unidrive.internxt.model.BucketEntry(id = session.bucketEntryId, index = indexHex, bucket = bucket)
-            }
 
             // Parts upload in parallel up to the concurrency cap, each with its own
             // retry ladder (retryShardCommit) and its own watchdog window — the same
