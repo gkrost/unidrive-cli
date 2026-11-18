@@ -2215,7 +2215,9 @@ class MountEngine private constructor(
         if (row.isFolder || (!sameItem && row.remoteId?.startsWith("local:") == false)) return false
         val newRemote = remotePathOf(newPath, row)
         val moved =
-            if (sameItem || landed.remotePath == newRemote) {
+            if (sameItem) {
+                provider.currentIfSameBytes(landed.item, newRemote) // gkrost/unidrive-cli#746 finding 2: the move's newer token
+            } else if (landed.remotePath == newRemote) {
                 landed.item
             } else {
                 provider.moveById(landed.item.id, landed.remotePath, newRemote)
@@ -2528,15 +2530,6 @@ data class UploadOutcome(
     val landedWithoutRow: LandedWithoutRow? = null,
 )
 
-/**
- * archive#1217: an item an upload created after its row was gone: the [item] as the provider answered, the [remotePath] it
- * landed at, and the cache copy's (mtime, size) as they were sent ([sent], null when they could not be read).
- */
-data class LandedWithoutRow(
-    val item: CloudItem,
-    val remotePath: String,
-    val sent: Pair<Long, Long>?,
-)
 /**
  * A folder above the path was refused by name ([NameRefusedException]) and exists only in this mount, so the drive cannot
  * take anything below it. Raised without a request to the provider; permanent, so the upload queue does not retry it.

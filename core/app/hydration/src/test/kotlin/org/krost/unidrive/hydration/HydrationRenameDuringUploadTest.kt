@@ -45,6 +45,10 @@ class HydrationRenameDuringUploadTest {
         val uploadRelease = CompletableDeferred<Unit>()
         private var versions = 0
 
+        // True: the upload has written the item in the cloud before it waits to answer, so a rename's move lands after it
+        // and gives the item a newer token than the upload's answer carries.
+        var landsBeforeAnswer = false
+
         fun cloudItem(id: String, item: Item) =
             CloudItem(
                 id = id,
@@ -54,7 +58,7 @@ class HydrationRenameDuringUploadTest {
                 isFolder = false,
                 modified = Instant.parse("2026-11-18T10:00:00Z").plusSeconds(item.version.toLong()),
                 created = null,
-                hash = "h${item.version}",
+                hash = "h${item.bytes.contentHashCode()}",
                 mimeType = null,
                 version = "e${item.version}",
             )
@@ -90,11 +94,12 @@ class HydrationRenameDuringUploadTest {
             onProgress: ((Long, Long) -> Unit)?,
         ): CloudItem {
             val bytes = Files.readAllBytes(localPath)
+            val id = existingRemoteId ?: "id-$remotePath"
+            fun land() = items[id]?.also { it.bytes = bytes; it.version = ++versions } ?: Item(remotePath, bytes, ++versions).also { items[id] = it }
+            val landed = if (landsBeforeAnswer) cloudItem(id, land()) else null
             uploadReached.complete(Unit)
             uploadRelease.await()
-            val id = existingRemoteId ?: "id-$remotePath"
-            val item = items[id]?.also { it.bytes = bytes; it.version = ++versions } ?: Item(remotePath, bytes, ++versions).also { items[id] = it }
-            return cloudItem(id, item)
+            return landed ?: cloudItem(id, land())
         }
 
         override suspend fun delete(
@@ -127,7 +132,17 @@ class HydrationRenameDuringUploadTest {
 
     @Test
     fun `a rename while the edit uploads rebaselines the row at the new path and completes there`() = runTest {
-        val provider = IdProvider()
+        renameDuringUpload(IdProvider())
+    }
+
+    // gkrost/unidrive-cli#746 finding 2 follow-up: the upload landed first and the rename's move after it, so the move's token
+    // is the newest. The row must end with it, or the next edit is refused as a conflict with a version the row itself made.
+    @Test
+    fun `a rename whose move lands after the upload leaves the row with the move's newer token`() = runTest {
+        renameDuringUpload(IdProvider().apply { landsBeforeAnswer = true })
+    }
+
+    private suspend fun kotlinx.coroutines.test.TestScope.renameDuringUpload(provider: IdProvider) {
         provider.items["rid-src"] = IdProvider.Item("/src.txt", "old".toByteArray(), version = 0)
         val db = StateDatabase(dbPath = TestScratch.directory("ud-746-2-db").resolve("state.db"), inMemory = true).also { it.initialize() }
         val engine =
