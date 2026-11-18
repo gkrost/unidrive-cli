@@ -2392,7 +2392,8 @@ class InternxtProvider(
             } catch (e: InternxtApiException) {
                 if (e.statusCode != 409) throw e
                 val folderContent = api.getFolderContents(parentUuid)
-                if (folderContent.children.any { sanitizeName(it.plainName ?: it.name ?: "") == segments.last() }) throw e
+                // A trashed folder of the name does not explain the refusal (#747): only a live one stands in the way.
+                if (folderContent.children.any { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == segments.last() }) throw e
                 val remote = findFileByName(parentUuid, segments.last()) ?: throw e
                 if ((remote.size?.toLongOrNull() ?: -1L) == 0L) {
                     log.info("#485: remote {} is already an empty file (uuid={}); adopting", remotePath, remote.uuid)
@@ -2768,14 +2769,18 @@ class InternxtProvider(
             } catch (e: InternxtApiException) {
                 if (e.statusCode != 409) throw e
                 // Folder already exists on the server — recover its UUID instead of failing.
-                val existing =
+                // UD-317: sanitise child name before matching; a trashed twin is never adopted. Two live twins are
+                // ambiguous (#747): a first-match pick would be cached for the process lifetime, as in resolveFolder.
+                val live =
                     api
                         .getFolderContents(parentUuid)
                         .children
-                        // UD-317: sanitise child name before matching; a trashed twin is never adopted.
-                        .find { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == name }
-                        ?: throw e // 409 but no live folder of that name: re-throw original error
-                existing
+                        .filter { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == name }
+                when (live.size) {
+                    0 -> throw e // 409 but no live folder of that name: re-throw original error
+                    1 -> live.single()
+                    else -> throwAmbiguous(live.size, name, parentPath)
+                }
             }
         // UD-357: cache the new folder's UUID so the next resolveFolder call
         // doesn't race Internxt's read-after-write inconsistency on listing.
