@@ -1240,7 +1240,8 @@ class MountEngine private constructor(
     suspend fun forceEvictCacheCopy(
         path: String,
         observed: Pair<Long, Long>?,
-    ): Long? = deleteCacheCopyLocked(path, disposableOnly = false, reason = "dehydrate", summary = "mount-dehydrate", observed = observed)
+        observedKey: Any? = null,
+    ): Long? = deleteCacheCopyLocked(path, false, "dehydrate", "mount-dehydrate", observed = observed, observedKey = observedKey)
 
     // The one cache-copy delete, under the path's hydration lock: the row re-read and the bytes re-checked
     // before the delete, the CACHE_EVICT event, and the row's bookkeeping. The budget pass asks the full
@@ -1254,12 +1255,13 @@ class MountEngine private constructor(
         onUnhydrated: suspend (String) -> Unit = {},
         observed: Pair<Long, Long>? = null,
         stillUnused: () -> Boolean = { true },
+        observedKey: Any? = null,
     ): Long? =
         hydrateLocks.withLock(path) {
             if (!stillUnused()) return@withLock null
             // gkrost/unidrive-cli#746 finding 6: the row re-read, the bytes compared and the delete under the swap lock too,
             // the one open_write_begin's truncate and edit mark take: no edit starts between this check and the delete.
-            val deleted = withCacheSwapLock(path) { deleteVettedCopy(path, disposableOnly, reason, summary, observed) }
+            val deleted = withCacheSwapLock(path) { deleteVettedCopy(path, disposableOnly, reason, summary, observed, observedKey) }
             val (size, unhydrated) = deleted ?: return@withLock null
             if (unhydrated) onUnhydrated(path)
             size
@@ -1273,6 +1275,7 @@ class MountEngine private constructor(
         reason: String,
         summary: String,
         observed: Pair<Long, Long>?,
+        observedKey: Any?,
     ): Pair<Long, Boolean>? {
         // archive#728: one row read decides both the classification and the baseline question below: this
         // is the re-check that counts, so it must not ask the database twice per evicted file.
@@ -1284,6 +1287,7 @@ class MountEngine private constructor(
         val size = runCatching { Files.size(cache) }.getOrNull() ?: return null
         val mtime = runCatching { Files.getLastModifiedTime(cache).toMillis() }.getOrNull() ?: return null
         if (!disposableOnly && (mtime to size) != observed) return null
+        if (!disposableOnly && observedKey != null && fileKeyOf(cache) != observedKey) return null // another file, same stat
         // The same test cacheDisposition used: the cache copy is the row's local file.
         val cacheWasLocalFile =
             entry.cacheBacked == true || (entry.cacheBacked == null && entry.localMtime == mtime && entry.localSize == size)

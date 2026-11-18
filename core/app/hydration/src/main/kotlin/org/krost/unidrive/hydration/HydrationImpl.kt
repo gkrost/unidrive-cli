@@ -2726,6 +2726,7 @@ class HydrationImpl(
         if (renames.blocks(path)) return DehydrateResult.Busy // archive#1040 M4: the copy has not followed its rename yet
         // gkrost/unidrive-cli#746 finding 6: stat BEFORE vetting, so a write landing meanwhile no longer matches it.
         val observed = runCatching { Transfers.statBeforeUpload(mount.resolveCachePath(path)) }.getOrNull()
+        val observedKey = runCatching { fileKeyOf(mount.resolveCachePath(path)) }.getOrNull()
         val entry = stateDb.getEntry(path)
             ?: return DehydrateResult.Failed(HydrationError.UnknownPath)
 
@@ -2767,7 +2768,7 @@ class HydrationImpl(
             // nothing was deleted; the exists-check tells a copy that was already gone (fine: the row is marked
             // not hydrated either way) from one the delete could not take (an error, or the copy changed under
             // the lock) — the old deleteIfExists answered Ok for the first and Failed for the second too.
-            val freed = mount.forceEvictCacheCopy(path, observed = observed)
+            val freed = mount.forceEvictCacheCopy(path, observed = observed, observedKey = observedKey)
             if (freed == null && Files.exists(cachePath)) {
                 // #517 review: the locked delete was refused (the copy changed while the lock was waited for,
                 // or the delete errored) and the copy stays — it must stay ACCOUNTED for too. Forgetting it

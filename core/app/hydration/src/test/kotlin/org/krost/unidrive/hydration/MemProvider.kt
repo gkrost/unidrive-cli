@@ -32,6 +32,9 @@ internal class MemProvider : CloudProvider {
     @Volatile var downloadReached: CompletableDeferred<Unit>? = null
     @Volatile var downloadRelease: CompletableDeferred<Unit>? = null
 
+    // When set, runs on the written staging file before download() returns (e.g. to pin its modification time).
+    @Volatile var downloadWritten: ((Path) -> Unit)? = null
+
     // When set, delete() signals deleteReached and suspends on deleteRelease before deleting: holds a provider delete.
     @Volatile var deleteReached: CompletableDeferred<Unit>? = null
     @Volatile var deleteRelease: CompletableDeferred<Unit>? = null
@@ -99,6 +102,7 @@ internal class MemProvider : CloudProvider {
         downloadRelease?.await()
         Files.createDirectories(destination.parent)
         Files.write(destination, remote.getValue(remotePath))
+        downloadWritten?.invoke(destination)
         return remote.getValue(remotePath).size.toLong()
     }
 
