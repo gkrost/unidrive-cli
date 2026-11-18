@@ -48,18 +48,22 @@ internal fun unobservedChild(
 )
 
 // gkrost/unidrive-cli#717: the window between a client's comparison of the folder's cloud contents with the engine's
-// listing and the rmdir that comparison blesses. A row in [rowsBelow] that a delta indexed after [listedAtMs] — when
+// listing and the rmdir that comparison blesses. A row in [rowsBelow] that a delta indexed after [listedAt] — when
 // a client was last told the folder whole (gkrost/unidrive-cli#445's coverage) — is a child that comparison cannot
 // have seen, so the folder delete refuses with UNOBSERVED and the row's path, like a child the delete's own listing
 // names. Files only: the mount writes a folder it created itself exactly like a delivery writes a delivered one,
 // while a delivered folder still names the delivered files below it that refuse; a file this computer holds was read
-// or written here, so the client knows it. Null [listedAtMs]: no whole listing on record, nothing to compare
+// or written here, so the client knows it. Null [listedAt]: no whole listing on record, nothing to compare
 // against, and the delete's own listings still guard.
+// gkrost/unidrive-cli#739: [listedAt] has the clock's full resolution, as `lastSynced` has, and of several such rows the one
+// indexed first is named (then the path): the answer does not hang on the order the database returns the rows in.
 internal fun refuseIndexedAfterWholeListing(
     rowsBelow: List<SyncEntry>,
-    listedAtMs: Long?,
+    listedAt: Instant?,
 ) {
-    if (listedAtMs == null) return
-    rowsBelow.firstOrNull { !it.isFolder && !it.isHydrated && it.lastSynced.isAfter(Instant.ofEpochMilli(listedAtMs)) }
+    if (listedAt == null) return
+    rowsBelow
+        .filter { !it.isFolder && !it.isHydrated && it.lastSynced.isAfter(listedAt) }
+        .minWithOrNull(compareBy<SyncEntry>({ it.lastSynced }, { it.path }))
         ?.let { throw UnobservedChildException(UnobservedChildException.UNOBSERVED, it.path) }
 }

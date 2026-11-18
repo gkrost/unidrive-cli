@@ -2091,7 +2091,7 @@ class MountEngine private constructor(
         // gkrost/unidrive-cli#717: a row a delta indexed after a client was last told the folder whole is a child that
         // client's comparison of the folder's cloud contents with the engine's listing cannot have seen; it refuses
         // before any listing, like one the listing itself names.
-        refuseIndexedAfterWholeListing(below, liveFolders.lastWholeListingMs(PathNormalizer.nfc(folder.path)))
+        refuseIndexedAfterWholeListing(below, liveFolders.lastWholeListing(PathNormalizer.nfc(folder.path)))
         // Read once, and only when a listed child has no row: the common delete never pays for the query.
         val ownDeletes by lazy {
             db.recovery.recentlyDeletedRemoteIds(Instant.now().minus(RemoteGather.LAGGING_LISTING_WINDOW))
