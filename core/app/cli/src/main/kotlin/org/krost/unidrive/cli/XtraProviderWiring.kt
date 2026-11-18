@@ -43,7 +43,7 @@ internal fun Main.wrapWithXtra(
                     System.err.println("Error: a profile sets xtra_algorithm = \"age-v1\" but $ageKeyPath does not exist.")
                     System.err.println("Create it first: unidrive xtra init-age")
                     System.exit(1)
-                    throw IllegalStateException("unreachable")
+                    error("unreachable")
                 }
                 AgeV1Strategy(
                     lazy { XtraAgeKeyStore(ageKeyPath) },
