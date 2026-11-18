@@ -15,9 +15,9 @@ import kotlin.test.assertTrue
 import org.krost.unidrive.testing.TestScratch
 
 /**
- * close() waits a short while for a notifications start that holds the start lock and then tears down
- * regardless. A start that is still stalled past that wait (a slow constructor, a descheduled thread) and
- * resumes afterwards must not publish its client and open a socket: close() shut the gate for good.
+ * close() tears down without waiting for a notifications start that holds the start lock (#532). A start that is
+ * still stalled (a slow constructor, a descheduled thread) and resumes afterwards must not publish its client and
+ * open a socket: close() shut the gate for good.
  */
 class InternxtNotificationsCloseDuringStartTest {
     private fun writeValidCredentials(dir: Path) {
@@ -81,12 +81,63 @@ class InternxtNotificationsCloseDuringStartTest {
             try {
                 assertTrue(entered.latch.await(30, TimeUnit.SECONDS), "the start never reached the client construction")
 
-                provider.close() // waits its ~500 ms for the start lock, then tears down without it
+                provider.close() // tears down at once and shuts the gate; the start holds the start lock
 
                 release.countDown()
                 startup.join(30_000)
                 assertTrue(!startup.isAlive, "the stalled start must end once released")
                 assertNull(startFailure, "the start must end quietly: $startFailure")
+                assertEquals(0, connects.get(), "no socket may connect after close()")
+                assertNull(provider.notificationsClient, "no client may be published after close()")
+            } finally {
+                release.countDown()
+            }
+        } finally {
+            Files.walk(tmp).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+        }
+    }
+
+    // #532: close() no longer spins on the start lock: the gate (notificationsClosed, under notificationsGuard) is what keeps
+    // a start that is still running from publishing a client, so close() tears down at once.
+    @Test
+    fun `close does not wait for a start that holds the start lock`() {
+        val tmp = TestScratch.directory("internxt-notif-close-fast-")
+        try {
+            writeValidCredentials(tmp)
+            val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmp, notificationsUrl = "http://127.0.0.1:9", notificationsEnabled = true))
+            val connects = AtomicInteger()
+            val entered = CountingLatch()
+            val release = CountDownLatch(1)
+            provider.notificationsClientFactory = { tokenSupplier, onRemoteChange ->
+                entered.latch.countDown()
+                assertTrue(release.await(60, TimeUnit.SECONDS), "the test never released the stalled start")
+                NotificationsClient(
+                    notificationsUrl = "http://127.0.0.1:9",
+                    tokenSupplier = tokenSupplier,
+                    onRemoteChange = onRemoteChange,
+                    socketFactory = { _, _ -> CountingSocket(connects) },
+                )
+            }
+            val startup =
+                Thread {
+                    runCatching {
+                        runBlocking {
+                            provider.authenticate()
+                            provider.onRemoteChangeHint { }
+                        }
+                    }
+                }.apply { isDaemon = true }
+            startup.start()
+            try {
+                assertTrue(entered.latch.await(30, TimeUnit.SECONDS), "the start never reached the client construction")
+
+                val started = System.nanoTime()
+                provider.close()
+                val tookMs = (System.nanoTime() - started) / 1_000_000
+
+                assertTrue(tookMs < 400, "close() waited ${tookMs} ms for the start lock")
+                release.countDown()
+                startup.join(30_000)
                 assertEquals(0, connects.get(), "no socket may connect after close()")
                 assertNull(provider.notificationsClient, "no client may be published after close()")
             } finally {

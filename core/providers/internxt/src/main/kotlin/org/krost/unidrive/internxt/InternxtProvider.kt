@@ -401,30 +401,16 @@ class InternxtProvider(
     override fun requestStatus(): org.krost.unidrive.http.RequestStatusSnapshot = api.requestStatus()
 
     override fun close() {
-        // The suspend paths take [notificationsStartLock] around this teardown; close() cannot suspend,
-        // so it waits a few non-blocking tries for a start that holds the lock (its credential fetch ends
-        // when the daemon's serve scope is cancelled) and then tears down regardless — disconnect() is
-        // idempotent, and the only window left is a start between its last suspension point and its
-        // connect, microseconds wide.
-        // After the wait it tears down regardless, and closes the gate for good: a start that is still stalled
-        // (credential lookup, client construction) finds the gate shut at its publish and drops its client.
-        var locked = notificationsStartLock.tryLock()
-        var tries = 0
-        while (!locked && tries < 50) {
-            Thread.sleep(10)
-            locked = notificationsStartLock.tryLock()
-            tries++
-        }
-        try {
-            val detached =
-                synchronized(notificationsGuard) {
-                    notificationsClosed = true
-                    notificationsClient.also { notificationsClient = null }
-                }
-            detached?.disconnect()
-        } finally {
-            if (locked) notificationsStartLock.unlock()
-        }
+        // close() cannot suspend, so it does not take [notificationsStartLock] (#532: it used to spin on it for up to
+        // 500 ms and then tear down regardless). The gate makes the lock unnecessary here: the detach and a start's
+        // publish-and-connect both run under [notificationsGuard], so close() either finds the published client and
+        // disconnects it, or shuts the gate first and the start drops its client unconnected. disconnect() is idempotent.
+        val detached =
+            synchronized(notificationsGuard) {
+                notificationsClosed = true
+                notificationsClient.also { notificationsClient = null }
+            }
+        detached?.disconnect()
         clearCachedSeed()
         authService.close()
         api.close()
