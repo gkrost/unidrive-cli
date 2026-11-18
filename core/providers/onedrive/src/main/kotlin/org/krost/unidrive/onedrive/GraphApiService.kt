@@ -1029,11 +1029,16 @@ class GraphApiService(
                 log.debug("Upload progress: {}/{} bytes", offset, fileSize)
                 onProgress?.invoke(offset, fileSize)
             }
+        } catch (e: UploadSessionGoneException) {
+            // The server reported the session gone: its record goes, there is nothing to cancel.
+            sessionStore.delete(remotePath)
+            throw e
         } catch (e: GraphApiException) {
             // Terminal 4xx responses cannot be resumed. Keep the session for 408/429
             // and server errors so a later attempt can continue from its committed offset.
+            // A terminal answer (a 409 on the final chunk among them) leaves a live session behind: it is cancelled.
             if (e.statusCode in 400..499 && e.statusCode != 408 && e.statusCode != 429) {
-                sessionStore.delete(remotePath)
+                discardSession(remotePath, uploadUrl)
             }
             throw e
         }
@@ -1042,16 +1047,18 @@ class GraphApiService(
         // or the stored session expects nothing more) but no item came back. The item at the target is the upload's only
         // when it holds these bytes: a sibling at the path (one a `rename` avoided, the file a `fail` met) is not.
         val uploadedItem = result ?: committedAfterLostAnswer(localPath, target, fileSize)
-        sessionStore.delete(remotePath)
         if (uploadedItem == null) {
             // The session never committed (a failed commit, a conflict at the end): resuming it would end the same way on
             // every attempt. It is discarded; the session-gone retry creates a fresh one.
+            discardSession(remotePath, uploadUrl)
             throw UploadSessionGoneException(
                 "OneDrive upload session for $remotePath holds every byte but returned no item and none at the target " +
                     "holds these bytes; discarding the session",
                 410,
             )
         }
+        // Graph removes a completed session itself: only the record goes.
+        sessionStore.delete(remotePath)
         downloadUrls.invalidate(itemId ?: uploadedItem.id)
         return uploadedItem
     }
@@ -1121,7 +1128,7 @@ class GraphApiService(
     }
 
     // The stored session when this upload may resume it; otherwise it is discarded and null is returned.
-    private fun usableStoredSession(
+    private suspend fun usableStoredSession(
         remotePath: String,
         stored: UploadSessionStore.StoredSession,
         fileSize: Long,
@@ -1142,7 +1149,7 @@ class GraphApiService(
                 fileSize,
                 localMtimeMillis,
             )
-            sessionStore.delete(remotePath)
+            discardSession(remotePath, stored.uploadUrl)
             return null
         }
         // If-Match guard: a stored session that could overwrite more than this upload allows must not be reused.
@@ -1191,7 +1198,7 @@ class GraphApiService(
                 is SessionProbe.Alive -> probe.session
                 is SessionProbe.Unusable -> {
                     log.info("Upload session for {} is gone or unusable ({}); creating new session", remotePath, probe.reason)
-                    sessionStore.delete(remotePath)
+                    if (probe.gone) sessionStore.delete(remotePath) else discardSession(remotePath, stored.uploadUrl)
                     return null
                 }
             }
@@ -1274,7 +1281,7 @@ class GraphApiService(
             }
             // 404 (the documented answer for a session that no longer exists), 410, and any other 4xx: the session
             // cannot be used again, the same rule the chunk loop applies to a terminal 4xx.
-            else -> SessionProbe.Unusable("status $status")
+            else -> SessionProbe.Unusable("status $status", gone = status == 404 || status == 410)
         }
     }
 
@@ -1335,6 +1342,8 @@ class GraphApiService(
                     .now()
                     .plusSeconds(86_400) // fallback: 24 h
 
+        // The store keeps one session per path: the one this replaces would be lost to the store, so it is cancelled.
+        sessionStore.getSession(remotePath)?.uploadUrl?.takeIf { it != url }?.let { cancelUploadSession(remotePath, it) }
         sessionStore.put(remotePath, url, expiresAt, fileSize, localMtimeMillis, ifMatchETag, conflictBehavior)
         log.info("Upload session created: {} ({} bytes, conflictBehavior={})", remotePath, fileSize, conflictBehavior)
         return url to 0L
@@ -1528,6 +1537,39 @@ class GraphApiService(
                 return null
             }
         return runCatching { json.decodeFromString<UploadSession>(body) }.getOrNull()?.nextExpectedRanges.nextExpectedStart()
+    }
+
+    // A session that is given up: its record goes, and it is cancelled on the server.
+    private suspend fun discardSession(
+        remotePath: String,
+        uploadUrl: String,
+    ) {
+        sessionStore.delete(remotePath)
+        cancelUploadSession(remotePath, uploadUrl)
+    }
+
+    // #69: an upload session that is given up is cancelled (DELETE on its upload URL), so the server does not keep it, and
+    // whatever it holds, until it expires. The upload URL is pre-authenticated: Graph wants no Authorization header on
+    // it, so the request bypasses sendThrottled. Best effort: a failed cancel is logged once and never fails the upload;
+    // the session then expires on the server as before. A 404 means it is gone already.
+    private suspend fun cancelUploadSession(
+        remotePath: String,
+        uploadUrl: String,
+    ) {
+        val response =
+            try {
+                httpClient.delete(uploadUrl) {
+                    timeout { requestTimeoutMillis = UPLOAD_SESSION_CANCEL_TIMEOUT_MS }
+                }
+            } catch (e: java.io.IOException) {
+                log.warn("Cancelling the upload session of {} failed ({}); it expires on the server", remotePath, e.message)
+                return
+            }
+        if (response.status.isSuccess() || response.status == HttpStatusCode.NotFound) {
+            log.debug("Upload session of {} cancelled ({})", remotePath, response.status)
+        } else {
+            log.warn("Cancelling the upload session of {} answered {}; it expires on the server", remotePath, response.status)
+        }
     }
 
     private fun List<String>?.nextExpectedStart(): Long? = this?.firstOrNull()?.substringBefore("-")?.toLongOrNull()
@@ -1967,6 +2009,8 @@ class UploadSessionGoneException(
     statusCode: Int,
 ) : GraphApiException(message, statusCode)
 
+private const val UPLOAD_SESSION_CANCEL_TIMEOUT_MS = 30_000L
+
 // Where an upload lands: [remotePath] names the file, [itemId] (when set) is the existing item it replaces in place.
 private class UploadTarget(
     val remotePath: String,
@@ -1997,9 +2041,11 @@ private sealed interface SessionProbe : SessionProbeOutcome {
         val session: UploadSession,
     ) : SessionProbe
 
-    // The server said the session is gone or unusable (404, 410, another 4xx, an unreadable answer).
+    // The server said the session is gone or unusable (404, 410, another 4xx, an unreadable answer). [gone]: it no longer
+    // exists (404/410), so there is nothing to cancel.
     class Unusable(
         val reason: String,
+        val gone: Boolean = false,
     ) : SessionProbe
 }
 

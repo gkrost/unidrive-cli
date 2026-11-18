@@ -808,6 +808,8 @@ class ListChildrenPaginationTest {
                                 headersOf(HttpHeaders.ContentType, "application/json"),
                             )
                         }
+                        // #69: the replaced session is cancelled (DELETE); only a probe or PUT would resume it.
+                        url == staleSessionUrl && request.method == HttpMethod.Delete -> respond("", HttpStatusCode.NoContent)
                         url == staleSessionUrl -> {
                             staleSessionAccessed = true
                             // Probe or PUT against the stale session should not happen.
