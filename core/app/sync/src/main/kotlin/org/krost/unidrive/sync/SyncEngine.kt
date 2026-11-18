@@ -2841,10 +2841,14 @@ open class SyncEngine(
         Triple(changes, safeAccumulator + deferred, resolvedLocal.get())
     }
 
-    private suspend fun applyCreatePlaceholder(
+    // Internal for the placeholder-overwrite guard test (#768).
+    internal suspend fun applyCreatePlaceholder(
         action: SyncAction.CreatePlaceholder,
         // A conflict the cloud won: what is on disk is not the remote's content, whatever its size.
         localBytesLost: Boolean = false,
+        // #768: the (mtime, size) of the local bytes a last-writer-wins caller judged and backed up to the conflict log.
+        // Only an edit made after that judgement is kept aside; null judges against the row's last-synced state.
+        lostBytesBackedUp: Pair<Long, Long>? = null,
     ) {
         // archive#230 (PR archive#242 review): applyDownload guards the file-download path, but folders and
         // "both new" adopt placeholders reach createFolder/createPlaceholder here. A name that
@@ -2877,6 +2881,20 @@ open class SyncEngine(
         val shouldDownload = !item.isFolder && item.size > 0 && !hasRealContent
         var downloadReceipt: DownloadReceipt? = null
         var downloadedHash: String? = null
+        // #768: a download, or the empty placeholder of a 0-byte remote, replaces what is at the path. A local file that
+        // differs from the state its row last synced (an edit since the scan, or a file no baseline vouches for) is kept
+        // aside as a conflict-local copy. The empty placeholder keeps it now; a download keeps it at the placement, once
+        // the cloud's bytes are in (a failed download leaves the file where it is, archive#1045), and also keeps an
+        // edit that lands during the transfer, as applyDownload does. A last-writer-wins loser the conflict log backed
+        // up is judged against the stats it was backed up with, so only a later edit is kept.
+        val replacesLocal = !item.isFolder && (shouldDownload || !sizeMatch)
+        val keepNow = replacesLocal && lostBytesBackedUp == null && differsFromSyncedState(action.path, localPath, item)
+        if (keepNow && !shouldDownload) {
+            keepAppearedFileAside(action.path, localPath, "was not in its synced state when its empty cloud file was placed")
+        }
+        // What the download keeps aside at its placement.
+        var keptLocalEdit: String? = null
+        val placementGuard = if (shouldDownload) placementGuard(action.path, localPath, keepNow, lostBytesBackedUp) else null
 
         withEchoSuppression(action.path) {
             if (item.isFolder) {
@@ -2898,8 +2916,10 @@ open class SyncEngine(
                     // archive#115: the REMOTE source is item.path (canonical); the local
                     // destination is localPath (resolved from the real-local action.path).
                     // archive#491: in the provider's own spelling, which a name that is not NFC keeps at the provider.
-                    val receipt = downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli()).first
+                    val (receipt, keptAtPlacement) =
+                        downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli(), placementGuard)
                     downloadReceipt = receipt
+                    keptLocalEdit = keptAtPlacement
                     downloadedHash = stagedLocalHash(localPath, receipt)
                     if (!receipt.mtimeAppliedBeforePlacement) placeholder.restoreMtime(action.path, item.modified)
                 } catch (e: Exception) {
@@ -2920,10 +2940,18 @@ open class SyncEngine(
             },
         )
         if (item.isFolder) db.clearPendingLocal(action.path)
+        // The kept edit of a download goes up in this pass, as applyDownload's does; the next scan uploads any other.
+        keptLocalEdit?.takeIf { syncDirection != SyncDirection.DOWNLOAD }?.let { uploadKeptLocalEdit(it, item.path.substringBeforeLast('/')) }
     }
 
     private suspend fun applyUpdatePlaceholder(action: SyncAction.UpdatePlaceholder) {
         val item = action.remoteItem
+        // #768: the re-download replaces the local bytes; an edit since the last sync, or a file no baseline vouches for,
+        // is kept aside first (the next scan uploads it).
+        if (action.wasHydrated && !item.isFolder) {
+            val localPath = placeholder.resolveLocal(action.path)
+            keepLocalEditAsideIfEditedSinceScan(action.path, localPath) ?: keepUnbaselinedFileAside(action.path, localPath, item)
+        }
         if (versionManager != null && action.wasHydrated && !item.isFolder) snapshotVersion(action.path, placeholder.resolveLocal(action.path))
         var downloadReceipt: DownloadReceipt? = null
         var downloadedHash: String? = null
@@ -3233,6 +3261,35 @@ open class SyncEngine(
         val row = db.getEntry(path) ?: return null
         if (!editedSinceScan(localPath, row, baselineMtime, baselineSize)) return null
         return keepAppearedFileAside(path, localPath, "was edited after the scan planned its $plannedFor", remoteState)
+    }
+
+    // #768: what a placeholder download re-checks at its placement. [keep]: the file is kept aside there unconditionally,
+    // as one that appeared on a proven-empty path is. Otherwise an edit made after [judged] (the stats a last-writer-wins
+    // loser was backed up with), or after now, is kept.
+    private fun placementGuard(
+        path: String,
+        localPath: Path,
+        keep: Boolean,
+        judged: Pair<Long, Long>?,
+    ): PreTransferGuard {
+        if (keep) return PreTransferGuard(path, null, absent = true)
+        val stats = judged ?: statBeforeUpload(localPath)
+        return PreTransferGuard(path, stats, absent = stats == null && !Files.exists(localPath, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+    }
+
+    // #768: whether the local file at [path] differs from the state its row last synced: edited since the scan, or a
+    // file no row baseline vouches for (isLocalFileWithoutBaseline). Moves nothing.
+    private suspend fun differsFromSyncedState(
+        path: String,
+        localPath: Path,
+        remote: CloudItem,
+    ): Boolean {
+        if (!Files.isRegularFile(localPath)) return false
+        val row = db.getEntry(path)
+        if (row != null && editedSinceScan(localPath, row)) return true
+        return isLocalFileWithoutBaseline(row, localPath, remote) {
+            offLoop { HashVerifier.compare(localPath, remote.hash, provider.hashAlgorithm()) }
+        }
     }
 
     // #742: a file at a download's destination no row baseline vouches for is kept aside (isLocalFileWithoutBaseline).
@@ -4526,6 +4583,9 @@ open class SyncEngine(
             }
 
         val loserFile = if (remoteWins && Files.exists(localPath)) localPath else null
+        // #768: what the conflict log backed up. Without a log the placement below keeps the loser aside itself.
+        val backedUp =
+            if (conflictLog != null && loserFile != null) attrs?.takeIf { it.isRegularFile }?.let { it.lastModifiedTime().toMillis() to it.size() } else null
         conflictLog?.record(
             path = action.path,
             localState = action.localState.name,
@@ -4540,6 +4600,7 @@ open class SyncEngine(
             applyCreatePlaceholder(
                 SyncAction.CreatePlaceholder(action.path, action.remoteItem, shouldHydrate = true),
                 localBytesLost = true,
+                lostBytesBackedUp = backedUp,
             )
         } else if (remoteWins && action.remoteItem?.deleted == true) {
             // A tombstone that is the newer writer IS the newer write: the delete applies (Internxt tombstones
